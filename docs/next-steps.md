@@ -61,11 +61,11 @@ Wire the agent into HTTP endpoints:
 
 ### Step 5 — Web Storefront (`apps/web`)
 
-Build the customer-facing UI (all copy in pt-BR):
-- Home page with product grid (fetched from Medusa)
-- Search page powered by Typesense
-- Product detail page
-- Embedded chat widget (connects to the SSE stream)
+Build the customer-facing UI (all copy in pt-BR, mobile-first):
+- Home page with product grid (fetched from Medusa) — design at 375px first
+- Search page powered by Typesense — large touch targets, no hover-only interactions
+- Product detail page — full-screen images, sticky add-to-cart button
+- Chat widget — floating button on mobile that expands to full-screen overlay; side panel on desktop
 
 ### Step 6 — Checkout
 
@@ -88,7 +88,16 @@ Connect the same agent to WhatsApp via Twilio or Z-API:
 - Incoming webhook → parse message → run agent → reply via WhatsApp API
 - Same tools, same cart, same Medusa backend as the web storefront
 
-### Step 9 — Observability
+### Step 9 — LGPD Compliance (pre-launch)
+
+Required before any real users see the platform:
+- Cookie consent banner — shown before PostHog or any analytics loads
+- Privacy policy page (`/privacidade`) — what data is collected, how it's used, retention period
+- Terms of service page (`/termos`) — purchase terms, returns, delivery
+- WhatsApp opt-in message — inform users their phone number is stored and how it's used
+- Medusa customer data retention policy — define how long order/personal data is kept
+
+### Step 10 — Observability
 
 Add production-grade visibility:
 - Request ID tracing (already available via Fastify's built-in `requestId`)

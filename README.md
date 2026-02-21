@@ -1,13 +1,13 @@
 # IbateXas
 
-AI-native conversational commerce platform for Brazil.
-Customers shop through natural language — web chat and WhatsApp — powered by a Claude-based agent that searches products, manages carts, and drives checkout.
+AI-native commerce platform for Brazil.
+Customers shop through a full web storefront and WhatsApp — both powered by the same Claude-based agent that searches products, manages carts, and drives checkout.
 
 ---
 
 **Target market:** Brazilian food & goods e-commerce
 **Primary language:** Portuguese (pt-BR)
-**Core differentiator:** The shopping experience is a conversation, not a UI
+**Core differentiator:** One agent, two channels — same cart, same tools, same experience on desktop, mobile browser, and WhatsApp
 
 ---
 
@@ -34,7 +34,7 @@ Customer (Web / WhatsApp)
 
 | App | Role |
 |---|---|
-| `apps/web` | Next.js chat interface |
+| `apps/web` | Next.js storefront (desktop + mobile) |
 | `apps/api` | Fastify API + SSE streaming |
 | `apps/agent` | Claude orchestrator + tool registry |
 | `apps/commerce` | Medusa.js v2 commerce engine |
@@ -124,6 +124,29 @@ The agent interacts with commerce exclusively through typed, authorized tools. I
 | `handoff_to_human` | Escalate to human support agent |
 
 Authorization is enforced per tool, not per route. A guest can browse but not checkout. A customer cannot access another customer's orders.
+
+---
+
+## Design Principles
+
+### Responsive-first
+The web storefront is designed for 375px (mobile) first and scales to desktop. The majority of Brazilian users shop from their phones. Every UI decision — tap target sizes (min 44px), font sizes, layout — is validated at mobile width first.
+
+### Channel parity
+Every user action available on web is available on WhatsApp, and vice versa. The agent, tools, cart, and checkout are shared. There is no "mobile lite" or "WhatsApp-only" feature — both channels are first-class.
+
+### Progressive auth
+Browsing and searching require no account. Cart is maintained as an anonymous session. Authentication (Clerk, SMS OTP) is required only at checkout and for order history. No login wall before the user has seen value.
+
+### LGPD compliance
+Brazil's Lei Geral de Proteção de Dados (LGPD) applies from day one:
+- Cookie consent banner before any tracking
+- Privacy policy and terms pages (required before public launch)
+- Personal data (phone numbers, addresses, order history) stored with explicit legal basis
+- WhatsApp users informed how their number is used
+
+### Payment methods (Brazil)
+Stripe handles card payments. Pagar.me handles PIX and boleto — the two dominant payment methods for Brazilian consumers. Both are available on web and via agent-generated payment links on WhatsApp.
 
 ---
 
