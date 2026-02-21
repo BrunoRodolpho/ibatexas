@@ -1,0 +1,22 @@
+{
+  "name": "@ibatexas/api",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clerk/fastify": "^1.0.0",
+    "@ibatexas/domain": "workspace:*",
+    "@ibatexas/types": "workspace:*",
+    "fastify": "^4.26.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.3.0"
+  }
+}

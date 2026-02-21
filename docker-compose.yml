@@ -1,0 +1,68 @@
+services:
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: ibatexas-postgres
+    environment:
+      POSTGRES_USER: ibatexas
+      POSTGRES_PASSWORD: ibatexas
+      POSTGRES_DB: ibatexas
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ibatexas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ibatexas-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  typesense:
+    image: typesense/typesense:0.25.2
+    container_name: ibatexas-typesense
+    environment:
+      TYPESENSE_DATA_DIR: /data
+      TYPESENSE_API_KEY: ibatexas-local-key
+    ports:
+      - "8108:8108"
+    volumes:
+      - typesense_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c 'echo > /dev/tcp/localhost/8108' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: ibatexas-nats
+    command: ["--jetstream", "--store_dir", "/data"]
+    ports:
+      - "4222:4222"   # client connections
+      - "8222:8222"   # monitoring UI
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 4222 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  typesense_data:
+  nats_data:
