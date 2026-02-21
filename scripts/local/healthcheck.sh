@@ -48,6 +48,35 @@ check "Typesense   :8108" "bash -c 'echo > /dev/tcp/localhost/8108' 2>/dev/null"
 
 echo ""
 
+# ── App services (only checked if port is open) ────────────────────────────────
+APP_CHECKS=0
+
+check_app() {
+  local name="$1"
+  local port="$2"
+  local url="$3"
+  # Skip silently if the app is not running
+  if ! bash -c "echo > /dev/tcp/localhost/$port" 2>/dev/null; then
+    return
+  fi
+  APP_CHECKS=$((APP_CHECKS + 1))
+  if curl -sf "$url" &>/dev/null; then
+    echo -e "${GREEN}✓${NC}  $name"
+    PASS=$((PASS + 1))
+  else
+    echo -e "${RED}✗${NC}  $name"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+check_app "API         :3001" 3001 "http://localhost:3001/health"
+check_app "Commerce    :9000" 9000 "http://localhost:9000/health"
+check_app "Web         :3000" 3000 "http://localhost:3000"
+
+if [ "$APP_CHECKS" -gt 0 ]; then
+  echo ""
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo "─────────────────────────────────────────────"
 if [ "$FAIL" -eq 0 ]; then
