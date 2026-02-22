@@ -1,11 +1,10 @@
 # IbateXas
 
-AI-native commerce platform for Brazil.
-Customers shop through a full web storefront and WhatsApp — both powered by the same Claude-based agent that searches products, manages carts, and drives checkout.
+AI-native platform for Brazilian restaurants — online ordering (food + frozen dishes), table reservations, and WhatsApp-native customer experience, all powered by the same Claude-based agent.
 
 ---
 
-**Target market:** Brazilian food & goods e-commerce
+**Target market:** Brazilian restaurant — food, frozen dishes, dine-in
 **Primary language:** Portuguese (pt-BR)
 **Core differentiator:** One agent, two channels — same cart, same tools, same experience on desktop, mobile browser, and WhatsApp
 
@@ -27,27 +26,27 @@ Customer (Web / WhatsApp)
    │         │
    └────┬────┘
         │
-   PostgreSQL + Redis + Typesense
+   PostgreSQL + Redis + Typesense + NATS
 ```
 
 ### Four Applications
 
 | App | Role |
 |---|---|
-| `apps/web` | Next.js storefront (desktop + mobile) |
+| `apps/web` | Next.js storefront (desktop + mobile) + owner dashboard |
 | `apps/api` | Fastify API + SSE streaming |
 | `apps/agent` | Claude orchestrator + tool registry |
-| `apps/commerce` | Medusa.js v2 commerce engine |
+| `apps/commerce` | Medusa.js v2 — catalog, cart, orders |
 
 ### Five Shared Packages
 
 | Package | Role |
 |---|---|
-| `@ibatexas/types` | Shared TypeScript types |
-| `@ibatexas/domain` | Domain models (conversations, events) |
-| `@ibatexas/llm-provider` | Claude adapter + provider interface |
-| `@ibatexas/tools` | Agent tool definitions + registry |
-| `@ibatexas/nats-client` | NATS event bus wrapper |
+| `@ibatexas/types` | Shared TypeScript types and interfaces |
+| `@ibatexas/domain` | Reservation, CustomerProfile, Review — custom domain models |
+| `@ibatexas/llm-provider` | Claude adapter + model-agnostic LLMProvider interface |
+| `@ibatexas/tools` | Agent tool definitions + registry (29 tools across 5 contexts) |
+| `@ibatexas/nats-client` | NATS event bus — publishes business events for analytics and intelligence |
 
 ---
 
@@ -55,95 +54,50 @@ Customer (Web / WhatsApp)
 
 ### Frontend
 - **Framework:** Next.js 14 (App Router)
-- **Language:** TypeScript 5+
 - **Styling:** Tailwind CSS + shadcn/ui
-- **Auth:** Clerk
+- **Auth:** Clerk (SMS OTP — no passwords)
 - **Analytics:** PostHog
 
 ### Backend
 - **API:** Fastify
 - **Language:** TypeScript 5+ / Node.js 20+
-- **ORM:** Prisma
 - **Commerce:** Medusa.js v2
 - **Validation:** Zod
 
 ### AI
 - **Primary LLM:** Claude Sonnet 4 (Anthropic)
 - **Fallback LLM:** GPT-4o (OpenAI)
-- **Embeddings:** Voyage AI
-- **Vector store:** Pinecone
-- **Abstraction:** Custom `LLMProvider` interface (swap models without code changes)
+- **Abstraction:** Custom `LLMProvider` interface — swap models without code changes
 
 ### Data
 - **Primary DB:** PostgreSQL 15+ (AWS RDS)
 - **Cache + Sessions:** Redis (Upstash)
 - **Search:** Typesense
 - **Event streaming:** NATS JetStream
-- **Analytics DB:** ClickHouse (Phase 2+)
 
 ### Infrastructure
-- **Cloud:** AWS (sa-east-1 — São Paulo)
+- **Cloud:** AWS sa-east-1 (São Paulo)
 - **Compute:** ECS Fargate
 - **IaC:** Terraform
-- **CI/CD:** GitHub Actions
 - **CDN:** CloudFront
-- **DNS:** Route 53
-- **Secrets:** AWS Secrets Manager
-
-### Observability
-- **Errors:** Sentry
-- **Product analytics:** PostHog
-- **Uptime:** BetterStack
-- **Metrics/Logs/Traces:** Prometheus + Grafana Loki + Grafana Tempo (Phase 2+)
 
 ### External Services (Brazil)
 - **WhatsApp:** Twilio API
-- **Payments:** Stripe + Pagar.me (PIX, boleto, credit card)
+- **Payments:** Stripe (card) + Pagar.me (PIX, boleto)
 - **Shipping:** Correios + EasyPost
-- **Address lookup:** ViaCEP
+- **Address:** ViaCEP
 - **Tax invoices:** Focus NFe
-
----
-
-## Agent Tools
-
-The agent interacts with commerce exclusively through typed, authorized tools. It cannot hallucinate prices or inventory — all facts come from tool responses.
-
-| Tool | What it does |
-|---|---|
-| `search_products` | Full-text product search via Typesense |
-| `get_product_details` | Product info, price, nutritional data |
-| `check_inventory` | Real-time stock check (FEFO-aware) |
-| `add_to_cart` | Add item, validates stock first |
-| `update_cart` | Change quantity of existing cart item |
-| `remove_from_cart` | Remove item from cart |
-| `create_checkout` | Generate checkout session (PIX/boleto/card) |
-| `estimate_delivery` | Delivery time + cost via CEP |
-| `check_order_status` | Order tracking for authenticated customer |
-| `get_nutritional_info` | ANVISA nutritional data per product |
-| `handoff_to_human` | Escalate to human support agent |
-
-Authorization is enforced per tool, not per route. A guest can browse but not checkout. A customer cannot access another customer's orders.
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Start infrastructure
-docker compose up -d
-
-# 2. Verify everything is healthy
-pnpm check
-
-# 3. Install dependencies
-pnpm install
-
-# 4. Start all apps
-turbo dev
+docker compose up -d   # start infrastructure
+pnpm check             # verify all services healthy
+pnpm install           # install dependencies
+turbo dev              # start all apps
 ```
-
-Full setup guide: [docs/setup/local-dev.md](docs/setup/local-dev.md)
 
 ---
 
@@ -152,75 +106,54 @@ Full setup guide: [docs/setup/local-dev.md](docs/setup/local-dev.md)
 ```
 ibatexas/
 ├── apps/
-│   ├── web/          Next.js 14 storefront (desktop + mobile)
+│   ├── web/          Next.js storefront + owner dashboard
 │   ├── api/          Fastify API + SSE streaming
 │   ├── agent/        Claude orchestrator + tool registry
 │   └── commerce/     Medusa.js v2 commerce engine
 ├── packages/
 │   ├── types/        Shared TypeScript types
-│   ├── domain/       Domain models (conversations, events)
+│   ├── domain/       Reservation, CustomerProfile, Review models
 │   ├── llm-provider/ Claude adapter + LLMProvider interface
 │   ├── tools/        Agent tool definitions + registry
-│   └── nats-client/  NATS JetStream wrapper
+│   └── nats-client/  NATS event bus wrapper
 ├── infra/
 │   └── terraform/    AWS infrastructure (ECS, RDS, VPC)
 ├── scripts/
 │   └── local/        Dev tooling (healthcheck.sh)
 ├── docs/
-│   ├── setup/        Local dev setup guide
-│   └── next-steps.md Phase 1 build order + current state
-├── docker-compose.yml Local infrastructure
-└── .env.example      All required environment variables
+│   ├── design/       System design documents
+│   └── setup/        Local dev setup guide
+├── docker-compose.yml
+└── .env.example
 ```
 
 ---
 
 ## Rollout Phases
 
-### Phase 1 — Launch (~$50–80/mo, under 1K users/month)
-- Hosted on a single ECS Fargate task (1 vCPU, 2GB RAM)
-- RDS PostgreSQL `db.t3.micro`, Upstash Redis free tier, Typesense Cloud starter
-- Claude API costs ~$10–20/mo at low volume
-- **Goal:** first paying customers, validate product-market fit
-
-### Phase 2 — Growth (~$150–200/mo, 1K–5K users/month)
-- Scale ECS tasks, upgrade RDS to `db.t3.small`
-- Add WhatsApp channel (Twilio)
-- Enable Pagar.me for PIX and boleto payments
-- **Goal:** repeat customers, first revenue milestone
-
-### Phase 3 — Scale (~$300–400/mo, 5K–20K users/month)
-- Multi-AZ RDS, Redis cluster, Typesense cluster
-- Add ClickHouse for analytics, Sentry for error tracking
-- **Goal:** reliable operations, data-driven decisions
-
-### Phase 4 — Expansion (~$1K–3.5K/mo, 20K+ users/month)
-- CDN (CloudFront), auto-scaling, dedicated infrastructure per service
-- Full observability stack (Grafana, Prometheus, Loki)
-- **Goal:** regional expansion, multiple store support
+| Phase | Scale | Est. Cost |
+|---|---|---|
+| 1 — Launch | < 1K users/mo | ~$50–80/mo |
+| 2 — Growth | 1K–5K users/mo | ~$150–200/mo |
+| 3 — Scale | 5K–20K users/mo | ~$300–400/mo |
+| 4 — Expansion | 20K+ users/mo | ~$1K–3.5K/mo |
 
 ---
 
 ## Design Principles
 
-### Responsive-first
-The web storefront is designed for 375px (mobile) first and scales to desktop. The majority of Brazilian users shop from their phones. Every UI decision — tap target sizes (min 44px), font sizes, layout — is validated at mobile width first.
-
-### Channel parity
-Every user action available on web is available on WhatsApp, and vice versa. The agent, tools, cart, and checkout are shared. There is no "mobile lite" or "WhatsApp-only" feature — both channels are first-class.
-
-### Progressive auth
-Browsing and searching require no account. Cart is maintained as an anonymous session. Authentication (Clerk, SMS OTP) is required only at checkout and for order history. No login wall before the user has seen value.
-
-### LGPD compliance
-Brazil's Lei Geral de Proteção de Dados (LGPD) applies from day one:
-- Cookie consent banner before any tracking
-- Privacy policy and terms pages (required before public launch)
-- Personal data (phone numbers, addresses, order history) stored with explicit legal basis
-- WhatsApp users informed how their number is used
-
-### Payment methods (Brazil)
-Stripe handles card payments. Pagar.me handles PIX and boleto — the two dominant payment methods for Brazilian consumers. Both are available on web and via agent-generated payment links on WhatsApp.
+**Responsive-first** — designed for 375px mobile, scales to desktop. **Channel parity** — every feature works on web and WhatsApp identically. **Progressive auth** — browse and search as guest, auth only at checkout. **LGPD compliant** — cookie consent, privacy policy, explicit data consent before launch.
 
 ---
 
+## Documentation
+
+| Document | Description |
+|---|---|
+| [Bounded Contexts](docs/design/bounded-contexts.md) | The 6 contexts, entity ownership, and rules |
+| [Domain Model](docs/design/domain-model.md) | Custom entities (Reservation, Review, CustomerProfile, Events) |
+| [Use Cases](docs/design/use-cases.md) | Full matrix: what's available on web, WhatsApp, and in-person |
+| [Agent Tools](docs/design/agent-tools.md) | All 29 tools — inputs, outputs, auth level |
+| [Customer Intelligence](docs/design/customer-intelligence.md) | Recommendations, reviews, NATS events, owner dashboard |
+| [Local Dev Setup](docs/setup/local-dev.md) | Prerequisites, env vars, running locally |
+| [Next Steps](docs/next-steps.md) | Current state + 12-step Phase 1 build order |
