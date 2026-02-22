@@ -10,6 +10,21 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # no colour
 
+# ── Load .env if present (silently skip if missing) ──────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/.env" 2>/dev/null || true
+
+# Port defaults — override via .env
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+REDIS_PORT="${REDIS_PORT:-6379}"
+NATS_PORT="${NATS_PORT:-4222}"
+TYPESENSE_PORT="${TYPESENSE_PORT:-8108}"
+API_PORT="${PORT:-3001}"
+COMMERCE_PORT="${COMMERCE_PORT:-9000}"
+WEB_PORT="${WEB_PORT:-3000}"
+
 PASS=0
 FAIL=0
 
@@ -41,12 +56,41 @@ echo ""
 
 # ── Network connectivity ───────────────────────────────────────────────────────
 echo "Network connectivity:"
-check "PostgreSQL  :5432" "bash -c 'echo > /dev/tcp/localhost/5432' 2>/dev/null"
-check "Redis       :6379" "bash -c 'echo > /dev/tcp/localhost/6379' 2>/dev/null"
-check "NATS        :4222" "bash -c 'echo > /dev/tcp/localhost/4222' 2>/dev/null"
-check "Typesense   :8108" "bash -c 'echo > /dev/tcp/localhost/8108' 2>/dev/null"
+check "PostgreSQL  :${POSTGRES_PORT}"  "bash -c 'echo > /dev/tcp/localhost/${POSTGRES_PORT}' 2>/dev/null"
+check "Redis       :${REDIS_PORT}"     "bash -c 'echo > /dev/tcp/localhost/${REDIS_PORT}' 2>/dev/null"
+check "NATS        :${NATS_PORT}"      "bash -c 'echo > /dev/tcp/localhost/${NATS_PORT}' 2>/dev/null"
+check "Typesense   :${TYPESENSE_PORT}" "bash -c 'echo > /dev/tcp/localhost/${TYPESENSE_PORT}' 2>/dev/null"
 
 echo ""
+
+# ── App services (only checked if port is open) ────────────────────────────────
+APP_CHECKS=0
+
+check_app() {
+  local name="$1"
+  local port="$2"
+  local url="$3"
+  # Skip silently if the app is not running
+  if ! bash -c "echo > /dev/tcp/localhost/$port" 2>/dev/null; then
+    return
+  fi
+  APP_CHECKS=$((APP_CHECKS + 1))
+  if curl -sf "$url" &>/dev/null; then
+    echo -e "${GREEN}✓${NC}  $name"
+    PASS=$((PASS + 1))
+  else
+    echo -e "${RED}✗${NC}  $name"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+check_app "API         :${API_PORT}"      "${API_PORT}"      "http://localhost:${API_PORT}/health"
+check_app "Commerce    :${COMMERCE_PORT}" "${COMMERCE_PORT}" "http://localhost:${COMMERCE_PORT}/health"
+check_app "Web         :${WEB_PORT}"      "${WEB_PORT}"      "http://localhost:${WEB_PORT}"
+
+if [ "$APP_CHECKS" -gt 0 ]; then
+  echo ""
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo "─────────────────────────────────────────────"

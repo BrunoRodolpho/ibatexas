@@ -56,7 +56,7 @@ Before starting apps, verify all infrastructure services are healthy:
 pnpm check
 ```
 
-This runs `scripts/healthcheck.sh` and prints ✓/✗ for each service. All 8 checks must pass before proceeding.
+This runs `scripts/local/healthcheck.sh` and prints ✓/✗ for each service. All 8 checks must pass before proceeding.
 
 ---
 
@@ -92,9 +92,14 @@ turbo db:seed
 
 ## Verify Everything Works
 
-1. Open http://localhost:3000
-2. Sign in with Clerk
-3. Type a product search in the chat
-4. The agent should respond with results from Typesense
+Run `pnpm check` — it verifies infrastructure and any running app services automatically.
 
-If the agent responds but returns no products, the seed data may not have loaded — re-run `turbo db:seed`.
+To manually spot-check individual services:
+
+| What | Command |
+|---|---|
+| API health | `curl http://localhost:3001/health` |
+| Medusa admin | Open http://localhost:9000/app |
+| Web storefront | Open http://localhost:3000 |
+
+> **Note:** The web storefront and full chat flow only work once all Phase 1 steps are complete (Medusa connected, agent built, API chat routes wired). Until then, verify using `curl` against the API directly.
