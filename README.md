@@ -127,6 +127,80 @@ Authorization is enforced per tool, not per route. A guest can browse but not ch
 
 ---
 
+## Quick Start
+
+```bash
+# 1. Start infrastructure
+docker compose up -d
+
+# 2. Verify everything is healthy
+pnpm check
+
+# 3. Install dependencies
+pnpm install
+
+# 4. Start all apps
+turbo dev
+```
+
+Full setup guide: [docs/setup/local-dev.md](docs/setup/local-dev.md)
+
+---
+
+## Repository Structure
+
+```
+ibatexas/
+├── apps/
+│   ├── web/          Next.js 14 storefront (desktop + mobile)
+│   ├── api/          Fastify API + SSE streaming
+│   ├── agent/        Claude orchestrator + tool registry
+│   └── commerce/     Medusa.js v2 commerce engine
+├── packages/
+│   ├── types/        Shared TypeScript types
+│   ├── domain/       Domain models (conversations, events)
+│   ├── llm-provider/ Claude adapter + LLMProvider interface
+│   ├── tools/        Agent tool definitions + registry
+│   └── nats-client/  NATS JetStream wrapper
+├── infra/
+│   └── terraform/    AWS infrastructure (ECS, RDS, VPC)
+├── scripts/
+│   └── local/        Dev tooling (healthcheck.sh)
+├── docs/
+│   ├── setup/        Local dev setup guide
+│   └── next-steps.md Phase 1 build order + current state
+├── docker-compose.yml Local infrastructure
+└── .env.example      All required environment variables
+```
+
+---
+
+## Rollout Phases
+
+### Phase 1 — Launch (~$50–80/mo, under 1K users/month)
+- Hosted on a single ECS Fargate task (1 vCPU, 2GB RAM)
+- RDS PostgreSQL `db.t3.micro`, Upstash Redis free tier, Typesense Cloud starter
+- Claude API costs ~$10–20/mo at low volume
+- **Goal:** first paying customers, validate product-market fit
+
+### Phase 2 — Growth (~$150–200/mo, 1K–5K users/month)
+- Scale ECS tasks, upgrade RDS to `db.t3.small`
+- Add WhatsApp channel (Twilio)
+- Enable Pagar.me for PIX and boleto payments
+- **Goal:** repeat customers, first revenue milestone
+
+### Phase 3 — Scale (~$300–400/mo, 5K–20K users/month)
+- Multi-AZ RDS, Redis cluster, Typesense cluster
+- Add ClickHouse for analytics, Sentry for error tracking
+- **Goal:** reliable operations, data-driven decisions
+
+### Phase 4 — Expansion (~$1K–3.5K/mo, 20K+ users/month)
+- CDN (CloudFront), auto-scaling, dedicated infrastructure per service
+- Full observability stack (Grafana, Prometheus, Loki)
+- **Goal:** regional expansion, multiple store support
+
+---
+
 ## Design Principles
 
 ### Responsive-first
