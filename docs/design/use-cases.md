@@ -1,8 +1,12 @@
 # Use Cases
 
-All use cases are available on both **Web** (browser, desktop + mobile) and **WhatsApp**, unless marked otherwise. In-Person capabilities are Phase 3.
+IbateXas has three distinct areas with different interaction models:
 
-The agent is the primary interface for all cases across channels. The web storefront additionally provides a traditional UI (product grid, product pages, cart page) alongside the agent chat widget.
+- **Restaurant** (menu, ordering, reservations) — agent is the preferred interface; full storefront UI also available
+- **Shop** (`/loja`) — standard e-commerce for merchandise; storefront UI only in Phase 1
+- **Admin** (`/admin`) — staff-only control panel; standard UI, no agent
+
+In-Person capabilities are Phase 3.
 
 ---
 
@@ -102,10 +106,52 @@ The agent is the primary interface for all cases across channels. The web storef
 
 ---
 
+## Shop (`/loja`)
+
+Branded merchandise — camisetas, accessories, gift sets. Standard e-commerce, no agent.
+
+| Use Case | Web | WhatsApp | In-Person |
+|---|:---:|:---:|:---:|
+| Browse merchandise by category | ✅ | — | — |
+| Search merchandise | ✅ | — | — |
+| View product detail + images | ✅ | — | — |
+| View size guide / variants | ✅ | — | — |
+| Add to cart | ✅ | — | — |
+| Checkout via PIX | ✅ | — | — |
+| Checkout via credit card | ✅ | — | — |
+| Checkout via boleto | ✅ | — | — |
+| Track shipping | ✅ | — | — |
+| View order history (shop) | ✅ | — | — |
+| Download NF-e | ✅ | — | — |
+| WhatsApp shop browsing | — | Phase 2 | — |
+
+---
+
+## Admin (`/admin` — staff only)
+
+| Capability | Phase |
+|---|---|
+| Dashboard: orders, revenue, reservations, active escalations | 1 |
+| Manage food menu (create / edit / archive products, prices, images, tags) | 1 |
+| Manage shop catalog (merchandise products, variants, stock) | 1 |
+| Manage availability windows (almoço, jantar, especial) | 1 |
+| View and manage all orders (restaurant + shop) | 1 |
+| View and manage all reservations | 1 |
+| Check in guests (transition reservation → seated) | 1 |
+| Manage delivery zones + fees + estimated times | 1 |
+| Manage table layout + time slot configuration | 1 |
+| View customer reviews + handle escalations (rating ≤ 2) | 1 |
+| Analytics dashboard (PostHog embed) | 1 |
+| Manage staff accounts + roles | 2 |
+| Proactive WhatsApp campaigns | 2 |
+| Inventory alerts (low-stock) | 2 |
+
+---
+
 ## Notes on Channel Behaviour
 
-**Web:** The agent chat widget is a floating button on mobile (expands to full-screen overlay) and a side panel on desktop. The full storefront UI (product grid, product pages, cart page, checkout) is always available alongside the agent — customers can use whichever they prefer.
+**Web (Restaurant):** The agent chat widget coexists with the full storefront UI. Customers can browse the menu, build a cart, and checkout without ever opening the chat. The chat widget is a floating button on mobile (full-screen overlay) and a side panel on desktop. The Shop (`/loja`) and Admin (`/admin`) sections have no chat widget.
 
-**WhatsApp:** Pure conversation. The agent uses WhatsApp's native message types: list messages for menus, buttons for confirmations, image messages for product photos, and payment links for checkout. The agent adapts its tone: slightly more conversational than on web, but always professional pt-BR.
+**WhatsApp:** Pure conversation. The agent uses WhatsApp's native message types: list messages for menus, buttons for confirmations, image messages for product photos, and payment links for checkout. Always professional pt-BR.
 
 **In-Person (Phase 3):** QR code on table opens a WhatsApp conversation pre-configured with the table number. Same agent, same tools, dine-in context.

@@ -1,36 +1,45 @@
 # IbateXas
 
-> Ordering, reservations, and customer intelligence — powered by a Claude-based AI agent.
+> Food ordering, reservations, and a branded shop — for a Brazilian restaurant, powered by AI.
 
-IbateXas is a Brazilian restaurant. This monorepo is the platform that runs it: web ordering, table reservations, frozen dish delivery, and a WhatsApp-native experience — all driven by a single AI agent instead of a traditional UI flow.
+IbateXas is a Brazilian restaurant. This monorepo is the platform that runs it.
+
+---
+
+## Three Areas
+
+**Restaurant** — browse the menu, order food for delivery or pickup, book a table, track your order. The AI agent is the preferred interface, but a full storefront UI is always available alongside it.
+
+**Shop** — branded merchandise (camisetas, accessories, gift sets). Standard e-commerce: product grid, cart, checkout. No chat required.
+
+**Admin** — the owner's control panel. Manage the menu, merchandise, orders, reservations, delivery zones, table layout, and analytics. Access restricted to authenticated staff.
 
 ---
 
 ## How It Works
 
-A customer opens the web app or sends a WhatsApp message. From that point, a Claude-based agent handles everything — searching the menu, building a cart, checking table availability, placing the order, tracking delivery, and requesting a review afterward. The agent has the same tools and capabilities on both channels.
-
 ```
-  Web Browser          WhatsApp
-      │                    │
-      └──────────┬─────────┘
-                 │
-         ┌───────▼────────┐
-         │   Fastify API  │
-         │  (SSE stream)  │
-         └───────┬────────┘
-                 │
-         ┌───────▼────────┐       ┌─────────────────┐
-         │  Claude Agent  │──────▶│  Agent Tools    │
-         │  Orchestrator  │       │  (29 tools)     │
-         └───────┬────────┘       └────────┬────────┘
-                 │                         │
-      ┌──────────┼──────────┬──────────────┤
-      │          │          │              │
-      ▼          ▼          ▼              ▼
-   Medusa     Prisma      Redis       Typesense
-  (catalog,  (reservas,  (sessions,  (product
-  orders)    reviews)    profiles)    search)
+  Customer (Web)    Customer (WhatsApp)    Admin (/admin)
+       │                    │                     │
+       └─────────┬──────────┘                     │
+                 │                                 │
+     ┌───────────▼─────────────────────────────────▼──┐
+     │                   Fastify API                   │
+     │          (REST + SSE streaming + auth)          │
+     └───────────┬─────────────────────┬──────────────┘
+                 │                     │
+         ┌───────▼────────┐    ┌───────▼────────┐
+         │  Claude Agent  │───▶│  Agent Tools   │
+         │  Orchestrator  │    │  (29 tools)    │
+         └───────┬────────┘    └───────┬────────┘
+                 │                     │
+      ┌──────────┼──────────┬──────────┤
+      │          │          │          │
+      ▼          ▼          ▼          ▼
+   Medusa     Prisma      Redis    Typesense
+ (catalog,  (reservas,  (sessions, (product
+  shop,      reviews)   profiles)   search)
+  orders)
       │
       └──── NATS JetStream ──▶ PostHog (analytics)
 ```
@@ -95,7 +104,7 @@ turbo dev                # start all apps
 
 ## Principles
 
-- **Agent-first** — the AI agent is the UX, not a feature added on top
+- **Agent-assisted** — the AI agent is the preferred interface for food ordering and reservations; the full storefront UI is always available alongside it. Shop and admin use standard UI
 - **Channel parity** — identical capabilities on web and WhatsApp
 - **Progressive auth** — browse and add to cart as guest; auth only at checkout (SMS OTP)
 - **No hardcoded config** — all runtime values from `.env`; missing required vars crash fast at startup

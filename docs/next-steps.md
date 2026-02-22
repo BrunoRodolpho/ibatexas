@@ -60,22 +60,46 @@ Wire the agent into HTTP endpoints:
 - `POST /api/chat/messages` — accepts `{ sessionId, message, channel }`
 - `GET /api/chat/stream/:sessionId` — SSE endpoint, streams agent response tokens
 
-### Step 5 — Web Storefront (`apps/web`)
+### Step 5 — Restaurant Storefront (`apps/web`)
 
-Build the customer-facing UI (all copy in pt-BR, mobile-first at 375px):
+Build the restaurant customer-facing UI (all copy in pt-BR, mobile-first at 375px):
 - Home page — product grid from Medusa, categories, featured items
 - Search page — Typesense powered, large touch targets, filter by tag
 - Product detail page — image gallery, variants, nutritional info, reviews, sticky add-to-cart
-- Chat widget — floating button on mobile (full-screen overlay), side panel on desktop
+- Cart page — items, special instructions, subtotal, delivery type selection
+- Chat widget — floating button on mobile (full-screen overlay), side panel on desktop (agent for restaurant ordering only)
 
-### Step 6 — Reservations
+### Step 6 — Shop (`/loja`)
+
+Branded merchandise section — standard e-commerce, no agent:
+- Merchandise product grid with category navigation (camisetas, accessories, kits)
+- Product detail page — images, size variants, stock, standard add-to-cart (no special instructions)
+- Shared cart and checkout with restaurant orders — or separate cart (TBD at implementation)
+- Checkout supports PIX + Stripe card + **Boleto** (boleto available for merchandise, unlike food)
+- Order tracking for shipped merchandise (Correios/EasyPost)
+- NF-e generation via Focus NFe (same as restaurant orders)
+
+### Step 7 — Admin Panel (`/admin`)
+
+Custom owner control panel in `apps/web` — Clerk `manager` role required:
+- Auth guard on all `/admin` routes — 401 for non-staff
+- **Dashboard:** today's orders (restaurant + shop), revenue, active reservations, pending escalations
+- **Menu management:** create/edit/archive food products — name, description, images, variants, prices, tags, availability windows, nutritional info, allergens
+- **Shop management:** create/edit merchandise — images, variants (size/color), prices, stock
+- **Orders:** view all orders (restaurant + shop), filter by status, update status
+- **Reservations:** calendar view, check in guests (reservation → seated), manage table layout, configure time slots
+- **Delivery zones:** define zones by neighbourhood, set fees and estimated transit times
+- **Reviews & escalations:** view all reviews, resolve low-rating escalations (≤ 2 stars), view unanswered agent questions
+- **Analytics:** PostHog embed — sales trends, top products, reservation occupancy, agent performance
+
+### Step 8 — Reservations
 
 - Prisma schema: `Table`, `TimeSlot`, `Reservation`, `Waitlist`
 - Tools: `check_table_availability`, `create_reservation`, `modify_reservation`, `cancel_reservation`, `get_my_reservations`, `join_waitlist`
 - `/reservas` page (pt-BR, mobile-first): date picker, party size, special requests, confirmation
 - Post-reservation WhatsApp confirmation message
 
-### Step 7 — Customer Intelligence
+### Step 9 — Customer Intelligence
 
 - `CustomerProfile` in Redis — populated from Medusa order history on first login
 - Tools: `get_recommendations`, `update_preferences`, `submit_review`, `get_customer_profile`
@@ -83,26 +107,26 @@ Build the customer-facing UI (all copy in pt-BR, mobile-first at 375px):
 - Post-delivery review prompt — 30min delay via NATS scheduled message → WhatsApp
 - Review display on product detail pages (rolling average rating)
 
-### Step 8 — Checkout
+### Step 10 — Checkout
 
 Add the full purchase flow:
 - Cart state via Medusa cart API (guest + authenticated)
 - Delivery type selection: delivery / pickup / dine-in
 - CEP validation via ViaCEP + delivery zone + fee estimate
-- PIX (QR code) + Stripe card (Payment Element) + cash
-- Tip (gorjeta) option
+- PIX (QR code) + Stripe card (Payment Element) + cash + boleto (merchandise only)
+- Tip (gorjeta) option (restaurant orders only)
 - Order confirmation page with status + estimated time
 - NF-e generation via Focus NFe API
 
-### Step 9 — Auth
+### Step 11 — Auth
 
 Lock down the app with Clerk (SMS OTP):
-- API middleware: require auth on `/api/chat/*` and `/api/orders/*`
-- Web middleware: require auth on `/checkout`, `/conta`, `/reservas` (creation)
+- API middleware: require auth on `/api/chat/*`, `/api/orders/*`, and `/api/admin/*`
+- Web middleware: require auth on `/checkout`, `/conta`, `/reservas` (creation), `/admin` (staff role)
 - Guest session → Customer promotion at checkout (cart migration)
 - Pass Clerk user ID into agent for personalisation
 
-### Step 10 — WhatsApp Channel
+### Step 12 — WhatsApp Channel
 
 Connect the same agent to WhatsApp via Twilio:
 - Incoming webhook → parse message → build `AgentContext { channel: 'whatsapp' }` → run agent
@@ -110,7 +134,7 @@ Connect the same agent to WhatsApp via Twilio:
 - Phone number → customerId mapping in Redis
 - Same tools, same cart, same Medusa backend as web
 
-### Step 11 — LGPD Compliance (pre-launch)
+### Step 13 — LGPD Compliance (pre-launch)
 
 Required before any real users see the platform:
 - Cookie consent banner — blocks PostHog until accepted
@@ -119,7 +143,7 @@ Required before any real users see the platform:
 - WhatsApp first-message opt-in — inform users their number is stored and how it's used
 - Data retention policy in Medusa customer settings
 
-### Step 12 — Observability
+### Step 14 — Observability
 
 Production-grade visibility:
 - Structured pino logs → CloudWatch in production

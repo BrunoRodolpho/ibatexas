@@ -1,6 +1,8 @@
 # Agent Tools
 
-The agent interacts with all bounded contexts exclusively through typed tools. It cannot hallucinate prices, stock, or availability — every fact comes from a tool response. Tools enforce authorization: a guest cannot checkout, a customer cannot see another customer's orders.
+The agent interacts with the Restaurant and Intelligence contexts through typed tools. It cannot hallucinate prices, stock, or availability — every fact comes from a tool response. Tools enforce authorization: a guest cannot checkout, a customer cannot see another customer's orders.
+
+**Scope of the agent:** food ordering, reservations, customer intelligence, and support. The Shop (`/loja`) uses the standard storefront UI in Phase 1 — no agent tools for merchandise. The Admin (`/admin`) panel is staff-only and operates independently of the agent.
 
 **Auth levels:**
 - `guest` — available to anyone, including anonymous sessions
