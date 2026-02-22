@@ -1,14 +1,20 @@
-import Fastify from "fastify";
+import { buildServer } from "./server.js";
 
-const server = Fastify({ logger: true });
+const PORT = Number(process.env.PORT ?? 3001);
 
-server.get("/health", async () => {
-  return { status: "ok" };
-});
+const start = async (): Promise<void> => {
+  const server = await buildServer();
 
-const start = async () => {
+  const shutdown = async (): Promise<void> => {
+    await server.close();
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+
   try {
-    await server.listen({ port: 3001, host: "0.0.0.0" });
+    await server.listen({ port: PORT, host: "0.0.0.0" });
   } catch (err) {
     server.log.error(err);
     process.exit(1);

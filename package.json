@@ -10,7 +10,7 @@
     "db:migrate": "turbo db:migrate",
     "db:seed": "turbo db:seed",
     "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
-    "check": "bash scripts/healthcheck.sh"
+    "check": "bash scripts/local/healthcheck.sh"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
