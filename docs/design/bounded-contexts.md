@@ -143,24 +143,25 @@ The catalog covers two distinct product types — food and merchandise — both 
 
 ## 5. Identity
 
-**Owner:** Clerk (auth) + Redis (sessions) + Medusa (customer record)
+**Owner:** Twilio Verify (auth) + Redis (sessions) + Medusa (customer record)
 
 ### Entities
 
 | Entity | Key fields |
 |---|---|
 | GuestSession | sessionId (UUID), cartId, channel: web/whatsapp, createdAt, TTL 48h (Redis) |
-| Customer | clerkId, medusaCustomerId, phone, name, email (optional), createdAt |
-| CustomerProfile | customerId, dietaryRestrictions[], allergens[], favouriteItems[], lastOrder, orderingPatterns, preferredPayment, preferredTableLocation (Redis, TTL 30d) |
+| Customer | phone (primary key, verified via Twilio), medusaCustomerId, name, email (optional), createdAt |
+| CustomerProfile | customerId, dietaryRestrictions[], allergens[], favouriteItems[], lastOrder, orderingPatterns, preferredPayment, preferredTableLocation, type: customer/staff (Redis, TTL 30d) |
 | Address | customerId, label, street, number, complement, neighbourhood, city, state, cep, isDefault |
-| Staff | clerkId, role: manager/kitchen/cashier/delivery, active |
+| Staff | phone, role: manager/kitchen/cashier/delivery, active |
 
 ### Rules
 
-- Auth is via SMS OTP (Clerk) — no passwords. Phone number is the primary identifier
+- Auth is via WhatsApp OTP (Twilio Verify) — no passwords. Phone number is the primary identifier. **This applies to both customers and staff — there is no separate auth provider.**
+- Staff roles are differentiated by `CustomerProfile.type` field (`customer` vs `staff`) and `Staff.role` — not by auth provider
 - Guest session → Customer promotion happens at first checkout: cart migrated, sessionId linked to customerId
 - A customer's WhatsApp phone number IS their identity on the WhatsApp channel — Twilio webhook maps phone to customerId
-- Staff members have separate Clerk roles and cannot place orders through the customer agent — they use the custom `/admin` panel
+- Staff members authenticated via the same OTP flow are restricted to `/admin` routes; they cannot place orders through the customer agent
 - CustomerProfile is read at session start to personalise every interaction; written back after orders, explicit preference statements, and reviews
 
 ### Out of scope
@@ -230,7 +231,7 @@ Same Commerce entities (Cart, Order, Payment) shared with the restaurant. Produc
 ## 8. Admin
 
 **Owner:** Custom — `/admin` routes in `apps/web` + dedicated API endpoints in `apps/api`
-**Access:** Clerk `manager` or `staff` role required — no customer can access this area
+**Access:** Twilio Verify OTP + `CustomerProfile.type === 'staff'` required — no customer can access this area
 
 The Admin panel is the owner's control center. It replaces the raw Medusa admin as the primary management interface and adds reservation management, delivery zone config, and analytics in one place.
 
@@ -238,7 +239,7 @@ The Admin panel is the owner's control center. It replaces the raw Medusa admin 
 
 | Entity | Key fields |
 |---|---|
-| AdminUser | clerkId, role: manager/kitchen/cashier, active |
+| AdminUser | phone, role: manager/kitchen/cashier, active |
 | MenuConfig | featuredProducts[], categoryOrder[], activeAvailabilityWindows |
 | TableLayout | tables[], activeSlots[], defaultSlotDuration |
 | DeliveryZoneConfig | zones[], fees[], estimatedTransitTimes[] |
@@ -246,7 +247,7 @@ The Admin panel is the owner's control center. It replaces the raw Medusa admin 
 
 ### Rules
 
-- All `/admin` API routes require Clerk JWT with `staff` role — 401 for any other token
+- All `/admin` API routes require a valid JWT with `CustomerProfile.type === 'staff'` — 401 for any other token
 - Admin manages **both** the food menu and the shop catalog through one interface — no need to switch systems
 - Admin can view, filter, and update all orders (restaurant + shop) and all reservations
 - Analytics pulls from PostHog (real-time) — no raw database queries in Phase 1

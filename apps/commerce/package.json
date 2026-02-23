@@ -6,13 +6,17 @@
     "dev": "medusa develop",
     "build": "medusa build",
     "start": "medusa start",
-    "db:migrate": "medusa migrations run",
-    "db:seed": "medusa seed --seed-file=src/seed.ts"
+    "db:migrate": "medusa db:migrate",
+    "db:seed": "medusa exec src/seed.ts",
+    "db:setup": "medusa db:setup"
   },
   "dependencies": {
-    "@medusajs/medusa": "^2.13.1"
+    "@medusajs/framework": "^2.13.1",
+    "@medusajs/medusa": "^2.13.1",
+    "@medusajs/utils": "^2.13.1"
   },
   "devDependencies": {
+    "ts-node": "^10.9.0",
     "typescript": "^5.3.0"
   }
 }

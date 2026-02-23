@@ -9,7 +9,7 @@ For Medusa's own entities (Product, Cart, Order, etc.) refer to the [Medusa v2 d
 ## Entity Map
 
 ```
-Customer (Clerk)
+Customer (Twilio Verify + Medusa)
   │
   ├── GuestSession (Redis, TTL 48h)
   │     ├── sessionId: string
@@ -117,6 +117,53 @@ Waitlist (Postgres)
 
 ---
 
+## Delivery Zones
+
+Zones are stored as a list of CEP prefixes (Phase 1). This covers most practical cases
+without requiring PostGIS. Upgrade to PostGIS polygon storage in Phase 2 if precise
+geo-fencing becomes necessary.
+
+```typescript
+interface DeliveryZone {
+  id: string
+  name: string                // e.g. "Centro", "Zona Sul"
+  cepPrefixes: string[]       // e.g. ["14800", "14801"] — first 5 digits of CEP
+  deliveryFee: number         // centavos BRL
+  estimatedMinutes: number    // transit time (added to preparation time)
+  active: boolean
+}
+```
+
+**CEP matching:** strip non-digits from customer CEP, check if any `cepPrefix` is a prefix of it.
+If no zone matches, delivery is unavailable to that address.
+
+---
+
+## Abandoned Cart
+
+**Cart TTL:** 24 hours of inactivity (tracked in Redis alongside the guest session).
+
+**Publisher:** Scheduled job in `apps/api` (cron every 1 hour).
+Queries Redis for guest sessions with `lastActivityAt > 24h ago` and a non-empty cartId.
+Publishes `cart.abandoned` to NATS for each matching session.
+
+**Subscriber:** `packages/tools` event handler.
+Sends WhatsApp reminder message (if phone is known) and updates `CustomerProfile` with abandonment signal.
+
+```typescript
+// cart.abandoned payload
+{
+  cartId: string
+  sessionId: string
+  customerId: string | null
+  items: { productId: string; name: string; quantity: number }[]
+  totalValue: number           // centavos
+  lastActivityAt: string       // ISO 8601
+}
+```
+
+---
+
 ## Business Events (NATS)
 
 All events share a common envelope:
@@ -183,7 +230,7 @@ model TimeSlot {
 
 model Reservation {
   id              String            @id @default(cuid())
-  customerId      String            // Clerk user id
+  customerId      String            // Medusa customer id (from Twilio-verified phone)
   partySize       Int
   status          ReservationStatus @default(pending)
   specialRequests Json              // SpecialRequest[]
