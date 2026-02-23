@@ -1,0 +1,32 @@
+{
+  "name": "@ibatexas/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "ibx — internal CLI for the IbateXas monorepo",
+  "bin": {
+    "ibx": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^5.0.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.0",
+    "execa": "^8.0.1",
+    "ora": "^8.0.1",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.6.0"
+  }
+}
