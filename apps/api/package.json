@@ -9,13 +9,15 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@clerk/fastify": "^1.0.0",
+    "@fastify/cookie": "^9.0.0",
     "@fastify/cors": "^9.0.0",
     "@fastify/helmet": "^11.0.0",
+    "@fastify/jwt": "^8.0.0",
     "@fastify/sensible": "^5.0.0",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "fastify": "^4.26.0",
+    "twilio": "^5.0.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {

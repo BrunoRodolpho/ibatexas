@@ -1,153 +1,211 @@
-# Next Steps
+# Next Steps — Phase 1 Build Order
 
-## Current State
-
-- ✅ Monorepo scaffold — Turborepo + pnpm workspace, all apps and packages created
-- ✅ Docker infrastructure — PostgreSQL, Redis, Typesense, NATS via Docker Compose
-- ✅ Health check script — `scripts/local/healthcheck.sh`, run with `pnpm check`
-- ✅ API foundation — Fastify plugin architecture, error handler, graceful shutdown
-- ✅ System design — bounded contexts, domain model, use cases, agent tools, customer intelligence
-- ⬜ `.env` filled with real keys
-- ⬜ Medusa connected and first migration run
+Step 1 is complete. Steps 2–14 are below in order.
+Remove a step from this file once it is done (git history is the record).
 
 ---
-
-## Immediate (before writing any code)
-
-1. Copy the environment template:
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Fill in the required Phase 1 keys:
-   - `ANTHROPIC_API_KEY` — console.anthropic.com
-   - `CLERK_SECRET_KEY` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — dashboard.clerk.com
-   - `STRIPE_SECRET_KEY` and `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` — dashboard.stripe.com
-
-   The `DATABASE_URL`, `REDIS_URL`, `TYPESENSE_API_KEY`, and `NATS_URL` are pre-filled for local Docker in `.env.example`.
-
----
-
-## Phase 1 Build Order
-
-### Step 1 — Medusa Connection (`apps/commerce`)
-
-- Complete `medusa-config.ts` (CORS, JWT/cookie secrets from env — no hardcoded values)
-- Create `apps/commerce/src/seed.ts` with realistic Brazilian restaurant products (food + frozen dishes, pt-BR names, BRL prices, images, tags, nutritional info)
-- Run first migration: `pnpm --filter @ibatexas/commerce db:migrate`
-- Seed products: `pnpm --filter @ibatexas/commerce db:seed`
-- Verify Medusa admin at http://localhost:9000/app
 
 ### Step 2 — First Agent Tool (`packages/tools`)
 
-Implement `search_products` — the first Claude tool definition:
-- Input: `{ query, tags?, availableNow?, excludeAllergens?, limit? }`
-- Logic: query Typesense `products` collection
-- Output: ranked list with image, price, rating, availability
-- Publishes `product.viewed` NATS event
+Implement `search_products` — the first Claude tool:
+
+```typescript
+// Input
+{
+  query: string              // free-text, pt-BR
+  tags?: string[]            // ["popular", "sem_gluten", ...]
+  availableNow?: boolean     // filter by current availability window
+  excludeAllergens?: string[] // hard filter (safety)
+  limit?: number             // default 5
+}
+
+// Output
+{
+  products: Array<{
+    id, title, description, price, imageUrl,
+    tags, availabilityWindow, allergens, variants
+  }>
+}
+```
+
+Implementation steps:
+1. Create Typesense `products` collection schema
+2. Index Medusa products → Typesense (webhook or batch job)
+3. Write `search_products` tool in `packages/tools/src/catalog/search-products.ts`
+4. Publish `product.viewed` NATS event on each call
+5. Add unit tests with mocked Typesense client
+
+---
 
 ### Step 3 — AgentOrchestrator (`apps/agent`)
 
 Build the core agent loop in `packages/llm-provider`:
-- Accept message + session history + `AgentContext` (channel, sessionId, customerId?)
+
+```typescript
+async function runAgent(
+  message: string,
+  history: Message[],
+  context: AgentContext  // { channel, sessionId, customerId? }
+): AsyncGenerator<StreamChunk>
+```
+
+- Accept message + session history + `AgentContext`
 - Call Claude with tool definitions from `packages/tools`
 - Handle tool calls → execute → feed result back to Claude
 - Stream final text response via SSE
+- Hardcode retry on tool errors (max 3)
+
+---
 
 ### Step 4 — API Chat Routes (`apps/api`)
 
 Wire the agent into HTTP endpoints:
-- `POST /api/chat/messages` — accepts `{ sessionId, message, channel }`
-- `GET /api/chat/stream/:sessionId` — SSE endpoint, streams agent response tokens
+
+```
+POST /api/chat/messages
+  Body: { sessionId, message, channel }
+  → triggers agent, returns { messageId }
+
+GET /api/chat/stream/:sessionId
+  → SSE stream of agent response tokens
+```
+
+- Redis-backed session store (TTL 30d for customers, 48h for guests)
+- Rate limiting: 30 messages/min per session
+- Add `@fastify/swagger` + `@fastify/swagger-ui` — OpenAPI spec at `/docs`
+  Use `@fastify/type-provider-zod` so schemas auto-generate from Zod definitions
+
+---
 
 ### Step 5 — Restaurant Storefront (`apps/web`)
 
-Build the restaurant customer-facing UI (all copy in pt-BR, mobile-first at 375px):
-- Home page — product grid from Medusa, categories, featured items
-- Search page — Typesense powered, large touch targets, filter by tag
-- Product detail page — image gallery, variants, nutritional info, reviews, sticky add-to-cart
-- Cart page — items, special instructions, subtotal, delivery type selection
-- Chat widget — floating button on mobile (full-screen overlay), side panel on desktop (agent for restaurant ordering only)
+**Before building any page:** set up i18n first.
+- Install `next-intl` (best fit for App Router)
+- Add `apps/web/messages/pt-BR.json` for all UI strings
+- Configure `apps/web/next.config.mjs` and wrap layout with `NextIntlClientProvider`
+
+Mobile-first Next.js UI (375px base, all copy in pt-BR):
+
+- **Home** — product grid from Medusa, categories, featured items
+- **Search** — Typesense-powered, large touch targets, filter by tag/allergen
+- **Product detail** — image gallery, variants, nutritional info, reviews, sticky add-to-cart
+- **Cart** — items, special instructions, subtotal, delivery type selection
+- **Chat widget** — floating button on mobile (full-screen), side panel on desktop
+
+---
 
 ### Step 6 — Shop (`/loja`)
 
-Branded merchandise section — standard e-commerce, no agent:
-- Merchandise product grid with category navigation (camisetas, accessories, kits)
-- Product detail page — images, size variants, stock, standard add-to-cart (no special instructions)
-- Shared cart and checkout with restaurant orders — or separate cart (TBD at implementation)
-- Checkout supports PIX + Stripe card + **Boleto** (boleto available for merchandise, unlike food)
-- Order tracking for shipped merchandise (Correios/EasyPost)
-- NF-e generation via Focus NFe (same as restaurant orders)
+Branded merchandise — standard e-commerce, no agent:
+
+- Merchandise grid (camisetas, accessories, kits)
+- Product detail — images, size variants, stock
+- Checkout: PIX + Stripe card + Boleto (boleto only for merchandise)
+- Order tracking via Correios/EasyPost
+- NF-e via Focus NFe
+
+---
 
 ### Step 7 — Admin Panel (`/admin`)
 
-Custom owner control panel in `apps/web` — Clerk `manager` role required:
-- Auth guard on all `/admin` routes — 401 for non-staff
-- **Dashboard:** today's orders (restaurant + shop), revenue, active reservations, pending escalations
-- **Menu management:** create/edit/archive food products — name, description, images, variants, prices, tags, availability windows, nutritional info, allergens
-- **Shop management:** create/edit merchandise — images, variants (size/color), prices, stock
-- **Orders:** view all orders (restaurant + shop), filter by status, update status
-- **Reservations:** calendar view, check in guests (reservation → seated), manage table layout, configure time slots
-- **Delivery zones:** define zones by neighbourhood, set fees and estimated transit times
-- **Reviews & escalations:** view all reviews, resolve low-rating escalations (≤ 2 stars), view unanswered agent questions
-- **Analytics:** PostHog embed — sales trends, top products, reservation occupancy, agent performance
+Owner control panel (staff role required):
+
+- **Dashboard** — today's orders, revenue, active reservations, pending escalations
+- **Menu management** — CRUD food products (Medusa admin supplement)
+- **Shop management** — merchandise, variants, stock
+- **Orders** — view + update status, filter by state
+- **Reservations** — calendar view, check-in, table layout, time slots
+- **Delivery zones** — draw zones, set fees + transit times
+
+  > Delivery zone storage: use list of CEP prefixes (Phase 1).
+  > Upgrade to PostGIS polygon in Phase 2 for precise geo-fencing.
+
+- **Reviews** — view all, resolve low-rating escalations (≤2 stars)
+- **Analytics** — PostHog embed
+
+---
 
 ### Step 8 — Reservations
 
-- Prisma schema: `Table`, `TimeSlot`, `Reservation`, `Waitlist`
-- Tools: `check_table_availability`, `create_reservation`, `modify_reservation`, `cancel_reservation`, `get_my_reservations`, `join_waitlist`
-- `/reservas` page (pt-BR, mobile-first): date picker, party size, special requests, confirmation
-- Post-reservation WhatsApp confirmation message
+- Prisma schema: `Table`, `TimeSlot`, `Reservation`, `Waitlist`, enums
+- Tools: `check_table_availability`, `create_reservation`, `modify_reservation`,
+  `cancel_reservation`, `get_my_reservations`, `join_waitlist`
+- `/reservas` page — date picker, party size, special requests, confirmation
+- WhatsApp confirmation message post-booking
+
+---
 
 ### Step 9 — Customer Intelligence
 
 - `CustomerProfile` in Redis — populated from Medusa order history on first login
 - Tools: `get_recommendations`, `update_preferences`, `submit_review`, `get_customer_profile`
-- NATS event publishing for all significant actions (full event catalogue in [customer-intelligence.md](design/customer-intelligence.md))
-- Post-delivery review prompt — 30min delay via NATS scheduled message → WhatsApp
-- Review display on product detail pages (rolling average rating)
+- NATS event publishing (full catalogue in [customer-intelligence.md](design/customer-intelligence.md))
+- Post-delivery review prompt — 30min delay via NATS → WhatsApp
+- Review display on product pages (rolling average)
+
+  > Abandoned cart publisher: scheduled job in `apps/api` (cron every 1h, checks carts
+  > inactive > 24h). Publishes `cart.abandoned`. Subscriber in `packages/tools` sends
+  > WhatsApp reminder and updates CustomerProfile.
+
+---
 
 ### Step 10 — Checkout
 
-Add the full purchase flow:
-- Cart state via Medusa cart API (guest + authenticated)
-- Delivery type selection: delivery / pickup / dine-in
-- CEP validation via ViaCEP + delivery zone + fee estimate
-- PIX (QR code) + Stripe card (Payment Element) + cash + boleto (merchandise only)
-- Tip (gorjeta) option (restaurant orders only)
-- Order confirmation page with status + estimated time
-- NF-e generation via Focus NFe API
+Full purchase flow:
 
-### Step 11 — Auth
+- Cart state via Medusa (guest + authenticated)
+- Delivery type: delivery / pickup / dine-in
+- CEP validation via ViaCEP + zone + fee
+- Payments: PIX (QR) + Stripe card + cash + boleto (merchandise only)
+- Gorjeta option (restaurant orders)
+- Order confirmation + estimated time
+- NF-e via Focus NFe
 
-Lock down the app with Clerk (SMS OTP):
-- API middleware: require auth on `/api/chat/*`, `/api/orders/*`, and `/api/admin/*`
-- Web middleware: require auth on `/checkout`, `/conta`, `/reservas` (creation), `/admin` (staff role)
-- Guest session → Customer promotion at checkout (cart migration)
-- Pass Clerk user ID into agent for personalisation
+---
+
+### Step 11 — Auth (Twilio Verify — WhatsApp OTP)
+
+Auth via Twilio Verify — no passwords. Same flow for customers and staff.
+
+- `POST /api/auth/send-otp` — sends WhatsApp OTP via Twilio Verify
+- `POST /api/auth/verify-otp` — validates code, issues JWT + sets cookie
+- API middleware: require auth on `/api/chat/*`, `/api/orders/*`, `/api/admin/*`
+- Web middleware: require auth on `/checkout`, `/conta`, `/reservas`, `/admin`
+- Guest → Customer promotion at checkout (cart migration)
+- Staff role differentiated by `CustomerProfile.type` field, not by auth provider
+- JWT stored in httpOnly cookie; refresh via `@fastify/jwt` + `@fastify/cookie`
+
+---
 
 ### Step 12 — WhatsApp Channel
 
-Connect the same agent to WhatsApp via Twilio:
-- Incoming webhook → parse message → build `AgentContext { channel: 'whatsapp' }` → run agent
+Connect the agent to WhatsApp via Twilio:
+
+- Incoming webhook → parse → build `AgentContext { channel: 'whatsapp' }` → run agent
 - Outgoing: text, image (product photos), list messages (menus), button messages (confirmations), payment links
-- Phone number → customerId mapping in Redis
+- Phone → customerId mapping in Redis
 - Same tools, same cart, same Medusa backend as web
 
-### Step 13 — LGPD Compliance (pre-launch)
+---
 
-Required before any real users see the platform:
+### Step 13 — LGPD Compliance
+
+Required before any real users:
+
 - Cookie consent banner — blocks PostHog until accepted
-- `/privacidade` — what data is collected, how it's used, retention period
+- `/privacidade` — data collection, usage, retention
 - `/termos` — purchase terms, returns, delivery policy
-- WhatsApp first-message opt-in — inform users their number is stored and how it's used
+- WhatsApp first-message opt-in disclosure
 - Data retention policy in Medusa customer settings
+
+---
 
 ### Step 14 — Observability
 
 Production-grade visibility:
-- Structured pino logs → CloudWatch in production
+
+- Structured pino logs → CloudWatch
 - PostHog dashboards: sales, products, reservations, agent performance, customer cohorts
 - Sentry for error tracking
 - BetterStack for uptime monitoring
-- `pnpm check` extended to cover all running services
+- `ibx health` extended to cover all running app services

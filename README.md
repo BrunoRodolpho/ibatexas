@@ -1,18 +1,27 @@
 # IbateXas
 
-> Food ordering, reservations, and a branded shop — for a Brazilian restaurant, powered by AI.
+AI-powered platform for a Brazilian Smoked House restaurant — food ordering, reservations, and a branded shop.
 
-IbateXas is a Brazilian restaurant. This monorepo is the platform that runs it.
+IbateXas is a Brazilian restaurant specializing in smoked meats. This monorepo is the full platform: web storefront, WhatsApp channel, AI ordering agent, and owner admin panel.
 
 ---
 
-## Three Areas
+## Quick Start
 
-**Restaurant** — browse the menu, order food for delivery or pickup, book a table, track your order. The AI agent is the preferred interface, but a full storefront UI is always available alongside it.
+```bash
+pnpm install
+cp .env.example .env  # fill in required keys (see .env.example for comments)
+ibx dev               # starts everything
+```
 
-**Shop** — branded merchandise (camisetas, accessories, gift sets). Standard e-commerce: product grid, cart, checkout. No chat required.
+Explore commands:
 
-**Admin** — the owner's control panel. Manage the menu, merchandise, orders, reservations, delivery zones, table layout, and analytics. Access restricted to authenticated staff.
+```bash
+ibx --help
+ibx <command> --help
+```
+
+See [docs/IBX-CLI.md](docs/IBX-CLI.md) for the full CLI reference.
 
 ---
 
@@ -49,88 +58,31 @@ IbateXas is a Brazilian restaurant. This monorepo is the platform that runs it.
 ## Stack
 
 | Layer | Technology |
-|---|---|
+|-------|-----------|
 | Frontend | Next.js 14, Tailwind CSS, shadcn/ui |
 | API | Fastify, TypeScript 5+, Node.js 20+ |
 | Agent | Claude Sonnet (Anthropic), tool-use API |
 | Commerce | Medusa.js v2 — catalog, cart, orders, payments |
-| Auth | Clerk — SMS OTP, no passwords |
-| Database | PostgreSQL 15 (reservations, reviews, orders) |
+| Auth | Twilio Verify — WhatsApp OTP (no passwords, no Clerk) |
+| Database | PostgreSQL 15 (Medusa + Prisma) |
 | Cache | Redis — sessions, CustomerProfile (30d TTL) |
 | Search | Typesense — full-text product search |
 | Events | NATS JetStream — analytics, review triggers |
 | Payments | Stripe (card) + Pagar.me (PIX) |
-| WhatsApp | Twilio API |
-| Address | ViaCEP |
-| Tax | Focus NFe |
 | Cloud | AWS sa-east-1 (ECS Fargate, RDS, CloudFront) |
 
 ---
 
-## Repository
+## Docs
 
-```
-apps/
-  web/        Next.js storefront + owner dashboard
-  api/        Fastify API + SSE agent streaming
-  agent/      Claude orchestrator + tool registry
-  commerce/   Medusa.js v2 commerce engine
-packages/
-  types/        Shared TypeScript interfaces
-  domain/       Reservation, Review, CustomerProfile — Prisma models
-  llm-provider/ Claude adapter behind a model-agnostic interface
-  tools/        29 agent tools across 5 bounded contexts
-  nats-client/  NATS JetStream wrapper for business events
-infra/
-  terraform/  AWS infrastructure (ECS, RDS, VPC, CloudFront)
-docs/
-  design/     Bounded contexts, domain model, use cases, agent tools
-  setup/      Local dev guide
-```
-
----
-
-## Quick Start
-
-```bash
-cp .env.example .env     # fill in required keys
-docker compose up -d     # start PostgreSQL, Redis, Typesense, NATS
-pnpm check               # verify all services healthy
-pnpm install             # install dependencies
-turbo dev                # start all apps
-```
-
----
-
-## Principles
-
-- **Agent-assisted** — the AI agent is the preferred interface for food ordering and reservations; the full storefront UI is always available alongside it. Shop and admin use standard UI
-- **Channel parity** — identical capabilities on web and WhatsApp
-- **Progressive auth** — browse and add to cart as guest; auth only at checkout (SMS OTP)
-- **No hardcoded config** — all runtime values from `.env`; missing required vars crash fast at startup
-- **LGPD compliant** — cookie consent, `/privacidade`, `/termos`, WhatsApp opt-in before launch
-
----
-
-## Phases
-
-| Phase | Scale | Est. Cost |
-|---|---|---|
-| 1 — Launch | < 1K orders/mo | ~$50–80/mo |
-| 2 — Growth | 1K–5K orders/mo | ~$150–200/mo |
-| 3 — Scale | 5K–20K orders/mo | ~$300–400/mo |
-| 4 — Expansion | 20K+ orders/mo | ~$1K–3.5K/mo |
-
----
-
-## Documentation
-
-| | |
-|---|---|
-| [Bounded Contexts](docs/design/bounded-contexts.md) | The 6 contexts, entity ownership, business rules |
-| [Domain Model](docs/design/domain-model.md) | Reservation, Review, CustomerProfile, NATS events |
-| [Use Cases](docs/design/use-cases.md) | Web vs WhatsApp vs in-person capability matrix |
-| [Agent Tools](docs/design/agent-tools.md) | All 29 tools — auth level, inputs, outputs |
-| [Customer Intelligence](docs/design/customer-intelligence.md) | Recommendations, reviews, analytics |
-| [Local Dev Setup](docs/setup/local-dev.md) | Prerequisites, env vars, running locally |
-| [Next Steps](docs/next-steps.md) | Current state + 12-step Phase 1 build order |
+| Doc | Contents |
+|-----|---------|
+| [CLAUDE.md](CLAUDE.md) | AI agent guide — hard rules, naming conventions |
+| [docs/IBX-CLI.md](docs/IBX-CLI.md) | Full `ibx` command reference |
+| [docs/setup/local-dev.md](docs/setup/local-dev.md) | Prerequisites, env vars, setup |
+| [docs/design/bounded-contexts.md](docs/design/bounded-contexts.md) | 8 contexts, entity ownership |
+| [docs/design/domain-model.md](docs/design/domain-model.md) | Reservation, Review, CustomerProfile |
+| [docs/design/agent-tools.md](docs/design/agent-tools.md) | 29 tools — auth level, inputs, outputs |
+| [docs/design/use-cases.md](docs/design/use-cases.md) | Web vs WhatsApp vs in-person matrix |
+| [docs/design/customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations, reviews |
+| [docs/next-steps.md](docs/next-steps.md) | Roadmap — current step + upcoming build order |
