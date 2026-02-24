@@ -57,6 +57,34 @@ async function runSeed() {
   }
 }
 
+async function runMigrateDomain() {
+  const spinner = ora("Running domain (Prisma) migrations…").start()
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:migrate"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
+    spinner.succeed(chalk.green("Domain migrations completed"))
+  } catch {
+    spinner.fail(chalk.red("Domain migration failed"))
+    process.exit(1)
+  }
+}
+
+async function runSeedDomain() {
+  const spinner = ora("Seeding domain tables (Table + TimeSlots)…").start()
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:tables"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
+    spinner.succeed(chalk.green("Domain seed completed"))
+  } catch {
+    spinner.fail(chalk.red("Domain seed failed"))
+    process.exit(1)
+  }
+}
+
 async function runReset(force = false) {
   if (!force) {
     const confirmed = await confirm({
@@ -90,14 +118,26 @@ async function runReset(force = false) {
     pgEnv
   )
 
-  step("Running migrations…")
+  step("Running Medusa migrations…")
   await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:migrate"], {
     cwd: ROOT,
     stdio: "inherit",
   })
 
-  step("Seeding…")
+  step("Running domain (Prisma) migrations…")
+  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:migrate"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  })
+
+  step("Seeding Medusa products…")
   await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:seed"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  })
+
+  step("Seeding domain tables…")
+  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:tables"], {
     cwd: ROOT,
     stdio: "inherit",
   })
@@ -116,14 +156,22 @@ export function registerDbCommands(program: Command) {
     .description("Run pending Medusa migrations (Medusa must NOT be running)")
     .action(runMigrate)
 
+  db.command("migrate:domain")
+    .description("Run pending Prisma (domain) migrations — Table, TimeSlot, Reservation, etc.")
+    .action(runMigrateDomain)
+
   db.command("seed")
     .description("Run the Medusa seed file (Medusa must be running)")
     .action(runSeed)
 
+  db.command("seed:domain")
+    .description("Seed restaurant Tables and TimeSlots via Prisma")
+    .action(runSeedDomain)
+
   db.command("reset")
-    .description("⚠️  Drop + migrate + reseed (destructive)")
+    .description("⚠️  Drop + migrate (Medusa + domain) + reseed (destructive)")
     .option("-f, --force", "Skip the confirmation prompt")
     .action((opts: { force?: boolean }) => runReset(opts.force))
 
-  return { runMigrate, runSeed, runReset }
+  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runReset }
 }

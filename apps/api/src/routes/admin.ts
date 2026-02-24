@@ -1,10 +1,16 @@
 // Admin routes
 //
-// GET  /api/admin/dashboard      — aggregated KPI metrics
-// GET  /api/admin/products        — proxy Medusa admin products list
-// PATCH /api/admin/products/:id   — proxy Medusa admin product update
-// GET  /api/admin/orders          — proxy Medusa admin orders list
-// PATCH /api/admin/orders/:id     — proxy Medusa admin order update
+// GET  /api/admin/dashboard             — aggregated KPI metrics
+// GET  /api/admin/products              — proxy Medusa admin products list
+// PATCH /api/admin/products/:id         — proxy Medusa admin product update
+// GET  /api/admin/orders                — proxy Medusa admin orders list
+// PATCH /api/admin/orders/:id           — proxy Medusa admin order update
+// GET  /api/admin/reservations          — list all reservations
+// POST /api/admin/reservations/:id/checkin    — check in guest
+// POST /api/admin/reservations/:id/complete   — mark completed
+// GET  /api/admin/tables                — list all tables
+// POST /api/admin/tables                — create/update table
+// POST /api/admin/timeslots             — generate time slots for a date range
 
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
@@ -97,10 +103,23 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
           // Medusa not running in test mode — return zeros
         }
 
+        let activeReservations = 0
+        try {
+          const { prisma } = await import("@ibatexas/domain")
+          activeReservations = await prisma.reservation.count({
+            where: {
+              status: { in: ["pending", "confirmed", "seated"] },
+              timeSlot: { date: { gte: new Date() } },
+            },
+          })
+        } catch {
+          // domain DB not yet migrated — return 0
+        }
+
         return reply.send({
           ordersToday,
           revenueToday,
-          activeReservations: 0, // populated in Step 8
+          activeReservations,
           pendingEscalations: 0, // populated in Step 9
         });
       } catch (err) {
@@ -328,4 +347,222 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       }
     },
   );
+
+  // ── Admin reservation endpoints ────────────────────────────────────────────
+
+  // GET /api/admin/reservations
+  app.get(
+    "/api/admin/reservations",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "Listar todas as reservas (admin)",
+        querystring: z.object({
+          date: z.string().optional(),
+          status: z.string().optional(),
+          limit: z.coerce.number().int().min(1).max(100).optional().default(50),
+          offset: z.coerce.number().int().min(0).optional().default(0),
+        }),
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { prisma } = await import("@ibatexas/domain")
+        const { date, status, limit, offset } = request.query as {
+          date?: string
+          status?: string
+          limit: number
+          offset: number
+        }
+
+        const where: Record<string, unknown> = {}
+        if (status) where.status = status
+        if (date) where.timeSlot = { date: new Date(date + "T00:00:00.000Z") }
+
+        const [reservations, total] = await Promise.all([
+          prisma.reservation.findMany({
+            where,
+            include: { timeSlot: true, tables: { include: { table: true } } },
+            orderBy: [{ timeSlot: { date: "asc" } }, { timeSlot: { startTime: "asc" } }],
+            take: limit,
+            skip: offset,
+          }),
+          prisma.reservation.count({ where }),
+        ])
+
+        return reply.send({ reservations, total })
+      } catch (err) {
+        reply.code(500).send({ error: "Failed to fetch reservations" })
+      }
+    },
+  )
+
+  // POST /api/admin/reservations/:id/checkin
+  app.post(
+    "/api/admin/reservations/:id/checkin",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "Check-in do hóspede (admin)",
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { prisma } = await import("@ibatexas/domain")
+        const { id } = request.params as { id: string }
+        const updated = await prisma.reservation.update({
+          where: { id },
+          data: { status: "seated", checkedInAt: new Date() },
+        })
+        return reply.send({ reservation: updated })
+      } catch (err) {
+        reply.code(500).send({ error: "Failed to check in reservation" })
+      }
+    },
+  )
+
+  // POST /api/admin/reservations/:id/complete
+  app.post(
+    "/api/admin/reservations/:id/complete",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "Marcar reserva como concluída (admin)",
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { prisma } = await import("@ibatexas/domain")
+        const { id } = request.params as { id: string }
+        const updated = await prisma.reservation.update({
+          where: { id },
+          data: { status: "completed" },
+        })
+        return reply.send({ reservation: updated })
+      } catch (err) {
+        reply.code(500).send({ error: "Failed to complete reservation" })
+      }
+    },
+  )
+
+  // GET /api/admin/tables
+  app.get(
+    "/api/admin/tables",
+    {
+      schema: { tags: ["admin"], summary: "Listar mesas (admin)" },
+    },
+    async (_request, reply) => {
+      try {
+        const { prisma } = await import("@ibatexas/domain")
+        const tables = await prisma.table.findMany({ orderBy: { number: "asc" } })
+        return reply.send({ tables })
+      } catch (err) {
+        reply.code(500).send({ error: "Failed to fetch tables" })
+      }
+    },
+  )
+
+  // POST /api/admin/tables
+  app.post(
+    "/api/admin/tables",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "Criar ou atualizar mesa (admin)",
+        body: z.object({
+          number: z.string(),
+          capacity: z.number().int().min(1),
+          location: z.enum(["indoor", "outdoor", "bar", "terrace"]),
+          accessible: z.boolean().optional().default(false),
+          active: z.boolean().optional().default(true),
+        }),
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { prisma } = await import("@ibatexas/domain")
+        const body = request.body as {
+          number: string
+          capacity: number
+          location: "indoor" | "outdoor" | "bar" | "terrace"
+          accessible: boolean
+          active: boolean
+        }
+        const table = await prisma.table.upsert({
+          where: { number: body.number },
+          update: {
+            capacity: body.capacity,
+            location: body.location,
+            accessible: body.accessible,
+            active: body.active,
+          },
+          create: body,
+        })
+        return reply.status(201).send({ table })
+      } catch (err) {
+        reply.code(500).send({ error: "Failed to upsert table" })
+      }
+    },
+  )
+
+  // POST /api/admin/timeslots — generate time slots for a date range
+  app.post(
+    "/api/admin/timeslots",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "Gerar horários para um intervalo de datas (admin)",
+        body: z.object({
+          fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          startTimes: z.array(z.string()).min(1),
+          maxCovers: z.number().int().min(1),
+          durationMinutes: z.number().int().min(30).optional().default(90),
+        }),
+      },
+    },
+    async (request, reply) => {
+      try {
+        const { prisma } = await import("@ibatexas/domain")
+        const body = request.body as {
+          fromDate: string
+          toDate: string
+          startTimes: string[]
+          maxCovers: number
+          durationMinutes: number
+        }
+
+        const from = new Date(body.fromDate + "T00:00:00.000Z")
+        const to = new Date(body.toDate + "T00:00:00.000Z")
+        let created = 0
+        const current = new Date(from)
+
+        while (current <= to) {
+          for (const startTime of body.startTimes) {
+            const existing = await prisma.timeSlot.findUnique({
+              where: { date_startTime: { date: new Date(current), startTime } },
+            })
+            if (!existing) {
+              await prisma.timeSlot.create({
+                data: {
+                  date: new Date(current),
+                  startTime,
+                  maxCovers: body.maxCovers,
+                  durationMinutes: body.durationMinutes,
+                },
+              })
+              created++
+            }
+          }
+          current.setUTCDate(current.getUTCDate() + 1)
+        }
+
+        return reply.send({ created })
+      } catch (err) {
+        reply.code(500).send({ error: "Failed to generate time slots" })
+      }
+    },
+  )
 }

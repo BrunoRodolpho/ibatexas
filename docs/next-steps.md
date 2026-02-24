@@ -1,17 +1,7 @@
 # Next Steps — Phase 1 Build Order
 
-Steps 1–7 are complete. Steps 8–14 are below in order.
+Steps 1–8 are complete. Steps 9–14 are below in order.
 Remove a step from this file once it is done (git history is the record).
-
----
-
-### Step 8 — Reservations
-
-- Prisma schema: `Table`, `TimeSlot`, `Reservation`, `Waitlist`, enums
-- Tools: `check_table_availability`, `create_reservation`, `modify_reservation`,
-  `cancel_reservation`, `get_my_reservations`, `join_waitlist`
-- `/reservas` page — date picker, party size, special requests, confirmation
-- WhatsApp confirmation message post-booking
 
 ---
 

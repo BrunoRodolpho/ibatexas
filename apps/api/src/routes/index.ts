@@ -4,6 +4,7 @@ import { chatRoutes } from "./chat.js";
 import { catalogRoutes } from "./catalog.js";
 import { shippingRoutes } from "./shipping.js";
 import { adminRoutes } from "./admin.js";
+import { reservationRoutes } from "./reservations.js";
 
 export async function registerRoutes(server: FastifyInstance): Promise<void> {
   await server.register(healthRoutes);
@@ -11,4 +12,5 @@ export async function registerRoutes(server: FastifyInstance): Promise<void> {
   await server.register(catalogRoutes);
   await server.register(shippingRoutes);
   await server.register(adminRoutes);
+  await server.register(reservationRoutes);
 }
