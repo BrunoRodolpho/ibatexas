@@ -4,8 +4,54 @@ import chalk from "chalk"
 import ora from "ora"
 import { execa } from "execa"
 import net from "node:net"
+import fs from "node:fs"
+import path from "node:path"
 import { ROOT } from "../utils/root.js"
 import { resolveServices, type ServiceDef } from "../services.js"
+
+const PID_FILE = path.join(ROOT, ".ibx-dev.pids")
+
+function writePidFile(pids: number[]): void {
+  try {
+    fs.writeFileSync(PID_FILE, pids.join("\n"), "utf8")
+  } catch {
+    // non-fatal
+  }
+}
+
+function removePidFile(): void {
+  try {
+    if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE)
+  } catch {
+    // non-fatal
+  }
+}
+
+function readPidFile(): number[] {
+  try {
+    if (!fs.existsSync(PID_FILE)) return []
+    return fs
+      .readFileSync(PID_FILE, "utf8")
+      .split("\n")
+      .map((l) => parseInt(l.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0)
+  } catch {
+    return []
+  }
+}
+
+function killPid(pid: number): void {
+  try {
+    // Kill the process group (negative PID) so child processes are also killed
+    process.kill(-pid, "SIGTERM")
+  } catch {
+    try {
+      process.kill(pid, "SIGTERM")
+    } catch {
+      // process already gone
+    }
+  }
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -127,7 +173,7 @@ function spawnService(svc: ServiceDef): ExecaChildProcess {
   const proc = execa(
     "pnpm",
     ["--filter", svc.filter, svc.script],
-    { cwd: ROOT, env: { ...process.env }, reject: false }
+    { cwd: ROOT, env: { ...process.env }, reject: false, detached: false }
   )
 
   const prefix = svc.logColor(`[${svc.logPrefix}]`)
@@ -292,9 +338,14 @@ export function registerDevCommands(dev: Command) {
 
       const procs = services.map((svc) => spawnService(svc))
 
+      // Write PIDs so `ibx dev stop` can kill them
+      const pids = procs.map((p) => p.pid).filter((id): id is number => id != null)
+      writePidFile(pids)
+
       process.on("SIGINT", () => {
         console.log(chalk.yellow("\n\n  Shutting down…"))
         for (const p of procs) p.kill("SIGTERM")
+        removePidFile()
         process.exit(0)
       })
 
@@ -337,14 +388,37 @@ export function registerDevCommands(dev: Command) {
   // ── ibx dev stop ─────────────────────────────────────────────────────────
   dev
     .command("stop")
-    .description("Stop all Docker containers")
+    .description("Stop all running dev services and Docker containers")
     .action(async () => {
-      const spinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
+      // 1. Kill app processes from PID file
+      const pids = readPidFile()
+      if (pids.length > 0) {
+        const spinner = ora({ text: `Stopping ${pids.length} service process(es)…`, indent: 2 }).start()
+        for (const pid of pids) killPid(pid)
+        // Give processes a moment to die gracefully
+        await new Promise((r) => setTimeout(r, 1500))
+        removePidFile()
+        spinner.succeed(chalk.green("Service processes stopped"))
+      } else {
+        // Fallback: pattern-kill any pnpm dev processes for ibatexas packages
+        const spinner = ora({ text: "Stopping service processes (no PID file — using pattern)…", indent: 2 }).start()
+        try {
+          await execa("pkill", ["-f", "pnpm.*@ibatexas"], { reject: false })
+          await execa("pkill", ["-f", "medusa\\s"], { reject: false })
+          await new Promise((r) => setTimeout(r, 800))
+          spinner.succeed(chalk.green("Service processes stopped"))
+        } catch {
+          spinner.warn(chalk.yellow("No service processes found"))
+        }
+      }
+
+      // 2. Stop Docker containers
+      const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
       try {
         await execa("docker", ["compose", "down"], { cwd: ROOT })
-        spinner.succeed(chalk.green("Docker containers stopped"))
+        dockerSpinner.succeed(chalk.green("Docker containers stopped"))
       } catch {
-        spinner.fail(chalk.red("Failed to stop Docker containers"))
+        dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
         process.exit(1)
       }
     })
