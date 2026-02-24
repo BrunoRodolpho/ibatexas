@@ -1,4 +1,9 @@
-// LLM Provider Package
-// Exports interfaces and utilities for interacting with LLM services
+// @ibatexas/llm-provider
+// Core agent loop and streaming utilities.
 
-export const version = "0.0.1";
+export { runAgent } from "./agent.js"
+export { SYSTEM_PROMPT } from "./system-prompt.js"
+export { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
+
+// Re-export agent types for consumers
+export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"

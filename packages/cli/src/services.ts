@@ -58,19 +58,6 @@ export const SERVICES: Record<string, ServiceDef> = {
     notes: ["Login: admin@ibatexas.com.br  /  IbateXas2024!"],
   },
 
-  agent: {
-    key: "agent",
-    name: "Agent Orchestrator",
-    filter: "@ibatexas/agent",
-    script: "dev",
-    port: 3002,
-    logColor: chalk.magenta,
-    logPrefix: "agent",
-    available: false,
-    step: 3,
-    urls: [{ label: "Agent     ", url: "http://localhost:3002" }],
-  },
-
   api: {
     key: "api",
     name: "Fastify API",
@@ -80,9 +67,12 @@ export const SERVICES: Record<string, ServiceDef> = {
     healthUrl: "http://localhost:3001/health",
     logColor: chalk.green,
     logPrefix: "api",
-    available: false,
+    available: true,
     step: 4,
-    urls: [{ label: "API       ", url: "http://localhost:3001" }],
+    urls: [
+      { label: "API       ", url: "http://localhost:3001" },
+      { label: "Docs      ", url: "http://localhost:3001/docs" },
+    ],
   },
 
   web: {

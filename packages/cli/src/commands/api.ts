@@ -2,6 +2,7 @@ import type { Command } from "commander"
 import { input, select, checkbox } from "@inquirer/prompts"
 import chalk from "chalk"
 import ora from "ora"
+import crypto from "node:crypto"
 import { searchProducts, closeRedisClient, Channel } from "@ibatexas/tools"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -23,6 +24,10 @@ function getMedusaUrl(): string {
     process.exit(1)
   }
   return url
+}
+
+function getApiUrl(): string {
+  return process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
 }
 
 async function medusaFetch(path: string, options?: RequestInit): Promise<Record<string, unknown>> {
@@ -348,6 +353,97 @@ export function registerApiCommands(api: Command) {
         console.log(chalk.gray(`  Typesense: ${typesenseUrl}\n`))
       } catch (err) {
         spinner.fail(chalk.red("Search failed"))
+        console.error(chalk.gray(String(err)))
+        process.exit(1)
+      }
+    })
+
+  // ── ibx api chat <message> ───────────────────────────────────────────────
+  api
+    .command("chat")
+    .description("Send a message to the agent and stream the response (SSE). API must be running.")
+    .argument("<message>", "User message (pt-BR)")
+    .option("--session <uuid>", "Reuse an existing session UUID. Omit to start a new session.")
+    .option("--channel <channel>", "Channel to send as: web | whatsapp | instagram", "web")
+    .action(async (message: string, opts: { session?: string; channel: string }) => {
+      const apiUrl = getApiUrl()
+      const sessionId = opts.session ?? crypto.randomUUID()
+
+      console.log(chalk.bold(`\n  ibx api chat\n`))
+      console.log(chalk.gray(`  api     : ${apiUrl}`))
+      console.log(chalk.gray(`  session : ${sessionId}`))
+      console.log(chalk.gray(`  channel : ${opts.channel}`))
+      console.log(chalk.gray(`  message : ${message}\n`))
+
+      // 1. POST the message
+      const spinner = ora("Sending message to agent...").start()
+      try {
+        const res = await fetch(`${apiUrl}/api/chat/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId, message, channel: opts.channel }),
+        })
+        if (!res.ok) {
+          const text = await res.text()
+          throw new Error(`API ${res.status}: ${text}`)
+        }
+        const data = (await res.json()) as { messageId: string }
+        spinner.succeed(chalk.green(`Message queued — messageId: ${data.messageId}`))
+      } catch (err) {
+        spinner.fail(chalk.red("Failed to send message"))
+        console.error(chalk.gray(String(err)))
+        process.exit(1)
+      }
+
+      // 2. Stream SSE response
+      console.log(chalk.bold("\n  Agent:\n"))
+      process.stdout.write("  ")
+
+      try {
+        const sseRes = await fetch(`${apiUrl}/api/chat/stream/${sessionId}`)
+        if (!sseRes.ok || !sseRes.body) {
+          throw new Error(`SSE error ${sseRes.status}`)
+        }
+
+        const decoder = new TextDecoder()
+        let buf = ""
+
+        for await (const rawChunk of sseRes.body as AsyncIterable<Uint8Array>) {
+          buf += decoder.decode(rawChunk, { stream: true })
+          const lines = buf.split("\n")
+          buf = lines.pop() ?? ""
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue
+            const payload = line.slice(6).trim()
+            if (!payload) continue
+
+            let parsed: { type: string; delta?: string; message?: string; toolName?: string }
+            try {
+              parsed = JSON.parse(payload) as typeof parsed
+            } catch {
+              continue
+            }
+
+            if (parsed.type === "text_delta" && parsed.delta) {
+              process.stdout.write(parsed.delta)
+            } else if (parsed.type === "tool_start") {
+              process.stdout.write(chalk.gray(`\n  [tool: ${parsed.toolName}]\n  `))
+            } else if (parsed.type === "done") {
+              process.stdout.write("\n")
+              console.log(chalk.green("\n  Done.\n"))
+              console.log(chalk.gray(`  Reuse session: ibx api chat "..." --session ${sessionId}\n`))
+              return
+            } else if (parsed.type === "error") {
+              process.stdout.write("\n")
+              console.log(chalk.red(`\n  Agent error: ${parsed.message}\n`))
+              process.exit(1)
+            }
+          }
+        }
+      } catch (err) {
+        process.stdout.write("\n")
+        console.error(chalk.red("  Failed to stream response"))
         console.error(chalk.gray(String(err)))
         process.exit(1)
       }
