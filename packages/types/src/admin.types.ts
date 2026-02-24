@@ -22,6 +22,22 @@ export interface AdminProductRow {
   inStock: boolean
 }
 
+export interface AdminVariant {
+  id: string
+  title: string // e.g. "P", "M", "G", "Único"
+  sku: string | null
+  price: number // integer centavos (0 if not linked)
+  inventoryQuantity: number
+  allowBackorder: boolean
+  manageInventory: boolean
+}
+
+export interface AdminProductDetail extends AdminProductRow {
+  description: string | null
+  variants: AdminVariant[]
+  tags: string[]
+}
+
 export interface OrderSummary {
   id: string
   displayId: number

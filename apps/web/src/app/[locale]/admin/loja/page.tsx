@@ -3,18 +3,25 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { type ColumnDef, createColumnHelper } from '@tanstack/react-table'
-import { ExternalLink } from 'lucide-react'
-import { DataTable, Badge, Switch } from '@/components/atoms'
-import { SearchInput } from '@/components/molecules'
-import { useAdminProducts } from '@/hooks/admin'
+import { ExternalLink, Package, Layers } from 'lucide-react'
+import { DataTable, Switch } from '@/components/atoms'
+import { SearchInput, Sheet } from '@/components/molecules'
+import { useAdminProducts, useAdminProduct } from '@/hooks/admin'
 import { apiFetch } from '@/lib/api'
 import type { AdminProductRow } from '@ibatexas/types'
 
 const col = createColumnHelper<AdminProductRow>()
 
+function formatBRL(centavos: number) {
+  if (!centavos) return '—'
+  return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+}
+
 export default function ShopManagement() {
   const t = useTranslations()
   const [search, setSearch] = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const { data: productDetail, loading: detailLoading } = useAdminProduct(selectedId)
 
   const { data, loading, error } = useAdminProducts({
     q: search || undefined,
@@ -96,16 +103,25 @@ export default function ShopManagement() {
       id: 'actions',
       header: '',
       cell: (i) => (
-        <a
-          href={`http://localhost:9000/app/products/${i.row.original.id}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Editar
-          <ExternalLink className="h-3 w-3" />
-        </a>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={(e) => { e.stopPropagation(); setSelectedId(i.row.original.id) }}
+            className="flex items-center gap-1 text-xs text-amber-700 hover:text-amber-900 font-medium"
+          >
+            <Layers className="h-3 w-3" />
+            Variantes
+          </button>
+          <a
+            href={`http://localhost:9000/app/products/${i.row.original.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            Editar
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
       ),
     }),
   ]
@@ -148,6 +164,109 @@ export default function ShopManagement() {
         emptyMessage={t('admin.no_products')}
         pageSize={25}
       />
+
+      {/* Variant detail Sheet */}
+      <Sheet
+        isOpen={!!selectedId}
+        title={productDetail?.title ?? t('admin.col_variants')}
+        onClose={() => setSelectedId(null)}
+        footer={
+          selectedId ? (
+            <a
+              href={`http://localhost:9000/app/products/${selectedId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-1.5 w-full rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Editar no Medusa
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          ) : undefined
+        }
+      >
+        {detailLoading ? (
+          <div className="space-y-3">
+            {[1, 2, 3].map((n) => (
+              <div key={n} className="h-14 animate-pulse rounded-lg bg-slate-100" />
+            ))}
+          </div>
+        ) : productDetail ? (
+          <div className="space-y-4">
+            {/* Product header */}
+            <div className="flex items-start gap-3">
+              {productDetail.imageUrl ? (
+                <img
+                  src={productDetail.imageUrl}
+                  alt=""
+                  className="h-14 w-14 shrink-0 rounded-lg object-cover"
+                />
+              ) : (
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-slate-100">
+                  <Package className="h-6 w-6 text-slate-300" />
+                </div>
+              )}
+              <div className="min-w-0">
+                <p className="font-semibold text-slate-900">{productDetail.title}</p>
+                <p className="text-xs text-slate-500">{productDetail.category}</p>
+                {productDetail.description && (
+                  <p className="mt-1 text-xs text-slate-400 line-clamp-2">{productDetail.description}</p>
+                )}
+              </div>
+            </div>
+
+            {/* Variants table */}
+            <div className="overflow-hidden rounded-lg border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium text-slate-600">Tamanho</th>
+                    <th className="px-3 py-2 text-left font-medium text-slate-600">SKU</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">Preço</th>
+                    <th className="px-3 py-2 text-right font-medium text-slate-600">Estoque</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {productDetail.variants.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-3 py-4 text-center text-slate-400">
+                        Nenhuma variante cadastrada
+                      </td>
+                    </tr>
+                  ) : (
+                    productDetail.variants.map((v) => (
+                      <tr key={v.id} className="hover:bg-slate-50">
+                        <td className="px-3 py-2.5 font-medium text-slate-800">{v.title}</td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-slate-400">{v.sku ?? '—'}</td>
+                        <td className="px-3 py-2.5 text-right text-slate-700">{formatBRL(v.price)}</td>
+                        <td className="px-3 py-2.5 text-right">
+                          {v.manageInventory ? (
+                            <span className={v.inventoryQuantity > 0 ? 'text-green-700' : 'text-red-600'}>
+                              {v.inventoryQuantity}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">∞</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Tags */}
+            {productDetail.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {productDetail.tags.map((tag) => (
+                  <span key={tag} className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-600">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
+      </Sheet>
     </div>
   )
 }

@@ -60,6 +60,26 @@ export function useAdminProducts(filters: AdminProductsFilters = {}) {
   return { data, count, loading, error }
 }
 
+// ── Single product detail ────────────────────────────────────────────────────
+
+export function useAdminProduct(id: string | null) {
+  const [data, setData] = useState<import('@ibatexas/types').AdminProductDetail | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
+
+  useEffect(() => {
+    if (!id) { setData(null); return }
+    setLoading(true)
+    setError(null)
+    apiFetch(`/api/admin/products/${id}`)
+      .then((res: { product: import('@ibatexas/types').AdminProductDetail }) => setData(res.product))
+      .catch(setError)
+      .finally(() => setLoading(false))
+  }, [id])
+
+  return { data, loading, error }
+}
+
 // ── Orders ───────────────────────────────────────────────────────────────────
 
 interface AdminOrdersFilters {
