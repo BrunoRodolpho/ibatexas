@@ -29,6 +29,13 @@ export interface ChatSession {
 // Agent types
 export type { AgentContext, AgentMessage, StreamChunk } from "./agent.types.js"
 
+// Admin types
+export type {
+  AdminDashboardMetrics,
+  AdminProductRow,
+  OrderSummary,
+} from "./admin.types.js"
+
 // Product types
 export {
   AvailabilityWindow,
