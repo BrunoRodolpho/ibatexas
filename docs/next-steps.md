@@ -1,24 +1,7 @@
 # Next Steps — Phase 1 Build Order
 
-Steps 1–4 are complete. Steps 5–14 are below in order.
+Steps 1–5 are complete. Steps 6–14 are below in order.
 Remove a step from this file once it is done (git history is the record).
-
----
-
-### Step 5 — Restaurant Storefront (`apps/web`)
-
-**Before building any page:** set up i18n first.
-- Install `next-intl` (best fit for App Router)
-- Add `apps/web/messages/pt-BR.json` for all UI strings
-- Configure `apps/web/next.config.mjs` and wrap layout with `NextIntlClientProvider`
-
-Mobile-first Next.js UI (375px base, all copy in pt-BR):
-
-- **Home** — product grid from Medusa, categories, featured items
-- **Search** — Typesense-powered, large touch targets, filter by tag/allergen
-- **Product detail** — image gallery, variants, nutritional info, reviews, sticky add-to-cart
-- **Cart** — items, special instructions, subtotal, delivery type selection
-- **Chat widget** — floating button on mobile (full-screen), side panel on desktop
 
 ---
 
