@@ -1,19 +1,7 @@
 # Next Steps — Phase 1 Build Order
 
-Steps 1–5 are complete. Steps 6–14 are below in order.
+Steps 1–6 are complete. Steps 7–14 are below in order.
 Remove a step from this file once it is done (git history is the record).
-
----
-
-### Step 6 — Shop (`/loja`)
-
-Branded merchandise — standard e-commerce, no agent:
-
-- Merchandise grid (camisetas, accessories, kits)
-- Product detail — images, size variants, stock
-- Checkout: PIX + Stripe card + Boleto (boleto only for merchandise)
-- Order tracking via Correios/EasyPost
-- NF-e via Focus NFe
 
 ---
 
