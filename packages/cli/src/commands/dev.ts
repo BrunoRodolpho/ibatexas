@@ -187,7 +187,7 @@ function spawnService(svc: ServiceDef): ExecaChildProcess {
   const proc = execa(
     "pnpm",
     ["--filter", svc.filter, svc.script],
-    { cwd: ROOT, env: { ...process.env }, reject: false, detached: false }
+    { cwd: ROOT, env: { ...process.env }, reject: false, detached: true }
   )
 
   const prefix = svc.logColor(`[${svc.logPrefix}]`)
