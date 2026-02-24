@@ -29,11 +29,23 @@ ibx --help
 ```bash
 ibx dev                    # start Docker infra + Medusa (default)
 ibx dev commerce           # same as above, explicit
+ibx dev web                # start only the Next.js web app
+ibx dev api                # start only the Fastify API
 ibx dev all                # start all available services
 ibx dev --skip-docker      # skip docker compose (infra already running)
 ibx dev --no-wait          # start without polling health endpoints
 
-ibx dev stop               # stop all Docker containers
+ibx dev start              # explicit alias for ibx dev
+ibx dev start web          # explicit alias for ibx dev web
+
+ibx dev stop               # stop all processes + docker compose down
+ibx dev stop web           # stop only the web process (keeps Docker up)
+ibx dev stop api           # stop only the API process (keeps Docker up)
+
+ibx dev restart            # kill + respawn all services (no Docker restart)
+ibx dev restart web        # kill + respawn only the web process
+ibx dev restart api        # kill + respawn only the API process
+
 ibx dev build              # build all packages (turbo build)
 ibx dev build @ibatexas/cli  # build a specific package
 ibx dev test               # run all tests (turbo test)
