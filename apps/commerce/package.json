@@ -8,12 +8,18 @@
     "start": "medusa start",
     "db:migrate": "medusa db:migrate",
     "db:seed": "medusa exec src/seed.ts",
-    "db:setup": "medusa db:setup"
+    "db:setup": "medusa db:setup",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@ibatexas/types": "workspace:*",
+    "@ibatexas/tools": "workspace:*",
+    "@ibatexas/nats-client": "workspace:*",
     "@medusajs/framework": "^2.13.1",
     "@medusajs/medusa": "^2.13.1",
-    "@medusajs/utils": "^2.13.1"
+    "@medusajs/utils": "^2.13.1",
+    "@medusajs/workflows-sdk": "^2.13.1"
   },
   "devDependencies": {
     "ts-node": "^10.9.0",

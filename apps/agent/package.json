@@ -9,8 +9,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.24.0",
-    "@ibatexas/llm-provider": "workspace:*",
+    "@anthropic-ai/sdk": "^0.28.0",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*"
   },

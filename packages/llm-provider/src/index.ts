@@ -1,5 +1,4 @@
-// @ibatexas/llm-provider
-// LLM provider abstraction — Claude and OpenAI adapters behind a common interface.
-// Swap models without touching application code.
+// LLM Provider Package
+// Exports interfaces and utilities for interacting with LLM services
 
-export {};
+export const version = "0.0.1";

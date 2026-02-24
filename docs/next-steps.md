@@ -1,43 +1,11 @@
 # Next Steps — Phase 1 Build Order
 
-Step 1 is complete. Steps 2–14 are below in order.
+Steps 1–2 are complete. Steps 3–14 are below in order.
 Remove a step from this file once it is done (git history is the record).
 
 ---
 
-### Step 2 — First Agent Tool (`packages/tools`)
-
-Implement `search_products` — the first Claude tool:
-
-```typescript
-// Input
-{
-  query: string              // free-text, pt-BR
-  tags?: string[]            // ["popular", "sem_gluten", ...]
-  availableNow?: boolean     // filter by current availability window
-  excludeAllergens?: string[] // hard filter (safety)
-  limit?: number             // default 5
-}
-
-// Output
-{
-  products: Array<{
-    id, title, description, price, imageUrl,
-    tags, availabilityWindow, allergens, variants
-  }>
-}
-```
-
-Implementation steps:
-1. Create Typesense `products` collection schema
-2. Index Medusa products → Typesense (webhook or batch job)
-3. Write `search_products` tool in `packages/tools/src/catalog/search-products.ts`
-4. Publish `product.viewed` NATS event on each call
-5. Add unit tests with mocked Typesense client
-
----
-
-### Step 3 — AgentOrchestrator (`apps/agent`)
+### Step 3 — AgentOrchestrator (`packages/llm-provider`)
 
 Build the core agent loop in `packages/llm-provider`:
 
@@ -57,10 +25,11 @@ async function runAgent(
 
 ---
 
-### Step 4 — API Chat Routes (`apps/api`)
+### Step 4 — API Routes & Product Catalog (`apps/api`)
 
-Wire the agent into HTTP endpoints:
+Wire agent + catalog into HTTP endpoints:
 
+**Chat routes:**
 ```
 POST /api/chat/messages
   Body: { sessionId, message, channel }
@@ -70,8 +39,16 @@ GET /api/chat/stream/:sessionId
   → SSE stream of agent response tokens
 ```
 
+**Catalog routes:**
+```
+GET /api/products?query=...&tags=...&availableNow=true
+GET /api/products/:id
+GET /api/categories
+```
+
 - Redis-backed session store (TTL 30d for customers, 48h for guests)
 - Rate limiting: 30 messages/min per session
+- Catalog routes call `search_products` & `get_product_details` tools internally
 - Add `@fastify/swagger` + `@fastify/swagger-ui` — OpenAPI spec at `/docs`
   Use `@fastify/type-provider-zod` so schemas auto-generate from Zod definitions
 

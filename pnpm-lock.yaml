@@ -7,6 +7,25 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@medusajs/admin-sdk':
+        specifier: 2.13.1
+        version: 2.13.1
+      '@medusajs/admin-shared':
+        specifier: ^2.13.1
+        version: 2.13.1
+      '@medusajs/dashboard':
+        specifier: ^2.13.1
+        version: 2.13.1(typescript@5.9.3)
+      '@medusajs/draft-order':
+        specifier: ^2.13.1
+        version: 2.13.1(@medusajs/admin-sdk@2.13.1)(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(react-dom@18.3.1)(react@18.3.1)
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.0
+        version: 18.3.1(react@18.3.1)
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -30,11 +49,8 @@ importers:
   apps/agent:
     dependencies:
       '@anthropic-ai/sdk':
-        specifier: ^0.24.0
-        version: 0.24.3
-      '@ibatexas/llm-provider':
-        specifier: workspace:*
-        version: link:../../packages/llm-provider
+        specifier: ^0.28.0
+        version: 0.28.0
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../../packages/tools
@@ -66,9 +82,6 @@ importers:
       '@fastify/sensible':
         specifier: ^5.0.0
         version: 5.6.0
-      '@ibatexas/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -94,13 +107,25 @@ importers:
 
   apps/commerce:
     dependencies:
+      '@ibatexas/nats-client':
+        specifier: workspace:*
+        version: link:../../packages/nats-client
+      '@ibatexas/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../../packages/types
       '@medusajs/framework':
         specifier: ^2.13.1
         version: 2.13.1(@medusajs/cli@2.13.1)(@types/node@20.19.33)(vite@5.4.21)(zod@3.25.76)
       '@medusajs/medusa':
         specifier: ^2.13.1
-        version: 2.13.1(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(@types/node@20.19.33)(awilix@8.0.1)(posthog-node@5.24.17)(react-dom@18.3.1)(react@18.3.1)(typescript@5.9.3)
+        version: 2.13.1(@medusajs/admin-sdk@2.13.1)(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(@types/node@20.19.33)(awilix@8.0.1)(posthog-node@5.24.17)(react-dom@18.3.1)(react@18.3.1)(typescript@5.9.3)
       '@medusajs/utils':
+        specifier: ^2.13.1
+        version: 2.13.1(@types/node@20.19.33)(express@4.22.1)
+      '@medusajs/workflows-sdk':
         specifier: ^2.13.1
         version: 2.13.1(@types/node@20.19.33)(express@4.22.1)
     devDependencies:
@@ -150,6 +175,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@ibatexas/tools':
+        specifier: workspace:*
+        version: link:../tools
       '@inquirer/prompts':
         specifier: ^5.0.0
         version: 5.5.0
@@ -188,27 +216,17 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.33)
 
-  packages/domain:
-    dependencies:
-      '@ibatexas/types':
-        specifier: workspace:*
-        version: link:../types
-    devDependencies:
-      typescript:
-        specifier: ^5.3.0
-        version: 5.9.3
-
   packages/llm-provider:
     dependencies:
       '@anthropic-ai/sdk':
-        specifier: ^0.24.0
-        version: 0.24.3
+        specifier: ^0.28.0
+        version: 0.28.0
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types
       openai:
         specifier: ^4.0.0
-        version: 4.104.0
+        version: 4.104.0(zod@3.25.76)
     devDependencies:
       typescript:
         specifier: ^5.3.0
@@ -226,12 +244,27 @@ importers:
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
+      vitest:
+        specifier: ^1.6.0
+        version: 1.6.1(@types/node@20.19.33)
 
   packages/tools:
     dependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^0.28.0
+        version: 0.28.0
+      '@ibatexas/nats-client':
+        specifier: workspace:*
+        version: link:../nats-client
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types
+      redis:
+        specifier: ^4.6.0
+        version: 4.7.1
+      typesense:
+        specifier: ^1.8.0
+        version: 1.8.2(@babel/runtime@7.28.6)
       zod:
         specifier: ^3.22.0
         version: 3.25.76
@@ -241,6 +274,10 @@ importers:
         version: 5.9.3
 
   packages/types:
+    dependencies:
+      zod:
+        specifier: ^3.22.0
+        version: 3.25.76
     devDependencies:
       typescript:
         specifier: ^5.3.0
@@ -260,8 +297,8 @@ packages:
       '@jridgewell/trace-mapping': 0.3.31
     dev: true
 
-  /@anthropic-ai/sdk@0.24.3:
-    resolution: {integrity: sha512-916wJXO6T6k8R6BAAcLhLPv/pnLGy7YSEBZXZ1XTFbLcTZE8oTy3oDW9WJf9KKZwMvVcePIfoTSvzXHRcGxkQQ==}
+  /@anthropic-ai/sdk@0.28.0:
+    resolution: {integrity: sha512-vV4mgpiw2HEg9hlkB91h7iB6izh3HhglExSdYQfFYyKxV05ajDsH/f6uxk1o2CpSKKFhpMQK1VQxz7JwBI/ADQ==}
     dependencies:
       '@types/node': 18.19.130
       '@types/node-fetch': 2.6.13
@@ -270,7 +307,6 @@ packages:
       form-data-encoder: 1.7.2
       formdata-node: 4.4.1
       node-fetch: 2.7.0
-      web-streams-polyfill: 3.3.3
     transitivePeerDependencies:
       - encoding
     dev: false
@@ -2294,6 +2330,13 @@ packages:
       - yaml
     dev: false
 
+  /@medusajs/admin-sdk@2.13.1:
+    resolution: {integrity: sha512-P10617QtkYqeoUEl7M3zsbn6TSYAegS57ovaZbBkBhdj/8lnN7gcCwRqGAFzW55Wvble/UA8oepgp8zlpQEidA==}
+    dependencies:
+      '@medusajs/admin-shared': 2.13.1
+      zod: 3.25.76
+    dev: false
+
   /@medusajs/admin-shared@2.13.1:
     resolution: {integrity: sha512-bGZmbX7VrXaGAOb8KCx/EabTrY/a4xVbvgeTTCN4w3h1u3qCKBCN2mOgsY/qdYGNiYdv3PY/uYtqYVSVn4Qdxw==}
     dev: false
@@ -2604,7 +2647,7 @@ packages:
       - tedious
     dev: false
 
-  /@medusajs/draft-order@2.13.1(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(react-dom@18.3.1)(react@18.3.1):
+  /@medusajs/draft-order@2.13.1(@medusajs/admin-sdk@2.13.1)(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(react-dom@18.3.1)(react@18.3.1):
     resolution: {integrity: sha512-obmnyjfWUERLZ7MrWVeJC7Mem2tZccVyqlY4J/RTMnEMoY3koknX5FGTamJN83ib+KtBhJm6diXYYNjBBzpePQ==}
     engines: {node: '>=20'}
     peerDependencies:
@@ -2638,6 +2681,7 @@ packages:
       '@ariakit/react': 0.4.21(react-dom@18.3.1)(react@18.3.1)
       '@babel/runtime': 7.28.6
       '@hookform/resolvers': 3.4.2(react-hook-form@7.49.1)
+      '@medusajs/admin-sdk': 2.13.1
       '@medusajs/cli': 2.13.1(@types/node@20.19.33)
       '@medusajs/framework': 2.13.1(@medusajs/cli@2.13.1)(@types/node@20.19.33)(vite@5.4.21)(zod@3.25.76)
       '@medusajs/js-sdk': 2.13.1
@@ -2862,7 +2906,7 @@ packages:
       '@medusajs/framework': 2.13.1(@medusajs/cli@2.13.1)(@types/node@20.19.33)(vite@5.4.21)(zod@3.25.76)
     dev: false
 
-  /@medusajs/medusa@2.13.1(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(@types/node@20.19.33)(awilix@8.0.1)(posthog-node@5.24.17)(react-dom@18.3.1)(react@18.3.1)(typescript@5.9.3):
+  /@medusajs/medusa@2.13.1(@medusajs/admin-sdk@2.13.1)(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(@types/node@20.19.33)(awilix@8.0.1)(posthog-node@5.24.17)(react-dom@18.3.1)(react@18.3.1)(typescript@5.9.3):
     resolution: {integrity: sha512-mdICv90Jh38N+dt6D4D9EQ/UAocLsLsxWRvt2HCwFtyxwoCmo30njt6SdunzT6BJsAVNLBtvgsx+zWJsCMlrvA==}
     engines: {node: '>=20'}
     peerDependencies:
@@ -2900,7 +2944,7 @@ packages:
       '@medusajs/core-flows': 2.13.1(@medusajs/framework@2.13.1)
       '@medusajs/currency': 2.13.1(@medusajs/framework@2.13.1)
       '@medusajs/customer': 2.13.1(@medusajs/framework@2.13.1)
-      '@medusajs/draft-order': 2.13.1(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(react-dom@18.3.1)(react@18.3.1)
+      '@medusajs/draft-order': 2.13.1(@medusajs/admin-sdk@2.13.1)(@medusajs/cli@2.13.1)(@medusajs/framework@2.13.1)(react-dom@18.3.1)(react@18.3.1)
       '@medusajs/event-bus-local': 2.13.1(@medusajs/framework@2.13.1)
       '@medusajs/event-bus-redis': 2.13.1(@medusajs/framework@2.13.1)
       '@medusajs/file': 2.13.1(@medusajs/framework@2.13.1)
@@ -7197,6 +7241,55 @@ packages:
       react: 18.3.1
     dev: false
 
+  /@redis/bloom@1.2.0(@redis/client@1.6.1):
+    resolution: {integrity: sha512-HG2DFjYKbpNmVXsa0keLHp/3leGJz1mjh09f2RLGGLQZzSHpkmZWuwJbAvo3QcRY8p80m5+ZdXZdYOSBLlp7Cg==}
+    peerDependencies:
+      '@redis/client': ^1.0.0
+    dependencies:
+      '@redis/client': 1.6.1
+    dev: false
+
+  /@redis/client@1.6.1:
+    resolution: {integrity: sha512-/KCsg3xSlR+nCK8/8ZYSknYxvXHwubJrU82F3Lm1Fp6789VQ0/3RJKfsmRXjqfaTA++23CvC3hqmqe/2GEt6Kw==}
+    engines: {node: '>=14'}
+    dependencies:
+      cluster-key-slot: 1.1.2
+      generic-pool: 3.9.0
+      yallist: 4.0.0
+    dev: false
+
+  /@redis/graph@1.1.1(@redis/client@1.6.1):
+    resolution: {integrity: sha512-FEMTcTHZozZciLRl6GiiIB4zGm5z5F3F6a6FZCyrfxdKOhFlGkiAqlexWMBzCi4DcRoyiOsuLfW+cjlGWyExOw==}
+    peerDependencies:
+      '@redis/client': ^1.0.0
+    dependencies:
+      '@redis/client': 1.6.1
+    dev: false
+
+  /@redis/json@1.0.7(@redis/client@1.6.1):
+    resolution: {integrity: sha512-6UyXfjVaTBTJtKNG4/9Z8PSpKE6XgSyEb8iwaqDcy+uKrd/DGYHTWkUdnQDyzm727V7p21WUMhsqz5oy65kPcQ==}
+    peerDependencies:
+      '@redis/client': ^1.0.0
+    dependencies:
+      '@redis/client': 1.6.1
+    dev: false
+
+  /@redis/search@1.2.0(@redis/client@1.6.1):
+    resolution: {integrity: sha512-tYoDBbtqOVigEDMAcTGsRlMycIIjwMCgD8eR2t0NANeQmgK/lvxNAvYyb6bZDD4frHRhIHkJu2TBRvB0ERkOmw==}
+    peerDependencies:
+      '@redis/client': ^1.0.0
+    dependencies:
+      '@redis/client': 1.6.1
+    dev: false
+
+  /@redis/time-series@1.1.0(@redis/client@1.6.1):
+    resolution: {integrity: sha512-c1Q99M5ljsIuc4YdaCwfUEXsofakb9c8+Zse2qxTadu8TalLXuAESzLvFAvNVbkmSlvlzIQOLpBCmWI9wTOt+g==}
+    peerDependencies:
+      '@redis/client': ^1.0.0
+    dependencies:
+      '@redis/client': 1.6.1
+    dev: false
+
   /@remix-run/router@1.23.2:
     resolution: {integrity: sha512-Ic6m2U/rMjTkhERIa/0ZtXJP17QUi2CbWE7cqx4J58M8aA3QTfW+2UlQ4psvTX9IO1RfNVhK3pcpdjej7L+t2w==}
     engines: {node: '>=14.0.0'}
@@ -10173,6 +10266,11 @@ packages:
   /function-bind@1.1.2:
     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
 
+  /generic-pool@3.9.0:
+    resolution: {integrity: sha512-hymDOu5B53XvN4QT9dBmZxPX4CWhBPPLguTZ9MMFeFa/Kg0xWVfylOVNlJji/E7yTZWFd/q9GO5TxDLq156D7g==}
+    engines: {node: '>= 4'}
+    dev: false
+
   /gensync@1.0.0-beta.2:
     resolution: {integrity: sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==}
     engines: {node: '>=6.9.0'}
@@ -11093,6 +11191,11 @@ packages:
       triple-beam: 1.4.1
     dev: false
 
+  /loglevel@1.9.2:
+    resolution: {integrity: sha512-HgMmCqIJSAKqo68l0rS2AanEWfkxaZ5wNiEFb5ggm08lDs9Xl2KxBlX3PTcaD2chBM1gXAYf491/M2Rv8Jwayg==}
+    engines: {node: '>= 0.6.0'}
+    dev: false
+
   /long-timeout@0.1.1:
     resolution: {integrity: sha512-BFRuQUqc7x2NWxfJBCyUrN8iYUYznzL9JROmRz1gZ6KlOIgmoD+njPVbb+VNn2nGMKggMsK79iUNErillsrx7w==}
     dev: false
@@ -11664,7 +11767,7 @@ packages:
       mimic-function: 5.0.1
     dev: false
 
-  /openai@4.104.0:
+  /openai@4.104.0(zod@3.25.76):
     resolution: {integrity: sha512-p99EFNsA/yX6UhVO93f5kJsDRLAg+CTA2RBqdHK4RtK8u5IJw32Hyb2dTGKbnnFmnuoBv5r7Z2CURI9sGZpSuA==}
     hasBin: true
     peerDependencies:
@@ -11683,6 +11786,7 @@ packages:
       form-data-encoder: 1.7.2
       formdata-node: 4.4.1
       node-fetch: 2.7.0
+      zod: 3.25.76
     transitivePeerDependencies:
       - encoding
     dev: false
@@ -12714,6 +12818,17 @@ packages:
       redis-errors: 1.2.0
     dev: false
 
+  /redis@4.7.1:
+    resolution: {integrity: sha512-S1bJDnqLftzHXHP8JsT5II/CtHWQrASX5K96REjWjlmWKrviSOLWmM7QnRLstAWsu1VBBV1ffV6DzCvxNP0UJQ==}
+    dependencies:
+      '@redis/bloom': 1.2.0(@redis/client@1.6.1)
+      '@redis/client': 1.6.1
+      '@redis/graph': 1.1.1(@redis/client@1.6.1)
+      '@redis/json': 1.0.7(@redis/client@1.6.1)
+      '@redis/search': 1.2.0(@redis/client@1.6.1)
+      '@redis/time-series': 1.1.0(@redis/client@1.6.1)
+    dev: false
+
   /reflect-metadata@0.2.2:
     resolution: {integrity: sha512-urBwgfrvVP/eAyXx4hluJivBKzuEbSQs9rKWCrCkbSxNv8mxPcUZKeuoF3Uy4mJl3Lwprp6yy5/39VWigZ4K6Q==}
     dev: false
@@ -13657,6 +13772,19 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  /typesense@1.8.2(@babel/runtime@7.28.6):
+    resolution: {integrity: sha512-aBpePjA99Qvo+OP2pJwMpvga4Jrm1Y2oV5NsrWXBxlqUDNEUCPZBIksPv2Hq0jxQxHhLLyJVbjXjByXsvpCDVA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@babel/runtime': ^7.23.2
+    dependencies:
+      '@babel/runtime': 7.28.6
+      axios: 1.13.5
+      loglevel: 1.9.2
+    transitivePeerDependencies:
+      - debug
+    dev: false
+
   /ua-parser-js@1.0.41:
     resolution: {integrity: sha512-LbBDqdIC5s8iROCUjMbW1f5dJQTEFB1+KO9ogbvlb3nm9n4YHa5p4KTvFPWvh2Hs8gZMBuiB1/8+pdfe/tDPug==}
     hasBin: true
@@ -13938,11 +14066,6 @@ packages:
     resolution: {integrity: sha512-XHPEwS0q6TaxcvG85+8EYkbiCux2XtWG2mkc47Ng2A77BQu9+DqIOJldST4HgPkuea7dvKSj5VgX3P1d4rW8Tg==}
     dependencies:
       defaults: 1.0.4
-    dev: false
-
-  /web-streams-polyfill@3.3.3:
-    resolution: {integrity: sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw==}
-    engines: {node: '>= 8'}
     dev: false
 
   /web-streams-polyfill@4.0.0-beta.3:

@@ -23,5 +23,13 @@
     "node": ">=20.0.0",
     "pnpm": ">=8.0.0"
   },
-  "packageManager": "pnpm@8.15.0"
+  "packageManager": "pnpm@8.15.0",
+  "dependencies": {
+    "@medusajs/admin-sdk": "2.13.1",
+    "@medusajs/admin-shared": "^2.13.1",
+    "@medusajs/dashboard": "^2.13.1",
+    "@medusajs/draft-order": "^2.13.1",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0"
+  }
 }

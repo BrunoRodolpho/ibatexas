@@ -27,13 +27,31 @@ async function tcpOk(host: string, port: number, timeoutMs = 3000): Promise<bool
   })
 }
 
-async function httpOk(url: string, timeoutMs = 3000): Promise<boolean> {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
-    return res.ok
-  } catch {
-    return false
+async function httpOk(url: string, timeoutMs?: number): Promise<boolean> {
+  // Use environment variable or default to 10s (Typesense can be slow to initialize)
+  const actualTimeoutMs = timeoutMs ?? Number(process.env.HEALTH_CHECK_TIMEOUT_MS ?? 10000)
+  // Retry with exponential backoff for services that need time to initialize
+  const maxAttempts = 3
+  let lastError = ""
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(actualTimeoutMs) })
+      if (res.ok) return true
+      lastError = `HTTP ${res.status}`
+    } catch (err) {
+      lastError = `${err instanceof Error ? err.message : String(err)}`
+    }
+
+    // Only log retry if we have more attempts
+    if (attempt < maxAttempts) {
+      const sleepMs = 200 * attempt
+      const serviceName = url.split("://").pop()?.split("/")[0] || url
+      console.log(`    ↻ ${serviceName} failed: ${lastError} (retry in ${sleepMs}ms)`)
+      await new Promise((resolve) => setTimeout(resolve, sleepMs))
+    }
   }
+  return false
 }
 
 // ── Infrastructure health (runs before starting any app) ──────────────────────
@@ -131,12 +149,13 @@ function spawnService(svc: ServiceDef): ExecaChildProcess {
 
 async function waitForService(
   svc: ServiceDef,
-  timeoutMs = 120_000,
+  timeoutMs = 180_000,
   intervalMs = 2_000
 ): Promise<boolean> {
   if (!svc.healthUrl) return true
 
   const deadline = Date.now() + timeoutMs
+
   while (Date.now() < deadline) {
     try {
       const res = await fetch(svc.healthUrl, { signal: AbortSignal.timeout(2000) })
@@ -148,6 +167,7 @@ async function waitForService(
     } catch {
       // still booting
     }
+
     await new Promise((r) => setTimeout(r, intervalMs))
   }
   return false
@@ -290,12 +310,12 @@ export function registerDevCommands(dev: Command) {
               indent: 4,
             }).start()
             const startTs = Date.now()
-            const ready = await waitForService(svc, 120_000, 2_000)
+            const ready = await waitForService(svc, 180_000, 2_000)
             const elapsed = ((Date.now() - startTs) / 1000).toFixed(1)
             if (ready) {
               spinner.succeed(chalk.green(`${svc.name} ready  ${chalk.gray(`(${elapsed}s)`)}`))
             } else {
-              spinner.fail(chalk.red(`${svc.name} did not become ready within 120s`))
+              spinner.fail(chalk.red(`${svc.name} did not become ready within 180s`))
               procs[i].kill("SIGTERM")
             }
             return { svc, ready }

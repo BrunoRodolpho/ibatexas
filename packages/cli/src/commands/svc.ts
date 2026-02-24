@@ -54,13 +54,31 @@ export async function checkRedis(redisUrl: string): Promise<ServiceHealth> {
 
 export async function checkTypesense(host: string, port: string): Promise<ServiceHealth> {
   const start = Date.now()
-  try {
-    const res = await fetch(`http://${host}:${port}/health`, { signal: AbortSignal.timeout(3000) })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return { service: "Typesense", status: "ok", latencyMs: Date.now() - start }
-  } catch (err) {
-    return { service: "Typesense", status: "error", latencyMs: Date.now() - start, error: String(err) }
+  // Use environment variable or default to 10s (accounts for slow startup on first run)
+  const timeoutMs = Number(process.env.HEALTH_CHECK_TIMEOUT_MS ?? 10000)
+  const maxAttempts = 3
+  let lastError: string | null = null
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(`http://${host}:${port}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+      if (res.ok) {
+        return { service: "Typesense", status: "ok", latencyMs: Date.now() - start }
+      }
+      lastError = `HTTP ${res.status}`
+    } catch (err) {
+      lastError = `${err instanceof Error ? err.message : String(err)}`
+    }
+
+    // Only log retry if we have more attempts
+    if (attempt < maxAttempts) {
+      const sleepMs = 200 * attempt
+      console.log(`    ↻ Typesense failed: ${lastError} (retry in ${sleepMs}ms)`)
+      await new Promise((resolve) => setTimeout(resolve, sleepMs))
+    }
   }
+
+  return { service: "Typesense", status: "error", latencyMs: Date.now() - start, error: lastError || "unknown error" }
 }
 
 export async function checkNats(natsUrl: string): Promise<ServiceHealth> {
