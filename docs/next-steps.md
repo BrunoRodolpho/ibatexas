@@ -1,56 +1,7 @@
 # Next Steps — Phase 1 Build Order
 
-Steps 1–2 are complete. Steps 3–14 are below in order.
+Steps 1–4 are complete. Steps 5–14 are below in order.
 Remove a step from this file once it is done (git history is the record).
-
----
-
-### Step 3 — AgentOrchestrator (`packages/llm-provider`)
-
-Build the core agent loop in `packages/llm-provider`:
-
-```typescript
-async function runAgent(
-  message: string,
-  history: Message[],
-  context: AgentContext  // { channel, sessionId, customerId? }
-): AsyncGenerator<StreamChunk>
-```
-
-- Accept message + session history + `AgentContext`
-- Call Claude with tool definitions from `packages/tools`
-- Handle tool calls → execute → feed result back to Claude
-- Stream final text response via SSE
-- Hardcode retry on tool errors (max 3)
-
----
-
-### Step 4 — API Routes & Product Catalog (`apps/api`)
-
-Wire agent + catalog into HTTP endpoints:
-
-**Chat routes:**
-```
-POST /api/chat/messages
-  Body: { sessionId, message, channel }
-  → triggers agent, returns { messageId }
-
-GET /api/chat/stream/:sessionId
-  → SSE stream of agent response tokens
-```
-
-**Catalog routes:**
-```
-GET /api/products?query=...&tags=...&availableNow=true
-GET /api/products/:id
-GET /api/categories
-```
-
-- Redis-backed session store (TTL 30d for customers, 48h for guests)
-- Rate limiting: 30 messages/min per session
-- Catalog routes call `search_products` & `get_product_details` tools internally
-- Add `@fastify/swagger` + `@fastify/swagger-ui` — OpenAPI spec at `/docs`
-  Use `@fastify/type-provider-zod` so schemas auto-generate from Zod definitions
 
 ---
 

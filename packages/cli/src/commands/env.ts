@@ -94,11 +94,29 @@ const ENV_VARS: EnvVar[] = [
   // ── AI ──────────────────────────────────────────────────────────────────────
   {
     key: "ANTHROPIC_API_KEY",
-    desc: "Anthropic Claude API key (Step 2)",
+    desc: "Anthropic Claude API key (Step 2 — agent)",
     phase: 1,
     step: 2,
     secret: true,
     example: "sk-ant-...",
+  },
+  {
+    key: "OPENAI_API_KEY",
+    desc: "OpenAI API key (Step 2 — embeddings)",
+    phase: 1,
+    step: 2,
+    secret: true,
+    example: "sk-...",
+  },
+
+  // ── Medusa store ─────────────────────────────────────────────────────────
+  {
+    key: "MEDUSA_PUBLISHABLE_KEY",
+    desc: "Medusa store publishable API key (Step 4 — catalog routes)",
+    phase: 1,
+    step: 4,
+    secret: false,
+    example: "pk_...",
   },
 
   // ── Auth ────────────────────────────────────────────────────────────────────

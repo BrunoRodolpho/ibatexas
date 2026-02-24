@@ -64,9 +64,22 @@ ibx svc status             # table of all services — address, status, latency
 ### API — `ibx api`
 
 ```bash
+# Product catalog (Medusa admin)
 ibx api products list          # list all products from Medusa
 ibx api products list -l 100   # show up to 100 products
 ibx api products add           # interactively create a new product
+
+# Search (Typesense)
+ibx api search "costela"                    # fast direct Typesense search
+ibx api search "costela" --full             # full pipeline: cache → embedding → Typesense
+ibx api search "costela" --available-now    # filter to products available now
+ibx api search "costela" --tags popular     # filter by tags
+ibx api search "costela" --exclude-allergens gluten,lactose
+
+# Agent chat (Step 4 — requires ibx dev api to be running)
+ibx api chat "tem costela defumada?"             # new session, stream agent response
+ibx api chat "e a de 1kg?" --session <uuid>      # continue an existing session
+ibx api chat "cardápio do almoço" --channel web  # specify channel (web | whatsapp | instagram)
 ```
 
 ### Database — `ibx db`
@@ -82,7 +95,8 @@ ibx db reset --force       # skip confirmation prompt (for CI)
 
 ```bash
 ibx env check              # verify required vars are set (Step 1 by default)
-ibx env check --step 2     # check up to Step 2 vars (includes ANTHROPIC_API_KEY)
+ibx env check --step 2     # check up to Step 2 vars (ANTHROPIC_API_KEY, OPENAI_API_KEY)
+ibx env check --step 4     # check up to Step 4 vars (+ MEDUSA_PUBLISHABLE_KEY)
 ibx env show               # show all vars, secrets masked
 ibx env show --reveal      # show full values (be careful!)
 ibx env gen                # generate a 32-byte base64 secret
@@ -108,6 +122,7 @@ ibx git log                # recent commits + open PR link
 | Medusa Admin | http://localhost:9000/app |
 | Web (Next.js) | http://localhost:3000 |
 | API (Fastify) | http://localhost:3001 |
+| API Swagger UI | http://localhost:3001/docs |
 | Typesense | http://localhost:8108 |
 | NATS Monitor | http://localhost:8222 |
 
@@ -122,9 +137,16 @@ ibx git log                # recent commits + open PR link
 | Service key | Step available | Default? |
 |-------------|---------------|----------|
 | `commerce`  | Step 1 ✅     | Yes      |
-| `agent`     | Step 3        | No       |
-| `api`       | Step 4        | No       |
+| `api`       | Step 4 ✅     | No       |
 | `web`       | Step 5        | No       |
+
+> **Note:** The agent orchestrator (`runAgent`) is a library (`packages/llm-provider`) used by `apps/api` — it is not a separate service.
+
+To start the API alongside Medusa:
+```bash
+ibx dev api      # start Docker + Medusa + Fastify API
+ibx dev all      # start all available services
+```
 
 ---
 

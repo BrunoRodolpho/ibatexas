@@ -5,11 +5,14 @@
 // ── Search tool ────────────────────────────────────────────────────────────────
 export { searchProducts, SearchProductsTool } from "./search/search-products.js"
 
+// ── Catalog tools ──────────────────────────────────────────────────────────────
+export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-details.js"
+
 // ── Embeddings ─────────────────────────────────────────────────────────────────
 export { generateEmbedding, generateEmbeddingsBatch } from "./embeddings/client.js"
 
 // ── Redis ──────────────────────────────────────────────────────────────────────
-export { closeRedisClient } from "./redis/client.js"
+export { getRedisClient, closeRedisClient } from "./redis/client.js"
 
 // ── Vector utilities ───────────────────────────────────────────────────────────
 export { cosineSimilarity } from "./utils/vectors.js"
