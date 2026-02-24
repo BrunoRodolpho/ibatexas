@@ -9,6 +9,8 @@ export interface CartItem {
   imageUrl?: string
   quantity: number
   specialInstructions?: string
+  productType?: "food" | "frozen" | "merchandise"
+  variantTitle?: string
 }
 
 interface CartState {
@@ -36,6 +38,9 @@ interface CartState {
   // Computed
   getTotal: () => number
   getItemCount: () => number
+  getCartType: () => "food" | "merchandise" | "mixed"
+  hasMerchandise: () => boolean
+  hasFood: () => boolean
 }
 
 export const useCartStore = create<CartState>()(
@@ -66,6 +71,8 @@ export const useCartStore = create<CartState>()(
                 imageUrl: product.imageUrl ?? undefined,
                 quantity,
                 specialInstructions,
+                productType: product.productType,
+                variantTitle: product.variants?.[0]?.title ?? undefined,
               },
             ],
           }
@@ -109,10 +116,40 @@ export const useCartStore = create<CartState>()(
       getItemCount: () => {
         return get().items.reduce((count, item) => count + item.quantity, 0)
       },
+
+      getCartType: () => {
+        const items = get().items
+        const hasFood = items.some(item => item.productType === "food" || item.productType === "frozen")
+        const hasMerchandise = items.some(item => item.productType === "merchandise")
+        
+        if (hasFood && hasMerchandise) return "mixed"
+        if (hasMerchandise) return "merchandise"
+        return "food"
+      },
+
+      hasMerchandise: () => {
+        return get().items.some(item => item.productType === "merchandise")
+      },
+
+      hasFood: () => {
+        return get().items.some(item => item.productType === "food" || item.productType === "frozen")
+      },
     }),
     {
       name: 'cart_v1',
-      version: 2,
+      version: 3,
+      migrate: (persistedState: any, version: number) => {
+        if (version < 3) {
+          // Default existing items to "food" productType
+          if (persistedState?.items) {
+            persistedState.items = persistedState.items.map((item: any) => ({
+              ...item,
+              productType: item.productType ?? "food"
+            }))
+          }
+        }
+        return persistedState
+      },
     }
   )
 )

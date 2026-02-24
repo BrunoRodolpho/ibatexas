@@ -2,11 +2,12 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { useTranslations } from "next-intl"
+import { useTranslations, useLocale } from "next-intl"
 import { useSessionStore } from "@/stores"
 
 export default function ReservationsPage() {
   const t = useTranslations()
+  const locale = useLocale()
   const { customerId } = useSessionStore()
   const [showForm, setShowForm] = useState(false)
   const [formData, setFormData] = useState({
@@ -50,7 +51,7 @@ export default function ReservationsPage() {
 
         <p className="mt-6">
           <Link
-            href="/search"
+            href={`/${locale}/search`}
             className="text-orange-600 hover:text-orange-700"
           >
             {t("cart.continue_shopping")} →

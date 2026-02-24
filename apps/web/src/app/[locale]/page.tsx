@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useTranslations } from 'next-intl'
+import { useTranslations, useLocale } from 'next-intl'
 import { Heading, Text, Button } from '@/components/atoms'
 import { ProductGrid } from '@/components/organisms/ProductGrid'
 import { CategoryCarousel } from '@/components/molecules/CategoryCarousel'
@@ -9,6 +9,7 @@ import { useProducts, useCategories } from '@/hooks/api'
 
 export default function Home() {
   const t = useTranslations()
+  const locale = useLocale()
 
   const { data: productsData, loading: productsLoading } = useProducts(undefined, ['popular'], 6)
   const { data: categories, loading: categoriesLoading } = useCategories()
@@ -32,12 +33,12 @@ export default function Home() {
             {t('home.hero_subtitle')}
           </Text>
           <div className="mt-10 flex gap-4 justify-center flex-wrap">
-            <Link href="/search">
+            <Link href={`/${locale}/search`}>
               <Button variant="primary" size="lg">
                 {t('home.browse_menu')}
               </Button>
             </Link>
-            <Link href="/account/reservations">
+            <Link href={`/${locale}/account/reservations`}>
               <Button variant="secondary" size="lg">
                 {t('home.make_reservation')}
               </Button>
@@ -58,7 +59,7 @@ export default function Home() {
                 {t('home.featured_subtitle')}
               </Text>
             </div>
-            <Link href="/search?tags=popular" className="text-amber-700 font-medium hover:text-amber-800">
+            <Link href={`/${locale}/search?tags=popular`} className="text-amber-700 font-medium hover:text-amber-800">
               {t('common.view_all')} →
             </Link>
           </div>
@@ -101,7 +102,7 @@ export default function Home() {
         <Text textColor="secondary" className="mt-4 text-amber-100">
           {t('home.delivery_cta_subtitle')}
         </Text>
-        <Link href="/search">
+        <Link href={`/${locale}/search`}>
           <Button variant="primary" size="lg" className="mt-8 bg-white text-amber-700 hover:bg-slate-50">
             {t('home.order_now')}
           </Button>

@@ -33,7 +33,7 @@ export interface SeedProduct {
     productType: ProductType
     availabilityWindow: AvailabilityWindow
     preparationTime?: number
-    nutritionalInfo: NutritionalInfo
+    nutritionalInfo?: NutritionalInfo
     allergens: string[]
   }
 }
@@ -48,7 +48,11 @@ export const CATEGORIES = [
   { name: "Sobremesas", handle: "sobremesas", parent: "restaurante" },
   { name: "Bebidas", handle: "bebidas", parent: "restaurante" },
   { name: "Congelados", handle: "congelados", parent: "restaurante" },
-] as const
+  { name: "Loja", handle: "loja", parent: null },
+  { name: "Camisetas", handle: "camisetas", parent: "loja" },
+  { name: "Acessórios", handle: "acessorios", parent: "loja" },
+  { name: "Kits", handle: "kits", parent: "loja" },
+]
 
 // ─── Product definitions ──────────────────────────────────────────────────────
 
@@ -417,6 +421,140 @@ export const SEED_PRODUCTS: SeedProduct[] = [
       productType: "frozen",
       availabilityWindow: "congelados",
       nutritionalInfo: { calories: 120, protein: 1, fat: 2, carbs: 26, sodium: 680 },
+      allergens: [],
+    },
+  },
+
+  // ── Merchandise (Loja) ──────────────────────────────────────────────────────
+  {
+    title: "Camiseta IbateXas Preta",
+    handle: "camiseta-ibatexas-preta",
+    description:
+      "Camiseta 100% algodão com estampa do logo IbateXas. Corte unissex, tecido macio e durável.",
+    categoryHandle: "camisetas",
+    tags: ["exclusivo"],
+    variants: [
+      { title: "P", price: 6900 },
+      { title: "M", price: 6900 },
+      { title: "G", price: 6900 },
+      { title: "GG", price: 6900 },
+    ],
+    metadata: {
+      productType: "merchandise",
+      availabilityWindow: "always",
+      allergens: [],
+    },
+  },
+  {
+    title: "Camiseta IbateXas Branca",
+    handle: "camiseta-ibatexas-branca",
+    description:
+      "Camiseta 100% algodão branca com estampa do logo IbateXas em contraste. Ideal para o dia a dia.",
+    categoryHandle: "camisetas",
+    tags: ["exclusivo"],
+    variants: [
+      { title: "P", price: 6900 },
+      { title: "M", price: 6900 },
+      { title: "G", price: 6900 },
+      { title: "GG", price: 6900 },
+    ],
+    metadata: {
+      productType: "merchandise",
+      availabilityWindow: "always",
+      allergens: [],
+    },
+  },
+  {
+    title: "Camiseta IbateXas Vermelha",
+    handle: "camiseta-ibatexas-vermelha",
+    description:
+      "Camiseta vermelha vibrante com estampa do logo IbateXas. Tecido premium, corte moderno.",
+    categoryHandle: "camisetas",
+    tags: ["exclusivo"],
+    variants: [
+      { title: "P", price: 6900 },
+      { title: "M", price: 6900 },
+      { title: "G", price: 6900 },
+      { title: "GG", price: 6900 },
+    ],
+    metadata: {
+      productType: "merchandise",
+      availabilityWindow: "always",
+      allergens: [],
+    },
+  },
+  {
+    title: "Camiseta IbateXas Edição Limitada",
+    handle: "camiseta-ibatexas-edicao-limitada",
+    description:
+      "Camiseta especial edição limitada com design exclusivo do IbateXas. Numerada e com certificado de autenticidade.",
+    categoryHandle: "camisetas",
+    tags: ["exclusivo", "edicao_limitada"],
+    variants: [
+      { title: "P", price: 8900 },
+      { title: "M", price: 8900 },
+      { title: "G", price: 8900 },
+      { title: "GG", price: 8900 },
+    ],
+    metadata: {
+      productType: "merchandise",
+      availabilityWindow: "always",
+      allergens: [],
+    },
+  },
+  {
+    title: "Boné IbateXas",
+    handle: "bone-ibatexas",
+    description:
+      "Boné snapback com bordado do logo IbateXas. Aba curvada, regulagem traseira, ideal para proteger do sol.",
+    categoryHandle: "acessorios",
+    tags: ["exclusivo"],
+    variants: [{ title: "Único", price: 4500 }],
+    metadata: {
+      productType: "merchandise",
+      availabilityWindow: "always",
+      allergens: [],
+    },
+  },
+  {
+    title: "Avental IbateXas",
+    handle: "avental-ibatexas",
+    description:
+      "Avental de couro sintético com logo bordado. Ideal para churrasqueiros que querem o estilo IbateXas.",
+    categoryHandle: "acessorios",
+    tags: ["exclusivo"],
+    variants: [{ title: "Único", price: 12900 }],
+    metadata: {
+      productType: "merchandise",
+      availabilityWindow: "always",
+      allergens: [],
+    },
+  },
+  {
+    title: "Kit Churrasco IbateXas",
+    handle: "kit-churrasco-ibatexas",
+    description:
+      "Kit completo para churrasco: avental, boné, camiseta preta (M) e molho barbecue artesanal. Perfeito para presentear.",
+    categoryHandle: "kits",
+    tags: ["exclusivo", "kit"],
+    variants: [{ title: "Único", price: 19900 }],
+    metadata: {
+      productType: "merchandise",
+      availabilityWindow: "always",
+      allergens: [],
+    },
+  },
+  {
+    title: "Kit Presente IbateXas",
+    handle: "kit-presente-ibatexas",
+    description:
+      "Kit presente especial: camiseta edição limitada (G), boné, e voucher para refeição no restaurante. Embalagem premium.",
+    categoryHandle: "kits",
+    tags: ["exclusivo", "kit", "edicao_limitada"],
+    variants: [{ title: "Único", price: 24900 }],
+    metadata: {
+      productType: "merchandise",
+      availabilityWindow: "always",
       allergens: [],
     },
   },

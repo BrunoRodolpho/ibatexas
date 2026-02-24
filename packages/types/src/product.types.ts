@@ -64,6 +64,7 @@ export const SearchProductsInputSchema = z
     tags: z.array(z.string()).optional().describe("Filter by tags"),
     availableNow: z.boolean().optional().describe("Filter by current availability"),
     excludeAllergens: z.array(z.string()).optional().describe("Hard filter: exclude allergens"),
+    productType: z.enum(["food", "frozen", "merchandise"]).optional().describe("Filter by product type"),
     limit: z.number().int().min(1).max(20).optional(),
   })
   .refine((d) => d.query || (d.queries && d.queries.length > 0), {

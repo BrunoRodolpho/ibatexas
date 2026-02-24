@@ -1,11 +1,12 @@
 "use client"
 
 import Link from "next/link"
-import { useTranslations } from "next-intl"
+import { useTranslations, useLocale } from "next-intl"
 import { useCartStore } from "@/stores"
 
 export function Header() {
   const t = useTranslations()
+  const locale = useLocale()
   const cartCount = useCartStore((s) => s.items.length)
 
   return (
@@ -13,7 +14,7 @@ export function Header() {
       <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between gap-4">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2">
+          <Link href={`/${locale}`} className="flex items-center gap-2">
             <div className="h-8 w-8 rounded-lg bg-orange-600" />
             <span className="hidden font-bold text-orange-900 sm:inline">
               IbateXas
@@ -23,13 +24,19 @@ export function Header() {
           {/* Nav */}
           <nav className="hidden gap-6 sm:flex">
             <Link
-              href="/search"
+              href={`/${locale}/search`}
               className="text-sm font-medium text-gray-700 hover:text-orange-600"
             >
               {t("nav.shop")}
             </Link>
             <Link
-              href="/account/reservations"
+              href={`/${locale}/loja`}
+              className="text-sm font-medium text-gray-700 hover:text-orange-600"
+            >
+              {t("nav.loja")}
+            </Link>
+            <Link
+              href={`/${locale}/account/reservations`}
               className="text-sm font-medium text-gray-700 hover:text-orange-600"
             >
               {t("nav.reservations")}
@@ -39,7 +46,7 @@ export function Header() {
           {/* Actions */}
           <div className="flex items-center gap-4">
             <Link
-              href="/search"
+              href={`/${locale}/search`}
               className="rounded-lg p-2 text-gray-700 hover:bg-gray-100"
               aria-label={t("common.search")}
             >
@@ -59,7 +66,7 @@ export function Header() {
             </Link>
 
             <Link
-              href="/cart"
+              href={`/${locale}/cart`}
               className="relative rounded-lg p-2 text-gray-700 hover:bg-gray-100"
               aria-label={t("nav.cart")}
             >
@@ -84,7 +91,7 @@ export function Header() {
             </Link>
 
             <Link
-              href="/account"
+              href={`/${locale}/account`}
               className="rounded-lg p-2 text-gray-700 hover:bg-gray-100"
               aria-label={t("nav.account")}
             >

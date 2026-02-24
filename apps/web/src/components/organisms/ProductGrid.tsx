@@ -16,6 +16,7 @@ interface ProductGridProps {
   products: Product[]
   columns?: number
   onAddToCart?: (productId: string) => void
+  getProductHref?: (product: Product) => string
   isLoading?: boolean
   isEmpty?: boolean
   emptyMessage?: string
@@ -25,6 +26,7 @@ export const ProductGrid = ({
   products,
   columns = 3,
   onAddToCart,
+  getProductHref,
   isLoading,
   isEmpty,
   emptyMessage,
@@ -60,6 +62,7 @@ export const ProductGrid = ({
         <ProductCard
           key={product.id}
           {...product}
+          href={getProductHref?.(product)}
           onAddToCart={() => onAddToCart?.(product.id)}
         />
       ))}

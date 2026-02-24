@@ -11,17 +11,20 @@ interface ProductCardProps {
   price: number
   rating?: number
   tags?: string[]
+  href?: string
   onAddToCart?: () => void
 }
 
-export const ProductCard = ({ id, title, imageUrl, price, rating, tags, onAddToCart }: ProductCardProps) => {
+export const ProductCard = ({ id, title, imageUrl, price, rating, tags, href, onAddToCart }: ProductCardProps) => {
   const priceFormatted = (price / 100).toLocaleString('pt-BR', {
     style: 'currency',
     currency: 'BRL',
   })
 
+  const linkHref = href || `/products/${id}`
+
   return (
-    <Link href={`/products/${id}`}>
+    <Link href={linkHref}>
       <Card className="flex flex-col gap-3 cursor-pointer h-full transition-transform hover:scale-105">
         <div className="relative overflow-hidden rounded-lg">
           {imageUrl ? (

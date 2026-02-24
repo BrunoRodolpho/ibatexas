@@ -33,7 +33,7 @@ function buildHelpText(): string {
     {
       title: "SDLC",
       commands: [
-        { usage: "dev [service]",     desc: "Start dev environment (Docker + Medusa)" },
+        { usage: "dev [service]",     desc: "Start dev environment — commerce (default) | api | web | all" },
         { usage: "dev stop",          desc: "Stop all Docker containers" },
         { usage: "dev build [filter]", desc: "Build packages" },
         { usage: "dev test [filter]", desc: "Run tests" },
