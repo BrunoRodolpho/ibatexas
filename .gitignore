@@ -35,3 +35,6 @@ pnpm-debug.log*
 
 # Claude Code local session files
 .claude/
+
+# ibx CLI runtime files
+.ibx-dev.pids
