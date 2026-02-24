@@ -2,6 +2,7 @@ import type { Command } from "commander"
 import { input, select, checkbox } from "@inquirer/prompts"
 import chalk from "chalk"
 import ora from "ora"
+import { searchProducts, closeRedisClient, Channel } from "@ibatexas/tools"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -198,6 +199,155 @@ export function registerApiCommands(api: Command) {
         )
       } catch (err) {
         spinner2.fail(chalk.red("Failed to create product"))
+        console.error(chalk.gray(String(err)))
+        process.exit(1)
+      }
+    })
+
+  // ── ibx api search <query> ──────────────────────────────────────────────
+  // Two modes:
+  //   (default)  Direct Typesense HTTP — fast, no embedding, no cache
+  //   --full     Full search_products pipeline: L0 cache → embedding → L1 cache → Typesense → filters
+  api
+    .command("search")
+    .description("Test product search. Use --full to run the complete search_products pipeline.")
+    .argument("<query>", "Search query (pt-BR)")
+    .option("-l, --limit <n>", "Number of results", "5")
+    .option("--full", "Run the full search_products pipeline (embedding + cache + filters)")
+    .option("--available-now", "Filter to products available at current time")
+    .option("--exclude-allergens <list>", "Comma-separated allergens to exclude (e.g. gluten,lactose)")
+    .option("--tags <list>", "Comma-separated tags to filter by (e.g. popular,carne)")
+    .action(async (
+      query: string,
+      opts: {
+        limit: string
+        full?: boolean
+        availableNow?: boolean
+        excludeAllergens?: string
+        tags?: string
+      }
+    ) => {
+      if (opts.full) {
+        // ── Full pipeline via searchProducts() tool ────────────────────────
+        const spinner = ora("Running full search pipeline (embedding + cache + Typesense)...").start()
+        try {
+          const excludeAllergens = opts.excludeAllergens
+            ? opts.excludeAllergens.split(",").map((a) => a.trim())
+            : undefined
+          const tags = opts.tags
+            ? opts.tags.split(",").map((t) => t.trim())
+            : undefined
+
+          const result = await searchProducts(
+            {
+              query,
+              limit: parseInt(opts.limit, 10),
+              availableNow: opts.availableNow,
+              excludeAllergens,
+              tags,
+            },
+            { sessionId: "ibx-cli", channel: Channel.Web }
+          )
+          spinner.stop()
+
+          const { products, searchModel, hitCache } = result
+          const cacheLabel = hitCache ? chalk.green("✓ cache hit") : chalk.gray("cache miss")
+          const modelLabel = searchModel === "hybrid" ? chalk.cyan("hybrid") : chalk.yellow("keyword-only")
+
+          console.log(
+            chalk.bold(`\n  "${query}" — ${products.length} result${products.length !== 1 ? "s" : ""} `) +
+            `[${modelLabel}] [${cacheLabel}]\n`
+          )
+
+          if (!products.length) {
+            console.log(chalk.yellow("  No products found."))
+            console.log(chalk.gray("  Tip: ibx db seed — then wait ~2s for indexing"))
+          } else {
+            console.log(
+              `  ${"ID".padEnd(26)} ${"Title".padEnd(38)} ${"R$".padEnd(10)} ${"Tags".padEnd(25)} Allergens`
+            )
+            console.log("  " + "─".repeat(115))
+
+            for (const p of products) {
+              const priceInReais = (p.price / 100).toFixed(2)
+              const tags = (p.tags ?? []).join(", ") || "—"
+              const allergens = (p.allergens ?? []).join(", ") || "nenhum"
+              const stock = p.inStock === false ? chalk.red(" [fora de estoque]") : ""
+              console.log(
+                `  ${chalk.gray(p.id.substring(0, 26).padEnd(26))} ${p.title.padEnd(38)} ${priceInReais.padEnd(10)} ${tags.substring(0, 25).padEnd(25)} ${allergens}${stock}`
+              )
+            }
+          }
+
+          const cacheNote = hitCache
+            ? chalk.green("  ✓ Served from cache (zero embedding cost)")
+            : chalk.gray("  ↗ Fresh from Typesense (results now cached)")
+          console.log(`\n${cacheNote}\n`)
+        } catch (err) {
+          spinner.fail(chalk.red("Full search pipeline failed"))
+          console.error(chalk.gray(String(err)))
+          process.exit(1)
+        } finally {
+          // Close Redis connection so the CLI process exits cleanly
+          await closeRedisClient()
+        }
+        return
+      }
+
+      // ── Fast mode: direct Typesense HTTP (no embedding, no cache) ─────────
+      const spinner = ora("Searching Typesense directly...").start()
+      try {
+        const typesenseHost = process.env.TYPESENSE_HOST || "localhost"
+        const typesensePort = process.env.TYPESENSE_PORT || "8108"
+        const typesenseUrl = `http://${typesenseHost}:${typesensePort}`
+        const typesenseKey = process.env.TYPESENSE_API_KEY
+
+        if (!typesenseKey) {
+          spinner.fail(chalk.red("TYPESENSE_API_KEY not set"))
+          process.exit(1)
+        }
+
+        const response = await fetch(
+          `${typesenseUrl}/collections/products/documents/search?q=${encodeURIComponent(query)}&query_by=title,description,tags&limit=${opts.limit}&per_page=${opts.limit}`,
+          {
+            headers: { "X-TYPESENSE-API-KEY": typesenseKey },
+          }
+        )
+
+        if (!response.ok) {
+          throw new Error(`Typesense error ${response.status}`)
+        }
+
+        const data = (await response.json()) as any
+        spinner.stop()
+
+        const results = data.hits || []
+        if (!results.length) {
+          console.log(chalk.yellow(`\n  No results found for: "${query}"`))
+          console.log(chalk.gray("  Tip: Make sure products are created and indexed."))
+          console.log(chalk.gray("  For full pipeline debug: ibx api search \"${query}\" --full"))
+          return
+        }
+
+        console.log(chalk.bold(`\n  Search results for: "${query}" (${results.length} hit${results.length !== 1 ? "s" : ""}) [Typesense direct]\n`))
+        console.log(
+          `  ${"ID".padEnd(30)} ${"Title".padEnd(40)} ${"Price (R$)".padEnd(12)} Tags`
+        )
+        console.log("  " + "─".repeat(100))
+
+        for (const hit of results) {
+          const doc = hit.document
+          const priceInReais = (doc.price / 100).toFixed(2)
+          const tags = (doc.tags || []).join(", ")
+          console.log(
+            `  ${chalk.gray(doc.id.substring(0, 30).padEnd(30))} ${doc.title.padEnd(40)} ${priceInReais.padEnd(12)} ${tags}`
+          )
+        }
+
+        console.log(chalk.gray(`\n  For full pipeline (embedding + cache): ibx api search "${query}" --full`))
+        console.log(chalk.gray(`  Typesense: ${typesenseUrl}\n`))
+      } catch (err) {
+        spinner.fail(chalk.red("Search failed"))
         console.error(chalk.gray(String(err)))
         process.exit(1)
       }

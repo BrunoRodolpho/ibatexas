@@ -11,11 +11,11 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --outDir dist",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.24.0",
+    "@anthropic-ai/sdk": "^0.28.0",
     "openai": "^4.0.0",
     "@ibatexas/types": "workspace:*"
   },

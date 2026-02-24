@@ -26,3 +26,20 @@ export interface ChatSession {
   messages: ChatMessage[];
   createdAt: string;
 }
+// Product types
+export {
+  AvailabilityWindow,
+  ProductType,
+  Channel,
+  type ProductDTO,
+  type ProductVariant,
+  type SearchProductsInput,
+  type SearchProductsOutput,
+  type ProductEmbedding,
+  type QueryCacheEntry,
+  type QueryLogEntry,
+  type ProductIndexedEvent,
+  type ProductSearchedEvent,
+  type ProductViewedEvent,
+  SearchProductsInputSchema,
+} from "./product.types.js"

@@ -11,12 +11,15 @@ import { registerDbCommands }   from "./commands/db.js"
 import { registerEnvCommands }  from "./commands/env.js"
 import { registerGitCommands }  from "./commands/git.js"
 
-// ── Load root .env before any command runs ────────────────────────────────────
-// index.ts lives at packages/cli/src/ → go up 3 levels → monorepo root
-// dist/index.js lives at packages/cli/dist/ → go up 3 levels → monorepo root
+// ── Load .env files ──────────────────────────────────────────────────────────
+// Load CLI-specific config first, then root config (root config takes priority)
+// index.ts lives at packages/cli/src/ → parent is packages/cli/
+// dist/index.js lives at packages/cli/dist/ → parent is packages/cli/
 const __filename = fileURLToPath(import.meta.url)
-const ROOT = path.resolve(path.dirname(__filename), "../../../")
-loadEnv({ path: path.join(ROOT, ".env"), override: false })
+const CLI_DIR = path.resolve(path.dirname(__filename), "..")
+const ROOT = path.resolve(CLI_DIR, "../../")
+loadEnv({ path: path.join(CLI_DIR, ".env"), override: false })
+loadEnv({ path: path.join(ROOT, ".env"), override: true })
 
 // ── Custom help formatter ─────────────────────────────────────────────────────
 
