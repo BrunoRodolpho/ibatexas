@@ -2,12 +2,13 @@
 
 import Link from "next/link"
 import { useTranslations, useLocale } from "next-intl"
-import { useCartStore } from "@/stores"
+import { useCartStore, useSessionStore } from "@/stores"
 
 export function Header() {
   const t = useTranslations()
   const locale = useLocale()
   const cartCount = useCartStore((s) => s.items.length)
+  const userType = useSessionStore((s) => s.userType)
 
   return (
     <header className="border-b bg-white">
@@ -41,6 +42,14 @@ export function Header() {
             >
               {t("nav.reservations")}
             </Link>
+            {userType === 'staff' && (
+              <Link
+                href={`/${locale}/admin`}
+                className="rounded-md bg-amber-700 px-3 py-1 text-sm font-medium text-white hover:bg-amber-800"
+              >
+                {t("nav.admin")}
+              </Link>
+            )}
           </nav>
 
           {/* Actions */}
