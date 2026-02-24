@@ -33,6 +33,8 @@ export type { AgentContext, AgentMessage, StreamChunk } from "./agent.types.js"
 export type {
   AdminDashboardMetrics,
   AdminProductRow,
+  AdminProductDetail,
+  AdminVariant,
   OrderSummary,
 } from "./admin.types.js"
 

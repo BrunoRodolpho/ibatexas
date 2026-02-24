@@ -198,6 +198,76 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── GET /api/admin/products/:id ─────────────────────────────────────────
+  app.get(
+    "/api/admin/products/:id",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "Detalhe do produto com variantes (admin)",
+        params: ProductParams,
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      try {
+        const data = await medusaAdmin(
+          `/admin/products/${id}?expand=variants,categories,tags`,
+        );
+        const p = data.product as {
+          id: string;
+          title: string;
+          handle: string;
+          description: string | null;
+          thumbnail: string | null;
+          status: string;
+          metadata: Record<string, unknown> | null;
+          categories: { name: string }[];
+          tags: { value: string }[];
+          variants: {
+            id: string;
+            title: string;
+            sku: string | null;
+            inventory_quantity: number;
+            allow_backorder: boolean;
+            manage_inventory: boolean;
+            prices: { amount: number; currency_code: string }[];
+          }[];
+        };
+
+        return reply.send({
+          product: {
+            id: p.id,
+            title: p.title,
+            handle: p.handle,
+            description: p.description,
+            imageUrl: p.thumbnail,
+            category: p.categories?.[0]?.name ?? "—",
+            price: 0,
+            status: p.status,
+            productType: (p.metadata?.productType ?? "food") as string,
+            variantCount: p.variants?.length ?? 0,
+            inStock: p.metadata?.inStock !== false,
+            tags: (p.tags ?? []).map((t) => t.value),
+            variants: (p.variants ?? []).map((v) => ({
+              id: v.id,
+              title: v.title,
+              sku: v.sku,
+              price:
+                v.prices?.find((pr) => pr.currency_code === "brl")?.amount ??
+                0,
+              inventoryQuantity: v.inventory_quantity,
+              allowBackorder: v.allow_backorder,
+              manageInventory: v.manage_inventory,
+            })),
+          },
+        });
+      } catch (err) {
+        reply.code(502).send({ error: "Failed to fetch product detail" });
+      }
+    },
+  );
+
   // ── GET /api/admin/orders ──────────────────────────────────────────────────
   app.get(
     "/api/admin/orders",
