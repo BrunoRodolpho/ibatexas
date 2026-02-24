@@ -26,3 +26,23 @@ export interface ChatSession {
   messages: ChatMessage[];
   createdAt: string;
 }
+// Agent types
+export type { AgentContext, AgentMessage, StreamChunk } from "./agent.types.js"
+
+// Product types
+export {
+  AvailabilityWindow,
+  ProductType,
+  Channel,
+  type ProductDTO,
+  type ProductVariant,
+  type SearchProductsInput,
+  type SearchProductsOutput,
+  type ProductEmbedding,
+  type QueryCacheEntry,
+  type QueryLogEntry,
+  type ProductIndexedEvent,
+  type ProductSearchedEvent,
+  type ProductViewedEvent,
+  SearchProductsInputSchema,
+} from "./product.types.js"

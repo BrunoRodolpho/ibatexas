@@ -1,5 +1,9 @@
 // @ibatexas/llm-provider
-// LLM provider abstraction — Claude and OpenAI adapters behind a common interface.
-// Swap models without touching application code.
+// Core agent loop and streaming utilities.
 
-export {};
+export { runAgent } from "./agent.js"
+export { SYSTEM_PROMPT } from "./system-prompt.js"
+export { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
+
+// Re-export agent types for consumers
+export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"

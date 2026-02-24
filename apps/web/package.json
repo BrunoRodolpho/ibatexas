@@ -9,7 +9,6 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@clerk/nextjs": "^5.0.0",
     "@ibatexas/types": "workspace:*",
     "next": "14.2.0",
     "posthog-js": "^1.96.0",
