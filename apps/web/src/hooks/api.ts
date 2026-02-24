@@ -7,7 +7,7 @@ import type { ProductDTO, SearchProductsOutput } from "@ibatexas/types"
 
 // ── Product Hooks ───────────────────────────────────────────────────────
 
-export function useProducts(query?: string, tags?: string[], limit = 5) {
+export function useProducts(query?: string, tags?: string[], limit = 5, productType?: "food" | "frozen" | "merchandise") {
   const [data, setData] = useState<SearchProductsOutput | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
@@ -16,6 +16,7 @@ export function useProducts(query?: string, tags?: string[], limit = 5) {
     const params = new URLSearchParams()
     if (query) params.set("query", query)
     if (tags?.length) params.set("tags", tags.join(","))
+    if (productType) params.set("productType", productType)
     params.set("limit", String(limit))
 
     const qs = params.toString()
@@ -26,7 +27,7 @@ export function useProducts(query?: string, tags?: string[], limit = 5) {
       .then(setData)
       .catch(setError)
       .finally(() => setLoading(false))
-  }, [query, tags?.join(","), limit])
+  }, [query, tags?.join(","), limit, productType])
 
   return { data, loading, error }
 }
@@ -57,6 +58,32 @@ export function useCategories() {
       .catch(setError)
       .finally(() => setLoading(false))
   }, [])
+
+  return { data, loading, error }
+}
+
+export function useShippingEstimate(cep?: string) {
+  const [data, setData] = useState<{ options: Array<{ service: string; price: number; estimatedDays: number }> } | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
+
+  useEffect(() => {
+    // Only fire when CEP is exactly 8 digits
+    if (!cep || cep.length !== 8 || !/^\d{8}$/.test(cep)) {
+      setData(null)
+      setLoading(false)
+      setError(null)
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+    
+    apiFetch(`/api/shipping/estimate?cep=${cep}`)
+      .then((response) => setData(response.data))
+      .catch(setError)
+      .finally(() => setLoading(false))
+  }, [cep])
 
   return { data, loading, error }
 }

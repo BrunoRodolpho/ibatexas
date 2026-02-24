@@ -19,6 +19,10 @@ const badgeVariants = cva('inline-flex items-center px-2.5 py-0.5 rounded-full t
       novo: 'bg-purple-100 text-purple-800',
       popular: 'bg-pink-100 text-pink-800',
       chef_choice: 'bg-amber-100 text-amber-800',
+      // Merchandise tag variants
+      exclusivo: 'bg-purple-100 text-purple-800',
+      edicao_limitada: 'bg-pink-100 text-pink-800',
+      kit: 'bg-blue-100 text-blue-800',
     },
   },
   defaultVariants: {

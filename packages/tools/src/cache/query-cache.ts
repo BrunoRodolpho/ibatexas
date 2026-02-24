@@ -45,11 +45,13 @@ export function exactCacheKey(
   query: string,
   channel: Channel,
   availabilityMode: string,
-  allergenHash: string
+  allergenHash: string,
+  productType?: string
 ): string {
   const normalized = query.toLowerCase().trim().replace(/\s+/g, " ")
+  const productTypeStr = productType || "all"
   const hash = createHash("sha256")
-    .update(`${normalized}:${availabilityMode}:${allergenHash}`)
+    .update(`${normalized}:${availabilityMode}:${allergenHash}:${productTypeStr}`)
     .digest("hex")
     .slice(0, 16)
   return `search_exact:${channel}:${hash}`
@@ -63,7 +65,8 @@ function semanticCacheKey(
   channel: Channel,
   bucket: string,
   availabilityMode: string,
-  allergenHash: string
+  allergenHash: string,
+  productType?: string
 ): string {
   return [
     "search_cache",
@@ -71,6 +74,7 @@ function semanticCacheKey(
     bucket,
     availabilityMode || "all",
     allergenHash || "none",
+    productType || "all",
   ].join(":")
 }
 
@@ -80,11 +84,12 @@ export async function getExactQueryCache(
   query: string,
   channel: Channel,
   availabilityMode: string,
-  allergenHash: string
+  allergenHash: string,
+  productType?: string
 ): Promise<{ hit: true; results: ProductDTO[]; cachedAt: string } | { hit: false }> {
   try {
     const redisClient = await getRedisClient()
-    const key = exactCacheKey(query, channel, availabilityMode, allergenHash)
+    const key = exactCacheKey(query, channel, availabilityMode, allergenHash, productType)
     const cached = await redisClient.get(key)
     if (cached) {
       const parsed = JSON.parse(cached) as { results: ProductDTO[]; cachedAt: string }
@@ -102,12 +107,13 @@ export async function setExactQueryCache(
   channel: Channel,
   availabilityMode: string,
   allergenHash: string,
-  results: ProductDTO[]
+  results: ProductDTO[],
+  productType?: string
 ): Promise<void> {
   try {
     const redisClient = await getRedisClient()
     const ttl = parseInt(process.env.QUERY_CACHE_EXACT_TTL_SECONDS || "300", 10)
-    const key = exactCacheKey(query, channel, availabilityMode, allergenHash)
+    const key = exactCacheKey(query, channel, availabilityMode, allergenHash, productType)
     const payload = { results, cachedAt: new Date().toISOString() }
     await redisClient.setEx(key, ttl, JSON.stringify(payload))
   } catch (error) {
@@ -124,12 +130,13 @@ export async function getQueryCache(
   channel: Channel,
   embedding: number[],
   availabilityMode?: string,
-  allergenHash?: string
+  allergenHash?: string,
+  productType?: string
 ): Promise<{ hit: true; results: ProductDTO[]; cachedAt: string } | { hit: false }> {
   try {
     const redisClient = await getRedisClient()
     const bucket = embeddingToBucket(embedding)
-    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none")
+    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none", productType)
 
     const cached = await redisClient.get(key)
     if (cached) {
@@ -153,12 +160,13 @@ export async function setQueryCache(
   results: ProductDTO[],
   availabilityMode?: string,
   allergenHash?: string,
-  ttlSeconds = parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10)
+  ttlSeconds = parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10),
+  productType?: string
 ): Promise<void> {
   try {
     const redisClient = await getRedisClient()
     const bucket = embeddingToBucket(embedding)
-    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none")
+    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none", productType)
     const now = new Date()
 
     const entry: QueryCacheEntry = {

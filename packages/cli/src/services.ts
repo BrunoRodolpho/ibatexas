@@ -84,7 +84,7 @@ export const SERVICES: Record<string, ServiceDef> = {
     healthUrl: "http://localhost:3000",
     logColor: chalk.cyan,
     logPrefix: "web",
-    available: false,
+    available: true,
     step: 5,
     urls: [{ label: "Storefront", url: "http://localhost:3000" }],
   },

@@ -75,6 +75,7 @@ interface FilterOptions {
   tags?: string[]
   availableNow: boolean
   excludeAllergens?: string[]
+  productType?: "food" | "frozen" | "merchandise"
 }
 
 /**
@@ -115,13 +116,16 @@ async function executeTypesenseSearch(
   query: string,
   embedding: number[],
   limit: number,
-  filterInStock = true
+  filterInStock = true,
+  productType?: "food" | "frozen" | "merchandise"
 ): Promise<TypesenseResult> {
   const typesenseClient = getTypesenseClient()
 
-  const filterBy = filterInStock
-    ? "status:published && inStock:true"
-    : "status:published"
+  const filterParts = ["status:published"]
+  if (filterInStock) filterParts.push("inStock:true")
+  if (productType) filterParts.push(`productType:${productType}`)
+  
+  const filterBy = filterParts.join(" && ")
 
   const response = await typesenseClient
     .collections(COLLECTION)
@@ -182,7 +186,7 @@ async function diagnoseNoResults(
   if (rawDocs.length === 0) {
     // Typesense found nothing with inStock:true — check if OOS products exist
     try {
-      const diagResult = await executeTypesenseSearch(query, embedding, limit, false)
+      const diagResult = await executeTypesenseSearch(query, embedding, limit, false, filters.productType)
       if (diagResult.hits.length > 0) {
         return "out_of_stock"
       }
@@ -245,7 +249,7 @@ async function singleQuerySearch(
   cacheTtl: number
 ): Promise<SingleQueryResult> {
   // ── L0: Exact cache ──────────────────────────────────────────────────────
-  const l0 = await getExactQueryCache(query, channel, availabilityMode, allergenHash)
+  const l0 = await getExactQueryCache(query, channel, availabilityMode, allergenHash, filters.productType)
   if (l0.hit) {
     return {
       query,
@@ -271,11 +275,11 @@ async function singleQuerySearch(
 
   // ── L1: Semantic bucket cache ────────────────────────────────────────────
   if (queryEmbedding.length > 0) {
-    const l1 = await getQueryCache(channel, queryEmbedding, availabilityMode, allergenHash)
+    const l1 = await getQueryCache(channel, queryEmbedding, availabilityMode, allergenHash, filters.productType)
     if (l1.hit) {
       try {
         await incrementQueryCacheHits(channel, queryEmbedding, availabilityMode, allergenHash)
-        await setExactQueryCache(query, channel, availabilityMode, allergenHash, l1.results)
+        await setExactQueryCache(query, channel, availabilityMode, allergenHash, l1.results, filters.productType)
       } catch (error) {
         console.warn("[Search] Cache backfill failed (non-critical):", error)
       }
@@ -294,7 +298,7 @@ async function singleQuerySearch(
   // ── L2: Typesense search ─────────────────────────────────────────────────
   let tsResult: TypesenseResult = { hits: [], totalFound: 0, scores: {} }
   try {
-    tsResult = await executeTypesenseSearch(query, queryEmbedding, limit)
+    tsResult = await executeTypesenseSearch(query, queryEmbedding, limit, true, filters.productType)
   } catch (error) {
     console.error("[Search] Typesense search failed:", error)
     // Graceful degradation — return empty
@@ -316,9 +320,9 @@ async function singleQuerySearch(
   // ── Cache results ────────────────────────────────────────────────────────
   try {
     if (queryEmbedding.length > 0) {
-      await setQueryCache(channel, queryEmbedding, products, availabilityMode, allergenHash, cacheTtl)
+      await setQueryCache(channel, queryEmbedding, products, availabilityMode, allergenHash, cacheTtl, filters.productType)
     }
-    await setExactQueryCache(query, channel, availabilityMode, allergenHash, products)
+    await setExactQueryCache(query, channel, availabilityMode, allergenHash, products, filters.productType)
   } catch (error) {
     console.warn("[Search] Cache write failed (non-critical):", error)
   }
@@ -414,6 +418,7 @@ export async function searchProducts(
     tags: validated.tags,
     availableNow,
     excludeAllergens: validated.excludeAllergens,
+    productType: validated.productType,
   }
 
   // ── Determine query list ─────────────────────────────────────────────────

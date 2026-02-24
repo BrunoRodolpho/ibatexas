@@ -134,12 +134,68 @@
     "modify": "Modificar"
   },
   "shop": {
-    "title": "Loja — Produtos IbateXas",
+    "title": "Loja ― Produtos IbateXas",
+    "subtitle": "Camisetas, Acessórios e Kits Exclusivos",
+    "hero_title": "Leve o IbateXas para Casa",
+    "hero_subtitle": "Produtos exclusivos para você mostrar sua paixão pelo churrasco defumado",
     "merchandise": "Camisetas, Acessórios e Kits IbateXas",
+    "categories": {
+      "camisetas": "Camisetas",
+      "acessorios": "Acessórios",
+      "kits": "Kits"
+    },
     "size": "Tamanho",
+    "sizes": {
+      "p": "P",
+      "m": "M",
+      "g": "G",
+      "gg": "GG",
+      "unico": "Único"
+    },
+    "size_guide": {
+      "title": "Guia de Tamanhos",
+      "open": "Ver Tabela de Medidas",
+      "chest": "Largura do Peito",
+      "length": "Comprimento",
+      "size_p": "P: 51cm x 69cm",
+      "size_m": "M: 55cm x 72cm",
+      "size_g": "G: 59cm x 75cm",
+      "size_gg": "GG: 63cm x 78cm"
+    },
     "color": "Cor",
-    "shipping": "Frete",
-    "shipping_info": "Rastreamento via Correios/EasyPost"
+    "shipping": {
+      "title": "Calcular Frete",
+      "cep_label": "CEP de Entrega",
+      "cep_placeholder": "00000-000",
+      "calculate": "Calcular",
+      "options": "Opções de Envio",
+      "pac": "PAC",
+      "sedex": "SEDEX",
+      "days": "dias úteis",
+      "business_days": " dia útil | dias úteis",
+      "info": "Rastreamento via Correios",
+      "origin": "Enviado de Araraquara/SP"
+    },
+    "product": {
+      "material": "Material",
+      "cotton": "100% Algodão",
+      "synthetic_leather": "Couro Sintético",
+      "care": "Cuidados",
+      "machine_wash": "Lavagem à máquina",
+      "no_bleach": "Não usar alvejante"
+    },
+    "cart": {
+      "size_required": "Selecione um tamanho",
+      "out_of_stock_size": "Tamanho indisponível"
+    },
+    "empty_states": {
+      "no_products": "Nenhum produto encontrado nesta categoria",
+      "no_featured": "Produtos em destaque em breve",
+      "category_empty": "Esta categoria ainda não possui produtos"
+    },
+    "featured": "Produtos em Destaque",
+    "view_all": "Ver Todos os Produtos",
+    "browse_category": "Navegar por Categoria"
   },
   "admin": {
     "login_required": "Acesso restrito a administradores",

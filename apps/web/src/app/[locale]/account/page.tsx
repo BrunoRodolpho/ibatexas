@@ -1,11 +1,12 @@
 "use client"
 
 import Link from "next/link"
-import { useTranslations } from "next-intl"
+import { useTranslations, useLocale } from "next-intl"
 import { useSessionStore } from "@/stores"
 
 export default function AccountPage() {
   const t = useTranslations()
+  const locale = useLocale()
   const { customerId, userType, logout } = useSessionStore()
 
   if (!customerId) {
@@ -20,7 +21,7 @@ export default function AccountPage() {
 
         <p className="mt-6">
           <Link
-            href="/search"
+            href={`/${locale}/search`}
             className="text-orange-600 hover:text-orange-700"
           >
             {t("cart.continue_shopping")} →
@@ -80,7 +81,7 @@ export default function AccountPage() {
           </h2>
           <p className="mt-4 text-gray-600">Suas reservas de mesa</p>
           <Link
-            href="/account/reservations"
+            href={`/${locale}/account/reservations`}
             className="mt-4 inline-block text-orange-600 hover:text-orange-700"
           >
             {t("common.view_all")} →
