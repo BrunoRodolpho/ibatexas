@@ -1,26 +1,7 @@
 # Next Steps — Phase 1 Build Order
 
-Steps 1–6 are complete. Steps 7–14 are below in order.
+Steps 1–7 are complete. Steps 8–14 are below in order.
 Remove a step from this file once it is done (git history is the record).
-
----
-
-### Step 7 — Admin Panel (`/admin`)
-
-Owner control panel (staff role required):
-
-- **Dashboard** — today's orders, revenue, active reservations, pending escalations
-- **Menu management** — CRUD food products (Medusa admin supplement)
-- **Shop management** — merchandise, variants, stock
-- **Orders** — view + update status, filter by state
-- **Reservations** — calendar view, check-in, table layout, time slots
-- **Delivery zones** — draw zones, set fees + transit times
-
-  > Delivery zone storage: use list of CEP prefixes (Phase 1).
-  > Upgrade to PostGIS polygon in Phase 2 for precise geo-fencing.
-
-- **Reviews** — view all, resolve low-rating escalations (≤2 stars)
-- **Analytics** — PostHog embed
 
 ---
 
