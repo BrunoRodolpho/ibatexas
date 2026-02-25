@@ -55,7 +55,9 @@ export const SERVICES: Record<string, ServiceDef> = {
       { label: "Medusa API  ", url: "http://localhost:9000" },
       { label: "Admin UI   ", url: "http://localhost:9000/app" },
     ],
-    notes: ["Login: admin@ibatexas.com.br  /  IbateXas2024!"],
+    notes: [
+      `Login: ${process.env.MEDUSA_ADMIN_EMAIL ?? "admin@ibatexas.com.br"}  /  ${process.env.MEDUSA_ADMIN_PASSWORD ? "****" : "(set MEDUSA_ADMIN_PASSWORD)"}`,
+    ],
   },
 
   api: {

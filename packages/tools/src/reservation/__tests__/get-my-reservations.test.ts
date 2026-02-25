@@ -65,13 +65,13 @@ function makeRow(id: string) {
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe("getMyReservations", () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => { vi.clearAllMocks() })
 
   it("returns empty list when customer has no reservations", async () => {
     mockReservationFindMany.mockResolvedValue([])
     mockReservationCount.mockResolvedValue(0)
 
-    const result = await getMyReservations({ customerId: "cus_01" })
+    const result = await getMyReservations({ customerId: "cus_01", limit: 10 })
 
     expect(result.reservations).toHaveLength(0)
     expect(result.total).toBe(0)
@@ -82,7 +82,7 @@ describe("getMyReservations", () => {
     mockReservationFindMany.mockResolvedValue(rows)
     mockReservationCount.mockResolvedValue(2)
 
-    const result = await getMyReservations({ customerId: "cus_01" })
+    const result = await getMyReservations({ customerId: "cus_01", limit: 10 })
 
     expect(result.reservations).toHaveLength(2)
     expect(result.total).toBe(2)
@@ -92,7 +92,7 @@ describe("getMyReservations", () => {
     mockReservationFindMany.mockResolvedValue([])
     mockReservationCount.mockResolvedValue(0)
 
-    await getMyReservations({ customerId: "cus_42" })
+    await getMyReservations({ customerId: "cus_42", limit: 10 })
 
     expect(mockReservationFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -105,7 +105,7 @@ describe("getMyReservations", () => {
     mockReservationFindMany.mockResolvedValue([])
     mockReservationCount.mockResolvedValue(0)
 
-    await getMyReservations({ customerId: "cus_01", status: ReservationStatus.CONFIRMED })
+    await getMyReservations({ customerId: "cus_01", status: ReservationStatus.CONFIRMED, limit: 10 })
 
     expect(mockReservationFindMany).toHaveBeenCalledWith(
       expect.objectContaining({

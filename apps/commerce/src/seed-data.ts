@@ -333,13 +333,13 @@ export const SEED_PRODUCTS: SeedProduct[] = [
     description:
       "IPA artesanal com lúpulos frutados e amargor equilibrado. Parceria com cervejaria local.",
     categoryHandle: "bebidas",
-    tags: ["sem_gluten"],
+    tags: [],
     variants: [{ title: "500ml", price: 1800 }],
     metadata: {
       productType: "food",
       availabilityWindow: "always",
       nutritionalInfo: { calories: 170, protein: 2, fat: 0, carbs: 14, sodium: 15 },
-      allergens: [],
+      allergens: ["gluten"],
     },
   },
   {

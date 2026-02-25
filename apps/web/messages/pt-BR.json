@@ -193,6 +193,11 @@
       "no_featured": "Produtos em destaque em breve",
       "category_empty": "Esta categoria ainda não possui produtos"
     },
+    "errors": {
+      "product_not_found": "Produto não encontrado"
+    },
+    "back_to_shop": "Voltar à Loja",
+    "product_details": "Detalhes do Produto",
     "featured": "Produtos em Destaque",
     "view_all": "Ver Todos os Produtos",
     "browse_category": "Navegar por Categoria"

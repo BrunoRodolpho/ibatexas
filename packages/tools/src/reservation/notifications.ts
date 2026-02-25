@@ -4,6 +4,8 @@
 import type { ReservationDTO, WaitlistDTO } from "@ibatexas/types"
 import { locationLabel, formatDateBR } from "./utils.js"
 
+const APP_BASE_URL = process.env.APP_BASE_URL || "https://ibatexas.com.br"
+
 /**
  * Send a reservation confirmation via WhatsApp.
  * Stub: logs to console. Step 12 will replace with Twilio Messages API.
@@ -12,7 +14,8 @@ export async function sendReservationConfirmation(
   reservation: ReservationDTO,
   phone?: string,
 ): Promise<void> {
-  const dateStr = formatDateBR(new Date(reservation.timeSlot.date))
+  // Append T12:00:00Z to avoid UTC midnight → previous-day-in-São-Paulo issue
+  const dateStr = formatDateBR(new Date(reservation.timeSlot.date + "T12:00:00Z"))
   const location = locationLabel(reservation.tableLocation)
 
   const message = [
@@ -25,7 +28,7 @@ export async function sendReservationConfirmation(
     ``,
     `ID: ${reservation.id}`,
     ``,
-    `Para cancelar ou modificar acesse: https://ibatexas.com.br/conta/reservas`,
+    `Para cancelar ou modificar acesse: ${APP_BASE_URL}/conta/reservas`,
   ].join("\n")
 
   // TODO: Step 12 — Twilio WhatsApp API
@@ -45,7 +48,7 @@ export async function notifyWaitlistSpotAvailable(
   startTime: string,
   phone?: string,
 ): Promise<void> {
-  const dateStr = formatDateBR(new Date(date))
+  const dateStr = formatDateBR(new Date(date + "T12:00:00Z"))
 
   const message = [
     `🎉 *IbateXas — Vaga disponível!*`,
@@ -55,7 +58,7 @@ export async function notifyWaitlistSpotAvailable(
     `👥 ${waitlist.partySize} pessoa${waitlist.partySize > 1 ? "s" : ""}`,
     ``,
     `Você tem 30 minutos para confirmar sua reserva:`,
-    `https://ibatexas.com.br/conta/reservas`,
+    `${APP_BASE_URL}/conta/reservas`,
     ``,
     `Após esse prazo, a vaga será oferecida ao próximo da fila.`,
   ].join("\n")

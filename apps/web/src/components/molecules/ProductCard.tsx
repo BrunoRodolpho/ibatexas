@@ -24,24 +24,29 @@ export const ProductCard = ({ id, title, imageUrl, price, rating, tags, href, on
   const linkHref = href || `/products/${id}`
 
   return (
-    <Link href={linkHref}>
-      <Card className="flex flex-col gap-3 cursor-pointer h-full transition-transform hover:scale-105">
-        <div className="relative overflow-hidden rounded-lg">
+    <Link href={linkHref} className="group block h-full">
+      <Card className="flex flex-col gap-3 cursor-pointer h-full card-hover">
+        <div className="relative overflow-hidden rounded-xl">
           {imageUrl ? (
-            <Image src={imageUrl} alt={title} variant="card" className="w-full h-48 object-cover" />
+            <Image
+              src={imageUrl}
+              alt={title}
+              variant="card"
+              className="w-full h-52 object-cover transition-transform duration-500 group-hover:scale-105"
+            />
           ) : (
-            <div className="w-full h-48 bg-slate-200 flex items-center justify-center text-slate-400">
-              Sem imagem
+            <div className="w-full h-52 bg-gradient-to-br from-brand-50 to-brand-100 flex items-center justify-center">
+              <span className="text-4xl">🔥</span>
             </div>
           )}
           {rating && (
-            <div className="absolute top-2 right-2 bg-amber-700 text-white px-2 py-1 rounded text-xs font-bold">
+            <div className="absolute top-3 right-3 bg-brand-500 text-white px-2.5 py-1 rounded-lg text-xs font-bold shadow-sm">
               ⭐ {rating.toFixed(1)}
             </div>
           )}
         </div>
 
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2 p-1">
           <Heading as="h3" variant="h5" className="line-clamp-2">
             {title}
           </Heading>
@@ -57,7 +62,7 @@ export const ProductCard = ({ id, title, imageUrl, price, rating, tags, href, on
             </div>
           )}
 
-          <div className="flex items-center justify-between pt-2 border-t border-slate-200">
+          <div className="flex items-center justify-between pt-2 border-t border-slate-100">
             <Text variant="h6" textColor="accent">
               {priceFormatted}
             </Text>

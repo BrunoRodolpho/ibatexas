@@ -6,6 +6,7 @@ import { useLocale } from 'next-intl'
 import { Heading, Text, Button, RadioGroup } from '@/components/atoms'
 import { CartItem, Modal } from '@/components/molecules'
 import { useCartStore, useUIStore } from '@/stores'
+import { apiFetch } from '@/lib/api'
 import clsx from 'clsx'
 
 export default function CartPage() {
@@ -22,14 +23,22 @@ export default function CartPage() {
   const tax = Math.floor(subtotal * 0.1) // 10% tax
   const total = subtotal + deliveryFee + tax
 
-  const handleApplyCoupon = () => {
-    // Simulated coupon validation
-    const validCoupons = ['WELCOME10', 'SAVE20', 'VIP15']
-    if (validCoupons.includes(couponInput.toUpperCase())) {
-      addToast(`Cupom "${couponInput}" aplicado!`, 'success')
-      setShowCouponModal(false)
-    } else {
-      addToast('Cupom inválido', 'error')
+  const handleApplyCoupon = async () => {
+    if (!couponInput.trim()) return
+    try {
+      const res = await apiFetch('/api/coupons/validate', {
+        method: 'POST',
+        body: JSON.stringify({ code: couponInput.toUpperCase() }),
+      })
+      if (res.valid) {
+        useCartStore.getState().setCouponCode(couponInput.toUpperCase())
+        addToast(`Cupom "${couponInput}" aplicado!`, 'success')
+        setShowCouponModal(false)
+      } else {
+        addToast('Cupom inválido', 'error')
+      }
+    } catch {
+      addToast('Erro ao validar cupom', 'error')
     }
   }
 
@@ -208,7 +217,7 @@ export default function CartPage() {
             className="w-full px-4 py-2 border border-slate-300 rounded-lg"
           />
           <Text variant="small" textColor="muted">
-            Dicas: WELCOME10, SAVE20, VIP15
+            Insira o código do cupom promocional
           </Text>
         </div>
       </Modal>

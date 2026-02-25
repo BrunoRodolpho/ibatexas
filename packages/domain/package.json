@@ -22,6 +22,7 @@
     "db:seed:tables": "tsx src/seed-tables.ts"
   },
   "dependencies": {
+    "@ibatexas/types": "workspace:*",
     "@prisma/client": "^5.10.0"
   },
   "devDependencies": {

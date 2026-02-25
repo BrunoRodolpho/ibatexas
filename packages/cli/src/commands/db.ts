@@ -100,6 +100,11 @@ async function runReset(force = false) {
   }
 
   const { host, port, user, password, dbName } = parseDatabaseUrl()
+  // Sanitize dbName — only allow alphanumeric, underscores, hyphens
+  if (!/^[a-zA-Z0-9_-]+$/.test(dbName)) {
+    console.error(chalk.red(`Invalid database name: "${dbName}". Only [a-zA-Z0-9_-] allowed.`))
+    process.exit(1)
+  }
   const pgEnv = password ? { PGPASSWORD: password } : {}
   const psqlBase = ["-h", host, "-p", port, "-U", user]
 

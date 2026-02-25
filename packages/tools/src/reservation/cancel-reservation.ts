@@ -6,7 +6,6 @@ import { prisma } from "@ibatexas/domain"
 import type { CancelReservationInput, CancelReservationOutput } from "@ibatexas/types"
 import { CancelReservationInputSchema } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
-import { releaseReservation } from "./utils.js"
 import { notifyWaitlistSpotAvailable } from "./notifications.js"
 
 export async function cancelReservation(
@@ -35,13 +34,18 @@ export async function cancelReservation(
     }
   }
 
-  // 2. Mark as cancelled + release resources
-  await prisma.reservation.update({
-    where: { id: parsed.reservationId },
-    data: { status: "cancelled", cancelledAt: new Date() },
-  })
-
-  await releaseReservation(parsed.reservationId)
+  // 2. Mark as cancelled + release resources (in a single transaction)
+  await prisma.$transaction([
+    prisma.reservation.update({
+      where: { id: parsed.reservationId },
+      data: { status: "cancelled", cancelledAt: new Date() },
+    }),
+    prisma.reservationTable.deleteMany({ where: { reservationId: parsed.reservationId } }),
+    prisma.timeSlot.update({
+      where: { id: reservation.timeSlotId },
+      data: { reservedCovers: { decrement: reservation.partySize } },
+    }),
+  ])
 
   // 3. Check waitlist for this slot — notify next in line
   const nextInLine = await prisma.waitlist.findFirst({
@@ -50,7 +54,8 @@ export async function cancelReservation(
   })
 
   if (nextInLine) {
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000) // 30 min window
+    const waitlistOfferMinutes = parseInt(process.env.WAITLIST_OFFER_MINUTES || "30", 10)
+    const expiresAt = new Date(Date.now() + waitlistOfferMinutes * 60 * 1000)
 
     await prisma.waitlist.update({
       where: { id: nextInLine.id },

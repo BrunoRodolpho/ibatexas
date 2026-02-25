@@ -3,6 +3,12 @@
 // Or via:  ibx db seed:domain
 
 import { prisma } from "./client.js"
+import {
+  LUNCH_STARTS,
+  DINNER_STARTS,
+  SLOT_DURATION_MINUTES,
+  SEED_DAYS_AHEAD,
+} from "@ibatexas/types"
 
 // ─── Tables ───────────────────────────────────────────────────────────────────
 
@@ -27,13 +33,7 @@ const TABLES = [
 
 // ─── Time slots ───────────────────────────────────────────────────────────────
 
-// Lunch: 11:30 and 13:00 (2 turns)
-// Dinner: 18:30, 20:00, and 21:30 (3 turns)
-const LUNCH_STARTS = ["11:30", "13:00"]
-const DINNER_STARTS = ["18:30", "20:00", "21:30"]
-
-// Total covers at dinner = sum of table capacities = 2+2+4+4+6+8+4+4+6+2+2+8 = 52
-// Lunch = same
+// Total covers = sum of table capacities
 const TOTAL_CAPACITY = TABLES.reduce((sum, t) => sum + t.capacity, 0)
 
 function addDays(date: Date, days: number): Date {
@@ -45,52 +45,48 @@ function addDays(date: Date, days: number): Date {
 async function seedTables() {
   console.log("🪑  Seeding tables…")
 
-  // Upsert tables
-  for (const table of TABLES) {
-    await prisma.table.upsert({
-      where: { number: table.number },
-      update: { capacity: table.capacity, location: table.location, accessible: table.accessible },
-      create: table,
-    })
-  }
+  // Batch upsert via transaction
+  await prisma.$transaction(
+    TABLES.map((table) =>
+      prisma.table.upsert({
+        where: { number: table.number },
+        update: { capacity: table.capacity, location: table.location, accessible: table.accessible },
+        create: table,
+      }),
+    ),
+  )
 
   console.log(`✅  ${TABLES.length} tables upserted`)
 }
 
-async function seedTimeSlots(days = 30) {
+async function seedTimeSlots(days = SEED_DAYS_AHEAD) {
   console.log(`📅  Seeding time slots for next ${days} days…`)
 
   const today = new Date()
   today.setUTCHours(0, 0, 0, 0)
 
-  let created = 0
+  const allStarts = [...LUNCH_STARTS, ...DINNER_STARTS]
+  const rows: { date: Date; startTime: string; durationMinutes: number; maxCovers: number; reservedCovers: number }[] = []
 
   for (let i = 0; i < days; i++) {
     const date = addDays(today, i)
-
-    const allStarts = [...LUNCH_STARTS, ...DINNER_STARTS]
-
     for (const startTime of allStarts) {
-      const existing = await prisma.timeSlot.findUnique({
-        where: { date_startTime: { date, startTime } },
+      rows.push({
+        date,
+        startTime,
+        durationMinutes: SLOT_DURATION_MINUTES,
+        maxCovers: TOTAL_CAPACITY,
+        reservedCovers: 0,
       })
-
-      if (!existing) {
-        await prisma.timeSlot.create({
-          data: {
-            date,
-            startTime,
-            durationMinutes: 90,
-            maxCovers: TOTAL_CAPACITY,
-            reservedCovers: 0,
-          },
-        })
-        created++
-      }
     }
   }
 
-  console.log(`✅  ${created} time slots created`)
+  const result = await prisma.timeSlot.createMany({
+    data: rows,
+    skipDuplicates: true,
+  })
+
+  console.log(`✅  ${result.count} time slots created`)
 }
 
 async function main() {

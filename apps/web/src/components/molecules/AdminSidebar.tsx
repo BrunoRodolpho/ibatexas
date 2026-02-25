@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useLocale, useTranslations } from 'next-intl'
 import { usePathname } from 'next/navigation'
+import { MEDUSA_ADMIN_URL } from '@/lib/api'
 import {
   LayoutDashboard,
   UtensilsCrossed,
@@ -93,7 +94,7 @@ export function AdminSidebar() {
       {/* Bottom — Medusa link */}
       <div className="border-t border-slate-200 p-3">
         <a
-          href="http://localhost:9000/app"
+          href={`${MEDUSA_ADMIN_URL}/app`}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-700"

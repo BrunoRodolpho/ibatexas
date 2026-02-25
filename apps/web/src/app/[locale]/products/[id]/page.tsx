@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import Image from "next/image"
 import Link from "next/link"
 import { useTranslations, useLocale } from "next-intl"
 import { useProductDetail } from "@/hooks/api"
@@ -80,10 +81,13 @@ export default function ProductPage({ params }: { params: { id: string } }) {
         <div>
           {product.imageUrl && (
             <div className="relative mb-4 overflow-hidden rounded-lg bg-gray-100">
-              <img
+              <Image
                 src={product.imageUrl}
                 alt={product.title}
                 className="aspect-square h-full w-full object-cover"
+                width={400}
+                height={400}
+                unoptimized
               />
             </div>
           )}
@@ -93,10 +97,13 @@ export default function ProductPage({ params }: { params: { id: string } }) {
               <div
                 className="cursor-pointer overflow-hidden rounded border-2 border-orange-600"
               >
-                <img
+                <Image
                   src={product.imageUrl}
                   alt={`${product.title} 1`}
                   className="aspect-square h-20 w-20 object-cover transition hover:scale-105"
+                  width={80}
+                  height={80}
+                  unoptimized
                 />
               </div>
             </div>

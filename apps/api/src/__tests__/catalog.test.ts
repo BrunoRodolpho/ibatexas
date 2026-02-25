@@ -1,7 +1,7 @@
 // Unit tests for catalog routes
 // GET /api/products, GET /api/products/:id, GET /api/categories
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Channel, AvailabilityWindow, ProductType } from "@ibatexas/types";
 import type { ProductDTO } from "@ibatexas/types";
 
@@ -140,6 +140,7 @@ describe("GET /api/products/:id", () => {
 
 describe("GET /api/categories", () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
 
   it("returns categories from Medusa", async () => {
     const mockCategories = [

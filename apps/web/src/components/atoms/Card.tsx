@@ -5,29 +5,36 @@ import clsx from 'clsx'
 
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   href?: string
+  interactive?: boolean
 }
 
-const Card = forwardRef<HTMLDivElement, CardProps>(({ className, href, children, ...props }, ref) => {
-  const content = (
-    <div
-      ref={ref}
-      className={clsx('rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md', className)}
-      {...props}
-    >
-      {children}
-    </div>
-  )
-
-  if (href) {
-    return (
-      <a href={href} className="block">
-        {content}
-      </a>
+const Card = forwardRef<HTMLDivElement, CardProps>(
+  ({ className, href, interactive, children, ...props }, ref) => {
+    const content = (
+      <div
+        ref={ref}
+        className={clsx(
+          'rounded-2xl border border-slate-200/70 bg-white shadow-card-sm transition-shadow',
+          interactive && 'card-hover cursor-pointer',
+          className
+        )}
+        {...props}
+      >
+        {children}
+      </div>
     )
-  }
 
-  return content
-})
+    if (href) {
+      return (
+        <a href={href} className="block card-hover">
+          {content}
+        </a>
+      )
+    }
+
+    return content
+  }
+)
 Card.displayName = 'Card'
 
 export { Card }

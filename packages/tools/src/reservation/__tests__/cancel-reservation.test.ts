@@ -14,6 +14,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 
 const mockReservationFindUnique = vi.hoisted(() => vi.fn())
 const mockReservationUpdate = vi.hoisted(() => vi.fn())
+const mockReservationTableDeleteMany = vi.hoisted(() => vi.fn())
+const mockTimeSlotUpdate = vi.hoisted(() => vi.fn())
+const mockTransaction = vi.hoisted(() => vi.fn())
 const mockWaitlistFindFirst = vi.hoisted(() => vi.fn())
 const mockWaitlistUpdate = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
@@ -26,10 +29,17 @@ vi.mock("@ibatexas/domain", () => ({
       findUnique: mockReservationFindUnique,
       update: mockReservationUpdate,
     },
+    reservationTable: {
+      deleteMany: mockReservationTableDeleteMany,
+    },
+    timeSlot: {
+      update: mockTimeSlotUpdate,
+    },
     waitlist: {
       findFirst: mockWaitlistFindFirst,
       update: mockWaitlistUpdate,
     },
+    $transaction: mockTransaction,
   },
 }))
 
@@ -82,6 +92,7 @@ describe("cancelReservation", () => {
     mockReleaseReservation.mockResolvedValue(undefined)
     mockNotifyWaitlistSpotAvailable.mockResolvedValue(undefined)
     mockReservationUpdate.mockResolvedValue({ ...RESERVATION, status: "cancelled" })
+    mockTransaction.mockResolvedValue(undefined)
     mockWaitlistFindFirst.mockResolvedValue(null) // no waitlist by default
     mockWaitlistUpdate.mockResolvedValue(undefined)
   })
@@ -129,13 +140,7 @@ describe("cancelReservation", () => {
     const result = await cancelReservation({ customerId: "cus_01", reservationId: "res_01" })
 
     expect(result.success).toBe(true)
-    expect(mockReservationUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: "res_01" },
-        data: expect.objectContaining({ status: "cancelled" }),
-      }),
-    )
-    expect(mockReleaseReservation).toHaveBeenCalledWith("res_01")
+    expect(mockTransaction).toHaveBeenCalledOnce()
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
       "reservation.cancelled",
       expect.objectContaining({

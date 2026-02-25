@@ -379,7 +379,7 @@ async function publishViewedEvents(
           source: "search",
         },
       }
-      return publishNatsEvent("product.viewed", event)
+      return publishNatsEvent("product.viewed", { ...event })
     })
   )
 }

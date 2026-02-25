@@ -50,6 +50,25 @@ export const TOOL_DEFINITIONS: Tool[] = [
 
 type ToolHandler = (input: unknown, ctx: AgentContext) => Promise<unknown>
 
+/**
+ * Higher-order function: injects customerId from AgentContext when absent in input.
+ * Throws early when authentication is required but customerId is missing.
+ */
+function withCustomerId<T extends { customerId?: string }>(
+  fn: (input: T) => Promise<unknown>,
+): ToolHandler {
+  return (input, ctx) => {
+    const i = input as T
+    if (!i.customerId && ctx.customerId) {
+      return fn({ ...i, customerId: ctx.customerId })
+    }
+    if (!i.customerId && !ctx.customerId) {
+      throw new Error("Autenticação necessária. O cliente precisa se identificar para usar esta funcionalidade.")
+    }
+    return fn(i)
+  }
+}
+
 const handlers = new Map<string, ToolHandler>([
   [
     "search_products",
@@ -73,57 +92,11 @@ const handlers = new Map<string, ToolHandler>([
     "check_table_availability",
     (input) => checkTableAvailability(input as Parameters<typeof checkTableAvailability>[0]),
   ],
-  [
-    "create_reservation",
-    (input, ctx) => {
-      const i = input as Parameters<typeof createReservation>[0]
-      // Inject customerId from agent context when not explicitly provided
-      if (!i.customerId && ctx.customerId) {
-        return createReservation({ ...i, customerId: ctx.customerId })
-      }
-      return createReservation(i)
-    },
-  ],
-  [
-    "modify_reservation",
-    (input, ctx) => {
-      const i = input as Parameters<typeof modifyReservation>[0]
-      if (!i.customerId && ctx.customerId) {
-        return modifyReservation({ ...i, customerId: ctx.customerId })
-      }
-      return modifyReservation(i)
-    },
-  ],
-  [
-    "cancel_reservation",
-    (input, ctx) => {
-      const i = input as Parameters<typeof cancelReservation>[0]
-      if (!i.customerId && ctx.customerId) {
-        return cancelReservation({ ...i, customerId: ctx.customerId })
-      }
-      return cancelReservation(i)
-    },
-  ],
-  [
-    "get_my_reservations",
-    (input, ctx) => {
-      const i = input as Parameters<typeof getMyReservations>[0]
-      if (!i.customerId && ctx.customerId) {
-        return getMyReservations({ ...i, customerId: ctx.customerId })
-      }
-      return getMyReservations(i)
-    },
-  ],
-  [
-    "join_waitlist",
-    (input, ctx) => {
-      const i = input as Parameters<typeof joinWaitlist>[0]
-      if (!i.customerId && ctx.customerId) {
-        return joinWaitlist({ ...i, customerId: ctx.customerId })
-      }
-      return joinWaitlist(i)
-    },
-  ],
+  ["create_reservation", withCustomerId(createReservation)],
+  ["modify_reservation", withCustomerId(modifyReservation)],
+  ["cancel_reservation", withCustomerId(cancelReservation)],
+  ["get_my_reservations", withCustomerId(getMyReservations)],
+  ["join_waitlist", withCustomerId(joinWaitlist)],
 ])
 
 /**

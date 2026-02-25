@@ -3,6 +3,7 @@
 import { useTranslations, useLocale } from 'next-intl'
 import Link from 'next/link'
 import { type ColumnDef, createColumnHelper } from '@tanstack/react-table'
+import { MEDUSA_ADMIN_URL } from '@/lib/api'
 import {
   ShoppingCart,
   DollarSign,
@@ -57,7 +58,7 @@ export default function AdminDashboard() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-900">{t('admin.dashboard')}</h1>
         <a
-          href="http://localhost:9000/app"
+          href={`${MEDUSA_ADMIN_URL}/app`}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700"
@@ -114,7 +115,7 @@ export default function AdminDashboard() {
           {t('admin.shop')} →
         </Link>
         <a
-          href="http://localhost:9000/app/orders"
+          href={`${MEDUSA_ADMIN_URL}/app/orders`}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"

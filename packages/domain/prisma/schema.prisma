@@ -48,6 +48,7 @@ model Table {
   accessible Boolean       @default(false)
   active     Boolean       @default(true)
   createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
 
   reservationTables ReservationTable[]
 
@@ -66,11 +67,13 @@ model TimeSlot {
   maxCovers       Int      @map("max_covers")
   reservedCovers  Int      @default(0) @map("reserved_covers")
   createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
   reservations Reservation[]
   waitlist     Waitlist[]
 
   @@unique([date, startTime])
+  @@index([date])
   @@map("time_slots")
   @@schema("ibx_domain")
 }
@@ -90,11 +93,14 @@ model Reservation {
   createdAt       DateTime          @default(now()) @map("created_at")
   updatedAt       DateTime          @updatedAt @map("updated_at")
 
-  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id])
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
   timeSlotId String   @map("time_slot_id")
 
   tables ReservationTable[]
 
+  @@index([customerId])
+  @@index([timeSlotId])
+  @@index([status])
   @@map("reservations")
   @@schema("ibx_domain")
 }
@@ -103,7 +109,7 @@ model Reservation {
 model ReservationTable {
   reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
   reservationId String      @map("reservation_id")
-  table         Table       @relation(fields: [tableId], references: [id])
+  table         Table       @relation(fields: [tableId], references: [id], onDelete: Restrict)
   tableId       String      @map("table_id")
 
   @@id([reservationId, tableId])
@@ -120,10 +126,14 @@ model Waitlist {
   notifiedAt DateTime? @map("notified_at")
   expiresAt  DateTime  @map("expires_at")
   createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
 
-  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id])
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
   timeSlotId String   @map("time_slot_id")
 
+  @@unique([customerId, timeSlotId])
+  @@index([customerId])
+  @@index([timeSlotId])
   @@map("waitlist")
   @@schema("ibx_domain")
 }
@@ -139,7 +149,12 @@ model Review {
   comment    String?
   channel    String   // 'web' | 'whatsapp'
   createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
 
+  @@unique([orderId, customerId])
+  @@index([customerId])
+  @@index([orderId])
+  @@index([rating])
   @@map("reviews")
   @@schema("ibx_domain")
 }
