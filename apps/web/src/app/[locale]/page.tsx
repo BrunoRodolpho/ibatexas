@@ -2,8 +2,6 @@
 
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
-import { Heading, Text, Button } from '@/components/atoms'
-import { Card } from '@/components/atoms/Card'
 import { ProductGrid } from '@/components/organisms/ProductGrid'
 import { CategoryCarousel } from '@/components/molecules/CategoryCarousel'
 import { useProducts, useCategories } from '@/hooks/api'
@@ -17,7 +15,7 @@ export default function Home() {
   const addToast = useUIStore((s) => s.addToast)
   const addItem = useCartStore((s) => s.addItem)
 
-  const { data: productsData, loading: productsLoading } = useProducts(undefined, ['popular'], 6)
+  const { data: productsData, loading: productsLoading } = useProducts(undefined, ['popular'], 12)
   const { data: categories, loading: categoriesLoading } = useCategories()
 
   const topProducts = productsData?.products ?? []
@@ -30,127 +28,95 @@ export default function Home() {
     }
   }
 
+  const stats = [
+    { icon: '🔥', value: t('home.stats_hours_value'), label: t('home.stats_hours_label') },
+    { icon: '🥩', value: t('home.stats_ingredients_value'), label: t('home.stats_ingredients_label') },
+    { icon: '🚚', value: t('home.stats_deliveries_value'), label: t('home.stats_deliveries_label') },
+    { icon: '⭐', value: t('home.stats_rating_value'), label: t('home.stats_rating_label') },
+  ]
+
   return (
     <>
-      {/* ── Hero ────────────────────────────────────────────────────── */}
-      <section className="relative overflow-hidden bg-white section-padding">
-        {/* Radial glow background */}
-        <div
-          className="pointer-events-none absolute inset-0 opacity-[0.04]"
-          aria-hidden="true"
-          style={{
-            backgroundImage:
-              'radial-gradient(circle at 20% 60%, #E85D04 0%, transparent 55%), radial-gradient(circle at 80% 30%, #E85D04 0%, transparent 50%)',
-          }}
-        />
-
-        <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="grid gap-12 lg:grid-cols-2 lg:items-center lg:gap-16">
-            {/* Left: Copy + CTAs */}
-            <div className="text-center lg:text-left">
-              {/* Eyebrow badge */}
-              <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-4 py-2">
-                <span className="h-2 w-2 rounded-full bg-brand-500 animate-pulse" />
-                <span className="text-sm font-semibold text-brand-700 font-display">
-                  {t('home.badge_ai_native')}
-                </span>
-              </div>
-
-              {/* Main headline */}
-              <h1 className="font-display text-display-xl font-extrabold text-slate-900 leading-[1.05] tracking-tight">
-                <span className="text-gradient-brand">{t('home.hero_title')}.</span>
-                <br />
-                {t('home.hero_tagline')}
+      {/* ═══════════════════════════════════════════════════════════════
+          SECTION 1 — Hero (max 60vh, split layout)
+          ═══════════════════════════════════════════════════════════════ */}
+      <section className="border-b border-slate-200">
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8 lg:py-10">
+          <div className="grid lg:grid-cols-2 gap-8 items-center" style={{ maxHeight: '60vh' }}>
+            {/* Left — headline + CTAs */}
+            <div className="flex flex-col justify-center">
+              <span className="inline-block w-fit rounded-full bg-brand-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-600 mb-4">
+                {t('home.badge_ai_native')}
+              </span>
+              <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-slate-900 leading-tight">
+                {t('home.hero_title')}
               </h1>
-
-              <Text variant="body" textColor="secondary" className="mx-auto mt-6 max-w-lg text-lg lg:mx-0">
+              <p className="mt-3 text-[15px] text-slate-500 leading-relaxed max-w-md">
                 {t('home.hero_subtitle')}
-              </Text>
-
-              {/* CTAs */}
-              <div className="mt-10 flex flex-col gap-4 sm:flex-row justify-center lg:justify-start">
+              </p>
+              <div className="mt-6 flex flex-wrap items-center gap-3">
                 <button
                   onClick={() => setChat(true)}
-                  className="inline-flex items-center justify-center gap-3 rounded-xl bg-brand-500 px-8 py-4 text-lg font-semibold text-white shadow-glow-brand hover:bg-brand-600 hover:-translate-y-0.5 hover:shadow-glow-brand-lg transition-all duration-250"
+                  className="bg-slate-900 px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-slate-800 transition-colors rounded-lg"
                 >
-                  <svg className="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                  </svg>
                   {t('home.order_via_ai')}
                 </button>
-                <Link href={"/search"}>
-                  <Button variant="secondary" size="lg" className="w-full sm:w-auto">
-                    {t('home.browse_menu')}
-                  </Button>
+                <Link
+                  href="/search"
+                  className="border border-slate-300 px-5 py-2.5 text-[13px] font-semibold text-slate-700 hover:border-slate-400 hover:text-slate-900 transition-colors rounded-lg"
+                >
+                  {t('home.view_menu')}
                 </Link>
               </div>
-
-
             </div>
 
-            {/* Right: Static chat preview — AI-first visual anchor */}
-            <div className="relative hidden lg:flex lg:justify-center">
-              <div className="relative w-[360px]">
-                {/* Glow behind card */}
-                <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-brand-500/10 to-brand-300/5 blur-2xl" />
-
-                {/* Chat preview card */}
-                <div className="relative rounded-3xl border border-slate-200/80 bg-white shadow-card-lg overflow-hidden">
-                  {/* Chat header */}
-                  <div className="bg-brand-500 px-5 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="h-9 w-9 rounded-full bg-white/20 flex items-center justify-center">
-                        <span className="text-white text-sm font-bold font-display">IA</span>
-                      </div>
-                      <div>
-                        <div className="text-sm font-bold text-white font-display">{t('home.chat_preview_assistant')}</div>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <div className="h-1.5 w-1.5 rounded-full bg-green-400" />
-                          <span className="text-xs text-brand-100">{t('home.chat_preview_online')}</span>
-                        </div>
-                      </div>
+            {/* Right — chat preview mockup */}
+            <div className="hidden lg:block">
+              <div className="mx-auto max-w-sm rounded-xl border border-slate-200 bg-white shadow-card overflow-hidden">
+                {/* Chat header */}
+                <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 bg-slate-50">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-900">
+                    <span className="text-[10px] font-bold text-white">IA</span>
+                  </div>
+                  <div>
+                    <p className="text-[13px] font-semibold text-slate-900">{t('home.chat_preview_assistant')}</p>
+                    <p className="text-[10px] text-emerald-600 font-medium">{t('home.chat_preview_online')}</p>
+                  </div>
+                </div>
+                {/* Chat messages */}
+                <div className="px-4 py-4 space-y-3">
+                  {/* Assistant greeting */}
+                  <div className="flex gap-2">
+                    <div className="flex-shrink-0 h-6 w-6 rounded-full bg-slate-100 flex items-center justify-center">
+                      <span className="text-[8px] font-bold text-slate-500">IA</span>
+                    </div>
+                    <div className="rounded-lg rounded-tl-none bg-slate-100 px-3 py-2 max-w-[75%]">
+                      <p className="text-[12px] text-slate-700 leading-relaxed">{t('home.chat_preview_greeting')}</p>
                     </div>
                   </div>
-
-                  {/* Chat bubbles */}
-                  <div className="bg-smoke-50 p-5 space-y-4">
-                    <div className="flex justify-start">
-                      <div className="max-w-[78%] rounded-2xl rounded-tl-sm bg-white px-4 py-3 text-sm text-slate-800 shadow-card-sm border border-slate-100">
-                        {t('home.chat_preview_greeting')}
-                      </div>
-                    </div>
-                    <div className="flex justify-end">
-                      <div className="max-w-[78%] rounded-2xl rounded-tr-sm bg-brand-500 px-4 py-3 text-sm text-white">
-                        {t('home.chat_preview_user')}
-                      </div>
-                    </div>
-                    <div className="flex justify-start">
-                      <div className="max-w-[82%] rounded-2xl rounded-tl-sm bg-white px-4 py-3 text-sm text-slate-800 shadow-card-sm border border-slate-100">
-                        {t('home.chat_preview_reply')}
-                      </div>
-                    </div>
-                    {/* Typing indicator */}
-                    <div className="flex justify-end">
-                      <div className="rounded-2xl rounded-tr-sm bg-brand-500 px-4 py-3">
-                        <div className="flex gap-1 items-center">
-                          <div className="h-1.5 w-1.5 rounded-full bg-white/70 animate-bounce [animation-delay:0ms]" />
-                          <div className="h-1.5 w-1.5 rounded-full bg-white/70 animate-bounce [animation-delay:150ms]" />
-                          <div className="h-1.5 w-1.5 rounded-full bg-white/70 animate-bounce [animation-delay:300ms]" />
-                        </div>
-                      </div>
+                  {/* User message */}
+                  <div className="flex justify-end">
+                    <div className="rounded-lg rounded-tr-none bg-slate-900 px-3 py-2 max-w-[75%]">
+                      <p className="text-[12px] text-white leading-relaxed">{t('home.chat_preview_user')}</p>
                     </div>
                   </div>
-
-                  {/* Chat input preview */}
-                  <div className="border-t border-slate-100 bg-white px-4 py-3">
-                    <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-smoke-50 px-4 py-2.5">
-                      <span className="flex-1 text-sm text-slate-400">{t('home.chat_preview_placeholder')}</span>
-                      <div className="h-7 w-7 rounded-lg bg-brand-500 flex items-center justify-center">
-                        <svg className="h-3.5 w-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                        </svg>
-                      </div>
+                  {/* Assistant reply */}
+                  <div className="flex gap-2">
+                    <div className="flex-shrink-0 h-6 w-6 rounded-full bg-slate-100 flex items-center justify-center">
+                      <span className="text-[8px] font-bold text-slate-500">IA</span>
                     </div>
+                    <div className="rounded-lg rounded-tl-none bg-slate-100 px-3 py-2 max-w-[75%]">
+                      <p className="text-[12px] text-slate-700 leading-relaxed">{t('home.chat_preview_reply')}</p>
+                    </div>
+                  </div>
+                </div>
+                {/* Chat input mockup */}
+                <div className="border-t border-slate-100 px-4 py-3">
+                  <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                    <span className="text-[12px] text-slate-400 flex-1">{t('home.chat_preview_placeholder')}</span>
+                    <svg className="h-4 w-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
                   </div>
                 </div>
               </div>
@@ -159,107 +125,116 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ── Featured Products ────────────────────────────────────────── */}
-      <section className="section-padding bg-smoke-50">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="mb-12 flex items-end justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-widest text-brand-500 mb-2 font-display">
-                {t('home.featured_subtitle')}
-              </p>
-              <Heading as="h2" variant="h2">
-                {t('home.featured_products')}
-              </Heading>
+      {/* ═══════════════════════════════════════════════════════════════
+          SECTION 2 — Sticky category nav (below header)
+          ═══════════════════════════════════════════════════════════════ */}
+      <nav className="sticky top-[76px] z-20 border-y border-slate-200 bg-white">
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6">
+          <div className="flex items-center gap-2 py-2.5 overflow-x-auto scrollbar-hide">
+            <Link
+              href="/search"
+              className="flex-shrink-0 rounded-full border border-slate-900 bg-slate-900 px-3 py-1 text-[12px] font-semibold text-white"
+            >
+              {t('home.all_categories')}
+            </Link>
+            {!categoriesLoading && categories && (categories as any[]).length > 0 && (
+              <CategoryCarousel categories={categories as any[]} />
+            )}
+            {categoriesLoading && (
+              <>
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="flex-shrink-0 h-7 w-20 rounded-full skeleton" />
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      </nav>
+
+      {/* ═══════════════════════════════════════════════════════════════
+          SECTION 3 — Dense product grid (4 cols desktop, 12 products)
+          ═══════════════════════════════════════════════════════════════ */}
+      <section className="border-b border-slate-200">
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8">
+          {/* Section header */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <h2 className="text-[15px] font-semibold text-slate-900">
+                {t('home.our_menu')}
+              </h2>
+              <span className="text-[12px] text-slate-400">
+                {t('home.our_menu_subtitle')}
+              </span>
             </div>
             <Link
-              href={"/search?tags=popular"}
-              className="hidden text-sm font-semibold text-brand-500 hover:text-brand-600 transition-colors duration-250 sm:inline-flex items-center gap-1"
+              href="/search"
+              className="text-[12px] font-medium text-slate-500 hover:text-slate-900 transition-colors"
             >
-              {t('common.view_all')}
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
+              {t('common.view_all')} →
             </Link>
           </div>
 
+          {/* Grid */}
           <ProductGrid
             products={topProducts}
-            columns={3}
+            columns={4}
             isLoading={productsLoading}
             onAddToCart={handleAddToCart}
           />
         </div>
       </section>
 
-      {/* ── Social Proof Testimonials ────────────────────────────────── */}
-      <section className="section-padding bg-white">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="text-center mb-12">
-            <p className="text-xs font-semibold uppercase tracking-widest text-brand-500 mb-2 font-display">
-              {t('home.testimonials_eyebrow')}
-            </p>
-            <Heading as="h2" variant="h2">
-              {t('home.testimonials_title')}
-            </Heading>
+      {/* ═══════════════════════════════════════════════════════════════
+          SECTION 4 — Operational highlights (stats band)
+          ═══════════════════════════════════════════════════════════════ */}
+      <section className="border-y border-slate-100 bg-slate-50">
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {stats.map((stat, i) => (
+              <div
+                key={i}
+                className="flex flex-col items-center text-center bg-white border border-slate-100 rounded-lg px-4 py-5"
+              >
+                <span className="text-2xl mb-2">{stat.icon}</span>
+                <span className="text-xl font-bold text-slate-900 tabular-nums">{stat.value}</span>
+                <span className="mt-1 text-[12px] text-slate-500">{stat.label}</span>
+              </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* ── Categories ───────────────────────────────────────────────── */}
-      <section className="section-padding bg-smoke-50">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="mb-12">
-            <p className="text-xs font-semibold uppercase tracking-widest text-brand-500 mb-2 font-display">
-              {t('home.browse_type')}
-            </p>
-            <Heading as="h2" variant="h2">
-              {t('home.categories')}
-            </Heading>
-          </div>
-
-          {categoriesLoading ? (
-            <div className="flex gap-4 overflow-x-auto pb-4">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="flex-shrink-0 w-44 h-32 rounded-2xl skeleton" />
-              ))}
+      {/* ═══════════════════════════════════════════════════════════════
+          SECTION 5 — CTA band (dark, 2-column)
+          ═══════════════════════════════════════════════════════════════ */}
+      <section className="bg-slate-900">
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-6">
+            {/* Left — text */}
+            <div className="text-center sm:text-left">
+              <h2 className="text-lg font-semibold text-white">
+                {t('home.cta_title')}
+              </h2>
+              <p className="mt-1 text-[13px] text-slate-400">
+                {t('home.cta_subtitle')}
+              </p>
             </div>
-          ) : categories && (categories as any[]).length > 0 ? (
-            <CategoryCarousel categories={categories as any[]} />
-          ) : (
-            <Text textColor="muted">{t('home.no_categories')}</Text>
-          )}
-        </div>
-      </section>
-
-      {/* ── CTA Banner ───────────────────────────────────────────────── */}
-      <section className="relative overflow-hidden bg-brand-500">
-        <div
-          className="pointer-events-none absolute inset-0 opacity-10"
-          aria-hidden="true"
-          style={{
-            backgroundImage:
-              'radial-gradient(circle at 10% 50%, white 0%, transparent 50%), radial-gradient(circle at 90% 20%, white 0%, transparent 40%)',
-          }}
-        />
-        <div className="relative section-padding text-center">
-          <p className="text-xs font-semibold uppercase tracking-widest text-brand-100 mb-4 font-display">
-            {t('home.delivery_cta_badge')}
-          </p>
-          <Heading as="h2" variant="h2" className="text-white">
-            {t('home.delivery_cta_title')}
-          </Heading>
-          <Text textColor="secondary" className="mt-4 text-brand-100 text-lg max-w-xl mx-auto">
-            {t('home.delivery_cta_subtitle')}
-          </Text>
-          <Link href={"/search"}>
-            <Button
-              variant="secondary"
-              size="lg"
-              className="mt-10 bg-white text-brand-600 hover:bg-smoke-50 border-white shadow-card-lg"
-            >
-              {t('home.order_now')}
-            </Button>
-          </Link>
+            {/* Right — buttons */}
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <button
+                onClick={() => setChat(true)}
+                className="bg-white px-5 py-2.5 text-[13px] font-semibold text-slate-900 hover:bg-slate-100 transition-colors rounded-lg"
+              >
+                {t('home.cta_button_ai')}
+              </button>
+              <Link
+                href="/search"
+                className="border border-slate-500 px-5 py-2.5 text-[13px] font-semibold text-white hover:border-white transition-colors rounded-lg"
+              >
+                {t('home.cta_button_menu')}
+              </Link>
+            </div>
+          </div>
         </div>
       </section>
     </>

@@ -1,7 +1,6 @@
 'use client'
 
-import { Card, Image, Heading, Text, Badge } from '../atoms'
-import { Button } from '../atoms/Button'
+import { Badge } from '../atoms'
 import Link from 'next/link'
 
 interface ProductCardProps {
@@ -24,62 +23,48 @@ export const ProductCard = ({ id, title, imageUrl, price, rating, tags, href, on
   const linkHref = href || `/products/${id}`
 
   return (
-    <Link href={linkHref} className="group block h-full">
-      <Card className="flex flex-col cursor-pointer h-full card-hover overflow-hidden">
-        {/* Image area — fixed aspect ratio */}
-        <div className="relative aspect-[4/3] overflow-hidden">
+    <Link href={linkHref} className="group block">
+      <div className="border border-slate-200 bg-white overflow-hidden hover:border-slate-300 transition-colors">
+        {/* Image — 3:2 */}
+        <div className="relative aspect-[3/2] overflow-hidden bg-slate-50">
           {imageUrl ? (
-            <Image
+            <img
               src={imageUrl}
               alt={title}
-              variant="card"
-              className="aspect-[4/3] transition-transform duration-500 group-hover:scale-105"
+              className="h-full w-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
             />
           ) : (
-            <div className="absolute inset-0 bg-gradient-to-br from-brand-50 to-brand-100 flex items-center justify-center">
-              <span className="text-5xl">🔥</span>
+            <div className="absolute inset-0 bg-slate-100 flex items-center justify-center">
+              <span className="text-2xl">🥩</span>
             </div>
           )}
           {rating && (
-            <div className="absolute top-3 right-3 z-10 bg-brand-500 text-white px-2.5 py-1 rounded-lg text-xs font-bold shadow-sm">
-              ⭐ {rating.toFixed(1)}
+            <div className="absolute top-1 left-1 z-10 bg-white/95 text-slate-900 px-1 py-px text-[10px] font-semibold">
+              {rating.toFixed(1)}
             </div>
           )}
         </div>
 
-        {/* Card body */}
-        <div className="flex flex-col gap-2 p-4 flex-1">
-          <Heading as="h3" variant="h5" className="line-clamp-2 text-base">
-            {title}
-          </Heading>
-
-          {tags && tags.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {tags.slice(0, 2).map((tag) => (
-                <Badge key={tag} variant={tag as any} className="text-xs">
-                  {tag.replace(/_/g, ' ')}
-                </Badge>
-              ))}
-              {tags.length > 2 && <Badge className="text-xs">+{tags.length - 2}</Badge>}
+        {/* Body — compact */}
+        <div className="px-2 py-1.5 border-t border-slate-100">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <h3 className="truncate text-[13px] font-medium text-slate-900 leading-tight">{title}</h3>
             </div>
-          )}
-
-          <div className="mt-auto flex items-center justify-between pt-3 border-t border-slate-100">
-            <Text variant="h6" textColor="accent">
-              {priceFormatted}
-            </Text>
-            <Button
-              size="sm"
-              onClick={(e) => {
-                e.preventDefault()
-                onAddToCart?.()
-              }}
-            >
-              Adicionar
-            </Button>
+            <span className="flex-shrink-0 text-[13px] font-semibold text-slate-900 tabular-nums">{priceFormatted}</span>
           </div>
+
+          <button
+            className="mt-1 w-full border border-slate-200 bg-slate-50 py-0.5 text-[10px] font-medium text-slate-700 hover:bg-slate-900 hover:text-white hover:border-slate-900 transition-colors"
+            onClick={(e) => {
+              e.preventDefault()
+              onAddToCart?.()
+            }}
+          >
+            Adicionar
+          </button>
         </div>
-      </Card>
+      </div>
     </Link>
   )
 }

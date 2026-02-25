@@ -37,7 +37,7 @@ export const Toast: React.FC<ToastProps> = ({ id, message, type, duration = 5000
   return (
     <div
       className={clsx(
-        'fixed bottom-6 right-6 max-w-sm px-4 py-3 rounded-xl border flex items-start gap-3 shadow-card-md animate-fade-up',
+        'fixed bottom-6 right-6 max-w-sm px-4 py-3 rounded-lg border flex items-start gap-3 shadow-md animate-fade-up',
         typeStyles[type]
       )}
       role="alert"

@@ -4,41 +4,44 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { forwardRef } from 'react'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-250 ease-smooth focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none disabled:transform-none select-none',
+  'inline-flex items-center justify-center gap-2 font-medium rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed select-none',
   {
     variants: {
       variant: {
         primary: [
-          'bg-brand-500 text-white',
-          'shadow-glow-brand',
-          'hover:bg-brand-600 hover:-translate-y-0.5 hover:shadow-glow-brand-lg',
-          'active:translate-y-0 active:shadow-glow-brand',
-          'focus-visible:ring-brand-500',
+          'bg-slate-900 text-white',
+          'hover:bg-slate-800',
+          'active:bg-slate-950',
+          'focus-visible:ring-slate-900',
         ],
         secondary: [
-          'border border-slate-200 bg-white text-slate-900',
-          'shadow-card-sm',
-          'hover:bg-smoke-50 hover:border-slate-300 hover:shadow-card-md hover:-translate-y-0.5',
-          'active:translate-y-0',
+          'border border-slate-200 bg-white text-slate-700',
+          'shadow-xs',
+          'hover:bg-slate-50 hover:text-slate-900',
           'focus-visible:ring-slate-400',
         ],
         tertiary: [
-          'bg-transparent text-brand-500',
-          'hover:bg-brand-50',
-          'focus-visible:ring-brand-500',
+          'bg-transparent text-slate-600',
+          'hover:bg-slate-100 hover:text-slate-900',
+          'focus-visible:ring-slate-400',
         ],
         danger: [
           'bg-red-600 text-white',
-          'hover:bg-red-700 hover:-translate-y-0.5',
-          'active:translate-y-0',
+          'hover:bg-red-700',
           'focus-visible:ring-red-600',
+        ],
+        brand: [
+          'bg-brand-500 text-white',
+          'hover:bg-brand-600',
+          'active:bg-brand-700',
+          'focus-visible:ring-brand-500',
         ],
       },
       size: {
-        sm:   'px-3 py-1.5 text-sm',
-        md:   'px-5 py-2.5 text-base',
-        lg:   'px-8 py-4 text-lg',
-        icon: 'p-2.5',
+        sm:   'px-3 py-1.5 text-xs',
+        md:   'px-4 py-2 text-sm',
+        lg:   'px-6 py-3 text-sm',
+        icon: 'p-2',
       },
     },
     defaultVariants: {

@@ -1,83 +1,64 @@
 'use client'
 
-import { cva, type VariantProps } from 'class-variance-authority'
 import type { LucideIcon } from 'lucide-react'
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
 
-const statCardVariants = cva(
-  'rounded-xl border p-6 bg-white',
-  {
-    variants: {
-      variant: {
-        default: 'border-slate-200',
-        success: 'border-emerald-200 bg-emerald-50',
-        warning: 'border-amber-200 bg-amber-50',
-        danger: 'border-red-200 bg-red-50',
-      },
-    },
-    defaultVariants: {
-      variant: 'default',
-    },
-  }
-)
+const accentColors: Record<string, string> = {
+  default: 'border-l-slate-300',
+  success: 'border-l-emerald-500',
+  warning: 'border-l-amber-500',
+  danger: 'border-l-red-500',
+  info: 'border-l-blue-500',
+}
 
-const iconWrapperVariants = cva('flex h-10 w-10 items-center justify-center rounded-lg', {
-  variants: {
-    variant: {
-      default: 'bg-slate-100 text-slate-600',
-      success: 'bg-emerald-100 text-emerald-600',
-      warning: 'bg-amber-100 text-amber-700',
-      danger: 'bg-red-100 text-red-600',
-    },
-  },
-  defaultVariants: { variant: 'default' },
-})
+const iconColors: Record<string, string> = {
+  default: 'text-slate-500',
+  success: 'text-emerald-600',
+  warning: 'text-amber-600',
+  danger: 'text-red-600',
+  info: 'text-blue-600',
+}
 
-interface StatCardProps extends VariantProps<typeof statCardVariants> {
+interface StatCardProps {
   label: string
   value: string | number
   icon?: LucideIcon
-  trend?: number // percentage, positive = up, negative = down
+  variant?: 'default' | 'success' | 'warning' | 'danger' | 'info'
+  trend?: number
   subLabel?: string
   isLoading?: boolean
 }
 
-export function StatCard({ label, value, icon: Icon, trend, subLabel, variant, isLoading }: StatCardProps) {
+export function StatCard({ label, value, icon: Icon, trend, subLabel, variant = 'default', isLoading }: StatCardProps) {
   if (isLoading) {
     return (
-      <div className={statCardVariants({ variant })}>
-        <div className="flex items-start justify-between">
-          <div className="h-10 w-10 animate-pulse rounded-lg bg-slate-200" />
-        </div>
-        <div className="mt-4 h-8 w-24 animate-pulse rounded bg-slate-200" />
-        <div className="mt-2 h-4 w-16 animate-pulse rounded bg-slate-100" />
+      <div className={`rounded-lg border border-slate-200 border-l-2 ${accentColors[variant]} bg-white p-5`}>
+        <div className="h-4 w-16 animate-pulse rounded bg-slate-100" />
+        <div className="mt-3 h-7 w-24 animate-pulse rounded bg-slate-200" />
+        <div className="mt-2 h-3 w-20 animate-pulse rounded bg-slate-100" />
       </div>
     )
   }
 
   const TrendIcon = trend === undefined ? null : trend > 0 ? TrendingUp : trend < 0 ? TrendingDown : Minus
-  const trendColor = trend === undefined ? '' : trend > 0 ? 'text-emerald-600' : trend < 0 ? 'text-red-600' : 'text-slate-500'
+  const trendColor = trend === undefined ? '' : trend > 0 ? 'text-emerald-600' : trend < 0 ? 'text-red-600' : 'text-slate-400'
 
   return (
-    <div className={statCardVariants({ variant })}>
-      <div className="flex items-start justify-between">
-        {Icon && (
-          <div className={iconWrapperVariants({ variant })}>
-            <Icon className="h-5 w-5" />
-          </div>
-        )}
+    <div className={`rounded-lg border border-slate-200 border-l-2 ${accentColors[variant]} bg-white p-5`}>
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+        {Icon && <Icon className={`h-4 w-4 ${iconColors[variant]}`} />}
+      </div>
+      <div className="mt-2 flex items-baseline gap-2">
+        <p className="text-xl font-semibold text-slate-900">{value}</p>
         {TrendIcon && (
-          <span className={`flex items-center gap-1 text-sm font-medium ${trendColor}`}>
-            <TrendIcon className="h-4 w-4" />
+          <span className={`flex items-center gap-0.5 text-xs font-medium ${trendColor}`}>
+            <TrendIcon className="h-3 w-3" />
             {Math.abs(trend!)}%
           </span>
         )}
       </div>
-      <div className="mt-4">
-        <p className="text-2xl font-bold text-slate-900">{value}</p>
-        <p className="mt-1 text-sm font-medium text-slate-600">{label}</p>
-        {subLabel && <p className="mt-0.5 text-xs text-slate-500">{subLabel}</p>}
-      </div>
+      {subLabel && <p className="mt-1 text-xs text-slate-400">{subLabel}</p>}
     </div>
   )
 }

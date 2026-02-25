@@ -6,12 +6,12 @@ import { forwardRef } from 'react'
 const textVariants = cva('', {
   variants: {
     variant: {
-      h1: 'font-display text-display-lg font-bold tracking-tight',
-      h2: 'font-display text-display-md font-bold tracking-tight',
-      h3: 'font-display text-display-sm font-bold tracking-tight',
-      h4: 'font-display text-2xl font-bold tracking-tight',
-      h5: 'text-xl font-bold',
-      h6: 'text-lg font-bold',
+      h1: 'text-3xl font-semibold tracking-tight',
+      h2: 'text-2xl font-semibold tracking-tight',
+      h3: 'text-xl font-semibold tracking-tight',
+      h4: 'text-lg font-semibold tracking-tight',
+      h5: 'text-base font-semibold',
+      h6: 'text-sm font-semibold',
       body: 'text-base leading-relaxed',
       small: 'text-sm leading-relaxed',
       xs: 'text-xs',

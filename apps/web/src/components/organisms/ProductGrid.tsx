@@ -34,20 +34,21 @@ export const ProductGrid = ({
   const gridColsClass = {
     1: 'grid-cols-1',
     2: 'grid-cols-1 md:grid-cols-2',
-    3: 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3',
-    4: 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4',
-  }[columns] || 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
+    3: 'grid-cols-2 md:grid-cols-3',
+    4: 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4',
+    5: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5',
+  }[columns] || 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5'
 
   if (isLoading) {
     return (
-      <div className={`grid ${gridColsClass} gap-6`}>
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="rounded-2xl border border-slate-200/70 bg-white overflow-hidden">
-            <div className="aspect-[4/3] skeleton" />
-            <div className="p-4 space-y-3">
-              <div className="h-4 w-3/4 rounded skeleton" />
-              <div className="h-3 w-1/2 rounded skeleton" />
-              <div className="h-8 w-full rounded skeleton mt-2" />
+      <div className={`grid ${gridColsClass} gap-4`}>
+        {Array.from({ length: columns === 5 ? 10 : 8 }).map((_, i) => (
+          <div key={i} className="border border-slate-200 bg-white overflow-hidden">
+            <div className="aspect-[3/2] skeleton" />
+            <div className="px-2 py-1.5 space-y-1.5">
+              <div className="h-3 w-3/4 rounded-sm skeleton" />
+              <div className="h-3 w-1/3 rounded-sm skeleton" />
+              <div className="h-6 w-full rounded-sm skeleton mt-1" />
             </div>
           </div>
         ))}
@@ -65,7 +66,7 @@ export const ProductGrid = ({
   }
 
   return (
-    <div className={`grid ${gridColsClass} gap-6`}>
+    <div className={`grid ${gridColsClass} gap-4`}>
       {products.map((product) => (
         <ProductCard
           key={product.id}
