@@ -1,14 +1,13 @@
 'use client'
 
-import { useTranslations, useLocale } from 'next-intl'
+import { useTranslations } from 'next-intl'
 import { useProducts } from '@/hooks/api'
 import { ProductGrid } from '@/components/organisms'
 import { Heading, Text, Button } from '@/components/atoms'
-import Link from 'next/link'
+import { Link } from '@/i18n/navigation'
 
 export default function ShopPage() {
   const t = useTranslations()
-  const locale = useLocale()
   const { data, loading, error } = useProducts(undefined, undefined, 12, 'merchandise')
 
   if (error) {
@@ -40,7 +39,7 @@ export default function ShopPage() {
             {t('shop.featured')}
           </Heading>
           <Button variant="tertiary" asChild>
-            <Link href={`/${locale}/loja/camisetas`}>
+            <Link href={"/loja/camisetas"}>
               {t('shop.view_all')}
             </Link>
           </Button>
@@ -53,7 +52,7 @@ export default function ShopPage() {
         ) : data?.products.length ? (
           <ProductGrid 
             products={data.products} 
-            getProductHref={(product) => `/${locale}/loja/produto/${product.id}`}
+            getProductHref={(product) => `/loja/produto/${product.id}`}
           />
         ) : (
           <div className="text-center py-12">
@@ -66,7 +65,7 @@ export default function ShopPage() {
 
       {/* Browse by Category */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Link href={`/${locale}/loja/camisetas`} className="group">
+        <Link href={"/loja/camisetas"} className="group">
           <div className="bg-white rounded-xl p-6 shadow-sm border hover:shadow-md transition-shadow">
             <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-4">
               <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -82,7 +81,7 @@ export default function ShopPage() {
           </div>
         </Link>
 
-        <Link href={`/${locale}/loja/acessorios`} className="group">
+        <Link href={"/loja/acessorios"} className="group">
           <div className="bg-white rounded-xl p-6 shadow-sm border hover:shadow-md transition-shadow">
             <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-4">
               <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -98,7 +97,7 @@ export default function ShopPage() {
           </div>
         </Link>
 
-        <Link href={`/${locale}/loja/kits`} className="group">
+        <Link href={"/loja/kits"} className="group">
           <div className="bg-white rounded-xl p-6 shadow-sm border hover:shadow-md transition-shadow">
             <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-4">
               <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">

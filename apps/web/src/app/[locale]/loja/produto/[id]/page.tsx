@@ -1,6 +1,6 @@
 'use client'
 
-import { useTranslations, useLocale } from 'next-intl'
+import { useTranslations } from 'next-intl'
 import { useProductDetail } from '@/hooks/api'
 import { useCartStore } from '@/stores'
 import { Heading, Text, Button } from '@/components/atoms'
@@ -8,7 +8,7 @@ import { Badge } from '@/components/atoms/Badge'
 import { SizeSelector, ShippingEstimate } from '@/components/molecules'
 import { useState } from 'react'
 import { ArrowLeft, Heart, Share2 } from 'lucide-react'
-import Link from 'next/link'
+import { Link } from '@/i18n/navigation'
 import Image from 'next/image'
 import clsx from 'clsx'
 
@@ -18,7 +18,6 @@ interface ProductPageProps {
 
 export default function ProductPage({ params }: ProductPageProps) {
   const t = useTranslations()
-  const locale = useLocale()
   const { data: product, loading, error } = useProductDetail(params.id)
   const addToCart = useCartStore(s => s.addItem)
   const [selectedVariantId, setSelectedVariantId] = useState<string>('')
@@ -40,7 +39,7 @@ export default function ProductPage({ params }: ProductPageProps) {
           {t('shop.errors.product_not_found')}
         </Text>
         <Button variant="tertiary" className="mt-4" asChild>
-          <Link href={`/${locale}/loja`}>{t('shop.back_to_shop')}</Link>
+          <Link href={"/loja"}>{t('shop.back_to_shop')}</Link>
         </Button>
       </div>
     )
@@ -72,7 +71,7 @@ export default function ProductPage({ params }: ProductPageProps) {
       {/* Breadcrumb & Back */}
       <div className="mb-6">
         <Button variant="tertiary" asChild>
-          <Link href={`/${locale}/loja`} className="inline-flex items-center gap-2">
+          <Link href={"/loja"} className="inline-flex items-center gap-2">
             <ArrowLeft className="w-4 h-4" />
             {t('shop.back_to_shop')}
           </Link>

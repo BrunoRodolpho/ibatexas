@@ -1,7 +1,7 @@
 "use client"
 
-import Link from "next/link"
-import { useLocale } from "next-intl"
+import { Link } from '@/i18n/navigation'
+
 import type { CreatedReservation } from "@/stores/useReservationStore"
 
 const LOCATION_LABELS: Record<string, string> = {
@@ -17,7 +17,6 @@ interface Props {
 }
 
 export function ReservationConfirmation({ reservation, onMakeAnother }: Props) {
-  const locale = useLocale()
 
   const dateTime = new Date(reservation.dateTime)
   const dateBR = dateTime.toLocaleDateString("pt-BR", {
@@ -78,7 +77,7 @@ export function ReservationConfirmation({ reservation, onMakeAnother }: Props) {
 
       <div className="mt-8 flex flex-col gap-3">
         <Link
-          href={`/${locale}/account/reservations`}
+          href={"/account/reservations"}
           className="rounded-lg border border-gray-300 px-6 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
         >
           Ver minhas reservas

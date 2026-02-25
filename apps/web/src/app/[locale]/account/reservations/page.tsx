@@ -1,8 +1,8 @@
 "use client"
 
 import { useEffect, useCallback } from "react"
-import Link from "next/link"
-import { useTranslations, useLocale } from "next-intl"
+import { Link } from '@/i18n/navigation'
+import { useTranslations } from "next-intl"
 import { useSessionStore } from "@/stores"
 import { useReservationStore } from "@/stores/useReservationStore"
 import type { ReservationDTO } from "@ibatexas/types"
@@ -18,7 +18,6 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
 
 export default function ReservationsPage() {
   const t = useTranslations()
-  const locale = useLocale()
   const { customerId } = useSessionStore()
 
   const {
@@ -171,7 +170,7 @@ export default function ReservationsPage() {
           {t("checkout.login_button")}
         </button>
         <p className="mt-6">
-          <Link href={`/${locale}/search`} className="text-orange-600 hover:text-orange-700">
+          <Link href={"/search"} className="text-orange-600 hover:text-orange-700">
             {t("cart.continue_shopping")} →
           </Link>
         </p>

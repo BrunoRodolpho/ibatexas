@@ -1,7 +1,7 @@
 'use client'
 
-import { useTranslations, useLocale } from 'next-intl'
-import Link from 'next/link'
+import { useTranslations } from 'next-intl'
+import { Link } from '@/i18n/navigation'
 import { type ColumnDef, createColumnHelper } from '@tanstack/react-table'
 import { MEDUSA_ADMIN_URL } from '@/lib/api'
 import {
@@ -48,7 +48,6 @@ const columns: ColumnDef<OrderSummary, any>[] = [
 
 export default function AdminDashboard() {
   const t = useTranslations()
-  const locale = useLocale()
   const { data: metrics, loading: metricsLoading } = useAdminDashboard()
   const { data: orders, loading: ordersLoading } = useAdminOrders({ limit: 10 })
 
@@ -103,13 +102,13 @@ export default function AdminDashboard() {
       {/* Quick actions */}
       <div className="flex flex-wrap gap-3">
         <Link
-          href={`/${locale}/admin/cardapio`}
+          href={"/admin/cardapio"}
           className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
         >
           {t('admin.menu')} →
         </Link>
         <Link
-          href={`/${locale}/admin/loja`}
+          href={"/admin/loja"}
           className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
         >
           {t('admin.shop')} →

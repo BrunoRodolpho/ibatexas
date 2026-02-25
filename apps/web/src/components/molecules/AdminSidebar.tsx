@@ -1,7 +1,7 @@
 'use client'
 
-import Link from 'next/link'
-import { useLocale, useTranslations } from 'next-intl'
+import { Link } from '@/i18n/navigation'
+import { useTranslations } from 'next-intl'
 import { usePathname } from 'next/navigation'
 import { MEDUSA_ADMIN_URL } from '@/lib/api'
 import {
@@ -26,22 +26,21 @@ interface NavItem {
 
 export function AdminSidebar() {
   const t = useTranslations()
-  const locale = useLocale()
   const pathname = usePathname()
 
   const nav: NavItem[] = [
-    { key: 'dashboard', labelKey: 'admin.dashboard', href: `/${locale}/admin`, icon: LayoutDashboard },
-    { key: 'cardapio', labelKey: 'admin.menu', href: `/${locale}/admin/cardapio`, icon: UtensilsCrossed },
-    { key: 'loja', labelKey: 'admin.shop', href: `/${locale}/admin/loja`, icon: ShoppingBag },
-    { key: 'pedidos', labelKey: 'admin.orders', href: `/${locale}/admin/pedidos`, icon: ClipboardList, comingSoon: true },
-    { key: 'reservas', labelKey: 'admin.reservations', href: `/${locale}/admin/reservas`, icon: CalendarDays, comingSoon: true },
-    { key: 'zonas', labelKey: 'admin.delivery_zones', href: `/${locale}/admin/zonas`, icon: MapPin, comingSoon: true },
-    { key: 'avaliacoes', labelKey: 'admin.reviews', href: `/${locale}/admin/avaliacoes`, icon: Star, comingSoon: true },
-    { key: 'analises', labelKey: 'admin.analytics', href: `/${locale}/admin/analises`, icon: BarChart2, comingSoon: true },
+    { key: 'dashboard', labelKey: 'admin.dashboard', href: "/admin", icon: LayoutDashboard },
+    { key: 'cardapio', labelKey: 'admin.menu', href: "/admin/cardapio", icon: UtensilsCrossed },
+    { key: 'loja', labelKey: 'admin.shop', href: "/admin/loja", icon: ShoppingBag },
+    { key: 'pedidos', labelKey: 'admin.orders', href: "/admin/pedidos", icon: ClipboardList, comingSoon: true },
+    { key: 'reservas', labelKey: 'admin.reservations', href: "/admin/reservas", icon: CalendarDays, comingSoon: true },
+    { key: 'zonas', labelKey: 'admin.delivery_zones', href: "/admin/zonas", icon: MapPin, comingSoon: true },
+    { key: 'avaliacoes', labelKey: 'admin.reviews', href: "/admin/avaliacoes", icon: Star, comingSoon: true },
+    { key: 'analises', labelKey: 'admin.analytics', href: "/admin/analises", icon: BarChart2, comingSoon: true },
   ]
 
   const isActive = (href: string) => {
-    if (href === `/${locale}/admin`) return pathname === `/${locale}/admin`
+    if (href === "/admin") return pathname === "/admin"
     return pathname.startsWith(href)
   }
 
@@ -49,7 +48,7 @@ export function AdminSidebar() {
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
       {/* Logo */}
       <div className="flex h-16 items-center border-b border-slate-200 px-6">
-        <Link href={`/${locale}/admin`} className="flex items-center gap-2">
+        <Link href={"/admin"} className="flex items-center gap-2">
           <div className="h-7 w-7 rounded-md bg-amber-700" />
           <span className="font-bold text-slate-900">IbateXas</span>
           <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-700">
