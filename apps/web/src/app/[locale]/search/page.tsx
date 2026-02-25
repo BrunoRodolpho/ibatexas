@@ -87,7 +87,7 @@ export default function SearchPage() {
   return (
     <div className="min-h-screen bg-white">
       {/* Search Header */}
-      <div className="sticky top-0 z-30 bg-white border-b border-slate-200 px-4 py-4">
+      <div className="sticky top-[65px] z-20 bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 py-4">
         <div className="max-w-6xl mx-auto">
           <SearchInput
             placeholder="Buscar produtos, marcas, categorias..."

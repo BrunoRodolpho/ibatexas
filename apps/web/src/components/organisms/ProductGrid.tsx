@@ -40,9 +40,16 @@ export const ProductGrid = ({
 
   if (isLoading) {
     return (
-      <div className={`grid ${gridColsClass} gap-4`}>
+      <div className={`grid ${gridColsClass} gap-6`}>
         {Array.from({ length: 6 }).map((_, i) => (
-          <div key={i} className="aspect-square bg-slate-200 rounded-lg animate-pulse" />
+          <div key={i} className="rounded-2xl border border-slate-200/70 bg-white overflow-hidden">
+            <div className="aspect-[4/3] skeleton" />
+            <div className="p-4 space-y-3">
+              <div className="h-4 w-3/4 rounded skeleton" />
+              <div className="h-3 w-1/2 rounded skeleton" />
+              <div className="h-8 w-full rounded skeleton mt-2" />
+            </div>
+          </div>
         ))}
       </div>
     )
@@ -50,14 +57,15 @@ export const ProductGrid = ({
 
   if (isEmpty || !products || products.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 gap-2">
+      <div className="flex flex-col items-center justify-center py-16 gap-3">
+        <span className="text-4xl">🔍</span>
         <Text textColor="muted">{emptyMessage || 'Nenhum produto encontrado'}</Text>
       </div>
     )
   }
 
   return (
-    <div className={`grid ${gridColsClass} gap-4`}>
+    <div className={`grid ${gridColsClass} gap-6`}>
       {products.map((product) => (
         <ProductCard
           key={product.id}

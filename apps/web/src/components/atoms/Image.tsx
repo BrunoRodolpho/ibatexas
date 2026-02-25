@@ -4,28 +4,38 @@ import NextImage, { ImageProps as NextImageProps } from 'next/image'
 import { forwardRef } from 'react'
 import clsx from 'clsx'
 
-interface ImageProps extends Omit<NextImageProps, 'alt'> {
+interface ImageProps extends Omit<NextImageProps, 'alt' | 'fill'> {
   alt: string
   variant?: 'thumbnail' | 'card' | 'detail'
 }
 
-const sizeMap = {
-  thumbnail: { width: 50, height: 50 },
-  card: { width: 250, height: 250 },
-  detail: { width: 500, height: 500 },
+/**
+ * Responsive image wrapper.
+ * - `thumbnail`: fixed 50×50
+ * - `card` / `detail`: uses `fill` + container aspect-ratio so the
+ *   image always respects the parent's dimensions.
+ */
+const containerClass: Record<string, string> = {
+  thumbnail: 'relative h-[50px] w-[50px] flex-shrink-0 overflow-hidden rounded-lg',
+  card:      'relative w-full overflow-hidden rounded-xl',
+  detail:    'relative w-full overflow-hidden rounded-2xl',
 }
 
 const Image = forwardRef<HTMLImageElement, ImageProps>(
-  ({ alt, variant = 'card', className, ...props }, ref) => {
-    const sizes = sizeMap[variant]
+  ({ alt, variant = 'card', className, width, height, sizes, ...props }, ref) => {
+    const isFill = variant !== 'thumbnail'
+
     return (
-      <div className={clsx('relative overflow-hidden rounded-lg', className)}>
+      <div className={clsx(containerClass[variant], className)}>
         <NextImage
           ref={ref}
           alt={alt}
-          width={sizes.width}
-          height={sizes.height}
           className="h-full w-full object-cover"
+          sizes={sizes ?? (variant === 'detail' ? '(max-width: 768px) 100vw, 50vw' : '(max-width: 768px) 100vw, 33vw')}
+          {...(isFill
+            ? { fill: true }
+            : { width: Number(width) || 50, height: Number(height) || 50 }
+          )}
           {...props}
         />
       </div>

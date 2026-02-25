@@ -40,10 +40,10 @@ export const CartItem: React.FC<CartItemProps> = ({
             <Image
               src={imageUrl}
               alt={title}
+              variant="thumbnail"
               width={80}
               height={80}
-              variant="thumbnail"
-              className="object-cover"
+              className="!h-20 !w-20 rounded-xl"
             />
           </div>
         )}

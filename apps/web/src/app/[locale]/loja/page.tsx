@@ -23,11 +23,11 @@ export default function ShopPage() {
   return (
     <div className="space-y-8">
       {/* Hero Section */}
-      <div className="text-center py-12 bg-gradient-to-r from-orange-50 to-amber-50 rounded-2xl">
-        <Heading variant="h1" className="text-gray-900 mb-4">
+      <div className="text-center py-12 bg-gradient-to-r from-brand-50 to-brand-100 rounded-2xl px-6">
+        <Heading variant="h1" className="text-slate-900 mb-4">
           {t('shop.hero_title')}
         </Heading>
-        <Text variant="body" className="text-gray-600 max-w-2xl mx-auto">
+        <Text variant="body" className="text-slate-600 max-w-2xl mx-auto">
           {t('shop.hero_subtitle')}
         </Text>
       </div>
@@ -35,7 +35,7 @@ export default function ShopPage() {
       {/* Featured Products */}
       <section>
         <div className="flex items-center justify-between mb-6">
-          <Heading variant="h2" className="text-gray-900">
+          <Heading variant="h2" className="text-slate-900">
             {t('shop.featured')}
           </Heading>
           <Button variant="tertiary" asChild>
@@ -56,7 +56,7 @@ export default function ShopPage() {
           />
         ) : (
           <div className="text-center py-12">
-            <Text variant="body" className="text-gray-500">
+            <Text variant="body" className="text-slate-500">
               {t('shop.empty_states.no_featured')}
             </Text>
           </div>
@@ -66,48 +66,48 @@ export default function ShopPage() {
       {/* Browse by Category */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Link href={"/loja/camisetas"} className="group">
-          <div className="bg-white rounded-xl p-6 shadow-sm border hover:shadow-md transition-shadow">
-            <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="bg-white rounded-2xl p-6 shadow-card-sm border border-slate-200/70 hover:shadow-card-md transition-shadow">
+            <div className="w-12 h-12 bg-brand-50 rounded-xl flex items-center justify-center mb-4">
+              <svg className="w-6 h-6 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
               </svg>
             </div>
-            <Heading variant="h3" className="text-gray-900 mb-2 group-hover:text-orange-600">
+            <Heading variant="h3" className="text-slate-900 mb-2 group-hover:text-brand-500">
               {t('shop.categories.camisetas')}
             </Heading>
-            <Text className="text-gray-600">
+            <Text className="text-slate-600">
               Camisetas exclusivas IbateXas em diversos tamanhos
             </Text>
           </div>
         </Link>
 
         <Link href={"/loja/acessorios"} className="group">
-          <div className="bg-white rounded-xl p-6 shadow-sm border hover:shadow-md transition-shadow">
-            <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="bg-white rounded-2xl p-6 shadow-card-sm border border-slate-200/70 hover:shadow-card-md transition-shadow">
+            <div className="w-12 h-12 bg-brand-50 rounded-xl flex items-center justify-center mb-4">
+              <svg className="w-6 h-6 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 3l-6 6m0 0V4m0 5h5M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
               </svg>
             </div>
-            <Heading variant="h3" className="text-gray-900 mb-2 group-hover:text-orange-600">
+            <Heading variant="h3" className="text-slate-900 mb-2 group-hover:text-brand-500">
               {t('shop.categories.acessorios')}
             </Heading>
-            <Text className="text-gray-600">
+            <Text className="text-slate-600">
               Bonés, aventais e acessórios para churrasco
             </Text>
           </div>
         </Link>
 
         <Link href={"/loja/kits"} className="group">
-          <div className="bg-white rounded-xl p-6 shadow-sm border hover:shadow-md transition-shadow">
-            <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="bg-white rounded-2xl p-6 shadow-card-sm border border-slate-200/70 hover:shadow-card-md transition-shadow">
+            <div className="w-12 h-12 bg-brand-50 rounded-xl flex items-center justify-center mb-4">
+              <svg className="w-6 h-6 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7" />
               </svg>
             </div>
-            <Heading variant="h3" className="text-gray-900 mb-2 group-hover:text-orange-600">
+            <Heading variant="h3" className="text-slate-900 mb-2 group-hover:text-brand-500">
               {t('shop.categories.kits')}
             </Heading>
-            <Text className="text-gray-600">
+            <Text className="text-slate-600">
               Kits completos para presente e churrasco
             </Text>
           </div>
