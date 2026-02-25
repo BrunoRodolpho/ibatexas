@@ -1,6 +1,5 @@
 'use client'
 
-import { Card, Heading } from '../atoms'
 import Link from 'next/link'
 
 interface Category {
@@ -11,21 +10,28 @@ interface Category {
 
 interface CategoryCarouselProps {
   categories: Category[]
+  activeHandle?: string
 }
 
-export const CategoryCarousel = ({ categories }: CategoryCarouselProps) => {
+export const CategoryCarousel = ({ categories, activeHandle }: CategoryCarouselProps) => {
   return (
-    <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-      {categories.map((category) => (
-        <Link key={category.id} href={`/search?category=${category.handle}`}>
-          <Card className="flex-shrink-0 w-44 p-6 text-center card-hover cursor-pointer">
-            <div className="h-16 w-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 shadow-glow-brand" />
-            <Heading as="h4" variant="h6" className="text-center">
-              {category.name}
-            </Heading>
-          </Card>
-        </Link>
-      ))}
+    <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide">
+      {categories.map((category) => {
+        const isActive = activeHandle === category.handle
+        return (
+          <Link
+            key={category.id}
+            href={`/search?category=${category.handle}`}
+            className={`flex-shrink-0 rounded-full border px-3 py-1 text-[12px] font-medium transition-colors ${
+              isActive
+                ? 'border-slate-900 bg-slate-900 text-white'
+                : 'border-slate-200 text-slate-600 hover:border-slate-400 hover:text-slate-900'
+            }`}
+          >
+            {category.name}
+          </Link>
+        )
+      })}
     </div>
   )
 }

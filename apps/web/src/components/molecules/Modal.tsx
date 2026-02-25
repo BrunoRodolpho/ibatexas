@@ -76,19 +76,19 @@ export const Modal: React.FC<ModalProps> = ({
     >
       <div
         className={clsx(
-          'bg-white rounded-2xl shadow-card-lg max-h-screen overflow-y-auto w-full mx-4',
+          'bg-white rounded-xl shadow-xl max-h-screen overflow-y-auto w-full mx-4',
           sizeClasses[size]
         )}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="sticky top-0 bg-white/95 backdrop-blur-sm border-b border-slate-100 px-6 py-4 flex items-center justify-between rounded-t-2xl">
-          <h2 id="modal-title" className="text-xl font-bold font-display text-slate-900">
+        <div className="sticky top-0 bg-white border-b border-slate-100 px-6 py-4 flex items-center justify-between rounded-t-xl">
+          <h2 id="modal-title" className="text-base font-semibold text-slate-900">
             {title}
           </h2>
           {closeButton && (
             <button
               onClick={onClose}
-              className="rounded-lg p-1.5 text-slate-400 hover:text-slate-600 hover:bg-smoke-100 transition-colors duration-250"
+              className="rounded-md p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors"
               aria-label="Fechar"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -101,7 +101,7 @@ export const Modal: React.FC<ModalProps> = ({
         <div className="px-6 py-4">{children}</div>
 
         {footer && (
-          <div className="border-t border-slate-100 px-6 py-4 bg-smoke-50 rounded-b-2xl">
+          <div className="border-t border-slate-100 px-6 py-4 bg-slate-50 rounded-b-xl">
             {footer}
           </div>
         )}
@@ -159,19 +159,19 @@ export const Sheet: React.FC<SheetProps> = ({
     >
       <div
         className={clsx(
-          'fixed top-0 bottom-0 w-[90vw] max-w-sm bg-white shadow-card-lg overflow-y-auto',
+          'fixed top-0 bottom-0 w-[90vw] max-w-sm bg-white shadow-xl overflow-y-auto',
           position === 'right' ? 'right-0' : 'left-0'
         )}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-white/95 backdrop-blur-sm border-b border-slate-100 px-4 py-4 flex items-center justify-between">
-          <h2 id="sheet-title" className="text-lg font-bold font-display text-slate-900">
+          <h2 id="sheet-title" className="text-base font-semibold text-slate-900">
             {title}
           </h2>
           {closeButton && (
             <button
               onClick={onClose}
-              className="rounded-lg p-1.5 text-slate-400 hover:text-slate-600 hover:bg-smoke-100 transition-colors duration-250"
+              className="rounded-md p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors"
               aria-label="Fechar"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -184,7 +184,7 @@ export const Sheet: React.FC<SheetProps> = ({
         <div className="px-4 py-4">{children}</div>
 
         {footer && (
-          <div className="border-t border-slate-100 px-4 py-4 bg-smoke-50">
+          <div className="border-t border-slate-100 px-4 py-4 bg-slate-50">
             {footer}
           </div>
         )}

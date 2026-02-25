@@ -3,12 +3,6 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
-    --section-y: clamp(5rem, 10vw, 7.5rem);
-    --radius-card: 1rem;
-    --radius-button: 0.75rem;
-  }
-
   html {
     scroll-behavior: smooth;
     -webkit-font-smoothing: antialiased;
@@ -18,14 +12,11 @@
 
   body {
     font-family: var(--font-inter, system-ui, sans-serif);
-  }
-
-  h1, h2, h3, h4, h5, h6 {
-    font-family: var(--font-outfit, var(--font-inter, system-ui));
+    color: theme('colors.slate.900');
   }
 
   :focus-visible {
-    outline: 2px solid #E85D04;
+    outline: 2px solid theme('colors.slate.900');
     outline-offset: 2px;
     border-radius: 4px;
   }
@@ -37,15 +28,15 @@
 
 @layer utilities {
   .section-padding {
-    padding-top: var(--section-y);
-    padding-bottom: var(--section-y);
+    padding-top: 2.5rem;
+    padding-bottom: 2.5rem;
   }
 
-  .text-gradient-brand {
-    background: linear-gradient(135deg, #E85D04 0%, #FF7A33 60%, #FFA066 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+  @media (min-width: 768px) {
+    .section-padding {
+      padding-top: 3rem;
+      padding-bottom: 3rem;
+    }
   }
 
   .skeleton {
@@ -65,13 +56,5 @@
   }
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
-  }
-
-  .card-hover {
-    transition: transform 250ms ease, box-shadow 250ms ease;
-  }
-  .card-hover:hover {
-    transform: translateY(-4px);
-    box-shadow: theme('boxShadow.card-hover');
   }
 }

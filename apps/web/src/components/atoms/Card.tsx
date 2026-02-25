@@ -14,8 +14,8 @@ const Card = forwardRef<HTMLDivElement, CardProps>(
       <div
         ref={ref}
         className={clsx(
-          'rounded-2xl border border-slate-200/70 bg-white shadow-card-sm transition-shadow',
-          interactive && 'card-hover cursor-pointer',
+          'rounded-lg border border-slate-200 bg-white shadow-xs transition-shadow duration-150',
+          interactive && 'hover:shadow-md cursor-pointer',
           className
         )}
         {...props}
@@ -26,7 +26,7 @@ const Card = forwardRef<HTMLDivElement, CardProps>(
 
     if (href) {
       return (
-        <a href={href} className="block card-hover">
+        <a href={href} className="block">
           {content}
         </a>
       )

@@ -44,67 +44,67 @@ export default function AccountPage() {
 
       <div className="mt-12 grid gap-6 md:grid-cols-2">
         {/* Profile */}
-        <div className="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-card-sm">
-          <h2 className="text-lg font-bold text-slate-900">
+        <div className="rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-slate-900">
             {t("account.profile")}
           </h2>
-          <p className="mt-4 text-slate-600">
+          <p className="mt-3 text-sm text-slate-500">
             {t("account.profile_description")}
           </p>
         </div>
 
         {/* Orders */}
-        <div className="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-card-sm">
-          <h2 className="text-lg font-bold text-slate-900">
+        <div className="rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-slate-900">
             {t("account.orders")}
           </h2>
-          <p className="mt-4 text-slate-600">
+          <p className="mt-3 text-sm text-slate-500">
             {t("account.orders_description")}
           </p>
         </div>
 
         {/* Reservations */}
-        <div className="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-card-sm">
-          <h2 className="text-lg font-bold text-slate-900">
+        <div className="rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-slate-900">
             {t("account.reservations")}
           </h2>
-          <p className="mt-4 text-slate-600">
+          <p className="mt-3 text-sm text-slate-500">
             {t("account.reservations_description")}
           </p>
           <Link
             href={"/account/reservations"}
-            className="mt-4 inline-block text-brand-500 hover:text-brand-600 font-medium transition-colors duration-250"
+            className="mt-3 inline-block text-sm text-slate-500 hover:text-slate-700 font-medium transition-colors"
           >
             {t("common.view_all")} →
           </Link>
         </div>
 
         {/* Preferences */}
-        <div className="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-card-sm">
-          <h2 className="text-lg font-bold text-slate-900">
+        <div className="rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-slate-900">
             {t("account.preferences")}
           </h2>
-          <p className="mt-4 text-slate-600">
+          <p className="mt-3 text-sm text-slate-500">
             {t("account.dietary_restrictions")} e {t("account.allergens")}
           </p>
         </div>
 
         {/* Saved Addresses */}
-        <div className="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-card-sm">
-          <h2 className="text-lg font-bold text-slate-900">
+        <div className="rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-slate-900">
             {t("account.saved_addresses")}
           </h2>
-          <p className="mt-4 text-slate-600">
+          <p className="mt-3 text-sm text-slate-500">
             {t("account.addresses_description")}
           </p>
         </div>
 
         {/* Payment Methods */}
-        <div className="rounded-2xl border border-slate-200/70 bg-white p-6 shadow-card-sm">
-          <h2 className="text-lg font-bold text-slate-900">
+        <div className="rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-slate-900">
             {t("account.payment_methods")}
           </h2>
-          <p className="mt-4 text-slate-600">
+          <p className="mt-3 text-sm text-slate-500">
             {t("account.payment_description")}
           </p>
         </div>

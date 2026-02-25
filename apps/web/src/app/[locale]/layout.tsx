@@ -1,7 +1,7 @@
 import { NextIntlClientProvider } from "next-intl"
 import { getMessages } from "next-intl/server"
 import { notFound } from "next/navigation"
-import { Inter, Outfit } from "next/font/google"
+import { Inter } from "next/font/google"
 import { routing } from "@/i18n/routing"
 import { Header } from "@/components/Header"
 import { Footer } from "@/components/Footer"
@@ -13,13 +13,6 @@ const inter = Inter({
   variable: "--font-inter",
   display: "swap",
   weight: ["400", "500", "600"],
-})
-
-const outfit = Outfit({
-  subsets: ["latin"],
-  variable: "--font-outfit",
-  display: "swap",
-  weight: ["600", "700", "800"],
 })
 
 export default async function LocaleLayout({
@@ -40,7 +33,7 @@ export default async function LocaleLayout({
 
   return (
     <html lang={locale}>
-      <body className={`${inter.variable} ${outfit.variable} flex min-h-screen flex-col bg-white`}>
+      <body className={`${inter.variable} font-sans flex min-h-screen flex-col bg-white antialiased`}>
         <NextIntlClientProvider messages={messages}>
           <Header />
           <main className="flex-1">{children}</main>

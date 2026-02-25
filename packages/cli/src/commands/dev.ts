@@ -344,7 +344,17 @@ async function startServices(
     console.log(chalk.gray(`    Logs prefixed with ${services[0].logColor(`[${services[0].logPrefix}]`)}\n`))
   }
 
-  const procs = services.map((svc) => spawnService(svc))
+  const procs = services.map((svc) => {
+    // Clean stale .next cache before starting Next.js to avoid "e[o] is not a function" errors
+    if (svc.key === "web") {
+      const nextDir = path.join(ROOT, "apps", "web", ".next")
+      if (fs.existsSync(nextDir)) {
+        fs.rmSync(nextDir, { recursive: true, force: true })
+        console.log(chalk.gray("    Cleaned stale .next cache"))
+      }
+    }
+    return spawnService(svc)
+  })
 
   // Merge new PIDs with any already-tracked services (e.g. only restarting one)
   const existingEntries = readPidEntries().filter((e) => !services.some((s) => s.key === e.key))
@@ -424,9 +434,62 @@ export function registerDevCommands(dev: Command) {
   dev
     .command("stop [service]")
     .description("Stop services (and Docker when stopping all) — commerce | api | web | all (default)")
-    .action(async (serviceKey: string | undefined) => {
+    .option("-f, --force", "Force-kill any process listening on service ports")
+    .action(async (serviceKey: string | undefined, opts: { force?: boolean }) => {
       const stopAll = !serviceKey || serviceKey === "all"
 
+      // ── Force mode: kill anything on the known ports ──────────────────────
+      if (opts.force) {
+        const { SERVICES } = await import("../services.js")
+        const targets = stopAll
+          ? Object.values(SERVICES)
+          : serviceKey ? [SERVICES[serviceKey]].filter(Boolean) : []
+
+        const ports = targets.map((s) => s.port)
+        console.log(chalk.bold.yellow(`\n  ⚡ Force-killing processes on ports: ${ports.join(", ")}\n`))
+
+        for (const port of ports) {
+          try {
+            const { stdout } = execaSync("lsof", ["-ti", `:${port}`], { reject: false })
+            const pids = (stdout ?? "").toString().trim().split("\n").filter(Boolean)
+            for (const pid of pids) {
+              try { process.kill(Number(pid), "SIGKILL") } catch { /* already gone */ }
+            }
+            if (pids.length > 0) {
+              console.log(chalk.green(`    ✓ Port ${port}: killed ${pids.length} process(es)`))
+            } else {
+              console.log(chalk.gray(`    · Port ${port}: nothing running`))
+            }
+          } catch {
+            console.log(chalk.gray(`    · Port ${port}: nothing running`))
+          }
+        }
+
+        // Also clean up PID file
+        if (stopAll) {
+          removePidFile()
+        } else if (serviceKey) {
+          const entries = readPidEntries().filter((e) => e.key !== serviceKey)
+          entries.length > 0 ? writePidEntries(entries) : removePidFile()
+        }
+
+        // Docker too when stopping all
+        if (stopAll) {
+          const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
+          try {
+            await execa("docker", ["compose", "down"], { cwd: ROOT })
+            dockerSpinner.succeed(chalk.green("Docker containers stopped"))
+          } catch {
+            dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
+            process.exit(1)
+          }
+        }
+
+        console.log(chalk.green("\n  Done.\n"))
+        return
+      }
+
+      // ── Normal (graceful) stop ────────────────────────────────────────────
       // Kill tracked processes
       const killed = killTrackedServices(stopAll ? undefined : serviceKey)
       if (killed > 0) {

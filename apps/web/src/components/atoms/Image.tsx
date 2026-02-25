@@ -16,9 +16,9 @@ interface ImageProps extends Omit<NextImageProps, 'alt' | 'fill'> {
  *   image always respects the parent's dimensions.
  */
 const containerClass: Record<string, string> = {
-  thumbnail: 'relative h-[50px] w-[50px] flex-shrink-0 overflow-hidden rounded-lg',
-  card:      'relative w-full overflow-hidden rounded-xl',
-  detail:    'relative w-full overflow-hidden rounded-2xl',
+  thumbnail: 'relative h-[50px] w-[50px] flex-shrink-0 overflow-hidden rounded-md',
+  card:      'relative w-full overflow-hidden rounded-lg',
+  detail:    'relative w-full overflow-hidden rounded-lg',
 }
 
 const Image = forwardRef<HTMLImageElement, ImageProps>(

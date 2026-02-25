@@ -35,7 +35,7 @@ function buildHelpText(): string {
       commands: [
         { usage: "dev [service]",          desc: "Start dev environment — commerce (default) | api | web | all" },
         { usage: "dev start [service]",    desc: "Explicit start alias for dev [service]" },
-        { usage: "dev stop [service]",     desc: "Stop service(s) — omit to stop all + docker compose down" },
+        { usage: "dev stop [service]",     desc: "Stop service(s) — omit to stop all + docker compose down (-f to force-kill ports)" },
         { usage: "dev restart [service]",  desc: "Kill + respawn service(s) without touching Docker" },
         { usage: "dev build [filter]",     desc: "Build packages" },
         { usage: "dev test [filter]",      desc: "Run tests" },

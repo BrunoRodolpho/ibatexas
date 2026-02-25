@@ -84,7 +84,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
         {/* Images */}
         <div>
           {product.imageUrl && (
-            <div className="relative mb-4 aspect-square overflow-hidden rounded-2xl bg-smoke-50">
+            <div className="relative mb-4 aspect-square overflow-hidden rounded-lg bg-slate-50">
               <Image
                 src={product.imageUrl}
                 alt={product.title}
@@ -112,7 +112,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
         {/* Details */}
         <div>
-          <h1 className="font-display text-display-md font-bold tracking-tight text-slate-900">{product.title}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{product.title}</h1>
 
           {product.description && (
             <p className="mt-4 text-slate-600 leading-relaxed">{product.description}</p>
@@ -176,20 +176,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
                 <div className="mt-2 flex items-center gap-2">
                   <button
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-600 hover:bg-smoke-50 transition-colors"
-                  >
-                    −
-                  </button>
-                  <input
-                    type="number"
-                    min="1"
-                    value={quantity}
-                    onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-16 rounded-xl border border-slate-200 px-3 py-2 text-center focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                  />
-                  <button
-                    onClick={() => setQuantity(quantity + 1)}
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-600 hover:bg-smoke-50 transition-colors"
+                    className="rounded-md border border-slate-200 px-3 py-2 text-slate-600 hover:bg-slate-50 transition-colors"
                   >
                     +
                   </button>
@@ -206,7 +193,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
                 value={specialInstructions}
                 onChange={(e) => setSpecialInstructions(e.target.value)}
                 placeholder={t("product.special_instructions_placeholder")}
-                className="mt-2 block w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                className="mt-2 block w-full rounded-md border border-slate-200 px-3 py-2.5 text-sm focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
                 rows={3}
               />
             </div>
@@ -216,7 +203,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
           <button
             onClick={handleAddToCart}
             disabled={!product.inStock}
-            className="mt-8 w-full rounded-xl bg-brand-500 px-6 py-4 text-lg font-semibold text-white shadow-glow-brand hover:bg-brand-600 hover:-translate-y-0.5 hover:shadow-glow-brand-lg transition-all duration-250 disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed disabled:transform-none"
+            className="mt-8 w-full rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white hover:bg-slate-800 transition-colors disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed"
           >
             {product.inStock ? t("product.add_to_cart") : t("product.out_of_stock")}
           </button>
@@ -234,7 +221,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
       {/* Nutritional Info & Allergens */}
       {(product.allergens?.length) && (
         <div className="mt-12 border-t border-slate-200 pt-8">
-          <h2 className="font-display text-2xl font-bold text-slate-900">
+          <h2 className="text-lg font-semibold text-slate-900">
             {t("product.nutritional_info")}
           </h2>
 

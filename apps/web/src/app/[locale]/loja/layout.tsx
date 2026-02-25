@@ -3,7 +3,6 @@
 import { useTranslations } from 'next-intl'
 import { Link } from '@/i18n/navigation'
 import { usePathname } from 'next/navigation'
-import { Badge } from '@/components/atoms'
 
 interface ShopLayoutProps {
   children: React.ReactNode
@@ -20,20 +19,20 @@ export default function ShopLayout({ children }: ShopLayoutProps) {
   const pathname = usePathname()
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-white">
       {/* Header with category navigation */}
-      <div className="bg-white border-b">
+      <div className="border-b border-slate-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           {/* Breadcrumb */}
-          <nav className="py-4" aria-label="Breadcrumb">
-            <ol className="flex items-center space-x-2 text-sm">
+          <nav className="py-3" aria-label="Breadcrumb">
+            <ol className="flex items-center space-x-2 text-[13px]">
               <li>
-                <Link href={"/"} className="text-slate-500 hover:text-slate-700">
+                <Link href={"/"} className="text-slate-400 hover:text-slate-600 transition-colors">
                   {t('common.home')}
                 </Link>
               </li>
               <li>
-                <svg className="w-4 h-4 text-slate-400" fill="currentColor" viewBox="0 0 20 20">
+                <svg className="w-3.5 h-3.5 text-slate-300" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 111.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clipRule="evenodd" />
                 </svg>
               </li>
@@ -44,23 +43,29 @@ export default function ShopLayout({ children }: ShopLayoutProps) {
           </nav>
 
           {/* Category Filter Bar */}
-          <div className="flex gap-3 pb-6 overflow-x-auto">
+          <div className="flex gap-2 pb-4 overflow-x-auto">
             <Link href={"/loja"}>
-              <Badge 
-                variant={pathname === "/loja" ? 'primary' : 'default'}
-                className="cursor-pointer"
+              <span
+                className={`inline-flex items-center rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                  pathname === "/loja"
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-50 text-slate-600 hover:bg-slate-100"
+                }`}
               >
                 {t('common.all')}
-              </Badge>
+              </span>
             </Link>
             {categories.map((category) => (
               <Link key={category.handle} href={`/loja/${category.handle}`}>
-                <Badge 
-                  variant={pathname === `/loja/${category.handle}` ? 'primary' : 'default'}
-                  className="cursor-pointer"
+                <span
+                  className={`inline-flex items-center rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                    pathname === `/loja/${category.handle}`
+                      ? "bg-slate-900 text-white"
+                      : "bg-slate-50 text-slate-600 hover:bg-slate-100"
+                  }`}
                 >
                   {t(category.label)}
-                </Badge>
+                </span>
               </Link>
             ))}
           </div>

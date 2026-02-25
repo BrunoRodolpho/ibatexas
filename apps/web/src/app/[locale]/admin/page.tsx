@@ -1,7 +1,6 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { Link } from '@/i18n/navigation'
 import { type ColumnDef, createColumnHelper } from '@tanstack/react-table'
 import { MEDUSA_ADMIN_URL } from '@/lib/api'
 import {
@@ -52,19 +51,11 @@ export default function AdminDashboard() {
   const { data: orders, loading: ordersLoading } = useAdminOrders({ limit: 10 })
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Page title */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-900">{t('admin.dashboard')}</h1>
-        <a
-          href={`${MEDUSA_ADMIN_URL}/app`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700"
-        >
-          Medusa Admin
-          <ExternalLink className="h-3.5 w-3.5" />
-        </a>
+      <div>
+        <h1 className="text-lg font-semibold text-slate-900">{t('admin.dashboard')}</h1>
+        <p className="mt-1 text-sm text-slate-500">Visão geral do dia</p>
       </div>
 
       {/* KPI cards */}
@@ -73,6 +64,7 @@ export default function AdminDashboard() {
           label={t('admin.orders_today')}
           value={metrics?.ordersToday ?? 0}
           icon={ShoppingCart}
+          variant="info"
           isLoading={metricsLoading}
         />
         <StatCard
@@ -99,36 +91,22 @@ export default function AdminDashboard() {
         />
       </div>
 
-      {/* Quick actions */}
-      <div className="flex flex-wrap gap-3">
-        <Link
-          href={"/admin/cardapio"}
-          className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-        >
-          {t('admin.menu')} →
-        </Link>
-        <Link
-          href={"/admin/loja"}
-          className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-        >
-          {t('admin.shop')} →
-        </Link>
-        <a
-          href={`${MEDUSA_ADMIN_URL}/app/orders`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-        >
-          {t('admin.orders')} (Medusa)
-          <ExternalLink className="h-3 w-3" />
-        </a>
-      </div>
-
       {/* Recent orders */}
       <div>
-        <h2 className="mb-4 text-base font-semibold text-slate-900">
-          {t('admin.recent_orders')}
-        </h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium text-slate-900">
+            {t('admin.recent_orders')}
+          </h2>
+          <a
+            href={`${MEDUSA_ADMIN_URL}/app/orders`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-slate-700"
+          >
+            Ver todos
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
         <DataTable
           data={orders}
           columns={columns}
