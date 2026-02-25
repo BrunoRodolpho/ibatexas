@@ -1,7 +1,7 @@
 'use client'
 
-import { useTranslations, useLocale } from 'next-intl'
-import Link from 'next/link'
+import { useTranslations } from 'next-intl'
+import { Link } from '@/i18n/navigation'
 import { usePathname } from 'next/navigation'
 import { Badge } from '@/components/atoms'
 
@@ -17,7 +17,6 @@ const categories = [
 
 export default function ShopLayout({ children }: ShopLayoutProps) {
   const t = useTranslations()
-  const locale = useLocale()
   const pathname = usePathname()
 
   return (
@@ -29,7 +28,7 @@ export default function ShopLayout({ children }: ShopLayoutProps) {
           <nav className="py-4" aria-label="Breadcrumb">
             <ol className="flex items-center space-x-2 text-sm">
               <li>
-                <Link href={`/${locale}`} className="text-gray-500 hover:text-gray-700">
+                <Link href={"/"} className="text-gray-500 hover:text-gray-700">
                   Início
                 </Link>
               </li>
@@ -46,18 +45,18 @@ export default function ShopLayout({ children }: ShopLayoutProps) {
 
           {/* Category Filter Bar */}
           <div className="flex gap-3 pb-6 overflow-x-auto">
-            <Link href={`/${locale}/loja`}>
+            <Link href={"/loja"}>
               <Badge 
-                variant={pathname === `/${locale}/loja` ? 'primary' : 'default'}
+                variant={pathname === "/loja" ? 'primary' : 'default'}
                 className="cursor-pointer"
               >
                 Todos
               </Badge>
             </Link>
             {categories.map((category) => (
-              <Link key={category.handle} href={`/${locale}/loja/${category.handle}`}>
+              <Link key={category.handle} href={`/loja/${category.handle}`}>
                 <Badge 
-                  variant={pathname === `/${locale}/loja/${category.handle}` ? 'primary' : 'default'}
+                  variant={pathname === `/loja/${category.handle}` ? 'primary' : 'default'}
                   className="cursor-pointer"
                 >
                   {t(category.label)}

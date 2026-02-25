@@ -2,14 +2,13 @@
 
 import { useState } from "react"
 import Image from "next/image"
-import Link from "next/link"
-import { useTranslations, useLocale } from "next-intl"
+import { Link } from '@/i18n/navigation'
+import { useTranslations } from "next-intl"
 import { useProductDetail } from "@/hooks/api"
 import { useCartStore, useUIStore } from "@/stores"
 
 export default function ProductPage({ params }: { params: { id: string } }) {
   const t = useTranslations()
-  const locale = useLocale()
   const [quantity, setQuantity] = useState(1)
   const [specialInstructions, setSpecialInstructions] = useState("")
   const [selectedVariant, setSelectedVariant] = useState<string | null>(null)
@@ -47,7 +46,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-8 text-center sm:px-6 lg:px-8">
         <p className="text-red-600">{t("common.error")}</p>
-        <Link href={`/${locale}/search`} className="mt-4 inline-block text-orange-600">
+        <Link href={"/search"} className="mt-4 inline-block text-orange-600">
           {t("common.back")} →
         </Link>
       </div>
@@ -65,11 +64,11 @@ export default function ProductPage({ params }: { params: { id: string } }) {
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       {/* Breadcrumb */}
       <div className="mb-8 flex gap-2 text-sm text-gray-600">
-        <Link href={`/${locale}`} className="hover:text-gray-900">
+        <Link href={"/"} className="hover:text-gray-900">
           Home
         </Link>
         <span>/</span>
-        <Link href={`/${locale}/search`} className="hover:text-gray-900">
+        <Link href={"/search"} className="hover:text-gray-900">
           {t("search.title")}
         </Link>
         <span>/</span>
@@ -223,7 +222,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
           {/* Back to Search */}
           <Link
-            href={`/${locale}/search`}
+            href={"/search"}
             className="mt-4 block text-center text-orange-600 hover:text-orange-700"
           >
             ← {t("common.back")}

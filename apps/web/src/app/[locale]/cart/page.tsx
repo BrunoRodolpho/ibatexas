@@ -1,8 +1,8 @@
 'use client'
 
 import React, { useMemo } from 'react'
-import Link from 'next/link'
-import { useLocale } from 'next-intl'
+import { Link } from '@/i18n/navigation'
+
 import { Heading, Text, Button, RadioGroup } from '@/components/atoms'
 import { CartItem, Modal } from '@/components/molecules'
 import { useCartStore, useUIStore } from '@/stores'
@@ -13,7 +13,6 @@ export default function CartPage() {
   const { items, deliveryType, couponCode, getTotal, getItemCount, removeItem, updateItem, setDeliveryType, clearCart } =
     useCartStore()
   const { addToast } = useUIStore()
-  const locale = useLocale()
 
   const [couponInput, setCouponInput] = React.useState(couponCode || '')
   const [showCouponModal, setShowCouponModal] = React.useState(false)
@@ -48,7 +47,7 @@ export default function CartPage() {
       return
     }
     // Navigate to checkout page
-    // router.push(`/${locale}/checkout`)
+    // router.push("/checkout")
     addToast('Prosseguindo para pagamento...', 'success')
   }
 
@@ -61,7 +60,7 @@ export default function CartPage() {
         <Text textColor="secondary" className="mb-8">
           Explore nosso menu e adicione seus pratos favoritos
         </Text>
-        <Link href={`/${locale}/search`}>
+        <Link href={"/search"}>
           <Button variant="primary" size="lg">
             Voltar ao Menu
           </Button>
@@ -181,7 +180,7 @@ export default function CartPage() {
               </Button>
 
               {/* Continue Shopping */}
-              <Link href={`/${locale}/search`} className="block">
+              <Link href={"/search"} className="block">
                 <Button variant="tertiary" size="md" className="w-full">
                   Voltar ao Menu
                 </Button>
