@@ -43,11 +43,11 @@ export default function CategoryPage({ params }: CategoryPageProps) {
     <div className="space-y-6">
       {/* Category Header */}
       <div className="text-center py-8">
-        <Heading variant="h1" className="text-gray-900 mb-4">
+        <Heading variant="h1" className="text-slate-900 mb-4">
           {t(categoryKey)}
         </Heading>
-        <Text variant="body" className="text-gray-600">
-          {getCategoryDescription(params.category)}
+        <Text variant="body" className="text-slate-600">
+          {t(`shop.category_descriptions.${params.category}`)}
         </Text>
       </div>
 
@@ -63,24 +63,11 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         />
       ) : (
         <div className="text-center py-12">
-          <Text variant="body" className="text-gray-500">
+          <Text variant="body" className="text-slate-500">
             {t('shop.empty_states.no_products')}
           </Text>
         </div>
       )}
     </div>
   )
-}
-
-function getCategoryDescription(category: string): string {
-  switch (category) {
-    case 'camisetas':
-      return 'Camisetas 100% algodão com designs exclusivos do IbateXas'
-    case 'acessorios':
-      return 'Bonés, aventais e acessórios premium para churrasco'
-    case 'kits':
-      return 'Kits completos e produtos especiais para presente'
-    default:
-      return ''
-  }
 }

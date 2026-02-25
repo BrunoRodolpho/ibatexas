@@ -1,53 +1,35 @@
 'use client'
 
 import React, { useState, useMemo } from 'react'
+import { useTranslations } from 'next-intl'
 import { Heading, Text, Button, Select, Checkbox, RadioGroup } from '@/components/atoms'
 import { SearchInput, FilterChip } from '@/components/molecules'
 import { ProductGrid } from '@/components/organisms'
-import { useUIStore } from '@/stores'
+import { useUIStore, useCartStore } from '@/stores'
 import { useProducts } from '@/hooks/api'
+import type { ProductDTO } from '@ibatexas/types'
 
-interface FilterOption {
-  id: string
-  label: string
-}
-
-const TAGS: FilterOption[] = [
-  { id: 'novo', label: '🆕 Novo' },
-  { id: 'popular', label: '⭐ Popular' },
-  { id: 'chef_choice', label: '👨‍🍳 Chef\'s Choice' },
-  { id: 'vegetariano', label: '🥬 Vegetariano' },
-  { id: 'vegan', label: '🌱 Vegan' },
-  { id: 'sem_gluten', label: '🌾 Sem Glúten' },
-]
-
-const CATEGORIES: FilterOption[] = [
-  { id: 'almoço', label: 'Almoço' },
-  { id: 'jantar', label: 'Jantar' },
-  { id: 'congelados', label: 'Congelados' },
-  { id: 'sobremesas', label: 'Sobremesas' },
-  { id: 'bebidas', label: 'Bebidas' },
-]
-
-const SORT_OPTIONS = [
-  { value: 'relevance', label: 'Relevância' },
-  { value: 'price_asc', label: 'Preço: Menor → Maior' },
-  { value: 'price_desc', label: 'Preço: Maior → Menor' },
-  { value: 'rating', label: 'Melhor Avaliação' },
-  { value: 'popular', label: 'Mais Popular' },
-]
+const TAG_IDS = ['novo', 'popular', 'chef_choice', 'vegetariano', 'vegan', 'sem_gluten'] as const
+const CATEGORY_IDS = ['almoco', 'jantar', 'congelados', 'sobremesas', 'bebidas'] as const
+const SORT_VALUES = ['relevance', 'price_asc', 'price_desc', 'rating', 'popular'] as const
 
 export default function SearchPage() {
+  const t = useTranslations()
   const [searchQuery, setSearchQuery] = useState('')
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false)
 
-  const { selectedFilters, setFilters, resetFilters } = useUIStore()
+  const { selectedFilters, setFilters, resetFilters, addToast } = useUIStore()
+  const addItem = useCartStore((s) => s.addItem)
 
   // Merge selected tags from UI store
   const activeTags = useMemo(
     () => (selectedFilters.tags.length > 0 ? selectedFilters.tags : undefined),
     [selectedFilters.tags]
   )
+
+  const TAGS = TAG_IDS.map((id) => ({ id, label: t(`search.tags_list.${id}`) }))
+  const CATEGORIES = CATEGORY_IDS.map((id) => ({ id, label: t(`search.categories_list.${id}`) }))
+  const SORT_OPTIONS = SORT_VALUES.map((value) => ({ value, label: t(`search.sort.${value}`) }))
 
   // Call real API via useProducts hook
   const { data: productsData, loading: isLoading } = useProducts(
@@ -90,7 +72,7 @@ export default function SearchPage() {
       <div className="sticky top-[65px] z-20 bg-white/90 backdrop-blur-md border-b border-slate-200 px-4 py-4">
         <div className="max-w-6xl mx-auto">
           <SearchInput
-            placeholder="Buscar produtos, marcas, categorias..."
+            placeholder={t('search.placeholder')}
             onSearch={handleSearch}
             isLoading={isLoading}
             debounceMs={300}
@@ -103,17 +85,17 @@ export default function SearchPage() {
         <div className="flex items-center justify-between mb-6">
           <Heading as="h1" variant="h3">
             {isLoading
-              ? 'Buscando...'
+              ? t('search.searching')
               : totalFound > 0
-                ? `${totalFound} resultado${totalFound !== 1 ? 's' : ''}`
-                : 'Resultados'}
+                ? `${totalFound} ${t('search.results')}`
+                : t('search.title')}
           </Heading>
           {hasActiveFilters && (
             <button
               onClick={resetFilters}
-              className="text-sm text-amber-700 hover:underline font-medium"
+              className="text-sm text-brand-600 hover:underline font-medium"
             >
-              Limpar filtros
+              {t('search.reset_filters')}
             </button>
           )}
         </div>
@@ -124,7 +106,7 @@ export default function SearchPage() {
             <div className="space-y-6 sticky top-24">
               {/* Category */}
               <div>
-                <h3 className="font-bold text-slate-900 mb-3">Categoria</h3>
+                <h3 className="font-bold text-slate-900 mb-3">{t('search.category')}</h3>
                 <RadioGroup
                   name="category"
                   options={CATEGORIES.map((cat) => ({
@@ -139,7 +121,7 @@ export default function SearchPage() {
 
               {/* Tags */}
               <div>
-                <h3 className="font-bold text-slate-900 mb-3">Características</h3>
+                <h3 className="font-bold text-slate-900 mb-3">{t('search.characteristics')}</h3>
                 <div className="space-y-2">
                   {TAGS.map((tag) => (
                     <Checkbox
@@ -154,7 +136,7 @@ export default function SearchPage() {
 
               {/* Price Range */}
               <div>
-                <h3 className="font-bold text-slate-900 mb-3">Preço</h3>
+                <h3 className="font-bold text-slate-900 mb-3">{t('search.price')}</h3>
                 <div className="space-y-3">
                   <input
                     type="range"
@@ -210,7 +192,7 @@ export default function SearchPage() {
                 options={SORT_OPTIONS}
                 value={selectedFilters.sort || 'relevance'}
                 onChange={(e) => handleSortChange(e.target.value)}
-                placeholder="Ordenar por"
+                placeholder={t('search.sort.label')}
                 className="flex-1 lg:w-auto"
               />
               <Button
@@ -218,7 +200,7 @@ export default function SearchPage() {
                 onClick={() => setIsMobileFilterOpen(!isMobileFilterOpen)}
                 className="lg:hidden"
               >
-                Filtrar
+                {t('search.filter')}
               </Button>
             </div>
 
@@ -226,7 +208,7 @@ export default function SearchPage() {
             {isMobileFilterOpen && (
               <div className="lg:hidden bg-slate-50 p-4 rounded-lg mb-6 space-y-4">
                 <div>
-                  <h3 className="font-bold text-slate-900 mb-2">Categoria</h3>
+                  <h3 className="font-bold text-slate-900 mb-2">{t('search.category')}</h3>
                   <RadioGroup
                     name="category"
                     options={CATEGORIES.map((cat) => ({
@@ -239,7 +221,7 @@ export default function SearchPage() {
                   />
                 </div>
                 <div>
-                  <h3 className="font-bold text-slate-900 mb-2">Características</h3>
+                  <h3 className="font-bold text-slate-900 mb-2">{t('search.characteristics')}</h3>
                   <div className="space-y-2">
                     {TAGS.map((tag) => (
                       <Checkbox
@@ -295,7 +277,11 @@ export default function SearchPage() {
                   : 'Digite algo para começar a buscar ou selecione uma categoria'
               }
               onAddToCart={(productId) => {
-                console.log('Add to cart:', productId)
+                const product = products.find((p) => p.id === productId)
+                if (product) {
+                  addItem(product as ProductDTO, 1)
+                  addToast(t('product.added'), 'success')
+                }
               }}
             />
           </main>

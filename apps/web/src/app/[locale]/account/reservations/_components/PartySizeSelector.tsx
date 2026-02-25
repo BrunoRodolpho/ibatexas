@@ -15,7 +15,7 @@ export function PartySizeSelector({ value, onChange }: Props) {
 
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-2">
+      <label className="block text-sm font-medium text-slate-700 mb-2">
         {t("reservations.party_size")}
       </label>
       <div className="flex items-center gap-4">
@@ -23,14 +23,14 @@ export function PartySizeSelector({ value, onChange }: Props) {
           type="button"
           onClick={() => onChange(Math.max(MIN_PARTY, value - 1))}
           disabled={value <= MIN_PARTY}
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-gray-300 text-lg font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
           aria-label="Diminuir"
         >
           −
         </button>
-        <span className="w-20 text-center text-2xl font-bold text-gray-900">
+        <span className="w-20 text-center text-2xl font-bold text-slate-900">
           {value}
-          <span className="ml-1 text-sm font-normal text-gray-500">
+          <span className="ml-1 text-sm font-normal text-slate-500">
             {value === 1 ? "pessoa" : "pessoas"}
           </span>
         </span>
@@ -38,7 +38,7 @@ export function PartySizeSelector({ value, onChange }: Props) {
           type="button"
           onClick={() => onChange(Math.min(MAX_PARTY, value + 1))}
           disabled={value >= MAX_PARTY}
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-gray-300 text-lg font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
           aria-label="Aumentar"
         >
           +

@@ -82,7 +82,7 @@ export default function ProductPage({ params }: ProductPageProps) {
         {/* Product Images */}
         <div className="space-y-4">
           {/* Main Image */}
-          <div className="aspect-square bg-gray-100 rounded-2xl overflow-hidden">
+          <div className="aspect-square bg-slate-100 rounded-2xl overflow-hidden">
             {currentImage ? (
               <Image
                 src={currentImage}
@@ -93,7 +93,7 @@ export default function ProductPage({ params }: ProductPageProps) {
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
-                <Text className="text-gray-400">Sem imagem</Text>
+                <Text className="text-slate-400">Sem imagem</Text>
               </div>
             )}
           </div>
@@ -104,7 +104,7 @@ export default function ProductPage({ params }: ProductPageProps) {
           {/* Header */}
           <div>
             <div className="flex items-start justify-between mb-2">
-              <Heading variant="h1" className="text-gray-900">
+              <Heading variant="h1" className="text-slate-900">
                 {product.title}
               </Heading>
               <div className="flex gap-2">
@@ -129,7 +129,7 @@ export default function ProductPage({ params }: ProductPageProps) {
 
           {/* Price */}
           <div className="space-y-2">
-            <Text variant="h2" weight="bold" className="text-gray-900">
+            <Text variant="h2" weight="bold" className="text-slate-900">
               {new Intl.NumberFormat('pt-BR', {
                 style: 'currency',
                 currency: 'BRL'
@@ -149,7 +149,7 @@ export default function ProductPage({ params }: ProductPageProps) {
           {/* Add to Cart */}
           <div className="space-y-4">
             <div className="flex items-center gap-4">
-              <Text className="font-medium text-gray-900">Quantidade:</Text>
+              <Text className="font-medium text-slate-900">Quantidade:</Text>
               <div className="flex items-center border rounded-lg">
                 <Button 
                   variant="tertiary" 
@@ -193,7 +193,7 @@ export default function ProductPage({ params }: ProductPageProps) {
           {product.description && (
             <div className="space-y-3 pt-6 border-t">
               <Heading variant="h3">{t('shop.product_details')}</Heading>
-              <Text className="text-gray-600 leading-relaxed">
+              <Text className="text-slate-600 leading-relaxed">
                 {product.description}
               </Text>
             </div>

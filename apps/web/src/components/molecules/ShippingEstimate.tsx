@@ -42,7 +42,7 @@ export const ShippingEstimate = () => {
 
   return (
     <div className="border rounded-lg p-4 bg-slate-50">
-      <Text className="font-medium text-gray-900 mb-3">
+      <Text className="font-medium text-slate-900 mb-3">
         {t('shop.shipping.title')}
       </Text>
       
@@ -75,7 +75,7 @@ export const ShippingEstimate = () => {
         
         {data?.options && (
           <div className="space-y-3">
-            <Text className="font-medium text-gray-900">
+            <Text className="font-medium text-slate-900">
               {t('shop.shipping.options')}
             </Text>
             
@@ -89,18 +89,18 @@ export const ShippingEstimate = () => {
                     <Text className="font-medium">
                       {option.service === 'PAC' ? t('shop.shipping.pac') : t('shop.shipping.sedex')}
                     </Text>
-                    <Text variant="small" className="text-gray-600">
+                    <Text variant="small" className="text-slate-600">
                       {option.estimatedDays} {t('shop.shipping.business_days')}
                     </Text>
                   </div>
-                  <Text className="font-bold text-gray-900">
+                  <Text className="font-bold text-slate-900">
                     {formatCurrency(option.price / 100)}
                   </Text>
                 </div>
               ))}
             </div>
             
-            <Text variant="xs" className="text-gray-500">
+            <Text variant="xs" className="text-slate-500">
               ✓ {t('shop.shipping.info')} • {t('shop.shipping.origin')}
             </Text>
           </div>

@@ -76,7 +76,7 @@ export default function ShopPage() {
               {t('shop.categories.camisetas')}
             </Heading>
             <Text className="text-slate-600">
-              Camisetas exclusivas IbateXas em diversos tamanhos
+              {t('shop.category_descriptions.camisetas')}
             </Text>
           </div>
         </Link>
@@ -92,7 +92,7 @@ export default function ShopPage() {
               {t('shop.categories.acessorios')}
             </Heading>
             <Text className="text-slate-600">
-              Bonés, aventais e acessórios para churrasco
+              {t('shop.category_descriptions.acessorios')}
             </Text>
           </div>
         </Link>
@@ -108,7 +108,7 @@ export default function ShopPage() {
               {t('shop.categories.kits')}
             </Heading>
             <Text className="text-slate-600">
-              Kits completos para presente e churrasco
+              {t('shop.category_descriptions.kits')}
             </Text>
           </div>
         </Link>

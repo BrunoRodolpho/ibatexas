@@ -51,7 +51,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-8 text-center sm:px-6 lg:px-8">
         <p className="text-red-600">{t("common.error")}</p>
-        <Link href={"/search"} className="mt-4 inline-block text-orange-600">
+        <Link href={"/search"} className="mt-4 inline-block text-brand-500">
           {t("common.back")} →
         </Link>
       </div>
@@ -68,16 +68,16 @@ export default function ProductPage({ params }: { params: { id: string } }) {
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       {/* Breadcrumb */}
-      <div className="mb-8 flex gap-2 text-sm text-gray-600">
-        <Link href={"/"} className="hover:text-gray-900">
+      <div className="mb-8 flex gap-2 text-sm text-slate-600">
+        <Link href={"/"} className="hover:text-slate-900">
           Home
         </Link>
         <span>/</span>
-        <Link href={"/search"} className="hover:text-gray-900">
+        <Link href={"/search"} className="hover:text-slate-900">
           {t("search.title")}
         </Link>
         <span>/</span>
-        <span className="text-gray-900">{product.title}</span>
+        <span className="text-slate-900">{product.title}</span>
       </div>
 
       <div className="grid gap-12 lg:grid-cols-2">
