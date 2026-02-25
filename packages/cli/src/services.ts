@@ -55,7 +55,9 @@ export const SERVICES: Record<string, ServiceDef> = {
       { label: "Medusa API  ", url: "http://localhost:9000" },
       { label: "Admin UI   ", url: "http://localhost:9000/app" },
     ],
-    notes: ["Login: REDACTED_EMAIL  /  REDACTED_PASSWORD"],
+    notes: [
+      `Login: ${process.env.MEDUSA_ADMIN_EMAIL ?? "REDACTED_EMAIL"}  /  ${process.env.MEDUSA_ADMIN_PASSWORD ? "****" : "(set MEDUSA_ADMIN_PASSWORD)"}`,
+    ],
   },
 
   api: {

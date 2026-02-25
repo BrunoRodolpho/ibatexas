@@ -2,6 +2,7 @@
 // All enums mirror the Prisma schema in packages/domain/prisma/schema.prisma.
 
 import { z } from "zod"
+import { MAX_PARTY_SIZE } from "./constants.js"
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
 
@@ -99,7 +100,7 @@ export const CheckAvailabilityInputSchema = z.object({
     .number()
     .int()
     .min(1)
-    .max(20)
+    .max(MAX_PARTY_SIZE)
     .describe("Número de pessoas"),
   preferredTime: z
     .string()
@@ -128,7 +129,7 @@ export interface CheckAvailabilityOutput {
 export const CreateReservationInputSchema = z.object({
   customerId: z.string().describe("ID do cliente (Medusa customer id)"),
   timeSlotId: z.string().describe("ID do horário retornado por check_table_availability"),
-  partySize: z.number().int().min(1).max(20).describe("Número de pessoas"),
+  partySize: z.number().int().min(1).max(MAX_PARTY_SIZE).describe("Número de pessoas"),
   specialRequests: z
     .array(SpecialRequestSchema)
     .optional()
@@ -152,7 +153,7 @@ export const ModifyReservationInputSchema = z.object({
   customerId: z.string(),
   reservationId: z.string().describe("ID da reserva a modificar"),
   newTimeSlotId: z.string().optional().describe("Novo horário (opcional)"),
-  newPartySize: z.number().int().min(1).max(20).optional().describe("Novo número de pessoas"),
+  newPartySize: z.number().int().min(1).max(MAX_PARTY_SIZE).optional().describe("Novo número de pessoas"),
   specialRequests: z.array(SpecialRequestSchema).optional().describe("Novas solicitações especiais"),
 })
 
@@ -196,7 +197,7 @@ export interface GetMyReservationsOutput {
 export const JoinWaitlistInputSchema = z.object({
   customerId: z.string(),
   timeSlotId: z.string().describe("ID do horário esgotado"),
-  partySize: z.number().int().min(1).max(20).describe("Número de pessoas"),
+  partySize: z.number().int().min(1).max(MAX_PARTY_SIZE).describe("Número de pessoas"),
 })
 
 export type JoinWaitlistInput = z.infer<typeof JoinWaitlistInputSchema>

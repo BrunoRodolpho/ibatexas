@@ -3,7 +3,7 @@ import { healthRoutes } from "./health.js";
 import { chatRoutes } from "./chat.js";
 import { catalogRoutes } from "./catalog.js";
 import { shippingRoutes } from "./shipping.js";
-import { adminRoutes } from "./admin.js";
+import { adminRoutes } from "./admin/index.js";
 import { reservationRoutes } from "./reservations.js";
 
 export async function registerRoutes(server: FastifyInstance): Promise<void> {

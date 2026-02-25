@@ -80,6 +80,7 @@ const BASE_INPUT = {
   customerId: "cus_01",
   timeSlotId: "ts_01",
   partySize: 4,
+  specialRequests: [],
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

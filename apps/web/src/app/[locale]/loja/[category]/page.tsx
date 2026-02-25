@@ -1,6 +1,6 @@
 'use client'
 
-import { useTranslations } from 'next-intl'
+import { useTranslations, useLocale } from 'next-intl'
 import { useProducts } from '@/hooks/api'
 import { ProductGrid } from '@/components/organisms'
 import { Heading, Text } from '@/components/atoms'
@@ -16,6 +16,7 @@ const validCategories = ['camisetas', 'acessorios', 'kits']
 
 export default function CategoryPage({ params }: CategoryPageProps) {
   const t = useTranslations()
+  const locale = useLocale()
 
   if (!validCategories.includes(params.category)) {
     notFound()
@@ -59,7 +60,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
       ) : filteredProducts.length ? (
         <ProductGrid 
           products={filteredProducts} 
-          getProductHref={(product) => `/loja/produto/${product.id}`}
+          getProductHref={(product) => `/${locale}/loja/produto/${product.id}`}
         />
       ) : (
         <div className="text-center py-12">

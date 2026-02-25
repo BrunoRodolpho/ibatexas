@@ -1,11 +1,13 @@
 'use client'
 
 import { useState } from 'react'
+import Image from 'next/image'
 import { useTranslations } from 'next-intl'
 import { type ColumnDef, createColumnHelper } from '@tanstack/react-table'
 import { ExternalLink, Package, Layers } from 'lucide-react'
 import { DataTable, Switch } from '@/components/atoms'
 import { SearchInput, Sheet } from '@/components/molecules'
+import { MEDUSA_ADMIN_URL } from '@/lib/api'
 import { useAdminProducts, useAdminProduct } from '@/hooks/admin'
 import { apiFetch } from '@/lib/api'
 import type { AdminProductRow } from '@ibatexas/types'
@@ -60,7 +62,7 @@ export default function ShopManagement() {
       cell: (i) => {
         const url = i.getValue() as string | null
         return url ? (
-          <img src={url} alt="" className="h-10 w-10 rounded-md object-cover" />
+          <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
         ) : (
           <div className="h-10 w-10 rounded-md bg-slate-100" />
         )
@@ -112,7 +114,7 @@ export default function ShopManagement() {
             Variantes
           </button>
           <a
-            href={`http://localhost:9000/app/products/${i.row.original.id}`}
+            href={`${MEDUSA_ADMIN_URL}/app/products/${i.row.original.id}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"
@@ -132,7 +134,7 @@ export default function ShopManagement() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-900">{t('admin.shop')}</h1>
         <a
-          href="http://localhost:9000/app/products/create"
+          href={`${MEDUSA_ADMIN_URL}/app/products/create`}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1.5 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800"
@@ -173,7 +175,7 @@ export default function ShopManagement() {
         footer={
           selectedId ? (
             <a
-              href={`http://localhost:9000/app/products/${selectedId}`}
+              href={`${MEDUSA_ADMIN_URL}/app/products/${selectedId}`}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center justify-center gap-1.5 w-full rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
@@ -195,10 +197,13 @@ export default function ShopManagement() {
             {/* Product header */}
             <div className="flex items-start gap-3">
               {productDetail.imageUrl ? (
-                <img
+                <Image
                   src={productDetail.imageUrl}
                   alt=""
                   className="h-14 w-14 shrink-0 rounded-lg object-cover"
+                  width={56}
+                  height={56}
+                  unoptimized
                 />
               ) : (
                 <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-slate-100">

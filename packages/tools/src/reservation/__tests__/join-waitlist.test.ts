@@ -52,7 +52,7 @@ const BASE_INPUT = {
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe("joinWaitlist", () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => { vi.clearAllMocks() })
 
   it("throws when time slot does not exist", async () => {
     mockTimeSlotFindUnique.mockResolvedValue(null)

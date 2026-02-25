@@ -6,7 +6,7 @@ import { prisma } from "@ibatexas/domain"
 import type { ModifyReservationInput, ModifyReservationOutput, ReservationDTO, SpecialRequest } from "@ibatexas/types"
 import { ModifyReservationInputSchema, TableLocation } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
-import { assignTables, releaseReservation, reservationToDTO, type ReservationWithRelations } from "./utils.js"
+import { assignTables, reservationToDTO, type ReservationWithRelations } from "./utils.js"
 
 export async function modifyReservation(
   input: ModifyReservationInput,

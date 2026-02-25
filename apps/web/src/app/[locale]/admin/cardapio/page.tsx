@@ -1,11 +1,13 @@
 'use client'
 
 import { useState } from 'react'
+import Image from 'next/image'
 import { useTranslations } from 'next-intl'
 import { type ColumnDef, createColumnHelper } from '@tanstack/react-table'
 import { ExternalLink, RefreshCw } from 'lucide-react'
 import { DataTable, Badge, Switch } from '@/components/atoms'
 import { SearchInput, FilterChip } from '@/components/molecules'
+import { MEDUSA_ADMIN_URL } from '@/lib/api'
 import { useAdminProducts } from '@/hooks/admin'
 import { apiFetch } from '@/lib/api'
 import type { AdminProductRow } from '@ibatexas/types'
@@ -49,7 +51,7 @@ export default function MenuManagement() {
       cell: (i) => {
         const url = i.getValue() as string | null
         return url ? (
-          <img src={url} alt="" className="h-10 w-10 rounded-md object-cover" />
+          <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
         ) : (
           <div className="h-10 w-10 rounded-md bg-slate-100" />
         )
@@ -84,7 +86,7 @@ export default function MenuManagement() {
       header: '',
       cell: (i) => (
         <a
-          href={`http://localhost:9000/app/products/${i.row.original.id}`}
+          href={`${MEDUSA_ADMIN_URL}/app/products/${i.row.original.id}`}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"
@@ -103,7 +105,7 @@ export default function MenuManagement() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-900">{t('admin.menu')}</h1>
         <a
-          href="http://localhost:9000/app/products/create"
+          href={`${MEDUSA_ADMIN_URL}/app/products/create`}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1.5 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800"

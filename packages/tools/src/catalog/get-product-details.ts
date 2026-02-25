@@ -12,9 +12,14 @@ export async function getProductDetails(productId: string): Promise<ProductDTO |
   const client = getTypesenseClient()
   try {
     const doc = await client.collections(COLLECTION).documents(productId).retrieve()
-    return typesenseDocToDTO(doc as Record<string, unknown>)
-  } catch {
-    return null
+    return typesenseDocToDTO(doc as unknown as import("../mappers/product-mapper.js").TypesenseProductDoc)
+  } catch (err: unknown) {
+    // Typesense 404 (ObjectNotFound) → return null
+    if (err && typeof err === "object" && "httpStatus" in err && (err as { httpStatus: number }).httpStatus === 404) {
+      return null
+    }
+    // All other errors (network, auth, server) → rethrow
+    throw err
   }
 }
 

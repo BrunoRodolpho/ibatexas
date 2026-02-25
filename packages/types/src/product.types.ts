@@ -2,6 +2,11 @@
 
 import { z } from "zod"
 
+// ─── Shared type aliases ──────────────────────────────────────────────────
+
+export type UserType = "guest" | "customer" | "staff"
+export type ProductStatus = "published" | "draft"
+
 // ─── Enums ────────────────────────────────────────────────────────────────
 
 export enum AvailabilityWindow {
@@ -33,7 +38,7 @@ export interface ProductVariant {
 export interface ProductDTO {
   id: string
   title: string
-  description: string
+  description: string | null
   price: number // integer centavos (e.g., 8900 = R$89.00)
   imageUrl: string | null
   tags: string[] // e.g., ["popular", "sem_gluten", "vegetariano"]
@@ -41,7 +46,7 @@ export interface ProductDTO {
   allergens: string[] // always explicit, never undefined (CLAUDE.md rule)
   variants: ProductVariant[]
   productType: ProductType
-  status?: "published" | "draft" // Medusa product status
+  status?: ProductStatus
   inStock?: boolean // false when admin marks item unavailable (metadata.inStock = false)
   preparationTimeMinutes?: number
   rating?: number // rolling average
@@ -116,7 +121,7 @@ export interface QueryLogEntry {
   bucket: string // semantic bucket (replaces full embedding — saves ~50MB/week in Redis)
   resultsCount: number
   channel: Channel
-  userType: "guest" | "customer" | "staff"
+  userType: UserType
 }
 
 // ─── Events ────────────────────────────────────────────────────────────
@@ -127,17 +132,6 @@ export interface ProductIndexedEvent {
   indexed: boolean
   hasEmbedding: boolean
   indexedAt: string
-}
-
-/** @deprecated Use ProductViewedEvent */
-export interface ProductSearchedEvent {
-  query: string
-  resultsCount: number
-  sessionId?: string
-  userId?: string
-  channel: Channel
-  cachedHit: boolean
-  timestamp: string
 }
 
 export interface ProductViewedEvent {

@@ -1,6 +1,7 @@
+import { createRequire } from "node:module";
 import type { FastifyInstance } from "fastify";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+const require = createRequire(import.meta.url);
 const { version } = require("../../package.json") as { version: string };
 
 export async function healthRoutes(server: FastifyInstance): Promise<void> {

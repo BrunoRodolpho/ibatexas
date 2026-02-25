@@ -1,63 +1,62 @@
 "use client"
 
-import Link from "next/link"
-import { useTranslations, useLocale } from "next-intl"
+import { Link } from "@/i18n/navigation"
+import { useTranslations } from "next-intl"
 
 export function Footer() {
   const t = useTranslations()
-  const locale = useLocale()
 
   return (
-    <footer className="border-t bg-gray-50">
+    <footer className="border-t border-slate-200/70 bg-smoke-100">
       <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
         <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
           {/* Contato */}
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">
+            <h3 className="text-xs font-semibold font-display text-slate-900 uppercase tracking-widest">
               {t("footer.contact")}
             </h3>
-            <p className="mt-4 text-sm text-gray-600">
+            <p className="mt-4 text-sm text-slate-600">
               {t("footer.phone")}: (17) 3341-5300
             </p>
-            <p className="mt-2 text-sm text-gray-600">
+            <p className="mt-2 text-sm text-slate-600">
               {t("footer.address")}: Ibaté, SP
             </p>
           </div>
 
           {/* Horário */}
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">
+            <h3 className="text-xs font-semibold font-display text-slate-900 uppercase tracking-widest">
               {t("footer.hours")}
             </h3>
-            <p className="mt-4 text-sm text-gray-600">
+            <p className="mt-4 text-sm text-slate-600">
               {t("footer.monday_to_friday")}: 11h - 23h
             </p>
-            <p className="mt-2 text-sm text-gray-600">
+            <p className="mt-2 text-sm text-slate-600">
               {t("footer.saturday")}: 11h - 23h30
             </p>
-            <p className="mt-2 text-sm text-gray-600">
+            <p className="mt-2 text-sm text-slate-600">
               {t("footer.sunday")}: 11h - 23h
             </p>
           </div>
 
           {/* Links */}
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">
+            <h3 className="text-xs font-semibold font-display text-slate-900 uppercase tracking-widest">
               {t("footer.links")}
             </h3>
             <ul className="mt-4 space-y-2">
               <li>
                 <Link
-                  href={`/${locale}/search`}
-                  className="text-sm text-gray-600 hover:text-orange-600"
+                  href={"/search"}
+                  className="text-sm text-slate-600 hover:text-brand-500 transition-colors duration-250"
                 >
                   {t("nav.shop")}
                 </Link>
               </li>
               <li>
                 <Link
-                  href={`/${locale}/account/reservations`}
-                  className="text-sm text-gray-600 hover:text-orange-600"
+                  href={"/account/reservations"}
+                  className="text-sm text-slate-600 hover:text-brand-500 transition-colors duration-250"
                 >
                   {t("nav.reservations")}
                 </Link>
@@ -65,7 +64,7 @@ export function Footer() {
               <li>
                 <a
                   href="#"
-                  className="text-sm text-gray-600 hover:text-orange-600"
+                  className="text-sm text-slate-600 hover:text-brand-500 transition-colors duration-250"
                 >
                   {t("footer.privacy")}
                 </a>
@@ -75,13 +74,13 @@ export function Footer() {
 
           {/* Social */}
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">
+            <h3 className="text-xs font-semibold font-display text-slate-900 uppercase tracking-widest">
               {t("footer.social")}
             </h3>
             <div className="mt-4 flex gap-4">
               <a
                 href="https://instagram.com"
-                className="text-gray-600 hover:text-orange-600"
+                className="text-slate-500 hover:text-brand-500 transition-colors duration-250"
                 aria-label="Instagram"
               >
                 <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
@@ -90,7 +89,7 @@ export function Footer() {
               </a>
               <a
                 href="https://facebook.com"
-                className="text-gray-600 hover:text-orange-600"
+                className="text-slate-500 hover:text-brand-500 transition-colors duration-250"
                 aria-label="Facebook"
               >
                 <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
@@ -99,7 +98,7 @@ export function Footer() {
               </a>
               <a
                 href="https://wa.me"
-                className="text-gray-600 hover:text-orange-600"
+                className="text-slate-500 hover:text-brand-500 transition-colors duration-250"
                 aria-label="WhatsApp"
               >
                 <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24">
@@ -111,7 +110,7 @@ export function Footer() {
         </div>
 
         {/* Copyright */}
-        <div className="mt-8 border-t pt-8 text-center text-sm text-gray-600">
+        <div className="mt-8 border-t border-slate-200/70 pt-8 text-center text-sm text-slate-500">
           <p>&copy; {new Date().getFullYear()} IbateXas. {t("footer.all_rights")}</p>
         </div>
       </div>

@@ -193,12 +193,13 @@ export async function incrementQueryCacheHits(
   channel: Channel,
   embedding: number[],
   availabilityMode?: string,
-  allergenHash?: string
+  allergenHash?: string,
+  productType?: string
 ): Promise<void> {
   try {
     const redisClient = await getRedisClient()
     const bucket = embeddingToBucket(embedding)
-    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none")
+    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none", productType)
 
     const cached = await redisClient.get(key)
     if (!cached) return

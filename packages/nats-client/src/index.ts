@@ -6,25 +6,41 @@
 import { connect, type NatsConnection } from "nats"
 
 let natsConn: NatsConnection | null = null
+let pendingConnection: Promise<NatsConnection> | null = null
 
 /**
  * Get or create NATS connection.
- * Singleton pattern; reused across all publishers/subscribers.
+ * Singleton pattern with pending-promise guard to prevent race conditions
+ * when multiple callers request the connection concurrently.
  */
 export async function getNatsConnection(): Promise<NatsConnection> {
   if (natsConn) {
     return natsConn
   }
 
+  // Guard: if a connection attempt is already in flight, wait for it
+  if (pendingConnection) {
+    return pendingConnection
+  }
+
   const natsUrl = process.env.NATS_URL || "nats://localhost:4222"
 
-  natsConn = await connect({
+  pendingConnection = connect({
     servers: [natsUrl],
     reconnect: true,
     maxReconnectAttempts: -1, // Infinite retries
   })
 
-  return natsConn
+  try {
+    natsConn = await pendingConnection
+    return natsConn
+  } catch (error) {
+    // Reset so the next call can retry
+    pendingConnection = null
+    throw error
+  } finally {
+    pendingConnection = null
+  }
 }
 
 /**
@@ -32,7 +48,7 @@ export async function getNatsConnection(): Promise<NatsConnection> {
  * Subject format: ibatexas.{domain}.{action}
  * E.g., ibatexas.product.indexed
  */
-export async function publishNatsEvent(event: string, payload: Record<string, any>): Promise<void> {
+export async function publishNatsEvent(event: string, payload: Record<string, unknown>): Promise<void> {
   try {
     const nats = await getNatsConnection()
     const subject = `ibatexas.${event}`
@@ -52,7 +68,7 @@ export async function publishNatsEvent(event: string, payload: Record<string, an
  */
 export async function subscribeNatsEvent(
   event: string,
-  handler: (payload: Record<string, any>) => void | Promise<void>
+  handler: (payload: Record<string, unknown>) => void | Promise<void>
 ): Promise<{ unsubscribe: () => void }> {
   const nats = await getNatsConnection()
   const subject = `ibatexas.${event}`
@@ -86,6 +102,7 @@ export async function closeNatsConnection(): Promise<void> {
   if (natsConn) {
     await natsConn.close()
     natsConn = null
+    pendingConnection = null
   }
 }
 

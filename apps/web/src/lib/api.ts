@@ -1,5 +1,7 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
 
+export const MEDUSA_ADMIN_URL = process.env.NEXT_PUBLIC_MEDUSA_BACKEND_URL || "http://localhost:9000"
+
 export const apiFetch = async (endpoint: string, options?: RequestInit) => {
   const url = `${API_BASE}${endpoint}`
   const response = await fetch(url, {

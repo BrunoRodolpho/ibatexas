@@ -275,6 +275,9 @@ importers:
 
   packages/domain:
     dependencies:
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../types
       '@prisma/client':
         specifier: ^5.10.0
         version: 5.22.0(prisma@5.22.0)
@@ -326,9 +329,6 @@ importers:
 
   packages/tools:
     dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.28.0
-        version: 0.28.0
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain

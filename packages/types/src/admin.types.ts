@@ -1,5 +1,7 @@
 // Admin domain types
 
+import type { ProductType, ProductStatus } from "./product.types.js"
+
 export interface AdminDashboardMetrics {
   ordersToday: number
   revenueToday: number // integer centavos
@@ -16,8 +18,8 @@ export interface AdminProductRow {
   imageUrl: string | null
   category: string
   price: number // integer centavos
-  status: 'published' | 'draft'
-  productType: 'food' | 'frozen' | 'merchandise'
+  status: ProductStatus
+  productType: ProductType
   variantCount: number
   inStock: boolean
 }

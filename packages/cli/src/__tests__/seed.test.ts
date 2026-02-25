@@ -11,6 +11,7 @@ const VALID_AVAILABILITY_WINDOWS = ["almoco", "jantar", "congelados", "always"] 
 const VALID_TAGS = [
   "popular", "chef_choice", "sem_gluten", "sem_lactose",
   "vegano", "vegetariano", "novo", "congelado", "defumado",
+  "exclusivo", "edicao_limitada", "kit",
 ] as const
 const NUTRITIONAL_FIELDS = ["calories", "protein", "fat", "carbs", "sodium"] as const
 const KEBAB_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/
@@ -18,9 +19,9 @@ const KEBAB_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/
 // ── Category tests ─────────────────────────────────────────────────────────────
 
 describe("Category definitions", () => {
-  it("has exactly one root (parent: null)", () => {
+  it("has at least one root (parent: null)", () => {
     const roots = CATEGORIES.filter((c) => c.parent === null)
-    expect(roots.length, "Expected exactly one root category").toBe(1)
+    expect(roots.length, "Expected at least one root category").toBeGreaterThanOrEqual(1)
   })
 
   it("all child categories reference an existing parent handle", () => {
@@ -88,10 +89,13 @@ describe("Seed data — structural validation", () => {
         `${product.title}: invalid availabilityWindow "${product.metadata.availabilityWindow}"`
       ).toBe(true)
 
-      expect(
-        product.metadata.nutritionalInfo,
-        `${product.title}: missing nutritionalInfo`
-      ).toBeDefined()
+      // Merchandise products don't require nutritionalInfo
+      if (product.metadata.productType !== "merchandise") {
+        expect(
+          product.metadata.nutritionalInfo,
+          `${product.title}: missing nutritionalInfo`
+        ).toBeDefined()
+      }
 
       expect(
         Array.isArray(product.metadata.allergens),
@@ -224,8 +228,11 @@ describe("Seed data — structural validation", () => {
     }
   })
 
-  it("nutritionalInfo fields are all non-negative numbers", () => {
-    for (const product of SEED_PRODUCTS) {
+  it("nutritionalInfo fields are all non-negative numbers (food/frozen only)", () => {
+    const withNutrition = SEED_PRODUCTS.filter(
+      (p) => p.metadata.productType !== "merchandise"
+    )
+    for (const product of withNutrition) {
       for (const field of NUTRITIONAL_FIELDS) {
         const val = product.metadata.nutritionalInfo[field]
         expect(
