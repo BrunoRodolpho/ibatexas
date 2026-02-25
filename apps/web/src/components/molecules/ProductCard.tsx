@@ -25,29 +25,31 @@ export const ProductCard = ({ id, title, imageUrl, price, rating, tags, href, on
 
   return (
     <Link href={linkHref} className="group block h-full">
-      <Card className="flex flex-col gap-3 cursor-pointer h-full card-hover">
-        <div className="relative overflow-hidden rounded-xl">
+      <Card className="flex flex-col cursor-pointer h-full card-hover overflow-hidden">
+        {/* Image area — fixed aspect ratio */}
+        <div className="relative aspect-[4/3] overflow-hidden">
           {imageUrl ? (
             <Image
               src={imageUrl}
               alt={title}
               variant="card"
-              className="w-full h-52 object-cover transition-transform duration-500 group-hover:scale-105"
+              className="aspect-[4/3] transition-transform duration-500 group-hover:scale-105"
             />
           ) : (
-            <div className="w-full h-52 bg-gradient-to-br from-brand-50 to-brand-100 flex items-center justify-center">
-              <span className="text-4xl">🔥</span>
+            <div className="absolute inset-0 bg-gradient-to-br from-brand-50 to-brand-100 flex items-center justify-center">
+              <span className="text-5xl">🔥</span>
             </div>
           )}
           {rating && (
-            <div className="absolute top-3 right-3 bg-brand-500 text-white px-2.5 py-1 rounded-lg text-xs font-bold shadow-sm">
+            <div className="absolute top-3 right-3 z-10 bg-brand-500 text-white px-2.5 py-1 rounded-lg text-xs font-bold shadow-sm">
               ⭐ {rating.toFixed(1)}
             </div>
           )}
         </div>
 
-        <div className="flex flex-col gap-2 p-1">
-          <Heading as="h3" variant="h5" className="line-clamp-2">
+        {/* Card body */}
+        <div className="flex flex-col gap-2 p-4 flex-1">
+          <Heading as="h3" variant="h5" className="line-clamp-2 text-base">
             {title}
           </Heading>
 
@@ -62,7 +64,7 @@ export const ProductCard = ({ id, title, imageUrl, price, rating, tags, href, on
             </div>
           )}
 
-          <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+          <div className="mt-auto flex items-center justify-between pt-3 border-t border-slate-100">
             <Text variant="h6" textColor="accent">
               {priceFormatted}
             </Text>

@@ -1,11 +1,11 @@
 "use client"
 
 import { useState } from "react"
-import Image from "next/image"
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from "next-intl"
 import { useProductDetail } from "@/hooks/api"
 import { useCartStore, useUIStore } from "@/stores"
+import { Image } from "@/components/atoms/Image"
 
 export default function ProductPage({ params }: { params: { id: string } }) {
   const t = useTranslations()
@@ -33,10 +33,15 @@ export default function ProductPage({ params }: { params: { id: string } }) {
   if (loading) {
     return (
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <div className="animate-pulse space-y-6">
-          <div className="aspect-square rounded-lg bg-gray-200" />
-          <div className="h-8 w-64 rounded bg-gray-200" />
-          <div className="h-4 w-full rounded bg-gray-200" />
+        <div className="grid gap-12 lg:grid-cols-2">
+          <div className="aspect-square rounded-2xl skeleton" />
+          <div className="space-y-6 py-4">
+            <div className="h-8 w-3/4 rounded-lg skeleton" />
+            <div className="h-4 w-full rounded skeleton" />
+            <div className="h-4 w-2/3 rounded skeleton" />
+            <div className="h-10 w-40 rounded-lg skeleton mt-4" />
+            <div className="h-14 w-full rounded-xl skeleton mt-8" />
+          </div>
         </div>
       </div>
     )
@@ -79,30 +84,26 @@ export default function ProductPage({ params }: { params: { id: string } }) {
         {/* Images */}
         <div>
           {product.imageUrl && (
-            <div className="relative mb-4 overflow-hidden rounded-lg bg-gray-100">
+            <div className="relative mb-4 aspect-square overflow-hidden rounded-2xl bg-smoke-50">
               <Image
                 src={product.imageUrl}
                 alt={product.title}
-                className="aspect-square h-full w-full object-cover"
-                width={400}
-                height={400}
-                unoptimized
+                variant="detail"
+                className="aspect-square"
               />
             </div>
           )}
-          {/* Related Images Placeholder */}
+          {/* Thumbnail strip */}
           {product.imageUrl && (
             <div className="grid grid-cols-4 gap-2">
               <div
-                className="cursor-pointer overflow-hidden rounded border-2 border-orange-600"
+                className="relative cursor-pointer overflow-hidden rounded-xl border-2 border-brand-500 aspect-square"
               >
                 <Image
                   src={product.imageUrl}
                   alt={`${product.title} 1`}
-                  className="aspect-square h-20 w-20 object-cover transition hover:scale-105"
-                  width={80}
-                  height={80}
-                  unoptimized
+                  variant="thumbnail"
+                  className="!h-full !w-full"
                 />
               </div>
             </div>
@@ -111,15 +112,15 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
         {/* Details */}
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">{product.title}</h1>
+          <h1 className="font-display text-display-md font-bold tracking-tight text-slate-900">{product.title}</h1>
 
           {product.description && (
-            <p className="mt-4 text-gray-600">{product.description}</p>
+            <p className="mt-4 text-slate-600 leading-relaxed">{product.description}</p>
           )}
 
           {/* Price */}
           <div className="mt-6 flex items-baseline gap-2">
-            <span className="text-4xl font-bold text-orange-600">{price}</span>
+            <span className="text-4xl font-bold text-brand-500">{price}</span>
           </div>
 
           {/* Stock */}
@@ -137,8 +138,8 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
           {/* Variants */}
           {variants.length > 0 && (
-            <div className="mt-6 border-t border-gray-200 pt-6">
-              <h3 className="text-sm font-medium text-gray-900">
+            <div className="mt-6 border-t border-slate-200 pt-6">
+              <h3 className="text-sm font-medium text-slate-900">
                 {t("product.variants")}
               </h3>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -151,10 +152,10 @@ export default function ProductPage({ params }: { params: { id: string } }) {
                     <button
                       key={variant.id}
                       onClick={() => setSelectedVariant(variant.id)}
-                      className={`rounded-lg border-2 px-4 py-2 text-sm font-medium transition ${
+                      className={`rounded-xl border-2 px-4 py-2.5 text-sm font-medium transition-all duration-250 ${
                         selectedVariant === variant.id
-                          ? "border-orange-600 bg-orange-50 text-orange-900"
-                          : "border-gray-200 text-gray-700 hover:border-gray-300"
+                          ? "border-brand-500 bg-brand-50 text-brand-800"
+                          : "border-slate-200 text-slate-700 hover:border-slate-300"
                       }`}
                     >
                       {variant.title} - {variantPrice}
@@ -166,16 +167,16 @@ export default function ProductPage({ params }: { params: { id: string } }) {
           )}
 
           {/* Quantity & Special Instructions */}
-          <div className="mt-6 border-t border-gray-200 pt-6">
+          <div className="mt-6 border-t border-slate-200 pt-6">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-sm font-medium text-gray-900">
+                <label className="block text-sm font-medium text-slate-900">
                   {t("product.quantity")}
                 </label>
                 <div className="mt-2 flex items-center gap-2">
                   <button
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                    className="rounded-lg border border-gray-300 px-3 py-2 text-gray-600 hover:bg-gray-100"
+                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-600 hover:bg-smoke-50 transition-colors"
                   >
                     −
                   </button>
@@ -184,11 +185,11 @@ export default function ProductPage({ params }: { params: { id: string } }) {
                     min="1"
                     value={quantity}
                     onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-16 rounded-lg border border-gray-300 px-3 py-2 text-center"
+                    className="w-16 rounded-xl border border-slate-200 px-3 py-2 text-center focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                   />
                   <button
                     onClick={() => setQuantity(quantity + 1)}
-                    className="rounded-lg border border-gray-300 px-3 py-2 text-gray-600 hover:bg-gray-100"
+                    className="rounded-xl border border-slate-200 px-3 py-2 text-slate-600 hover:bg-smoke-50 transition-colors"
                   >
                     +
                   </button>
@@ -198,14 +199,14 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
             {/* Special Instructions */}
             <div className="mt-4">
-              <label className="block text-sm font-medium text-gray-900">
+              <label className="block text-sm font-medium text-slate-900">
                 {t("product.special_instructions")}
               </label>
               <textarea
                 value={specialInstructions}
                 onChange={(e) => setSpecialInstructions(e.target.value)}
                 placeholder={t("product.special_instructions_placeholder")}
-                className="mt-2 block w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-orange-600 focus:outline-none"
+                className="mt-2 block w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                 rows={3}
               />
             </div>
@@ -215,7 +216,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
           <button
             onClick={handleAddToCart}
             disabled={!product.inStock}
-            className="mt-8 w-full rounded-lg bg-orange-600 px-6 py-3 font-medium text-white hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            className="mt-8 w-full rounded-xl bg-brand-500 px-6 py-4 text-lg font-semibold text-white shadow-glow-brand hover:bg-brand-600 hover:-translate-y-0.5 hover:shadow-glow-brand-lg transition-all duration-250 disabled:bg-slate-300 disabled:shadow-none disabled:cursor-not-allowed disabled:transform-none"
           >
             {product.inStock ? t("product.add_to_cart") : t("product.out_of_stock")}
           </button>
@@ -223,7 +224,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
           {/* Back to Search */}
           <Link
             href={"/search"}
-            className="mt-4 block text-center text-orange-600 hover:text-orange-700"
+            className="mt-4 block text-center text-brand-500 hover:text-brand-600 font-medium transition-colors"
           >
             ← {t("common.back")}
           </Link>
@@ -232,17 +233,17 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
       {/* Nutritional Info & Allergens */}
       {(product.allergens?.length) && (
-        <div className="mt-12 border-t pt-8">
-          <h2 className="text-2xl font-bold text-gray-900">
+        <div className="mt-12 border-t border-slate-200 pt-8">
+          <h2 className="font-display text-2xl font-bold text-slate-900">
             {t("product.nutritional_info")}
           </h2>
 
           {product.allergens?.length > 0 && (
             <div className="mt-6">
-              <h3 className="font-semibold text-gray-900">
+              <h3 className="font-semibold text-slate-900">
                 {t("product.allergens")}
               </h3>
-              <p className="mt-2 text-gray-600">
+              <p className="mt-2 text-slate-600">
                 {t("product.contains")} {product.allergens.join(", ")}
               </p>
             </div>
