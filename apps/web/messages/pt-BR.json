@@ -15,10 +15,14 @@
     "description": "Churrasco de qualidade defumado lentamente, feito com carinho.",
     "hero_title": "Churrasco Defumado Artesanal",
     "hero_subtitle": "Feito com ingredientes selecionados, defumado lentamente. Peça já!",
+    "hero_tagline": "Pedido em 3 segundos.",
+    "badge_ai_native": "IA Nativa",
+    "order_via_ai": "Pedir via IA",
     "featured": "Produtos em Destaque",
     "featured_products": "Produtos em Destaque",
     "featured_subtitle": "Conheça nossos pratos mais populares",
     "browse_by_category": "Navegue por Categoria",
+    "browse_type": "Navegue por tipo",
     "view_menu": "Ver Cardápio Completo",
     "browse_menu": "Ver Cardápio",
     "make_reservation": "Fazer Reserva",
@@ -27,18 +31,58 @@
     "no_categories": "Nenhuma categoria disponível",
     "delivery_cta_title": "Entrega Rápida e Segura",
     "delivery_cta_subtitle": "Acompanhe seu pedido em tempo real",
-    "order_now": "Peça Agora"
+    "delivery_cta_badge": "Sem espera",
+    "order_now": "Peça Agora",
+    "testimonials_eyebrow": "O que nossos clientes dizem",
+    "testimonials_title": "Escolha dos nossos clientes",
+    "chat_preview_assistant": "Assistente IbateXas",
+    "chat_preview_online": "Online agora",
+    "chat_preview_greeting": "Olá! O que você vai querer hoje? 🔥",
+    "chat_preview_user": "Costela defumada para 2 pessoas",
+    "chat_preview_reply": "Perfeito! Adicionei ao carrinho. Entrega em ~40 min. Confirmar? 🥩",
+    "chat_preview_placeholder": "Pedir, perguntar, reservar..."
   },
   "search": {
     "title": "Buscar Cardápio",
-    "placeholder": "Pesquise por produto, ingrediente ou tipo...",
+    "placeholder": "Buscar produtos, marcas, categorias...",
     "results": "resultados encontrados",
     "filters": "Filtros",
+    "filter": "Filtrar",
     "tags": "Tags",
     "allergens_exclude": "Excluir alérgenos",
     "available_now": "Disponível agora",
     "no_results": "Nenhum produto encontrado",
-    "reset_filters": "Limpar Filtros"
+    "no_results_for": "Nenhum produto encontrado para \"{query}\"",
+    "start_searching": "Digite algo para começar a buscar ou selecione uma categoria",
+    "reset_filters": "Limpar Filtros",
+    "searching": "Buscando...",
+    "results_count": "{count} resultado(s)",
+    "category": "Categoria",
+    "characteristics": "Características",
+    "price": "Preço",
+    "sort": {
+      "label": "Ordenar por",
+      "relevance": "Relevância",
+      "price_asc": "Preço: Menor → Maior",
+      "price_desc": "Preço: Maior → Menor",
+      "rating": "Melhor Avaliação",
+      "popular": "Mais Popular"
+    },
+    "tags_list": {
+      "novo": "🆕 Novo",
+      "popular": "⭐ Popular",
+      "chef_choice": "👨‍🍳 Chef's Choice",
+      "vegetariano": "🥬 Vegetariano",
+      "vegan": "🌱 Vegan",
+      "sem_gluten": "🌾 Sem Glúten"
+    },
+    "categories_list": {
+      "almoco": "Almoço",
+      "jantar": "Jantar",
+      "congelados": "Congelados",
+      "sobremesas": "Sobremesas",
+      "bebidas": "Bebidas"
+    }
   },
   "product": {
     "price": "Preço",
@@ -61,8 +105,11 @@
   },
   "cart": {
     "title": "Seu Carrinho",
+    "title_count": "Carrinho ({count} {count, plural, one {item} other {itens}})",
     "empty": "Seu carrinho está vazio",
+    "empty_subtitle": "Explore nosso menu e adicione seus pratos favoritos",
     "continue_shopping": "Continuar Comprando",
+    "back_to_menu": "Voltar ao Menu",
     "item": "Item",
     "items": "Itens",
     "quantity": "Qtd",
@@ -73,16 +120,30 @@
     "tip": "Gorjeta",
     "total": "Total",
     "delivery_type": "Tipo de Entrega",
-    "delivery": "Entrega",
-    "pickup": "Retirada",
-    "dine_in": "No Local",
+    "delivery": "Entrega em Casa",
+    "delivery_fee_label": "Taxa de entrega calculada pelo CEP",
+    "pickup": "Retirada no Local",
+    "pickup_fee_label": "Sem taxa",
+    "dine_in": "Comer no Local",
+    "dine_in_fee_label": "Sem taxa",
     "cep": "CEP",
     "validate_address": "Validar Endereço",
     "delivery_fee_estimate": "Taxa de Entrega Estimada",
     "delivery_time_estimate": "Tempo de Entrega Estimado",
-    "proceed_checkout": "Ir para Checkout",
+    "proceed_checkout": "Ir para Pagamento",
     "update_cart": "Atualizar Carrinho",
-    "remove": "Remover"
+    "remove": "Remover",
+    "select_delivery_type": "Selecione um tipo de entrega",
+    "checkout_progress": "Prosseguindo para pagamento...",
+    "coupon_applied": "Cupom \"{code}\" aplicado!",
+    "coupon_invalid": "Cupom inválido",
+    "coupon_error": "Erro ao validar cupom",
+    "coupon_applied_badge": "✓ Cupom Aplicado",
+    "add_coupon": "Adicionar Cupom",
+    "apply_coupon": "Aplicar Cupom",
+    "apply": "Aplicar",
+    "coupon_placeholder": "Ex: WELCOME10",
+    "coupon_hint": "Insira o código do cupom promocional"
   },
   "checkout": {
     "title": "Checkout",
@@ -105,13 +166,18 @@
     "title": "Minha Conta",
     "login_required": "Faça login para acessar sua conta",
     "profile": "Perfil",
+    "profile_description": "Informações do seu perfil",
     "orders": "Pedidos",
+    "orders_description": "Seu histórico de pedidos",
     "reservations": "Reservas",
+    "reservations_description": "Suas reservas de mesa",
     "preferences": "Preferências",
     "dietary_restrictions": "Restrições Dietéticas",
     "allergens": "Alérgenos",
     "saved_addresses": "Endereços Salvos",
+    "addresses_description": "Endereços salvos para entrega",
     "payment_methods": "Métodos de Pagamento",
+    "payment_description": "Seus métodos de pagamento",
     "logout": "Sair"
   },
   "reservations": {
@@ -193,6 +259,11 @@
       "no_featured": "Produtos em destaque em breve",
       "category_empty": "Esta categoria ainda não possui produtos"
     },
+    "category_descriptions": {
+      "camisetas": "Camisetas 100% algodão com designs exclusivos do IbateXas",
+      "acessorios": "Bonés, aventais e acessórios premium para churrasco",
+      "kits": "Kits completos e produtos especiais para presente"
+    },
     "errors": {
       "product_not_found": "Produto não encontrado"
     },
@@ -262,7 +333,9 @@
     "more": "Mais",
     "less": "Menos",
     "real": "R$",
-    "required_field": "Campo obrigatório"
+    "required_field": "Campo obrigatório",
+    "home": "Início",
+    "all": "Todos"
   },
   "footer": {
     "contact": "Contato",

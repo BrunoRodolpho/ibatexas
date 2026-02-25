@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react'
 import { Link } from '@/i18n/navigation'
+import { useTranslations } from 'next-intl'
 
 import { Heading, Text, Button, RadioGroup } from '@/components/atoms'
 import { CartItem, Modal } from '@/components/molecules'
@@ -10,17 +11,18 @@ import { apiFetch } from '@/lib/api'
 import clsx from 'clsx'
 
 export default function CartPage() {
-  const { items, deliveryType, couponCode, getTotal, getItemCount, removeItem, updateItem, setDeliveryType, clearCart } =
+  const t = useTranslations()
+  const { items, deliveryType, couponCode, deliveryFee: storeDeliveryFee, getTotal, getItemCount, removeItem, updateItem, setDeliveryType, clearCart } =
     useCartStore()
   const { addToast } = useUIStore()
 
   const [couponInput, setCouponInput] = React.useState(couponCode || '')
   const [showCouponModal, setShowCouponModal] = React.useState(false)
+  const [couponDiscount, setCouponDiscount] = React.useState(0)
 
   const subtotal = getTotal()
-  const deliveryFee = deliveryType === 'delivery' ? 1000 : 0 // R$10
-  const tax = Math.floor(subtotal * 0.1) // 10% tax
-  const total = subtotal + deliveryFee + tax
+  const deliveryFee = deliveryType === 'delivery' ? (storeDeliveryFee ?? 0) : 0
+  const total = subtotal + deliveryFee - couponDiscount
 
   const handleApplyCoupon = async () => {
     if (!couponInput.trim()) return
@@ -31,38 +33,37 @@ export default function CartPage() {
       })
       if (res.valid) {
         useCartStore.getState().setCouponCode(couponInput.toUpperCase())
-        addToast(`Cupom "${couponInput}" aplicado!`, 'success')
+        setCouponDiscount(res.discount ?? 0)
+        addToast(t('cart.coupon_applied', { code: couponInput }), 'success')
         setShowCouponModal(false)
       } else {
-        addToast('Cupom inválido', 'error')
+        addToast(t('cart.coupon_invalid'), 'error')
       }
     } catch {
-      addToast('Erro ao validar cupom', 'error')
+      addToast(t('cart.coupon_error'), 'error')
     }
   }
 
   const handleCheckout = () => {
     if (!deliveryType) {
-      addToast('Selecione um tipo de entrega', 'warning')
+      addToast(t('cart.select_delivery_type'), 'warning')
       return
     }
-    // Navigate to checkout page
-    // router.push("/checkout")
-    addToast('Prosseguindo para pagamento...', 'success')
+    addToast(t('cart.checkout_progress'), 'success')
   }
 
   if (items.length === 0) {
     return (
       <div className="min-h-screen bg-white flex flex-col items-center justify-center px-4">
         <Heading as="h1" variant="h2" className="mb-4">
-          Seu carrinho está vazio
+          {t('cart.empty')}
         </Heading>
         <Text textColor="secondary" className="mb-8">
-          Explore nosso menu e adicione seus pratos favoritos
+          {t('cart.empty_subtitle')}
         </Text>
         <Link href={"/search"}>
           <Button variant="primary" size="lg">
-            Voltar ao Menu
+            {t('cart.back_to_menu')}
           </Button>
         </Link>
       </div>
@@ -75,7 +76,7 @@ export default function CartPage() {
         {/* Header */}
         <div className="mb-6">
           <Heading as="h1" variant="h2">
-            Carrinho ({getItemCount()} {getItemCount() === 1 ? 'item' : 'itens'})
+            {t('cart.title')} ({getItemCount()} {getItemCount() === 1 ? t('cart.item') : t('cart.items')})
           </Heading>
         </div>
 
@@ -98,14 +99,14 @@ export default function CartPage() {
               {/* Delivery Type */}
               <div>
                 <Heading as="h3" variant="h5" className="mb-3">
-                  Tipo de Entrega
+                  {t('cart.delivery_type')}
                 </Heading>
                 <RadioGroup
                   name="deliveryType"
                   options={[
-                    { value: 'delivery', label: 'Entrega em Casa', description: 'R$ 10,00' },
-                    { value: 'pickup', label: 'Retirada no Local', description: 'Sem taxa' },
-                    { value: 'dine-in', label: 'Comer no Local', description: 'Sem taxa' },
+                    { value: 'delivery', label: t('cart.delivery'), description: t('cart.delivery_fee_label') },
+                    { value: 'pickup', label: t('cart.pickup'), description: t('cart.pickup_fee_label') },
+                    { value: 'dine-in', label: t('cart.dine_in'), description: t('cart.dine_in_fee_label') },
                   ]}
                   value={deliveryType || ''}
                   onChange={(value) => setDeliveryType(value as 'delivery' | 'pickup' | 'dine-in')}
@@ -116,33 +117,26 @@ export default function CartPage() {
               {/* Summary */}
               <div className="space-y-3 border-t border-slate-200 pt-4">
                 <div className="flex justify-between">
-                  <Text textColor="secondary">Subtotal</Text>
+                  <Text textColor="secondary">{t('cart.subtotal')}</Text>
                   <Text className="font-semibold">
                     {(subtotal / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                   </Text>
                 </div>
 
-                <div className="flex justify-between">
-                  <Text textColor="secondary">Taxa</Text>
-                  <Text className="font-semibold">
-                    {(tax / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
-                  </Text>
-                </div>
-
                 {deliveryFee > 0 && (
                   <div className="flex justify-between">
-                    <Text textColor="secondary">Entrega</Text>
+                    <Text textColor="secondary">{t('cart.delivery_fee')}</Text>
                     <Text className="font-semibold">
                       {(deliveryFee / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                     </Text>
                   </div>
                 )}
 
-                {couponCode && (
+                {couponCode && couponDiscount > 0 && (
                   <div className="flex justify-between bg-green-50 p-2 rounded text-green-700">
-                    <Text variant="small">Cupom {couponCode}</Text>
+                    <Text variant="small">{t('cart.coupon_applied_badge')} ({couponCode})</Text>
                     <Text variant="small" className="font-semibold">
-                      -R$ 10,00
+                      -{(couponDiscount / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                     </Text>
                   </div>
                 )}
@@ -151,7 +145,7 @@ export default function CartPage() {
               {/* Total */}
               <div className="flex justify-between border-t border-slate-200 pt-4">
                 <Heading as="h4" variant="h4">
-                  Total
+                  {t('cart.total')}
                 </Heading>
                 <Heading as="h4" variant="h4" textColor="accent">
                   {(total / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
@@ -165,7 +159,7 @@ export default function CartPage() {
                 className="w-full"
                 onClick={() => setShowCouponModal(true)}
               >
-                {couponCode ? '✓ Cupom Aplicado' : 'Adicionar Cupom'}
+                {couponCode ? t('cart.coupon_applied_badge') : t('cart.add_coupon')}
               </Button>
 
               {/* Checkout Button */}
@@ -176,13 +170,13 @@ export default function CartPage() {
                 onClick={handleCheckout}
                 disabled={!deliveryType}
               >
-                Ir para Pagamento
+                {t('cart.proceed_checkout')}
               </Button>
 
               {/* Continue Shopping */}
               <Link href={"/search"} className="block">
                 <Button variant="tertiary" size="md" className="w-full">
-                  Voltar ao Menu
+                  {t('cart.back_to_menu')}
                 </Button>
               </Link>
             </div>
@@ -193,16 +187,16 @@ export default function CartPage() {
       {/* Coupon Modal */}
       <Modal
         isOpen={showCouponModal}
-        title="Aplicar Cupom"
+        title={t('cart.apply_coupon')}
         onClose={() => setShowCouponModal(false)}
         size="sm"
         footer={
           <div className="flex gap-2">
             <Button variant="secondary" className="flex-1" onClick={() => setShowCouponModal(false)}>
-              Cancelar
+              {t('common.cancel')}
             </Button>
             <Button variant="primary" className="flex-1" onClick={handleApplyCoupon}>
-              Aplicar
+              {t('cart.apply')}
             </Button>
           </div>
         }
@@ -212,11 +206,11 @@ export default function CartPage() {
             type="text"
             value={couponInput}
             onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
-            placeholder="Ex: WELCOME10"
+            placeholder={t('cart.coupon_placeholder')}
             className="w-full px-4 py-2 border border-slate-300 rounded-lg"
           />
           <Text variant="small" textColor="muted">
-            Insira o código do cupom promocional
+            {t('cart.coupon_hint')}
           </Text>
         </div>
       </Modal>

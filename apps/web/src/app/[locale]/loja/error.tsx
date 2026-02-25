@@ -10,12 +10,12 @@ export default function LojaError({
   return (
     <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-4 text-center">
       <h2 className="text-2xl font-bold text-red-600">Erro na loja</h2>
-      <p className="max-w-md text-sm text-gray-600">
+      <p className="max-w-md text-sm text-slate-600">
         {error.message || "Erro inesperado. Tente novamente."}
       </p>
       <button
         onClick={reset}
-        className="rounded-lg bg-orange-600 px-6 py-2 text-sm font-medium text-white hover:bg-orange-700"
+        className="rounded-lg bg-brand-500 px-6 py-2 text-sm font-medium text-white hover:bg-brand-600"
       >
         Tentar novamente
       </button>
