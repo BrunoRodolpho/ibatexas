@@ -49,5 +49,13 @@ export { indexProduct, deleteProductFromIndex, indexProductsBatch } from "./type
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"
 
+// ── Reservation tools ──────────────────────────────────────────────────────────
+export { checkTableAvailability, CheckTableAvailabilityTool } from "./reservation/check-availability.js"
+export { createReservation, CreateReservationTool } from "./reservation/create-reservation.js"
+export { modifyReservation, ModifyReservationTool } from "./reservation/modify-reservation.js"
+export { cancelReservation, CancelReservationTool } from "./reservation/cancel-reservation.js"
+export { getMyReservations, GetMyReservationsTool } from "./reservation/get-my-reservations.js"
+export { joinWaitlist, JoinWaitlistTool } from "./reservation/join-waitlist.js"
+
 // ── Re-export shared types consumed by CLI and other packages ─────────────────
 export { Channel } from "@ibatexas/types"

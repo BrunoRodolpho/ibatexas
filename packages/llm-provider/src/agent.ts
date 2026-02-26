@@ -15,8 +15,9 @@ import type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
 import { SYSTEM_PROMPT } from "./system-prompt.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 
-const MAX_TURNS = 10
-const MAX_TOOL_RETRIES = 3
+const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || "10", 10)
+const MAX_TOOL_RETRIES = parseInt(process.env.AGENT_MAX_TOOL_RETRIES || "3", 10)
+const AGENT_MAX_TOKENS = parseInt(process.env.AGENT_MAX_TOKENS || "2048", 10)
 
 // ── Anthropic client (singleton) ──────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ async function executeWithRetry(
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
       if (attempt < MAX_TOOL_RETRIES - 1) {
-        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)))
+        await new Promise((r) => setTimeout(r, 200 * 2 ** attempt))
       }
     }
   }
@@ -84,22 +85,33 @@ export async function* runAgent(
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // ── Stream one turn ─────────────────────────────────────────────────────
-    const stream = client.messages.stream({
-      model,
-      system: SYSTEM_PROMPT,
-      messages,
-      tools: TOOL_DEFINITIONS,
-      max_tokens: 2048,
-    })
+    let stream: ReturnType<typeof client.messages.stream>
+    try {
+      stream = client.messages.stream({
+        model,
+        system: SYSTEM_PROMPT,
+        messages,
+        tools: TOOL_DEFINITIONS,
+        max_tokens: AGENT_MAX_TOKENS,
+      })
+    } catch (err) {
+      yield { type: "error", message: `Erro ao iniciar stream: ${err instanceof Error ? err.message : String(err)}` }
+      return
+    }
 
     // Yield text deltas as they arrive
-    for await (const event of stream) {
-      if (
-        event.type === "content_block_delta" &&
-        event.delta.type === "text_delta"
-      ) {
-        yield { type: "text_delta", delta: event.delta.text }
+    try {
+      for await (const event of stream) {
+        if (
+          event.type === "content_block_delta" &&
+          event.delta.type === "text_delta"
+        ) {
+          yield { type: "text_delta", delta: event.delta.text }
+        }
       }
+    } catch (err) {
+      yield { type: "error", message: `Erro na stream: ${err instanceof Error ? err.message : String(err)}` }
+      return
     }
 
     const finalMessage = await stream.finalMessage()
@@ -107,6 +119,16 @@ export async function* runAgent(
 
     // ── End turn ────────────────────────────────────────────────────────────
     if (stop_reason === "end_turn") {
+      yield {
+        type: "done",
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+      }
+      return
+    }
+
+    // ── Max tokens ─ yield partial text and finish gracefully ───────────
+    if (stop_reason === "max_tokens") {
       yield {
         type: "done",
         inputTokens: usage.input_tokens,
@@ -128,9 +150,9 @@ export async function* runAgent(
         yield { type: "tool_start", toolName: block.name, toolUseId: block.id }
 
         const result = await executeWithRetry(block.name, block.input, context)
-        const success = !((result as any)?.error)
+        const isError = typeof result === "object" && result !== null && "error" in result
 
-        yield { type: "tool_result", toolName: block.name, toolUseId: block.id, success }
+        yield { type: "tool_result", toolName: block.name, toolUseId: block.id, success: !isError }
 
         toolResults.push({
           type: "tool_result",

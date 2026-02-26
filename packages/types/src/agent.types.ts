@@ -1,16 +1,17 @@
 // Agent types — AgentContext, AgentMessage, StreamChunk
 
 import type { Channel } from "./product.types.js"
+import type { UserType } from "./product.types.js"
 
 export interface AgentContext {
   channel: Channel
   sessionId: string
   customerId?: string
-  userType: "guest" | "customer" | "staff"
+  userType: UserType
 }
 
 export type AgentMessage = {
-  role: "user" | "assistant"
+  role: "user" | "assistant" | "system"
   content: string
 }
 

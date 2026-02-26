@@ -30,6 +30,7 @@ vi.mock("@ibatexas/nats-client", () => ({
 vi.mock("@medusajs/framework", () => ({}))
 vi.mock("@medusajs/framework/utils", () => ({
   Modules: { PRODUCT: "product" },
+  ContainerRegistrationKeys: { QUERY: "query" },
 }))
 
 // ── Imports after mocks ────────────────────────────────────────────────────────
@@ -69,8 +70,8 @@ const mockProduct = {
  * Resolves "logger" and any module key to the provided product service.
  */
 function makeContainer(product = mockProduct) {
-  const productService = {
-    retrieveProduct: vi.fn().mockResolvedValue(product),
+  const queryService = {
+    graph: vi.fn().mockResolvedValue({ data: [product] }),
   }
   const logger = {
     info: vi.fn(),
@@ -80,10 +81,11 @@ function makeContainer(product = mockProduct) {
   return {
     resolve: vi.fn().mockImplementation((key: string) => {
       if (key === "logger") return logger
-      // Return productService for any module key (Modules.PRODUCT, etc.)
-      return productService
+      if (key === "query") return queryService
+      // Fallback for any other key (e.g. product.deleted still uses Modules.PRODUCT)
+      return { retrieveProduct: vi.fn().mockResolvedValue(product) }
     }),
-    _productService: productService, // expose for assertion
+    _queryService: queryService, // expose for assertion
     _logger: logger,
   }
 }

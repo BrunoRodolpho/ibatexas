@@ -1,0 +1,160 @@
+// IbateXas custom domain schema.
+// Lives in the `ibx_domain` PostgreSQL schema — separate namespace from Medusa.
+//
+// Run `ibx db migrate:domain` to apply migrations.
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../src/generated/prisma-client"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["ibx_domain"]
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum TableLocation {
+  indoor
+  outdoor
+  bar
+  terrace
+
+  @@schema("ibx_domain")
+}
+
+enum ReservationStatus {
+  pending
+  confirmed
+  seated
+  completed
+  cancelled
+  no_show
+
+  @@schema("ibx_domain")
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+/// Physical table in the restaurant.
+model Table {
+  id         String        @id @default(cuid())
+  number     String        @unique
+  capacity   Int
+  location   TableLocation
+  accessible Boolean       @default(false)
+  active     Boolean       @default(true)
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+
+  reservationTables ReservationTable[]
+
+  @@map("tables")
+  @@schema("ibx_domain")
+}
+
+/// A bookable time slot for the whole restaurant (not per-table).
+/// maxCovers is the total seat count across all tables available in this slot.
+/// reservedCovers is updated atomically when a reservation is created/cancelled.
+model TimeSlot {
+  id              String   @id @default(cuid())
+  date            DateTime @db.Date
+  startTime       String // '19:30'
+  durationMinutes Int      @default(90) @map("duration_minutes")
+  maxCovers       Int      @map("max_covers")
+  reservedCovers  Int      @default(0) @map("reserved_covers")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  reservations Reservation[]
+  waitlist     Waitlist[]
+
+  @@unique([date, startTime])
+  @@index([date])
+  @@map("time_slots")
+  @@schema("ibx_domain")
+}
+
+/// A table reservation.
+/// customerId references the Medusa customer id (Twilio-verified phone → Medusa customer).
+model Reservation {
+  id              String            @id @default(cuid())
+  customerId      String            @map("customer_id")
+  partySize       Int               @map("party_size")
+  status          ReservationStatus @default(pending)
+  specialRequests Json              @default("[]") @map("special_requests")
+  // ISO 8601 strings for confirmationMessage building
+  confirmedAt     DateTime?         @map("confirmed_at")
+  checkedInAt     DateTime?         @map("checked_in_at")
+  cancelledAt     DateTime?         @map("cancelled_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+  timeSlotId String   @map("time_slot_id")
+
+  tables ReservationTable[]
+
+  @@index([customerId])
+  @@index([timeSlotId])
+  @@index([status])
+  @@map("reservations")
+  @@schema("ibx_domain")
+}
+
+/// Join table: a reservation can span multiple physical tables for large parties.
+model ReservationTable {
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  reservationId String      @map("reservation_id")
+  table         Table       @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  tableId       String      @map("table_id")
+
+  @@id([reservationId, tableId])
+  @@map("reservation_tables")
+  @@schema("ibx_domain")
+}
+
+/// Waitlist entry when a time slot is fully booked.
+/// Position is derived (ORDER BY createdAt among entries for the same slot).
+model Waitlist {
+  id         String    @id @default(cuid())
+  customerId String    @map("customer_id")
+  partySize  Int       @map("party_size")
+  notifiedAt DateTime? @map("notified_at")
+  expiresAt  DateTime  @map("expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+  timeSlotId String   @map("time_slot_id")
+
+  @@unique([customerId, timeSlotId])
+  @@index([customerId])
+  @@index([timeSlotId])
+  @@map("waitlist")
+  @@schema("ibx_domain")
+}
+
+/// Product review submitted by an authenticated customer after delivery.
+/// Stored here (not in Medusa) so it can be read without Medusa overhead.
+model Review {
+  id         String   @id @default(cuid())
+  orderId    String   @map("order_id") // Medusa order id
+  productIds String[] @map("product_ids") // Medusa product ids
+  customerId String   @map("customer_id")
+  rating     Int // 1–5
+  comment    String?
+  channel    String // 'web' | 'whatsapp'
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([orderId, customerId])
+  @@index([customerId])
+  @@index([orderId])
+  @@index([rating])
+  @@map("reviews")
+  @@schema("ibx_domain")
+}

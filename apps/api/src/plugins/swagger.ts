@@ -1,8 +1,9 @@
+import { createRequire } from "node:module";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import type { FastifyInstance } from "fastify";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+const require = createRequire(import.meta.url);
 const { version } = require("../../package.json") as { version: string };
 
 export async function registerSwagger(server: FastifyInstance): Promise<void> {
@@ -21,11 +22,14 @@ export async function registerSwagger(server: FastifyInstance): Promise<void> {
     },
   });
 
-  await server.register(swaggerUi, {
-    routePrefix: "/docs",
-    uiConfig: {
-      docExpansion: "list",
-      deepLinking: false,
-    },
-  });
+  // Only expose Swagger UI outside production
+  if (process.env.NODE_ENV !== "production") {
+    await server.register(swaggerUi, {
+      routePrefix: "/docs",
+      uiConfig: {
+        docExpansion: "list",
+        deepLinking: false,
+      },
+    });
+  }
 }

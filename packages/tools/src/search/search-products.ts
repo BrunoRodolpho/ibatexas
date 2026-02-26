@@ -75,18 +75,17 @@ interface FilterOptions {
   tags?: string[]
   availableNow: boolean
   excludeAllergens?: string[]
+  productType?: "food" | "frozen" | "merchandise"
+  categoryHandle?: string
 }
 
 /**
  * Apply post-fetch filters that cannot be expressed as Typesense filter_by.
+ * Tags are now handled by Typesense filter_by — no longer post-filtered here.
  * Availability window is time-dependent and product-specific.
  */
 function applyFilters(products: ProductDTO[], filters: FilterOptions): ProductDTO[] {
   return products.filter((product) => {
-    if (filters.tags && filters.tags.length > 0) {
-      if (!filters.tags.some((tag) => product.tags.includes(tag))) return false
-    }
-
     if (filters.availableNow && !isAvailableNow(product.availabilityWindow)) {
       return false
     }
@@ -109,36 +108,52 @@ interface TypesenseResult {
 
 /**
  * Execute Typesense hybrid search (vector + keyword).
+ * Uses multi_search (POST) to avoid query-string length limits with large embeddings.
  * @param filterInStock — when false, omits `inStock:true` (diagnostic pass only)
  */
 async function executeTypesenseSearch(
   query: string,
   embedding: number[],
   limit: number,
-  filterInStock = true
+  filterInStock = true,
+  productType?: "food" | "frozen" | "merchandise",
+  categoryHandle?: string,
+  tags?: string[]
 ): Promise<TypesenseResult> {
   const typesenseClient = getTypesenseClient()
 
-  const filterBy = filterInStock
-    ? "status:published && inStock:true"
-    : "status:published"
+  const filterParts = ["status:published"]
+  if (filterInStock) filterParts.push("inStock:true")
+  if (productType) filterParts.push(`productType:${productType}`)
+  if (categoryHandle) filterParts.push(`categoryHandle:${categoryHandle}`)
+  if (tags && tags.length > 0) filterParts.push(`tags:=[${tags.join(",")}]`)
+  
+  const filterBy = filterParts.join(" && ")
 
-  const response = await typesenseClient
-    .collections(COLLECTION)
-    .documents()
-    .search({
-      q: query,
-      query_by: "title,description,tags",
-      // Hybrid vector query — requires Typesense v0.25+ and embeddings stored in collection
-      // Syntax: embedding:([dim0,dim1,...], k:N)
-      vector_query: embedding.length > 0
-        ? `embedding:([${embedding.join(",")}], k:${limit})`
-        : undefined,
-      filter_by: filterBy,
-      facet_by: "tags,availabilityWindow,allergens",
-      limit,
-      per_page: limit,
-    } as any)
+  const searchParams: Record<string, any> = {
+    q: query,
+    query_by: "title,description,tags",
+    filter_by: filterBy,
+    facet_by: "tags,availabilityWindow,allergens",
+    limit,
+    per_page: limit,
+  }
+
+  if (embedding.length > 0) {
+    searchParams.vector_query = `embedding:([${embedding.join(",")}], k:${limit})`
+  }
+
+  // Use multi_search (POST) to avoid GET query-string length limits
+  // with large embedding vectors (1536-dim ≈ 15KB as text)
+  const multiResult = await typesenseClient.multiSearch.perform(
+    { searches: [searchParams] },
+    { collection: COLLECTION }
+  )
+
+  const response = (multiResult.results ?? [])[0] as any
+  if (!response) {
+    return { hits: [], totalFound: 0, scores: {} }
+  }
 
   const hits = response.hits ?? []
   const scores: Record<string, number> = {}
@@ -148,7 +163,6 @@ async function executeTypesenseSearch(
     const doc = hit.document as any
     docs.push(doc)
     if ((doc as any)?.id) {
-      // Prefer rank_fusion_score (hybrid mode) over text_match_score (keyword mode)
       const score =
         ((hit as any).hybrid_search_info?.rank_fusion_score as number | undefined) ??
         ((hit as any).text_match_score as number | undefined) ??
@@ -182,7 +196,7 @@ async function diagnoseNoResults(
   if (rawDocs.length === 0) {
     // Typesense found nothing with inStock:true — check if OOS products exist
     try {
-      const diagResult = await executeTypesenseSearch(query, embedding, limit, false)
+      const diagResult = await executeTypesenseSearch(query, embedding, limit, false, filters.productType, filters.categoryHandle, filters.tags)
       if (diagResult.hits.length > 0) {
         return "out_of_stock"
       }
@@ -244,8 +258,10 @@ async function singleQuerySearch(
   allergenHash: string,
   cacheTtl: number
 ): Promise<SingleQueryResult> {
+  const isWildcard = query === "*"
+
   // ── L0: Exact cache ──────────────────────────────────────────────────────
-  const l0 = await getExactQueryCache(query, channel, availabilityMode, allergenHash)
+  const l0 = await getExactQueryCache(query, channel, availabilityMode, allergenHash, filters.productType, filters.categoryHandle, filters.tags)
   if (l0.hit) {
     return {
       query,
@@ -254,28 +270,30 @@ async function singleQuerySearch(
       scores: {},
       hitCache: true,
       cachedAt: l0.cachedAt,
-      searchModel: "hybrid",
+      searchModel: isWildcard ? "keyword" : "hybrid",
     }
   }
 
-  // ── Generate query embedding ─────────────────────────────────────────────
+  // ── Generate query embedding (skip for wildcard browse queries) ──────────
   let queryEmbedding: number[] = []
-  try {
-    queryEmbedding = await generateEmbedding(
-      query,
-      `embedding:query:${Buffer.from(query).toString("base64")}`
-    )
-  } catch (error) {
-    console.warn("[Search] Query embedding failed; falling back to keyword search:", error)
+  if (!isWildcard) {
+    try {
+      queryEmbedding = await generateEmbedding(
+        query,
+        `embedding:query:${Buffer.from(query).toString("base64")}`
+      )
+    } catch (error) {
+      console.warn("[Search] Query embedding failed; falling back to keyword search:", error)
+    }
   }
 
   // ── L1: Semantic bucket cache ────────────────────────────────────────────
   if (queryEmbedding.length > 0) {
-    const l1 = await getQueryCache(channel, queryEmbedding, availabilityMode, allergenHash)
+    const l1 = await getQueryCache(channel, queryEmbedding, availabilityMode, allergenHash, filters.productType, filters.categoryHandle, filters.tags)
     if (l1.hit) {
       try {
-        await incrementQueryCacheHits(channel, queryEmbedding, availabilityMode, allergenHash)
-        await setExactQueryCache(query, channel, availabilityMode, allergenHash, l1.results)
+        await incrementQueryCacheHits(channel, queryEmbedding, availabilityMode, allergenHash, filters.productType, filters.categoryHandle, filters.tags)
+        await setExactQueryCache(query, channel, availabilityMode, allergenHash, l1.results, filters.productType, filters.categoryHandle, filters.tags)
       } catch (error) {
         console.warn("[Search] Cache backfill failed (non-critical):", error)
       }
@@ -294,7 +312,7 @@ async function singleQuerySearch(
   // ── L2: Typesense search ─────────────────────────────────────────────────
   let tsResult: TypesenseResult = { hits: [], totalFound: 0, scores: {} }
   try {
-    tsResult = await executeTypesenseSearch(query, queryEmbedding, limit)
+    tsResult = await executeTypesenseSearch(query, queryEmbedding, limit, true, filters.productType, filters.categoryHandle, filters.tags)
   } catch (error) {
     console.error("[Search] Typesense search failed:", error)
     // Graceful degradation — return empty
@@ -316,9 +334,9 @@ async function singleQuerySearch(
   // ── Cache results ────────────────────────────────────────────────────────
   try {
     if (queryEmbedding.length > 0) {
-      await setQueryCache(channel, queryEmbedding, products, availabilityMode, allergenHash, cacheTtl)
+      await setQueryCache(channel, queryEmbedding, products, availabilityMode, allergenHash, cacheTtl, filters.productType, filters.categoryHandle, filters.tags)
     }
-    await setExactQueryCache(query, channel, availabilityMode, allergenHash, products)
+    await setExactQueryCache(query, channel, availabilityMode, allergenHash, products, filters.productType, filters.categoryHandle, filters.tags)
   } catch (error) {
     console.warn("[Search] Cache write failed (non-critical):", error)
   }
@@ -375,7 +393,7 @@ async function publishViewedEvents(
           source: "search",
         },
       }
-      return publishNatsEvent("product.viewed", event)
+      return publishNatsEvent("product.viewed", { ...event })
     })
   )
 }
@@ -414,6 +432,8 @@ export async function searchProducts(
     tags: validated.tags,
     availableNow,
     excludeAllergens: validated.excludeAllergens,
+    productType: validated.productType,
+    categoryHandle: validated.categoryHandle,
   }
 
   // ── Determine query list ─────────────────────────────────────────────────

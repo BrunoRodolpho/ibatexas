@@ -5,7 +5,7 @@
  */
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
-import { Modules } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { indexProduct } from "@ibatexas/tools"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 
@@ -18,10 +18,24 @@ export default async function productCreatedHandler({
   try {
     logger.info(`[Product Indexing] product.created: ${data.id}`)
 
-    const productService = container.resolve(Modules.PRODUCT)
-    const product = await productService.retrieveProduct(data.id, {
-      relations: ["variants", "variants.prices"],
+    const query = container.resolve(ContainerRegistrationKeys.QUERY)
+    const { data: products } = await query.graph({
+      entity: "product",
+      fields: [
+        "*",
+        "variants.*",
+        "variants.prices.*",
+        "tags.*",
+        "categories.*",
+        "images.*",
+      ],
+      filters: { id: data.id },
     })
+    const product = products[0]
+    if (!product) {
+      logger.warn(`[Product Indexing] product.created: ${data.id} not found`)
+      return
+    }
 
     await indexProduct(product)
 

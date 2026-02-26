@@ -37,22 +37,28 @@ describe("NATS Client", () => {
     const testEvent = "cart.abandoned"
     const testPayload = { cartId: "cart_123", userId: "user_456" }
 
-    // This should not throw
     await publishNatsEvent(testEvent, testPayload)
 
-    // Expected subject format
-    const expectedSubject = `ibatexas.${testEvent}`
-    expect(expectedSubject).toBe("ibatexas.cart.abandoned")
+    // Get the mock connection to verify publish was called
+    const conn = await getNatsConnection()
+    expect(conn.publish).toHaveBeenCalledWith(
+      "ibatexas.cart.abandoned",
+      expect.any(Uint8Array),
+    )
+
+    // Verify the encoded payload is correct JSON
+    const publishCall = (conn.publish as ReturnType<typeof vi.fn>).mock.calls[0]
+    const encoded = publishCall?.[1] as Uint8Array
+    const decoded = JSON.parse(new TextDecoder().decode(encoded))
+    expect(decoded).toEqual(testPayload)
   })
 
   it("publishNatsEvent swallows errors gracefully", async () => {
     const testEvent = "order.placed"
     const testPayload = { orderId: "order_123" }
 
-    // Should not throw even without a real NATS connection
-    expect(async () => {
-      await publishNatsEvent(testEvent, testPayload)
-    }).not.toThrow()
+    // Should not reject even without a real NATS connection
+    await expect(publishNatsEvent(testEvent, testPayload)).resolves.not.toThrow()
   })
 
   it("subscribeNatsEvent returns a subscription handle", async () => {
@@ -92,10 +98,8 @@ describe("NATS Client", () => {
     // Get a connection first
     await getNatsConnection()
 
-    // Close should not throw and should be async
-    expect(async () => {
-      await closeNatsConnection()
-    }).not.toThrow()
+    // Close should not reject
+    await expect(closeNatsConnection()).resolves.not.toThrow()
   })
 })
 

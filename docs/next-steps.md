@@ -1,65 +1,7 @@
 # Next Steps — Phase 1 Build Order
 
-Steps 1–4 are complete. Steps 5–14 are below in order.
+Steps 1–8 are complete. Steps 9–14 are below in order.
 Remove a step from this file once it is done (git history is the record).
-
----
-
-### Step 5 — Restaurant Storefront (`apps/web`)
-
-**Before building any page:** set up i18n first.
-- Install `next-intl` (best fit for App Router)
-- Add `apps/web/messages/pt-BR.json` for all UI strings
-- Configure `apps/web/next.config.mjs` and wrap layout with `NextIntlClientProvider`
-
-Mobile-first Next.js UI (375px base, all copy in pt-BR):
-
-- **Home** — product grid from Medusa, categories, featured items
-- **Search** — Typesense-powered, large touch targets, filter by tag/allergen
-- **Product detail** — image gallery, variants, nutritional info, reviews, sticky add-to-cart
-- **Cart** — items, special instructions, subtotal, delivery type selection
-- **Chat widget** — floating button on mobile (full-screen), side panel on desktop
-
----
-
-### Step 6 — Shop (`/loja`)
-
-Branded merchandise — standard e-commerce, no agent:
-
-- Merchandise grid (camisetas, accessories, kits)
-- Product detail — images, size variants, stock
-- Checkout: PIX + Stripe card + Boleto (boleto only for merchandise)
-- Order tracking via Correios/EasyPost
-- NF-e via Focus NFe
-
----
-
-### Step 7 — Admin Panel (`/admin`)
-
-Owner control panel (staff role required):
-
-- **Dashboard** — today's orders, revenue, active reservations, pending escalations
-- **Menu management** — CRUD food products (Medusa admin supplement)
-- **Shop management** — merchandise, variants, stock
-- **Orders** — view + update status, filter by state
-- **Reservations** — calendar view, check-in, table layout, time slots
-- **Delivery zones** — draw zones, set fees + transit times
-
-  > Delivery zone storage: use list of CEP prefixes (Phase 1).
-  > Upgrade to PostGIS polygon in Phase 2 for precise geo-fencing.
-
-- **Reviews** — view all, resolve low-rating escalations (≤2 stars)
-- **Analytics** — PostHog embed
-
----
-
-### Step 8 — Reservations
-
-- Prisma schema: `Table`, `TimeSlot`, `Reservation`, `Waitlist`, enums
-- Tools: `check_table_availability`, `create_reservation`, `modify_reservation`,
-  `cancel_reservation`, `get_my_reservations`, `join_waitlist`
-- `/reservas` page — date picker, party size, special requests, confirmation
-- WhatsApp confirmation message post-booking
 
 ---
 

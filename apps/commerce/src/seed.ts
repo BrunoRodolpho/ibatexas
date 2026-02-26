@@ -30,22 +30,30 @@ export default async function ({ container }: ExecArgs) {
 
   const categoryMap = new Map<string, string>() // handle → id
 
-  // Parent first
-  const parent = CATEGORIES.find((c) => c.parent === null)!
-  const [parentCategory] = await productModule.createProductCategories([
-    { name: parent.name, handle: parent.handle, is_active: true },
-  ])
-  categoryMap.set(parent.handle, parentCategory.id)
+  // Root categories first (there can be multiple, e.g. restaurante + loja)
+  const roots = CATEGORIES.filter((c) => c.parent === null)
+  for (const root of roots) {
+    const [created] = await productModule.createProductCategories([
+      { name: root.name, handle: root.handle, is_active: true },
+    ])
+    categoryMap.set(root.handle, created.id)
+  }
 
-  // Children
+  // Children (parents already in categoryMap)
   const children = CATEGORIES.filter((c) => c.parent !== null)
   const createdChildren = await productModule.createProductCategories(
-    children.map((c) => ({
-      name: c.name,
-      handle: c.handle,
-      is_active: true,
-      parent_category_id: categoryMap.get(c.parent!)!,
-    }))
+    children.map((c) => {
+      const parentId = categoryMap.get(c.parent!)
+      if (!parentId) {
+        throw new Error(`Parent category '${c.parent}' not found for child '${c.handle}'`)
+      }
+      return {
+        name: c.name,
+        handle: c.handle,
+        is_active: true,
+        parent_category_id: parentId,
+      }
+    })
   )
   for (const child of createdChildren) {
     categoryMap.set(child.handle, child.id)
@@ -100,7 +108,7 @@ export default async function ({ container }: ExecArgs) {
           manage_inventory: false,
           ...(hasVariants ? { options: { Variante: v.title } } : {}),
         })),
-        metadata: product.metadata,
+        metadata: { ...product.metadata, categoryHandle: product.categoryHandle },
       },
     ])
 
