@@ -31,7 +31,6 @@ function statusBadge(status: string) {
   return <Badge variant={variant} className="text-xs">{status}</Badge>
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const columns: ColumnDef<OrderSummary, any>[] = [
   col.accessor('displayId', { header: '#', cell: (i) => `#${i.getValue()}` }),
   col.accessor('customerEmail', { header: 'Cliente' }),
