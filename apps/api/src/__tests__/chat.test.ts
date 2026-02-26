@@ -134,13 +134,13 @@ describe("POST /api/chat/messages", () => {
       },
     });
 
-    // Wait a tick for the fire-and-forget to settle
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(mockPushChunk).toHaveBeenCalledWith(
-      VALID_SESSION_ID,
-      expect.objectContaining({ type: "error" }),
-    );
+    // Wait for the fire-and-forget to settle
+    await vi.waitFor(() => {
+      expect(mockPushChunk).toHaveBeenCalledWith(
+        VALID_SESSION_ID,
+        expect.objectContaining({ type: "error" }),
+      );
+    }, { timeout: 500 });
   });
 });
 

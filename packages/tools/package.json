@@ -16,7 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.28.0",
+    "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "redis": "^4.6.0",

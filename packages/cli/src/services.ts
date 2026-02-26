@@ -55,7 +55,9 @@ export const SERVICES: Record<string, ServiceDef> = {
       { label: "Medusa API  ", url: "http://localhost:9000" },
       { label: "Admin UI   ", url: "http://localhost:9000/app" },
     ],
-    notes: ["Login: REDACTED_EMAIL  /  REDACTED_PASSWORD"],
+    notes: [
+      `Login: ${process.env.MEDUSA_ADMIN_EMAIL ?? "REDACTED_EMAIL"}  /  ${process.env.MEDUSA_ADMIN_PASSWORD ? "****" : "(set MEDUSA_ADMIN_PASSWORD)"}`,
+    ],
   },
 
   api: {
@@ -84,7 +86,7 @@ export const SERVICES: Record<string, ServiceDef> = {
     healthUrl: "http://localhost:3000",
     logColor: chalk.cyan,
     logPrefix: "web",
-    available: false,
+    available: true,
     step: 5,
     urls: [{ label: "Storefront", url: "http://localhost:3000" }],
   },

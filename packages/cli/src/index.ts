@@ -33,17 +33,19 @@ function buildHelpText(): string {
     {
       title: "SDLC",
       commands: [
-        { usage: "dev [service]",     desc: "Start dev environment (Docker + Medusa)" },
-        { usage: "dev stop",          desc: "Stop all Docker containers" },
-        { usage: "dev build [filter]", desc: "Build packages" },
-        { usage: "dev test [filter]", desc: "Run tests" },
+        { usage: "dev [service]",          desc: "Start dev environment — commerce (default) | api | web | all" },
+        { usage: "dev start [service]",    desc: "Explicit start alias (use --no-docker to skip containers)" },
+        { usage: "dev stop [service]",     desc: "Stop service(s) — omit to stop all + docker compose stop (-f to force-kill ports)" },
+        { usage: "dev restart [service]",  desc: "Kill + respawn service(s) without touching Docker" },
+        { usage: "dev build [filter]",     desc: "Build packages" },
+        { usage: "dev test [filter]",      desc: "Run tests" },
       ],
     },
     {
       title: "Services",
       commands: [
-        { usage: "svc health [service]", desc: "Check health — all or a specific service" },
-        { usage: "svc status",           desc: "Show running services with addresses" },
+        { usage: "svc health [service]", desc: "Check health — all or postgres | redis | typesense | nats" },
+        { usage: "svc status",           desc: "Show running services with addresses and data status" },
       ],
     },
     {
@@ -56,9 +58,10 @@ function buildHelpText(): string {
     {
       title: "Data",
       commands: [
-        { usage: "db migrate", desc: "Run Medusa migrations" },
-        { usage: "db seed",    desc: "Seed the product catalog" },
-        { usage: "db reset",   desc: "⚠  Drop, migrate, and reseed" },
+        { usage: "db migrate",  desc: "Run Medusa migrations" },
+        { usage: "db seed",     desc: "Seed the product catalog" },
+        { usage: "db reindex",  desc: "Fetch products from Medusa → index into Typesense (--fresh to recreate)" },
+        { usage: "db reset",    desc: "⚠  Drop, migrate, and reseed" },
       ],
     },
     {

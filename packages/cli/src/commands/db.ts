@@ -23,6 +23,54 @@ function parseDatabaseUrl() {
   }
 }
 
+function getMedusaUrl(): string {
+  const url = process.env.MEDUSA_BACKEND_URL
+  if (!url) {
+    console.error(chalk.red("MEDUSA_BACKEND_URL is not set. Run: ibx env check"))
+    process.exit(1)
+  }
+  return url
+}
+
+/** Authenticate with Medusa admin API and return a bearer token. */
+async function getAdminToken(): Promise<string> {
+  const base = getMedusaUrl()
+  const email = process.env.MEDUSA_ADMIN_EMAIL ?? "REDACTED_EMAIL"
+  const password = process.env.MEDUSA_ADMIN_PASSWORD ?? "REDACTED_PASSWORD"
+
+  const res = await fetch(`${base}/auth/user/emailpass`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(
+      `Admin auth failed (${res.status}): ${text}\n` +
+      `Set MEDUSA_ADMIN_EMAIL and MEDUSA_ADMIN_PASSWORD or create an admin user:\n` +
+      `  npx medusa user --email REDACTED_EMAIL --password 'REDACTED_PASSWORD'`
+    )
+  }
+
+  const data = (await res.json()) as { token?: string }
+  if (!data.token) throw new Error("Admin auth response missing token")
+  return data.token
+}
+
+async function medusaFetch(path: string, token?: string): Promise<Record<string, unknown>> {
+  const base = getMedusaUrl()
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (token) headers["Authorization"] = `Bearer ${token}`
+
+  const res = await fetch(`${base}${path}`, { headers })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Medusa API ${res.status}: ${text}`)
+  }
+  return res.json() as Promise<Record<string, unknown>>
+}
+
 async function runPsql(args: string[], env?: NodeJS.ProcessEnv) {
   await execa("psql", args, { stdio: "inherit", env: { ...process.env, ...env } })
 }
@@ -57,6 +105,34 @@ async function runSeed() {
   }
 }
 
+async function runMigrateDomain() {
+  const spinner = ora("Running domain (Prisma) migrations…").start()
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:migrate"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
+    spinner.succeed(chalk.green("Domain migrations completed"))
+  } catch {
+    spinner.fail(chalk.red("Domain migration failed"))
+    process.exit(1)
+  }
+}
+
+async function runSeedDomain() {
+  const spinner = ora("Seeding domain tables (Table + TimeSlots)…").start()
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:tables"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
+    spinner.succeed(chalk.green("Domain seed completed"))
+  } catch {
+    spinner.fail(chalk.red("Domain seed failed"))
+    process.exit(1)
+  }
+}
+
 async function runReset(force = false) {
   if (!force) {
     const confirmed = await confirm({
@@ -72,6 +148,11 @@ async function runReset(force = false) {
   }
 
   const { host, port, user, password, dbName } = parseDatabaseUrl()
+  // Sanitize dbName — only allow alphanumeric, underscores, hyphens
+  if (!/^[a-zA-Z0-9_-]+$/.test(dbName)) {
+    console.error(chalk.red(`Invalid database name: "${dbName}". Only [a-zA-Z0-9_-] allowed.`))
+    process.exit(1)
+  }
   const pgEnv = password ? { PGPASSWORD: password } : {}
   const psqlBase = ["-h", host, "-p", port, "-U", user]
 
@@ -90,19 +171,114 @@ async function runReset(force = false) {
     pgEnv
   )
 
-  step("Running migrations…")
+  step("Running Medusa migrations…")
   await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:migrate"], {
     cwd: ROOT,
     stdio: "inherit",
   })
 
-  step("Seeding…")
+  step("Running domain (Prisma) migrations…")
+  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:push"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  })
+
+  step("Seeding Medusa products…")
   await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:seed"], {
     cwd: ROOT,
     stdio: "inherit",
   })
 
+  step("Seeding domain tables…")
+  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:tables"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  })
+
   console.log(chalk.green("\n  ✅  Database reset and reseed complete\n"))
+}
+
+async function runReindex(fresh = false) {
+  const {
+    ensureCollectionExists,
+    recreateCollection,
+    indexProductsBatch,
+  } = await import("@ibatexas/tools")
+
+  const step = (msg: string) =>
+    console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${msg}`))
+
+  // 1. Create or recreate the collection
+  if (fresh) {
+    step("Recreating Typesense collection (--fresh)…")
+    await recreateCollection()
+    console.log(chalk.green("    Collection recreated"))
+  } else {
+    step("Ensuring Typesense collection exists…")
+    await ensureCollectionExists()
+    console.log(chalk.green("    Collection ready"))
+  }
+
+  // 2. Authenticate with Medusa admin API
+  step("Authenticating with Medusa admin API…")
+  let token: string
+  try {
+    token = await getAdminToken()
+    console.log(chalk.green("    Authenticated"))
+  } catch (err) {
+    console.error(chalk.red(`    ${String(err)}`))
+    process.exit(1)
+  }
+
+  // 3. Fetch all published products from Medusa (paginated)
+  step("Fetching products from Medusa…")
+  const allProducts: unknown[] = []
+  let offset = 0
+  const limit = 100
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const data = await medusaFetch(
+      `/admin/products?limit=${limit}&offset=${offset}&fields=*variants,*variants.prices,*tags,*categories,*images`,
+      token
+    )
+    const products = (data.products as unknown[] | undefined) ?? []
+    allProducts.push(...products)
+    if (products.length < limit) break
+    offset += limit
+  }
+
+  if (allProducts.length === 0) {
+    console.log(chalk.yellow("\n  No products found in Medusa. Run: ibx db seed\n"))
+    return
+  }
+
+  console.log(chalk.white(`    Found ${allProducts.length} product(s)`))
+
+  // 4. Batch index into Typesense
+  step(`Indexing ${allProducts.length} product(s) into Typesense…`)
+  const spinner = ora("Generating embeddings & indexing…").start()
+  try {
+    await indexProductsBatch(allProducts)
+    spinner.succeed(chalk.green(`Indexed ${allProducts.length} product(s) into Typesense`))
+  } catch (err) {
+    spinner.fail(chalk.red("Indexing failed"))
+    console.error(err)
+    process.exit(1)
+  }
+
+  // 5. Flush search cache so stale empty results don't persist
+  step("Flushing search cache…")
+  try {
+    const { invalidateAllQueryCache, closeRedisClient } = await import("@ibatexas/tools")
+    await invalidateAllQueryCache()
+    console.log(chalk.green("    Search cache cleared"))
+    await closeRedisClient()
+  } catch {
+    console.log(chalk.yellow("    Cache flush skipped (Redis unavailable)"))
+  }
+
+  console.log(chalk.green("\n  ✅  Reindex complete\n"))
 }
 
 // ── Command registration ──────────────────────────────────────────────────────
@@ -116,14 +292,27 @@ export function registerDbCommands(program: Command) {
     .description("Run pending Medusa migrations (Medusa must NOT be running)")
     .action(runMigrate)
 
+  db.command("migrate:domain")
+    .description("Run pending Prisma (domain) migrations — Table, TimeSlot, Reservation, etc.")
+    .action(runMigrateDomain)
+
   db.command("seed")
     .description("Run the Medusa seed file (Medusa must be running)")
     .action(runSeed)
 
+  db.command("seed:domain")
+    .description("Seed restaurant Tables and TimeSlots via Prisma")
+    .action(runSeedDomain)
+
   db.command("reset")
-    .description("⚠️  Drop + migrate + reseed (destructive)")
+    .description("⚠️  Drop + migrate (Medusa + domain) + reseed (destructive)")
     .option("-f, --force", "Skip the confirmation prompt")
     .action((opts: { force?: boolean }) => runReset(opts.force))
 
-  return { runMigrate, runSeed, runReset }
+  db.command("reindex")
+    .description("Fetch all products from Medusa and reindex into Typesense")
+    .option("--fresh", "Drop and recreate the Typesense collection before indexing")
+    .action((opts: { fresh?: boolean }) => runReindex(opts.fresh))
+
+  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runReset, runReindex }
 }

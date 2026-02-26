@@ -236,12 +236,13 @@ async function detailTypesense(host: string, port: string): Promise<void> {
   try {
     const baseUrl = `http://${host}:${port}`
     const apiKey = process.env.TYPESENSE_API_KEY ?? ""
+    const headers: Record<string, string> = apiKey ? { "X-TYPESENSE-API-KEY": apiKey } : {}
 
-    const [healthRes, statsRes] = await Promise.all([
+    const [healthRes, collectionsRes] = await Promise.all([
       fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) }),
-      fetch(`${baseUrl}/stats.json`, {
+      fetch(`${baseUrl}/collections`, {
         signal: AbortSignal.timeout(3000),
-        headers: apiKey ? { "X-TYPESENSE-API-KEY": apiKey } : {},
+        headers,
       }).catch(() => null),
     ])
 
@@ -249,16 +250,28 @@ async function detailTypesense(host: string, port: string): Promise<void> {
     const healthData = (await healthRes.json()) as Record<string, unknown>
     const latencyMs = Date.now() - start
 
-    console.log(`  ${chalk.bold("Status")}      ${chalk.green("✓  ok")}`)
-    console.log(`  ${chalk.bold("Connection")} ${chalk.cyan(`${host}:${port}`)}`)
-    console.log(`  ${chalk.bold("Health")}      ${chalk.white(String(healthData.ok ?? true))}`)
+    console.log(`  ${chalk.bold("Status")}       ${chalk.green("✓  ok")}`)
+    console.log(`  ${chalk.bold("Connection")}   ${chalk.cyan(`${host}:${port}`)}`)
+    console.log(`  ${chalk.bold("Health")}       ${chalk.white(String(healthData.ok ?? true))}`)
 
-    if (statsRes?.ok) {
-      const statsData = (await statsRes.json()) as Record<string, unknown>
-      const numDocs = statsData.num_documents ?? "n/a"
-      console.log(`\n  ${chalk.bold("Documents")}   ${numDocs}`)
+    if (collectionsRes?.ok) {
+      const collections = (await collectionsRes.json()) as Array<{ name: string; num_documents: number }>
+      console.log(`\n  ${chalk.bold("Collections")}  ${collections.length}`)
+      for (const col of collections) {
+        const docCount = col.num_documents ?? 0
+        const docColor = docCount > 0 ? chalk.green : chalk.yellow
+        console.log(`    · ${chalk.white(col.name.padEnd(20))} ${docColor(`${docCount} docs`)}`)
+      }
+      if (collections.length === 0) {
+        console.log(chalk.yellow(`    No collections found — run: ibx db reindex`))
+      } else {
+        const productsCol = collections.find((c) => c.name === "products")
+        if (productsCol && productsCol.num_documents === 0) {
+          console.log(chalk.yellow(`\n  ⚠  products collection is empty — run: ibx db reindex`))
+        }
+      }
     } else if (!apiKey) {
-      console.log(chalk.gray(`\n  Set TYPESENSE_API_KEY to see document stats`))
+      console.log(chalk.gray(`\n  Set TYPESENSE_API_KEY to see collection details`))
     }
 
     const samples = await latencySamples(() => checkTypesense(host, port))
@@ -351,6 +364,36 @@ async function checkAllSummary(): Promise<void> {
     const detail = r.error ? chalk.gray(` — ${r.error}`) : ""
     console.log(`  ${icon}  ${label.padEnd(14)} ${latency}${detail}`)
     if (r.status === "error") allOk = false
+  }
+
+  // Show Typesense collection data summary if healthy
+  const tsResult = results.find((r) => r.service === "Typesense")
+  if (tsResult?.status === "ok") {
+    const apiKey = process.env.TYPESENSE_API_KEY ?? ""
+    if (apiKey) {
+      try {
+        const colRes = await fetch(
+          `http://${typesenseHost}:${typesensePort}/collections`,
+          { signal: AbortSignal.timeout(2000), headers: { "X-TYPESENSE-API-KEY": apiKey } }
+        )
+        if (colRes.ok) {
+          const collections = (await colRes.json()) as Array<{ name: string; num_documents: number }>
+          const productsCol = collections.find((c) => c.name === "products")
+          if (productsCol) {
+            const count = productsCol.num_documents ?? 0
+            const countColor = count > 0 ? chalk.green : chalk.yellow
+            console.log(`\n  ${chalk.bold("Search Index")}  ${countColor(`${count} products indexed`)}`)
+            if (count === 0) {
+              console.log(chalk.yellow(`  ⚠  Run: ibx db reindex`))
+            }
+          } else if (collections.length === 0) {
+            console.log(chalk.yellow(`\n  ⚠  No Typesense collections — run: ibx db reindex`))
+          }
+        }
+      } catch {
+        // Non-critical — skip silently
+      }
+    }
   }
 
   console.log()

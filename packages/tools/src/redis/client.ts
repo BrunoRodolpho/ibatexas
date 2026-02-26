@@ -12,7 +12,11 @@ export async function getRedisClient(): Promise<ReturnType<typeof createClient>>
       throw new Error("REDIS_URL env var required")
     }
     redis = createClient({ url: redisUrl })
-    redis.on("error", (err) => console.error("[Redis] Client error:", err))
+    redis.on("error", (err) => {
+      console.error("[Redis] Client error:", err)
+      // Clear reference so next call creates a fresh connection
+      redis = null
+    })
     await redis.connect()
   }
   return redis

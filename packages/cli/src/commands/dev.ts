@@ -2,10 +2,70 @@ import type { Command } from "commander"
 import type { ExecaChildProcess } from "execa"
 import chalk from "chalk"
 import ora from "ora"
-import { execa } from "execa"
+import { execa, execaSync } from "execa"
 import net from "node:net"
+import fs from "node:fs"
+import path from "node:path"
 import { ROOT } from "../utils/root.js"
 import { resolveServices, type ServiceDef } from "../services.js"
+
+const PID_FILE = path.join(ROOT, ".ibx-dev.pids")
+
+interface PidEntry { key: string; pid: number }
+
+function writePidEntries(entries: PidEntry[]): void {
+  try {
+    fs.writeFileSync(PID_FILE, JSON.stringify(entries, null, 2), "utf8")
+  } catch {
+    // non-fatal
+  }
+}
+
+function removePidFile(): void {
+  try {
+    if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE)
+  } catch {
+    // non-fatal
+  }
+}
+
+function readPidEntries(): PidEntry[] {
+  try {
+    if (!fs.existsSync(PID_FILE)) return []
+    return JSON.parse(fs.readFileSync(PID_FILE, "utf8")) as PidEntry[]
+  } catch {
+    return []
+  }
+}
+
+function killPid(pid: number): void {
+  try {
+    process.kill(-pid, "SIGTERM")
+  } catch {
+    try { process.kill(pid, "SIGTERM") } catch { /* already gone */ }
+  }
+}
+
+/** Kill one or all tracked service processes. Returns how many were killed. */
+function killTrackedServices(serviceKey?: string): number {
+  const entries = readPidEntries()
+  const targets = serviceKey ? entries.filter((e) => e.key === serviceKey) : entries
+  for (const e of targets) killPid(e.pid)
+
+  if (serviceKey) {
+    // Remove only the killed entries from the file
+    const remaining = entries.filter((e) => e.key !== serviceKey)
+    remaining.length > 0 ? writePidEntries(remaining) : removePidFile()
+  } else {
+    removePidFile()
+  }
+  return targets.length
+}
+
+function patternKillAll(): void {
+  try { execaSync("pkill", ["-f", "pnpm.*@ibatexas"], { reject: false }) } catch { /* noop */ }
+  try { execaSync("pkill", ["-f", "medusa\\s"], { reject: false }) } catch { /* noop */ }
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -127,7 +187,7 @@ function spawnService(svc: ServiceDef): ExecaChildProcess {
   const proc = execa(
     "pnpm",
     ["--filter", svc.filter, svc.script],
-    { cwd: ROOT, env: { ...process.env }, reject: false }
+    { cwd: ROOT, env: { ...process.env }, reject: false, detached: true }
   )
 
   const prefix = svc.logColor(`[${svc.logPrefix}]`)
@@ -235,118 +295,258 @@ function printSummary(services: ServiceDef[], infra: InfraEntry[]): void {
 const step = (n: number, total: number, msg: string) =>
   console.log(chalk.bold(`\n${chalk.cyan(`[${n}/${total}]`)} ${msg}`))
 
+// ── Shared start logic ────────────────────────────────────────────────────────
+
+async function startServices(
+  serviceArg: string | undefined,
+  opts: { skipDocker?: boolean; wait: boolean },
+) {
+  let services: ServiceDef[]
+  try {
+    services = resolveServices(serviceArg)
+  } catch (err) {
+    console.error(chalk.red(`\n  ${String(err)}\n`))
+    process.exit(1)
+  }
+
+  const TOTAL = opts.wait ? 4 : 3
+  console.log(chalk.bold.blue("\n  🔥  IbateXas Dev Environment\n"))
+
+  // ── [1/N] Docker ──────────────────────────────────────────────────────────
+  step(1, TOTAL, "Starting infrastructure…")
+
+  if (opts.skipDocker) {
+    console.log(chalk.gray("    --skip-docker: assuming containers are already up"))
+  } else {
+    const spinner = ora({ text: "docker compose up -d --wait", indent: 4 }).start()
+    try {
+      await execa("docker", ["compose", "up", "-d", "--wait"], { cwd: ROOT })
+      spinner.succeed(chalk.green("Docker services healthy"))
+    } catch (err) {
+      spinner.fail(chalk.red("Docker failed to start"))
+      console.error(chalk.gray(String(err)))
+      process.exit(1)
+    }
+  }
+
+  // ── [2/N] Infrastructure health ───────────────────────────────────────────
+  step(2, TOTAL, "Verifying infrastructure…")
+  const infraEntries = await checkInfrastructure()
+
+  // ── [3/N] Spawn services ──────────────────────────────────────────────────
+  const serviceNames = services.map((s) => s.name).join(", ")
+  step(3, TOTAL, `Starting ${serviceNames}…`)
+
+  if (services.length > 1) {
+    const coloredPrefixes = services.map((s) => s.logColor(`[${s.logPrefix}]`)).join("  ")
+    console.log(chalk.gray(`    Log prefixes: ${coloredPrefixes}\n`))
+  } else {
+    console.log(chalk.gray(`    Logs prefixed with ${services[0].logColor(`[${services[0].logPrefix}]`)}\n`))
+  }
+
+  const procs = services.map((svc) => {
+    // Clean stale .next cache before starting Next.js to avoid "e[o] is not a function" errors
+    if (svc.key === "web") {
+      const nextDir = path.join(ROOT, "apps", "web", ".next")
+      if (fs.existsSync(nextDir)) {
+        fs.rmSync(nextDir, { recursive: true, force: true })
+        console.log(chalk.gray("    Cleaned stale .next cache"))
+      }
+    }
+    return spawnService(svc)
+  })
+
+  // Merge new PIDs with any already-tracked services (e.g. only restarting one)
+  const existingEntries = readPidEntries().filter((e) => !services.some((s) => s.key === e.key))
+  const newEntries: PidEntry[] = procs
+    .map((p, i) => ({ key: services[i].key, pid: p.pid! }))
+    .filter((e) => e.pid != null)
+  writePidEntries([...existingEntries, ...newEntries])
+
+  process.on("SIGINT", () => {
+    console.log(chalk.yellow("\n\n  Shutting down…"))
+    for (const p of procs) p.kill("SIGTERM")
+    for (const svc of services) killTrackedServices(svc.key)
+    process.exit(0)
+  })
+
+  // ── [4/N] Wait for all services ───────────────────────────────────────────
+  if (opts.wait) {
+    step(4, TOTAL, "Waiting for services to be ready…")
+
+    const readyResults = await Promise.all(
+      services.map(async (svc, i) => {
+        if (!svc.healthUrl) return { svc, ready: true }
+        const spinner = ora({
+          text: `${svc.name} — polling ${svc.healthUrl}`,
+          indent: 4,
+        }).start()
+        const startTs = Date.now()
+        const ready = await waitForService(svc, 180_000, 2_000)
+        const elapsed = ((Date.now() - startTs) / 1000).toFixed(1)
+        if (ready) {
+          spinner.succeed(chalk.green(`${svc.name} ready  ${chalk.gray(`(${elapsed}s)`)}`))
+        } else {
+          spinner.fail(chalk.red(`${svc.name} did not become ready within 180s`))
+          procs[i].kill("SIGTERM")
+        }
+        return { svc, ready }
+      })
+    )
+
+    if (readyResults.some((r) => !r.ready)) {
+      const failed = readyResults.filter((r) => !r.ready).map((r) => r.svc.name)
+      console.log(chalk.red(`\n  Failed to start: ${failed.join(", ")}\n`))
+      process.exit(1)
+    }
+  }
+
+  printSummary(services, infraEntries)
+
+  await Promise.all(procs)
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 export function registerDevCommands(dev: Command) {
 
-  // ── ibx dev [service] ────────────────────────────────────────────────────
+  // ── ibx dev [service]  (backward-compat default action) ──────────────────
   dev
     .description("SDLC — development lifecycle")
-    .argument("[service]", "commerce (default) | all")
-    .option("--skip-docker", "Skip 'docker compose up' (assume infra is already running)")
+    .argument("[service]", "commerce (default) | api | web | all")
+    .option("--skip-docker, --no-docker", "Skip 'docker compose up' (assume infra is already running)")
     .option("--no-wait", "Start services without polling health endpoints")
-    .action(async (serviceArg: string | undefined, opts: { skipDocker?: boolean; wait: boolean }) => {
-
-      let services: ServiceDef[]
-      try {
-        services = resolveServices(serviceArg)
-      } catch (err) {
-        console.error(chalk.red(`\n  ${String(err)}\n`))
-        process.exit(1)
-      }
-
-      const TOTAL = opts.wait ? 4 : 3
-      console.log(chalk.bold.blue("\n  🔥  IbateXas Dev Environment\n"))
-
-      // ── [1/N] Docker ──────────────────────────────────────────────────────
-      step(1, TOTAL, "Starting infrastructure…")
-
-      if (opts.skipDocker) {
-        console.log(chalk.gray("    --skip-docker: assuming containers are already up"))
-      } else {
-        const spinner = ora({ text: "docker compose up -d --wait", indent: 4 }).start()
-        try {
-          await execa("docker", ["compose", "up", "-d", "--wait"], { cwd: ROOT })
-          spinner.succeed(chalk.green("Docker services healthy"))
-        } catch (err) {
-          spinner.fail(chalk.red("Docker failed to start"))
-          console.error(chalk.gray(String(err)))
-          process.exit(1)
-        }
-      }
-
-      // ── [2/N] Infrastructure health ───────────────────────────────────────
-      step(2, TOTAL, "Verifying infrastructure…")
-      const infraEntries = await checkInfrastructure()
-
-      // ── [3/N] Spawn services ──────────────────────────────────────────────
-      const serviceNames = services.map((s) => s.name).join(", ")
-      step(3, TOTAL, `Starting ${serviceNames}…`)
-
-      if (services.length > 1) {
-        const coloredPrefixes = services.map((s) => s.logColor(`[${s.logPrefix}]`)).join("  ")
-        console.log(chalk.gray(`    Log prefixes: ${coloredPrefixes}\n`))
-      } else {
-        console.log(chalk.gray(`    Logs prefixed with ${services[0].logColor(`[${services[0].logPrefix}]`)}\n`))
-      }
-
-      const procs = services.map((svc) => spawnService(svc))
-
-      process.on("SIGINT", () => {
-        console.log(chalk.yellow("\n\n  Shutting down…"))
-        for (const p of procs) p.kill("SIGTERM")
-        process.exit(0)
-      })
-
-      // ── [4/N] Wait for all services ───────────────────────────────────────
-      if (opts.wait) {
-        step(4, TOTAL, "Waiting for services to be ready…")
-
-        const readyResults = await Promise.all(
-          services.map(async (svc, i) => {
-            if (!svc.healthUrl) return { svc, ready: true }
-            const spinner = ora({
-              text: `${svc.name} — polling ${svc.healthUrl}`,
-              indent: 4,
-            }).start()
-            const startTs = Date.now()
-            const ready = await waitForService(svc, 180_000, 2_000)
-            const elapsed = ((Date.now() - startTs) / 1000).toFixed(1)
-            if (ready) {
-              spinner.succeed(chalk.green(`${svc.name} ready  ${chalk.gray(`(${elapsed}s)`)}`))
-            } else {
-              spinner.fail(chalk.red(`${svc.name} did not become ready within 180s`))
-              procs[i].kill("SIGTERM")
-            }
-            return { svc, ready }
-          })
-        )
-
-        if (readyResults.some((r) => !r.ready)) {
-          const failed = readyResults.filter((r) => !r.ready).map((r) => r.svc.name)
-          console.log(chalk.red(`\n  Failed to start: ${failed.join(", ")}\n`))
-          process.exit(1)
-        }
-      }
-
-      printSummary(services, infraEntries)
-
-      await Promise.all(procs)
+    .action(async (serviceArg: string | undefined, opts: { skipDocker?: boolean; noDocker?: boolean; wait: boolean }) => {
+      await startServices(serviceArg, { ...opts, skipDocker: opts.skipDocker || opts.noDocker })
     })
 
-  // ── ibx dev stop ─────────────────────────────────────────────────────────
+  // ── ibx dev start [service] ───────────────────────────────────────────────
   dev
-    .command("stop")
-    .description("Stop all Docker containers")
-    .action(async () => {
-      const spinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
-      try {
-        await execa("docker", ["compose", "down"], { cwd: ROOT })
-        spinner.succeed(chalk.green("Docker containers stopped"))
-      } catch {
-        spinner.fail(chalk.red("Failed to stop Docker containers"))
-        process.exit(1)
+    .command("start [service]")
+    .description("Start dev services — commerce (default) | api | web | all")
+    .option("--skip-docker, --no-docker", "Skip 'docker compose up' (assume infra is already running)")
+    .option("--no-wait", "Start without polling health endpoints")
+    .action(async (serviceArg: string | undefined, opts: { skipDocker?: boolean; noDocker?: boolean; wait: boolean }) => {
+      await startServices(serviceArg, { ...opts, skipDocker: opts.skipDocker || opts.noDocker })
+    })
+
+  // ── ibx dev stop [service] ────────────────────────────────────────────────
+  dev
+    .command("stop [service]")
+    .description("Stop services (and Docker when stopping all) — commerce | api | web | all (default)")
+    .option("-f, --force", "Force-kill any process listening on service ports")
+    .action(async (serviceKey: string | undefined, opts: { force?: boolean }) => {
+      const stopAll = !serviceKey || serviceKey === "all"
+
+      // ── Force mode: kill anything on the known ports ──────────────────────
+      if (opts.force) {
+        const { SERVICES } = await import("../services.js")
+        const targets = stopAll
+          ? Object.values(SERVICES)
+          : serviceKey ? [SERVICES[serviceKey]].filter(Boolean) : []
+
+        const ports = targets.map((s) => s.port)
+        console.log(chalk.bold.yellow(`\n  ⚡ Force-killing processes on ports: ${ports.join(", ")}\n`))
+
+        for (const port of ports) {
+          try {
+            const { stdout } = execaSync("lsof", ["-ti", `:${port}`], { reject: false })
+            const pids = (stdout ?? "").toString().trim().split("\n").filter(Boolean)
+            for (const pid of pids) {
+              try { process.kill(Number(pid), "SIGKILL") } catch { /* already gone */ }
+            }
+            if (pids.length > 0) {
+              console.log(chalk.green(`    ✓ Port ${port}: killed ${pids.length} process(es)`))
+            } else {
+              console.log(chalk.gray(`    · Port ${port}: nothing running`))
+            }
+          } catch {
+            console.log(chalk.gray(`    · Port ${port}: nothing running`))
+          }
+        }
+
+        // Also clean up PID file
+        if (stopAll) {
+          removePidFile()
+        } else if (serviceKey) {
+          const entries = readPidEntries().filter((e) => e.key !== serviceKey)
+          entries.length > 0 ? writePidEntries(entries) : removePidFile()
+        }
+
+        // Docker too when stopping all — use 'stop' to preserve volumes
+        if (stopAll) {
+          const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
+          try {
+            await execa("docker", ["compose", "stop"], { cwd: ROOT })
+            dockerSpinner.succeed(chalk.green("Docker containers stopped (volumes preserved)"))
+          } catch {
+            dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
+            process.exit(1)
+          }
+        }
+
+        console.log(chalk.green("\n  Done.\n"))
+        return
       }
+
+      // ── Normal (graceful) stop ────────────────────────────────────────────
+      // Kill tracked processes
+      const killed = killTrackedServices(stopAll ? undefined : serviceKey)
+      if (killed > 0) {
+        const spinner = ora({ text: `Stopping ${killed} process(es)…`, indent: 2 }).start()
+        await new Promise((r) => setTimeout(r, 1500))
+        spinner.succeed(chalk.green(stopAll ? "All service processes stopped" : `${serviceKey} stopped`))
+      } else {
+        // Fallback: pattern-kill
+        const spinner = ora({ text: "No PID file — stopping via pattern match…", indent: 2 }).start()
+        if (stopAll) {
+          patternKillAll()
+        } else if (serviceKey) {
+          try { execaSync("pkill", ["-f", serviceKey], { reject: false }) } catch { /* noop */ }
+        }
+        await new Promise((r) => setTimeout(r, 800))
+        spinner.succeed(chalk.green("Done"))
+      }
+
+      // Only stop Docker when stopping everything — 'stop' preserves volumes
+      if (stopAll) {
+        const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
+        try {
+          await execa("docker", ["compose", "stop"], { cwd: ROOT })
+          dockerSpinner.succeed(chalk.green("Docker containers stopped (volumes preserved)"))
+        } catch {
+          dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
+          process.exit(1)
+        }
+      }
+    })
+
+  // ── ibx dev restart [service] ─────────────────────────────────────────────
+  dev
+    .command("restart [service]")
+    .description("Restart services without touching Docker — commerce | api | web | all (default)")
+    .option("--no-wait", "Restart without polling health endpoints")
+    .action(async (serviceKey: string | undefined, opts: { wait: boolean }) => {
+      const target = serviceKey ?? "all"
+      console.log(chalk.bold.blue(`\n  ♻️  Restarting ${target}…\n`))
+
+      // Kill target processes
+      const killed = killTrackedServices(target === "all" ? undefined : target)
+      if (killed > 0) {
+        const spinner = ora({ text: `Stopping ${killed} process(es)…`, indent: 2 }).start()
+        await new Promise((r) => setTimeout(r, 1500))
+        spinner.succeed(chalk.green(`Stopped ${killed} process(es)`))
+      } else {
+        if (target === "all") {
+          patternKillAll()
+        } else {
+          try { execaSync("pkill", ["-f", target], { reject: false }) } catch { /* noop */ }
+        }
+        await new Promise((r) => setTimeout(r, 800))
+      }
+
+      // Respawn — Docker is already running
+      await startServices(target === "all" ? "all" : target, { skipDocker: true, wait: opts.wait })
     })
 
   // ── ibx dev build [filter] ────────────────────────────────────────────────

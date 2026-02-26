@@ -4,6 +4,7 @@ import chalk from "chalk"
 import ora from "ora"
 import crypto from "node:crypto"
 import { searchProducts, closeRedisClient, Channel } from "@ibatexas/tools"
+import { v4 as uuidv4 } from 'uuid';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -30,12 +31,43 @@ function getApiUrl(): string {
   return process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
 }
 
+let _adminToken: string | null = null
+
+/** Authenticate with Medusa admin API and cache the token for this CLI run. */
+async function getAdminToken(): Promise<string> {
+  if (_adminToken) return _adminToken
+  const base = getMedusaUrl()
+  const email = process.env.MEDUSA_ADMIN_EMAIL ?? "REDACTED_EMAIL"
+  const password = process.env.MEDUSA_ADMIN_PASSWORD ?? "REDACTED_PASSWORD"
+
+  const res = await fetch(`${base}/auth/user/emailpass`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(
+      `Admin auth failed (${res.status}): ${text}\n` +
+      `Set MEDUSA_ADMIN_EMAIL and MEDUSA_ADMIN_PASSWORD or create an admin user.`
+    )
+  }
+
+  const data = (await res.json()) as { token?: string }
+  if (!data.token) throw new Error("Admin auth response missing token")
+  _adminToken = data.token
+  return _adminToken
+}
+
 async function medusaFetch(path: string, options?: RequestInit): Promise<Record<string, unknown>> {
   const base = getMedusaUrl()
+  const token = await getAdminToken()
   const res = await fetch(`${base}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
       ...(options?.headers ?? {}),
     },
   })
@@ -367,7 +399,7 @@ export function registerApiCommands(api: Command) {
     .option("--channel <channel>", "Channel to send as: web | whatsapp | instagram", "web")
     .action(async (message: string, opts: { session?: string; channel: string }) => {
       const apiUrl = getApiUrl()
-      const sessionId = opts.session ?? crypto.randomUUID()
+      const sessionId = opts.session ?? uuidv4()
 
       console.log(chalk.bold(`\n  ibx api chat\n`))
       console.log(chalk.gray(`  api     : ${apiUrl}`))
