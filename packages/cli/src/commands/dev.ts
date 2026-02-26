@@ -414,20 +414,20 @@ export function registerDevCommands(dev: Command) {
   dev
     .description("SDLC — development lifecycle")
     .argument("[service]", "commerce (default) | api | web | all")
-    .option("--skip-docker", "Skip 'docker compose up' (assume infra is already running)")
+    .option("--skip-docker, --no-docker", "Skip 'docker compose up' (assume infra is already running)")
     .option("--no-wait", "Start services without polling health endpoints")
-    .action(async (serviceArg: string | undefined, opts: { skipDocker?: boolean; wait: boolean }) => {
-      await startServices(serviceArg, opts)
+    .action(async (serviceArg: string | undefined, opts: { skipDocker?: boolean; noDocker?: boolean; wait: boolean }) => {
+      await startServices(serviceArg, { ...opts, skipDocker: opts.skipDocker || opts.noDocker })
     })
 
   // ── ibx dev start [service] ───────────────────────────────────────────────
   dev
     .command("start [service]")
     .description("Start dev services — commerce (default) | api | web | all")
-    .option("--skip-docker", "Skip 'docker compose up'")
+    .option("--skip-docker, --no-docker", "Skip 'docker compose up' (assume infra is already running)")
     .option("--no-wait", "Start without polling health endpoints")
-    .action(async (serviceArg: string | undefined, opts: { skipDocker?: boolean; wait: boolean }) => {
-      await startServices(serviceArg, opts)
+    .action(async (serviceArg: string | undefined, opts: { skipDocker?: boolean; noDocker?: boolean; wait: boolean }) => {
+      await startServices(serviceArg, { ...opts, skipDocker: opts.skipDocker || opts.noDocker })
     })
 
   // ── ibx dev stop [service] ────────────────────────────────────────────────
@@ -473,12 +473,12 @@ export function registerDevCommands(dev: Command) {
           entries.length > 0 ? writePidEntries(entries) : removePidFile()
         }
 
-        // Docker too when stopping all
+        // Docker too when stopping all — use 'stop' to preserve volumes
         if (stopAll) {
           const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
           try {
-            await execa("docker", ["compose", "down"], { cwd: ROOT })
-            dockerSpinner.succeed(chalk.green("Docker containers stopped"))
+            await execa("docker", ["compose", "stop"], { cwd: ROOT })
+            dockerSpinner.succeed(chalk.green("Docker containers stopped (volumes preserved)"))
           } catch {
             dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
             process.exit(1)
@@ -508,12 +508,12 @@ export function registerDevCommands(dev: Command) {
         spinner.succeed(chalk.green("Done"))
       }
 
-      // Only bring down Docker when stopping everything
+      // Only stop Docker when stopping everything — 'stop' preserves volumes
       if (stopAll) {
         const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
         try {
-          await execa("docker", ["compose", "down"], { cwd: ROOT })
-          dockerSpinner.succeed(chalk.green("Docker containers stopped"))
+          await execa("docker", ["compose", "stop"], { cwd: ROOT })
+          dockerSpinner.succeed(chalk.green("Docker containers stopped (volumes preserved)"))
         } catch {
           dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
           process.exit(1)

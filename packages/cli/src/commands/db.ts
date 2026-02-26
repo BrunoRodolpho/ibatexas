@@ -23,6 +23,27 @@ function parseDatabaseUrl() {
   }
 }
 
+function getMedusaUrl(): string {
+  const url = process.env.MEDUSA_BACKEND_URL
+  if (!url) {
+    console.error(chalk.red("MEDUSA_BACKEND_URL is not set. Run: ibx env check"))
+    process.exit(1)
+  }
+  return url
+}
+
+async function medusaFetch(path: string): Promise<Record<string, unknown>> {
+  const base = getMedusaUrl()
+  const res = await fetch(`${base}${path}`, {
+    headers: { "Content-Type": "application/json" },
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Medusa API ${res.status}: ${text}`)
+  }
+  return res.json() as Promise<Record<string, unknown>>
+}
+
 async function runPsql(args: string[], env?: NodeJS.ProcessEnv) {
   await execa("psql", args, { stdio: "inherit", env: { ...process.env, ...env } })
 }
@@ -150,6 +171,66 @@ async function runReset(force = false) {
   console.log(chalk.green("\n  ✅  Database reset and reseed complete\n"))
 }
 
+async function runReindex(fresh = false) {
+  const {
+    ensureCollectionExists,
+    recreateCollection,
+    indexProductsBatch,
+  } = await import("@ibatexas/tools")
+
+  const step = (msg: string) =>
+    console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${msg}`))
+
+  // 1. Create or recreate the collection
+  if (fresh) {
+    step("Recreating Typesense collection (--fresh)…")
+    await recreateCollection()
+    console.log(chalk.green("    Collection recreated"))
+  } else {
+    step("Ensuring Typesense collection exists…")
+    await ensureCollectionExists()
+    console.log(chalk.green("    Collection ready"))
+  }
+
+  // 2. Fetch all published products from Medusa (paginated)
+  step("Fetching products from Medusa…")
+  const allProducts: unknown[] = []
+  let offset = 0
+  const limit = 100
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const data = await medusaFetch(
+      `/admin/products?limit=${limit}&offset=${offset}&fields=id,title,description,thumbnail,status,tag_ids,variants,metadata,created_at,updated_at&expand=variants,variants.prices`
+    )
+    const products = (data.products as unknown[] | undefined) ?? []
+    allProducts.push(...products)
+    if (products.length < limit) break
+    offset += limit
+  }
+
+  if (allProducts.length === 0) {
+    console.log(chalk.yellow("\n  No products found in Medusa. Run: ibx db seed\n"))
+    return
+  }
+
+  console.log(chalk.white(`    Found ${allProducts.length} product(s)`))
+
+  // 3. Batch index into Typesense
+  step(`Indexing ${allProducts.length} product(s) into Typesense…`)
+  const spinner = ora("Generating embeddings & indexing…").start()
+  try {
+    await indexProductsBatch(allProducts)
+    spinner.succeed(chalk.green(`Indexed ${allProducts.length} product(s) into Typesense`))
+  } catch (err) {
+    spinner.fail(chalk.red("Indexing failed"))
+    console.error(err)
+    process.exit(1)
+  }
+
+  console.log(chalk.green("\n  ✅  Reindex complete\n"))
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 export function registerDbCommands(program: Command) {
@@ -178,5 +259,10 @@ export function registerDbCommands(program: Command) {
     .option("-f, --force", "Skip the confirmation prompt")
     .action((opts: { force?: boolean }) => runReset(opts.force))
 
-  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runReset }
+  db.command("reindex")
+    .description("Fetch all products from Medusa and reindex into Typesense")
+    .option("--fresh", "Drop and recreate the Typesense collection before indexing")
+    .action((opts: { fresh?: boolean }) => runReindex(opts.fresh))
+
+  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runReset, runReindex }
 }
