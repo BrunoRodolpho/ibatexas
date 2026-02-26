@@ -2,6 +2,7 @@
   "name": "@ibatexas/commerce",
   "version": "0.0.1",
   "private": true,
+  "//build": "build runs tsc --noEmit for CI type-checking; use build:medusa for actual Medusa deployment builds",
   "scripts": {
     "dev": "medusa develop",
     "build": "tsc --noEmit",
