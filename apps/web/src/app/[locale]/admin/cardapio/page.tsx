@@ -53,7 +53,7 @@ export default function MenuManagement() {
         return url ? (
           <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
         ) : (
-          <div className="h-10 w-10 rounded-md bg-slate-100" />
+          <div className="h-10 w-10 rounded-sm bg-smoke-100" />
         )
       },
     }),
@@ -89,7 +89,7 @@ export default function MenuManagement() {
           href={`${MEDUSA_ADMIN_URL}/app/products/${i.row.original.id}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800"
+          className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
           onClick={(e) => e.stopPropagation()}
         >
           Editar
@@ -103,12 +103,12 @@ export default function MenuManagement() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-900">{t('admin.menu')}</h1>
+        <h1 className="text-2xl font-bold text-charcoal-900">{t('admin.menu')}</h1>
         <a
           href={`${MEDUSA_ADMIN_URL}/app/products/create`}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1.5 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-800"
+          className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
         >
           + {t('admin.add_product')}
           <ExternalLink className="h-3.5 w-3.5" />
@@ -136,7 +136,7 @@ export default function MenuManagement() {
         {typeFilter && (
           <button
             onClick={() => setTypeFilter('')}
-            className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"
+            className="flex items-center gap-1 text-sm text-smoke-400 hover:text-charcoal-700"
           >
             <RefreshCw className="h-3.5 w-3.5" />
             {t('search.reset_filters')}

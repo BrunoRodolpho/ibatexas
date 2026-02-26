@@ -36,7 +36,7 @@ export function SpecialRequestsForm({ value, onChange }: Props) {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-slate-600 mb-4">
+      <p className="text-sm text-smoke-400 mb-4">
         Selecione as opções que se aplicam (opcional):
       </p>
       {SPECIAL_REQUEST_OPTIONS.map((option) => {
@@ -45,14 +45,14 @@ export function SpecialRequestsForm({ value, onChange }: Props) {
 
         return (
           <div key={option.type}>
-            <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-3 transition hover:bg-slate-50">
+            <label className="flex cursor-pointer items-center gap-3 rounded-sm border border-smoke-200 p-3 transition-all duration-500 hover:bg-smoke-100">
               <input
                 type="checkbox"
                 checked={isActive}
                 onChange={() => toggle(option.type)}
-                className="h-4 w-4 rounded border-slate-300 text-brand-500 focus:ring-brand-500"
+                className="h-4 w-4 rounded border-smoke-200 accent-charcoal-900 focus:ring-charcoal-900"
               />
-              <span className="text-sm font-medium text-slate-800">{option.label}</span>
+              <span className="text-sm font-medium text-charcoal-800">{option.label}</span>
             </label>
 
             {isActive && option.placeholder && (
@@ -63,7 +63,7 @@ export function SpecialRequestsForm({ value, onChange }: Props) {
                   placeholder={option.placeholder}
                   rows={2}
                   maxLength={200}
-                  className="block w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  className="block w-full border-0 border-b border-smoke-200 px-0 py-2 text-sm text-charcoal-900 focus:border-charcoal-900 focus:outline-none transition-colors duration-500"
                 />
               </div>
             )}

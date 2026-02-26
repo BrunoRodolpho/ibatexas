@@ -41,14 +41,13 @@ export const ProductGrid = ({
 
   if (isLoading) {
     return (
-      <div className={`grid ${gridColsClass} gap-4`}>
+      <div className={`grid ${gridColsClass} gap-6`}>
         {Array.from({ length: columns === 5 ? 10 : 8 }).map((_, i) => (
-          <div key={i} className="border border-slate-200 bg-white overflow-hidden">
-            <div className="aspect-[3/2] skeleton" />
-            <div className="px-2 py-1.5 space-y-1.5">
-              <div className="h-3 w-3/4 rounded-sm skeleton" />
+          <div key={i} className="overflow-hidden">
+            <div className="aspect-[4/5] rounded-sm skeleton" />
+            <div className="pt-4 space-y-2">
+              <div className="h-3.5 w-3/4 rounded-sm skeleton" />
               <div className="h-3 w-1/3 rounded-sm skeleton" />
-              <div className="h-6 w-full rounded-sm skeleton mt-1" />
             </div>
           </div>
         ))}
@@ -58,15 +57,18 @@ export const ProductGrid = ({
 
   if (isEmpty || !products || products.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16 gap-3">
-        <span className="text-4xl">🔍</span>
-        <Text textColor="muted">{emptyMessage || 'Nenhum produto encontrado'}</Text>
+      <div className="flex flex-col items-center justify-center py-24 gap-4">
+        <div className="w-16 h-px bg-smoke-200" />
+        <p className="font-display text-xl text-smoke-300 tracking-display">
+          {emptyMessage || 'Nenhum produto encontrado'}
+        </p>
+        <div className="w-16 h-px bg-smoke-200" />
       </div>
     )
   }
 
   return (
-    <div className={`grid ${gridColsClass} gap-4`}>
+    <div className={`grid ${gridColsClass} gap-6`}>
       {products.map((product) => (
         <ProductCard
           key={product.id}

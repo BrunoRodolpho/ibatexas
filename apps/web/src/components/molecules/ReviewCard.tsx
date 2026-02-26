@@ -61,7 +61,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
             </Text>
           )}
 
-          <Text variant="body" className="mb-3 text-slate-700">
+          <Text variant="body" className="mb-3 text-charcoal-700">
             {comment}
           </Text>
 
@@ -74,7 +74,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
               {onRespond && (
                 <button
                   onClick={() => onRespond(id)}
-                  className="ml-2 text-sm font-medium text-amber-700 hover:text-amber-800 hover:underline"
+                  className="ml-2 text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
                 >
                   Responder
                 </button>

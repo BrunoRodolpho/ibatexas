@@ -54,15 +54,15 @@ export default function CartPage() {
 
   if (items.length === 0) {
     return (
-      <div className="min-h-screen bg-white flex flex-col items-center justify-center px-4">
-        <Heading as="h1" variant="h2" className="mb-4">
+      <div className="min-h-screen bg-smoke-50 flex flex-col items-center justify-center px-4">
+        <Heading as="h1" variant="h2" className="mb-4 font-display">
           {t('cart.empty')}
         </Heading>
         <Text textColor="secondary" className="mb-8">
           {t('cart.empty_subtitle')}
         </Text>
         <Link href={"/search"}>
-          <Button variant="primary" size="lg">
+          <Button variant="brand" size="lg">
             {t('cart.back_to_menu')}
           </Button>
         </Link>
@@ -71,11 +71,11 @@ export default function CartPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-smoke-50">
       <div className="max-w-6xl mx-auto px-4 py-6">
         {/* Header */}
         <div className="mb-6">
-          <Heading as="h1" variant="h2">
+          <Heading as="h1" variant="h2" className="font-display">
             {t('cart.title')} ({getItemCount()} {getItemCount() === 1 ? t('cart.item') : t('cart.items')})
           </Heading>
         </div>
@@ -95,7 +95,7 @@ export default function CartPage() {
 
           {/* Summary Sidebar */}
           <div className="lg:col-span-1">
-            <div className="bg-white rounded-lg border border-slate-200 p-6 sticky top-4 space-y-4">
+            <div className="bg-smoke-50 rounded-sm border border-smoke-200 p-6 sticky top-4 space-y-4">
               {/* Delivery Type */}
               <div>
                 <Heading as="h3" variant="h5" className="mb-3">
@@ -115,7 +115,7 @@ export default function CartPage() {
               </div>
 
               {/* Summary */}
-              <div className="space-y-3 border-t border-slate-200 pt-4">
+              <div className="space-y-3 border-t border-smoke-200 pt-4">
                 <div className="flex justify-between">
                   <Text textColor="secondary">{t('cart.subtotal')}</Text>
                   <Text className="font-semibold">
@@ -143,11 +143,11 @@ export default function CartPage() {
               </div>
 
               {/* Total */}
-              <div className="flex justify-between border-t border-slate-200 pt-4">
-                <Heading as="h4" variant="h4">
+              <div className="flex justify-between border-t border-smoke-200 pt-4">
+                <Heading as="h4" variant="h4" className="font-display">
                   {t('cart.total')}
                 </Heading>
-                <Heading as="h4" variant="h4" textColor="accent">
+                <Heading as="h4" variant="h4" className="font-display text-brand-600">
                   {(total / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
                 </Heading>
               </div>
@@ -164,7 +164,7 @@ export default function CartPage() {
 
               {/* Checkout Button */}
               <Button
-                variant="primary"
+                variant="brand"
                 size="lg"
                 className="w-full"
                 onClick={handleCheckout}
@@ -195,7 +195,7 @@ export default function CartPage() {
             <Button variant="secondary" className="flex-1" onClick={() => setShowCouponModal(false)}>
               {t('common.cancel')}
             </Button>
-            <Button variant="primary" className="flex-1" onClick={handleApplyCoupon}>
+            <Button variant="brand" className="flex-1" onClick={handleApplyCoupon}>
               {t('cart.apply')}
             </Button>
           </div>
@@ -207,7 +207,7 @@ export default function CartPage() {
             value={couponInput}
             onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
             placeholder={t('cart.coupon_placeholder')}
-            className="w-full px-4 py-2 border border-slate-300 rounded-lg"
+            className="w-full px-4 py-2 border-0 border-b border-smoke-200 focus:border-charcoal-900 focus:outline-none transition-colors duration-500"
           />
           <Text variant="small" textColor="muted">
             {t('cart.coupon_hint')}

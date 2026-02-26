@@ -51,7 +51,7 @@ export const SizeSelector = ({
             disabled={isOutOfStock}
             className={clsx(
               'px-4 py-2 min-w-[3rem]',
-              isSelected && 'ring-2 ring-orange-500 ring-offset-2',
+              isSelected && 'ring-2 ring-brand-500 ring-offset-2',
               isOutOfStock && 'opacity-50 cursor-not-allowed'
             )}
           >

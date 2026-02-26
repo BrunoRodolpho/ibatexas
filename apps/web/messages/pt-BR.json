@@ -17,7 +17,7 @@
     "hero_subtitle": "Feito com ingredientes selecionados, defumado lentamente. Peça já!",
     "hero_tagline": "Pedido em 3 segundos.",
     "badge_ai_native": "IA Nativa",
-    "order_via_ai": "Pedir via IA",
+    "order_via_ai": "Pedir via Chat",
     "featured": "Produtos em Destaque",
     "featured_products": "Produtos em Destaque",
     "featured_subtitle": "Conheça nossos pratos mais populares",
@@ -43,7 +43,7 @@
     "order_now": "Peça Agora",
     "cta_title": "Pronto para pedir?",
     "cta_subtitle": "Peça pelo nosso assistente de IA ou navegue o cardápio completo.",
-    "cta_button_ai": "Pedir via IA",
+    "cta_button_ai": "Pedir via Chat",
     "cta_button_menu": "Ver Cardápio",
     "chat_preview_assistant": "Assistente IbateXas",
     "chat_preview_online": "Online agora",
@@ -85,7 +85,7 @@
     "order_title": "Faça seu pedido",
     "order_subtitle": "WhatsApp, IA ou cardápio online.",
     "order_whatsapp": "Pedir via WhatsApp",
-    "order_ai": "Pedir via IA",
+    "order_ai": "Pedir via Chat",
     "order_menu": "Ver Cardápio",
     "facts_label": "Números",
     "facts_products": "produtos",
@@ -386,7 +386,8 @@
     "real": "R$",
     "required_field": "Campo obrigatório",
     "home": "Início",
-    "all": "Todos"
+    "all": "Todos",
+    "add": "Adicionar"
   },
   "footer": {
     "contact": "Contato",

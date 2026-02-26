@@ -3,13 +3,13 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import clsx from 'clsx'
 
 const iconButtonVariants = cva(
-  'inline-flex items-center justify-center rounded-lg font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed',
+  'inline-flex items-center justify-center rounded-sm font-medium transition-all duration-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed',
   {
     variants: {
       variant: {
-        primary: 'bg-amber-700 text-white hover:bg-amber-800 active:bg-amber-900',
-        secondary: 'bg-slate-200 text-slate-900 hover:bg-slate-300 active:bg-slate-400',
-        tertiary: 'bg-transparent text-slate-700 hover:bg-slate-100 active:bg-slate-200',
+        primary: 'bg-charcoal-900 text-smoke-50 hover:bg-charcoal-800 active:bg-charcoal-700',
+        secondary: 'bg-smoke-200 text-charcoal-900 hover:bg-smoke-300 active:bg-smoke-400',
+        tertiary: 'bg-transparent text-charcoal-700 hover:bg-smoke-100 active:bg-smoke-200',
         danger: 'bg-red-600 text-white hover:bg-red-700 active:bg-red-800',
       },
       size: {

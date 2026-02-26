@@ -19,11 +19,11 @@ export const TextArea = React.forwardRef<HTMLTextAreaElement, TextAreaProps>(
           maxLength={maxLength}
           value={value}
           className={clsx(
-            'w-full px-4 py-3 rounded-lg border-2 font-sans transition-colors focus-visible:outline-none',
+            'w-full px-0 py-2 border-0 border-b font-sans transition-colors duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-none bg-transparent text-sm',
             error
-              ? 'border-red-600 bg-red-50 focus-visible:border-red-700 focus-visible:ring-2 focus-visible:ring-red-200'
-              : 'border-slate-300 bg-white focus-visible:border-amber-700 focus-visible:ring-2 focus-visible:ring-amber-200',
-            'disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed',
+              ? 'border-red-600 focus-visible:border-red-700'
+              : 'border-smoke-200 focus-visible:border-charcoal-900',
+            'disabled:text-smoke-400 disabled:cursor-not-allowed',
             className
           )}
           {...props}
@@ -36,7 +36,7 @@ export const TextArea = React.forwardRef<HTMLTextAreaElement, TextAreaProps>(
             <p
               className={clsx(
                 'text-xs ml-auto',
-                charCount === maxLength ? 'text-red-600 font-medium' : 'text-slate-500'
+                charCount === maxLength ? 'text-red-600 font-medium' : 'text-smoke-400'
               )}
             >
               {charCount}/{maxLength}

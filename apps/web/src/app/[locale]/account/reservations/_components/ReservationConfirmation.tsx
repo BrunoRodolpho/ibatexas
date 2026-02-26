@@ -34,42 +34,42 @@ export function ReservationConfirmation({ reservation, onMakeAnother }: Props) {
   return (
     <div className="text-center">
       {/* Success icon */}
-      <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-green-100">
-        <svg className="h-10 w-10 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-emerald-50">
+        <svg className="h-10 w-10 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
         </svg>
       </div>
 
-      <h2 className="text-2xl font-bold text-gray-900">Reserva confirmada!</h2>
-      <p className="mt-2 text-gray-600">
+      <h2 className="text-2xl font-display font-bold text-charcoal-900">Reserva confirmada!</h2>
+      <p className="mt-2 text-smoke-400">
         Você receberá uma confirmação pelo WhatsApp em breve.
       </p>
 
       {/* Details card */}
-      <div className="mx-auto mt-8 max-w-sm rounded-2xl border border-gray-200 bg-white p-6 text-left shadow-sm">
+      <div className="mx-auto mt-8 max-w-sm rounded-sm border border-smoke-200 bg-smoke-50 p-6 text-left">
         <div className="space-y-3">
           <div className="flex justify-between">
-            <span className="text-sm text-gray-500">📅 Data</span>
-            <span className="text-sm font-medium text-gray-900 capitalize">{dateBR}</span>
+            <span className="text-sm text-smoke-400">📅 Data</span>
+            <span className="text-sm font-medium text-charcoal-900 capitalize">{dateBR}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-sm text-gray-500">🕕 Horário</span>
-            <span className="text-sm font-medium text-gray-900">{time}</span>
+            <span className="text-sm text-smoke-400">🕕 Horário</span>
+            <span className="text-sm font-medium text-charcoal-900">{time}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-sm text-gray-500">👥 Pessoas</span>
-            <span className="text-sm font-medium text-gray-900">
+            <span className="text-sm text-smoke-400">👥 Pessoas</span>
+            <span className="text-sm font-medium text-charcoal-900">
               {reservation.partySize} {reservation.partySize === 1 ? "pessoa" : "pessoas"}
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-sm text-gray-500">📍 Local</span>
-            <span className="text-sm font-medium text-gray-900">{location}</span>
+            <span className="text-sm text-smoke-400">📍 Local</span>
+            <span className="text-sm font-medium text-charcoal-900">{location}</span>
           </div>
-          <div className="border-t border-gray-100 pt-3">
+          <div className="border-t border-smoke-200 pt-3">
             <div className="flex justify-between">
-              <span className="text-xs text-gray-400">ID da reserva</span>
-              <span className="font-mono text-xs text-gray-500">{reservation.reservationId.slice(0, 12)}…</span>
+              <span className="text-xs text-smoke-300">ID da reserva</span>
+              <span className="font-mono text-xs text-smoke-400">{reservation.reservationId.slice(0, 12)}…</span>
             </div>
           </div>
         </div>
@@ -78,14 +78,14 @@ export function ReservationConfirmation({ reservation, onMakeAnother }: Props) {
       <div className="mt-8 flex flex-col gap-3">
         <Link
           href={"/account/reservations"}
-          className="rounded-lg border border-gray-300 px-6 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          className="rounded-sm border border-smoke-200 px-6 py-3 text-sm font-medium text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
         >
           Ver minhas reservas
         </Link>
         <button
           type="button"
           onClick={onMakeAnother}
-          className="rounded-lg bg-orange-600 px-6 py-3 text-sm font-medium text-white hover:bg-orange-700"
+          className="rounded-sm bg-charcoal-900 px-6 py-3 text-sm font-medium text-smoke-50 hover:bg-charcoal-800 transition-all duration-500"
         >
           Fazer outra reserva
         </button>

@@ -2,28 +2,29 @@
 
 import { cva, type VariantProps } from 'class-variance-authority'
 import { forwardRef } from 'react'
+import { Link } from '@/i18n/navigation'
+import type { ComponentProps } from 'react'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 font-medium rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed select-none',
+  'inline-flex items-center justify-center gap-2 font-medium rounded-sm text-sm transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed select-none',
   {
     variants: {
       variant: {
         primary: [
-          'bg-slate-900 text-white',
-          'hover:bg-slate-800',
-          'active:bg-slate-950',
-          'focus-visible:ring-slate-900',
+          'bg-charcoal-900 text-white',
+          'hover:bg-charcoal-700',
+          'active:bg-charcoal-900',
+          'focus-visible:ring-charcoal-900',
         ],
         secondary: [
-          'border border-slate-200 bg-white text-slate-700',
-          'shadow-xs',
-          'hover:bg-slate-50 hover:text-slate-900',
-          'focus-visible:ring-slate-400',
+          'border border-smoke-200 bg-smoke-50 text-charcoal-900',
+          'hover:bg-smoke-100',
+          'focus-visible:ring-smoke-300',
         ],
         tertiary: [
-          'bg-transparent text-slate-600',
-          'hover:bg-slate-100 hover:text-slate-900',
-          'focus-visible:ring-slate-400',
+          'bg-transparent text-smoke-400',
+          'hover:text-charcoal-900',
+          'focus-visible:ring-smoke-300',
         ],
         danger: [
           'bg-red-600 text-white',
@@ -35,6 +36,17 @@ const buttonVariants = cva(
           'hover:bg-brand-600',
           'active:bg-brand-700',
           'focus-visible:ring-brand-500',
+        ],
+        'primary-inverse': [
+          'bg-smoke-50 text-charcoal-900',
+          'hover:bg-smoke-100',
+          'active:bg-smoke-200',
+          'focus-visible:ring-smoke-300',
+        ],
+        'secondary-inverse': [
+          'border border-smoke-300 bg-transparent text-white',
+          'hover:border-white',
+          'focus-visible:ring-white',
         ],
       },
       size: {
@@ -78,4 +90,17 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
 )
 Button.displayName = 'Button'
 
-export { Button, buttonVariants }
+interface LinkButtonProps
+  extends ComponentProps<typeof Link>,
+    VariantProps<typeof buttonVariants> {}
+
+const LinkButton = forwardRef<HTMLAnchorElement, LinkButtonProps>(
+  ({ className, variant, size, children, ...props }, ref) => (
+    <Link ref={ref} className={buttonVariants({ variant, size, className })} {...props}>
+      {children}
+    </Link>
+  )
+)
+LinkButton.displayName = 'LinkButton'
+
+export { Button, LinkButton, buttonVariants }

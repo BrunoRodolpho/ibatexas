@@ -164,13 +164,13 @@ export default function ReservationsPage() {
     return (
       <div className="mx-auto max-w-md px-4 py-12 text-center sm:px-6">
         <div className="mb-6 text-4xl">🍽️</div>
-        <h1 className="text-3xl font-bold text-gray-900">{t("reservations.title")}</h1>
-        <p className="mt-4 text-gray-600">{t("reservations.login_required")}</p>
-        <button className="mt-8 w-full rounded-lg bg-orange-600 px-6 py-3 font-medium text-white hover:bg-orange-700">
+        <h1 className="text-3xl font-display font-bold text-charcoal-900">{t("reservations.title")}</h1>
+        <p className="mt-4 text-smoke-400">{t("reservations.login_required")}</p>
+        <button className="mt-8 w-full rounded-sm bg-charcoal-900 px-6 py-3 font-medium text-smoke-50 hover:bg-charcoal-800 transition-all duration-500">
           {t("checkout.login_button")}
         </button>
         <p className="mt-6">
-          <Link href={"/search"} className="text-orange-600 hover:text-orange-700">
+          <Link href={"/search"} className="text-brand-500 hover:text-brand-600">
             {t("cart.continue_shopping")} →
           </Link>
         </p>
@@ -206,7 +206,7 @@ export default function ReservationsPage() {
         <div className="mb-6 flex items-center gap-2 text-sm text-gray-500">
           <button
             onClick={() => setStep("date-party")}
-            className="text-orange-600 hover:text-orange-700"
+            className="text-brand-500 hover:text-brand-600"
           >
             ← Voltar
           </button>
@@ -220,8 +220,8 @@ export default function ReservationsPage() {
 
       {/* ── Step 1: Date + Party size ─────────────────────────────────────── */}
       {step === "date-party" && (
-        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="mb-6 text-lg font-semibold text-gray-900">
+        <div className="rounded-sm border border-smoke-200 bg-smoke-50 p-6">
+          <h2 className="mb-6 text-lg font-semibold text-charcoal-900">
             🗓️ Nova reserva
           </h2>
 
@@ -234,7 +234,7 @@ export default function ReservationsPage() {
             type="button"
             disabled={!selectedDate}
             onClick={fetchAvailability}
-            className="mt-8 w-full rounded-lg bg-orange-600 px-6 py-3 font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+            className="mt-8 w-full rounded-sm bg-charcoal-900 px-6 py-3 font-medium text-smoke-50 hover:bg-charcoal-800 disabled:opacity-50 transition-all duration-500"
           >
             Ver horários disponíveis →
           </button>
@@ -243,8 +243,8 @@ export default function ReservationsPage() {
 
       {/* ── Step 2: Pick time slot ────────────────────────────────────────── */}
       {step === "timeslot" && (
-        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="mb-6 text-lg font-semibold text-gray-900">
+        <div className="rounded-sm border border-smoke-200 bg-smoke-50 p-6">
+          <h2 className="mb-6 text-lg font-semibold text-charcoal-900">
             🕕 Horários disponíveis para {partySize} {partySize === 1 ? "pessoa" : "pessoas"} em{" "}
             {new Date(selectedDate + "T00:00:00").toLocaleDateString("pt-BR", {
               day: "numeric",
@@ -262,13 +262,13 @@ export default function ReservationsPage() {
 
       {/* ── Step 3: Special requests + confirm ───────────────────────────── */}
       {step === "requests" && selectedSlot && (
-        <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="rounded-sm border border-smoke-200 bg-smoke-50 p-6">
           {/* Summary card */}
-          <div className="mb-6 rounded-xl bg-orange-50 p-4">
+          <div className="mb-6 rounded-sm bg-charcoal-900 text-smoke-50 p-4">
             <div className="flex items-center gap-3">
               <div className="text-2xl">📋</div>
               <div>
-                <p className="font-semibold text-gray-900">
+                <p className="font-semibold text-smoke-50">
                   {new Date(selectedSlot.date + "T00:00:00").toLocaleDateString("pt-BR", {
                     weekday: "long",
                     day: "2-digit",
@@ -276,14 +276,14 @@ export default function ReservationsPage() {
                   })}{" "}
                   às {selectedSlot.startTime}
                 </p>
-                <p className="text-sm text-gray-600">
+                <p className="text-sm text-smoke-200">
                   {partySize} {partySize === 1 ? "pessoa" : "pessoas"} · {selectedSlot.durationMinutes} min
                 </p>
               </div>
             </div>
           </div>
 
-          <h2 className="mb-4 text-lg font-semibold text-gray-900">
+          <h2 className="mb-4 text-lg font-semibold text-charcoal-900">
             Solicitações especiais
           </h2>
 
@@ -299,7 +299,7 @@ export default function ReservationsPage() {
             <button
               type="button"
               onClick={() => setStep("timeslot")}
-              className="flex-1 rounded-lg border border-gray-300 px-4 py-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              className="flex-1 rounded-sm border border-smoke-200 px-4 py-3 text-sm font-medium text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
             >
               Voltar
             </button>
@@ -307,7 +307,7 @@ export default function ReservationsPage() {
               type="button"
               onClick={submitReservation}
               disabled={creating}
-              className="flex-1 rounded-lg bg-orange-600 px-4 py-3 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-60"
+              className="flex-1 rounded-sm bg-charcoal-900 px-4 py-3 text-sm font-medium text-smoke-50 hover:bg-charcoal-800 disabled:opacity-60 transition-all duration-500"
             >
               {creating ? "Confirmando…" : "Confirmar reserva ✓"}
             </button>
@@ -317,7 +317,7 @@ export default function ReservationsPage() {
 
       {/* ── My reservations ──────────────────────────────────────────────── */}
       <div className="mt-12">
-        <h2 className="mb-4 text-xl font-bold text-gray-900">
+        <h2 className="mb-4 text-xl font-display font-bold text-charcoal-900">
           {t("reservations.my_reservations")}
         </h2>
         <MyReservations

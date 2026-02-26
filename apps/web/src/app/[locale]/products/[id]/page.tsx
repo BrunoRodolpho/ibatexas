@@ -68,23 +68,23 @@ export default function ProductPage({ params }: { params: { id: string } }) {
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
       {/* Breadcrumb */}
-      <div className="mb-8 flex gap-2 text-sm text-slate-600">
-        <Link href={"/"} className="hover:text-slate-900">
+      <div className="mb-8 flex gap-2 text-sm text-smoke-400">
+        <Link href={"/"} className="hover:text-charcoal-900">
           Home
         </Link>
         <span>/</span>
-        <Link href={"/search"} className="hover:text-slate-900">
+        <Link href={"/search"} className="hover:text-charcoal-900">
           {t("search.title")}
         </Link>
         <span>/</span>
-        <span className="text-slate-900">{product.title}</span>
+        <span className="text-charcoal-900">{product.title}</span>
       </div>
 
       <div className="grid gap-12 lg:grid-cols-2">
         {/* Images */}
         <div>
           {product.imageUrl && (
-            <div className="relative mb-4 aspect-square overflow-hidden rounded-lg bg-slate-50">
+            <div className="relative mb-4 aspect-square overflow-hidden rounded-sm bg-smoke-100">
               <Image
                 src={product.imageUrl}
                 alt={product.title}
@@ -112,10 +112,10 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
         {/* Details */}
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{product.title}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-charcoal-900">{product.title}</h1>
 
           {product.description && (
-            <p className="mt-4 text-slate-600 leading-relaxed">{product.description}</p>
+            <p className="mt-4 text-smoke-400 leading-relaxed">{product.description}</p>
           )}
 
           {/* Price */}
@@ -138,8 +138,8 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
           {/* Variants */}
           {variants.length > 0 && (
-            <div className="mt-6 border-t border-slate-200 pt-6">
-              <h3 className="text-sm font-medium text-slate-900">
+            <div className="mt-6 border-t border-smoke-200 pt-6">
+              <h3 className="text-sm font-medium text-charcoal-900">
                 {t("product.variants")}
               </h3>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -152,10 +152,10 @@ export default function ProductPage({ params }: { params: { id: string } }) {
                     <button
                       key={variant.id}
                       onClick={() => setSelectedVariant(variant.id)}
-                      className={`rounded-xl border-2 px-4 py-2.5 text-sm font-medium transition-all duration-250 ${
+                      className={`rounded-xl border-2 px-4 py-2.5 text-sm font-medium transition-all duration-200 ${
                         selectedVariant === variant.id
                           ? "border-brand-500 bg-brand-50 text-brand-800"
-                          : "border-slate-200 text-slate-700 hover:border-slate-300"
+                          : "border-smoke-200 text-charcoal-700 hover:border-smoke-300"
                       }`}
                     >
                       {variant.title} - {variantPrice}
@@ -167,16 +167,16 @@ export default function ProductPage({ params }: { params: { id: string } }) {
           )}
 
           {/* Quantity & Special Instructions */}
-          <div className="mt-6 border-t border-slate-200 pt-6">
+          <div className="mt-6 border-t border-smoke-200 pt-6">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="block text-sm font-medium text-slate-900">
+                <label className="block text-sm font-medium text-charcoal-900">
                   {t("product.quantity")}
                 </label>
                 <div className="mt-2 flex items-center gap-2">
                   <button
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                    className="rounded-md border border-slate-200 px-3 py-2 text-slate-600 hover:bg-slate-50 transition-colors"
+                    className="rounded-sm border border-smoke-200 px-3 py-2 text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
                   >
                     +
                   </button>
@@ -186,14 +186,14 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
             {/* Special Instructions */}
             <div className="mt-4">
-              <label className="block text-sm font-medium text-slate-900">
+              <label className="block text-sm font-medium text-charcoal-900">
                 {t("product.special_instructions")}
               </label>
               <textarea
                 value={specialInstructions}
                 onChange={(e) => setSpecialInstructions(e.target.value)}
                 placeholder={t("product.special_instructions_placeholder")}
-                className="mt-2 block w-full rounded-md border border-slate-200 px-3 py-2.5 text-sm focus:border-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                className="mt-2 block w-full border-0 border-b border-smoke-200 px-0 py-2.5 text-sm focus:border-charcoal-900 focus:outline-none transition-colors duration-500"
                 rows={3}
               />
             </div>
@@ -203,7 +203,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
           <button
             onClick={handleAddToCart}
             disabled={!product.inStock}
-            className="mt-8 w-full rounded-lg bg-slate-900 px-6 py-3 text-sm font-medium text-white hover:bg-slate-800 transition-colors disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed"
+            className="mt-8 w-full rounded-sm bg-charcoal-900 px-6 py-3 text-sm font-medium text-smoke-50 hover:bg-charcoal-800 transition-all duration-500 disabled:bg-smoke-200 disabled:text-smoke-400 disabled:cursor-not-allowed"
           >
             {product.inStock ? t("product.add_to_cart") : t("product.out_of_stock")}
           </button>
@@ -220,17 +220,17 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
       {/* Nutritional Info & Allergens */}
       {(product.allergens?.length) && (
-        <div className="mt-12 border-t border-slate-200 pt-8">
-          <h2 className="text-lg font-semibold text-slate-900">
+        <div className="mt-12 border-t border-smoke-200 pt-8">
+          <h2 className="text-lg font-semibold text-charcoal-900">
             {t("product.nutritional_info")}
           </h2>
 
           {product.allergens?.length > 0 && (
             <div className="mt-6">
-              <h3 className="font-semibold text-slate-900">
+              <h3 className="font-semibold text-charcoal-900">
                 {t("product.allergens")}
               </h3>
-              <p className="mt-2 text-slate-600">
+              <p className="mt-2 text-smoke-400">
                 {t("product.contains")} {product.allergens.join(", ")}
               </p>
             </div>

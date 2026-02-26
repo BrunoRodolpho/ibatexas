@@ -54,8 +54,8 @@ export default function AdminDashboard() {
     <div className="space-y-6">
       {/* Page title */}
       <div>
-        <h1 className="text-lg font-semibold text-slate-900">{t('admin.dashboard')}</h1>
-        <p className="mt-1 text-sm text-slate-500">Visão geral do dia</p>
+        <h1 className="text-lg font-semibold text-charcoal-900">{t('admin.dashboard')}</h1>
+        <p className="mt-1 text-sm text-smoke-400">Visão geral do dia</p>
       </div>
 
       {/* KPI cards */}
@@ -94,14 +94,14 @@ export default function AdminDashboard() {
       {/* Recent orders */}
       <div>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-slate-900">
+          <h2 className="text-sm font-medium text-charcoal-900">
             {t('admin.recent_orders')}
           </h2>
           <a
             href={`${MEDUSA_ADMIN_URL}/app/orders`}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-slate-700"
+            className="flex items-center gap-1 text-xs font-medium text-smoke-400 hover:text-charcoal-700"
           >
             Ver todos
             <ExternalLink className="h-3 w-3" />

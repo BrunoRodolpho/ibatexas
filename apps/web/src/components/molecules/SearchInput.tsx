@@ -53,13 +53,13 @@ export const SearchInput: React.FC<SearchInputProps> = ({
         onFocus={() => query && setIsDropdownOpen(true)}
         onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
         placeholder={placeholder}
-        className="w-full px-4 py-3 rounded-lg border-2 border-slate-300 focus-visible:outline-none focus-visible:border-amber-700 focus-visible:ring-2 focus-visible:ring-amber-200"
+        className="w-full px-0 py-2 bg-transparent border-0 border-b border-smoke-200 text-charcoal-900 placeholder:text-smoke-400 focus-visible:outline-none focus-visible:border-charcoal-900 transition-colors duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] text-sm"
       />
 
       {isDropdownOpen && (suggestions.length > 0 || isLoading) && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-10 max-h-60 overflow-y-auto">
+        <div className="absolute top-full left-0 right-0 mt-1 bg-smoke-50 border border-smoke-200 rounded-sm shadow-md z-10 max-h-60 overflow-y-auto">
           {isLoading && (
-            <div className="px-4 py-3 text-center text-slate-500">
+            <div className="px-4 py-3 text-center text-smoke-400 text-sm">
               Carregando...
             </div>
           )}
@@ -69,7 +69,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({
                 <li key={suggestion.id}>
                   <button
                     onClick={() => handleSuggestionClick(suggestion.label)}
-                    className="w-full px-4 py-2 text-left text-sm hover:bg-amber-50 focus-visible:bg-amber-50 outline-none"
+                    className="w-full px-4 py-2 text-left text-sm text-charcoal-900 hover:bg-smoke-100 focus-visible:bg-smoke-100 outline-none transition-colors duration-300"
                   >
                     {suggestion.label}
                   </button>

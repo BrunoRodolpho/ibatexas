@@ -43,10 +43,10 @@ export default function CategoryPage({ params }: CategoryPageProps) {
     <div className="space-y-6">
       {/* Category Header */}
       <div className="text-center py-8">
-        <Heading variant="h1" className="text-slate-900 mb-4">
+        <Heading variant="h1" className="text-charcoal-900 mb-4">
           {t(categoryKey)}
         </Heading>
-        <Text variant="body" className="text-slate-600">
+        <Text variant="body" className="text-smoke-400">
           {t(`shop.category_descriptions.${params.category}`)}
         </Text>
       </div>
@@ -63,7 +63,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
         />
       ) : (
         <div className="text-center py-12">
-          <Text variant="body" className="text-slate-500">
+          <Text variant="body" className="text-smoke-400">
             {t('shop.empty_states.no_products')}
           </Text>
         </div>

@@ -15,24 +15,25 @@ interface TabsProps {
 
 export function Tabs({ items, activeKey, onChange, className = '' }: TabsProps) {
   return (
-    <div className={`flex border-b border-slate-200 ${className}`}>
+    <div className={`flex border-b border-smoke-200 ${className}`}>
       {items.map((item) => (
         <button
           key={item.key}
           onClick={() => onChange(item.key)}
-          className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+          className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-all duration-500 ${
             activeKey === item.key
-              ? 'border-amber-700 text-amber-700'
-              : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700'
+              ? 'border-charcoal-900 text-charcoal-900'
+              : 'border-transparent text-smoke-400 hover:border-smoke-300 hover:text-charcoal-700'
           }`}
+          style={{ transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)' }}
         >
           {item.label}
           {item.count !== undefined && (
             <span
-              className={`rounded-full px-2 py-0.5 text-xs ${
+              className={`rounded-sm px-2 py-0.5 text-[10px] uppercase tracking-wider ${
                 activeKey === item.key
-                  ? 'bg-amber-100 text-amber-700'
-                  : 'bg-slate-100 text-slate-500'
+                  ? 'bg-charcoal-900 text-smoke-50'
+                  : 'bg-smoke-100 text-smoke-400'
               }`}
             >
               {item.count}

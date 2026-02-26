@@ -41,8 +41,8 @@ export const ShippingEstimate = () => {
   }
 
   return (
-    <div className="border rounded-lg p-4 bg-slate-50">
-      <Text className="font-medium text-slate-900 mb-3">
+    <div className="border border-smoke-200 rounded-sm p-4 bg-smoke-50">
+      <Text className="font-medium text-charcoal-900 mb-3">
         {t('shop.shipping.title')}
       </Text>
       
@@ -75,7 +75,7 @@ export const ShippingEstimate = () => {
         
         {data?.options && (
           <div className="space-y-3">
-            <Text className="font-medium text-slate-900">
+            <Text className="font-medium text-charcoal-900">
               {t('shop.shipping.options')}
             </Text>
             
@@ -83,24 +83,24 @@ export const ShippingEstimate = () => {
               {data.options.map((option) => (
                 <div 
                   key={option.service} 
-                  className="flex items-center justify-between p-3 bg-white rounded border"
+                  className="flex items-center justify-between p-3 bg-smoke-100 rounded-sm border border-smoke-200"
                 >
                   <div>
                     <Text className="font-medium">
                       {option.service === 'PAC' ? t('shop.shipping.pac') : t('shop.shipping.sedex')}
                     </Text>
-                    <Text variant="small" className="text-slate-600">
+                    <Text variant="small" className="text-smoke-400">
                       {option.estimatedDays} {t('shop.shipping.business_days')}
                     </Text>
                   </div>
-                  <Text className="font-bold text-slate-900">
+                  <Text className="font-bold text-charcoal-900">
                     {formatCurrency(option.price / 100)}
                   </Text>
                 </div>
               ))}
             </div>
             
-            <Text variant="xs" className="text-slate-500">
+            <Text variant="xs" className="text-smoke-400">
               ✓ {t('shop.shipping.info')} • {t('shop.shipping.origin')}
             </Text>
           </div>

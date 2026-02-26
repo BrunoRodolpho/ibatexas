@@ -38,7 +38,7 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
     return (
       <div className="space-y-3">
         {[1, 2].map((i) => (
-          <div key={i} className="h-24 animate-pulse rounded-xl bg-gray-100" />
+          <div key={i} className="h-24 animate-pulse rounded-sm bg-smoke-100" />
         ))}
       </div>
     )
@@ -46,7 +46,7 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
 
   if (reservations.length === 0) {
     return (
-      <div className="py-8 text-center text-gray-500">
+      <div className="py-8 text-center text-smoke-400">
         <p>Você ainda não tem reservas.</p>
       </div>
     )
@@ -59,18 +59,18 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
         const canModifyOrCancel = ["pending", "confirmed"].includes(r.status)
 
         return (
-          <div key={r.id} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div key={r.id} className="rounded-sm border border-smoke-200 bg-smoke-50 p-5">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="text-base font-semibold text-gray-900">
+                  <span className="text-base font-semibold text-charcoal-900">
                     {formatDateBR(r.timeSlot.date)} às {r.timeSlot.startTime}
                   </span>
                   <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusInfo.color}`}>
                     {statusInfo.label}
                   </span>
                 </div>
-                <div className="mt-1 flex items-center gap-3 text-sm text-gray-500">
+                <div className="mt-1 flex items-center gap-3 text-sm text-smoke-400">
                   <span>👥 {r.partySize} {r.partySize === 1 ? "pessoa" : "pessoas"}</span>
                   {r.tableLocation && (
                     <span>📍 {LOCATION_LABELS[r.tableLocation] ?? r.tableLocation}</span>
@@ -81,7 +81,7 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
                     {r.specialRequests.map((sr, i) => (
                       <span
                         key={i}
-                        className="rounded-full bg-orange-50 px-2 py-0.5 text-xs text-orange-700"
+                        className="rounded-full bg-brand-50 px-2 py-0.5 text-xs text-brand-700"
                       >
                         {sr.type}
                       </span>
@@ -94,13 +94,13 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
                 <div className="flex shrink-0 gap-2">
                   <button
                     onClick={() => onModify(r)}
-                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                    className="rounded-sm border border-smoke-200 px-3 py-1.5 text-xs font-medium text-charcoal-700 hover:bg-smoke-100"
                   >
                     Modificar
                   </button>
                   <button
                     onClick={() => onCancel(r.id)}
-                    className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                    className="rounded-sm border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
                   >
                     Cancelar
                   </button>
