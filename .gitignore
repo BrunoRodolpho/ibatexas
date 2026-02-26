@@ -38,3 +38,6 @@ pnpm-debug.log*
 
 # ibx CLI runtime files
 .ibx-dev.pids
+
+# Medusa admin file uploads
+apps/commerce/static/
