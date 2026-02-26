@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "medusa develop",
-    "build": "medusa build",
+    "build": "tsc --noEmit",
+    "build:medusa": "medusa build",
     "start": "medusa start",
     "db:migrate": "medusa db:migrate",
     "db:seed": "medusa exec src/seed.ts",
@@ -13,15 +14,16 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@ibatexas/types": "workspace:*",
-    "@ibatexas/tools": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
+    "@ibatexas/tools": "workspace:*",
+    "@ibatexas/types": "workspace:*",
     "@medusajs/framework": "^2.13.1",
     "@medusajs/medusa": "^2.13.1",
     "@medusajs/utils": "^2.13.1",
     "@medusajs/workflows-sdk": "^2.13.1"
   },
   "devDependencies": {
+    "@medusajs/cli": "^2.13.1",
     "ts-node": "^10.9.0",
     "typescript": "^5.3.0"
   }
