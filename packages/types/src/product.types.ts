@@ -46,6 +46,7 @@ export interface ProductDTO {
   allergens: string[] // always explicit, never undefined (CLAUDE.md rule)
   variants: ProductVariant[]
   productType: ProductType
+  categoryHandle?: string // e.g. "carnes-defumadas", "acompanhamentos"
   status?: ProductStatus
   inStock?: boolean // false when admin marks item unavailable (metadata.inStock = false)
   preparationTimeMinutes?: number
@@ -70,6 +71,7 @@ export const SearchProductsInputSchema = z
     availableNow: z.boolean().optional().describe("Filter by current availability"),
     excludeAllergens: z.array(z.string()).optional().describe("Hard filter: exclude allergens"),
     productType: z.enum(["food", "frozen", "merchandise"]).optional().describe("Filter by product type"),
+    categoryHandle: z.string().optional().describe("Filter by category handle e.g. carnes-defumadas"),
     limit: z.number().int().min(1).max(20).optional(),
   })
   .refine((d) => d.query || (d.queries && d.queries.length > 0), {

@@ -52,6 +52,7 @@ export const PRODUCTS_COLLECTION_SCHEMA = {
     { name: "availabilityWindow", type: "string", facet: true },
     { name: "allergens", type: "string[]", facet: true },
     { name: "productType", type: "string", facet: true },
+    { name: "categoryHandle", type: "string", facet: true, optional: true },
     { name: "status", type: "string", facet: true },
     { name: "inStock", type: "bool" },
     { name: "preparationTimeMinutes", type: "int32", optional: true },
