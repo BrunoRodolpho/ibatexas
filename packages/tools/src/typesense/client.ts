@@ -48,6 +48,7 @@ export const PRODUCTS_COLLECTION_SCHEMA = {
     { name: "description", type: "string" },
     { name: "price", type: "int64" },
     { name: "imageUrl", type: "string", optional: true },
+    { name: "images", type: "string[]", optional: true },
     { name: "tags", type: "string[]", facet: true },
     { name: "availabilityWindow", type: "string", facet: true },
     { name: "allergens", type: "string[]", facet: true },

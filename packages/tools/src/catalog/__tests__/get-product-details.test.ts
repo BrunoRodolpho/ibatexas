@@ -12,6 +12,7 @@ const mockTypesenseDocToDTO = vi.hoisted(() =>
     description: "",
     price: 5000,
     imageUrl: null,
+    images: [],
     tags: [],
     allergens: [],
     variants: [],

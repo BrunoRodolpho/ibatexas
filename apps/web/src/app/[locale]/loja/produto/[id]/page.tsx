@@ -9,7 +9,7 @@ import { SizeSelector, ShippingEstimate } from '@/components/molecules'
 import { useState } from 'react'
 import { ArrowLeft, Heart, Share2 } from 'lucide-react'
 import { Link } from '@/i18n/navigation'
-import Image from 'next/image'
+import { MediaGallery } from '@/components/molecules/MediaGallery'
 import clsx from 'clsx'
 
 interface ProductPageProps {
@@ -50,7 +50,6 @@ export default function ProductPage({ params }: ProductPageProps) {
     : product.variants[0]
 
   const hasVariants = product.variants.length > 1
-  const currentImage = product.imageUrl
 
   const handleAddToCart = async () => {
     if (!selectedVariant) return
@@ -81,22 +80,11 @@ export default function ProductPage({ params }: ProductPageProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
         {/* Product Images */}
         <div className="space-y-4">
-          {/* Main Image */}
-          <div className="aspect-square bg-smoke-100 rounded-sm overflow-hidden">
-            {currentImage ? (
-              <Image
-                src={currentImage}
-                alt={product.title}
-                width={600}
-                height={600}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center">
-                <Text className="text-smoke-300">Sem imagem</Text>
-              </div>
-            )}
-          </div>
+          <MediaGallery
+            images={product.images ?? []}
+            thumbnail={product.imageUrl}
+            title={product.title}
+          />
         </div>
 
         {/* Product Details */}

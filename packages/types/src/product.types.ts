@@ -41,6 +41,7 @@ export interface ProductDTO {
   description: string | null
   price: number // integer centavos (e.g., 8900 = R$89.00)
   imageUrl: string | null
+  images: string[] // full gallery URLs, sorted by rank — always explicit array
   tags: string[] // e.g., ["popular", "sem_gluten", "vegetariano"]
   availabilityWindow: AvailabilityWindow
   allergens: string[] // always explicit, never undefined (CLAUDE.md rule)

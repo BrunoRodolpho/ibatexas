@@ -1,5 +1,6 @@
 'use client'
 
+import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 
 interface ProductCardProps {
@@ -7,6 +8,7 @@ interface ProductCardProps {
   title: string
   subtitle?: string
   imageUrl?: string | null
+  images?: string[]
   price: number
   rating?: number
   tags?: string[]
@@ -14,12 +16,14 @@ interface ProductCardProps {
   onAddToCart?: () => void
 }
 
-export const ProductCard = ({ id, title, subtitle, imageUrl, price, rating, tags, href }: ProductCardProps) => {
+export const ProductCard = ({ id, title, subtitle, imageUrl, images, price, rating, tags, href }: ProductCardProps) => {
   const priceFormatted = (price / 100).toLocaleString('pt-BR', {
     style: 'currency',
     currency: 'BRL',
   })
 
+  // Prefer thumbnail, fall back to first gallery image
+  const displayImage = imageUrl || images?.[0] || null
   const linkHref = href || `/products/${id}`
 
   return (
@@ -27,11 +31,13 @@ export const ProductCard = ({ id, title, subtitle, imageUrl, price, rating, tags
       <div className="overflow-hidden">
         {/* Image — 4:5 portrait, editorial food ratio */}
         <div className="relative aspect-[4/5] overflow-hidden rounded-sm bg-smoke-100">
-          {imageUrl ? (
-            <img
-              src={imageUrl}
+          {displayImage ? (
+            <NextImage
+              src={displayImage}
               alt={title}
-              className="h-full w-full object-cover group-hover:scale-[1.02] transition-transform duration-800 ease-luxury"
+              fill
+              sizes="(max-width: 768px) 50vw, 33vw"
+              className="object-cover group-hover:scale-[1.02] transition-transform duration-800 ease-luxury"
             />
           ) : (
             <div className="absolute inset-0 bg-gradient-to-br from-smoke-100 to-smoke-200 flex items-center justify-center">

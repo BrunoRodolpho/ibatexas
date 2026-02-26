@@ -7,6 +7,7 @@ interface Product {
   id: string
   title: string
   imageUrl?: string | null
+  images?: string[]
   price: number
   rating?: number
   tags?: string[]

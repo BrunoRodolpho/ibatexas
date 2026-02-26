@@ -1,6 +1,7 @@
 export { ProductCard } from './ProductCard'
 export { CategoryCarousel } from './CategoryCarousel'
 export { CartItem } from './CartItem'
+export { MediaGallery } from './MediaGallery'
 export { AddressCard } from './AddressCard'
 export { ReservationCard } from './ReservationCard'
 export { ReviewCard } from './ReviewCard'
