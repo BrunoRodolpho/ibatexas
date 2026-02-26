@@ -4,6 +4,7 @@ import chalk from "chalk"
 import ora from "ora"
 import crypto from "node:crypto"
 import { searchProducts, closeRedisClient, Channel } from "@ibatexas/tools"
+import { v4 as uuidv4 } from 'uuid';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -398,7 +399,7 @@ export function registerApiCommands(api: Command) {
     .option("--channel <channel>", "Channel to send as: web | whatsapp | instagram", "web")
     .action(async (message: string, opts: { session?: string; channel: string }) => {
       const apiUrl = getApiUrl()
-      const sessionId = opts.session ?? crypto.randomUUID()
+      const sessionId = opts.session ?? uuidv4()
 
       console.log(chalk.bold(`\n  ibx api chat\n`))
       console.log(chalk.gray(`  api     : ${apiUrl}`))
