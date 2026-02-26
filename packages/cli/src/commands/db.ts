@@ -32,11 +32,38 @@ function getMedusaUrl(): string {
   return url
 }
 
-async function medusaFetch(path: string): Promise<Record<string, unknown>> {
+/** Authenticate with Medusa admin API and return a bearer token. */
+async function getAdminToken(): Promise<string> {
   const base = getMedusaUrl()
-  const res = await fetch(`${base}${path}`, {
+  const email = process.env.MEDUSA_ADMIN_EMAIL ?? "REDACTED_EMAIL"
+  const password = process.env.MEDUSA_ADMIN_PASSWORD ?? "REDACTED_PASSWORD"
+
+  const res = await fetch(`${base}/auth/user/emailpass`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
   })
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(
+      `Admin auth failed (${res.status}): ${text}\n` +
+      `Set MEDUSA_ADMIN_EMAIL and MEDUSA_ADMIN_PASSWORD or create an admin user:\n` +
+      `  npx medusa user --email REDACTED_EMAIL --password 'REDACTED_PASSWORD'`
+    )
+  }
+
+  const data = (await res.json()) as { token?: string }
+  if (!data.token) throw new Error("Admin auth response missing token")
+  return data.token
+}
+
+async function medusaFetch(path: string, token?: string): Promise<Record<string, unknown>> {
+  const base = getMedusaUrl()
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (token) headers["Authorization"] = `Bearer ${token}`
+
+  const res = await fetch(`${base}${path}`, { headers })
   if (!res.ok) {
     const text = await res.text()
     throw new Error(`Medusa API ${res.status}: ${text}`)
@@ -192,7 +219,18 @@ async function runReindex(fresh = false) {
     console.log(chalk.green("    Collection ready"))
   }
 
-  // 2. Fetch all published products from Medusa (paginated)
+  // 2. Authenticate with Medusa admin API
+  step("Authenticating with Medusa admin API…")
+  let token: string
+  try {
+    token = await getAdminToken()
+    console.log(chalk.green("    Authenticated"))
+  } catch (err) {
+    console.error(chalk.red(`    ${String(err)}`))
+    process.exit(1)
+  }
+
+  // 3. Fetch all published products from Medusa (paginated)
   step("Fetching products from Medusa…")
   const allProducts: unknown[] = []
   let offset = 0
@@ -201,7 +239,8 @@ async function runReindex(fresh = false) {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const data = await medusaFetch(
-      `/admin/products?limit=${limit}&offset=${offset}&fields=id,title,description,thumbnail,status,tag_ids,variants,metadata,created_at,updated_at&expand=variants,variants.prices`
+      `/admin/products?limit=${limit}&offset=${offset}&fields=id,title,description,thumbnail,status,tag_ids,variants,metadata,created_at,updated_at&expand=variants,variants.prices`,
+      token
     )
     const products = (data.products as unknown[] | undefined) ?? []
     allProducts.push(...products)
