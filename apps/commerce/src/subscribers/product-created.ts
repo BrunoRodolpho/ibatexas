@@ -20,7 +20,7 @@ export default async function productCreatedHandler({
 
     const productService = container.resolve(Modules.PRODUCT)
     const product = await productService.retrieveProduct(data.id, {
-      relations: ["variants", "variants.prices"],
+      relations: ["variants", "variants.prices", "tags", "categories"],
     })
 
     await indexProduct(product)

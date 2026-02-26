@@ -129,7 +129,8 @@ exports.Prisma.TableScalarFieldEnum = {
   location: 'location',
   accessible: 'accessible',
   active: 'active',
-  createdAt: 'createdAt'
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
 };
 
 exports.Prisma.TimeSlotScalarFieldEnum = {
@@ -139,7 +140,8 @@ exports.Prisma.TimeSlotScalarFieldEnum = {
   durationMinutes: 'durationMinutes',
   maxCovers: 'maxCovers',
   reservedCovers: 'reservedCovers',
-  createdAt: 'createdAt'
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
 };
 
 exports.Prisma.ReservationScalarFieldEnum = {
@@ -168,6 +170,7 @@ exports.Prisma.WaitlistScalarFieldEnum = {
   notifiedAt: 'notifiedAt',
   expiresAt: 'expiresAt',
   createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
   timeSlotId: 'timeSlotId'
 };
 
@@ -179,7 +182,8 @@ exports.Prisma.ReviewScalarFieldEnum = {
   rating: 'rating',
   comment: 'comment',
   channel: 'channel',
-  createdAt: 'createdAt'
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
 };
 
 exports.Prisma.SortOrder = {

@@ -18,6 +18,7 @@ const ProductsQuery = z.object({
     .optional()
     .transform((v) => v === "true"),
   productType: z.enum(["food", "frozen", "merchandise"]).optional(),
+  categoryHandle: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(20).optional(),
 });
 
@@ -40,7 +41,7 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
       },
     },
     async (request, reply) => {
-      const { query, tags, availableNow, productType, limit } = request.query;
+      const { query, tags, availableNow, productType, categoryHandle, limit } = request.query;
 
       const tagList = tags
         ? tags.split(",").map((t) => t.trim()).filter(Boolean)
@@ -48,10 +49,11 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
 
       const result = await searchProducts(
         {
-          query: query ?? ".",
+          query: query ?? "*",
           tags: tagList,
           availableNow: availableNow ?? false,
           productType,
+          categoryHandle,
           limit,
         },
         {

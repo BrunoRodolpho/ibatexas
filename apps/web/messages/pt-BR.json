@@ -128,11 +128,12 @@
       "sem_gluten": "🌾 Sem Glúten"
     },
     "categories_list": {
-      "almoco": "Almoço",
-      "jantar": "Jantar",
-      "congelados": "Congelados",
+      "carnes-defumadas": "Carnes Defumadas",
+      "acompanhamentos": "Acompanhamentos",
+      "sanduiches": "Sanduíches & Combos",
       "sobremesas": "Sobremesas",
-      "bebidas": "Bebidas"
+      "bebidas": "Bebidas",
+      "congelados": "Congelados"
     }
   },
   "product": {

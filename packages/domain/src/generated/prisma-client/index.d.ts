@@ -1442,6 +1442,7 @@ export namespace Prisma {
     accessible: boolean | null
     active: boolean | null
     createdAt: Date | null
+    updatedAt: Date | null
   }
 
   export type TableMaxAggregateOutputType = {
@@ -1452,6 +1453,7 @@ export namespace Prisma {
     accessible: boolean | null
     active: boolean | null
     createdAt: Date | null
+    updatedAt: Date | null
   }
 
   export type TableCountAggregateOutputType = {
@@ -1462,6 +1464,7 @@ export namespace Prisma {
     accessible: number
     active: number
     createdAt: number
+    updatedAt: number
     _all: number
   }
 
@@ -1482,6 +1485,7 @@ export namespace Prisma {
     accessible?: true
     active?: true
     createdAt?: true
+    updatedAt?: true
   }
 
   export type TableMaxAggregateInputType = {
@@ -1492,6 +1496,7 @@ export namespace Prisma {
     accessible?: true
     active?: true
     createdAt?: true
+    updatedAt?: true
   }
 
   export type TableCountAggregateInputType = {
@@ -1502,6 +1507,7 @@ export namespace Prisma {
     accessible?: true
     active?: true
     createdAt?: true
+    updatedAt?: true
     _all?: true
   }
 
@@ -1599,6 +1605,7 @@ export namespace Prisma {
     accessible: boolean
     active: boolean
     createdAt: Date
+    updatedAt: Date
     _count: TableCountAggregateOutputType | null
     _avg: TableAvgAggregateOutputType | null
     _sum: TableSumAggregateOutputType | null
@@ -1628,6 +1635,7 @@ export namespace Prisma {
     accessible?: boolean
     active?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
     reservationTables?: boolean | Table$reservationTablesArgs<ExtArgs>
     _count?: boolean | TableCountOutputTypeDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["table"]>
@@ -1640,6 +1648,7 @@ export namespace Prisma {
     accessible?: boolean
     active?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
   }, ExtArgs["result"]["table"]>
 
   export type TableSelectScalar = {
@@ -1650,6 +1659,7 @@ export namespace Prisma {
     accessible?: boolean
     active?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
   }
 
   export type TableInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
@@ -1671,6 +1681,7 @@ export namespace Prisma {
       accessible: boolean
       active: boolean
       createdAt: Date
+      updatedAt: Date
     }, ExtArgs["result"]["table"]>
     composites: {}
   }
@@ -2072,6 +2083,7 @@ export namespace Prisma {
     readonly accessible: FieldRef<"Table", 'Boolean'>
     readonly active: FieldRef<"Table", 'Boolean'>
     readonly createdAt: FieldRef<"Table", 'DateTime'>
+    readonly updatedAt: FieldRef<"Table", 'DateTime'>
   }
     
 
@@ -2452,6 +2464,7 @@ export namespace Prisma {
     maxCovers: number | null
     reservedCovers: number | null
     createdAt: Date | null
+    updatedAt: Date | null
   }
 
   export type TimeSlotMaxAggregateOutputType = {
@@ -2462,6 +2475,7 @@ export namespace Prisma {
     maxCovers: number | null
     reservedCovers: number | null
     createdAt: Date | null
+    updatedAt: Date | null
   }
 
   export type TimeSlotCountAggregateOutputType = {
@@ -2472,6 +2486,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers: number
     createdAt: number
+    updatedAt: number
     _all: number
   }
 
@@ -2496,6 +2511,7 @@ export namespace Prisma {
     maxCovers?: true
     reservedCovers?: true
     createdAt?: true
+    updatedAt?: true
   }
 
   export type TimeSlotMaxAggregateInputType = {
@@ -2506,6 +2522,7 @@ export namespace Prisma {
     maxCovers?: true
     reservedCovers?: true
     createdAt?: true
+    updatedAt?: true
   }
 
   export type TimeSlotCountAggregateInputType = {
@@ -2516,6 +2533,7 @@ export namespace Prisma {
     maxCovers?: true
     reservedCovers?: true
     createdAt?: true
+    updatedAt?: true
     _all?: true
   }
 
@@ -2613,6 +2631,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers: number
     createdAt: Date
+    updatedAt: Date
     _count: TimeSlotCountAggregateOutputType | null
     _avg: TimeSlotAvgAggregateOutputType | null
     _sum: TimeSlotSumAggregateOutputType | null
@@ -2642,6 +2661,7 @@ export namespace Prisma {
     maxCovers?: boolean
     reservedCovers?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
     reservations?: boolean | TimeSlot$reservationsArgs<ExtArgs>
     waitlist?: boolean | TimeSlot$waitlistArgs<ExtArgs>
     _count?: boolean | TimeSlotCountOutputTypeDefaultArgs<ExtArgs>
@@ -2655,6 +2675,7 @@ export namespace Prisma {
     maxCovers?: boolean
     reservedCovers?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
   }, ExtArgs["result"]["timeSlot"]>
 
   export type TimeSlotSelectScalar = {
@@ -2665,6 +2686,7 @@ export namespace Prisma {
     maxCovers?: boolean
     reservedCovers?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
   }
 
   export type TimeSlotInclude<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = {
@@ -2688,6 +2710,7 @@ export namespace Prisma {
       maxCovers: number
       reservedCovers: number
       createdAt: Date
+      updatedAt: Date
     }, ExtArgs["result"]["timeSlot"]>
     composites: {}
   }
@@ -3090,6 +3113,7 @@ export namespace Prisma {
     readonly maxCovers: FieldRef<"TimeSlot", 'Int'>
     readonly reservedCovers: FieldRef<"TimeSlot", 'Int'>
     readonly createdAt: FieldRef<"TimeSlot", 'DateTime'>
+    readonly updatedAt: FieldRef<"TimeSlot", 'DateTime'>
   }
     
 
@@ -5449,6 +5473,7 @@ export namespace Prisma {
     notifiedAt: Date | null
     expiresAt: Date | null
     createdAt: Date | null
+    updatedAt: Date | null
     timeSlotId: string | null
   }
 
@@ -5459,6 +5484,7 @@ export namespace Prisma {
     notifiedAt: Date | null
     expiresAt: Date | null
     createdAt: Date | null
+    updatedAt: Date | null
     timeSlotId: string | null
   }
 
@@ -5469,6 +5495,7 @@ export namespace Prisma {
     notifiedAt: number
     expiresAt: number
     createdAt: number
+    updatedAt: number
     timeSlotId: number
     _all: number
   }
@@ -5489,6 +5516,7 @@ export namespace Prisma {
     notifiedAt?: true
     expiresAt?: true
     createdAt?: true
+    updatedAt?: true
     timeSlotId?: true
   }
 
@@ -5499,6 +5527,7 @@ export namespace Prisma {
     notifiedAt?: true
     expiresAt?: true
     createdAt?: true
+    updatedAt?: true
     timeSlotId?: true
   }
 
@@ -5509,6 +5538,7 @@ export namespace Prisma {
     notifiedAt?: true
     expiresAt?: true
     createdAt?: true
+    updatedAt?: true
     timeSlotId?: true
     _all?: true
   }
@@ -5606,6 +5636,7 @@ export namespace Prisma {
     notifiedAt: Date | null
     expiresAt: Date
     createdAt: Date
+    updatedAt: Date
     timeSlotId: string
     _count: WaitlistCountAggregateOutputType | null
     _avg: WaitlistAvgAggregateOutputType | null
@@ -5635,6 +5666,7 @@ export namespace Prisma {
     notifiedAt?: boolean
     expiresAt?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
     timeSlotId?: boolean
     timeSlot?: boolean | TimeSlotDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["waitlist"]>
@@ -5646,6 +5678,7 @@ export namespace Prisma {
     notifiedAt?: boolean
     expiresAt?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
     timeSlotId?: boolean
     timeSlot?: boolean | TimeSlotDefaultArgs<ExtArgs>
   }, ExtArgs["result"]["waitlist"]>
@@ -5657,6 +5690,7 @@ export namespace Prisma {
     notifiedAt?: boolean
     expiresAt?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
     timeSlotId?: boolean
   }
 
@@ -5679,6 +5713,7 @@ export namespace Prisma {
       notifiedAt: Date | null
       expiresAt: Date
       createdAt: Date
+      updatedAt: Date
       timeSlotId: string
     }, ExtArgs["result"]["waitlist"]>
     composites: {}
@@ -6080,6 +6115,7 @@ export namespace Prisma {
     readonly notifiedAt: FieldRef<"Waitlist", 'DateTime'>
     readonly expiresAt: FieldRef<"Waitlist", 'DateTime'>
     readonly createdAt: FieldRef<"Waitlist", 'DateTime'>
+    readonly updatedAt: FieldRef<"Waitlist", 'DateTime'>
     readonly timeSlotId: FieldRef<"Waitlist", 'String'>
   }
     
@@ -6441,6 +6477,7 @@ export namespace Prisma {
     comment: string | null
     channel: string | null
     createdAt: Date | null
+    updatedAt: Date | null
   }
 
   export type ReviewMaxAggregateOutputType = {
@@ -6451,6 +6488,7 @@ export namespace Prisma {
     comment: string | null
     channel: string | null
     createdAt: Date | null
+    updatedAt: Date | null
   }
 
   export type ReviewCountAggregateOutputType = {
@@ -6462,6 +6500,7 @@ export namespace Prisma {
     comment: number
     channel: number
     createdAt: number
+    updatedAt: number
     _all: number
   }
 
@@ -6482,6 +6521,7 @@ export namespace Prisma {
     comment?: true
     channel?: true
     createdAt?: true
+    updatedAt?: true
   }
 
   export type ReviewMaxAggregateInputType = {
@@ -6492,6 +6532,7 @@ export namespace Prisma {
     comment?: true
     channel?: true
     createdAt?: true
+    updatedAt?: true
   }
 
   export type ReviewCountAggregateInputType = {
@@ -6503,6 +6544,7 @@ export namespace Prisma {
     comment?: true
     channel?: true
     createdAt?: true
+    updatedAt?: true
     _all?: true
   }
 
@@ -6601,6 +6643,7 @@ export namespace Prisma {
     comment: string | null
     channel: string
     createdAt: Date
+    updatedAt: Date
     _count: ReviewCountAggregateOutputType | null
     _avg: ReviewAvgAggregateOutputType | null
     _sum: ReviewSumAggregateOutputType | null
@@ -6631,6 +6674,7 @@ export namespace Prisma {
     comment?: boolean
     channel?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
   }, ExtArgs["result"]["review"]>
 
   export type ReviewSelectCreateManyAndReturn<ExtArgs extends $Extensions.InternalArgs = $Extensions.DefaultArgs> = $Extensions.GetSelect<{
@@ -6642,6 +6686,7 @@ export namespace Prisma {
     comment?: boolean
     channel?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
   }, ExtArgs["result"]["review"]>
 
   export type ReviewSelectScalar = {
@@ -6653,6 +6698,7 @@ export namespace Prisma {
     comment?: boolean
     channel?: boolean
     createdAt?: boolean
+    updatedAt?: boolean
   }
 
 
@@ -6668,6 +6714,7 @@ export namespace Prisma {
       comment: string | null
       channel: string
       createdAt: Date
+      updatedAt: Date
     }, ExtArgs["result"]["review"]>
     composites: {}
   }
@@ -7069,6 +7116,7 @@ export namespace Prisma {
     readonly comment: FieldRef<"Review", 'String'>
     readonly channel: FieldRef<"Review", 'String'>
     readonly createdAt: FieldRef<"Review", 'DateTime'>
+    readonly updatedAt: FieldRef<"Review", 'DateTime'>
   }
     
 
@@ -7378,7 +7426,8 @@ export namespace Prisma {
     location: 'location',
     accessible: 'accessible',
     active: 'active',
-    createdAt: 'createdAt'
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
   };
 
   export type TableScalarFieldEnum = (typeof TableScalarFieldEnum)[keyof typeof TableScalarFieldEnum]
@@ -7391,7 +7440,8 @@ export namespace Prisma {
     durationMinutes: 'durationMinutes',
     maxCovers: 'maxCovers',
     reservedCovers: 'reservedCovers',
-    createdAt: 'createdAt'
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
   };
 
   export type TimeSlotScalarFieldEnum = (typeof TimeSlotScalarFieldEnum)[keyof typeof TimeSlotScalarFieldEnum]
@@ -7429,6 +7479,7 @@ export namespace Prisma {
     notifiedAt: 'notifiedAt',
     expiresAt: 'expiresAt',
     createdAt: 'createdAt',
+    updatedAt: 'updatedAt',
     timeSlotId: 'timeSlotId'
   };
 
@@ -7443,7 +7494,8 @@ export namespace Prisma {
     rating: 'rating',
     comment: 'comment',
     channel: 'channel',
-    createdAt: 'createdAt'
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
   };
 
   export type ReviewScalarFieldEnum = (typeof ReviewScalarFieldEnum)[keyof typeof ReviewScalarFieldEnum]
@@ -7606,6 +7658,7 @@ export namespace Prisma {
     accessible?: BoolFilter<"Table"> | boolean
     active?: BoolFilter<"Table"> | boolean
     createdAt?: DateTimeFilter<"Table"> | Date | string
+    updatedAt?: DateTimeFilter<"Table"> | Date | string
     reservationTables?: ReservationTableListRelationFilter
   }
 
@@ -7617,6 +7670,7 @@ export namespace Prisma {
     accessible?: SortOrder
     active?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     reservationTables?: ReservationTableOrderByRelationAggregateInput
   }
 
@@ -7631,6 +7685,7 @@ export namespace Prisma {
     accessible?: BoolFilter<"Table"> | boolean
     active?: BoolFilter<"Table"> | boolean
     createdAt?: DateTimeFilter<"Table"> | Date | string
+    updatedAt?: DateTimeFilter<"Table"> | Date | string
     reservationTables?: ReservationTableListRelationFilter
   }, "id" | "number">
 
@@ -7642,6 +7697,7 @@ export namespace Prisma {
     accessible?: SortOrder
     active?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     _count?: TableCountOrderByAggregateInput
     _avg?: TableAvgOrderByAggregateInput
     _max?: TableMaxOrderByAggregateInput
@@ -7660,6 +7716,7 @@ export namespace Prisma {
     accessible?: BoolWithAggregatesFilter<"Table"> | boolean
     active?: BoolWithAggregatesFilter<"Table"> | boolean
     createdAt?: DateTimeWithAggregatesFilter<"Table"> | Date | string
+    updatedAt?: DateTimeWithAggregatesFilter<"Table"> | Date | string
   }
 
   export type TimeSlotWhereInput = {
@@ -7673,6 +7730,7 @@ export namespace Prisma {
     maxCovers?: IntFilter<"TimeSlot"> | number
     reservedCovers?: IntFilter<"TimeSlot"> | number
     createdAt?: DateTimeFilter<"TimeSlot"> | Date | string
+    updatedAt?: DateTimeFilter<"TimeSlot"> | Date | string
     reservations?: ReservationListRelationFilter
     waitlist?: WaitlistListRelationFilter
   }
@@ -7685,6 +7743,7 @@ export namespace Prisma {
     maxCovers?: SortOrder
     reservedCovers?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     reservations?: ReservationOrderByRelationAggregateInput
     waitlist?: WaitlistOrderByRelationAggregateInput
   }
@@ -7701,6 +7760,7 @@ export namespace Prisma {
     maxCovers?: IntFilter<"TimeSlot"> | number
     reservedCovers?: IntFilter<"TimeSlot"> | number
     createdAt?: DateTimeFilter<"TimeSlot"> | Date | string
+    updatedAt?: DateTimeFilter<"TimeSlot"> | Date | string
     reservations?: ReservationListRelationFilter
     waitlist?: WaitlistListRelationFilter
   }, "id" | "date_startTime">
@@ -7713,6 +7773,7 @@ export namespace Prisma {
     maxCovers?: SortOrder
     reservedCovers?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     _count?: TimeSlotCountOrderByAggregateInput
     _avg?: TimeSlotAvgOrderByAggregateInput
     _max?: TimeSlotMaxOrderByAggregateInput
@@ -7731,6 +7792,7 @@ export namespace Prisma {
     maxCovers?: IntWithAggregatesFilter<"TimeSlot"> | number
     reservedCovers?: IntWithAggregatesFilter<"TimeSlot"> | number
     createdAt?: DateTimeWithAggregatesFilter<"TimeSlot"> | Date | string
+    updatedAt?: DateTimeWithAggregatesFilter<"TimeSlot"> | Date | string
   }
 
   export type ReservationWhereInput = {
@@ -7877,6 +7939,7 @@ export namespace Prisma {
     notifiedAt?: DateTimeNullableFilter<"Waitlist"> | Date | string | null
     expiresAt?: DateTimeFilter<"Waitlist"> | Date | string
     createdAt?: DateTimeFilter<"Waitlist"> | Date | string
+    updatedAt?: DateTimeFilter<"Waitlist"> | Date | string
     timeSlotId?: StringFilter<"Waitlist"> | string
     timeSlot?: XOR<TimeSlotRelationFilter, TimeSlotWhereInput>
   }
@@ -7888,12 +7951,14 @@ export namespace Prisma {
     notifiedAt?: SortOrderInput | SortOrder
     expiresAt?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     timeSlotId?: SortOrder
     timeSlot?: TimeSlotOrderByWithRelationInput
   }
 
   export type WaitlistWhereUniqueInput = Prisma.AtLeast<{
     id?: string
+    customerId_timeSlotId?: WaitlistCustomerIdTimeSlotIdCompoundUniqueInput
     AND?: WaitlistWhereInput | WaitlistWhereInput[]
     OR?: WaitlistWhereInput[]
     NOT?: WaitlistWhereInput | WaitlistWhereInput[]
@@ -7902,9 +7967,10 @@ export namespace Prisma {
     notifiedAt?: DateTimeNullableFilter<"Waitlist"> | Date | string | null
     expiresAt?: DateTimeFilter<"Waitlist"> | Date | string
     createdAt?: DateTimeFilter<"Waitlist"> | Date | string
+    updatedAt?: DateTimeFilter<"Waitlist"> | Date | string
     timeSlotId?: StringFilter<"Waitlist"> | string
     timeSlot?: XOR<TimeSlotRelationFilter, TimeSlotWhereInput>
-  }, "id">
+  }, "id" | "customerId_timeSlotId">
 
   export type WaitlistOrderByWithAggregationInput = {
     id?: SortOrder
@@ -7913,6 +7979,7 @@ export namespace Prisma {
     notifiedAt?: SortOrderInput | SortOrder
     expiresAt?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     timeSlotId?: SortOrder
     _count?: WaitlistCountOrderByAggregateInput
     _avg?: WaitlistAvgOrderByAggregateInput
@@ -7931,6 +7998,7 @@ export namespace Prisma {
     notifiedAt?: DateTimeNullableWithAggregatesFilter<"Waitlist"> | Date | string | null
     expiresAt?: DateTimeWithAggregatesFilter<"Waitlist"> | Date | string
     createdAt?: DateTimeWithAggregatesFilter<"Waitlist"> | Date | string
+    updatedAt?: DateTimeWithAggregatesFilter<"Waitlist"> | Date | string
     timeSlotId?: StringWithAggregatesFilter<"Waitlist"> | string
   }
 
@@ -7946,6 +8014,7 @@ export namespace Prisma {
     comment?: StringNullableFilter<"Review"> | string | null
     channel?: StringFilter<"Review"> | string
     createdAt?: DateTimeFilter<"Review"> | Date | string
+    updatedAt?: DateTimeFilter<"Review"> | Date | string
   }
 
   export type ReviewOrderByWithRelationInput = {
@@ -7957,10 +8026,12 @@ export namespace Prisma {
     comment?: SortOrderInput | SortOrder
     channel?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type ReviewWhereUniqueInput = Prisma.AtLeast<{
     id?: string
+    orderId_customerId?: ReviewOrderIdCustomerIdCompoundUniqueInput
     AND?: ReviewWhereInput | ReviewWhereInput[]
     OR?: ReviewWhereInput[]
     NOT?: ReviewWhereInput | ReviewWhereInput[]
@@ -7971,7 +8042,8 @@ export namespace Prisma {
     comment?: StringNullableFilter<"Review"> | string | null
     channel?: StringFilter<"Review"> | string
     createdAt?: DateTimeFilter<"Review"> | Date | string
-  }, "id">
+    updatedAt?: DateTimeFilter<"Review"> | Date | string
+  }, "id" | "orderId_customerId">
 
   export type ReviewOrderByWithAggregationInput = {
     id?: SortOrder
@@ -7982,6 +8054,7 @@ export namespace Prisma {
     comment?: SortOrderInput | SortOrder
     channel?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     _count?: ReviewCountOrderByAggregateInput
     _avg?: ReviewAvgOrderByAggregateInput
     _max?: ReviewMaxOrderByAggregateInput
@@ -8001,6 +8074,7 @@ export namespace Prisma {
     comment?: StringNullableWithAggregatesFilter<"Review"> | string | null
     channel?: StringWithAggregatesFilter<"Review"> | string
     createdAt?: DateTimeWithAggregatesFilter<"Review"> | Date | string
+    updatedAt?: DateTimeWithAggregatesFilter<"Review"> | Date | string
   }
 
   export type TableCreateInput = {
@@ -8011,6 +8085,7 @@ export namespace Prisma {
     accessible?: boolean
     active?: boolean
     createdAt?: Date | string
+    updatedAt?: Date | string
     reservationTables?: ReservationTableCreateNestedManyWithoutTableInput
   }
 
@@ -8022,6 +8097,7 @@ export namespace Prisma {
     accessible?: boolean
     active?: boolean
     createdAt?: Date | string
+    updatedAt?: Date | string
     reservationTables?: ReservationTableUncheckedCreateNestedManyWithoutTableInput
   }
 
@@ -8033,6 +8109,7 @@ export namespace Prisma {
     accessible?: BoolFieldUpdateOperationsInput | boolean
     active?: BoolFieldUpdateOperationsInput | boolean
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     reservationTables?: ReservationTableUpdateManyWithoutTableNestedInput
   }
 
@@ -8044,6 +8121,7 @@ export namespace Prisma {
     accessible?: BoolFieldUpdateOperationsInput | boolean
     active?: BoolFieldUpdateOperationsInput | boolean
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     reservationTables?: ReservationTableUncheckedUpdateManyWithoutTableNestedInput
   }
 
@@ -8055,6 +8133,7 @@ export namespace Prisma {
     accessible?: boolean
     active?: boolean
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type TableUpdateManyMutationInput = {
@@ -8065,6 +8144,7 @@ export namespace Prisma {
     accessible?: BoolFieldUpdateOperationsInput | boolean
     active?: BoolFieldUpdateOperationsInput | boolean
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type TableUncheckedUpdateManyInput = {
@@ -8075,6 +8155,7 @@ export namespace Prisma {
     accessible?: BoolFieldUpdateOperationsInput | boolean
     active?: BoolFieldUpdateOperationsInput | boolean
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type TimeSlotCreateInput = {
@@ -8085,6 +8166,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers?: number
     createdAt?: Date | string
+    updatedAt?: Date | string
     reservations?: ReservationCreateNestedManyWithoutTimeSlotInput
     waitlist?: WaitlistCreateNestedManyWithoutTimeSlotInput
   }
@@ -8097,6 +8179,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers?: number
     createdAt?: Date | string
+    updatedAt?: Date | string
     reservations?: ReservationUncheckedCreateNestedManyWithoutTimeSlotInput
     waitlist?: WaitlistUncheckedCreateNestedManyWithoutTimeSlotInput
   }
@@ -8109,6 +8192,7 @@ export namespace Prisma {
     maxCovers?: IntFieldUpdateOperationsInput | number
     reservedCovers?: IntFieldUpdateOperationsInput | number
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     reservations?: ReservationUpdateManyWithoutTimeSlotNestedInput
     waitlist?: WaitlistUpdateManyWithoutTimeSlotNestedInput
   }
@@ -8121,6 +8205,7 @@ export namespace Prisma {
     maxCovers?: IntFieldUpdateOperationsInput | number
     reservedCovers?: IntFieldUpdateOperationsInput | number
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     reservations?: ReservationUncheckedUpdateManyWithoutTimeSlotNestedInput
     waitlist?: WaitlistUncheckedUpdateManyWithoutTimeSlotNestedInput
   }
@@ -8133,6 +8218,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers?: number
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type TimeSlotUpdateManyMutationInput = {
@@ -8143,6 +8229,7 @@ export namespace Prisma {
     maxCovers?: IntFieldUpdateOperationsInput | number
     reservedCovers?: IntFieldUpdateOperationsInput | number
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type TimeSlotUncheckedUpdateManyInput = {
@@ -8153,6 +8240,7 @@ export namespace Prisma {
     maxCovers?: IntFieldUpdateOperationsInput | number
     reservedCovers?: IntFieldUpdateOperationsInput | number
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type ReservationCreateInput = {
@@ -8297,6 +8385,7 @@ export namespace Prisma {
     notifiedAt?: Date | string | null
     expiresAt: Date | string
     createdAt?: Date | string
+    updatedAt?: Date | string
     timeSlot: TimeSlotCreateNestedOneWithoutWaitlistInput
   }
 
@@ -8307,6 +8396,7 @@ export namespace Prisma {
     notifiedAt?: Date | string | null
     expiresAt: Date | string
     createdAt?: Date | string
+    updatedAt?: Date | string
     timeSlotId: string
   }
 
@@ -8317,6 +8407,7 @@ export namespace Prisma {
     notifiedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     expiresAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     timeSlot?: TimeSlotUpdateOneRequiredWithoutWaitlistNestedInput
   }
 
@@ -8327,6 +8418,7 @@ export namespace Prisma {
     notifiedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     expiresAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     timeSlotId?: StringFieldUpdateOperationsInput | string
   }
 
@@ -8337,6 +8429,7 @@ export namespace Prisma {
     notifiedAt?: Date | string | null
     expiresAt: Date | string
     createdAt?: Date | string
+    updatedAt?: Date | string
     timeSlotId: string
   }
 
@@ -8347,6 +8440,7 @@ export namespace Prisma {
     notifiedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     expiresAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type WaitlistUncheckedUpdateManyInput = {
@@ -8356,6 +8450,7 @@ export namespace Prisma {
     notifiedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     expiresAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     timeSlotId?: StringFieldUpdateOperationsInput | string
   }
 
@@ -8368,6 +8463,7 @@ export namespace Prisma {
     comment?: string | null
     channel: string
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type ReviewUncheckedCreateInput = {
@@ -8379,6 +8475,7 @@ export namespace Prisma {
     comment?: string | null
     channel: string
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type ReviewUpdateInput = {
@@ -8390,6 +8487,7 @@ export namespace Prisma {
     comment?: NullableStringFieldUpdateOperationsInput | string | null
     channel?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type ReviewUncheckedUpdateInput = {
@@ -8401,6 +8499,7 @@ export namespace Prisma {
     comment?: NullableStringFieldUpdateOperationsInput | string | null
     channel?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type ReviewCreateManyInput = {
@@ -8412,6 +8511,7 @@ export namespace Prisma {
     comment?: string | null
     channel: string
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type ReviewUpdateManyMutationInput = {
@@ -8423,6 +8523,7 @@ export namespace Prisma {
     comment?: NullableStringFieldUpdateOperationsInput | string | null
     channel?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type ReviewUncheckedUpdateManyInput = {
@@ -8434,6 +8535,7 @@ export namespace Prisma {
     comment?: NullableStringFieldUpdateOperationsInput | string | null
     channel?: StringFieldUpdateOperationsInput | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type StringFilter<$PrismaModel = never> = {
@@ -8503,6 +8605,7 @@ export namespace Prisma {
     accessible?: SortOrder
     active?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type TableAvgOrderByAggregateInput = {
@@ -8517,6 +8620,7 @@ export namespace Prisma {
     accessible?: SortOrder
     active?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type TableMinOrderByAggregateInput = {
@@ -8527,6 +8631,7 @@ export namespace Prisma {
     accessible?: SortOrder
     active?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type TableSumOrderByAggregateInput = {
@@ -8632,6 +8737,7 @@ export namespace Prisma {
     maxCovers?: SortOrder
     reservedCovers?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type TimeSlotAvgOrderByAggregateInput = {
@@ -8648,6 +8754,7 @@ export namespace Prisma {
     maxCovers?: SortOrder
     reservedCovers?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type TimeSlotMinOrderByAggregateInput = {
@@ -8658,6 +8765,7 @@ export namespace Prisma {
     maxCovers?: SortOrder
     reservedCovers?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type TimeSlotSumOrderByAggregateInput = {
@@ -8843,6 +8951,11 @@ export namespace Prisma {
     tableId?: SortOrder
   }
 
+  export type WaitlistCustomerIdTimeSlotIdCompoundUniqueInput = {
+    customerId: string
+    timeSlotId: string
+  }
+
   export type WaitlistCountOrderByAggregateInput = {
     id?: SortOrder
     customerId?: SortOrder
@@ -8850,6 +8963,7 @@ export namespace Prisma {
     notifiedAt?: SortOrder
     expiresAt?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     timeSlotId?: SortOrder
   }
 
@@ -8864,6 +8978,7 @@ export namespace Prisma {
     notifiedAt?: SortOrder
     expiresAt?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     timeSlotId?: SortOrder
   }
 
@@ -8874,6 +8989,7 @@ export namespace Prisma {
     notifiedAt?: SortOrder
     expiresAt?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
     timeSlotId?: SortOrder
   }
 
@@ -8904,6 +9020,11 @@ export namespace Prisma {
     not?: NestedStringNullableFilter<$PrismaModel> | string | null
   }
 
+  export type ReviewOrderIdCustomerIdCompoundUniqueInput = {
+    orderId: string
+    customerId: string
+  }
+
   export type ReviewCountOrderByAggregateInput = {
     id?: SortOrder
     orderId?: SortOrder
@@ -8913,6 +9034,7 @@ export namespace Prisma {
     comment?: SortOrder
     channel?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type ReviewAvgOrderByAggregateInput = {
@@ -8927,6 +9049,7 @@ export namespace Prisma {
     comment?: SortOrder
     channel?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type ReviewMinOrderByAggregateInput = {
@@ -8937,6 +9060,7 @@ export namespace Prisma {
     comment?: SortOrder
     channel?: SortOrder
     createdAt?: SortOrder
+    updatedAt?: SortOrder
   }
 
   export type ReviewSumOrderByAggregateInput = {
@@ -9547,6 +9671,7 @@ export namespace Prisma {
     notifiedAt?: Date | string | null
     expiresAt: Date | string
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type WaitlistUncheckedCreateWithoutTimeSlotInput = {
@@ -9556,6 +9681,7 @@ export namespace Prisma {
     notifiedAt?: Date | string | null
     expiresAt: Date | string
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type WaitlistCreateOrConnectWithoutTimeSlotInput = {
@@ -9627,6 +9753,7 @@ export namespace Prisma {
     notifiedAt?: DateTimeNullableFilter<"Waitlist"> | Date | string | null
     expiresAt?: DateTimeFilter<"Waitlist"> | Date | string
     createdAt?: DateTimeFilter<"Waitlist"> | Date | string
+    updatedAt?: DateTimeFilter<"Waitlist"> | Date | string
     timeSlotId?: StringFilter<"Waitlist"> | string
   }
 
@@ -9638,6 +9765,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers?: number
     createdAt?: Date | string
+    updatedAt?: Date | string
     waitlist?: WaitlistCreateNestedManyWithoutTimeSlotInput
   }
 
@@ -9649,6 +9777,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers?: number
     createdAt?: Date | string
+    updatedAt?: Date | string
     waitlist?: WaitlistUncheckedCreateNestedManyWithoutTimeSlotInput
   }
 
@@ -9694,6 +9823,7 @@ export namespace Prisma {
     maxCovers?: IntFieldUpdateOperationsInput | number
     reservedCovers?: IntFieldUpdateOperationsInput | number
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     waitlist?: WaitlistUpdateManyWithoutTimeSlotNestedInput
   }
 
@@ -9705,6 +9835,7 @@ export namespace Prisma {
     maxCovers?: IntFieldUpdateOperationsInput | number
     reservedCovers?: IntFieldUpdateOperationsInput | number
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     waitlist?: WaitlistUncheckedUpdateManyWithoutTimeSlotNestedInput
   }
 
@@ -9765,6 +9896,7 @@ export namespace Prisma {
     accessible?: boolean
     active?: boolean
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type TableUncheckedCreateWithoutReservationTablesInput = {
@@ -9775,6 +9907,7 @@ export namespace Prisma {
     accessible?: boolean
     active?: boolean
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type TableCreateOrConnectWithoutReservationTablesInput = {
@@ -9840,6 +9973,7 @@ export namespace Prisma {
     accessible?: BoolFieldUpdateOperationsInput | boolean
     active?: BoolFieldUpdateOperationsInput | boolean
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type TableUncheckedUpdateWithoutReservationTablesInput = {
@@ -9850,6 +9984,7 @@ export namespace Prisma {
     accessible?: BoolFieldUpdateOperationsInput | boolean
     active?: BoolFieldUpdateOperationsInput | boolean
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type TimeSlotCreateWithoutWaitlistInput = {
@@ -9860,6 +9995,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers?: number
     createdAt?: Date | string
+    updatedAt?: Date | string
     reservations?: ReservationCreateNestedManyWithoutTimeSlotInput
   }
 
@@ -9871,6 +10007,7 @@ export namespace Prisma {
     maxCovers: number
     reservedCovers?: number
     createdAt?: Date | string
+    updatedAt?: Date | string
     reservations?: ReservationUncheckedCreateNestedManyWithoutTimeSlotInput
   }
 
@@ -9898,6 +10035,7 @@ export namespace Prisma {
     maxCovers?: IntFieldUpdateOperationsInput | number
     reservedCovers?: IntFieldUpdateOperationsInput | number
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     reservations?: ReservationUpdateManyWithoutTimeSlotNestedInput
   }
 
@@ -9909,6 +10047,7 @@ export namespace Prisma {
     maxCovers?: IntFieldUpdateOperationsInput | number
     reservedCovers?: IntFieldUpdateOperationsInput | number
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     reservations?: ReservationUncheckedUpdateManyWithoutTimeSlotNestedInput
   }
 
@@ -9948,6 +10087,7 @@ export namespace Prisma {
     notifiedAt?: Date | string | null
     expiresAt: Date | string
     createdAt?: Date | string
+    updatedAt?: Date | string
   }
 
   export type ReservationUpdateWithoutTimeSlotInput = {
@@ -9998,6 +10138,7 @@ export namespace Prisma {
     notifiedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     expiresAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type WaitlistUncheckedUpdateWithoutTimeSlotInput = {
@@ -10007,6 +10148,7 @@ export namespace Prisma {
     notifiedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     expiresAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type WaitlistUncheckedUpdateManyWithoutTimeSlotInput = {
@@ -10016,6 +10158,7 @@ export namespace Prisma {
     notifiedAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     expiresAt?: DateTimeFieldUpdateOperationsInput | Date | string
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
+    updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
 
   export type ReservationTableCreateManyReservationInput = {

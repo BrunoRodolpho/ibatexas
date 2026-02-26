@@ -16,8 +16,20 @@ export default function Home() {
   const addToast = useUIStore((s) => s.addToast)
   const addItem = useCartStore((s) => s.addItem)
 
-  const { data: productsData, loading: productsLoading } = useProducts(undefined, ['popular'], 12)
-  const { data: categories, loading: categoriesLoading } = useCategories()
+  const { data: productsData, loading: productsLoading } = useProducts(undefined, undefined, 12)
+  const { data: apiCategories, loading: categoriesLoading } = useCategories()
+
+  // Fallback categories matching seed data — shown when API is unavailable
+  const FALLBACK_CATEGORIES = [
+    { id: 'carnes-defumadas', name: 'Carnes Defumadas', handle: 'carnes-defumadas' },
+    { id: 'acompanhamentos', name: 'Acompanhamentos', handle: 'acompanhamentos' },
+    { id: 'sanduiches', name: 'Sanduíches & Combos', handle: 'sanduiches' },
+    { id: 'sobremesas', name: 'Sobremesas', handle: 'sobremesas' },
+    { id: 'bebidas', name: 'Bebidas', handle: 'bebidas' },
+    { id: 'congelados', name: 'Congelados', handle: 'congelados' },
+  ]
+
+  const categories = (apiCategories as any[])?.length ? apiCategories as any[] : FALLBACK_CATEGORIES
 
   const topProducts = productsData?.products ?? []
 
@@ -77,15 +89,14 @@ export default function Home() {
       <nav className="sticky top-[56px] z-20 border-b border-smoke-200 bg-smoke-50/95 backdrop-blur-sm">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6">
           <div className="flex items-center gap-6 py-3 overflow-x-auto scrollbar-hide">
-            {!categoriesLoading && categories && (categories as any[]).length > 0 && (
-              <CategoryCarousel categories={categories as any[]} />
-            )}
-            {categoriesLoading && (
+            {categoriesLoading ? (
               <>
                 {Array.from({ length: 6 }).map((_, i) => (
                   <div key={i} className="flex-shrink-0 h-4 w-16 rounded-sm skeleton" />
                 ))}
               </>
+            ) : (
+              <CategoryCarousel categories={categories} />
             )}
           </div>
         </div>

@@ -29,11 +29,9 @@ const mockGenerateEmbedding = vi.hoisted(() => vi.fn())
 
 vi.mock("../../typesense/client.js", () => ({
   getTypesenseClient: vi.fn(() => ({
-    collections: vi.fn(() => ({
-      documents: vi.fn(() => ({
-        search: mockTypesenseSearch,
-      })),
-    })),
+    multiSearch: {
+      perform: mockTypesenseSearch,
+    },
   })),
   ensureCollectionExists: vi.fn(),
   COLLECTION: "products",
@@ -114,8 +112,10 @@ describe("searchProducts", () => {
     // Reset defaults: embedding succeeds, Typesense returns one doc, cache misses
     mockGenerateEmbedding.mockResolvedValue(TEST_EMBEDDING)
     mockTypesenseSearch.mockResolvedValue({
-      hits: [makeHit(makeTypesenseDoc())],
-      found: 1,
+      results: [{
+        hits: [makeHit(makeTypesenseDoc())],
+        found: 1,
+      }],
     })
     // Reset cache mocks to cache-miss state (vi.clearAllMocks() clears implementations)
     vi.mocked(getExactQueryCache).mockResolvedValue({ hit: false })
@@ -179,7 +179,7 @@ describe("searchProducts", () => {
       await searchProducts({ query: "costela bovina" })
 
       expect(mockTypesenseSearch).toHaveBeenCalledOnce()
-      const args = mockTypesenseSearch.mock.calls[0][0]
+      const args = mockTypesenseSearch.mock.calls[0][0].searches[0]
 
       // Must NOT be the old broken syntax: embedding:([], ...)
       expect(args.vector_query).not.toContain("([]")
@@ -192,7 +192,7 @@ describe("searchProducts", () => {
     it("includes filter_by: status:published && inStock:true (hides out-of-stock/draft)", async () => {
       await searchProducts({ query: "costela" })
 
-      const args = mockTypesenseSearch.mock.calls[0][0]
+      const args = mockTypesenseSearch.mock.calls[0][0].searches[0]
       expect(args.filter_by).toContain("status:published")
       expect(args.filter_by).toContain("inStock:true")
     })
@@ -200,7 +200,7 @@ describe("searchProducts", () => {
     it("passes limit to per_page", async () => {
       await searchProducts({ query: "costela", limit: 3 })
 
-      const args = mockTypesenseSearch.mock.calls[0][0]
+      const args = mockTypesenseSearch.mock.calls[0][0].searches[0]
       expect(args.per_page).toBe(3)
     })
 
@@ -223,7 +223,7 @@ describe("searchProducts", () => {
 
       await searchProducts({ query: "costela" })
 
-      const args = mockTypesenseSearch.mock.calls[0][0]
+      const args = mockTypesenseSearch.mock.calls[0][0].searches[0]
       // vector_query should be absent or undefined (not empty brackets)
       expect(args.vector_query).toBeUndefined()
     })
@@ -234,9 +234,11 @@ describe("searchProducts", () => {
   describe("totalFound", () => {
     it("reflects Typesense response.found — not products.length", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        // response.found=12 but only 5 hits returned (per_page limit)
-        hits: [makeHit(makeTypesenseDoc())],
-        found: 12,
+        results: [{
+          // response.found=12 but only 5 hits returned (per_page limit)
+          hits: [makeHit(makeTypesenseDoc())],
+          found: 12,
+        }],
       })
 
       const result = await searchProducts({ query: "costela" })
@@ -246,7 +248,7 @@ describe("searchProducts", () => {
     })
 
     it("is 0 when Typesense returns no results", async () => {
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [], found: 0 })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [], found: 0 }] })
 
       const result = await searchProducts({ query: "algo raro" })
 
@@ -259,8 +261,10 @@ describe("searchProducts", () => {
   describe("scores", () => {
     it("includes scores on live search (not on cache hit)", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(makeTypesenseDoc({ id: "prod_abc" }), 0.87)],
-        found: 1,
+        results: [{
+          hits: [makeHit(makeTypesenseDoc({ id: "prod_abc" }), 0.87)],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "costela" })
@@ -301,11 +305,13 @@ describe("searchProducts", () => {
   describe("noResultsReason", () => {
     it("out_of_stock: when Typesense finds docs without inStock filter but not with", async () => {
       // Primary call (with inStock:true): no results
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [], found: 0 })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [], found: 0 }] })
       // Diagnostic call (without inStock): finds OOS products
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(makeTypesenseDoc({ inStock: false }))],
-        found: 1,
+        results: [{
+          hits: [makeHit(makeTypesenseDoc({ inStock: false }))],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "costela" })
@@ -316,9 +322,9 @@ describe("searchProducts", () => {
 
     it("no_match: when Typesense finds nothing even without inStock filter", async () => {
       // Primary call: no results
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [], found: 0 })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [], found: 0 }] })
       // Diagnostic call: still no results
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [], found: 0 })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [], found: 0 }] })
 
       const result = await searchProducts({ query: "produto inexistente xyz" })
 
@@ -329,8 +335,10 @@ describe("searchProducts", () => {
     it("allergen_filtered: when allergen filter removes all primary results", async () => {
       // Primary call returns docs with allergen that matches exclusion
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(makeTypesenseDoc({ allergens: ["latex"] }))],
-        found: 1,
+        results: [{
+          hits: [makeHit(makeTypesenseDoc({ allergens: ["latex"] }))],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "costela", excludeAllergens: ["latex"] })
@@ -350,8 +358,10 @@ describe("searchProducts", () => {
 
       try {
         mockTypesenseSearch.mockResolvedValueOnce({
-          hits: [makeHit(makeTypesenseDoc({ availabilityWindow: "almoco", allergens: [] }))],
-          found: 1,
+          results: [{
+            hits: [makeHit(makeTypesenseDoc({ availabilityWindow: "almoco", allergens: [] }))],
+            found: 1,
+          }],
         })
 
         const result = await searchProducts({ query: "costela", availableNow: true })
@@ -395,13 +405,17 @@ describe("searchProducts", () => {
 
       // First query: costela de porco
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(porkDoc, 0.9)],
-        found: 1,
+        results: [{
+          hits: [makeHit(porkDoc, 0.9)],
+          found: 1,
+        }],
       })
       // Second query: costela de boi
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(beefDoc, 0.8)],
-        found: 1,
+        results: [{
+          hits: [makeHit(beefDoc, 0.8)],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({
@@ -423,13 +437,17 @@ describe("searchProducts", () => {
 
       // First query: returns shared + pork-only
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(sharedDoc, 0.95), makeHit(porkOnlyDoc, 0.7)],
-        found: 2,
+        results: [{
+          hits: [makeHit(sharedDoc, 0.95), makeHit(porkOnlyDoc, 0.7)],
+          found: 2,
+        }],
       })
       // Second query: returns shared again (same product)
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(sharedDoc, 0.6)],
-        found: 1,
+        results: [{
+          hits: [makeHit(sharedDoc, 0.6)],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({
@@ -445,8 +463,8 @@ describe("searchProducts", () => {
     })
 
     it("totalFound is the sum of all per-query Typesense found counts", async () => {
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [makeHit(makeTypesenseDoc({ id: "a" }))], found: 5 })
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [makeHit(makeTypesenseDoc({ id: "b" }))], found: 3 })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [makeHit(makeTypesenseDoc({ id: "a" }))], found: 5 }] })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [makeHit(makeTypesenseDoc({ id: "b" }))], found: 3 }] })
 
       const result = await searchProducts({ queries: ["porco", "boi"] })
 
@@ -457,8 +475,8 @@ describe("searchProducts", () => {
       const porkDoc = makeTypesenseDoc({ id: "pork_1" })
       const beefDoc = makeTypesenseDoc({ id: "beef_1" })
 
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [makeHit(porkDoc, 0.9)], found: 1 })
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [makeHit(beefDoc, 0.7)], found: 1 })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [makeHit(porkDoc, 0.9)], found: 1 }] })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [makeHit(beefDoc, 0.7)], found: 1 }] })
 
       const result = await searchProducts({ queries: ["porco", "boi"] })
 
@@ -477,10 +495,10 @@ describe("searchProducts", () => {
       const porkDoc = makeTypesenseDoc({ id: "pork_1" })
 
       // First query: finds product
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [makeHit(porkDoc, 0.9)], found: 1 })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [makeHit(porkDoc, 0.9)], found: 1 }] })
       // Second query: empty primary + empty diagnostic = no_match
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [], found: 0 })
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [], found: 0 }) // diagnostic call
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [], found: 0 }] })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [], found: 0 }] }) // diagnostic call
 
       const result = await searchProducts({
         queries: ["costela de porco", "produto xyz"],
@@ -498,8 +516,10 @@ describe("searchProducts", () => {
   describe("typesenseDocToDTO mapping", () => {
     it("reads price from flat Typesense price field — not nested variants (Bug 6)", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(makeTypesenseDoc({ price: 8900 }))],
-        found: 1,
+        results: [{
+          hits: [makeHit(makeTypesenseDoc({ price: 8900 }))],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "costela" })
@@ -510,8 +530,10 @@ describe("searchProducts", () => {
 
     it("reads allergens from flat Typesense allergens field — not metadata.allergens", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(makeTypesenseDoc({ allergens: ["gluten", "lactose"] }))],
-        found: 1,
+        results: [{
+          hits: [makeHit(makeTypesenseDoc({ allergens: ["gluten", "lactose"] }))],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "algo" })
@@ -521,8 +543,10 @@ describe("searchProducts", () => {
 
     it("reads tags from flat Typesense tags field — not tag_ids", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(makeTypesenseDoc({ tags: ["popular", "sem_gluten"] }))],
-        found: 1,
+        results: [{
+          hits: [makeHit(makeTypesenseDoc({ tags: ["popular", "sem_gluten"] }))],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "algo" })
@@ -535,8 +559,10 @@ describe("searchProducts", () => {
       delete (docWithoutAllergens as Record<string, unknown>).allergens
 
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(docWithoutAllergens)],
-        found: 1,
+        results: [{
+          hits: [makeHit(docWithoutAllergens)],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "algo" })
@@ -547,8 +573,10 @@ describe("searchProducts", () => {
 
     it("maps status and inStock from flat Typesense fields", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(makeTypesenseDoc({ status: "published", inStock: true }))],
-        found: 1,
+        results: [{
+          hits: [makeHit(makeTypesenseDoc({ status: "published", inStock: true }))],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "algo" })
@@ -563,11 +591,13 @@ describe("searchProducts", () => {
   describe("applyFilters", () => {
     it("excludes products with allergens listed in excludeAllergens", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [
-          makeHit(makeTypesenseDoc({ id: "prod_1", allergens: ["latex"] })),
-          makeHit(makeTypesenseDoc({ id: "prod_2", allergens: [] })),
-        ],
-        found: 2,
+        results: [{
+          hits: [
+            makeHit(makeTypesenseDoc({ id: "prod_1", allergens: ["latex"] })),
+            makeHit(makeTypesenseDoc({ id: "prod_2", allergens: [] })),
+          ],
+          found: 2,
+        }],
       })
 
       const result = await searchProducts({
@@ -581,8 +611,10 @@ describe("searchProducts", () => {
 
     it("keeps products with no allergens when excludeAllergens is set", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [makeHit(makeTypesenseDoc({ allergens: [] }))],
-        found: 1,
+        results: [{
+          hits: [makeHit(makeTypesenseDoc({ allergens: [] }))],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "algo", excludeAllergens: ["latex"] })
@@ -591,41 +623,54 @@ describe("searchProducts", () => {
     })
 
     it("filters by tags — product must contain at least one requested tag", async () => {
+      // Tags are now sent to Typesense via filter_by, so Typesense does the filtering.
+      // Mock returns only the matching product (as Typesense would).
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [
-          makeHit(makeTypesenseDoc({ id: "prod_1", tags: ["carne", "popular"] })),
-          makeHit(makeTypesenseDoc({ id: "prod_2", tags: ["sobremesa"] })),
-        ],
-        found: 2,
+        results: [{
+          hits: [
+            makeHit(makeTypesenseDoc({ id: "prod_1", tags: ["carne", "popular"] })),
+          ],
+          found: 1,
+        }],
       })
 
       const result = await searchProducts({ query: "algo", tags: ["carne"] })
 
+      // Verify tags clause is in filter_by sent to Typesense
+      const args = mockTypesenseSearch.mock.calls[0][0].searches[0]
+      expect(args.filter_by).toContain("tags:=[carne]")
       expect(result.products).toHaveLength(1)
       expect(result.products[0].id).toBe("prod_1")
     })
 
     it("returns all products when no tags filter is specified", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [
-          makeHit(makeTypesenseDoc({ id: "prod_1", tags: ["carne"] })),
-          makeHit(makeTypesenseDoc({ id: "prod_2", tags: ["sobremesa"] })),
-        ],
-        found: 2,
+        results: [{
+          hits: [
+            makeHit(makeTypesenseDoc({ id: "prod_1", tags: ["carne"] })),
+            makeHit(makeTypesenseDoc({ id: "prod_2", tags: ["sobremesa"] })),
+          ],
+          found: 2,
+        }],
       })
 
       const result = await searchProducts({ query: "algo" })
 
+      // Verify no tags clause in filter_by when tags not specified
+      const args = mockTypesenseSearch.mock.calls[0][0].searches[0]
+      expect(args.filter_by).not.toContain("tags:=")
       expect(result.products).toHaveLength(2)
     })
 
     it("returns empty array when all products are excluded by allergen filter", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [
-          makeHit(makeTypesenseDoc({ allergens: ["gluten"] })),
-          makeHit(makeTypesenseDoc({ allergens: ["lactose"] })),
-        ],
-        found: 2,
+        results: [{
+          hits: [
+            makeHit(makeTypesenseDoc({ allergens: ["gluten"] })),
+            makeHit(makeTypesenseDoc({ allergens: ["lactose"] })),
+          ],
+          found: 2,
+        }],
       })
 
       const result = await searchProducts({
@@ -642,11 +687,13 @@ describe("searchProducts", () => {
   describe("isAvailableNow", () => {
     it("always includes congelados and sempre products regardless of current hour", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [
-          makeHit(makeTypesenseDoc({ id: "a", availabilityWindow: "congelados" })),
-          makeHit(makeTypesenseDoc({ id: "b", availabilityWindow: "sempre" })),
-        ],
-        found: 2,
+        results: [{
+          hits: [
+            makeHit(makeTypesenseDoc({ id: "a", availabilityWindow: "congelados" })),
+            makeHit(makeTypesenseDoc({ id: "b", availabilityWindow: "sempre" })),
+          ],
+          found: 2,
+        }],
       })
 
       const result = await searchProducts({ query: "algo", availableNow: true })
@@ -656,11 +703,13 @@ describe("searchProducts", () => {
 
     it("does not filter by availability when availableNow is false or absent", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [
-          makeHit(makeTypesenseDoc({ id: "a", availabilityWindow: "almoco" })),
-          makeHit(makeTypesenseDoc({ id: "b", availabilityWindow: "jantar" })),
-        ],
-        found: 2,
+        results: [{
+          hits: [
+            makeHit(makeTypesenseDoc({ id: "a", availabilityWindow: "almoco" })),
+            makeHit(makeTypesenseDoc({ id: "b", availabilityWindow: "jantar" })),
+          ],
+          found: 2,
+        }],
       })
 
       const result = await searchProducts({ query: "algo", availableNow: false })
@@ -720,12 +769,14 @@ describe("searchProducts", () => {
 
     it("emits one product.viewed event per product in results", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
-        hits: [
-          makeHit(makeTypesenseDoc({ id: "prod_a" })),
-          makeHit(makeTypesenseDoc({ id: "prod_b" })),
-          makeHit(makeTypesenseDoc({ id: "prod_c" })),
-        ],
-        found: 3,
+        results: [{
+          hits: [
+            makeHit(makeTypesenseDoc({ id: "prod_a" })),
+            makeHit(makeTypesenseDoc({ id: "prod_b" })),
+            makeHit(makeTypesenseDoc({ id: "prod_c" })),
+          ],
+          found: 3,
+        }],
       })
 
       await searchProducts({ query: "costela" })
@@ -760,8 +811,8 @@ describe("searchProducts", () => {
     })
 
     it("does not publish events when products array is empty", async () => {
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [], found: 0 })
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [], found: 0 }) // diagnostic
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [], found: 0 }] })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [], found: 0 }] }) // diagnostic
 
       await searchProducts({ query: "algo" })
 
@@ -775,8 +826,8 @@ describe("searchProducts", () => {
       const sharedDoc = makeTypesenseDoc({ id: "shared_1" })
       const uniqueDoc = makeTypesenseDoc({ id: "unique_1" })
 
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [makeHit(sharedDoc), makeHit(uniqueDoc)], found: 2 })
-      mockTypesenseSearch.mockResolvedValueOnce({ hits: [makeHit(sharedDoc)], found: 1 })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [makeHit(sharedDoc), makeHit(uniqueDoc)], found: 2 }] })
+      mockTypesenseSearch.mockResolvedValueOnce({ results: [{ hits: [makeHit(sharedDoc)], found: 1 }] })
 
       await searchProducts({ queries: ["porco", "boi"] })
 

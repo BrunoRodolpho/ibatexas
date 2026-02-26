@@ -108,7 +108,7 @@ export default async function ({ container }: ExecArgs) {
           manage_inventory: false,
           ...(hasVariants ? { options: { Variante: v.title } } : {}),
         })),
-        metadata: product.metadata,
+        metadata: { ...product.metadata, categoryHandle: product.categoryHandle },
       },
     ])
 

@@ -1,7 +1,8 @@
 'use client'
 
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
+import { useSearchParams } from 'next/navigation'
 import { Heading, Text, Button } from '@/components/atoms'
 import { SearchInput } from '@/components/molecules'
 import { ProductGrid } from '@/components/organisms'
@@ -10,16 +11,57 @@ import { useProducts } from '@/hooks/api'
 import type { ProductDTO } from '@ibatexas/types'
 
 const TAG_IDS = ['novo', 'popular', 'chef_choice', 'vegetariano', 'vegan', 'sem_gluten'] as const
-const CATEGORY_IDS = ['almoco', 'jantar', 'congelados', 'sobremesas', 'bebidas'] as const
+const CATEGORY_IDS = ['carnes-defumadas', 'acompanhamentos', 'sanduiches', 'sobremesas', 'bebidas', 'congelados'] as const
 const SORT_VALUES = ['relevance', 'price_asc', 'price_desc', 'rating', 'popular'] as const
 
 export default function SearchPage() {
   const t = useTranslations()
+  const searchParams = useSearchParams()
   const [searchQuery, setSearchQuery] = useState('')
   const [isFilterOpen, setIsFilterOpen] = useState(false)
+  const initializedRef = useRef(false)
 
   const { selectedFilters, setFilters, resetFilters, addToast } = useUIStore()
   const addItem = useCartStore((s) => s.addItem)
+
+  // ── Sync URL params → store on mount ──────────────────────────────────
+  useEffect(() => {
+    if (initializedRef.current) return
+    initializedRef.current = true
+
+    const urlCategory = searchParams.get('category')
+    const urlTags = searchParams.get('tags')
+    const urlQuery = searchParams.get('q')
+    const urlSort = searchParams.get('sort')
+
+    const hasUrlFilters = urlCategory || urlTags || urlQuery || urlSort
+    if (!hasUrlFilters) return
+
+    const newFilters: typeof selectedFilters = {
+      tags: urlTags ? urlTags.split(',').filter(Boolean) : [],
+      category: urlCategory || undefined,
+      sort: urlSort || undefined,
+    }
+
+    setFilters(newFilters)
+    if (urlQuery) setSearchQuery(urlQuery)
+  }, [searchParams, setFilters])
+
+  // ── Sync store → URL when filters change ──────────────────────────────
+  const updateURL = useCallback(
+    (filters: typeof selectedFilters, query?: string) => {
+      const params = new URLSearchParams()
+      if (filters.category) params.set('category', filters.category)
+      if (filters.tags.length > 0) params.set('tags', filters.tags.join(','))
+      if (filters.sort && filters.sort !== 'relevance') params.set('sort', filters.sort)
+      if (query) params.set('q', query)
+
+      const qs = params.toString()
+      const newUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname
+      window.history.replaceState(null, '', newUrl)
+    },
+    []
+  )
 
   const activeTags = useMemo(
     () => (selectedFilters.tags.length > 0 ? selectedFilters.tags : undefined),
@@ -33,27 +75,45 @@ export default function SearchPage() {
   const { data: productsData, loading: isLoading } = useProducts(
     searchQuery || undefined,
     activeTags,
-    20
+    20,
+    undefined,
+    selectedFilters.category || undefined
   )
 
   const products = productsData?.products ?? []
   const totalFound = productsData?.totalFound ?? 0
 
-  const handleSearch = (query: string) => setSearchQuery(query)
+  const handleSearch = (query: string) => {
+    setSearchQuery(query)
+    updateURL(selectedFilters, query)
+  }
 
   const handleTagToggle = (tagId: string) => {
     const newTags = selectedFilters.tags.includes(tagId)
       ? selectedFilters.tags.filter((t) => t !== tagId)
       : [...selectedFilters.tags, tagId]
-    setFilters({ ...selectedFilters, tags: newTags })
+    const newFilters = { ...selectedFilters, tags: newTags }
+    setFilters(newFilters)
+    updateURL(newFilters, searchQuery)
   }
 
   const handleCategoryChange = (categoryId: string) => {
-    setFilters({ ...selectedFilters, category: categoryId === selectedFilters.category ? undefined : categoryId })
+    const newCategory = categoryId === selectedFilters.category ? undefined : categoryId
+    const newFilters = { ...selectedFilters, category: newCategory }
+    setFilters(newFilters)
+    updateURL(newFilters, searchQuery)
   }
 
   const handleSortChange = (sortValue: string) => {
-    setFilters({ ...selectedFilters, sort: sortValue })
+    const newFilters = { ...selectedFilters, sort: sortValue }
+    setFilters(newFilters)
+    updateURL(newFilters, searchQuery)
+  }
+
+  const handleResetFilters = () => {
+    resetFilters()
+    setSearchQuery('')
+    window.history.replaceState(null, '', window.location.pathname)
   }
 
   const hasActiveFilters = selectedFilters.tags.length > 0 || selectedFilters.category || selectedFilters.priceRange
@@ -85,7 +145,7 @@ export default function SearchPage() {
             </h1>
             {hasActiveFilters && (
               <button
-                onClick={resetFilters}
+                onClick={handleResetFilters}
                 className="mt-2 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
               >
                 {t('search.reset_filters')}
@@ -183,7 +243,7 @@ export default function SearchPage() {
             })}
             {selectedFilters.category && (
               <button
-                onClick={() => handleCategoryChange('')}
+                onClick={() => handleCategoryChange(selectedFilters.category!)}
                 className="text-xs font-medium text-charcoal-900 border-b border-charcoal-900/30 pb-0.5 hover:border-charcoal-900 transition-colors duration-500 ease-luxury"
               >
                 {CATEGORIES.find((c) => c.id === selectedFilters.category)?.label} ✕

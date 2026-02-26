@@ -1,6 +1,6 @@
 'use client'
 
-import Link from 'next/link'
+import { Link } from '@/i18n/navigation'
 
 interface Category {
   id: string
@@ -21,7 +21,7 @@ export const CategoryCarousel = ({ categories, activeHandle }: CategoryCarouselP
         return (
           <Link
             key={category.id}
-            href={`/search?category=${category.handle}`}
+            href={{ pathname: '/search', query: { category: category.handle } } as any}
             className={`flex-shrink-0 text-xs font-medium uppercase tracking-editorial transition-colors duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
               isActive
                 ? 'text-charcoal-900 border-b border-charcoal-900 pb-0.5'

@@ -178,7 +178,7 @@ async function runReset(force = false) {
   })
 
   step("Running domain (Prisma) migrations…")
-  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:migrate"], {
+  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:push"], {
     cwd: ROOT,
     stdio: "inherit",
   })
@@ -239,7 +239,7 @@ async function runReindex(fresh = false) {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const data = await medusaFetch(
-      `/admin/products?limit=${limit}&offset=${offset}&fields=id,title,description,thumbnail,status,tag_ids,variants,metadata,created_at,updated_at&expand=variants,variants.prices`,
+      `/admin/products?limit=${limit}&offset=${offset}`,
       token
     )
     const products = (data.products as unknown[] | undefined) ?? []

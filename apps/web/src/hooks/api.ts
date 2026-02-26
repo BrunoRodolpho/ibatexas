@@ -7,7 +7,7 @@ import type { ProductDTO, SearchProductsOutput } from "@ibatexas/types"
 
 // ── Product Hooks ───────────────────────────────────────────────────────
 
-export function useProducts(query?: string, tags?: string[], limit = 5, productType?: "food" | "frozen" | "merchandise") {
+export function useProducts(query?: string, tags?: string[], limit = 5, productType?: "food" | "frozen" | "merchandise", categoryHandle?: string) {
   const [data, setData] = useState<SearchProductsOutput | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
@@ -17,6 +17,7 @@ export function useProducts(query?: string, tags?: string[], limit = 5, productT
     if (query) params.set("query", query)
     if (tags?.length) params.set("tags", tags.join(","))
     if (productType) params.set("productType", productType)
+    if (categoryHandle) params.set("categoryHandle", categoryHandle)
     params.set("limit", String(limit))
 
     const qs = params.toString()
@@ -27,7 +28,7 @@ export function useProducts(query?: string, tags?: string[], limit = 5, productT
       .then(setData)
       .catch(setError)
       .finally(() => setLoading(false))
-  }, [query, tags?.join(","), limit, productType])
+  }, [query, tags?.join(","), limit, productType, categoryHandle])
 
   return { data, loading, error }
 }
