@@ -1,1 +1,2 @@
-libquery_engine-debian-openssl-*.so.node
+# Engine binaries — generated locally & in CI via `prisma generate`
+libquery_engine-*
