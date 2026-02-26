@@ -16,6 +16,10 @@ function makeMedusa(overrides: Partial<MedusaProductInput> = {}): MedusaProductI
     title: "Costela Bovina Defumada",
     description: "12 horas de defumação lenta",
     thumbnail: "https://cdn.ibatexas.com/costela.jpg",
+    images: [
+      { id: "img_01", url: "https://cdn.ibatexas.com/costela.jpg", rank: 0 },
+      { id: "img_02", url: "https://cdn.ibatexas.com/costela-2.jpg", rank: 1 },
+    ],
     status: "published",
     tag_ids: ["popular", "sem_gluten"],
     variants: [
@@ -45,6 +49,7 @@ function makeTypesenseDoc(overrides: Partial<TypesenseProductDoc> = {}): Typesen
     description: "12 horas de defumação lenta",
     price: 18900,
     imageUrl: "https://cdn.ibatexas.com/costela.jpg",
+    images: ["https://cdn.ibatexas.com/costela.jpg", "https://cdn.ibatexas.com/costela-2.jpg"],
     tags: ["popular", "sem_gluten"],
     availabilityWindow: "jantar",
     allergens: [],
@@ -71,6 +76,7 @@ describe("medusaToTypesenseDoc", () => {
     expect(doc.description).toBe("12 horas de defumação lenta")
     expect(doc.price).toBe(18900)
     expect(doc.imageUrl).toBe("https://cdn.ibatexas.com/costela.jpg")
+    expect(doc.images).toEqual(["https://cdn.ibatexas.com/costela.jpg", "https://cdn.ibatexas.com/costela-2.jpg"])
     expect(doc.tags).toEqual(["popular", "sem_gluten"])
     expect(doc.availabilityWindow).toBe("jantar")
     expect(doc.allergens).toEqual([])
@@ -101,6 +107,38 @@ describe("medusaToTypesenseDoc", () => {
   it("defaults thumbnail to null when missing", () => {
     const doc = medusaToTypesenseDoc(makeMedusa({ thumbnail: null }))
     expect(doc.imageUrl).toBeNull()
+  })
+
+  it("maps images sorted by rank", () => {
+    const doc = medusaToTypesenseDoc(makeMedusa({
+      images: [
+        { id: "img_b", url: "https://cdn.ibatexas.com/b.jpg", rank: 2 },
+        { id: "img_a", url: "https://cdn.ibatexas.com/a.jpg", rank: 0 },
+        { id: "img_c", url: "https://cdn.ibatexas.com/c.jpg", rank: 1 },
+      ],
+      thumbnail: "https://cdn.ibatexas.com/a.jpg",
+    }))
+    expect(doc.images).toEqual([
+      "https://cdn.ibatexas.com/a.jpg",
+      "https://cdn.ibatexas.com/c.jpg",
+      "https://cdn.ibatexas.com/b.jpg",
+    ])
+  })
+
+  it("prepends thumbnail to images when not in gallery", () => {
+    const doc = medusaToTypesenseDoc(makeMedusa({
+      thumbnail: "https://cdn.ibatexas.com/thumb.jpg",
+      images: [{ id: "img_01", url: "https://cdn.ibatexas.com/other.jpg", rank: 0 }],
+    }))
+    expect(doc.images).toEqual([
+      "https://cdn.ibatexas.com/thumb.jpg",
+      "https://cdn.ibatexas.com/other.jpg",
+    ])
+  })
+
+  it("defaults images to empty array when missing", () => {
+    const doc = medusaToTypesenseDoc(makeMedusa({ images: undefined, thumbnail: null }))
+    expect(doc.images).toEqual([])
   })
 
   it("defaults tags to empty array when tag_ids missing", () => {
@@ -194,5 +232,17 @@ describe("typesenseDocToDTO", () => {
     )
     expect(dto.rating).toBeUndefined()
     expect(dto.reviewCount).toBeUndefined()
+  })
+
+  it("maps images array", () => {
+    const dto = typesenseDocToDTO(
+      makeTypesenseDoc({ images: ["https://cdn.ibatexas.com/a.jpg", "https://cdn.ibatexas.com/b.jpg"] }),
+    )
+    expect(dto.images).toEqual(["https://cdn.ibatexas.com/a.jpg", "https://cdn.ibatexas.com/b.jpg"])
+  })
+
+  it("defaults images to [] when missing", () => {
+    const dto = typesenseDocToDTO(makeTypesenseDoc({ images: undefined }))
+    expect(dto.images).toEqual([])
   })
 })

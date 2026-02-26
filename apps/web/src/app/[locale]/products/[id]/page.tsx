@@ -5,7 +5,7 @@ import { Link } from '@/i18n/navigation'
 import { useTranslations } from "next-intl"
 import { useProductDetail } from "@/hooks/api"
 import { useCartStore, useUIStore } from "@/stores"
-import { Image } from "@/components/atoms/Image"
+import { MediaGallery } from "@/components/molecules/MediaGallery"
 
 export default function ProductPage({ params }: { params: { id: string } }) {
   const t = useTranslations()
@@ -83,31 +83,11 @@ export default function ProductPage({ params }: { params: { id: string } }) {
       <div className="grid gap-12 lg:grid-cols-2">
         {/* Images */}
         <div>
-          {product.imageUrl && (
-            <div className="relative mb-4 aspect-square overflow-hidden rounded-sm bg-smoke-100">
-              <Image
-                src={product.imageUrl}
-                alt={product.title}
-                variant="detail"
-                className="aspect-square"
-              />
-            </div>
-          )}
-          {/* Thumbnail strip */}
-          {product.imageUrl && (
-            <div className="grid grid-cols-4 gap-2">
-              <div
-                className="relative cursor-pointer overflow-hidden rounded-xl border-2 border-brand-500 aspect-square"
-              >
-                <Image
-                  src={product.imageUrl}
-                  alt={`${product.title} 1`}
-                  variant="thumbnail"
-                  className="!h-full !w-full"
-                />
-              </div>
-            </div>
-          )}
+          <MediaGallery
+            images={product.images ?? []}
+            thumbnail={product.imageUrl}
+            title={product.title}
+          />
         </div>
 
         {/* Details */}

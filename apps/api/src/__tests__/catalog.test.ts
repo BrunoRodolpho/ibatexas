@@ -43,6 +43,7 @@ const MOCK_PRODUCT: ProductDTO = {
   description: "Costela bovina defumada lentamente",
   price: 8900,
   imageUrl: null,
+  images: [],
   tags: ["popular"],
   availabilityWindow: AvailabilityWindow.JANTAR,
   allergens: [],

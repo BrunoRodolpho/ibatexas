@@ -12,7 +12,7 @@ describe("Catalog Flow", () => {
     const { searchProducts } = await import("@ibatexas/tools")
     const mock = vi.mocked(searchProducts)
     mock.mockResolvedValueOnce({
-      products: [{ id: "prod_1", title: "Costela Defumada", description: "Costela defumada artesanal", price: 8900, imageUrl: null, tags: ["popular"], availabilityWindow: AvailabilityWindow.ALMOCO, allergens: [], variants: [], productType: ProductType.FOOD, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+      products: [{ id: "prod_1", title: "Costela Defumada", description: "Costela defumada artesanal", price: 8900, imageUrl: null, images: [], tags: ["popular"], availabilityWindow: AvailabilityWindow.ALMOCO, allergens: [], variants: [], productType: ProductType.FOOD, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
       searchModel: "hybrid",
       hitCache: false,
       totalFound: 1,
@@ -29,7 +29,7 @@ describe("Catalog Flow", () => {
     const { searchProducts } = await import("@ibatexas/tools")
     const mock = vi.mocked(searchProducts)
     mock.mockResolvedValueOnce({
-      products: [{ id: "prod_1", title: "Costela Defumada", description: "Costela defumada artesanal", price: 8900, imageUrl: null, tags: ["popular"], availabilityWindow: AvailabilityWindow.ALMOCO, allergens: [], variants: [], productType: ProductType.FOOD, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+      products: [{ id: "prod_1", title: "Costela Defumada", description: "Costela defumada artesanal", price: 8900, imageUrl: null, images: [], tags: ["popular"], availabilityWindow: AvailabilityWindow.ALMOCO, allergens: [], variants: [], productType: ProductType.FOOD, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
       searchModel: "hybrid",
       hitCache: true,
       totalFound: 1,

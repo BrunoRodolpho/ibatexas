@@ -239,7 +239,7 @@ async function runReindex(fresh = false) {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const data = await medusaFetch(
-      `/admin/products?limit=${limit}&offset=${offset}`,
+      `/admin/products?limit=${limit}&offset=${offset}&fields=*variants,*variants.prices,*tags,*categories,*images`,
       token
     )
     const products = (data.products as unknown[] | undefined) ?? []

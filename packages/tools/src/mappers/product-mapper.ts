@@ -20,6 +20,7 @@ export interface MedusaProductInput {
   title: string
   description?: string | null
   thumbnail?: string | null
+  images?: Array<{ id: string; url: string; rank?: number }>
   status?: string
   // Medusa v2 returns tags as objects on retrieval
   tags?: Array<{ id: string; value: string }> | string[]
@@ -52,6 +53,7 @@ export interface TypesenseProductDoc {
   description?: string
   price?: number
   imageUrl?: string | null
+  images?: string[]
   tags?: string[]
   availabilityWindow?: string
   allergens?: string[]
@@ -85,12 +87,16 @@ export function medusaToTypesenseDoc(product: MedusaProductInput): TypesenseProd
   const createdAt = product.created_at || product.createdAt || ""
   const updatedAt = product.updated_at || product.updatedAt || ""
 
+  // Extract images: sort by rank, map to URLs
+  const images = extractImages(product)
+
   return {
     id: product.id,
     title: product.title,
     description: product.description || "",
     price,
     imageUrl: product.thumbnail || null,
+    images,
     tags,
     availabilityWindow: (product.metadata?.availabilityWindow as string) || "sempre",
     allergens: Array.isArray(product.metadata?.allergens) ? product.metadata.allergens as string[] : [],
@@ -144,6 +150,22 @@ function extractPrice(product: MedusaProductInput): number {
   return 0
 }
 
+/** Extract image URLs from Medusa product images, sorted by rank.
+ *  If thumbnail exists but isn't in images[], it's prepended.
+ */
+function extractImages(product: MedusaProductInput): string[] {
+  const imgs = (product.images || [])
+    .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
+    .map((img) => img.url)
+
+  // Ensure thumbnail is in the list (prepend if missing)
+  if (product.thumbnail && !imgs.includes(product.thumbnail)) {
+    imgs.unshift(product.thumbnail)
+  }
+
+  return imgs
+}
+
 /** Extract category handle: prefer categories array, fallback to metadata. */
 function extractCategoryHandle(product: MedusaProductInput): string | undefined {
   if (Array.isArray(product.categories) && product.categories.length > 0) {
@@ -166,6 +188,7 @@ export function typesenseDocToDTO(doc: TypesenseProductDoc): ProductDTO {
     description: doc.description || "",
     price: typeof doc.price === "number" ? doc.price : 0,
     imageUrl: doc.imageUrl || null,
+    images: Array.isArray(doc.images) ? doc.images : [],
     tags: Array.isArray(doc.tags) ? doc.tags : [],
     availabilityWindow: (doc.availabilityWindow || "sempre") as ProductDTO["availabilityWindow"],
     allergens: Array.isArray(doc.allergens) ? doc.allergens : [],
