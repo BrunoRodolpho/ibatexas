@@ -110,6 +110,7 @@ interface TypesenseResult {
 
 /**
  * Execute Typesense hybrid search (vector + keyword).
+ * Uses multi_search (POST) to avoid query-string length limits with large embeddings.
  * @param filterInStock — when false, omits `inStock:true` (diagnostic pass only)
  */
 async function executeTypesenseSearch(
@@ -127,22 +128,30 @@ async function executeTypesenseSearch(
   
   const filterBy = filterParts.join(" && ")
 
-  const response = await typesenseClient
-    .collections(COLLECTION)
-    .documents()
-    .search({
-      q: query,
-      query_by: "title,description,tags",
-      // Hybrid vector query — requires Typesense v0.25+ and embeddings stored in collection
-      // Syntax: embedding:([dim0,dim1,...], k:N)
-      vector_query: embedding.length > 0
-        ? `embedding:([${embedding.join(",")}], k:${limit})`
-        : undefined,
-      filter_by: filterBy,
-      facet_by: "tags,availabilityWindow,allergens",
-      limit,
-      per_page: limit,
-    } as any)
+  const searchParams: Record<string, any> = {
+    q: query,
+    query_by: "title,description,tags",
+    filter_by: filterBy,
+    facet_by: "tags,availabilityWindow,allergens",
+    limit,
+    per_page: limit,
+  }
+
+  if (embedding.length > 0) {
+    searchParams.vector_query = `embedding:([${embedding.join(",")}], k:${limit})`
+  }
+
+  // Use multi_search (POST) to avoid GET query-string length limits
+  // with large embedding vectors (1536-dim ≈ 15KB as text)
+  const multiResult = await typesenseClient.multiSearch.perform(
+    { searches: [searchParams] },
+    { collection: COLLECTION }
+  )
+
+  const response = (multiResult.results ?? [])[0] as any
+  if (!response) {
+    return { hits: [], totalFound: 0, scores: {} }
+  }
 
   const hits = response.hits ?? []
   const scores: Record<string, number> = {}
@@ -152,7 +161,6 @@ async function executeTypesenseSearch(
     const doc = hit.document as any
     docs.push(doc)
     if ((doc as any)?.id) {
-      // Prefer rank_fusion_score (hybrid mode) over text_match_score (keyword mode)
       const score =
         ((hit as any).hybrid_search_info?.rank_fusion_score as number | undefined) ??
         ((hit as any).text_match_score as number | undefined) ??

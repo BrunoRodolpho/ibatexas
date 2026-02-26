@@ -255,7 +255,7 @@ async function runReindex(fresh = false) {
 
   console.log(chalk.white(`    Found ${allProducts.length} product(s)`))
 
-  // 3. Batch index into Typesense
+  // 4. Batch index into Typesense
   step(`Indexing ${allProducts.length} product(s) into Typesense…`)
   const spinner = ora("Generating embeddings & indexing…").start()
   try {
@@ -265,6 +265,17 @@ async function runReindex(fresh = false) {
     spinner.fail(chalk.red("Indexing failed"))
     console.error(err)
     process.exit(1)
+  }
+
+  // 5. Flush search cache so stale empty results don't persist
+  step("Flushing search cache…")
+  try {
+    const { invalidateAllQueryCache, closeRedisClient } = await import("@ibatexas/tools")
+    await invalidateAllQueryCache()
+    console.log(chalk.green("    Search cache cleared"))
+    await closeRedisClient()
+  } catch {
+    console.log(chalk.yellow("    Cache flush skipped (Redis unavailable)"))
   }
 
   console.log(chalk.green("\n  ✅  Reindex complete\n"))
