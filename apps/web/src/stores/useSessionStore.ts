@@ -19,8 +19,10 @@ interface SessionState {
   isAuthenticated: () => boolean
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function generateSessionId(): string {
-  return `session_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  return crypto.randomUUID()
 }
 
 export const useSessionStore = create<SessionState>()(
@@ -33,6 +35,11 @@ export const useSessionStore = create<SessionState>()(
 
       initSession: () => {
         const { sessionId } = get()
+        // Migrate legacy non-UUID session IDs
+        if (sessionId && !UUID_RE.test(sessionId)) {
+          set({ sessionId: generateSessionId() })
+          return
+        }
         if (sessionId) return
         set({ sessionId: generateSessionId(), userType: 'guest', customerId: undefined })
       },
