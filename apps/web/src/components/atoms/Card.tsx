@@ -14,8 +14,8 @@ const Card = forwardRef<HTMLDivElement, CardProps>(
       <div
         ref={ref}
         className={clsx(
-          'rounded-lg border border-slate-200 bg-white shadow-xs transition-shadow duration-150',
-          interactive && 'hover:shadow-md cursor-pointer',
+          'rounded-sm bg-smoke-50 transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]',
+          interactive && 'hover:bg-smoke-100 cursor-pointer',
           className
         )}
         {...props}

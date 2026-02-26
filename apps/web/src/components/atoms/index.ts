@@ -1,4 +1,4 @@
-export { Button, buttonVariants } from './Button'
+export { Button, LinkButton, buttonVariants } from './Button'
 export { Heading, Text, textVariants } from './Typography'
 export { Label } from './Label'
 export { Image } from './Image'

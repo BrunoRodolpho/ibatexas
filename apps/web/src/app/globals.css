@@ -12,42 +12,67 @@
 
   body {
     font-family: var(--font-inter, system-ui, sans-serif);
-    color: theme('colors.slate.900');
+    color: #1A1614;
+    background-color: #FAFAF9;
   }
 
   :focus-visible {
-    outline: 2px solid theme('colors.slate.900');
+    outline: 2px solid #1A1614;
     outline-offset: 2px;
-    border-radius: 4px;
+    border-radius: 2px;
   }
 
   * {
     -webkit-tap-highlight-color: transparent;
   }
+
+  /* Luxury selection */
+  ::selection {
+    background-color: #FFE4CC;
+    color: #3D1800;
+  }
+}
+
+@layer components {
+  /* Grain overlay — applied to dark sections for materiality */
+  .grain-overlay {
+    position: relative;
+  }
+  .grain-overlay::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 256px 256px;
+    mix-blend-mode: overlay;
+    z-index: 1;
+  }
+  .grain-overlay > * {
+    position: relative;
+    z-index: 2;
+  }
+
+  /* Warm radial glow — used for hero atmospheric warmth */
+  .warm-glow {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(232,93,4,0.08), transparent),
+      radial-gradient(ellipse 60% 80% at 80% 50%, rgba(232,93,4,0.04), transparent);
+  }
 }
 
 @layer utilities {
-  .section-padding {
-    padding-top: 2.5rem;
-    padding-bottom: 2.5rem;
-  }
-
-  @media (min-width: 768px) {
-    .section-padding {
-      padding-top: 3rem;
-      padding-bottom: 3rem;
-    }
-  }
-
   .skeleton {
     background: linear-gradient(
       90deg,
-      theme('colors.slate.100') 25%,
-      theme('colors.slate.50')  50%,
-      theme('colors.slate.100') 75%
+      #F5F3F0 25%,
+      #FAFAF9 50%,
+      #F5F3F0 75%
     );
     background-size: 200% 100%;
-    animation: shimmer 1.8s linear infinite;
+    animation: shimmer 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
   }
 
   .scrollbar-hide {
@@ -56,5 +81,18 @@
   }
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Luxury easing for all transitions */
+  .ease-luxury {
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Editorial text measure */
+  .measure-narrow {
+    max-width: 38ch;
+  }
+  .measure-reading {
+    max-width: 55ch;
   }
 }

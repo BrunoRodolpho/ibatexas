@@ -43,19 +43,19 @@ export const CartItem: React.FC<CartItemProps> = ({
               variant="thumbnail"
               width={80}
               height={80}
-              className="!h-20 !w-20 rounded-xl"
+              className="!h-20 !w-20 rounded-sm"
             />
           </div>
         )}
 
         <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-slate-900 truncate">{title}</h3>
+          <h3 className="font-semibold text-charcoal-900 truncate">{title}</h3>
           <Text variant="small" textColor="secondary">
             {formattedPrice} cada
           </Text>
 
           {specialInstructions && (
-            <p className="text-xs text-slate-500 mt-1 line-clamp-2">
+            <p className="text-xs text-smoke-400 mt-1 line-clamp-2">
               {specialInstructions}
             </p>
           )}
@@ -64,7 +64,7 @@ export const CartItem: React.FC<CartItemProps> = ({
             <div className="flex items-center gap-2">
               <button
                 onClick={() => onQuantityChange(Math.max(1, quantity - 1))}
-                className="w-6 h-6 flex items-center justify-center rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
+                className="w-6 h-6 flex items-center justify-center rounded-sm border border-smoke-200 text-charcoal-700 hover:bg-smoke-100"
                 aria-label="Diminuir quantidade"
               >
                 −
@@ -72,14 +72,14 @@ export const CartItem: React.FC<CartItemProps> = ({
               <span className="w-8 text-center font-medium">{quantity}</span>
               <button
                 onClick={() => onQuantityChange(quantity + 1)}
-                className="w-6 h-6 flex items-center justify-center rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
+                className="w-6 h-6 flex items-center justify-center rounded-sm border border-smoke-200 text-charcoal-700 hover:bg-smoke-100"
                 aria-label="Aumentar quantidade"
               >
                 +
               </button>
             </div>
 
-            <Text variant="body" className="font-semibold text-amber-700">
+            <Text variant="body" className="font-semibold text-brand-600">
               {lineTotal}
             </Text>
           </div>

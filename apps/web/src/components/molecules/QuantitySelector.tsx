@@ -40,14 +40,14 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
   const inputSize = size === 'sm' ? 'w-8 text-sm' : size === 'lg' ? 'w-12 text-lg' : 'w-10 text-base'
 
   return (
-    <div className={clsx('flex items-center gap-2 rounded-lg border border-slate-300 bg-white w-fit')}>
+    <div className={clsx('flex items-center gap-2 rounded-sm border border-smoke-200 bg-smoke-50 w-fit')}>
       <button
         onClick={handleDecrease}
         disabled={quantity <= min}
         className={clsx(
           btnSize,
-          'flex items-center justify-center font-bold text-slate-700',
-          'hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed'
+          'flex items-center justify-center font-bold text-charcoal-700',
+          'hover:bg-smoke-100 disabled:opacity-50 disabled:cursor-not-allowed'
         )}
         aria-label="Diminuir quantidade"
       >
@@ -72,8 +72,8 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
         disabled={quantity >= max}
         className={clsx(
           btnSize,
-          'flex items-center justify-center font-bold text-slate-700',
-          'hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed'
+          'flex items-center justify-center font-bold text-charcoal-700',
+          'hover:bg-smoke-100 disabled:opacity-50 disabled:cursor-not-allowed'
         )}
         aria-label="Aumentar quantidade"
       >

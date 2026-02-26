@@ -14,7 +14,7 @@ export const Label = React.forwardRef<HTMLLabelElement, LabelProps>(
         ref={ref}
         className={clsx(
           'block text-sm font-medium transition-colors',
-          error ? 'text-red-600' : 'text-slate-700',
+          error ? 'text-red-600' : 'text-charcoal-700',
           className
         )}
         {...props}
@@ -23,7 +23,7 @@ export const Label = React.forwardRef<HTMLLabelElement, LabelProps>(
         {required && <span className="text-red-600 ml-1">*</span>}
       </label>
       {helper && (
-        <p className={clsx('text-xs', error ? 'text-red-600' : 'text-slate-500')}>
+        <p className={clsx('text-xs', error ? 'text-red-600' : 'text-smoke-400')}>
           {helper}
         </p>
       )}

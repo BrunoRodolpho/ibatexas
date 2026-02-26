@@ -23,15 +23,16 @@ export function Switch({ checked, onChange, label, disabled = false, size = 'md'
         aria-checked={checked}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
-        className={`relative inline-flex shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2 ${trackSize} ${
-          checked ? 'bg-amber-700' : 'bg-slate-300'
+        className={`relative inline-flex shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 ${trackSize} ${
+          checked ? 'bg-charcoal-900' : 'bg-smoke-300'
         }`}
       >
         <span
-          className={`inline-block rounded-full bg-white shadow-sm transition-transform ${thumbSize} ${thumbTranslate}`}
+          className={`inline-block rounded-full bg-smoke-50 shadow-sm transition-transform duration-500 ${thumbSize} ${thumbTranslate}`}
+          style={{ transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)' }}
         />
       </button>
-      {label && <span className="text-sm text-slate-700">{label}</span>}
+      {label && <span className="text-sm text-charcoal-700">{label}</span>}
     </label>
   )
 }

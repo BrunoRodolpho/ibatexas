@@ -17,7 +17,7 @@ interface ReservationCardProps {
 const statusColors = {
   pending: 'bg-yellow-50 border-yellow-300 text-yellow-800',
   confirmed: 'bg-green-50 border-green-300 text-green-800',
-  completed: 'bg-slate-50 border-slate-300 text-slate-800',
+  completed: 'bg-smoke-100 border-smoke-300 text-charcoal-700',
   cancelled: 'bg-red-50 border-red-300 text-red-800',
 }
 

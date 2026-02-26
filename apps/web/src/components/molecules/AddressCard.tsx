@@ -35,8 +35,8 @@ export const AddressCard: React.FC<AddressCardProps> = ({
     <Card
       className={`p-4 cursor-pointer transition-all ${
         isSelected
-          ? 'ring-2 ring-amber-700 bg-amber-50'
-          : 'hover:bg-slate-50'
+          ? 'ring-2 ring-brand-600 bg-brand-50'
+          : 'hover:bg-smoke-100'
       }`}
       onClick={() => onSelect(id)}
     >
@@ -48,9 +48,9 @@ export const AddressCard: React.FC<AddressCardProps> = ({
             value={id}
             checked={isSelected}
             onChange={() => onSelect(id)}
-            className="accent-amber-700"
+            className="accent-brand-600"
           />
-          <Text variant="body" className="mt-2 text-slate-900">
+          <Text variant="body" className="mt-2 text-charcoal-900">
             {address}
           </Text>
         </div>
@@ -63,7 +63,7 @@ export const AddressCard: React.FC<AddressCardProps> = ({
                   e.stopPropagation()
                   onEdit(id)
                 }}
-                className="text-sm text-amber-700 hover:underline"
+                className="text-sm text-brand-600 hover:underline"
               >
                 Editar
               </button>

@@ -20,11 +20,11 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
       <select
         ref={ref}
         className={clsx(
-          'w-full px-4 py-3 rounded-lg border-2 font-sans appearance-none transition-colors focus-visible:outline-none bg-white',
+          'w-full px-0 py-2 border-0 border-b font-sans appearance-none transition-colors duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-none bg-transparent text-sm',
           error
-            ? 'border-red-600 bg-red-50 focus-visible:border-red-700 focus-visible:ring-2 focus-visible:ring-red-200'
-            : 'border-slate-300 focus-visible:border-amber-700 focus-visible:ring-2 focus-visible:ring-amber-200',
-          'disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed',
+            ? 'border-red-600 text-red-600 focus-visible:border-red-700'
+            : 'border-smoke-200 text-charcoal-900 focus-visible:border-charcoal-900',
+          'disabled:bg-transparent disabled:text-smoke-400 disabled:cursor-not-allowed',
           'cursor-pointer',
           className
         )}
