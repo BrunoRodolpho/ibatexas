@@ -43,7 +43,6 @@ export default function MenuManagement() {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const columns: ColumnDef<AdminProductRow, any>[] = [
     col.accessor('imageUrl', {
       header: '',
