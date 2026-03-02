@@ -5,7 +5,7 @@ import { ProductCarousel } from '@/components/organisms/ProductCarousel'
 import { useProducts } from '@/hooks/api'
 import { useUIStore } from '@/stores/useUIStore'
 import { useCartStore } from '@/stores/useCartStore'
-import { Button } from '@/components/atoms'
+import { Button, HeroVideo } from '@/components/atoms'
 import type { ProductDTO } from '@ibatexas/types'
 
 export default function Home() {
@@ -42,16 +42,11 @@ export default function Home() {
 
         {/* Video — positioned as backdrop on the left (desktop only) */}
         <div className="hidden lg:block absolute top-4 bottom-0 left-[2%] w-[52%] pointer-events-none">
-          <video
-            autoPlay
-            muted
-            playsInline
-            preload="none"
-            className="h-full w-full object-contain object-left brightness-[0.98] sepia-[0.03]"
-            aria-hidden="true"
-          >
-            <source src="/videos/pitmaster-hero.mp4" type="video/mp4" />
-          </video>
+          <HeroVideo
+            src="/videos/pitmaster-hero.mp4"
+            poster="/videos/pitmaster-hero-placeholder.png"
+            className="h-full w-full"
+          />
         </div>
 
         {/* White gradient — fades video into white on the right */}
@@ -63,16 +58,11 @@ export default function Home() {
           {/* Mobile — video above text */}
           <div className="lg:hidden flex justify-center mb-2">
             <div className="w-[100%] sm:w-[85%]">
-              <video
-                autoPlay
-                muted
-                playsInline
-                preload="none"
-                className="w-full h-auto brightness-[0.98] sepia-[0.03]"
-                aria-hidden="true"
-              >
-                <source src="/videos/pitmaster-hero.mp4" type="video/mp4" />
-              </video>
+              <HeroVideo
+                src="/videos/pitmaster-hero.mp4"
+                poster="/videos/pitmaster-hero-placeholder.png"
+                className="w-full"
+              />
             </div>
           </div>
 
