@@ -42,6 +42,7 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
               imageUrl={product.imageUrl}
               images={product.images}
               price={product.price}
+              variantCount={product.variants?.length}
               rating={product.rating}
               tags={product.tags}
             />
@@ -65,6 +66,7 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
             imageUrl={product.imageUrl}
             images={product.images}
             price={product.price}
+            variantCount={product.variants?.length}
             rating={product.rating}
             tags={product.tags}
           />
@@ -79,6 +81,7 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
             imageUrl={product.imageUrl}
             images={product.images}
             price={product.price}
+            variantCount={product.variants?.length}
             rating={product.rating}
             tags={product.tags}
           />

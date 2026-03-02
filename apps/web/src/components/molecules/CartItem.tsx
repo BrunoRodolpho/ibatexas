@@ -9,6 +9,7 @@ interface CartItemProps {
   imageUrl?: string
   quantity: number
   specialInstructions?: string
+  variantTitle?: string
   onQuantityChange: (quantity: number) => void
   onRemove: () => void
 }
@@ -20,6 +21,7 @@ export const CartItem: React.FC<CartItemProps> = ({
   imageUrl,
   quantity,
   specialInstructions,
+  variantTitle,
   onQuantityChange,
   onRemove,
 }) => {
@@ -50,6 +52,11 @@ export const CartItem: React.FC<CartItemProps> = ({
 
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold text-charcoal-900 truncate">{title}</h3>
+          {variantTitle && (
+            <Text variant="small" textColor="secondary" className="text-smoke-400">
+              {variantTitle}
+            </Text>
+          )}
           <Text variant="small" textColor="secondary">
             {formattedPrice} cada
           </Text>

@@ -11,6 +11,9 @@ import type { ExecArgs } from "@medusajs/framework/types"
 import type {
   IProductModuleService,
   IPricingModuleService,
+  IRegionModuleService,
+  ISalesChannelModuleService,
+  IStoreModuleService,
 } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { CATEGORIES, SEED_PRODUCTS } from "./seed-data"
@@ -21,8 +24,39 @@ export default async function ({ container }: ExecArgs) {
   const pricingModule =
     container.resolve<IPricingModuleService>(Modules.PRICING)
   const remoteLink = container.resolve(ContainerRegistrationKeys.LINK)
+  const storeModule =
+    container.resolve<IStoreModuleService>(Modules.STORE)
+  const regionModule =
+    container.resolve<IRegionModuleService>(Modules.REGION)
+  const salesChannelModule =
+    container.resolve<ISalesChannelModuleService>(Modules.SALES_CHANNEL)
 
   console.log("🌱 Starting seed...")
+
+  // ── 0. Store, Sales Channel & Region ──────────────────────────────────
+  // These are required for the admin panel to show price editing fields.
+
+  console.log("  Creating store, sales channel & region...")
+
+  const [salesChannel] = await salesChannelModule.createSalesChannels([
+    { name: "Loja Online", description: "Canal de vendas padrão", is_disabled: false },
+  ])
+
+  const store = await storeModule.createStores({
+    name: "IbateXas Smoked House",
+    supported_currencies: [
+      { currency_code: "brl", is_default: true },
+    ],
+    default_sales_channel_id: salesChannel.id,
+  })
+
+  await regionModule.createRegions({
+    name: "Brasil",
+    currency_code: "brl",
+    countries: ["br"],
+  })
+
+  console.log(`  ✓ Store "${store.name}", sales channel & region created`)
 
   // ── 1. Create categories ─────────────────────────────────────────────────
 
@@ -114,6 +148,14 @@ export default async function ({ container }: ExecArgs) {
 
     const createdProduct = created[0]
 
+    // Link product → sales channel via Remote Link
+    await remoteLink.create([
+      {
+        [Modules.PRODUCT]: { product_id: createdProduct.id },
+        [Modules.SALES_CHANNEL]: { sales_channel_id: salesChannel.id },
+      },
+    ])
+
     for (const variant of createdProduct.variants ?? []) {
       const seedVariant = product.variants.find((v) => v.title === variant.title)
       if (seedVariant) {
@@ -122,16 +164,18 @@ export default async function ({ container }: ExecArgs) {
     }
   }
 
-  console.log(`  ✓ ${SEED_PRODUCTS.length} products created`)
+  console.log(`  ✓ ${SEED_PRODUCTS.length} products created & linked to sales channel`)
 
   // ── 3. Create price sets and link to variants via Remote Link ─────────────
 
   console.log("  Creating prices...")
 
   for (const { variantId, amount } of variantPrices) {
+    // Medusa v2 stores amount in main currency unit (reais), not centavos.
+    // Our seed data uses centavos (CLAUDE.md convention), so divide by 100.
     const [priceSet] = await pricingModule.createPriceSets([
       {
-        prices: [{ amount, currency_code: "brl" }],
+        prices: [{ amount: amount / 100, currency_code: "brl" }],
       },
     ])
 
@@ -147,8 +191,13 @@ export default async function ({ container }: ExecArgs) {
   console.log(`  ✓ ${variantPrices.length} prices linked`)
 
   console.log("\n✅ Seed complete!")
+  console.log(`   Store      : ${store.name}`)
+  console.log(`   Currency   : BRL (default)`)
+  console.log(`   Region     : Brasil`)
+  console.log(`   Sales Ch.  : ${salesChannel.name}`)
   console.log(`   Categories : ${CATEGORIES.length}`)
   console.log(`   Products   : ${SEED_PRODUCTS.length}`)
   console.log(`   Variants   : ${variantPrices.length}`)
   console.log("\n   Verify at http://localhost:9000/app → Products")
+  console.log("   Edit prices at: Product → Variants → Pricing")
 }

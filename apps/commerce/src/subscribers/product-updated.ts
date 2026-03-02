@@ -24,7 +24,8 @@ export default async function productUpdatedHandler({
       fields: [
         "*",
         "variants.*",
-        "variants.prices.*",
+        "variants.price_set.*",
+        "variants.price_set.prices.*",
         "tags.*",
         "categories.*",
         "images.*",

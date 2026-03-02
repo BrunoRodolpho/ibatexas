@@ -33,6 +33,7 @@ export interface ProductVariant {
   id: string
   title: string | null
   sku: string | null
+  price: number // integer centavos (e.g., 8900 = R$89.00)
 }
 
 export interface ProductDTO {
