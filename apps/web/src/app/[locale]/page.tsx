@@ -1,11 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Link } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
-import { ProductGrid } from '@/components/organisms/ProductGrid'
-import { CategoryCarousel } from '@/components/molecules/CategoryCarousel'
-import { useProducts, useCategories } from '@/hooks/api'
+import { ProductCarousel } from '@/components/organisms/ProductCarousel'
+import { useProducts } from '@/hooks/api'
 import { useUIStore } from '@/stores/useUIStore'
 import { useCartStore } from '@/stores/useCartStore'
 import { Button } from '@/components/atoms'
@@ -18,19 +15,6 @@ export default function Home() {
   const addItem = useCartStore((s) => s.addItem)
 
   const { data: productsData, loading: productsLoading } = useProducts(undefined, undefined, 12)
-  const { data: apiCategories, loading: categoriesLoading } = useCategories()
-
-  // Fallback categories matching seed data — shown when API is unavailable
-  const FALLBACK_CATEGORIES = [
-    { id: 'carnes-defumadas', name: 'Carnes Defumadas', handle: 'carnes-defumadas' },
-    { id: 'acompanhamentos', name: 'Acompanhamentos', handle: 'acompanhamentos' },
-    { id: 'sanduiches', name: 'Sanduíches & Combos', handle: 'sanduiches' },
-    { id: 'sobremesas', name: 'Sobremesas', handle: 'sobremesas' },
-    { id: 'bebidas', name: 'Bebidas', handle: 'bebidas' },
-    { id: 'congelados', name: 'Congelados', handle: 'congelados' },
-  ]
-
-  const categories = (apiCategories as any[])?.length ? apiCategories as any[] : FALLBACK_CATEGORIES
 
   const topProducts = productsData?.products ?? []
 
@@ -48,19 +32,6 @@ export default function Home() {
     { value: t('home.stats_deliveries_value'), label: t('home.stats_deliveries_label') },
     { value: t('home.stats_rating_value'), label: t('home.stats_rating_label') },
   ]
-
-  // Show category nav only after scrolling past the hero
-  const [pastHero, setPastHero] = useState(false)
-  useEffect(() => {
-    const hero = document.querySelector('[data-hero]')
-    if (!hero) return
-    const obs = new IntersectionObserver(
-      ([entry]) => setPastHero(!entry.isIntersecting),
-      { threshold: 0 }
-    )
-    obs.observe(hero)
-    return () => obs.disconnect()
-  }, [])
 
   return (
     <>
@@ -122,59 +93,32 @@ export default function Home() {
       </section>
 
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 2 — Typographic category nav (no pills)
-          ═══════════════════════════════════════════════════════════════ */}
-      <nav className={`sticky top-[56px] z-20 border-b border-smoke-200 bg-smoke-50/95 backdrop-blur-sm transition-all duration-500 ease-luxury ${pastHero ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'}`}>
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6">
-          <div className="flex items-center gap-6 py-3 overflow-x-auto scrollbar-hide">
-            {categoriesLoading ? (
-              <>
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="flex-shrink-0 h-4 w-16 rounded-sm skeleton" />
-                ))}
-              </>
-            ) : (
-              <CategoryCarousel categories={categories} />
-            )}
-          </div>
-        </div>
-      </nav>
-
-      {/* ═══════════════════════════════════════════════════════════════
-          SECTION 3 — Curated product grid (editorial spacing)
+          SECTION 2 — Bold statement + infinite product carousel
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-smoke-50">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8 lg:py-16">
-          {/* Section header */}
-          <div className="flex items-end justify-between mb-12">
-            <div>
-              <h2 className="font-display text-display-sm font-semibold text-charcoal-900 tracking-display">
-                {t('home.our_menu')}
-              </h2>
-              <p className="mt-2 text-sm text-smoke-400 tracking-wide">
-                {t('home.our_menu_subtitle')}
-              </p>
-            </div>
-            <Link
-              href="/search"
-              className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
-            >
-              {t('common.view_all')} →
-            </Link>
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 pt-8 lg:pt-16 pb-4">
+          {/* Section header — bold statement */}
+          <div className="max-w-2xl">
+            <h2 className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 tracking-display leading-tight">
+              {t('home.our_menu')}
+            </h2>
+            <p className="mt-4 text-sm sm:text-base text-smoke-400 leading-relaxed tracking-wide">
+              {t('home.our_menu_subtitle')}
+            </p>
           </div>
+        </div>
 
-          {/* Grid */}
-          <ProductGrid
+        {/* Carousel — full-bleed, hidden on small phones */}
+        <div className="hidden sm:block pb-8 lg:pb-16">
+          <ProductCarousel
             products={topProducts}
-            columns={4}
             isLoading={productsLoading}
-            onAddToCart={handleAddToCart}
           />
         </div>
       </section>
 
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 4 — Stats band (textured dark, editorial numbers)
+          SECTION 3 — Stats band (textured dark, editorial numbers)
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-charcoal-900 grain-overlay">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-16 lg:py-22">
@@ -193,7 +137,7 @@ export default function Home() {
       </section>
 
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 5 — Closing CTA (quiet authority)
+          SECTION 4 — Closing CTA (quiet authority)
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-smoke-100">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-30">
