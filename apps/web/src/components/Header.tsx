@@ -18,7 +18,7 @@ export function Header() {
             {/* Logo */}
             <Link href="/" className="flex items-center">
               <span className="font-display text-lg font-bold tracking-wide text-charcoal-900">
-                IbateXas
+                Ibate<span className="text-brand-500">X</span>as
               </span>
             </Link>
 
