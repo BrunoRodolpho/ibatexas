@@ -71,7 +71,7 @@ export function ChatWidget() {
       {!isOpen && (
         <button
           onClick={() => setChat(true)}
-          className={`fixed bottom-6 right-6 z-40 flex items-center gap-2.5 rounded-lg bg-charcoal-900 px-4 py-3 text-white shadow-lg transition-all duration-500 ease-luxury hover:bg-charcoal-700 ${
+          className={`fixed bottom-6 max-sm:bottom-[4.5rem] right-6 z-40 flex items-center gap-2.5 rounded-lg bg-charcoal-900 px-4 py-3 text-white shadow-lg transition-all duration-500 ease-luxury hover:bg-charcoal-700 ${
             fabVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
           }`}
           aria-label={t("chat.title")}
