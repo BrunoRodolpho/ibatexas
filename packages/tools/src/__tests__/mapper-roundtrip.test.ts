@@ -32,7 +32,7 @@ describe("Product Mapper Roundtrip", () => {
       tags: raw.tags.map((t: { value: string }) => t.value),
       availabilityWindow: raw.metadata.availabilityWindow as AvailabilityWindow,
       allergens: raw.metadata.allergens as string[],
-      variants: raw.variants.map((v: { id: string; title: string; sku: string }) => ({ id: v.id, title: v.title, sku: v.sku })),
+      variants: raw.variants.map((v: { id: string; title: string; sku: string }) => ({ id: v.id, title: v.title, sku: v.sku, price: 0 })),
       productType: raw.metadata.productType as ProductType,
       createdAt: raw.created_at,
       updatedAt: raw.updated_at,

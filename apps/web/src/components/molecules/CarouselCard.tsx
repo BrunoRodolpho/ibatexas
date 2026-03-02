@@ -10,6 +10,7 @@ interface CarouselCardProps {
   imageUrl?: string | null
   images?: string[]
   price: number
+  variantCount?: number
   rating?: number
   tags?: string[]
 }
@@ -21,6 +22,7 @@ export const CarouselCard = ({
   imageUrl,
   images,
   price,
+  variantCount,
   rating,
   tags,
 }: CarouselCardProps) => {
@@ -28,6 +30,7 @@ export const CarouselCard = ({
     style: 'currency',
     currency: 'BRL',
   })
+  const hasMultipleVariants = (variantCount ?? 0) > 1
 
   const displayImage = imageUrl || images?.[0] || null
   const linkHref = `/products/${id}`
@@ -81,6 +84,9 @@ export const CarouselCard = ({
             </p>
           )}
           <p className="mt-[3%] text-[clamp(10px,3vw,12px)] font-medium text-brand-200 tabular-nums">
+            {hasMultipleVariants && (
+              <span className="text-brand-300/70 mr-1">a partir de</span>
+            )}
             {priceFormatted}
           </p>
         </div>

@@ -41,6 +41,9 @@ export const SizeSelector = ({
         const isSelected = variant.id === selectedVariant
         const isOutOfStock = disabled // Simplified - could check individual variant stock
         const label = getSizeLabel(variant.title)
+        const priceLabel = variant.price
+          ? ` — ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(variant.price / 100)}`
+          : ''
         
         return (
           <Button
@@ -55,7 +58,7 @@ export const SizeSelector = ({
               isOutOfStock && 'opacity-50 cursor-not-allowed'
             )}
           >
-            {label}
+            {label}{priceLabel}
           </Button>
         )
       })}

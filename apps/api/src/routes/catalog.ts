@@ -8,6 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { Channel } from "@ibatexas/types";
+import type { ProductVariant } from "@ibatexas/types";
 import { searchProducts, getProductDetails } from "@ibatexas/tools";
 
 const ProductsQuery = z.object({
@@ -90,6 +91,56 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
         return reply
           .status(404)
           .send({ statusCode: 404, error: "Not Found", message: "Produto não encontrado." });
+      }
+
+      // Enrich with variant data from Medusa only if Typesense didn't provide them
+      // (Typesense now stores variants via variantsJson field; this is a fallback)
+      // Fallback: enrich from Medusa if Typesense has no variants or all prices are zero
+      const needsEnrichment =
+        !product.variants ||
+        product.variants.length === 0 ||
+        product.variants.every((v) => v.price === 0);
+      if (needsEnrichment) {
+        try {
+          const medusaUrl = process.env.MEDUSA_URL ?? "http://localhost:9000";
+          const apiKey = process.env.MEDUSA_API_KEY ?? "";
+          // Medusa v2 uses ?fields with + prefix for additional relations
+          const res = await fetch(
+            `${medusaUrl}/admin/products/${id}?fields=*,+variants,+variants.price_set,+variants.price_set.prices`,
+            {
+              headers: {
+                "Content-Type": "application/json",
+                "x-medusa-access-token": apiKey,
+              },
+            },
+          );
+          if (res.ok) {
+            const data = (await res.json()) as {
+              product: {
+                variants: {
+                  id: string;
+                  title: string;
+                  sku: string | null;
+                  price_set?: {
+                    prices?: { amount: number; currency_code: string }[];
+                  };
+                }[];
+              };
+            };
+            const medusaVariants = data.product?.variants ?? [];
+            product.variants = medusaVariants.map((v): ProductVariant => ({
+              id: v.id,
+              title: v.title,
+              sku: v.sku ?? null,
+              // Medusa v2 stores in reais — convert to centavos
+              price: Math.round(
+                (v.price_set?.prices?.find((pr) => pr.currency_code === "brl")?.amount ?? 0) * 100
+              ),
+            }));
+          }
+        } catch (err) {
+          server.log.warn(err, `[catalog] Failed to enrich variants for product ${id}`);
+        }
       }
 
       return reply.send(product);

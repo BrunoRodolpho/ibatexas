@@ -10,17 +10,19 @@ interface ProductCardProps {
   imageUrl?: string | null
   images?: string[]
   price: number
+  variantCount?: number
   rating?: number
   tags?: string[]
   href?: string
   onAddToCart?: () => void
 }
 
-export const ProductCard = ({ id, title, subtitle, imageUrl, images, price, rating, tags, href }: ProductCardProps) => {
+export const ProductCard = ({ id, title, subtitle, imageUrl, images, price, variantCount, rating, tags, href }: ProductCardProps) => {
   const priceFormatted = (price / 100).toLocaleString('pt-BR', {
     style: 'currency',
     currency: 'BRL',
   })
+  const hasMultipleVariants = (variantCount ?? 0) > 1
 
   // Prefer thumbnail, fall back to first gallery image
   const displayImage = imageUrl || images?.[0] || null
@@ -57,7 +59,12 @@ export const ProductCard = ({ id, title, subtitle, imageUrl, images, price, rati
           {subtitle && (
             <p className="mt-0.5 text-xs text-smoke-400 line-clamp-1">{subtitle}</p>
           )}
-          <p className="mt-1.5 text-sm text-smoke-400 tabular-nums">{priceFormatted}</p>
+          <p className="mt-1.5 text-sm text-smoke-400 tabular-nums">
+            {hasMultipleVariants && (
+              <span className="text-xs text-smoke-300 mr-1">a partir de</span>
+            )}
+            {priceFormatted}
+          </p>
         </div>
       </div>
     </Link>

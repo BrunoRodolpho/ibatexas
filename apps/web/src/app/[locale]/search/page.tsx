@@ -266,7 +266,8 @@ export default function SearchPage() {
           onAddToCart={(productId) => {
             const product = products.find((p) => p.id === productId)
             if (product) {
-              addItem(product as ProductDTO, 1)
+              const defaultVariant = product.variants?.[0]
+              addItem(product as ProductDTO, 1, undefined, defaultVariant)
               addToast(t('product.added'), 'success')
             }
           }}

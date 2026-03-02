@@ -21,7 +21,8 @@ export default function Home() {
   const handleAddToCart = (productId: string) => {
     const product = topProducts.find((p) => p.id === productId)
     if (product) {
-      addItem(product as ProductDTO, 1)
+      const defaultVariant = product.variants?.[0]
+      addItem(product as ProductDTO, 1, undefined, defaultVariant)
       addToast(t('product.added'), 'success')
     }
   }

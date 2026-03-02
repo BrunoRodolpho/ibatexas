@@ -3,12 +3,15 @@
 import { ProductCard } from '../molecules/ProductCard'
 import { Text } from '../atoms'
 
+import type { ProductVariant } from '@ibatexas/types'
+
 interface Product {
   id: string
   title: string
   imageUrl?: string | null
   images?: string[]
   price: number
+  variants?: ProductVariant[]
   rating?: number
   tags?: string[]
 }
@@ -74,6 +77,7 @@ export const ProductGrid = ({
         <ProductCard
           key={product.id}
           {...product}
+          variantCount={product.variants?.length}
           href={getProductHref?.(product)}
           onAddToCart={() => onAddToCart?.(product.id)}
         />

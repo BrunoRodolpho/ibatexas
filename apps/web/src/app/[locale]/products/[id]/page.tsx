@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from "next-intl"
 import { useProductDetail } from "@/hooks/api"
 import { useCartStore, useUIStore } from "@/stores"
 import { MediaGallery } from "@/components/molecules/MediaGallery"
+import type { ProductVariant } from "@ibatexas/types"
 
 export default function ProductPage({ params }: { params: { id: string } }) {
   const t = useTranslations()
@@ -17,10 +18,25 @@ export default function ProductPage({ params }: { params: { id: string } }) {
   const addItem = useCartStore((s) => s.addItem)
   const { addToast } = useUIStore()
 
+  const variants = useMemo(() => product?.variants || [], [product?.variants])
+
+  // Resolve the selected variant object (auto-select first if none selected)
+  const activeVariant: ProductVariant | undefined = useMemo(() => {
+    if (selectedVariant) return variants.find((v: ProductVariant) => v.id === selectedVariant)
+    return variants[0]
+  }, [selectedVariant, variants])
+
+  // Display the active variant's price, falling back to product base price
+  const displayPrice = activeVariant?.price ?? product?.price ?? 0
+  const price = (displayPrice / 100).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  })
+
   const handleAddToCart = () => {
     if (!product) return
 
-    addItem(product, quantity, specialInstructions || undefined)
+    addItem(product, quantity, specialInstructions || undefined, activeVariant)
 
     // Reset form
     setQuantity(1)
@@ -57,13 +73,6 @@ export default function ProductPage({ params }: { params: { id: string } }) {
       </div>
     )
   }
-
-  const price = (product.price / 100).toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  })
-
-  const variants = product.variants || []
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -153,10 +162,18 @@ export default function ProductPage({ params }: { params: { id: string } }) {
                 <label className="block text-sm font-medium text-charcoal-900">
                   {t("product.quantity")}
                 </label>
-                <div className="mt-2 flex items-center gap-2">
+                <div className="mt-2 flex items-center border rounded-lg">
                   <button
                     onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                    className="rounded-sm border border-smoke-200 px-3 py-2 text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
+                    disabled={quantity <= 1}
+                    className="rounded-l-lg border-r border-smoke-200 px-3 py-2 text-charcoal-700 hover:bg-smoke-100 transition-all duration-500 disabled:opacity-40"
+                  >
+                    -
+                  </button>
+                  <span className="px-4 py-2 min-w-[3rem] text-center">{quantity}</span>
+                  <button
+                    onClick={() => setQuantity(quantity + 1)}
+                    className="rounded-r-lg border-l border-smoke-200 px-3 py-2 text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
                   >
                     +
                   </button>

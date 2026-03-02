@@ -56,7 +56,7 @@ export default function ProductPage({ params }: ProductPageProps) {
 
     setIsAdding(true)
     try {
-      addToCart(product, quantity)
+      addToCart(product, quantity, undefined, selectedVariant)
       // Could show success toast here
     } catch (error) {
       console.error('Failed to add to cart:', error)
@@ -115,13 +115,13 @@ export default function ProductPage({ params }: ProductPageProps) {
             </div>
           </div>
 
-          {/* Price */}
+          {/* Price — show selected variant price when available */}
           <div className="space-y-2">
             <Text variant="h2" weight="bold" className="text-charcoal-900">
               {new Intl.NumberFormat('pt-BR', {
                 style: 'currency',
                 currency: 'BRL'
-              }).format(product.price / 100)}
+              }).format((selectedVariant?.price || product.price) / 100)}
             </Text>
           </div>
 

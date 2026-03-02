@@ -47,7 +47,7 @@ const MOCK_PRODUCT: ProductDTO = {
   tags: ["popular"],
   availabilityWindow: AvailabilityWindow.JANTAR,
   allergens: [],
-  variants: [{ id: "var_01", title: "Individual", sku: "CST-IND" }],
+  variants: [{ id: "var_01", title: "Individual", sku: "CST-IND", price: 8900 }],
   productType: ProductType.FOOD,
   createdAt: "2024-01-01T00:00:00Z",
   updatedAt: "2024-01-01T00:00:00Z",

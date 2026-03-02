@@ -24,9 +24,11 @@ function makeMedusa(overrides: Partial<MedusaProductInput> = {}): MedusaProductI
     tag_ids: ["popular", "sem_gluten"],
     variants: [
       {
+        id: "variant_01",
         title: "Porção família (1,2kg)",
         sku: "COST-FAM-01",
-        prices: [{ amount: 18900, currency_code: "BRL" }],
+        // Medusa v2 stores in reais (main currency unit)
+        prices: [{ amount: 189, currency_code: "BRL" }],
       },
     ],
     metadata: {
@@ -62,6 +64,7 @@ function makeTypesenseDoc(overrides: Partial<TypesenseProductDoc> = {}): Typesen
     createdAt: "2025-01-15T10:00:00Z",
     updatedAt: "2025-01-16T12:00:00Z",
     createdAtTimestamp: new Date("2025-01-15T10:00:00Z").getTime(),
+    variantsJson: JSON.stringify([{ id: "variant_01", title: "Porção família (1,2kg)", sku: "COST-FAM-01", price: 18900 }]),
     ...overrides,
   }
 }
@@ -181,6 +184,95 @@ describe("medusaToTypesenseDoc", () => {
     const doc = medusaToTypesenseDoc(makeMedusa({ metadata: {} }))
     expect(doc.inStock).toBe(true)
   })
+
+  it("serializes variants to variantsJson", () => {
+    const doc = medusaToTypesenseDoc(makeMedusa())
+    expect(doc.variantsJson).toBeDefined()
+    const variants = JSON.parse(doc.variantsJson!)
+    expect(variants).toHaveLength(1)
+    expect(variants[0]).toEqual({
+      id: "variant_01",
+      title: "Porção família (1,2kg)",
+      sku: "COST-FAM-01",
+      price: 18900,
+    })
+  })
+
+  it("uses lowest variant price when multiple variants exist", () => {
+    const doc = medusaToTypesenseDoc(
+      makeMedusa({
+        variants: [
+          { id: "v1", title: "500g (individual)", sku: null, prices: [{ amount: 39, currency_code: "brl" }] },
+          { id: "v2", title: "1kg (família)", sku: null, prices: [{ amount: 69, currency_code: "brl" }] },
+        ],
+      }),
+    )
+    expect(doc.price).toBe(3900) // lowest variant → 39 reais = 3900 centavos
+    const variants = JSON.parse(doc.variantsJson!)
+    expect(variants).toHaveLength(2)
+    expect(variants[0].price).toBe(3900)
+    expect(variants[1].price).toBe(6900)
+  })
+
+  it("sets variantsJson undefined when no variants", () => {
+    const doc = medusaToTypesenseDoc(makeMedusa({ variants: [] }))
+    expect(doc.variantsJson).toBeUndefined()
+  })
+
+  it("extracts prices from variant.price_set.prices (query.graph path)", () => {
+    const doc = medusaToTypesenseDoc(
+      makeMedusa({
+        variants: [
+          {
+            id: "v1",
+            title: "500g",
+            sku: "SKU-500",
+            // No direct `prices` — only price_set (as returned by query.graph)
+            price_set: {
+              id: "pset_01",
+              prices: [{ amount: 45.5, currency_code: "brl" }],
+            },
+          },
+          {
+            id: "v2",
+            title: "1kg",
+            sku: "SKU-1K",
+            price_set: {
+              id: "pset_02",
+              prices: [{ amount: 82, currency_code: "brl" }],
+            },
+          },
+        ],
+      }),
+    )
+    // Product-level price = lowest variant = 45.5 reais = 4550 centavos
+    expect(doc.price).toBe(4550)
+    const variants = JSON.parse(doc.variantsJson!)
+    expect(variants).toHaveLength(2)
+    expect(variants[0]).toEqual({ id: "v1", title: "500g", sku: "SKU-500", price: 4550 })
+    expect(variants[1]).toEqual({ id: "v2", title: "1kg", sku: "SKU-1K", price: 8200 })
+  })
+
+  it("prefers variant.prices over variant.price_set.prices", () => {
+    const doc = medusaToTypesenseDoc(
+      makeMedusa({
+        variants: [
+          {
+            id: "v1",
+            title: "combo",
+            sku: null,
+            // Both present — direct prices should win
+            prices: [{ amount: 50, currency_code: "brl" }],
+            price_set: {
+              id: "pset_01",
+              prices: [{ amount: 99, currency_code: "brl" }],
+            },
+          },
+        ],
+      }),
+    )
+    expect(doc.price).toBe(5000) // 50 reais from direct prices, not 99
+  })
 })
 
 // ── typesenseDocToDTO ─────────────────────────────────────────────────────────
@@ -193,7 +285,7 @@ describe("typesenseDocToDTO", () => {
     expect(dto.price).toBe(18900)
     expect(dto.tags).toEqual(["popular", "sem_gluten"])
     expect(dto.allergens).toEqual([])
-    expect(dto.variants).toEqual([]) // always empty from Typesense
+    expect(dto.variants).toEqual([{ id: "variant_01", title: "Porção família (1,2kg)", sku: "COST-FAM-01", price: 18900 }])
     expect(dto.productType).toBe("food")
     expect(dto.inStock).toBe(true)
   })
@@ -244,5 +336,29 @@ describe("typesenseDocToDTO", () => {
   it("defaults images to [] when missing", () => {
     const dto = typesenseDocToDTO(makeTypesenseDoc({ images: undefined }))
     expect(dto.images).toEqual([])
+  })
+
+  it("parses variantsJson into variants array", () => {
+    const dto = typesenseDocToDTO(
+      makeTypesenseDoc({
+        variantsJson: JSON.stringify([
+          { id: "v1", title: "500g", sku: "SKU-1", price: 3900 },
+          { id: "v2", title: "1kg", sku: "SKU-2", price: 6900 },
+        ]),
+      }),
+    )
+    expect(dto.variants).toHaveLength(2)
+    expect(dto.variants[0]).toEqual({ id: "v1", title: "500g", sku: "SKU-1", price: 3900 })
+    expect(dto.variants[1]).toEqual({ id: "v2", title: "1kg", sku: "SKU-2", price: 6900 })
+  })
+
+  it("returns [] when variantsJson is missing", () => {
+    const dto = typesenseDocToDTO(makeTypesenseDoc({ variantsJson: undefined }))
+    expect(dto.variants).toEqual([])
+  })
+
+  it("returns [] when variantsJson is invalid JSON", () => {
+    const dto = typesenseDocToDTO(makeTypesenseDoc({ variantsJson: "not-json" }))
+    expect(dto.variants).toEqual([])
   })
 })

@@ -183,6 +183,15 @@ async function runReset(force = false) {
     stdio: "inherit",
   })
 
+  const adminEmail = process.env.MEDUSA_ADMIN_EMAIL ?? "admin@ibatexas.com.br"
+  const adminPassword = process.env.MEDUSA_ADMIN_PASSWORD ?? "IbateXas2024!"
+  step(`Creating admin user (${adminEmail})…`)
+  await execa(
+    "npx",
+    ["medusa", "user", "--email", adminEmail, "--password", adminPassword],
+    { cwd: `${ROOT}/apps/commerce`, stdio: "inherit" }
+  )
+
   step("Seeding Medusa products…")
   await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:seed"], {
     cwd: ROOT,
@@ -239,7 +248,7 @@ async function runReindex(fresh = false) {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const data = await medusaFetch(
-      `/admin/products?limit=${limit}&offset=${offset}&fields=*variants,*variants.prices,*tags,*categories,*images`,
+      `/admin/products?limit=${limit}&offset=${offset}&fields=*variants,*variants.price_set,*variants.price_set.prices,*tags,*categories,*images`,
       token
     )
     const products = (data.products as unknown[] | undefined) ?? []
