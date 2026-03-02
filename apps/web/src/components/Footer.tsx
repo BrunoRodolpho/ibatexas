@@ -91,7 +91,7 @@ export function Footer() {
       <div className="border-t border-smoke-200">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6">
           <p className="py-4 text-center text-[10px] uppercase tracking-editorial text-smoke-400">
-            &copy; {new Date().getFullYear()} IbateXas. {t("footer.all_rights")}
+            &copy; {new Date().getFullYear()} Ibate<span className="text-brand-500">X</span>as. {t("footer.all_rights")}
           </p>
         </div>
       </div>

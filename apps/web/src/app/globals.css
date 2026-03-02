@@ -61,6 +61,7 @@
       radial-gradient(ellipse 80% 50% at 50% -20%, rgba(232,93,4,0.08), transparent),
       radial-gradient(ellipse 60% 80% at 80% 50%, rgba(232,93,4,0.04), transparent);
   }
+
 }
 
 @layer utilities {
