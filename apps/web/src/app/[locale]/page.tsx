@@ -74,7 +74,6 @@ export default function Home() {
           <video
             autoPlay
             muted
-            loop
             playsInline
             preload="none"
             className="h-full w-full object-contain object-left brightness-[0.98] sepia-[0.03]"
@@ -96,7 +95,6 @@ export default function Home() {
               <video
                 autoPlay
                 muted
-                loop
                 playsInline
                 preload="none"
                 className="w-full h-auto brightness-[0.98] sepia-[0.03]"
