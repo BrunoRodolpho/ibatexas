@@ -27,6 +27,7 @@
     "@ibatexas/types": "workspace:*",
     "fastify": "^4.26.0",
     "redis": "^4.6.0",
+    "stripe": "^14.0.0",
     "twilio": "^5.0.0",
     "uuid": "^10.0.0",
     "zod": "^3.22.0"

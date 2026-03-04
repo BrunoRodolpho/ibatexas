@@ -71,6 +71,11 @@ ibx svc health nats        # detailed NATS check (version, connections, messages
 ibx svc health -s postgres # flag variant (same as positional arg)
 
 ibx svc status             # table of all services — address, status, latency
+
+ibx svc logs               # tail Docker compose logs for all infra services
+ibx svc logs postgres      # tail only Postgres logs
+ibx svc logs redis         # tail only Redis logs
+ibx svc logs -n 100        # show last 100 lines (default: 50)
 ```
 
 ### API — `ibx api`
@@ -98,9 +103,14 @@ ibx api chat "cardápio do almoço" --channel web  # specify channel (web | what
 
 ```bash
 ibx db migrate             # run pending Medusa migrations (Medusa must NOT be running)
+ibx db migrate:domain      # run Prisma migrations for ibx_domain schema
 ibx db seed                # seed products into Medusa (Medusa must be running)
+ibx db seed:domain         # seed domain tables (DeliveryZone, Table, TimeSlot)
 ibx db reset               # ⚠️  drop + migrate + reseed (destructive)
 ibx db reset --force       # skip confirmation prompt (for CI)
+ibx db reindex             # reindex Typesense from Medusa catalog
+ibx db reindex --fresh     # drop + recreate Typesense collection, then reindex
+ibx db status              # show migration status for both Medusa and domain schemas
 ```
 
 ### Config — `ibx env`
@@ -117,6 +127,20 @@ ibx env gen 64             # generate a 64-byte secret
 
 Generate secrets manually: `openssl rand -base64 32`
 
+### Intelligence — `ibx intel`
+
+```bash
+ibx intel copurchase-reset              # delete all co-purchase Redis sorted sets
+ibx intel copurchase-rebuild            # rebuild co-purchase sets from CustomerOrderItem history
+ibx intel copurchase-rebuild --reset    # delete existing keys, then rebuild
+ibx intel global-score-rebuild          # rebuild global product popularity sorted set
+ibx intel global-score-rebuild --reset  # delete + rebuild
+ibx intel scores-inspect                # show top products by global score
+ibx intel scores-inspect <productId>    # show co-purchase scores for a product
+ibx intel scores-inspect --top 20       # show top N results (default: 10)
+ibx intel cache-stats                   # Redis memory usage for intelligence keys
+```
+
 ### VCS — `ibx git`
 
 ```bash
@@ -128,15 +152,16 @@ ibx git log                # recent commits + open PR link
 
 ## Local URLs (when running)
 
-| Service | URL |
-|---------|-----|
-| Medusa API | http://localhost:9000 |
-| Medusa Admin | http://localhost:9000/app |
-| Web (Next.js) | http://localhost:3000 |
-| API (Fastify) | http://localhost:3001 |
-| API Swagger UI | http://localhost:3001/docs |
-| Typesense | http://localhost:8108 |
-| NATS Monitor | http://localhost:8222 |
+| Service         | URL                              |
+|-----------------|----------------------------------|
+| Medusa API      | http://localhost:9000           |
+| Medusa Admin    | http://localhost:9000/app       |
+| Web (Next.js)   | http://localhost:3000           |
+| API (Fastify)   | http://localhost:3001           |
+| API Swagger UI  | http://localhost:3001/api/docs  |
+| Typesense       | http://localhost:8108           |
+| NATS Monitor    | http://localhost:8222           |
+| PostHog         | http://localhost:POSTHOG_PORT   |
 
 **Admin credentials:** `REDACTED_EMAIL` / `REDACTED_PASSWORD`
 
@@ -146,11 +171,11 @@ ibx git log                # recent commits + open PR link
 
 `ibx dev` is service-aware. The registry lives in `packages/cli/src/services.ts`.
 
-| Service key | Step available | Default? |
-|-------------|---------------|----------|
-| `commerce`  | Step 1 ✅     | Yes      |
-| `api`       | Step 4 ✅     | No       |
-| `web`       | Step 5        | No       |
+| Service key | Available | Default? |
+|-------------|-----------|----------|
+| `commerce`  | ✅        | Yes      |
+| `api`       | ✅        | No       |
+| `web`       | ✅        | No       |
 
 > **Note:** The agent orchestrator (`runAgent`) is a library (`packages/llm-provider`) used by `apps/api` — it is not a separate service.
 

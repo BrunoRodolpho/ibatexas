@@ -72,12 +72,12 @@ describe("GET /api/products", () => {
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body) as {
-      products: ProductDTO[];
-      totalFound: number;
+      items: ProductDTO[];
+      total: number;
     };
-    expect(body.products).toHaveLength(1);
-    expect(body.products[0].title).toBe("Costela Defumada");
-    expect(body.totalFound).toBe(1);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0].title).toBe("Costela Defumada");
+    expect(body.total).toBe(1);
 
     expect(mockSearchProducts).toHaveBeenCalledWith(
       expect.objectContaining({ query: "costela" }),

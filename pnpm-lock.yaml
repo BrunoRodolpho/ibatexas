@@ -121,6 +121,9 @@ importers:
       redis:
         specifier: ^4.6.0
         version: 4.7.1
+      stripe:
+        specifier: ^14.0.0
+        version: 14.25.0
       twilio:
         specifier: ^5.0.0
         version: 5.12.2
@@ -247,6 +250,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@ibatexas/domain':
+        specifier: workspace:*
+        version: link:../domain
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../tools
@@ -356,6 +362,9 @@ importers:
       redis:
         specifier: ^4.6.0
         version: 4.7.1
+      stripe:
+        specifier: ^14.0.0
+        version: 14.25.0
       typesense:
         specifier: ^1.8.0
         version: 1.8.2(@babel/runtime@7.28.6)
@@ -15433,6 +15442,14 @@ packages:
     dependencies:
       js-tokens: 9.0.1
     dev: true
+
+  /stripe@14.25.0:
+    resolution: {integrity: sha512-wQS3GNMofCXwH8TSje8E1SE8zr6ODiGtHQgPtO95p9Mb4FhKC9jvXR2NUTpZ9ZINlckJcFidCmaTFV4P6vsb9g==}
+    engines: {node: '>=12.*'}
+    dependencies:
+      '@types/node': 20.19.33
+      qs: 6.15.0
+    dev: false
 
   /stripe@15.12.0:
     resolution: {integrity: sha512-slTbYS1WhRJXVB8YXU8fgHizkUrM9KJyrw4Dd8pLEwzKHYyQTIE46EePC2MVbSDZdE24o1GdNtzmJV4PrPpmJA==}

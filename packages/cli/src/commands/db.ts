@@ -290,6 +290,100 @@ async function runReindex(fresh = false) {
   console.log(chalk.green("\n  ✅  Reindex complete\n"))
 }
 
+async function runStatus() {
+  console.log(chalk.bold("\n  ibx db status\n"))
+
+  const step = (msg: string) =>
+    console.log(chalk.bold(`  ${chalk.cyan("●")} ${msg}\n`))
+
+  // ── Medusa migrations ─────────────────────────────────────────────────────
+  step("Medusa (MikroORM)")
+  try {
+    const result = await execa("pnpm", ["--filter", "@ibatexas/commerce", "exec", "medusa", "db:migrate", "--skip"], {
+      cwd: ROOT,
+      reject: false,
+    })
+    // If --skip is not supported, try just showing current state
+    if (result.exitCode === 0) {
+      console.log(chalk.green("    Migrations up to date"))
+    } else {
+      // Fallback: check if Medusa command responds at all
+      const healthCheck = await execa("pnpm", ["--filter", "@ibatexas/commerce", "exec", "medusa", "--version"], {
+        cwd: ROOT,
+        reject: false,
+      })
+      if (healthCheck.exitCode === 0) {
+        console.log(chalk.white(`    Medusa ${healthCheck.stdout.trim()}`))
+        console.log(chalk.yellow("    Run ibx db migrate to apply pending migrations"))
+      } else {
+        console.log(chalk.yellow("    Cannot determine migration status (Medusa CLI not available)"))
+      }
+    }
+  } catch {
+    console.log(chalk.yellow("    Cannot determine Medusa migration status"))
+  }
+
+  console.log()
+
+  // ── Domain (Prisma) migrations ────────────────────────────────────────────
+  step("Domain (Prisma — ibx_domain)")
+  try {
+    const result = await execa(
+      "pnpm", ["--filter", "@ibatexas/domain", "exec", "prisma", "migrate", "status"],
+      { cwd: ROOT, reject: false }
+    )
+    const output = (result.stdout + "\n" + result.stderr).trim()
+
+    // Parse Prisma migrate status output
+    const lines = output.split("\n").filter((l: string) => l.trim().length > 0)
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed.startsWith("Database schema is up to date")) {
+        console.log(chalk.green(`    ${trimmed}`))
+      } else if (trimmed.includes("migration") || trimmed.includes("Following")) {
+        console.log(chalk.white(`    ${trimmed}`))
+      } else if (trimmed.includes("not yet been applied")) {
+        console.log(chalk.yellow(`    ${trimmed}`))
+      } else if (trimmed.includes("applied")) {
+        console.log(chalk.green(`    ${trimmed}`))
+      }
+    }
+
+    if (result.exitCode !== 0 && lines.length === 0) {
+      console.log(chalk.yellow("    Pending migrations — run: ibx db migrate:domain"))
+    }
+  } catch {
+    console.log(chalk.yellow("    Cannot determine Prisma migration status"))
+  }
+
+  // ── Table counts ──────────────────────────────────────────────────────────
+  console.log()
+  step("Domain table counts")
+  try {
+    const { prisma } = await import("@ibatexas/domain")
+
+    const counts = await Promise.all([
+      prisma.customer.count().then((n: number) => ({ table: "Customer", count: n })),
+      prisma.table.count().then((n: number) => ({ table: "Table", count: n })),
+      prisma.timeSlot.count().then((n: number) => ({ table: "TimeSlot", count: n })),
+      prisma.reservation.count().then((n: number) => ({ table: "Reservation", count: n })),
+      prisma.deliveryZone.count().then((n: number) => ({ table: "DeliveryZone", count: n })),
+      prisma.customerOrderItem.count().then((n: number) => ({ table: "CustomerOrderItem", count: n })),
+    ])
+
+    for (const { table, count } of counts) {
+      const color = count > 0 ? chalk.green : chalk.yellow
+      console.log(`    ${table.padEnd(22)} ${color(String(count))}`)
+    }
+
+    await prisma.$disconnect()
+  } catch (err) {
+    console.log(chalk.yellow(`    Cannot query domain tables: ${(err as Error).message}`))
+  }
+
+  console.log()
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 export function registerDbCommands(program: Command) {
@@ -322,6 +416,10 @@ export function registerDbCommands(program: Command) {
     .description("Fetch all products from Medusa and reindex into Typesense")
     .option("--fresh", "Drop and recreate the Typesense collection before indexing")
     .action((opts: { fresh?: boolean }) => runReindex(opts.fresh))
+
+  db.command("status")
+    .description("Show migration status for Medusa and domain (Prisma) schemas")
+    .action(runStatus)
 
   return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runReset, runReindex }
 }

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { getApiBase } from '@/lib/api'
 
 interface SessionState {
   sessionId: string
@@ -13,7 +14,8 @@ interface SessionState {
   initSession: () => void
   login: (customerId: string, authToken: string) => void
   setCustomer: (customerId: string, userType: 'customer' | 'staff') => void
-  logout: () => void
+  logout: () => Promise<void>
+  hydrate: () => Promise<void>
   setChannel: (channel: 'web' | 'whatsapp') => void
   setPermissions: (permissions: string[]) => void
   isAuthenticated: () => boolean
@@ -57,13 +59,42 @@ export const useSessionStore = create<SessionState>()(
       setCustomer: (customerId, userType) =>
         set({ customerId, userType }),
 
-      logout: () =>
+      logout: async () => {
+        try {
+          await fetch(`${getApiBase()}/api/auth/logout`, {
+            method: 'POST',
+            credentials: 'include',
+          })
+        } catch {
+          // Swallow — clear local state regardless
+        }
         set({
           customerId: undefined,
           authToken: undefined,
           userType: 'guest',
           permissions: [],
-        }),
+        })
+      },
+
+      hydrate: async () => {
+        try {
+          const res = await fetch(`${getApiBase()}/api/auth/me`, {
+            credentials: 'include',
+          })
+          if (!res.ok) {
+            // Cookie expired or invalid — clear auth state
+            set({ customerId: undefined, authToken: undefined, userType: 'guest' })
+            return
+          }
+          const data = await res.json() as { id: string; userType?: 'customer' | 'staff' }
+          set({
+            customerId: data.id,
+            userType: data.userType ?? 'customer',
+          })
+        } catch {
+          // Network error — leave state unchanged
+        }
+      },
 
       setChannel: (channel) => set({ channel }),
       setPermissions: (permissions) => set({ permissions }),
@@ -88,10 +119,12 @@ export const useSessionStore = create<SessionState>()(
   )
 )
 
-// Initialize session on first load
+// Initialize session on first load and hydrate auth state from server cookie
 if (typeof window !== 'undefined') {
   const state = useSessionStore.getState()
   if (!state.sessionId) {
     state.initSession()
   }
+  // Hydrate from API to sync cookie-based auth with Zustand
+  void state.hydrate()
 }

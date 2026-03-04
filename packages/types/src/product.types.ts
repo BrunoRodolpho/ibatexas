@@ -54,6 +54,8 @@ export interface ProductDTO {
   preparationTimeMinutes?: number
   rating?: number // rolling average
   reviewCount?: number
+  servings?: number // how many persons a portion serves
+  compareAtPrice?: number // original price in centavos, before discount
   createdAt: string // ISO 8601
   updatedAt: string // ISO 8601
 }
@@ -75,6 +77,14 @@ export const SearchProductsInputSchema = z
     productType: z.enum(["food", "frozen", "merchandise"]).optional().describe("Filter by product type"),
     categoryHandle: z.string().optional().describe("Filter by category handle e.g. carnes-defumadas"),
     limit: z.number().int().min(1).max(20).optional(),
+    offset: z.number().int().min(0).optional().describe("Pagination offset for infinite scroll"),
+    sort: z
+      .enum(["relevance", "price_asc", "price_desc", "rating_desc", "newest"])
+      .optional()
+      .describe("Sort order for results"),
+    minPrice: z.number().int().min(0).optional().describe("Minimum price in centavos"),
+    maxPrice: z.number().int().min(0).optional().describe("Maximum price in centavos"),
+    minRating: z.number().min(0).max(5).optional().describe("Minimum average rating (0–5)"),
   })
   .refine((d) => d.query || (d.queries && d.queries.length > 0), {
     message: "Either query or queries must be provided",
@@ -90,6 +100,7 @@ export interface SearchProductsOutput {
   cachedAt?: string
   scores?: Record<string, number> // productId → Typesense relevance score; absent on cache hit
   noResultsReason?: "no_match" | "out_of_stock" | "allergen_filtered" | "not_available_now"
+  facetCounts?: Record<string, Array<{ value: string; count: number }>> // from Typesense facets
   queriesResults?: Array<{
     // present only when queries[] used
     query: string

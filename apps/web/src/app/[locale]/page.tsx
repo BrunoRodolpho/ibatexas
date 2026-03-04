@@ -5,7 +5,7 @@ import { ProductCarousel } from '@/components/organisms/ProductCarousel'
 import { useProducts } from '@/hooks/api'
 import { useUIStore } from '@/stores/useUIStore'
 import { useCartStore } from '@/stores/useCartStore'
-import { Button, HeroVideo } from '@/components/atoms'
+import { Button, HeroVideo, Heading, Text } from '@/components/atoms'
 import type { ProductDTO } from '@ibatexas/types'
 
 export default function Home() {
@@ -14,9 +14,9 @@ export default function Home() {
   const addToast = useUIStore((s) => s.addToast)
   const addItem = useCartStore((s) => s.addItem)
 
-  const { data: productsData, loading: productsLoading } = useProducts(undefined, undefined, 12)
+  const { data: productsData, loading: productsLoading } = useProducts({ limit: 12 })
 
-  const topProducts = productsData?.products ?? []
+  const topProducts = productsData?.items ?? []
 
   const handleAddToCart = (productId: string) => {
     const product = topProducts.find((p) => p.id === productId)
@@ -69,12 +69,12 @@ export default function Home() {
 
           {/* Text — centered on desktop, overlaps video edge */}
           <div className="text-center lg:text-left lg:ml-[46%] lg:max-w-[600px] animate-reveal">
-            <h1 className="font-display text-display-md sm:text-display-lg lg:text-display-xl font-bold text-brand-500 leading-[1.02] tracking-display">
+            <Heading as="h1" className="font-display text-display-md sm:text-display-lg lg:text-display-xl font-bold text-brand-500 leading-[1.02] tracking-display">
               {t('home.hero_title')}
-            </h1>
-            <p className="mt-4 lg:mt-6 font-display italic text-xl sm:text-2xl text-smoke-400 leading-relaxed mx-auto lg:mx-0">
+            </Heading>
+            <Text className="mt-4 lg:mt-6 font-display italic text-xl sm:text-2xl text-smoke-400 leading-relaxed mx-auto lg:mx-0">
               {t('home.hero_subtitle')}
-            </p>
+            </Text>
           </div>
 
         </div>
@@ -90,12 +90,12 @@ export default function Home() {
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 pt-8 lg:pt-16 pb-4">
           {/* Section header — bold statement */}
           <div className="max-w-2xl">
-            <h2 className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 tracking-display leading-tight">
+            <Heading as="h2" className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 tracking-display leading-tight">
               {t('home.our_menu')}
-            </h2>
-            <p className="mt-4 text-sm sm:text-base text-smoke-400 leading-relaxed tracking-wide">
+            </Heading>
+            <Text className="mt-4 text-sm sm:text-base text-smoke-400 leading-relaxed tracking-wide">
               {t('home.our_menu_subtitle')}
-            </p>
+            </Text>
           </div>
         </div>
 
@@ -133,12 +133,12 @@ export default function Home() {
       <section className="bg-smoke-100">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-30">
           <div className="max-w-xl mx-auto text-center">
-            <h2 className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 leading-tight tracking-display">
+            <Heading as="h2" className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 leading-tight tracking-display">
               {t('home.cta_title')}
-            </h2>
-            <p className="mt-4 text-sm text-smoke-400 leading-relaxed measure-reading mx-auto">
+            </Heading>
+            <Text className="mt-4 text-sm text-smoke-400 leading-relaxed measure-reading mx-auto">
               {t('home.cta_subtitle')}
-            </p>
+            </Text>
             <div className="mt-10">
               <Button variant="brand" size="lg" onClick={() => setChat(true)}>
                 {t('home.cta_button_ai')}

@@ -1,13 +1,14 @@
 // Redis-backed session store for conversation history.
 // Each session holds an ordered list of AgentMessage (user + assistant turns).
-// TTL: 48h for guests (Step 11 auth will upgrade customers to 30d).
+// TTL: 24h for authenticated customers, 48h for guests (Step 11 auth upgrade).
 //
 // Uses Redis list (RPUSH + LTRIM) for atomic append, avoiding read-modify-write races.
 
 import { getRedisClient } from "@ibatexas/tools";
 import type { AgentMessage } from "@ibatexas/types";
 
-const SESSION_TTL_SECONDS = 48 * 60 * 60; // 48h
+const GUEST_SESSION_TTL_SECONDS = 48 * 60 * 60; // 48h
+const CUSTOMER_SESSION_TTL_SECONDS = 24 * 60 * 60; // 24h
 const MAX_HISTORY = 50;
 
 function sessionKey(sessionId: string): string {
@@ -34,13 +35,16 @@ export async function loadSession(sessionId: string): Promise<AgentMessage[]> {
  * Append new messages to the session history.
  * Uses RPUSH + LTRIM atomically via pipeline to avoid race conditions.
  * Resets the TTL on each append.
+ * Pass isAuthenticated=true to upgrade TTL to customer window.
  */
 export async function appendMessages(
   sessionId: string,
   messages: AgentMessage[],
+  isAuthenticated = false,
 ): Promise<void> {
   const redis = await getRedisClient();
   const key = sessionKey(sessionId);
+  const ttl = isAuthenticated ? CUSTOMER_SESSION_TTL_SECONDS : GUEST_SESSION_TTL_SECONDS;
 
   const pipeline = redis.multi();
   for (const msg of messages) {
@@ -48,6 +52,6 @@ export async function appendMessages(
   }
   // Keep only the last MAX_HISTORY messages
   pipeline.lTrim(key, -MAX_HISTORY, -1);
-  pipeline.expire(key, SESSION_TTL_SECONDS);
+  pipeline.expire(key, ttl);
   await pipeline.exec();
 }

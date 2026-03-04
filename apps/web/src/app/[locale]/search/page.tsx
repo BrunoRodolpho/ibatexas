@@ -8,6 +8,8 @@ import { SearchInput } from '@/components/molecules'
 import { ProductGrid } from '@/components/organisms'
 import { useUIStore, useCartStore } from '@/stores'
 import { useProducts } from '@/hooks/api'
+import { track } from '@/lib/analytics'
+import { UtensilsCrossed } from 'lucide-react'
 import type { ProductDTO } from '@ibatexas/types'
 
 const TAG_IDS = ['novo', 'popular', 'chef_choice', 'vegetariano', 'vegan', 'sem_gluten'] as const
@@ -72,21 +74,27 @@ export default function SearchPage() {
   const CATEGORIES = CATEGORY_IDS.map((id) => ({ id, label: t(`search.categories_list.${id}`) }))
   const SORT_OPTIONS = SORT_VALUES.map((value) => ({ value, label: t(`search.sort.${value}`) }))
 
-  const { data: productsData, loading: isLoading } = useProducts(
-    searchQuery || undefined,
-    activeTags,
-    20,
-    undefined,
-    selectedFilters.category || undefined
-  )
+  const { data: productsData, loading: isLoading } = useProducts({
+    query: searchQuery || undefined,
+    tags: activeTags,
+    limit: 20,
+    categoryHandle: selectedFilters.category || undefined,
+    sort: selectedFilters.sort,
+  })
 
-  const products = productsData?.products ?? []
-  const totalFound = productsData?.totalFound ?? 0
+  const products = productsData?.items ?? []
+  const totalFound = productsData?.total ?? 0
 
   const handleSearch = (query: string) => {
     setSearchQuery(query)
     updateURL(selectedFilters, query)
   }
+
+  // Fire search_performed once results settle
+  useEffect(() => {
+    if (isLoading || !searchQuery) return
+    track('search_performed', { query: searchQuery, resultCount: totalFound })
+  }, [isLoading, searchQuery, totalFound])
 
   const handleTagToggle = (tagId: string) => {
     const newTags = selectedFilters.tags.includes(tagId)
@@ -95,6 +103,7 @@ export default function SearchPage() {
     const newFilters = { ...selectedFilters, tags: newTags }
     setFilters(newFilters)
     updateURL(newFilters, searchQuery)
+    track('filter_applied', { filterType: 'tag', value: tagId })
   }
 
   const handleCategoryChange = (categoryId: string) => {
@@ -102,12 +111,14 @@ export default function SearchPage() {
     const newFilters = { ...selectedFilters, category: newCategory }
     setFilters(newFilters)
     updateURL(newFilters, searchQuery)
+    track('filter_applied', { filterType: 'category', value: categoryId ?? 'all' })
   }
 
   const handleSortChange = (sortValue: string) => {
     const newFilters = { ...selectedFilters, sort: sortValue }
     setFilters(newFilters)
     updateURL(newFilters, searchQuery)
+    track('filter_applied', { filterType: 'sort', value: sortValue })
   }
 
   const handleResetFilters = () => {
@@ -171,12 +182,17 @@ export default function SearchPage() {
               ))}
             </select>
 
-            {/* Filter toggle */}
+            {/* Filter toggle with active count */}
             <button
               onClick={() => setIsFilterOpen(!isFilterOpen)}
-              className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+              className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
             >
               {isFilterOpen ? '✕ Fechar' : t('search.filter')}
+              {!isFilterOpen && selectedFilters.tags.length > 0 && (
+                <span className="inline-flex items-center justify-center h-4 min-w-[1rem] px-1 rounded-full bg-charcoal-900 text-smoke-50 text-[9px] font-semibold">
+                  {selectedFilters.tags.length}
+                </span>
+              )}
             </button>
           </div>
         </div>
@@ -253,25 +269,54 @@ export default function SearchPage() {
         )}
 
         {/* ── Product grid ────────────────────────────────────────── */}
-        <ProductGrid
-          products={products}
-          columns={4}
-          isLoading={isLoading}
-          isEmpty={!isLoading && products.length === 0}
-          emptyMessage={
-            searchQuery
-              ? `Nenhum resultado para "${searchQuery}"`
-              : 'Explore nosso cardápio ou busque por nome'
-          }
-          onAddToCart={(productId) => {
-            const product = products.find((p) => p.id === productId)
-            if (product) {
-              const defaultVariant = product.variants?.[0]
-              addItem(product as ProductDTO, 1, undefined, defaultVariant)
-              addToast(t('product.added'), 'success')
-            }
-          }}
-        />
+        {!isLoading && products.length === 0 ? (
+          /* ── Enhanced empty state ───────────────────────────────── */
+          <div className="flex flex-col items-center justify-center py-24 gap-6">
+            <div className="w-16 h-16 rounded-full bg-smoke-100 flex items-center justify-center">
+              <UtensilsCrossed className="w-7 h-7 text-smoke-300" strokeWidth={1.5} />
+            </div>
+            <div className="text-center">
+              <p className="font-display text-xl text-charcoal-900 tracking-display mb-2">
+                {searchQuery
+                  ? `Nenhum resultado para "${searchQuery}"`
+                  : 'Nenhum produto encontrado'}
+              </p>
+              <p className="text-sm text-smoke-400 max-w-md">
+                {searchQuery
+                  ? 'Tente buscar com outros termos ou explore nossas categorias abaixo.'
+                  : 'Explore nosso cardápio completo ou busque por nome.'}
+              </p>
+            </div>
+            <div className="h-px w-16 bg-smoke-200" />
+            {/* Suggested categories */}
+            <div className="flex flex-wrap justify-center gap-3">
+              {CATEGORIES.slice(0, 4).map((cat) => (
+                <button
+                  key={cat.id}
+                  onClick={() => handleCategoryChange(cat.id)}
+                  className="px-4 py-2 rounded-sm border border-smoke-200 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 hover:border-charcoal-900 transition-all duration-500 ease-luxury"
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <ProductGrid
+            products={products}
+            columns={4}
+            isLoading={isLoading}
+            onAddToCart={(productId) => {
+              const product = products.find((p) => p.id === productId)
+              if (product) {
+                const defaultVariant = product.variants?.[0]
+                addItem(product as ProductDTO, 1, undefined, defaultVariant)
+                track('add_to_cart', { productId, source: 'listing' })
+                addToast(t('product.added'), 'success')
+              }
+            }}
+          />
+        )}
       </div>
     </div>
   )
