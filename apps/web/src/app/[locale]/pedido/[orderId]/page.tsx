@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { useParams } from "next/navigation"
+import Image from "next/image"
 import { Link } from "@/i18n/navigation"
 import { getApiBase } from "@/lib/api"
 
@@ -105,7 +106,7 @@ export default function OrderTrackingPage() {
             <div key={item.id} className="flex items-center justify-between text-sm text-charcoal-700">
               <div className="flex items-center gap-3">
                 {item.thumbnail && (
-                  <img src={item.thumbnail} alt={item.title} className="w-10 h-10 rounded-sm object-cover" />
+                  <Image src={item.thumbnail} alt={item.title} width={40} height={40} className="rounded-sm object-cover" />
                 )}
                 <span>{item.quantity}× {item.title}</span>
               </div>
