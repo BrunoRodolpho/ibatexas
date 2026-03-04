@@ -8,6 +8,7 @@ import { Link } from "@/i18n/navigation"
 import { getApiBase } from "@/lib/api"
 import { track, getSessionId } from "@/lib/analytics"
 import { Heading, Text, Button } from "@/components/atoms"
+import Image from "next/image"
 import { CheckCircle } from "lucide-react"
 
 function formatPrice(centavos: number): string {
@@ -212,7 +213,7 @@ export default function CheckoutPage() {
           <Heading as="h1" variant="h2">Pague via PIX</Heading>
           <Text textColor="muted" variant="small">Escaneie o QR Code abaixo ou copie a chave PIX</Text>
           {result?.pixQrCode && (
-            <img src={result.pixQrCode} alt="QR Code PIX" className="mx-auto w-48 h-48 border border-smoke-200 rounded-sm" />
+            <Image src={result.pixQrCode} alt="QR Code PIX" width={192} height={192} unoptimized className="mx-auto border border-smoke-200 rounded-sm" />
           )}
           {result?.pixCopyPaste && (
             <div className="bg-smoke-100 rounded-sm p-3 text-xs font-mono break-all text-charcoal-700 flex items-center gap-2">
