@@ -30,6 +30,8 @@ export type AnalyticsEvent =
   | 'storytelling_section_viewed'
   | 'filter_applied'
   | 'search_performed'
+  | 'wishlist_toggled'
+  | 'cart_abandonment_nudge'
 
 const isDev = process.env.NODE_ENV === 'development'
 

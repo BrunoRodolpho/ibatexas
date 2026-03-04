@@ -630,7 +630,7 @@ export const SearchProductsTool = {
       },
       limit: {
         type: "number",
-        description: "Máximo de resultados (1–20, padrão 5)",
+        description: "Máximo de resultados (1–100, padrão 5)",
       },
     },
   },

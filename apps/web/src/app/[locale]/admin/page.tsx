@@ -1,7 +1,7 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { type ColumnDef, createColumnHelper } from '@tanstack/react-table'
+import { createColumnHelper } from '@tanstack/react-table'
 import { MEDUSA_ADMIN_URL } from '@/lib/api'
 import {
   ShoppingCart,
@@ -31,7 +31,7 @@ function statusBadge(status: string) {
   return <Badge variant={variant} className="text-xs">{status}</Badge>
 }
 
-const columns: ColumnDef<OrderSummary, any>[] = [
+const columns = [
   col.accessor('displayId', { header: '#', cell: (i) => `#${i.getValue()}` }),
   col.accessor('customerEmail', { header: 'Cliente' }),
   col.accessor('itemCount', { header: 'Itens', cell: (i) => `${i.getValue()} item(s)` }),

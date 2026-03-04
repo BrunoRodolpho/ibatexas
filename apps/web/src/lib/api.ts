@@ -33,6 +33,7 @@ export const MEDUSA_ADMIN_URL = process.env.NEXT_PUBLIC_MEDUSA_BACKEND_URL || "h
 export const apiFetch = async (endpoint: string, options?: RequestInit) => {
   const url = `${API_BASE}${endpoint}`
   const response = await fetch(url, {
+    credentials: 'include',
     headers: {
       "Content-Type": "application/json",
       ...options?.headers,
@@ -49,7 +50,9 @@ export const apiFetch = async (endpoint: string, options?: RequestInit) => {
 
 export const apiStream = async (endpoint: string, onChunk: (chunk: unknown) => void) => {
   const url = `${API_BASE}${endpoint}`
-  const response = await fetch(url)
+  const response = await fetch(url, {
+    credentials: 'include',
+  })
 
   if (!response.ok) {
     throw new Error(`Stream error: ${response.status}`)

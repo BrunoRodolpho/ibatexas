@@ -48,21 +48,24 @@ export function Header() {
             <nav className="hidden items-center gap-6 sm:flex">
               <Link
                 href="/search"
-                className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+                className="relative text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury group/nav"
               >
                 {t("nav.shop")}
+                <span className="absolute -bottom-1 left-0 h-[2px] w-full origin-left scale-x-0 bg-charcoal-900 group-hover/nav:animate-snap-underline" />
               </Link>
               <Link
                 href="/loja"
-                className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+                className="relative text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury group/nav"
               >
                 {t("nav.loja")}
+                <span className="absolute -bottom-1 left-0 h-[2px] w-full origin-left scale-x-0 bg-charcoal-900 group-hover/nav:animate-snap-underline" />
               </Link>
               <Link
                 href="/account/reservations"
-                className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+                className="relative text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury group/nav"
               >
                 {t("nav.reservations")}
+                <span className="absolute -bottom-1 left-0 h-[2px] w-full origin-left scale-x-0 bg-charcoal-900 group-hover/nav:animate-snap-underline" />
               </Link>
               {userType === "staff" && (
                 <Link
@@ -78,7 +81,7 @@ export function Header() {
             <div className="flex items-center gap-1">
               <Link
                 href="/search"
-                className="p-2 text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+                className="p-3 text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
                 aria-label={t("common.search")}
               >
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -88,7 +91,7 @@ export function Header() {
 
               <button
                 onClick={handleCartClick}
-                className="relative p-2 text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+                className="relative p-3 text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
                 aria-label={t("nav.cart")}
               >
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -97,7 +100,7 @@ export function Header() {
                 {cartCount > 0 && (
                   <span
                     className={`absolute right-0.5 top-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-charcoal-900 text-micro font-semibold text-white transition-transform ${
-                      isBouncing ? 'animate-bounce' : ''
+                      isBouncing ? 'animate-bounce-subtle' : ''
                     }`}
                   >
                     {cartCount}
@@ -107,7 +110,7 @@ export function Header() {
 
               <Link
                 href="/account"
-                className="p-2 text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+                className="p-3 text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
                 aria-label={t("nav.account")}
               >
                 <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

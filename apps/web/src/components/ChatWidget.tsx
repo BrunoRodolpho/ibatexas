@@ -107,7 +107,7 @@ export function ChatWidget() {
             </div>
             <button
               onClick={() => setChat(false)}
-              className="p-1.5 text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
               aria-label="Fechar chat"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -153,7 +153,7 @@ export function ChatWidget() {
               </div>
             )}
             {error && (
-              <div className="rounded-lg bg-red-50 p-3 text-[13px] text-red-600 border border-red-100">
+              <div className="rounded-lg bg-accent-red/10 p-3 text-[13px] text-accent-red border border-accent-red/10">
                 {error}
               </div>
             )}
@@ -175,7 +175,7 @@ export function ChatWidget() {
               <button
                 onClick={handleSend}
                 disabled={isLoading || !input.trim()}
-                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-charcoal-900 text-white hover:bg-charcoal-700 disabled:opacity-40 transition-colors duration-500 ease-luxury disabled:cursor-not-allowed"
+                className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-md bg-charcoal-900 text-white hover:bg-charcoal-700 disabled:opacity-40 transition-colors duration-500 ease-luxury disabled:cursor-not-allowed"
                 aria-label={t("chat.send")}
               >
                 <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">

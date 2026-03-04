@@ -190,8 +190,8 @@ export default function CheckoutPage() {
       <div className="min-h-screen bg-smoke-50 flex items-center justify-center px-4">
         <div className="text-center max-w-sm">
           <div className="flex justify-center mb-4">
-            <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
-              <CheckCircle className="w-7 h-7 text-green-600" />
+            <div className="w-14 h-14 rounded-full bg-accent-green/10 flex items-center justify-center">
+              <CheckCircle className="w-7 h-7 text-accent-green" />
             </div>
           </div>
           <Heading as="h1" variant="h2" className="mb-2">Pedido confirmado!</Heading>
@@ -348,7 +348,7 @@ export default function CheckoutPage() {
           </div>
         </div>
 
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-accent-red">{error}</p>}
 
         <Button
           variant="brand"

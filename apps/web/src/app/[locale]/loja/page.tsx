@@ -13,7 +13,7 @@ export default function ShopPage() {
   if (error) {
     return (
       <div className="text-center py-20">
-        <Text variant="body" className="text-red-600">
+        <Text variant="body" className="text-accent-red">
           {t('common.error')}: {error.message}
         </Text>
       </div>

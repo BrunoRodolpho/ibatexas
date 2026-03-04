@@ -88,7 +88,7 @@ export function CartDrawer() {
         </div>
       ) : (
         <div className="space-y-4">
-          {items.map((item) => {
+          {items.map((item, index) => {
             const lineTotal = ((item.price * item.quantity) / 100).toLocaleString('pt-BR', {
               style: 'currency',
               currency: 'BRL',
@@ -97,7 +97,8 @@ export function CartDrawer() {
             return (
               <div
                 key={item.id}
-                className="flex gap-3 pb-4 border-b border-smoke-200 last:border-0"
+                className="flex gap-3 pb-4 border-b border-smoke-200 last:border-0 opacity-0 animate-slide-up"
+                style={{ animationDelay: `${index * 40}ms`, animationFillMode: 'forwards' }}
               >
                 {/* Thumbnail */}
                 {item.imageUrl && (
@@ -107,6 +108,8 @@ export function CartDrawer() {
                       alt={item.title}
                       width={64}
                       height={64}
+                      placeholder="blur"
+                      blurDataURL="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjEwIj48cmVjdCBmaWxsPSIjZThlNGUwIiB3aWR0aD0iOCIgaGVpZ2h0PSIxMCIvPjwvc3ZnPg=="
                       className="object-cover w-full h-full"
                     />
                   </div>
@@ -134,7 +137,7 @@ export function CartDrawer() {
                     />
                     <button
                       onClick={() => removeItem(item.id)}
-                      className="p-1.5 text-smoke-400 hover:text-red-600 transition-colors duration-300"
+                      className="min-w-[44px] min-h-[44px] flex items-center justify-center text-smoke-400 hover:text-accent-red transition-colors duration-300"
                       aria-label={`Remover ${item.title}`}
                     >
                       <Trash2 className="w-3.5 h-3.5" />

@@ -5,14 +5,13 @@ import { getApiBase } from '@/lib/api'
 interface SessionState {
   sessionId: string
   customerId?: string
-  authToken?: string
   channel: 'web' | 'whatsapp'
   userType: 'guest' | 'customer' | 'staff'
   permissions: string[]
 
   // Actions
   initSession: () => void
-  login: (customerId: string, authToken: string) => void
+  login: (customerId: string, token: string) => void
   setCustomer: (customerId: string, userType: 'customer' | 'staff') => void
   logout: () => Promise<void>
   hydrate: () => Promise<void>
@@ -53,8 +52,11 @@ export const useSessionStore = create<SessionState>()(
         set({ sessionId: generateSessionId(), userType: 'guest', customerId: undefined })
       },
 
-      login: (customerId, authToken) =>
-        set({ customerId, authToken, userType: 'customer' }),
+      login: (customerId, _token) => {
+        // Token is handled via httpOnly cookie set by the API.
+        // Just sync Zustand state with the authenticated customer.
+        set({ customerId, userType: 'customer' })
+      },
 
       setCustomer: (customerId, userType) =>
         set({ customerId, userType }),
@@ -70,20 +72,21 @@ export const useSessionStore = create<SessionState>()(
         }
         set({
           customerId: undefined,
-          authToken: undefined,
           userType: 'guest',
           permissions: [],
         })
       },
 
       hydrate: async () => {
+        // Skip network call for guests — no cookie will exist
+        if (!get().customerId) return
         try {
           const res = await fetch(`${getApiBase()}/api/auth/me`, {
             credentials: 'include',
           })
           if (!res.ok) {
             // Cookie expired or invalid — clear auth state
-            set({ customerId: undefined, authToken: undefined, userType: 'guest' })
+            set({ customerId: undefined, userType: 'guest' })
             return
           }
           const data = await res.json() as { id: string; userType?: 'customer' | 'staff' }
@@ -110,7 +113,6 @@ export const useSessionStore = create<SessionState>()(
       partialize: (state) => ({
         sessionId: state.sessionId,
         customerId: state.customerId,
-        authToken: state.authToken,
         channel: state.channel,
         userType: state.userType,
         permissions: state.permissions,

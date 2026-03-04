@@ -158,10 +158,10 @@ ibx git log                # recent commits + open PR link
 | Medusa Admin    | http://localhost:9000/app       |
 | Web (Next.js)   | http://localhost:3000           |
 | API (Fastify)   | http://localhost:3001           |
-| API Swagger UI  | http://localhost:3001/api/docs  |
+| API Swagger UI  | http://localhost:3001/docs      |
 | Typesense       | http://localhost:8108           |
 | NATS Monitor    | http://localhost:8222           |
-| PostHog         | http://localhost:POSTHOG_PORT   |
+| PostHog         | https://app.posthog.com         |
 
 **Admin credentials:** `admin@ibatexas.com.br` / `IbateXas2024!`
 
