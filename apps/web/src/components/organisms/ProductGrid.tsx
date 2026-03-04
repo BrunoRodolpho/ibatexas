@@ -3,12 +3,15 @@
 import { ProductCard } from '../molecules/ProductCard'
 import { Text } from '../atoms'
 
+import type { ProductVariant } from '@ibatexas/types'
+
 interface Product {
   id: string
   title: string
   imageUrl?: string | null
   images?: string[]
   price: number
+  variants?: ProductVariant[]
   rating?: number
   tags?: string[]
 }
@@ -70,13 +73,19 @@ export const ProductGrid = ({
 
   return (
     <div className={`grid ${gridColsClass} gap-6`}>
-      {products.map((product) => (
-        <ProductCard
+      {products.map((product, index) => (
+        <div
           key={product.id}
-          {...product}
-          href={getProductHref?.(product)}
-          onAddToCart={() => onAddToCart?.(product.id)}
-        />
+          className="opacity-0 animate-reveal"
+          style={{ animationDelay: `${index * 60}ms` }}
+        >
+          <ProductCard
+            {...product}
+            variantCount={product.variants?.length}
+            href={getProductHref?.(product)}
+            onAddToCart={() => onAddToCart?.(product.id)}
+          />
+        </div>
       ))}
     </div>
   )

@@ -21,11 +21,13 @@ export default function CategoryPage({ params }: CategoryPageProps) {
     notFound()
   }
 
-  const { data, loading, error } = useProducts(undefined, undefined, 20, 'merchandise')
+  const { data, loading, error } = useProducts({
+    limit: 20,
+    productType: 'merchandise',
+    categoryHandle: params.category,
+  })
 
-  // Filter products by category handle if we had category data
-  // For now, show all merchandise since we don't have category filtering in API
-  const filteredProducts = data?.products || []
+  const filteredProducts = data?.items ?? []
 
   if (error) {
     return (

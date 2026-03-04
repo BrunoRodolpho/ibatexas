@@ -5,8 +5,11 @@ import { Inter, Playfair_Display } from "next/font/google"
 import { routing } from "@/i18n/routing"
 import { Header } from "@/components/Header"
 import { Footer } from "@/components/Footer"
+import { MobileBottomNav } from "@/components/molecules/MobileBottomNav"
 import { ChatWidget } from "@/components/ChatWidget"
 import { ToastProvider } from "@/components/ToastProvider"
+import { CartDrawer } from "@/components/organisms/CartDrawer"
+import { PostHogProvider } from "@/components/PostHogProvider"
 
 const inter = Inter({
   subsets: ["latin"],
@@ -42,11 +45,15 @@ export default async function LocaleLayout({
     <html lang={locale}>
         <body className={`${inter.variable} ${playfair.variable} font-sans flex min-h-screen flex-col bg-smoke-50 text-charcoal-900 antialiased`}>
         <NextIntlClientProvider messages={messages}>
-          <Header />
-          <main className="flex-1">{children}</main>
-          <Footer />
-          <ChatWidget />
-          <ToastProvider />
+          <PostHogProvider>
+            <Header />
+            <main className="flex-1 pb-14 sm:pb-0">{children}</main>
+            <Footer />
+            <MobileBottomNav />
+            <CartDrawer />
+            <ChatWidget />
+            <ToastProvider />
+          </PostHogProvider>
         </NextIntlClientProvider>
       </body>
     </html>

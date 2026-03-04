@@ -8,7 +8,7 @@ import { Link } from '@/i18n/navigation'
 
 export default function ShopPage() {
   const t = useTranslations()
-  const { data, loading, error } = useProducts(undefined, undefined, 12, 'merchandise')
+  const { data, loading, error } = useProducts({ limit: 12, productType: 'merchandise' })
 
   if (error) {
     return (
@@ -41,9 +41,9 @@ export default function ShopPage() {
             <div className="text-center py-16">
               <Text className="text-smoke-400">{t('common.loading')}</Text>
             </div>
-          ) : data?.products.length ? (
+          ) : data?.items?.length ? (
             <ProductGrid
-              products={data.products}
+              products={data.items}
               columns={4}
               getProductHref={(product) => `/loja/produto/${product.id}`}
             />

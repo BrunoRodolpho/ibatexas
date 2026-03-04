@@ -44,6 +44,14 @@ cp .env.example .env
 | `TWILIO_VERIFY_SID` | Twilio → Verify → create service → Service SID |
 | `JWT_SECRET` | `openssl rand -base64 32` |
 | `COOKIE_SECRET` | `openssl rand -base64 32` |
+| `APP_ENV` | `development` (default, no action needed) |
+
+**Optional (PostHog analytics):**
+
+| Variable | Where to get it |
+|----------|----------------|
+| `NEXT_PUBLIC_POSTHOG_KEY` | [PostHog](https://posthog.com) → Project Settings → Project API Key |
+| `NEXT_PUBLIC_POSTHOG_HOST` | `https://app.posthog.com` (default) or your self-hosted URL |
 
 > `DATABASE_URL`, `REDIS_URL`, `TYPESENSE_API_KEY`, and `NATS_URL` are pre-filled in `.env.example` for local Docker. Do not change the port from 5433 — local macOS Postgres occupies 5432.
 
@@ -72,22 +80,24 @@ ibx dev --skip-docker
 
 ```bash
 # Ctrl+C to stop Medusa, then:
-ibx stop   # stops Docker containers
+ibx dev stop   # stops all processes + Docker containers
 ```
 
 ---
 
 ## Local URLs
 
-| Service | URL | Notes |
-|---------|-----|-------|
-| Medusa API | http://localhost:9000 | Commerce backend |
-| Medusa Admin | http://localhost:9000/app | Login: see below |
-| Web (Next.js) | http://localhost:3000 | Storefront |
-| API (Fastify) | http://localhost:3001 | REST + SSE |
-| Typesense | http://localhost:8108 | Search |
-| NATS Monitor | http://localhost:8222 | Event bus |
-| PostgreSQL | localhost:5433 | Port 5433 (not 5432!) |
+| Service         | URL                              | Notes                     |
+|-----------------|----------------------------------|---------------------------|
+| Medusa API      | http://localhost:9000           | Commerce backend          |
+| Medusa Admin    | http://localhost:9000/app       | Login: see below          |
+| Web (Next.js)   | http://localhost:3000           | Storefront                |
+| API (Fastify)   | http://localhost:3001           | REST + SSE               |
+| API Swagger UI  | http://localhost:3001/api/docs  | API documentation         |
+| Typesense       | http://localhost:8108           | Search                    |
+| NATS Monitor    | http://localhost:8222           | Event bus                 |
+| PostHog         | http://localhost:POSTHOG_PORT   | Analytics dashboard       |
+| PostgreSQL      | localhost:5433                  | Port 5433 (not 5432!)     |
 
 **Medusa admin login:** `REDACTED_EMAIL` / `REDACTED_PASSWORD`
 
@@ -96,14 +106,23 @@ ibx stop   # stops Docker containers
 ## Database Operations
 
 ```bash
-# Run migrations (Medusa must NOT be running)
-pnpm --filter @ibatexas/commerce db:migrate
+# Run Medusa migrations (Medusa must NOT be running)
+ibx db migrate
+
+# Run Prisma domain migrations
+ibx db migrate:domain
 
 # Seed with Smoked House products (Medusa must be running)
-ibx seed
+ibx db seed
+
+# Seed domain tables (DeliveryZone, Table, TimeSlot)
+ibx db seed:domain
+
+# Reindex Typesense from Medusa catalog
+ibx db reindex
 
 # Full reset: drop → migrate → reseed (destructive)
-ibx seed reset
+ibx db reset
 
 # Direct DB access
 psql postgresql://ibatexas:ibatexas@localhost:5433/ibatexas
@@ -114,7 +133,7 @@ psql postgresql://ibatexas:ibatexas@localhost:5433/ibatexas
 ## Health Check
 
 ```bash
-ibx health
+ibx svc health
 ```
 
 Checks all 4 services with latency:
@@ -165,7 +184,7 @@ cd packages/cli && npm link && cd ../..
 |---------|-----|
 | `Port 9000 already in use` | `pkill -f "medusa develop"` then `ibx dev` |
 | `Role ibatexas does not exist` | Using port 5432 — check `DATABASE_URL` uses 5433 |
-| Medusa doesn't start | `ibx stop && ibx dev` (fresh start) |
-| Seed fails | Ensure Medusa is running first: `ibx health` |
+| Medusa doesn't start | `ibx dev stop && ibx dev` (fresh start) |
+| Seed fails | Ensure Medusa is running first: `ibx svc health` |
 | CLI command not found | `cd packages/cli && npm link` |
 | Docker containers unhealthy | `docker compose down -v && ibx dev` |

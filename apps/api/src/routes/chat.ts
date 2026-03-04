@@ -11,6 +11,7 @@ import { Channel } from "@ibatexas/types";
 import type { AgentContext } from "@ibatexas/types";
 import { runAgent } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
+import { optionalAuth } from "../middleware/auth.js";
 import {
   isStreamActive,
   createStream,
@@ -62,6 +63,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         body: PostMessageBody,
         response: { 200: PostMessageResponse },
       },
+      preHandler: optionalAuth,
     },
     async (request, reply) => {
       const { sessionId, message, channel } = request.body;
@@ -78,14 +80,15 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       const history = await loadSession(sessionId);
       const messageId = uuidv4();
 
-      await appendMessages(sessionId, [{ role: "user", content: message }]);
+      await appendMessages(sessionId, [{ role: "user", content: message }], !!request.customerId);
 
       createStream(sessionId);
 
       const context: AgentContext = {
         channel,
         sessionId,
-        userType: "guest", // Step 11 (auth) will upgrade to "customer"
+        customerId: request.customerId,
+        userType: request.userType ?? "guest",
       };
 
       // Fire-and-forget agent loop

@@ -178,10 +178,65 @@ exports.Prisma.ReviewScalarFieldEnum = {
   id: 'id',
   orderId: 'orderId',
   productIds: 'productIds',
+  productId: 'productId',
   customerId: 'customerId',
   rating: 'rating',
   comment: 'comment',
   channel: 'channel',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerScalarFieldEnum = {
+  id: 'id',
+  phone: 'phone',
+  name: 'name',
+  email: 'email',
+  medusaId: 'medusaId',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.AddressScalarFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  street: 'street',
+  number: 'number',
+  complement: 'complement',
+  district: 'district',
+  city: 'city',
+  state: 'state',
+  cep: 'cep',
+  isDefault: 'isDefault'
+};
+
+exports.Prisma.CustomerPreferencesScalarFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  dietaryRestrictions: 'dietaryRestrictions',
+  allergenExclusions: 'allergenExclusions',
+  favoriteCategories: 'favoriteCategories',
+  updatedAt: 'updatedAt'
+};
+
+exports.Prisma.CustomerOrderItemScalarFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  medusaOrderId: 'medusaOrderId',
+  productId: 'productId',
+  variantId: 'variantId',
+  quantity: 'quantity',
+  priceInCentavos: 'priceInCentavos',
+  orderedAt: 'orderedAt'
+};
+
+exports.Prisma.DeliveryZoneScalarFieldEnum = {
+  id: 'id',
+  name: 'name',
+  cepPrefixes: 'cepPrefixes',
+  feeInCentavos: 'feeInCentavos',
+  estimatedMinutes: 'estimatedMinutes',
+  active: 'active',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 };
@@ -232,7 +287,12 @@ exports.Prisma.ModelName = {
   Reservation: 'Reservation',
   ReservationTable: 'ReservationTable',
   Waitlist: 'Waitlist',
-  Review: 'Review'
+  Review: 'Review',
+  Customer: 'Customer',
+  Address: 'Address',
+  CustomerPreferences: 'CustomerPreferences',
+  CustomerOrderItem: 'CustomerOrderItem',
+  DeliveryZone: 'DeliveryZone'
 };
 
 /**

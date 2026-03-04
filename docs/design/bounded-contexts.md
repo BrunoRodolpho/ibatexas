@@ -231,7 +231,7 @@ Same Commerce entities (Cart, Order, Payment) shared with the restaurant. Produc
 ## 8. Admin
 
 **Owner:** Custom — `/admin` routes in `apps/web` + dedicated API endpoints in `apps/api`
-**Access:** Twilio Verify OTP + `CustomerProfile.type === 'staff'` required — no customer can access this area
+**Access:** All `/api/admin/*` routes require `x-admin-key` header — no customer can access this area
 
 The Admin panel is the owner's control center. It replaces the raw Medusa admin as the primary management interface and adds reservation management, delivery zone config, and analytics in one place.
 
@@ -247,7 +247,7 @@ The Admin panel is the owner's control center. It replaces the raw Medusa admin 
 
 ### Rules
 
-- All `/admin` API routes require a valid JWT with `CustomerProfile.type === 'staff'` — 401 for any other token
+- All `/api/admin/*` routes require a valid `x-admin-key` header — 401 for missing/invalid key
 - Admin manages **both** the food menu and the shop catalog through one interface — no need to switch systems
 - Admin can view, filter, and update all orders (restaurant + shop) and all reservations
 - Analytics pulls from PostHog (real-time) — no raw database queries in Phase 1

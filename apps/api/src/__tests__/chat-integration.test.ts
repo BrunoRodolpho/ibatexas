@@ -170,6 +170,7 @@ describe("Chat routes integration", () => {
     expect(mockAppendMessages).toHaveBeenCalledWith(
       "22222222-3333-4444-5555-666666666666",
       [{ role: "user", content: "E o cardápio?" }],
+      false,
     )
   })
 

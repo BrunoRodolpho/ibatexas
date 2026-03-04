@@ -9,20 +9,7 @@
 Use `ibx` for all dev operations. Run `ibx --help` or `ibx <command> --help` before writing code.
 If a command does not exist for what you need, add it to `packages/cli/` first, then use it.
 
-```bash
-ibx dev             # start Docker + Medusa
-ibx dev stop        # stop Docker containers
-ibx dev build       # build all packages
-ibx dev test        # run all tests
-ibx svc health      # check infra (Postgres, Redis, Typesense, NATS)
-ibx svc health postgres  # detailed check for a specific service
-ibx db seed         # seed products (Medusa must be running)
-ibx db reset        # ⚠️  drop + migrate + reseed
-ibx env check       # verify required env vars
-ibx api products list  # inspect catalog
-```
-
-See **[docs/IBX-CLI.md](docs/IBX-CLI.md)** for the full command reference.
+See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 
 ---
 
@@ -34,6 +21,8 @@ See **[docs/IBX-CLI.md](docs/IBX-CLI.md)** for the full command reference.
 4. **User-facing text:** pt-BR only — product names, agent responses, error messages
 5. **Auth:** Twilio Verify WhatsApp OTP — for both customers and staff. No Clerk, no passwords.
 6. **`.env`:** never committed — update `.env.example` when adding new vars
+7. **Redis keys:** always use `rk()` from `@ibatexas/tools` — never build raw key strings inline
+8. **Analytics events:** add to `AnalyticsEvent` union in `apps/web/src/lib/analytics.ts` AND document in `docs/analytics-dashboards.md`
 
 ---
 
@@ -45,7 +34,7 @@ See **[docs/IBX-CLI.md](docs/IBX-CLI.md)** for the full command reference.
 - **NATS events:** `domain.action` (`cart.abandoned`, `order.placed`)
 - **NATS subjects:** `ibatexas.{domain}.{action}`
 - **Product/category handles:** kebab-case, ASCII only (`costela-bovina-defumada`)
-- **CLI commands:** lowercase (`dev`, `svc`, `api`, `db`)
+- **CLI commands:** lowercase (`dev`, `svc`, `api`, `db`, `intel`)
 
 ---
 
@@ -53,10 +42,12 @@ See **[docs/IBX-CLI.md](docs/IBX-CLI.md)** for the full command reference.
 
 | What | Where |
 |------|-------|
-| CLI reference | [docs/IBX-CLI.md](docs/IBX-CLI.md) |
+| CLI reference | [docs/ibx-cli.md](docs/ibx-cli.md) |
 | Architecture & design | [docs/design/](docs/design/) |
 | Roadmap | [docs/next-steps.md](docs/next-steps.md) — remove items when done |
 | Setup guide | [docs/setup/local-dev.md](docs/setup/local-dev.md) |
+| Analytics & dashboards | [docs/analytics-dashboards.md](docs/analytics-dashboards.md) |
+| Redis key patterns | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
 
 ---
 
@@ -69,23 +60,6 @@ See **[docs/IBX-CLI.md](docs/IBX-CLI.md)** for the full command reference.
 
 ---
 
-## Medusa v2 Conventions
-
-```typescript
-// ✅ Correct field names
-category_ids: ["cat_123"]   // not categories: [{ id }]
-tag_ids: ["tag_abc"]        // not tags: [{ id }]
-
-// ✅ Link variant → price set via Remote Link
-const remoteLink = container.resolve(ContainerRegistrationKeys.LINK)
-await remoteLink.create([{
-  [Modules.PRODUCT]: { variant_id: variantId },
-  [Modules.PRICING]: { price_set_id: priceSet.id },
-}])
-```
-
----
-
 ## Design Docs — Read Before Building
 
 | Doc | Read before |
@@ -95,3 +69,5 @@ await remoteLink.create([{
 | [agent-tools.md](docs/design/agent-tools.md) | Any AI tool |
 | [use-cases.md](docs/design/use-cases.md) | Any user-facing feature |
 | [customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations or profiles |
+| [analytics-dashboards.md](docs/analytics-dashboards.md) | Any analytics event or PostHog insight |
+| [redis-memory.md](docs/ops/redis-memory.md) | Any Redis key usage |

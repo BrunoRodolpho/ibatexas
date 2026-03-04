@@ -6,7 +6,7 @@ The agent interacts with the Restaurant and Intelligence contexts through typed 
 
 **Auth levels:**
 - `guest` — available to anyone, including anonymous sessions
-- `customer` — requires Clerk authentication
+- `customer` — requires Twilio Verify WhatsApp OTP authentication (JWT cookie)
 - `staff` — reserved for internal use (not exposed to customers)
 
 ---
@@ -35,7 +35,7 @@ Retrieve full product information including gallery, variants, nutritional info,
 | **Output** | `{ id, name, description, images[], variants[], nutritionalInfo, allergens[], tags[], preparationTime, availabilityWindow, relatedProducts[], rating, reviewCount }` |
 | **Notes** | Publishes `product.viewed` NATS event |
 
-### `check_inventory`
+### `check_inventory` _(not yet implemented)_
 Check real-time stock for a specific product variant.
 
 | | |
@@ -43,9 +43,9 @@ Check real-time stock for a specific product variant.
 | **Auth** | guest |
 | **Input** | `variantId: string` |
 | **Output** | `{ available: boolean, quantity: number, nextAvailableAt?: string }` |
-| **Notes** | Always called before `add_to_cart`. Never trust cached stock for perishables |
+| **Notes** | `add_to_cart` validates stock internally; this tool is for explicit pre-check |
 
-### `get_nutritional_info`
+### `get_nutritional_info` _(not yet implemented)_
 Retrieve ANVISA-format nutritional data for a product.
 
 | | |
@@ -53,6 +53,7 @@ Retrieve ANVISA-format nutritional data for a product.
 | **Auth** | guest |
 | **Input** | `productId: string` |
 | **Output** | `{ per100g: { calories, protein, fat, saturatedFat, carbohydrates, sugars, fiber, sodium }, servingSize, servingsPerPackage }` |
+| **Notes** | `get_product_details` already returns `nutritionalInfo`; this tool provides the full ANVISA breakdown |
 
 ---
 
@@ -266,11 +267,31 @@ Submit a review for a delivered order.
 | **Output** | `{ reviewId, message: string }` |
 | **Notes** | Only callable once per order. Rating ≤ 2 triggers staff escalation. Publishes `review.submitted` NATS event. Updates product rolling average rating |
 
+### `get_also_added`
+Return products frequently added to cart alongside a given product in the current session.
+
+| | |
+|---|---|
+| **Auth** | guest |
+| **Input** | `productId: string`, `limit?: number` |
+| **Output** | `{ products: { id, name, price, reason: string }[] }` |
+| **Notes** | Uses Redis co-purchase sorted set (`copurchase:{productId}`). Falls back to global score if no co-purchase data. Respects allergen exclusions from CustomerProfile |
+
+### `get_ordered_together`
+Return products historically ordered together with the current cart contents.
+
+| | |
+|---|---|
+| **Auth** | guest |
+| **Input** | `sessionId: string`, `limit?: number` |
+| **Output** | `{ products: { id, name, price, reason: string }[] }` |
+| **Notes** | Unions co-purchase sorted sets for all cart items; deduplicates against current cart |
+
 ---
 
 ## Support Tools
 
-### `handoff_to_human`
+### `handoff_to_human` _(not yet implemented)_
 Escalate the conversation to a human staff member.
 
 | | |
@@ -278,4 +299,4 @@ Escalate the conversation to a human staff member.
 | **Auth** | guest |
 | **Input** | `sessionId: string`, `reason?: string` |
 | **Output** | `{ success: boolean, estimatedWaitMinutes?: number, message: string }` |
-| **Notes** | Notifies staff via internal WhatsApp/Slack. Preserves full conversation context for the staff member |
+| **Notes** | Notifies staff via internal WhatsApp. Preserves full conversation context for the staff member |

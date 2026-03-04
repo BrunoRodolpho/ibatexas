@@ -1,15 +1,17 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { ProductDTO } from '@ibatexas/types'
+import type { ProductDTO, ProductVariant } from '@ibatexas/types'
 
 export interface CartItem {
-  id: string
+  id: string // productId:variantId composite key for unique cart entries
+  productId: string
   title: string
   price: number // centavos
   imageUrl?: string
   quantity: number
   specialInstructions?: string
   productType?: "food" | "frozen" | "merchandise"
+  variantId?: string
   variantTitle?: string
 }
 
@@ -22,11 +24,13 @@ interface CartState {
   cep?: string
   deliveryFee?: number
   estimatedDeliveryMinutes?: number
+  /** Medusa cart ID — set when a cart is created via /api/cart */
+  medusaCartId?: string
 
   // Actions
-  addItem: (product: ProductDTO, quantity: number, specialInstructions?: string) => void
-  updateItem: (productId: string, updates: Partial<Pick<CartItem, 'quantity' | 'specialInstructions'>>) => void
-  removeItem: (productId: string) => void
+  addItem: (product: ProductDTO, quantity: number, specialInstructions?: string, variant?: ProductVariant) => void
+  updateItem: (itemId: string, updates: Partial<Pick<CartItem, 'quantity' | 'specialInstructions'>>) => void
+  removeItem: (itemId: string) => void
   clearCart: () => void
   setDeliveryType: (type: 'delivery' | 'pickup' | 'dine-in') => void
   setCouponCode: (code?: string) => void
@@ -34,6 +38,8 @@ interface CartState {
   setSelectedTimeSlot: (slot?: string) => void
   setCep: (cep: string) => void
   setDeliveryEstimate: (fee: number, minutes: number) => void
+  setMedusaCartId: (cartId: string) => void
+  clearMedusaCartId: () => void
 
   // Computed
   getTotal: () => number
@@ -49,13 +55,19 @@ export const useCartStore = create<CartState>()(
       items: [],
       deliveryType: null,
 
-      addItem: (product, quantity, specialInstructions) =>
+      addItem: (product, quantity, specialInstructions, variant) =>
         set((state) => {
-          const existing = state.items.find((item) => item.id === product.id)
+          const selectedVariant = variant ?? product.variants?.[0]
+          const itemId = selectedVariant?.id
+            ? `${product.id}:${selectedVariant.id}`
+            : product.id
+          const itemPrice = selectedVariant?.price ?? product.price
+
+          const existing = state.items.find((item) => item.id === itemId)
           if (existing) {
             return {
               items: state.items.map((item) =>
-                item.id === product.id
+                item.id === itemId
                   ? { ...item, quantity: item.quantity + quantity, specialInstructions }
                   : item
               ),
@@ -65,29 +77,31 @@ export const useCartStore = create<CartState>()(
             items: [
               ...state.items,
               {
-                id: product.id,
+                id: itemId,
+                productId: product.id,
                 title: product.title,
-                price: product.price,
+                price: itemPrice,
                 imageUrl: product.imageUrl ?? undefined,
                 quantity,
                 specialInstructions,
                 productType: product.productType,
-                variantTitle: product.variants?.[0]?.title ?? undefined,
+                variantId: selectedVariant?.id ?? undefined,
+                variantTitle: selectedVariant?.title ?? undefined,
               },
             ],
           }
         }),
 
-      updateItem: (productId, updates) =>
+      updateItem: (itemId, updates) =>
         set((state) => ({
           items: state.items.map((item) =>
-            item.id === productId ? { ...item, ...updates } : item
+            item.id === itemId ? { ...item, ...updates } : item
           ),
         })),
 
-      removeItem: (productId) =>
+      removeItem: (itemId) =>
         set((state) => ({
-          items: state.items.filter((item) => item.id !== productId),
+          items: state.items.filter((item) => item.id !== itemId),
         })),
 
       clearCart: () =>
@@ -99,6 +113,7 @@ export const useCartStore = create<CartState>()(
           selectedTimeSlot: undefined,
           cep: undefined,
           deliveryFee: undefined,
+          medusaCartId: undefined,
         }),
 
       setDeliveryType: (type) => set({ deliveryType: type }),
@@ -108,6 +123,8 @@ export const useCartStore = create<CartState>()(
       setCep: (cep) => set({ cep }),
       setDeliveryEstimate: (fee, minutes) =>
         set({ deliveryFee: fee, estimatedDeliveryMinutes: minutes }),
+      setMedusaCartId: (cartId) => set({ medusaCartId: cartId }),
+      clearMedusaCartId: () => set({ medusaCartId: undefined }),
 
       getTotal: () => {
         return get().items.reduce((total, item) => total + item.price * item.quantity, 0)
@@ -137,7 +154,7 @@ export const useCartStore = create<CartState>()(
     }),
     {
       name: 'cart_v1',
-      version: 3,
+      version: 4,
       migrate: (persistedState: any, version: number) => {
         if (version < 3) {
           // Default existing items to "food" productType
@@ -145,6 +162,16 @@ export const useCartStore = create<CartState>()(
             persistedState.items = persistedState.items.map((item: any) => ({
               ...item,
               productType: item.productType ?? "food"
+            }))
+          }
+        }
+        if (version < 4) {
+          // Migrate: add productId field (was missing), ensure variantId exists
+          if (persistedState?.items) {
+            persistedState.items = persistedState.items.map((item: any) => ({
+              ...item,
+              productId: item.productId ?? item.id,
+              variantId: item.variantId ?? undefined,
             }))
           }
         }

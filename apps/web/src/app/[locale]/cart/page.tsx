@@ -8,6 +8,7 @@ import { Heading, Text, Button, RadioGroup } from '@/components/atoms'
 import { CartItem, Modal } from '@/components/molecules'
 import { useCartStore, useUIStore } from '@/stores'
 import { apiFetch } from '@/lib/api'
+import { track } from '@/lib/analytics'
 import clsx from 'clsx'
 
 export default function CartPage() {
@@ -49,6 +50,11 @@ export default function CartPage() {
       addToast(t('cart.select_delivery_type'), 'warning')
       return
     }
+    track('checkout_started', {
+      cartTotal: total,
+      itemCount: getItemCount(),
+      deliveryType,
+    })
     addToast(t('cart.checkout_progress'), 'success')
   }
 

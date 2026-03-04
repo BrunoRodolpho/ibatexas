@@ -38,7 +38,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
         limit: String(limit),
         offset: String(offset),
         fields: "id,title,handle,thumbnail,status,metadata,variants,categories",
-        expand: "variants,categories,tags",
+        expand: "variants,variants.prices,categories,tags",
       });
       if (q) qs.set("q", q);
       if (category_id) qs.set("category_id[]", category_id);
@@ -52,7 +52,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
           thumbnail: string | null;
           status: string;
           metadata: Record<string, unknown> | null;
-          variants: { id: string }[];
+          variants: { id: string; prices?: { amount: number; currency_code: string }[] }[];
           categories: { handle: string; name: string }[];
         }[];
 
@@ -63,18 +63,28 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
               (p.metadata?.productType ?? "food") === productType
             );
           })
-          .map((p) => ({
-            id: p.id,
-            title: p.title,
-            handle: p.handle,
-            imageUrl: p.thumbnail,
-            category: p.categories?.[0]?.name ?? "—",
-            price: 0, // price set comes via Remote Link — enriched client-side
-            status: p.status,
-            productType: (p.metadata?.productType ?? "food") as string,
-            variantCount: p.variants?.length ?? 0,
-            inStock: p.metadata?.inStock !== false,
-          }));
+          .map((p) => {
+            // Extract the lowest BRL price from all variants
+            // Medusa v2 stores in reais — convert to centavos (our convention)
+            const brlPrices = (p.variants ?? [])
+              .flatMap((v) => v.prices ?? [])
+              .filter((pr) => pr.currency_code === "brl")
+              .map((pr) => Math.round(pr.amount * 100));
+            const price = brlPrices.length > 0 ? Math.min(...brlPrices) : 0;
+
+            return {
+              id: p.id,
+              title: p.title,
+              handle: p.handle,
+              imageUrl: p.thumbnail,
+              category: p.categories?.[0]?.name ?? "—",
+              price,
+              status: p.status,
+              productType: (p.metadata?.productType ?? "food") as string,
+              variantCount: p.variants?.length ?? 0,
+              inStock: p.metadata?.inStock !== false,
+            };
+          });
 
         return reply.send({ products: rows, count: rows.length });
       } catch (err) {
@@ -124,7 +134,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
       const { id } = request.params;
       try {
         const data = await medusaAdmin(
-          `/admin/products/${id}?expand=variants,categories,tags`,
+          `/admin/products/${id}?expand=variants,variants.prices,categories,tags`,
         );
         const p = data.product as {
           id: string;
@@ -147,6 +157,23 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
           }[];
         };
 
+        const variantRows = (p.variants ?? []).map((v) => ({
+              id: v.id,
+              title: v.title,
+              sku: v.sku,
+              // Medusa v2 stores in reais — convert to centavos (our convention)
+              price: Math.round(
+                (v.prices?.find((pr) => pr.currency_code === "brl")?.amount ?? 0) * 100
+              ),
+              inventoryQuantity: v.inventory_quantity,
+              allowBackorder: v.allow_backorder,
+              manageInventory: v.manage_inventory,
+            }));
+
+        // Product-level price: lowest BRL variant price (already in centavos)
+        const brlPrices = variantRows.map((v) => v.price).filter((p) => p > 0);
+        const productPrice = brlPrices.length > 0 ? Math.min(...brlPrices) : 0;
+
         return reply.send({
           product: {
             id: p.id,
@@ -155,23 +182,13 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
             description: p.description,
             imageUrl: p.thumbnail,
             category: p.categories?.[0]?.name ?? "—",
-            price: 0,
+            price: productPrice,
             status: p.status,
             productType: (p.metadata?.productType ?? "food") as string,
             variantCount: p.variants?.length ?? 0,
             inStock: p.metadata?.inStock !== false,
             tags: (p.tags ?? []).map((t) => t.value),
-            variants: (p.variants ?? []).map((v) => ({
-              id: v.id,
-              title: v.title,
-              sku: v.sku,
-              price:
-                v.prices?.find((pr) => pr.currency_code === "brl")?.amount ??
-                0,
-              inventoryQuantity: v.inventory_quantity,
-              allowBackorder: v.allow_backorder,
-              manageInventory: v.manage_inventory,
-            })),
+            variants: variantRows,
           },
         });
       } catch (err) {

@@ -16,6 +16,8 @@ vi.mock("@ibatexas/tools", () => {
     SearchProductsTool: makeTool("search_products"),
     getProductDetails: vi.fn(async () => ({ product: null })),
     GetProductDetailsTool: makeTool("get_product_details"),
+    estimateDelivery: vi.fn(async () => ({ deliverable: true, fee: 500 })),
+    EstimateDeliveryTool: makeTool("estimate_delivery"),
     checkTableAvailability: vi.fn(async () => ({ slots: [] })),
     CheckTableAvailabilityTool: makeTool("check_table_availability"),
     createReservation: vi.fn(async () => ({ reservationId: "res_01" })),
@@ -28,6 +30,42 @@ vi.mock("@ibatexas/tools", () => {
     GetMyReservationsTool: makeTool("get_my_reservations"),
     joinWaitlist: vi.fn(async () => ({ waitlistId: "wl_01" })),
     JoinWaitlistTool: makeTool("join_waitlist"),
+    // Cart tools
+    getCart: vi.fn(async () => ({ cart: null })),
+    GetCartTool: makeTool("get_cart"),
+    addToCart: vi.fn(async () => ({ success: true })),
+    AddToCartTool: makeTool("add_to_cart"),
+    updateCart: vi.fn(async () => ({ success: true })),
+    UpdateCartTool: makeTool("update_cart"),
+    removeFromCart: vi.fn(async () => ({ success: true })),
+    RemoveFromCartTool: makeTool("remove_from_cart"),
+    applyCoupon: vi.fn(async () => ({ valid: true })),
+    ApplyCouponTool: makeTool("apply_coupon"),
+    createCheckout: vi.fn(async () => ({ success: true })),
+    CreateCheckoutTool: makeTool("create_checkout"),
+    getOrderHistory: vi.fn(async () => ({ orders: [] })),
+    GetOrderHistoryTool: makeTool("get_order_history"),
+    checkOrderStatus: vi.fn(async () => ({ status: "pending" })),
+    CheckOrderStatusTool: makeTool("check_order_status"),
+    cancelOrder: vi.fn(async () => ({ success: true })),
+    CancelOrderTool: makeTool("cancel_order"),
+    reorder: vi.fn(async () => ({ cartId: "cart_01" })),
+    ReorderTool: makeTool("reorder"),
+    // Intelligence tools
+    getCustomerProfile: vi.fn(async () => ({})),
+    GetCustomerProfileTool: makeTool("get_customer_profile"),
+    getRecommendations: vi.fn(async () => ({ products: [] })),
+    GetRecommendationsTool: makeTool("get_recommendations"),
+    updatePreferences: vi.fn(async () => ({ success: true })),
+    UpdatePreferencesTool: makeTool("update_preferences"),
+    submitReview: vi.fn(async () => ({ success: true })),
+    SubmitReviewTool: makeTool("submit_review"),
+    getAlsoAdded: vi.fn(async () => ({ products: [] })),
+    GetAlsoAddedTool: makeTool("get_also_added"),
+    getOrderedTogether: vi.fn(async () => ({ products: [] })),
+    GetOrderedTogetherTool: makeTool("get_ordered_together"),
+    PROFILE_TTL_SECONDS: 2_592_000,
+    RECENTLY_VIEWED_MAX: 20,
   }
 })
 
@@ -46,8 +84,8 @@ const ctx: AgentContext = {
 // ── TOOL_DEFINITIONS ──────────────────────────────────────────────────────────
 
 describe("TOOL_DEFINITIONS", () => {
-  it("has 8 registered tools", () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(8)
+  it("has 25 registered tools", () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(25)
   })
 
   it("uses input_schema (snake_case) for Anthropic API", () => {
@@ -96,7 +134,7 @@ describe("executeTool", () => {
   it("dispatches get_product_details with productId", async () => {
     await executeTool("get_product_details", { productId: "prod_01" }, ctx)
     const { getProductDetails } = await import("@ibatexas/tools")
-    expect(getProductDetails).toHaveBeenCalledWith("prod_01")
+    expect(getProductDetails).toHaveBeenCalledWith("prod_01", "cust_01")
   })
 })
 

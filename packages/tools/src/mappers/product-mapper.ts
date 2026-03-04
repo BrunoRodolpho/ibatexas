@@ -7,7 +7,7 @@
 // Never mix these — Typesense documents have flat fields;
 // Medusa objects have nested variants/prices/metadata.
 
-import type { ProductDTO } from "@ibatexas/types"
+import type { ProductDTO, ProductVariant } from "@ibatexas/types"
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
@@ -29,6 +29,7 @@ export interface MedusaProductInput {
   // categories from Medusa v2 product retrieval
   categories?: Array<{ id: string; handle?: string; name?: string }>
   variants?: Array<{
+    id?: string
     title: string
     sku?: string | null
     // Direct prices (admin API with expand)
@@ -61,6 +62,8 @@ export interface TypesenseProductDoc {
   categoryHandle?: string
   status?: string
   inStock?: boolean
+  /** JSON-serialized ProductVariant[] — parsed back in typesenseDocToDTO */
+  variantsJson?: string
   preparationTimeMinutes?: number | null
   rating?: number | null
   reviewCount?: number | null
@@ -78,8 +81,13 @@ export function medusaToTypesenseDoc(product: MedusaProductInput): TypesenseProd
   // Extract tags: handle both object array `[{ id, value }]` and string array
   const tags = extractTags(product)
 
-  // Extract price: try multiple Medusa v2 paths
-  const price = extractPrice(product)
+  // Extract all variant prices and serialize to JSON for Typesense storage
+  const variants = extractVariants(product)
+
+  // Price = lowest variant price ("a partir de") for list views; 0 if no variants
+  const price = variants.length > 0
+    ? Math.min(...variants.map((v) => v.price))
+    : extractPrice(product)
 
   // Extract category handle: try categories array first, then metadata
   const categoryHandle = extractCategoryHandle(product)
@@ -104,6 +112,7 @@ export function medusaToTypesenseDoc(product: MedusaProductInput): TypesenseProd
     categoryHandle,
     status: product.status || "published",
     inStock: product.metadata?.inStock !== false, // true unless explicitly false
+    variantsJson: variants.length > 0 ? JSON.stringify(variants) : undefined,
     preparationTimeMinutes: (product.metadata?.preparationTimeMinutes as number) || null,
     rating: (product.metadata?.rating as number) || null,
     reviewCount: (product.metadata?.reviewCount as number) || null,
@@ -131,23 +140,58 @@ function extractTags(product: MedusaProductInput): string[] {
   return []
 }
 
-/** Extract best price from Medusa v2 product variants.
- *  Tries: variant.prices[0].amount → variant.calculated_price → variant.price_set.prices[0].amount
+/** Extract all variants with their prices from a Medusa product.
+ *  Returns ProductVariant[] with prices in centavos.
+ *  Medusa v2 stores amounts in main currency unit (reais). We convert to centavos
+ *  (integer) to match our internal convention (CLAUDE.md: 8900 = R$89,00).
+ */
+function extractVariants(product: MedusaProductInput): ProductVariant[] {
+  if (!product.variants || product.variants.length === 0) return []
+
+  return product.variants.map((variant) => {
+    const price = extractVariantPrice(variant)
+    return {
+      id: variant.id || "",
+      title: variant.title || null,
+      sku: variant.sku ?? null,
+      price,
+    }
+  })
+}
+
+/** Extract price (in centavos) from a single Medusa variant.
+ *  Tries: variant.prices → variant.calculated_price → variant.price_set.prices
+ *  Prefers BRL currency when multiple currencies exist.
+ */
+function extractVariantPrice(variant: NonNullable<MedusaProductInput["variants"]>[number]): number {
+  let amount = 0
+
+  // Direct prices (admin API with expand) — prefer BRL
+  if (variant.prices && variant.prices.length > 0) {
+    const brl = variant.prices.find((p) => p.currency_code === "brl")
+    amount = brl?.amount ?? variant.prices[0].amount
+  }
+  // Calculated price (store API)
+  else if (variant.calculated_price?.calculated_amount) {
+    amount = variant.calculated_price.calculated_amount
+  }
+  // Price set link
+  else if (variant.price_set?.prices && variant.price_set.prices.length > 0) {
+    const brl = variant.price_set.prices.find((p) => p.currency_code === "brl")
+    amount = brl?.amount ?? variant.price_set.prices[0].amount
+  }
+
+  // Convert reais → centavos (round to avoid floating point issues)
+  return Math.round(amount * 100)
+}
+
+/** Extract best price from first variant (legacy fallback when extractVariants is empty).
+ *  Used only when product has no variant data at all.
  */
 function extractPrice(product: MedusaProductInput): number {
   const variant = product.variants?.[0]
   if (!variant) return 0
-
-  // Direct prices (admin API with expand)
-  if (variant.prices?.[0]?.amount) return variant.prices[0].amount
-
-  // Calculated price (store API)
-  if (variant.calculated_price?.calculated_amount) return variant.calculated_price.calculated_amount
-
-  // Price set link
-  if (variant.price_set?.prices?.[0]?.amount) return variant.price_set.prices[0].amount
-
-  return 0
+  return extractVariantPrice(variant)
 }
 
 /** Extract image URLs from Medusa product images, sorted by rank.
@@ -192,7 +236,7 @@ export function typesenseDocToDTO(doc: TypesenseProductDoc): ProductDTO {
     tags: Array.isArray(doc.tags) ? doc.tags : [],
     availabilityWindow: (doc.availabilityWindow || "sempre") as ProductDTO["availabilityWindow"],
     allergens: Array.isArray(doc.allergens) ? doc.allergens : [],
-    variants: [], // Typesense does not store variant detail; fetch from Medusa if needed
+    variants: parseVariantsJson(doc.variantsJson),
     productType: (doc.productType || "food") as ProductDTO["productType"],
     categoryHandle: doc.categoryHandle || undefined,
     status: (doc.status || "published") as ProductDTO["status"],
@@ -202,5 +246,24 @@ export function typesenseDocToDTO(doc: TypesenseProductDoc): ProductDTO {
     reviewCount: doc.reviewCount ?? undefined,
     createdAt: doc.createdAt ?? "",
     updatedAt: doc.updatedAt ?? "",
+  }
+}
+
+/** Safely parse variantsJson string back to ProductVariant[].
+ *  Returns [] on missing/invalid data (never throws).
+ */
+function parseVariantsJson(json?: string): ProductVariant[] {
+  if (!json) return []
+  try {
+    const parsed = JSON.parse(json)
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((v: any) => ({
+      id: v.id || "",
+      title: v.title ?? null,
+      sku: v.sku ?? null,
+      price: typeof v.price === "number" ? v.price : 0,
+    }))
+  } catch {
+    return []
   }
 }

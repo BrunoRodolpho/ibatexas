@@ -192,7 +192,7 @@ Every event follows this envelope:
 
 ### Owner Dashboard (Phase 2)
 
-A simple `/admin` page in `apps/web` (protected by Clerk staff role) showing:
+A simple `/admin` page in `apps/web` (protected by `x-admin-key` header) showing:
 
 - Today at a glance: orders, revenue, avg ticket, reservations
 - Active orders: live list with current status
