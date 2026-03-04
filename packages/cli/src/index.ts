@@ -10,6 +10,7 @@ import { registerApiCommands }  from "./commands/api.js"
 import { registerDbCommands }   from "./commands/db.js"
 import { registerEnvCommands }  from "./commands/env.js"
 import { registerGitCommands }  from "./commands/git.js"
+import { registerIntelligenceCommands } from "./commands/intelligence.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
@@ -46,6 +47,7 @@ function buildHelpText(): string {
       commands: [
         { usage: "svc health [service]", desc: "Check health — all or postgres | redis | typesense | nats" },
         { usage: "svc status",           desc: "Show running services with addresses and data status" },
+        { usage: "svc logs [service]",   desc: "Tail Docker compose logs — all or a specific service" },
       ],
     },
     {
@@ -62,6 +64,17 @@ function buildHelpText(): string {
         { usage: "db seed",     desc: "Seed the product catalog" },
         { usage: "db reindex",  desc: "Fetch products from Medusa → index into Typesense (--fresh to recreate)" },
         { usage: "db reset",    desc: "⚠  Drop, migrate, and reseed" },
+        { usage: "db status",   desc: "Migration status for Medusa + Prisma schemas" },
+      ],
+    },
+    {
+      title: "Intelligence",
+      commands: [
+        { usage: "intel copurchase-reset",    desc: "Delete all co-purchase Redis sorted sets" },
+        { usage: "intel copurchase-rebuild",  desc: "Rebuild co-purchase sets from order history (--reset)" },
+        { usage: "intel global-score-rebuild",desc: "Rebuild global popularity scores (--reset)" },
+        { usage: "intel scores-inspect [id]", desc: "Inspect co-purchase or global scores" },
+        { usage: "intel cache-stats",          desc: "Redis memory usage for intelligence keys" },
       ],
     },
     {
@@ -143,5 +156,8 @@ registerEnvCommands(program)
 
 // ── VCS ───────────────────────────────────────────────────────────────────────
 registerGitCommands(program)
+
+// ── Intelligence ─────────────────────────────────────────────────────────────
+registerIntelligenceCommands(program)
 
 program.parse()

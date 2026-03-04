@@ -2,7 +2,7 @@
 
 AI-powered platform for a Brazilian Smoked House restaurant — food ordering, reservations, and a branded shop.
 
-IbateXas is a Brazilian restaurant specializing in smoked meats. This monorepo is the full platform: web storefront, WhatsApp channel, AI ordering agent, and owner admin panel.
+Monorepo: Next.js storefront, Fastify API, WhatsApp channel (planned), Claude AI agent with 25 tools, Medusa v2 commerce, owner admin panel.
 
 ---
 
@@ -21,7 +21,7 @@ ibx --help
 ibx <command> --help
 ```
 
-See [docs/IBX-CLI.md](docs/IBX-CLI.md) for the full CLI reference.
+See [docs/ibx-cli.md](docs/ibx-cli.md) for the full CLI reference.
 
 ---
 
@@ -32,43 +32,62 @@ See [docs/IBX-CLI.md](docs/IBX-CLI.md) for the full CLI reference.
        │                    │                     │
        └─────────┬──────────┘                     │
                  │                                 │
-     ┌───────────▼─────────────────────────────────▼──┐
-     │                   Fastify API                   │
-     │          (REST + SSE streaming + auth)          │
-     └───────────┬─────────────────────┬──────────────┘
-                 │                     │
-         ┌───────▼────────┐    ┌───────▼────────┐
-         │  Claude Agent  │───▶│  Agent Tools   │
-         │  Orchestrator  │    │  (29 tools)    │
-         └───────┬────────┘    └───────┬────────┘
-                 │                     │
-      ┌──────────┼──────────┬──────────┤
-      │          │          │          │
-      ▼          ▼          ▼          ▼
-   Medusa     Prisma      Redis    Typesense
- (catalog,  (reservas,  (sessions, (product
-  shop,      reviews)   profiles)   search)
-  orders)
-      │
-      └──── NATS JetStream ──▶ PostHog (analytics)
+  ┌──────────────▼──────────────────────────────────▼──┐
+  │              Fastify API (apps/api)                 │
+  │       REST + SSE streaming + OTP auth               │
+  │       Swagger UI → /api/docs                        │
+  └──────────┬──────────────────────┬──────────────────┘
+             │                      │
+     ┌───────▼────────┐     ┌───────▼────────┐
+     │  Claude Agent  │────▶│  Agent Tools   │
+     │  Orchestrator  │     │  (25 tools)    │
+     └───────┬────────┘     └───────┬────────┘
+             │                      │
+  ┌──────────┼──────────┬───────────┤
+  │          │          │           │
+  ▼          ▼          ▼           ▼
+Medusa     Prisma      Redis     Typesense
+(catalog,  (reservas,  (sessions, (product
+ shop,      reviews,   profiles,   search)
+ orders)    customers)  co-purchase)
+  │
+  └──── NATS JetStream ──▶ PostHog (analytics)
+
+  ┌──────────────────────────────────────────────────┐
+  │           Next.js Storefront (apps/web)           │
+  │  PDP · Search · Cart · Checkout · Login · Orders  │
+  │  PostHog analytics · sendBeacon → NATS            │
+  └──────────────────────────────────────────────────┘
 ```
 
 ---
+
+## Apps
+
+| App | Path | What |
+|-----|------|------|
+| Web | `apps/web` | Next.js 14 storefront — PDP, search, cart, checkout, OTP login, order tracking, analytics |
+| API | `apps/api` | Fastify REST API — 44 routes, SSE chat stream, Swagger docs |
+| Commerce | `apps/commerce` | Medusa v2 — catalog, cart, orders, payments, admin UI |
+| Agent | `apps/agent` | Claude agent orchestrator (library, runs inside API) |
+
+For a full list of services and their URLs, see the [Local URLs](docs/setup/local-dev.md#local-urls) section in the setup guide.
 
 ## Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Next.js 14, Tailwind CSS, shadcn/ui |
-| API | Fastify, TypeScript 5+, Node.js 20+ |
-| Agent | Claude Sonnet (Anthropic), tool-use API |
+| Frontend | Next.js 14, Tailwind CSS, PostHog analytics |
+| API | Fastify, TypeScript 5+, Swagger/OpenAPI, Node.js 20+ |
+| Agent | Claude Sonnet (Anthropic), tool-use API — 25 tools |
 | Commerce | Medusa.js v2 — catalog, cart, orders, payments |
 | Auth | Twilio Verify — WhatsApp OTP (no passwords, no Clerk) |
-| Database | PostgreSQL 15 (Medusa + Prisma) |
-| Cache | Redis — sessions, CustomerProfile (30d TTL) |
-| Search | Typesense — full-text product search |
-| Events | NATS JetStream — analytics, review triggers |
-| Payments | Stripe (card) + Pagar.me (PIX) |
+| Database | PostgreSQL 15 (Medusa + Prisma `ibx_domain` schema) |
+| Cache | Redis — sessions, CustomerProfile (30d TTL), co-purchase matrix |
+| Search | Typesense — full-text + vector product search |
+| Events | NATS JetStream — domain events, analytics pipeline |
+| Analytics | PostHog (client-side) + sendBeacon → NATS (server-side) |
+| Payments | Stripe (card + PIX) |
 | Cloud | AWS sa-east-1 (ECS Fargate, RDS, CloudFront) |
 
 ---
@@ -78,11 +97,13 @@ See [docs/IBX-CLI.md](docs/IBX-CLI.md) for the full CLI reference.
 | Doc | Contents |
 |-----|---------|
 | [CLAUDE.md](CLAUDE.md) | AI agent guide — hard rules, naming conventions |
-| [docs/IBX-CLI.md](docs/IBX-CLI.md) | Full `ibx` command reference |
+| [docs/ibx-cli.md](docs/ibx-cli.md) | Full `ibx` command reference |
 | [docs/setup/local-dev.md](docs/setup/local-dev.md) | Prerequisites, env vars, setup |
 | [docs/design/bounded-contexts.md](docs/design/bounded-contexts.md) | 8 contexts, entity ownership |
-| [docs/design/domain-model.md](docs/design/domain-model.md) | Reservation, Review, CustomerProfile |
-| [docs/design/agent-tools.md](docs/design/agent-tools.md) | 29 tools — auth level, inputs, outputs |
+| [docs/design/domain-model.md](docs/design/domain-model.md) | Prisma schema, entities, NATS events |
+| [docs/design/agent-tools.md](docs/design/agent-tools.md) | 25 tools — auth level, inputs, outputs |
 | [docs/design/use-cases.md](docs/design/use-cases.md) | Web vs WhatsApp vs in-person matrix |
-| [docs/design/customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations, reviews |
-| [docs/next-steps.md](docs/next-steps.md) | Roadmap — current step + upcoming build order |
+| [docs/design/customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations, reviews, co-purchase |
+| [docs/analytics-dashboards.md](docs/analytics-dashboards.md) | Event taxonomy, PostHog dashboards, KPIs |
+| [docs/ops/redis-memory.md](docs/ops/redis-memory.md) | Redis key patterns, TTLs, ops commands |
+| [docs/next-steps.md](docs/next-steps.md) | Roadmap — remaining build steps |

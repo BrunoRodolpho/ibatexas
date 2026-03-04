@@ -164,7 +164,8 @@ describe("runAgent edge cases", () => {
 
     const errorChunk = chunks.find((c) => c.type === "error")
     expect(errorChunk).toBeDefined()
-    expect((errorChunk as { type: "error"; message: string }).message).toContain("stream")
+    // Error message is sanitized — no SDK internals leak to the client
+    expect((errorChunk as { type: "error"; message: string }).message).toContain("Tente novamente")
   })
 
   it("passes history messages correctly", async () => {

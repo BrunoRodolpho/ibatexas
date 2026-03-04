@@ -15,21 +15,25 @@ export async function registerSwagger(server: FastifyInstance): Promise<void> {
         version,
       },
       tags: [
-        { name: "chat", description: "Conversas com o agente" },
-        { name: "catalog", description: "Catálogo de produtos" },
         { name: "health", description: "Status do serviço" },
+        { name: "auth", description: "Autenticação (OTP via WhatsApp)" },
+        { name: "chat", description: "Conversas com o agente" },
+        { name: "catalog", description: "Catálogo de produtos e categorias" },
+        { name: "cart", description: "Carrinho de compras" },
+        { name: "shipping", description: "Estimativa de entrega" },
+        { name: "reservations", description: "Reservas de mesa" },
+        { name: "analytics", description: "Tracking de eventos" },
+        { name: "webhooks", description: "Webhooks (Stripe)" },
+        { name: "admin", description: "Painel administrativo" },
       ],
     },
   });
 
-  // Only expose Swagger UI outside production
-  if (process.env.NODE_ENV !== "production") {
-    await server.register(swaggerUi, {
-      routePrefix: "/docs",
-      uiConfig: {
-        docExpansion: "list",
-        deepLinking: false,
-      },
-    });
-  }
+  await server.register(swaggerUi, {
+    routePrefix: "/api/docs",
+    uiConfig: {
+      docExpansion: "list",
+      deepLinking: false,
+    },
+  });
 }

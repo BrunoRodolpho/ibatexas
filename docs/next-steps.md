@@ -1,49 +1,7 @@
-# Next Steps — Phase 1 Build Order
+# Next Steps — Remaining Build Order
 
-Steps 1–8 are complete. Steps 9–14 are below in order.
+Steps 1–11 are complete. Steps 12–15 are below in order.
 Remove a step from this file once it is done (git history is the record).
-
----
-
-### Step 9 — Customer Intelligence
-
-- `CustomerProfile` in Redis — populated from Medusa order history on first login
-- Tools: `get_recommendations`, `update_preferences`, `submit_review`, `get_customer_profile`
-- NATS event publishing (full catalogue in [customer-intelligence.md](design/customer-intelligence.md))
-- Post-delivery review prompt — 30min delay via NATS → WhatsApp
-- Review display on product pages (rolling average)
-
-  > Abandoned cart publisher: scheduled job in `apps/api` (cron every 1h, checks carts
-  > inactive > 24h). Publishes `cart.abandoned`. Subscriber in `packages/tools` sends
-  > WhatsApp reminder and updates CustomerProfile.
-
----
-
-### Step 10 — Checkout
-
-Full purchase flow:
-
-- Cart state via Medusa (guest + authenticated)
-- Delivery type: delivery / pickup / dine-in
-- CEP validation via ViaCEP + zone + fee
-- Payments: PIX (QR) + Stripe card + cash + boleto (merchandise only)
-- Gorjeta option (restaurant orders)
-- Order confirmation + estimated time
-- NF-e via Focus NFe
-
----
-
-### Step 11 — Auth (Twilio Verify — WhatsApp OTP)
-
-Auth via Twilio Verify — no passwords. Same flow for customers and staff.
-
-- `POST /api/auth/send-otp` — sends WhatsApp OTP via Twilio Verify
-- `POST /api/auth/verify-otp` — validates code, issues JWT + sets cookie
-- API middleware: require auth on `/api/chat/*`, `/api/orders/*`, `/api/admin/*`
-- Web middleware: require auth on `/checkout`, `/conta`, `/reservas`, `/admin`
-- Guest → Customer promotion at checkout (cart migration)
-- Staff role differentiated by `CustomerProfile.type` field, not by auth provider
-- JWT stored in httpOnly cookie; refresh via `@fastify/jwt` + `@fastify/cookie`
 
 ---
 
@@ -75,7 +33,20 @@ Required before any real users:
 Production-grade visibility:
 
 - Structured pino logs → CloudWatch
-- PostHog dashboards: sales, products, reservations, agent performance, customer cohorts
+- PostHog dashboards: create the 3 dashboards defined in `docs/analytics-dashboards.md` (PostHog integration code is complete — only UI dashboard setup remains)
 - Sentry for error tracking
 - BetterStack for uptime monitoring
-- `ibx health` extended to cover all running app services
+
+---
+
+### Step 15 — Remaining Agent Tools + API Docs
+
+3 tools from the spec not yet implemented:
+
+- `check_inventory` — real-time stock check for a variant (standalone, beyond `add_to_cart` internal check)
+- `get_nutritional_info` — full ANVISA-format breakdown (beyond `get_product_details.nutritionalInfo`)
+- `handoff_to_human` — escalate to staff via WhatsApp notification
+
+API documentation:
+
+- Swagger/OpenAPI at `/api/docs` — wire `@fastify/swagger` + `@fastify/swagger-ui` into existing Fastify route schemas

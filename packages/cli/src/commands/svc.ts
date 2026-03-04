@@ -2,6 +2,7 @@ import type { Command } from "commander"
 import chalk from "chalk"
 import net from "node:net"
 import { SERVICES } from "../services.js"
+import { ROOT } from "../utils/root.js"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -557,4 +558,43 @@ export function registerSvcCommands(svc: Command) {
     .command("status")
     .description("Show running services with addresses and health status")
     .action(showStatus)
+
+  svc
+    .command("logs [service]")
+    .description("Tail Docker compose logs — all or a specific service (postgres, redis, typesense, nats)")
+    .option("-n, --tail <lines>", "Number of lines to show", "50")
+    .action(async (service: string | undefined, opts: { tail: string }) => {
+      const { execa } = await import("execa")
+
+      const DOCKER_SERVICES: Record<string, string> = {
+        postgres: "postgres",
+        redis: "redis",
+        typesense: "typesense",
+        nats: "nats",
+      }
+
+      const args = ["compose", "logs", "-f", "--tail", opts.tail]
+
+      if (service) {
+        const mapped = DOCKER_SERVICES[service.toLowerCase()]
+        if (!mapped) {
+          console.error(
+            chalk.red(`Unknown service "${service}". Valid: ${Object.keys(DOCKER_SERVICES).join(", ")}`)
+          )
+          process.exit(1)
+        }
+        args.push(mapped)
+      }
+
+      try {
+        await execa("docker", args, { cwd: ROOT, stdio: "inherit" })
+      } catch (err) {
+        const error = err as { exitCode?: number }
+        // SIGINT (Ctrl+C) is expected — don't treat as failure
+        if (error.exitCode !== 130) {
+          console.error(chalk.red(`docker compose logs failed: ${(err as Error).message}`))
+          process.exit(1)
+        }
+      }
+    })
 }

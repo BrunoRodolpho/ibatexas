@@ -110,10 +110,12 @@ Waitlist (Postgres)
   ├── customerId: string
   ├── timeSlotId: string
   ├── partySize: number
-  ├── position: number          ← 1 = next in line
   ├── notifiedAt: Date | null   ← when WhatsApp notification was sent
-  └── expiresAt: Date           ← auto-remove if customer doesn't claim spot in 30min
+  ├── expiresAt: Date           ← auto-remove if customer doesn't claim spot in 30min
+  └── createdAt: Date           ← position derived from ORDER BY createdAt
 ```
+
+`@@unique([customerId, timeSlotId])` — one waitlist entry per customer per slot.
 
 ---
 
@@ -202,67 +204,167 @@ interface BusinessEvent<T = Record<string, unknown>> {
 
 ---
 
-## Prisma Schema (target — not yet created)
+## Prisma Schema
+
+Lives in `packages/domain/prisma/schema.prisma` — `ibx_domain` PostgreSQL schema.
+Separate namespace from Medusa. Run `ibx db migrate:domain` to apply migrations.
 
 ```prisma
 model Table {
-  id          String        @id @default(cuid())
-  number      String        @unique
-  capacity    Int
-  location    TableLocation
-  accessible  Boolean       @default(false)
-  active      Boolean       @default(true)
-  createdAt   DateTime      @default(now())
-  timeSlots   TimeSlot[]
+  id         String        @id @default(cuid())
+  number     String        @unique
+  capacity   Int
+  location   TableLocation
+  accessible Boolean       @default(false)
+  active     Boolean       @default(true)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  reservationTables ReservationTable[]
 }
 
 model TimeSlot {
-  id              String        @id @default(cuid())
-  date            DateTime      @db.Date
-  startTime       String        // '19:30'
-  durationMinutes Int           @default(90)
+  id              String   @id @default(cuid())
+  date            DateTime @db.Date
+  startTime       String   // '19:30'
+  durationMinutes Int      @default(90)
   maxCovers       Int
-  table           Table         @relation(fields: [tableId], references: [id])
-  tableId         String
-  reservations    Reservation[]
-  @@unique([tableId, date, startTime])
+  reservedCovers  Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  reservations Reservation[]
+  waitlist     Waitlist[]
+
+  @@unique([date, startTime])
 }
 
 model Reservation {
   id              String            @id @default(cuid())
-  customerId      String            // Medusa customer id (from Twilio-verified phone)
+  customerId      String
   partySize       Int
   status          ReservationStatus @default(pending)
-  specialRequests Json              // SpecialRequest[]
+  specialRequests Json              @default("[]")
   confirmedAt     DateTime?
   checkedInAt     DateTime?
   cancelledAt     DateTime?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
-  timeSlot        TimeSlot          @relation(fields: [timeSlotId], references: [id])
-  timeSlotId      String
+
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id])
+  timeSlotId String
+
+  tables ReservationTable[]
+}
+
+model ReservationTable {
+  reservation   Reservation @relation(fields: [reservationId], references: [id])
+  reservationId String
+  table         Table       @relation(fields: [tableId], references: [id])
+  tableId       String
+
+  @@id([reservationId, tableId])
 }
 
 model Waitlist {
-  id          String    @id @default(cuid())
-  customerId  String
-  timeSlotId  String
-  partySize   Int
-  position    Int
-  notifiedAt  DateTime?
-  expiresAt   DateTime
-  createdAt   DateTime  @default(now())
+  id         String    @id @default(cuid())
+  customerId String
+  partySize  Int
+  // position is derived: ORDER BY createdAt among entries for the same slot
+  notifiedAt DateTime?
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id])
+  timeSlotId String
+
+  @@unique([customerId, timeSlotId])
 }
 
 model Review {
   id          String   @id @default(cuid())
-  orderId     String   // Medusa order id
-  productIds  String[] // Medusa product ids
+  orderId     String
+  productIds  String[]  // legacy: multiple product ids
+  productId   String?   // primary product this review is for
   customerId  String
-  rating      Int      // 1–5
+  rating      Int       // 1–5
   comment     String?
-  channel     String   // 'web' | 'whatsapp'
+  channel     String    // 'web' | 'whatsapp'
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  customer Customer? @relation(fields: [customerId], references: [id])
+
+  @@unique([orderId, customerId])
+}
+
+model Customer {
+  id        String   @id @default(cuid())
+  phone     String   @unique
+  name      String?
+  email     String?
+  medusaId  String?  @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  addresses   Address[]
+  preferences CustomerPreferences?
+  reviews     Review[]
+  orderItems  CustomerOrderItem[]
+}
+
+model Address {
+  id         String  @id @default(cuid())
+  customerId String
+  street     String
+  number     String
+  complement String?
+  district   String
+  city       String
+  state      String  @db.Char(2)
+  cep        String  @db.Char(8)
+  isDefault  Boolean @default(false)
+
+  customer Customer @relation(fields: [customerId], references: [id])
+}
+
+model CustomerPreferences {
+  id                  String   @id @default(cuid())
+  customerId          String   @unique
+  dietaryRestrictions String[]
+  allergenExclusions  String[] // always explicit array — never infer
+  favoriteCategories  String[]
+  updatedAt           DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id])
+}
+
+model CustomerOrderItem {
+  id               String   @id @default(cuid())
+  customerId       String
+  medusaOrderId    String
+  productId        String
+  variantId        String
+  quantity         Int
+  priceInCentavos  Int
+  orderedAt        DateTime
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId, productId])
+  @@index([medusaOrderId])
+}
+
+model DeliveryZone {
+  id               String   @id @default(cuid())
+  name             String
+  cepPrefixes      String[]
+  feeInCentavos    Int
+  estimatedMinutes Int
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
 
 enum TableLocation {

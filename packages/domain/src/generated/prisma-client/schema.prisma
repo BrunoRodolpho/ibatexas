@@ -144,7 +144,8 @@ model Waitlist {
 model Review {
   id         String   @id @default(cuid())
   orderId    String   @map("order_id") // Medusa order id
-  productIds String[] @map("product_ids") // Medusa product ids
+  productIds String[] @map("product_ids") // legacy: multiple product ids
+  productId  String?  @map("product_id") // primary product this review is for
   customerId String   @map("customer_id")
   rating     Int // 1–5
   comment    String?
@@ -152,10 +153,109 @@ model Review {
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
   @@unique([orderId, customerId])
   @@index([customerId])
   @@index([orderId])
   @@index([rating])
+  @@index([productId])
   @@map("reviews")
+  @@schema("ibx_domain")
+}
+
+// ─── Customer & Auth ──────────────────────────────────────────────────────────
+
+/// Twilio-verified customer profile. Phone is the primary identity.
+model Customer {
+  id        String   @id @default(cuid())
+  phone     String   @unique
+  name      String?
+  email     String?
+  medusaId  String?  @unique @map("medusa_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  addresses   Address[]
+  preferences CustomerPreferences?
+  reviews     Review[]
+  orderItems  CustomerOrderItem[]
+
+  @@index([phone])
+  @@map("customers")
+  @@schema("ibx_domain")
+}
+
+/// Delivery address for a customer.
+model Address {
+  id         String  @id @default(cuid())
+  customerId String  @map("customer_id")
+  street     String
+  number     String
+  complement String?
+  district   String
+  city       String
+  state      String  @db.Char(2)
+  cep        String  @db.Char(8)
+  isDefault  Boolean @default(false) @map("is_default")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("addresses")
+  @@schema("ibx_domain")
+}
+
+/// Customer dietary preferences — one row per customer.
+/// allergenExclusions must always be an explicit array (never inferred).
+model CustomerPreferences {
+  id                  String   @id @default(cuid())
+  customerId          String   @unique @map("customer_id")
+  dietaryRestrictions String[] @map("dietary_restrictions")
+  allergenExclusions  String[] @map("allergen_exclusions")
+  favoriteCategories  String[] @map("favorite_categories")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@map("customer_preferences")
+  @@schema("ibx_domain")
+}
+
+/// One row per product per order — powers personalized recommendations and co-purchase matrix.
+/// Not deleted on order cancellation (needed for analytics).
+model CustomerOrderItem {
+  id              String   @id @default(cuid())
+  customerId      String   @map("customer_id")
+  medusaOrderId   String   @map("medusa_order_id")
+  productId       String   @map("product_id")
+  variantId       String   @map("variant_id")
+  quantity        Int
+  priceInCentavos Int      @map("price_in_centavos")
+  orderedAt       DateTime @map("ordered_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId, productId])
+  @@index([medusaOrderId])
+  @@index([customerId])
+  @@map("customer_order_items")
+  @@schema("ibx_domain")
+}
+
+// ─── Delivery ─────────────────────────────────────────────────────────────────
+
+/// Delivery zone defined by CEP prefix matching.
+model DeliveryZone {
+  id               String   @id @default(cuid())
+  name             String
+  cepPrefixes      String[] @map("cep_prefixes")
+  feeInCentavos    Int      @map("fee_in_centavos")
+  estimatedMinutes Int      @map("estimated_minutes")
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("delivery_zones")
   @@schema("ibx_domain")
 }

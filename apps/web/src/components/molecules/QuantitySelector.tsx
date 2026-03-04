@@ -1,5 +1,4 @@
 import React from 'react'
-import { Button } from '../atoms'
 import clsx from 'clsx'
 
 interface QuantitySelectorProps {
@@ -29,51 +28,42 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
     }
   }
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value, 10)
-    if (!isNaN(value) && value >= min && value <= max) {
-      onQuantityChange(value)
-    }
-  }
-
-  const btnSize = size === 'sm' ? 'h-8 w-8' : size === 'lg' ? 'h-10 w-10' : 'h-9 w-9'
-  const inputSize = size === 'sm' ? 'w-8 text-sm' : size === 'lg' ? 'w-12 text-lg' : 'w-10 text-base'
+  const containerSize = size === 'sm' ? 'h-8' : size === 'lg' ? 'h-12' : 'h-10'
+  const btnSize = size === 'sm' ? 'w-8 h-8' : size === 'lg' ? 'w-12 h-12' : 'w-10 h-10'
+  const countSize = size === 'sm' ? 'w-8 text-xs' : size === 'lg' ? 'w-14 text-base' : 'w-12 text-sm'
 
   return (
-    <div className={clsx('flex items-center gap-2 rounded-sm border border-smoke-200 bg-smoke-50 w-fit')}>
+    <div className={clsx('inline-flex items-center border border-smoke-200 rounded-sm w-fit', containerSize)}>
       <button
         onClick={handleDecrease}
         disabled={quantity <= min}
         className={clsx(
           btnSize,
-          'flex items-center justify-center font-bold text-charcoal-700',
-          'hover:bg-smoke-100 disabled:opacity-50 disabled:cursor-not-allowed'
+          'flex items-center justify-center text-charcoal-900 transition-colors duration-300',
+          'hover:bg-smoke-100 disabled:opacity-50 disabled:cursor-not-allowed',
         )}
         aria-label="Diminuir quantidade"
       >
         −
       </button>
 
-      <input
-        type="number"
-        value={quantity}
-        onChange={handleInputChange}
-        min={min}
-        max={max}
+      <span
         className={clsx(
-          inputSize,
-          'text-center border-0 outline-none bg-transparent font-semibold'
+          countSize,
+          'text-center tabular-nums font-medium text-charcoal-900 select-none',
         )}
         aria-label="Quantidade"
-      />
+      >
+        {quantity}
+      </span>
 
       <button
         onClick={handleIncrease}
         disabled={quantity >= max}
         className={clsx(
           btnSize,
-          'flex items-center justify-center font-bold text-charcoal-700',
-          'hover:bg-smoke-100 disabled:opacity-50 disabled:cursor-not-allowed'
+          'flex items-center justify-center text-charcoal-900 transition-colors duration-300',
+          'hover:bg-smoke-100 disabled:opacity-50 disabled:cursor-not-allowed',
         )}
         aria-label="Aumentar quantidade"
       >

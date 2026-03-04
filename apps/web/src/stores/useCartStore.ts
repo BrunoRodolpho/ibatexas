@@ -24,6 +24,8 @@ interface CartState {
   cep?: string
   deliveryFee?: number
   estimatedDeliveryMinutes?: number
+  /** Medusa cart ID — set when a cart is created via /api/cart */
+  medusaCartId?: string
 
   // Actions
   addItem: (product: ProductDTO, quantity: number, specialInstructions?: string, variant?: ProductVariant) => void
@@ -36,6 +38,8 @@ interface CartState {
   setSelectedTimeSlot: (slot?: string) => void
   setCep: (cep: string) => void
   setDeliveryEstimate: (fee: number, minutes: number) => void
+  setMedusaCartId: (cartId: string) => void
+  clearMedusaCartId: () => void
 
   // Computed
   getTotal: () => number
@@ -109,6 +113,7 @@ export const useCartStore = create<CartState>()(
           selectedTimeSlot: undefined,
           cep: undefined,
           deliveryFee: undefined,
+          medusaCartId: undefined,
         }),
 
       setDeliveryType: (type) => set({ deliveryType: type }),
@@ -118,6 +123,8 @@ export const useCartStore = create<CartState>()(
       setCep: (cep) => set({ cep }),
       setDeliveryEstimate: (fee, minutes) =>
         set({ deliveryFee: fee, estimatedDeliveryMinutes: minutes }),
+      setMedusaCartId: (cartId) => set({ medusaCartId: cartId }),
+      clearMedusaCartId: () => set({ medusaCartId: undefined }),
 
       getTotal: () => {
         return get().items.reduce((total, item) => total + item.price * item.quantity, 0)
