@@ -35,7 +35,7 @@ See [docs/ibx-cli.md](docs/ibx-cli.md) for the full CLI reference.
   ┌──────────────▼──────────────────────────────────▼──┐
   │              Fastify API (apps/api)                 │
   │       REST + SSE streaming + OTP auth               │
-  │       Swagger UI → /api/docs                        │
+  │       Swagger UI → /docs                            │
   └──────────┬──────────────────────┬──────────────────┘
              │                      │
      ┌───────▼────────┐     ┌───────▼────────┐
