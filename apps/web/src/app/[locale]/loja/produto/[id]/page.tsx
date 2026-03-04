@@ -7,7 +7,7 @@ import { Heading, Text, Button } from '@/components/atoms'
 import { Badge } from '@/components/atoms/Badge'
 import { SizeSelector, ShippingEstimate, QuantitySelector } from '@/components/molecules'
 import { ProductGrid } from '@/components/organisms'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Star, Truck, Flame, ShieldCheck, ChevronRight } from 'lucide-react'
 import { Link } from '@/i18n/navigation'
 import { MediaGallery } from '@/components/molecules/MediaGallery'
@@ -140,8 +140,9 @@ export default function ProductPage({ params }: ProductPageProps) {
     limit: 6,
   })
 
-  const crossSellProducts = (crossSellData?.items ?? []).filter(
-    (p) => p.id !== params.id,
+  const crossSellProducts = useMemo(
+    () => (crossSellData?.items ?? []).filter((p) => p.id !== params.id),
+    [crossSellData?.items, params.id],
   )
 
   // ── Track cross-sell visibility ─────────────────────────────────────
@@ -151,7 +152,7 @@ export default function ProductPage({ params }: ProductPageProps) {
       productId: product.id,
       suggestedIds: crossSellProducts.map((p) => p.id),
     })
-  }, [product?.id, crossSellProducts.length])
+  }, [product?.id, crossSellProducts])
 
   if (loading) {
     return <PDPSkeleton />

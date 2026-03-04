@@ -5,7 +5,8 @@
 
 import type { AgentContext } from "@ibatexas/types";
 import { prisma } from "@ibatexas/domain";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient } from "../redis/client.js";
+import { rk } from "../redis/key.js";
 import { PROFILE_TTL_SECONDS } from "./types.js";
 
 export interface UpdatePreferencesInput {

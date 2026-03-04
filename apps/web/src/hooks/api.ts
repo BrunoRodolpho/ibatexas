@@ -47,6 +47,9 @@ export function useProducts({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
 
+  const tagsKey = tags?.join(",") ?? ""
+  const allergensKey = excludeAllergens?.join(",") ?? ""
+
   useEffect(() => {
     const params = new URLSearchParams()
     if (query) params.set("query", query)
@@ -78,7 +81,7 @@ export function useProducts({
       })
       .catch(setError)
       .finally(() => setLoading(false))
-  }, [query, tags?.join(","), limit, productType, categoryHandle, sort, minPrice, maxPrice, minRating, offset, excludeAllergens?.join(","), availableNow])
+  }, [query, tagsKey, limit, productType, categoryHandle, sort, minPrice, maxPrice, minRating, offset, allergensKey, availableNow, tags, excludeAllergens])
 
   return { data, loading, error }
 }

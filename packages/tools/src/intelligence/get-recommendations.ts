@@ -3,7 +3,8 @@
 // Fallback: bestsellers/most-ordered for new customers.
 
 import type { AgentContext } from "@ibatexas/types";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient } from "../redis/client.js";
+import { rk } from "../redis/key.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
 
 export interface GetRecommendationsOutput {
@@ -93,7 +94,7 @@ export async function getRecommendations(
   const topIds = await redis.zRangeWithScores(globalKey, 0, limit - 1, { REV: true });
 
   if (topIds.length > 0) {
-    const productIds = topIds.map((e) => e.value);
+    const productIds = topIds.map((e: { value: string; score: number }) => e.value);
     const results = await typesense
       .collections<Record<string, unknown>>(COLLECTION)
       .documents()
