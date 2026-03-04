@@ -61,7 +61,7 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: ibatexas-nats
-    command: ["--jetstream", "--store_dir", "/data"]
+    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
     ports:
       - "127.0.0.1:4222:4222"   # client connections
       - "127.0.0.1:8222:8222"   # monitoring UI

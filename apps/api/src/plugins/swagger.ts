@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 import type { FastifyInstance } from "fastify";
+import { jsonSchemaTransform } from "fastify-type-provider-zod";
 
 const require = createRequire(import.meta.url);
 const { version } = require("../../package.json") as { version: string };
@@ -27,10 +28,14 @@ export async function registerSwagger(server: FastifyInstance): Promise<void> {
         { name: "admin", description: "Painel administrativo" },
       ],
     },
+    transform: jsonSchemaTransform,
   });
 
   await server.register(swaggerUi, {
-    routePrefix: "/api/docs",
+    routePrefix: "/docs",
+    staticCSP: true,
+    transformStaticCSP: (header) =>
+      header.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"),
     uiConfig: {
       docExpansion: "list",
       deepLinking: false,
