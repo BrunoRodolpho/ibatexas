@@ -96,7 +96,7 @@ ibx dev stop   # stops all processes + Docker containers
 | API Swagger UI  | http://localhost:3001/docs      | API documentation         |
 | Typesense       | http://localhost:8108           | Search                    |
 | NATS Monitor    | http://localhost:8222           | Event bus                 |
-| PostHog         | http://localhost:POSTHOG_PORT   | Analytics dashboard       |
+| PostHog         | https://app.posthog.com         | Analytics dashboard (cloud) |
 | PostgreSQL      | localhost:5433                  | Port 5433 (not 5432!)     |
 
 **Medusa admin login:** `admin@ibatexas.com.br` / `IbateXas2024!`
