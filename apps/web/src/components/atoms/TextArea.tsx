@@ -30,7 +30,7 @@ export const TextArea = React.forwardRef<HTMLTextAreaElement, TextAreaProps>(
         />
         <div className="flex justify-between items-start">
           {errorMessage && error && (
-            <p className="text-xs text-red-600">{errorMessage}</p>
+            <p className="text-xs text-accent-red">{errorMessage}</p>
           )}
           {counter && maxLength && (
             <p

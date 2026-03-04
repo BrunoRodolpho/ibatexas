@@ -27,11 +27,20 @@ const config: Config = {
           200: "#EDE9E3",
           300: "#DDD8CF",
           400: "#C4BDB3",
+          500: "#A8A298",
+          600: "#8C877E",
+          700: "#706C64",
+          800: "#55524B",
         },
         charcoal: {
           900: "#1A1614",
           800: "#231F1C",
           700: "#2E2924",
+        },
+        accent: {
+          green: "#2D6A4F",
+          red: "#DC2626",
+          amber: "#D97706",
         },
       },
 
@@ -46,6 +55,8 @@ const config: Config = {
         "display-lg": ["3.75rem", { lineHeight: "1.08", letterSpacing: "-0.015em" }],
         "display-md": ["3rem", { lineHeight: "1.1", letterSpacing: "-0.01em" }],
         "display-sm": ["2.25rem", { lineHeight: "1.15", letterSpacing: "-0.005em" }],
+        "display-xs": ["1.75rem", { lineHeight: "1.2", letterSpacing: "-0.005em" }],
+        "display-2xs": ["1.375rem", { lineHeight: "1.25", letterSpacing: "0" }],
       },
       letterSpacing: {
         "editorial": "0.04em",
@@ -59,6 +70,11 @@ const config: Config = {
         "md":   "0 4px 12px -2px rgba(120,80,40,0.06), 0 2px 4px -2px rgba(120,80,40,0.03)",
         "lg":   "0 10px 24px -4px rgba(120,80,40,0.08), 0 4px 8px -2px rgba(120,80,40,0.03)",
         "xl":   "0 20px 48px -8px rgba(120,80,40,0.10), 0 8px 16px -4px rgba(120,80,40,0.04)",
+      },
+
+      // ── Border Radius ──────────────────────────────────────────────
+      borderRadius: {
+        card: "6px",
       },
 
       // ── Spacing (luxury editorial rhythm) ────────────────────────────
@@ -105,6 +121,31 @@ const config: Config = {
           "0%":   { transform: "translateX(0)" },
           "100%": { transform: "translateX(-50%)" },
         },
+        "bounce-subtle": {
+          "0%":   { transform: "scale(1)" },
+          "40%":  { transform: "scale(1.15)" },
+          "100%": { transform: "scale(1)" },
+        },
+        press: {
+          "0%":   { transform: "scale(1)" },
+          "100%": { transform: "scale(0.95)" },
+        },
+        "snap-underline": {
+          "0%":   { transform: "scaleX(0)" },
+          "100%": { transform: "scaleX(1)" },
+        },
+        "slide-in-right": {
+          "0%":   { transform: "translateX(100%)" },
+          "100%": { transform: "translateX(0)" },
+        },
+        "slide-in-left": {
+          "0%":   { transform: "translateX(-100%)" },
+          "100%": { transform: "translateX(0)" },
+        },
+        "slide-in-bottom": {
+          "0%":   { transform: "translateY(100%)" },
+          "100%": { transform: "translateY(0)" },
+        },
       },
       animation: {
         "fade-in":    "fade-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards",
@@ -113,6 +154,12 @@ const config: Config = {
         "reveal-slow":"reveal-slow 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards",
         shimmer:      "shimmer 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite",
         marquee:      "marquee 40s linear infinite",
+        "bounce-subtle": "bounce-subtle 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        press:         "press 0.1s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "snap-underline": "snap-underline 0.1s linear forwards",
+        "slide-in-right":  "slide-in-right 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "slide-in-left":   "slide-in-left 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "slide-in-bottom": "slide-in-bottom 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards",
       },
     },
   },

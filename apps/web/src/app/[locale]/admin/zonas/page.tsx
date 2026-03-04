@@ -121,7 +121,7 @@ export default function ZonasPage() {
         </button>
       </div>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-accent-red">{error}</p>}
 
       {showForm && (
         <div className="rounded-sm border border-brand-200 bg-brand-50 p-5 space-y-4">
@@ -218,7 +218,7 @@ export default function ZonasPage() {
                 <button onClick={() => openEdit(zone)} className="p-1.5 rounded hover:bg-smoke-200 text-smoke-400 hover:text-charcoal-700">
                   <Pencil className="h-4 w-4" />
                 </button>
-                <button onClick={() => handleDelete(zone.id)} className="p-1.5 rounded hover:bg-red-50 text-smoke-400 hover:text-red-600">
+                <button onClick={() => handleDelete(zone.id)} className="p-1.5 rounded hover:bg-accent-red/10 text-smoke-400 hover:text-accent-red">
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>

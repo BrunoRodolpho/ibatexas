@@ -25,7 +25,7 @@ const ProductsQuery = z.object({
     .transform((v) => v === "true"),
   productType: z.enum(["food", "frozen", "merchandise"]).optional(),
   categoryHandle: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(20).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
   offset: z.coerce.number().int().min(0).optional(),
   sort: z.enum(["relevance", "price_asc", "price_desc", "rating_desc", "newest"]).optional(),
   excludeAllergens: z.string().optional(), // comma-separated list

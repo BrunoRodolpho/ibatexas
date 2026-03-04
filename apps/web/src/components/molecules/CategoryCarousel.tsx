@@ -21,7 +21,7 @@ export const CategoryCarousel = ({ categories, activeHandle }: CategoryCarouselP
         return (
           <Link
             key={category.id}
-            href={{ pathname: '/search', query: { category: category.handle } } as any}
+            href={`/search?category=${category.handle}`}
             className={`flex-shrink-0 text-xs font-medium uppercase tracking-editorial transition-colors duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
               isActive
                 ? 'text-charcoal-900 border-b border-charcoal-900 pb-0.5'

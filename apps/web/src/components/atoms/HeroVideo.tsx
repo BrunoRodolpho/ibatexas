@@ -28,6 +28,9 @@ export function HeroVideo({ src, poster, className = '' }: HeroVideoProps) {
     video.addEventListener('playing', onPlaying)
     video.addEventListener('pause', onPause)
 
+    // Track retry listeners for unconditional cleanup
+    const retryListeners: Array<{ type: string; handler: EventListener }> = []
+
     // autoPlay may have already started before React hydrated
     if (!video.paused) {
       setIsPlaying(true)
@@ -37,19 +40,25 @@ export function HeroVideo({ src, poster, className = '' }: HeroVideoProps) {
         // Blocked (Low Power Mode etc.) — retry on first interaction
         const retry = () => {
           video.play().catch(() => {})
-          document.removeEventListener('touchstart', retry)
-          document.removeEventListener('scroll', retry)
-          document.removeEventListener('click', retry)
+          retryListeners.forEach(({ type, handler }) =>
+            document.removeEventListener(type, handler),
+          )
         }
-        document.addEventListener('touchstart', retry, { once: true, passive: true })
-        document.addEventListener('scroll', retry, { once: true, passive: true })
-        document.addEventListener('click', retry, { once: true })
+        const events = ['touchstart', 'scroll', 'click'] as const
+        events.forEach((type) => {
+          document.addEventListener(type, retry, { once: true, passive: true })
+          retryListeners.push({ type, handler: retry as EventListener })
+        })
       })
     }
 
     return () => {
       video.removeEventListener('playing', onPlaying)
       video.removeEventListener('pause', onPause)
+      // Unconditionally remove retry listeners on unmount
+      retryListeners.forEach(({ type, handler }) =>
+        document.removeEventListener(type, handler),
+      )
     }
   }, [])
 

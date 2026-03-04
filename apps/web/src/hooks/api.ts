@@ -51,6 +51,7 @@ export function useProducts({
   const allergensKey = excludeAllergens?.join(",") ?? ""
 
   useEffect(() => {
+    const controller = new AbortController()
     const params = new URLSearchParams()
     if (query) params.set("query", query)
     if (tags?.length) params.set("tags", tags.join(","))
@@ -69,8 +70,9 @@ export function useProducts({
     const endpoint = qs ? `/api/products?${qs}` : "/api/products"
 
     setLoading(true)
-    apiFetch(endpoint)
+    apiFetch(endpoint, { signal: controller.signal })
       .then((res: Record<string, unknown>) => {
+        if (controller.signal.aborted) return
         // Support both old shape (products/totalFound) and new shape (items/total)
         setData({
           items: (res.items ?? res.products ?? []) as import('@ibatexas/types').ProductDTO[],
@@ -79,8 +81,15 @@ export function useProducts({
           facetCounts: res.facetCounts as ProductsResponse['facetCounts'],
         })
       })
-      .catch(setError)
-      .finally(() => setLoading(false))
+      .catch((err) => {
+        if (err?.name === 'AbortError') return
+        setError(err)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+
+    return () => controller.abort()
   }, [query, tagsKey, limit, productType, categoryHandle, sort, minPrice, maxPrice, minRating, offset, allergensKey, availableNow, tags, excludeAllergens])
 
   return { data, loading, error }
@@ -92,10 +101,21 @@ export function useProductDetail(id: string) {
   const [error, setError] = useState<Error | null>(null)
 
   useEffect(() => {
-    apiFetch(`/api/products/${id}`)
-      .then(setData)
-      .catch(setError)
-      .finally(() => setLoading(false))
+    const controller = new AbortController()
+    setLoading(true)
+    apiFetch(`/api/products/${id}`, { signal: controller.signal })
+      .then((res) => {
+        if (!controller.signal.aborted) setData(res)
+      })
+      .catch((err) => {
+        if (err?.name === 'AbortError') return
+        setError(err)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+
+    return () => controller.abort()
   }, [id])
 
   return { data, loading, error }
@@ -189,12 +209,13 @@ export function useChat() {
       })
 
       // Stream response
-      await apiStream(`/api/chat/stream/${sessionId}`, (chunk: any) => {
-        if (chunk.type === "text_delta") {
-          updateLastMessage(chunk.delta)
-        } else if (chunk.type === "error") {
-          setError(chunk.message)
-        } else if (chunk.type === "done") {
+      await apiStream(`/api/chat/stream/${sessionId}`, (chunk: unknown) => {
+        const c = chunk as Record<string, unknown>
+        if (c.type === "text_delta") {
+          updateLastMessage(c.delta as string)
+        } else if (c.type === "error") {
+          setError(c.message as string)
+        } else if (c.type === "done") {
           setLoading(false)
         }
       })

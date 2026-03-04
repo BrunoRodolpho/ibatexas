@@ -68,7 +68,7 @@ export const ShippingEstimate = () => {
         </div>
         
         {error && (
-          <Text variant="small" className="text-red-600">
+          <Text variant="small" className="text-accent-red">
             {error.message}
           </Text>
         )}

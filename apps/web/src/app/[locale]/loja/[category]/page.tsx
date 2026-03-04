@@ -32,7 +32,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
   if (error) {
     return (
       <div className="text-center py-12">
-        <Text variant="body" className="text-red-600">
+        <Text variant="body" className="text-accent-red">
           {t('common.error')}: {error.message}
         </Text>
       </div>

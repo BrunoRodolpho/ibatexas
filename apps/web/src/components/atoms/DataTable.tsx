@@ -15,7 +15,8 @@ import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 
 interface DataTableProps<T> {
   data: T[]
-  columns: ColumnDef<T, unknown>[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TanStack Table requires `any` for mixed-value column arrays
+  columns: ColumnDef<T, any>[]
   pageSize?: number
   isLoading?: boolean
   emptyMessage?: string

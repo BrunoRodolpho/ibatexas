@@ -139,7 +139,7 @@ export default function CartPage() {
                 )}
 
                 {couponCode && couponDiscount > 0 && (
-                  <div className="flex justify-between bg-green-50 p-2 rounded text-green-700">
+                  <div className="flex justify-between bg-accent-green/10 p-2 rounded text-accent-green">
                     <Text variant="small">{t('cart.coupon_applied_badge')} ({couponCode})</Text>
                     <Text variant="small" className="font-semibold">
                       -{(couponDiscount / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}

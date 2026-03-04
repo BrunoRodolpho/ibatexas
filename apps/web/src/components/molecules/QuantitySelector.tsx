@@ -1,5 +1,6 @@
 import React from 'react'
 import clsx from 'clsx'
+import { useTranslations } from 'next-intl'
 
 interface QuantitySelectorProps {
   quantity: number
@@ -16,6 +17,8 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
   onQuantityChange,
   size = 'md',
 }) => {
+  const t = useTranslations()
+
   const handleDecrease = () => {
     if (quantity > min) {
       onQuantityChange(quantity - 1)
@@ -28,9 +31,9 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
     }
   }
 
-  const containerSize = size === 'sm' ? 'h-8' : size === 'lg' ? 'h-12' : 'h-10'
-  const btnSize = size === 'sm' ? 'w-8 h-8' : size === 'lg' ? 'w-12 h-12' : 'w-10 h-10'
-  const countSize = size === 'sm' ? 'w-8 text-xs' : size === 'lg' ? 'w-14 text-base' : 'w-12 text-sm'
+  const containerSize = size === 'sm' ? 'h-11' : size === 'lg' ? 'h-12' : 'h-11'
+  const btnSize = size === 'sm' ? 'w-11 h-11' : size === 'lg' ? 'w-12 h-12' : 'w-11 h-11'
+  const countSize = size === 'sm' ? 'w-10 text-xs' : size === 'lg' ? 'w-14 text-base' : 'w-12 text-sm'
 
   return (
     <div className={clsx('inline-flex items-center border border-smoke-200 rounded-sm w-fit', containerSize)}>
@@ -42,7 +45,7 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
           'flex items-center justify-center text-charcoal-900 transition-colors duration-300',
           'hover:bg-smoke-100 disabled:opacity-50 disabled:cursor-not-allowed',
         )}
-        aria-label="Diminuir quantidade"
+        aria-label={t('common.decrease_quantity')}
       >
         −
       </button>
@@ -52,7 +55,7 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
           countSize,
           'text-center tabular-nums font-medium text-charcoal-900 select-none',
         )}
-        aria-label="Quantidade"
+        aria-label={t('common.quantity_label')}
       >
         {quantity}
       </span>
@@ -65,7 +68,7 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
           'flex items-center justify-center text-charcoal-900 transition-colors duration-300',
           'hover:bg-smoke-100 disabled:opacity-50 disabled:cursor-not-allowed',
         )}
-        aria-label="Aumentar quantidade"
+        aria-label={t('common.increase_quantity')}
       >
         +
       </button>

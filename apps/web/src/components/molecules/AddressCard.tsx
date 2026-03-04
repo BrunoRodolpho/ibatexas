@@ -74,7 +74,7 @@ export const AddressCard: React.FC<AddressCardProps> = ({
                   e.stopPropagation()
                   onDelete(id)
                 }}
-                className="text-sm text-red-600 hover:underline"
+                className="text-sm text-accent-red hover:underline"
               >
                 Remover
               </button>

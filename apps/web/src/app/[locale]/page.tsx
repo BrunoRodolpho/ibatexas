@@ -1,37 +1,24 @@
-'use client'
+import { getTranslations } from 'next-intl/server'
+import { Heading, Text, HeroVideo } from '@/components/atoms'
+import { Beef, Flame, Package, Truck } from 'lucide-react'
+import HomeCarousel from './HomeCarousel'
+import HomeCTA from './HomeCTA'
 
-import { useTranslations } from 'next-intl'
-import { ProductCarousel } from '@/components/organisms/ProductCarousel'
-import { useProducts } from '@/hooks/api'
-import { useUIStore } from '@/stores/useUIStore'
-import { useCartStore } from '@/stores/useCartStore'
-import { Button, HeroVideo, Heading, Text } from '@/components/atoms'
-import type { ProductDTO } from '@ibatexas/types'
-
-export default function Home() {
-  const t = useTranslations()
-  const setChat = useUIStore((s) => s.setChat)
-  const addToast = useUIStore((s) => s.addToast)
-  const addItem = useCartStore((s) => s.addItem)
-
-  const { data: productsData, loading: productsLoading } = useProducts({ limit: 12 })
-
-  const topProducts = productsData?.items ?? []
-
-  const handleAddToCart = (productId: string) => {
-    const product = topProducts.find((p) => p.id === productId)
-    if (product) {
-      const defaultVariant = product.variants?.[0]
-      addItem(product as ProductDTO, 1, undefined, defaultVariant)
-      addToast(t('product.added'), 'success')
-    }
-  }
+export default async function Home() {
+  const t = await getTranslations()
 
   const stats = [
     { value: t('home.stats_hours_value'), label: t('home.stats_hours_label') },
     { value: t('home.stats_ingredients_value'), label: t('home.stats_ingredients_label') },
     { value: t('home.stats_deliveries_value'), label: t('home.stats_deliveries_label') },
     { value: t('home.stats_rating_value'), label: t('home.stats_rating_label') },
+  ]
+
+  const steps = [
+    { icon: Beef, title: t('home.process_step1_title'), desc: t('home.process_step1_desc') },
+    { icon: Flame, title: t('home.process_step2_title'), desc: t('home.process_step2_desc') },
+    { icon: Package, title: t('home.process_step3_title'), desc: t('home.process_step3_desc') },
+    { icon: Truck, title: t('home.process_step4_title'), desc: t('home.process_step4_desc') },
   ]
 
   return (
@@ -99,17 +86,46 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Carousel — full-bleed, hidden on small phones */}
-        <div className="hidden sm:block pb-8 lg:pb-16">
-          <ProductCarousel
-            products={topProducts}
-            isLoading={productsLoading}
-          />
+        {/* Carousel — full-bleed (client island) */}
+        <div className="pb-8 lg:pb-16">
+          <HomeCarousel />
         </div>
       </section>
 
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 3 — Stats band (textured dark, editorial numbers)
+          SECTION 3 — Nosso Processo (craft authority)
+          ═══════════════════════════════════════════════════════════════ */}
+      <div className="h-[2px] bg-charcoal-900" />
+      <section className="bg-smoke-50">
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-28">
+          <div className="text-center mb-16">
+            <Heading as="h2" className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 tracking-display">
+              {t('home.process_title')}
+            </Heading>
+            <Text className="mt-4 text-sm text-smoke-400 leading-relaxed">
+              {t('home.process_subtitle')}
+            </Text>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-12 lg:gap-8">
+            {steps.map((step, i) => (
+              <div key={i} className="flex flex-col items-center text-center">
+                <div className="w-12 h-12 rounded-full bg-smoke-100 flex items-center justify-center mb-5">
+                  <step.icon className="w-5 h-5 text-charcoal-900" strokeWidth={1.5} />
+                </div>
+                <h3 className="font-display text-sm font-semibold text-charcoal-900 uppercase tracking-editorial">
+                  {step.title}
+                </h3>
+                <p className="mt-2 text-xs text-smoke-400 leading-relaxed max-w-[200px]">
+                  {step.desc}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ═══════════════════════════════════════════════════════════════
+          SECTION 4 — Stats band (textured dark, editorial numbers)
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-charcoal-900 grain-overlay">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-16 lg:py-22">
@@ -127,8 +143,10 @@ export default function Home() {
         </div>
       </section>
 
+      <div className="h-[2px] bg-charcoal-900" />
+
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 4 — Closing CTA (quiet authority)
+          SECTION 5 — Closing CTA (quiet authority)
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-smoke-100">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-30">
@@ -140,9 +158,7 @@ export default function Home() {
               {t('home.cta_subtitle')}
             </Text>
             <div className="mt-10">
-              <Button variant="brand" size="lg" onClick={() => setChat(true)}>
-                {t('home.cta_button_ai')}
-              </Button>
+              <HomeCTA />
             </div>
           </div>
         </div>

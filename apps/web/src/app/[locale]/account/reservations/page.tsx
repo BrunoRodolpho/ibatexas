@@ -405,7 +405,7 @@ export default function ReservationsPage() {
           <SpecialRequestsForm value={specialRequests} onChange={setSpecialRequests} />
 
           {createError && (
-            <div className="mt-4 rounded-sm border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <div className="mt-4 rounded-sm border border-accent-red/20 bg-accent-red/10 p-3 text-sm text-accent-red">
               {createError}
             </div>
           )}

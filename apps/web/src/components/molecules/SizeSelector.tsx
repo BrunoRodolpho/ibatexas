@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl'
 import { Button } from '../atoms'
 import clsx from 'clsx'
 import type { ProductVariant } from '@ibatexas/types'
+import { formatBRL } from '@/lib/format'
 
 interface SizeSelectorProps {
   variants: ProductVariant[]
@@ -36,18 +37,20 @@ export const SizeSelector = ({
   }
 
   return (
-    <div className="flex flex-wrap gap-3">
+    <div role="radiogroup" aria-label={t('product.variants')} className="flex flex-wrap gap-3">
       {variants.map((variant) => {
         const isSelected = variant.id === selectedVariant
-        const isOutOfStock = disabled // Simplified - could check individual variant stock
+        const isOutOfStock = disabled
         const label = getSizeLabel(variant.title)
         const priceLabel = variant.price
-          ? ` — ${new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(variant.price / 100)}`
+          ? ` — ${formatBRL(variant.price)}`
           : ''
         
         return (
           <Button
             key={variant.id}
+            role="radio"
+            aria-checked={isSelected}
             variant={isSelected ? 'primary' : 'secondary'}
             size="sm"
             onClick={() => onVariantChange(variant.id)}

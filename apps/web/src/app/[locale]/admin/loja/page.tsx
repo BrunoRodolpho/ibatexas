@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import Image from 'next/image'
 import { useTranslations } from 'next-intl'
-import { type ColumnDef, createColumnHelper } from '@tanstack/react-table'
+import { createColumnHelper } from '@tanstack/react-table'
 import { ExternalLink, Package, Layers } from 'lucide-react'
 import { DataTable, Switch } from '@/components/atoms'
 import { SearchInput, Sheet } from '@/components/molecules'
@@ -54,7 +54,7 @@ export default function ShopManagement() {
     }
   }
 
-  const columns: ColumnDef<AdminProductRow, any>[] = [
+  const columns = [
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
@@ -153,7 +153,7 @@ export default function ShopManagement() {
       </div>
 
       {error && (
-        <div className="rounded-lg bg-red-50 p-4 text-sm text-red-700">
+        <div className="rounded-lg bg-accent-red/10 p-4 text-sm text-accent-red">
           {t('common.error')}: {error.message}
         </div>
       )}
