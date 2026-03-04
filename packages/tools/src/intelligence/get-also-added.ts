@@ -3,7 +3,8 @@
 // Reads ZREVRANGEBYSCORE rk('copurchase:{productId}'), fetches details from Typesense.
 
 import type { AgentContext } from "@ibatexas/types";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient } from "../redis/client.js";
+import { rk } from "../redis/key.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
 
 export async function getAlsoAdded(
@@ -24,7 +25,7 @@ export async function getAlsoAdded(
     return { products: [], label: "Clientes também adicionam" };
   }
 
-  const productIds = topIds.map((e) => e.value);
+  const productIds = topIds.map((e: { value: string; score: number }) => e.value);
   const typesense = getTypesenseClient();
 
   const results = await typesense
