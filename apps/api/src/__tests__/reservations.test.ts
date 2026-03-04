@@ -157,7 +157,7 @@ describe("POST /api/reservations", () => {
     expect(body.confirmed).toBe(true)
   })
 
-  it("returns 400 when customerId is missing", async () => {
+  it("returns 401 when customerId is missing", async () => {
     const app = await buildTestServer()
     const res = await app.inject({
       method: "POST",
@@ -165,7 +165,7 @@ describe("POST /api/reservations", () => {
       payload: { timeSlotId: "ts_01", partySize: 4 },
     })
 
-    expect(res.statusCode).toBe(400)
+    expect(res.statusCode).toBe(401)
     expect(mockCreateReservation).not.toHaveBeenCalled()
   })
 
@@ -202,14 +202,14 @@ describe("GET /api/reservations", () => {
     )
   })
 
-  it("returns 400 when customerId is missing", async () => {
+  it("returns 401 when customerId is missing", async () => {
     const app = await buildTestServer()
     const res = await app.inject({
       method: "GET",
       url: "/api/reservations",
     })
 
-    expect(res.statusCode).toBe(400)
+    expect(res.statusCode).toBe(401)
   })
 })
 

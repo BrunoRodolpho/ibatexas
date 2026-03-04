@@ -3,6 +3,7 @@ import { create } from 'zustand'
 interface UIState {
   isMobileNavOpen: boolean
   isChatOpen: boolean
+  isCartDrawerOpen: boolean
   selectedFilters: {
     tags: string[]
     category?: string
@@ -16,6 +17,9 @@ interface UIState {
   toggleChat: () => void
   setMobileNav: (isOpen: boolean) => void
   setChat: (isOpen: boolean) => void
+  openCartDrawer: () => void
+  closeCartDrawer: () => void
+  toggleCartDrawer: () => void
   setFilters: (filters: UIState['selectedFilters']) => void
   resetFilters: () => void
   addToast: (message: string, type: 'success' | 'error' | 'warning' | 'info', duration?: number) => void
@@ -25,6 +29,7 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
   isMobileNavOpen: false,
   isChatOpen: false,
+  isCartDrawerOpen: false,
   selectedFilters: {
     tags: [],
   },
@@ -38,6 +43,10 @@ export const useUIStore = create<UIState>((set) => ({
 
   setMobileNav: (isOpen) => set({ isMobileNavOpen: isOpen }),
   setChat: (isOpen) => set({ isChatOpen: isOpen }),
+
+  openCartDrawer: () => set({ isCartDrawerOpen: true }),
+  closeCartDrawer: () => set({ isCartDrawerOpen: false }),
+  toggleCartDrawer: () => set((state) => ({ isCartDrawerOpen: !state.isCartDrawerOpen })),
 
   setFilters: (filters) =>
     set((state) => ({

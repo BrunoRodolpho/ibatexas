@@ -1,4 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import fastifyJwt from "@fastify/jwt";
+import fastifyCookie from "@fastify/cookie";
 import {
   serializerCompiler,
   validatorCompiler,
@@ -28,6 +30,20 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   await registerHelmet(server);
   await registerCors(server);
+
+  // Cookie parser — must be registered before JWT (JWT reads from cookies)
+  await server.register(fastifyCookie);
+
+  // JWT — reads from `token` cookie automatically when cookie is set
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret && process.env.NODE_ENV !== "test") {
+    throw new Error("JWT_SECRET env var is required");
+  }
+  await server.register(fastifyJwt, {
+    secret: jwtSecret ?? "test-secret-do-not-use-in-production",
+    cookie: { cookieName: "token", signed: false },
+  });
+
   await registerSensible(server);
   await registerSwagger(server);
   await registerRateLimit(server);

@@ -77,6 +77,11 @@ interface FilterOptions {
   excludeAllergens?: string[]
   productType?: "food" | "frozen" | "merchandise"
   categoryHandle?: string
+  minPrice?: number // centavos
+  maxPrice?: number // centavos
+  minRating?: number // 0-5
+  sort?: "relevance" | "price_asc" | "price_desc" | "rating_desc" | "newest"
+  offset?: number
 }
 
 /**
@@ -94,6 +99,20 @@ function applyFilters(products: ProductDTO[], filters: FilterOptions): ProductDT
       if (product.allergens.some((a) => filters.excludeAllergens!.includes(a))) return false
     }
 
+    // Price filter: use lowest variant price
+    if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
+      const prices = (product.variants ?? []).map((v) => v.price).filter((p) => p > 0)
+      const lowestPrice = prices.length > 0 ? Math.min(...prices) : 0
+      if (filters.minPrice !== undefined && lowestPrice < filters.minPrice) return false
+      if (filters.maxPrice !== undefined && lowestPrice > filters.maxPrice) return false
+    }
+
+    // Rating filter
+    if (filters.minRating !== undefined) {
+      const rating = (product as { rating?: number }).rating ?? 0
+      if (rating < filters.minRating) return false
+    }
+
     return true
   })
 }
@@ -104,6 +123,7 @@ interface TypesenseResult {
   hits: any[]
   totalFound: number
   scores: Record<string, number> // productId → relevance score
+  facetCounts?: Record<string, Array<{ value: string; count: number }>>
 }
 
 /**
@@ -118,7 +138,9 @@ async function executeTypesenseSearch(
   filterInStock = true,
   productType?: "food" | "frozen" | "merchandise",
   categoryHandle?: string,
-  tags?: string[]
+  tags?: string[],
+  sort?: string,
+  offset?: number
 ): Promise<TypesenseResult> {
   const typesenseClient = getTypesenseClient()
 
@@ -134,9 +156,20 @@ async function executeTypesenseSearch(
     q: query,
     query_by: "title,description,tags",
     filter_by: filterBy,
-    facet_by: "tags,availabilityWindow,allergens",
+    facet_by: "tags,availabilityWindow,allergens,productType",
     limit,
     per_page: limit,
+    page: offset ? Math.floor(offset / limit) + 1 : 1,
+  }
+
+  const SORT_BY_MAP: Record<string, string> = {
+    price_asc: "price:asc",
+    price_desc: "price:desc",
+    rating: "rating:desc",
+    popular: "orderCount:desc",
+  }
+  if (sort && SORT_BY_MAP[sort]) {
+    searchParams.sort_by = SORT_BY_MAP[sort]
   }
 
   if (embedding.length > 0) {
@@ -175,7 +208,23 @@ async function executeTypesenseSearch(
     hits: docs,
     totalFound: (response as any).found ?? 0,
     scores,
+    facetCounts: parseFacetCounts((response as any).facet_counts),
   }
+}
+
+function parseFacetCounts(
+  raw: any[]
+): Record<string, Array<{ value: string; count: number }>> | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  const result: Record<string, Array<{ value: string; count: number }>> = {}
+  for (const fc of raw) {
+    const field = fc?.field_name as string
+    const counts = fc?.counts as Array<{ value: string; count: number }> | undefined
+    if (field && Array.isArray(counts)) {
+      result[field] = counts.map((c) => ({ value: c.value, count: c.count }))
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined
 }
 
 // ── noResultsReason diagnostic ────────────────────────────────────────────────
@@ -256,7 +305,8 @@ async function singleQuerySearch(
   limit: number,
   availabilityMode: "dynamic" | "all",
   allergenHash: string,
-  cacheTtl: number
+  cacheTtl: number,
+  facetCountsRef?: { value?: Record<string, Array<{ value: string; count: number }>> }
 ): Promise<SingleQueryResult> {
   const isWildcard = query === "*"
 
@@ -312,7 +362,10 @@ async function singleQuerySearch(
   // ── L2: Typesense search ─────────────────────────────────────────────────
   let tsResult: TypesenseResult = { hits: [], totalFound: 0, scores: {} }
   try {
-    tsResult = await executeTypesenseSearch(query, queryEmbedding, limit, true, filters.productType, filters.categoryHandle, filters.tags)
+    tsResult = await executeTypesenseSearch(query, queryEmbedding, limit, true, filters.productType, filters.categoryHandle, filters.tags, filters.sort, filters.offset)
+    if (facetCountsRef && tsResult.facetCounts) {
+      facetCountsRef.value = tsResult.facetCounts
+    }
   } catch (error) {
     console.error("[Search] Typesense search failed:", error)
     // Graceful degradation — return empty
@@ -434,6 +487,11 @@ export async function searchProducts(
     excludeAllergens: validated.excludeAllergens,
     productType: validated.productType,
     categoryHandle: validated.categoryHandle,
+    sort: validated.sort,
+    offset: validated.offset,
+    minPrice: validated.minPrice,
+    maxPrice: validated.maxPrice,
+    minRating: validated.minRating,
   }
 
   // ── Determine query list ─────────────────────────────────────────────────
@@ -445,9 +503,10 @@ export async function searchProducts(
   const isMultiQuery = queryList.length > 1
 
   // ── Run all queries in parallel ──────────────────────────────────────────
+  const facetCountsRef: { value?: Record<string, Array<{ value: string; count: number }>> } = {}
   const queryResults = await Promise.all(
     queryList.map((q) =>
-      singleQuerySearch(q, filters, channel, userType, sessionId, limit, availabilityMode, allergenHash, cacheTtl)
+      singleQuerySearch(q, filters, channel, userType, sessionId, limit, availabilityMode, allergenHash, cacheTtl, facetCountsRef)
     )
   )
 
@@ -518,6 +577,7 @@ export async function searchProducts(
     // scores: only include when at least one live search happened (not on full cache hit)
     ...(anyLiveSearch && Object.keys(mergedScores).length > 0 ? { scores: mergedScores } : {}),
     ...(noResultsReason ? { noResultsReason } : {}),
+    ...(facetCountsRef.value ? { facetCounts: facetCountsRef.value } : {}),
   }
 
   // queriesResults: only when multi-query was used

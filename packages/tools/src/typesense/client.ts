@@ -56,6 +56,7 @@ export const PRODUCTS_COLLECTION_SCHEMA = {
     { name: "categoryHandle", type: "string", facet: true, optional: true },
     { name: "status", type: "string", facet: true },
     { name: "inStock", type: "bool" },
+    { name: "variantsJson", type: "string", optional: true },
     { name: "preparationTimeMinutes", type: "int32", optional: true },
     { name: "rating", type: "float", optional: true },
     { name: "reviewCount", type: "int32", optional: true },

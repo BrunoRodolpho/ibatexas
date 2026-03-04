@@ -95,7 +95,8 @@ export async function* runAgent(
         max_tokens: AGENT_MAX_TOKENS,
       })
     } catch (err) {
-      yield { type: "error", message: `Erro ao iniciar stream: ${err instanceof Error ? err.message : String(err)}` }
+      console.error("[agent] Failed to start stream:", err)
+      yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
       return
     }
 
@@ -110,7 +111,8 @@ export async function* runAgent(
         }
       }
     } catch (err) {
-      yield { type: "error", message: `Erro na stream: ${err instanceof Error ? err.message : String(err)}` }
+      console.error("[agent] Stream error:", err)
+      yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
       return
     }
 

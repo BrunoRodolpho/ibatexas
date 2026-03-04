@@ -1,5 +1,7 @@
 "use client"
 
+import { Button, Card } from "@/components/atoms"
+import { Users, MapPin } from "lucide-react"
 import type { ReservationDTO } from "@ibatexas/types"
 
 interface Props {
@@ -13,7 +15,7 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   pending: { label: "Aguardando confirmação", color: "bg-yellow-100 text-yellow-800" },
   confirmed: { label: "Confirmada", color: "bg-green-100 text-green-800" },
   seated: { label: "Em andamento", color: "bg-blue-100 text-blue-800" },
-  completed: { label: "Concluída", color: "bg-gray-100 text-gray-700" },
+  completed: { label: "Concluída", color: "bg-smoke-100 text-smoke-500" },
   cancelled: { label: "Cancelada", color: "bg-red-100 text-red-700" },
   no_show: { label: "Não compareceu", color: "bg-red-100 text-red-700" },
 }
@@ -38,7 +40,7 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
     return (
       <div className="space-y-3">
         {[1, 2].map((i) => (
-          <div key={i} className="h-24 animate-pulse rounded-sm bg-smoke-100" />
+          <div key={i} className="h-24 rounded-sm skeleton" />
         ))}
       </div>
     )
@@ -55,11 +57,11 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
   return (
     <div className="space-y-4">
       {reservations.map((r) => {
-        const statusInfo = STATUS_LABELS[r.status] ?? { label: r.status, color: "bg-gray-100 text-gray-700" }
+        const statusInfo = STATUS_LABELS[r.status] ?? { label: r.status, color: "bg-smoke-100 text-smoke-500" }
         const canModifyOrCancel = ["pending", "confirmed"].includes(r.status)
 
         return (
-          <div key={r.id} className="rounded-sm border border-smoke-200 bg-smoke-50 p-5">
+          <Card key={r.id} className="p-5">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2">
@@ -71,9 +73,9 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
                   </span>
                 </div>
                 <div className="mt-1 flex items-center gap-3 text-sm text-smoke-400">
-                  <span>👥 {r.partySize} {r.partySize === 1 ? "pessoa" : "pessoas"}</span>
+                  <span className="inline-flex items-center gap-1"><Users className="w-3.5 h-3.5" /> {r.partySize} {r.partySize === 1 ? "pessoa" : "pessoas"}</span>
                   {r.tableLocation && (
-                    <span>📍 {LOCATION_LABELS[r.tableLocation] ?? r.tableLocation}</span>
+                    <span className="inline-flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {LOCATION_LABELS[r.tableLocation] ?? r.tableLocation}</span>
                   )}
                 </div>
                 {r.specialRequests.length > 0 && (
@@ -92,22 +94,24 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
 
               {canModifyOrCancel && (
                 <div className="flex shrink-0 gap-2">
-                  <button
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     onClick={() => onModify(r)}
-                    className="rounded-sm border border-smoke-200 px-3 py-1.5 text-xs font-medium text-charcoal-700 hover:bg-smoke-100"
                   >
                     Modificar
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
                     onClick={() => onCancel(r.id)}
-                    className="rounded-sm border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
                   >
                     Cancelar
-                  </button>
+                  </Button>
                 </div>
               )}
             </div>
-          </div>
+          </Card>
         )
       })}
     </div>

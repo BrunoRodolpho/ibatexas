@@ -1,13 +1,11 @@
 'use client'
 
-import { Link } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
-import { ProductGrid } from '@/components/organisms/ProductGrid'
-import { CategoryCarousel } from '@/components/molecules/CategoryCarousel'
-import { useProducts, useCategories } from '@/hooks/api'
+import { ProductCarousel } from '@/components/organisms/ProductCarousel'
+import { useProducts } from '@/hooks/api'
 import { useUIStore } from '@/stores/useUIStore'
 import { useCartStore } from '@/stores/useCartStore'
-import { Button } from '@/components/atoms'
+import { Button, HeroVideo, Heading, Text } from '@/components/atoms'
 import type { ProductDTO } from '@ibatexas/types'
 
 export default function Home() {
@@ -16,27 +14,15 @@ export default function Home() {
   const addToast = useUIStore((s) => s.addToast)
   const addItem = useCartStore((s) => s.addItem)
 
-  const { data: productsData, loading: productsLoading } = useProducts(undefined, undefined, 12)
-  const { data: apiCategories, loading: categoriesLoading } = useCategories()
+  const { data: productsData, loading: productsLoading } = useProducts({ limit: 12 })
 
-  // Fallback categories matching seed data — shown when API is unavailable
-  const FALLBACK_CATEGORIES = [
-    { id: 'carnes-defumadas', name: 'Carnes Defumadas', handle: 'carnes-defumadas' },
-    { id: 'acompanhamentos', name: 'Acompanhamentos', handle: 'acompanhamentos' },
-    { id: 'sanduiches', name: 'Sanduíches & Combos', handle: 'sanduiches' },
-    { id: 'sobremesas', name: 'Sobremesas', handle: 'sobremesas' },
-    { id: 'bebidas', name: 'Bebidas', handle: 'bebidas' },
-    { id: 'congelados', name: 'Congelados', handle: 'congelados' },
-  ]
-
-  const categories = (apiCategories as any[])?.length ? apiCategories as any[] : FALLBACK_CATEGORIES
-
-  const topProducts = productsData?.products ?? []
+  const topProducts = productsData?.items ?? []
 
   const handleAddToCart = (productId: string) => {
     const product = topProducts.find((p) => p.id === productId)
     if (product) {
-      addItem(product as ProductDTO, 1)
+      const defaultVariant = product.variants?.[0]
+      addItem(product as ProductDTO, 1, undefined, defaultVariant)
       addToast(t('product.added'), 'success')
     }
   }
@@ -51,92 +37,79 @@ export default function Home() {
   return (
     <>
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 1 — Hero (cinematic, textured, editorial)
+          SECTION 1 — Hero (layered composition, not grid)
           ═══════════════════════════════════════════════════════════════ */}
-      <section className="relative bg-charcoal-900 overflow-hidden grain-overlay" data-hero>
-        {/* Layered atmosphere: warm fire + smoke gradient */}
-        <div className="absolute inset-0 bg-gradient-to-b from-charcoal-800/60 via-charcoal-900/50 to-charcoal-900/70 pointer-events-none" />
-        <div className="absolute inset-0 warm-glow pointer-events-none" />
-        {/* Faint cinematic fire/smoke image at very low opacity */}
-        <div className="absolute inset-0 opacity-[0.04] bg-[url('data:image/svg+xml,%3Csvg%20viewBox%3D%220%200%20800%20600%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cfilter%20id%3D%22smoke%22%3E%3CfeTurbulence%20baseFrequency%3D%220.01%22%20numOctaves%3D%225%22%20seed%3D%222%22%2F%3E%3CfeDisplacementMap%20in%3D%22SourceGraphic%22%20scale%3D%2250%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22100%25%22%20height%3D%22100%25%22%20filter%3D%22url(%23smoke)%22%20fill%3D%22%23E85D04%22%20opacity%3D%220.3%22%2F%3E%3C%2Fsvg%3E')] bg-cover pointer-events-none" />
+      <section className="relative bg-smoke-50 overflow-hidden" data-hero>
 
-        <div className="relative mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-28">
-          <div className="max-w-2xl">
-            <h1 className="font-display text-display-sm sm:text-display-md lg:text-display-lg font-bold text-white leading-[1.05] tracking-display">
-              {t('home.hero_title')}
-            </h1>
-            <p className="mt-8 text-base sm:text-lg text-smoke-300 leading-relaxed measure-narrow">
-              {t('home.hero_subtitle')}
-            </p>
-            <div className="mt-12 flex items-center gap-6">
-              <Button variant="brand" size="lg" onClick={() => setChat(true)}>
-                {t('home.order_via_ai')}
-              </Button>
-              <Link
-                href="/search"
-                className="text-sm font-medium text-smoke-300 hover:text-white transition-colors duration-500 ease-luxury"
-              >
-                {t('home.view_menu')} →
-              </Link>
+        {/* Video — positioned as backdrop on the left (desktop only) */}
+        <div className="hidden lg:block absolute top-4 bottom-0 left-[2%] w-[52%] pointer-events-none">
+          <HeroVideo
+            src="/videos/pitmaster-hero.mp4"
+            poster="/videos/pitmaster-hero-placeholder.png"
+            className="h-full w-full"
+          />
+        </div>
+
+        {/* White gradient — fades video into white on the right */}
+        <div className="hidden lg:block absolute inset-y-0 left-[34%] w-[28%] bg-gradient-to-r from-transparent to-smoke-50 pointer-events-none" />
+
+        {/* Content layer */}
+        <div className="relative mx-auto max-w-[1400px] px-6 sm:px-8 py-4 lg:pt-14 lg:pb-20 lg:min-h-[460px] lg:flex lg:items-start">
+
+          {/* Mobile — video above text */}
+          <div className="lg:hidden flex justify-center mb-2">
+            <div className="w-[100%] sm:w-[85%]">
+              <HeroVideo
+                src="/videos/pitmaster-hero.mp4"
+                poster="/videos/pitmaster-hero-placeholder.png"
+                className="w-full"
+              />
             </div>
           </div>
+
+          {/* Text — centered on desktop, overlaps video edge */}
+          <div className="text-center lg:text-left lg:ml-[46%] lg:max-w-[600px] animate-reveal">
+            <Heading as="h1" className="font-display text-display-md sm:text-display-lg lg:text-display-xl font-bold text-brand-500 leading-[1.02] tracking-display">
+              {t('home.hero_title')}
+            </Heading>
+            <Text className="mt-4 lg:mt-6 font-display italic text-xl sm:text-2xl text-smoke-400 leading-relaxed mx-auto lg:mx-0">
+              {t('home.hero_subtitle')}
+            </Text>
+          </div>
+
         </div>
+
+        {/* Bottom accent */}
+        <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-smoke-200 to-transparent" />
       </section>
 
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 2 — Typographic category nav (no pills)
-          ═══════════════════════════════════════════════════════════════ */}
-      <nav className="sticky top-[56px] z-20 border-b border-smoke-200 bg-smoke-50/95 backdrop-blur-sm">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6">
-          <div className="flex items-center gap-6 py-3 overflow-x-auto scrollbar-hide">
-            {categoriesLoading ? (
-              <>
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="flex-shrink-0 h-4 w-16 rounded-sm skeleton" />
-                ))}
-              </>
-            ) : (
-              <CategoryCarousel categories={categories} />
-            )}
-          </div>
-        </div>
-      </nav>
-
-      {/* ═══════════════════════════════════════════════════════════════
-          SECTION 3 — Curated product grid (editorial spacing)
+          SECTION 2 — Bold statement + infinite product carousel
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-smoke-50">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-24">
-          {/* Section header */}
-          <div className="flex items-end justify-between mb-12">
-            <div>
-              <h2 className="font-display text-display-sm font-semibold text-charcoal-900 tracking-display">
-                {t('home.our_menu')}
-              </h2>
-              <p className="mt-2 text-sm text-smoke-400 tracking-wide">
-                {t('home.our_menu_subtitle')}
-              </p>
-            </div>
-            <Link
-              href="/search"
-              className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
-            >
-              {t('common.view_all')} →
-            </Link>
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 pt-8 lg:pt-16 pb-4">
+          {/* Section header — bold statement */}
+          <div className="max-w-2xl">
+            <Heading as="h2" className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 tracking-display leading-tight">
+              {t('home.our_menu')}
+            </Heading>
+            <Text className="mt-4 text-sm sm:text-base text-smoke-400 leading-relaxed tracking-wide">
+              {t('home.our_menu_subtitle')}
+            </Text>
           </div>
+        </div>
 
-          {/* Grid */}
-          <ProductGrid
+        {/* Carousel — full-bleed, hidden on small phones */}
+        <div className="hidden sm:block pb-8 lg:pb-16">
+          <ProductCarousel
             products={topProducts}
-            columns={4}
             isLoading={productsLoading}
-            onAddToCart={handleAddToCart}
           />
         </div>
       </section>
 
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 4 — Stats band (textured dark, editorial numbers)
+          SECTION 3 — Stats band (textured dark, editorial numbers)
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-charcoal-900 grain-overlay">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-16 lg:py-22">
@@ -155,17 +128,17 @@ export default function Home() {
       </section>
 
       {/* ═══════════════════════════════════════════════════════════════
-          SECTION 5 — Closing CTA (quiet authority)
+          SECTION 4 — Closing CTA (quiet authority)
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-smoke-100">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-30">
           <div className="max-w-xl mx-auto text-center">
-            <h2 className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 leading-tight tracking-display">
+            <Heading as="h2" className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 leading-tight tracking-display">
               {t('home.cta_title')}
-            </h2>
-            <p className="mt-4 text-sm text-smoke-400 leading-relaxed measure-reading mx-auto">
+            </Heading>
+            <Text className="mt-4 text-sm text-smoke-400 leading-relaxed measure-reading mx-auto">
               {t('home.cta_subtitle')}
-            </p>
+            </Text>
             <div className="mt-10">
               <Button variant="brand" size="lg" onClick={() => setChat(true)}>
                 {t('home.cta_button_ai')}

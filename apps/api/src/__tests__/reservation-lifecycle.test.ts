@@ -147,7 +147,7 @@ describe("Reservation lifecycle integration", () => {
       },
     })
 
-    expect(res.statusCode).toBe(400)
+    expect(res.statusCode).toBe(401)
     expect(mockCreateReservation).not.toHaveBeenCalled()
   })
 
@@ -293,7 +293,7 @@ describe("Reservation lifecycle integration", () => {
       },
     })
 
-    expect(res.statusCode).toBe(400)
+    expect(res.statusCode).toBe(401)
     expect(mockJoinWaitlist).not.toHaveBeenCalled()
   })
 })

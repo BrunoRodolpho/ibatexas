@@ -33,6 +33,33 @@ export async function getNatsConnection(): Promise<NatsConnection> {
 
   try {
     natsConn = await pendingConnection
+
+    // Observability: log connection lifecycle events (guard for test mocks)
+    if (natsConn && typeof natsConn.status === "function") {
+      ;(async () => {
+        try {
+          for await (const status of natsConn!.status()) {
+            switch (status.type) {
+              case "disconnect":
+                console.warn("[nats] Disconnected from server")
+                break
+              case "reconnect":
+                console.info("[nats] Reconnected to server")
+                break
+              case "error":
+                console.error("[nats] Connection error:", status.data)
+                break
+              case "reconnecting":
+                console.info("[nats] Reconnecting...")
+                break
+            }
+          }
+        } catch {
+          // Connection closed or status iterator ended — expected during shutdown
+        }
+      })()
+    }
+
     return natsConn
   } catch (error) {
     // Reset so the next call can retry

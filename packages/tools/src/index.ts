@@ -7,12 +7,35 @@ export { searchProducts, SearchProductsTool } from "./search/search-products.js"
 
 // ── Catalog tools ──────────────────────────────────────────────────────────────
 export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-details.js"
+export { estimateDelivery, EstimateDeliveryTool } from "./catalog/estimate-delivery.js"
+
+// ── Cart tools ─────────────────────────────────────────────────────────────────
+export { getCart, GetCartTool } from "./cart/get-cart.js"
+export { addToCart, AddToCartTool } from "./cart/add-to-cart.js"
+export { updateCart, UpdateCartTool } from "./cart/update-cart.js"
+export { removeFromCart, RemoveFromCartTool } from "./cart/remove-from-cart.js"
+export { applyCoupon, ApplyCouponTool } from "./cart/apply-coupon.js"
+export { createCheckout, CreateCheckoutTool } from "./cart/create-checkout.js"
+export { getOrderHistory, GetOrderHistoryTool } from "./cart/get-order-history.js"
+export { checkOrderStatus, CheckOrderStatusTool } from "./cart/check-order-status.js"
+export { cancelOrder, CancelOrderTool } from "./cart/cancel-order.js"
+export { reorder, ReorderTool } from "./cart/reorder.js"
+
+// ── Intelligence tools ─────────────────────────────────────────────────────────
+export { getCustomerProfile, GetCustomerProfileTool } from "./intelligence/get-customer-profile.js"
+export { getRecommendations, GetRecommendationsTool, buildPersonalizedQuery } from "./intelligence/get-recommendations.js"
+export { updatePreferences, UpdatePreferencesTool } from "./intelligence/update-preferences.js"
+export { submitReview, SubmitReviewTool } from "./intelligence/submit-review.js"
+export { getAlsoAdded, GetAlsoAddedTool } from "./intelligence/get-also-added.js"
+export { getOrderedTogether, GetOrderedTogetherTool } from "./intelligence/get-ordered-together.js"
+export { PROFILE_TTL_SECONDS, RECENTLY_VIEWED_MAX } from "./intelligence/types.js"
 
 // ── Embeddings ─────────────────────────────────────────────────────────────────
 export { generateEmbedding, generateEmbeddingsBatch } from "./embeddings/client.js"
 
 // ── Redis ──────────────────────────────────────────────────────────────────────
 export { getRedisClient, closeRedisClient } from "./redis/client.js"
+export { rk } from "./redis/key.js"
 
 // ── Vector utilities ───────────────────────────────────────────────────────────
 export { cosineSimilarity } from "./utils/vectors.js"

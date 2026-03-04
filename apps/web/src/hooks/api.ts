@@ -3,12 +3,47 @@
 import { useEffect, useState } from "react"
 import { apiFetch, apiStream } from "@/lib/api"
 import { useChatStore, useSessionStore } from "@/stores"
-import type { ProductDTO, SearchProductsOutput } from "@ibatexas/types"
+import type { ProductDTO } from "@ibatexas/types"
 
 // ── Product Hooks ───────────────────────────────────────────────────────
 
-export function useProducts(query?: string, tags?: string[], limit = 5, productType?: "food" | "frozen" | "merchandise", categoryHandle?: string) {
-  const [data, setData] = useState<SearchProductsOutput | null>(null)
+export interface ProductsResponse {
+  items: import('@ibatexas/types').ProductDTO[]
+  total: number
+  searchModel?: string
+  facetCounts?: Record<string, Array<{ value: string; count: number }>>
+}
+
+interface UseProductsOptions {
+  query?: string
+  tags?: string[]
+  limit?: number
+  productType?: "food" | "frozen" | "merchandise"
+  categoryHandle?: string
+  sort?: string
+  minPrice?: number
+  maxPrice?: number
+  minRating?: number
+  offset?: number
+  excludeAllergens?: string[]
+  availableNow?: boolean
+}
+
+export function useProducts({
+  query,
+  tags,
+  limit = 5,
+  productType,
+  categoryHandle,
+  sort,
+  minPrice,
+  maxPrice,
+  minRating,
+  offset,
+  excludeAllergens,
+  availableNow,
+}: UseProductsOptions = {}) {
+  const [data, setData] = useState<ProductsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
 
@@ -18,6 +53,13 @@ export function useProducts(query?: string, tags?: string[], limit = 5, productT
     if (tags?.length) params.set("tags", tags.join(","))
     if (productType) params.set("productType", productType)
     if (categoryHandle) params.set("categoryHandle", categoryHandle)
+    if (sort && sort !== "relevance") params.set("sort", sort)
+    if (minPrice != null) params.set("minPrice", String(minPrice))
+    if (maxPrice != null) params.set("maxPrice", String(maxPrice))
+    if (minRating != null) params.set("minRating", String(minRating))
+    if (offset != null && offset > 0) params.set("offset", String(offset))
+    if (excludeAllergens?.length) params.set("excludeAllergens", excludeAllergens.join(","))
+    if (availableNow) params.set("availableNow", "true")
     params.set("limit", String(limit))
 
     const qs = params.toString()
@@ -25,10 +67,18 @@ export function useProducts(query?: string, tags?: string[], limit = 5, productT
 
     setLoading(true)
     apiFetch(endpoint)
-      .then(setData)
+      .then((res: Record<string, unknown>) => {
+        // Support both old shape (products/totalFound) and new shape (items/total)
+        setData({
+          items: (res.items ?? res.products ?? []) as import('@ibatexas/types').ProductDTO[],
+          total: (res.total ?? res.totalFound ?? 0) as number,
+          searchModel: res.searchModel as string | undefined,
+          facetCounts: res.facetCounts as ProductsResponse['facetCounts'],
+        })
+      })
       .catch(setError)
       .finally(() => setLoading(false))
-  }, [query, tags?.join(","), limit, productType, categoryHandle])
+  }, [query, tags?.join(","), limit, productType, categoryHandle, sort, minPrice, maxPrice, minRating, offset, excludeAllergens?.join(","), availableNow])
 
   return { data, loading, error }
 }

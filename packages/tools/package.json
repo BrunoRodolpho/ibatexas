@@ -20,6 +20,7 @@
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "redis": "^4.6.0",
+    "stripe": "^14.0.0",
     "typesense": "^1.8.0",
     "zod": "^3.22.0"
   },

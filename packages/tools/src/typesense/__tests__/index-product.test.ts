@@ -58,7 +58,8 @@ const mockMedusaProduct = {
     productType: "food",
     inStock: true,
   },
-  variants: [{ id: "var_1", prices: [{ amount: 8900 }] }],
+  // Medusa v2 stores in reais (89 reais = R$89.00 → 8900 centavos after conversion)
+  variants: [{ id: "var_1", prices: [{ amount: 89 }] }],
   created_at: "2025-01-01T00:00:00.000Z",
   updated_at: "2025-01-15T12:00:00.000Z",
 }
