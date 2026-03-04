@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState, useEffect } from 'react'
+import Image from 'next/image'
 
 interface HeroVideoProps {
   src: string
@@ -55,11 +56,12 @@ export function HeroVideo({ src, poster, className = '' }: HeroVideoProps) {
   return (
     <div className={`relative ${className}`}>
       {/* Static image — always rendered, visible when video isn't playing */}
-      <img
+      <Image
         src={poster}
         alt=""
-        aria-hidden="true"
-        className="absolute inset-0 h-full w-full object-contain object-left brightness-[0.98] sepia-[0.03]"
+        aria-hidden
+        fill
+        className="object-contain object-left brightness-[0.98] sepia-[0.03]"
       />
 
       {/* Video — layered on top, invisible until actually playing */}
