@@ -43,7 +43,7 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
           )}
         </div>
         {errorMessage && error && (
-          <p className="text-xs text-red-600">{errorMessage}</p>
+          <p className="text-xs text-accent-red">{errorMessage}</p>
         )}
       </div>
     )

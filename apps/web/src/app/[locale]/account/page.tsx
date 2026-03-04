@@ -37,7 +37,7 @@ export default function AccountPage() {
         <h1 className="text-3xl font-display text-charcoal-900">{t("account.title")}</h1>
         <button
           onClick={() => logout()}
-          className="text-red-600 hover:text-red-700 transition-colors duration-500"
+          className="text-accent-red hover:text-accent-red/80 transition-colors duration-500"
         >
           {t("account.logout")}
         </button>

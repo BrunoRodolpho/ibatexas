@@ -44,7 +44,7 @@ export function TimeslotGrid({ slots, loading, error, onSelect }: Props) {
 
   if (error) {
     return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+      <div className="rounded-lg border border-accent-red/20 bg-accent-red/10 p-4 text-sm text-accent-red">
         {error}
       </div>
     )
@@ -89,7 +89,7 @@ export function TimeslotGrid({ slots, loading, error, onSelect }: Props) {
                     </span>
                   ))}
                 </div>
-                <div className="mt-2 text-xs text-green-600">
+                <div className="mt-2 text-xs text-accent-green">
                   {slot.availableCovers} vaga{slot.availableCovers !== 1 ? "s" : ""}
                 </div>
               </button>

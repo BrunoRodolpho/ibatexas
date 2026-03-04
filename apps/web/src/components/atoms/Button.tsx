@@ -27,9 +27,9 @@ const buttonVariants = cva(
           'focus-visible:ring-smoke-300',
         ],
         danger: [
-          'bg-red-600 text-white',
+          'bg-accent-red text-white',
           'hover:bg-red-700',
-          'focus-visible:ring-red-600',
+          'focus-visible:ring-accent-red',
         ],
         brand: [
           'bg-brand-500 text-white',
@@ -67,7 +67,6 @@ export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
   isLoading?: boolean
-  asChild?: boolean
 }
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(

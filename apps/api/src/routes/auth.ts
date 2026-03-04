@@ -204,10 +204,10 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       const jwtSecret = process.env.JWT_SECRET;
       if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
-      const token = (server as unknown as { jwt: { sign: (payload: object) => string } }).jwt.sign({
+      const token = (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
         sub: customer.id,
         userType: "customer",
-      });
+      }, { expiresIn: '24h' });
 
       const isProduction = process.env.NODE_ENV === "production";
       return reply

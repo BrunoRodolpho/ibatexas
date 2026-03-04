@@ -81,8 +81,8 @@ export const SizeGuide = ({ isOpen, onClose }: SizeGuideProps) => {
             </ul>
           </div>
           
-          <div className="bg-blue-50 p-4 rounded-lg">
-            <Text variant="small" className="text-blue-800">
+          <div className="bg-brand-50 p-4 rounded-lg">
+            <Text variant="small" className="text-brand-800">
               💡 <strong>Dica:</strong> Se você está entre dois tamanhos, recomendamos escolher o maior para maior conforto.
             </Text>
           </div>

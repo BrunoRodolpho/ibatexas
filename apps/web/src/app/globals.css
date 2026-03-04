@@ -89,6 +89,13 @@
     transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
   }
 
+  /* Premium transition shorthand — one class for standard interactive transitions */
+  .transition-premium {
+    transition-property: all;
+    transition-duration: 500ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
   /* Editorial text measure */
   .measure-narrow {
     max-width: 38ch;
@@ -109,9 +116,18 @@
       animation: none;
     }
     .animate-reveal,
-    .animate-reveal-slow {
+    .animate-reveal-slow,
+    .animate-bounce-subtle,
+    .animate-snap-underline,
+    .animate-press,
+    .animate-fade-in,
+    .animate-slide-up,
+    .animate-slide-in-right,
+    .animate-slide-in-left,
+    .animate-slide-in-bottom {
       animation: none;
       opacity: 1;
+      transform: none;
     }
   }
 }

@@ -20,10 +20,10 @@ export const Label = React.forwardRef<HTMLLabelElement, LabelProps>(
         {...props}
       >
         {children}
-        {required && <span className="text-red-600 ml-1">*</span>}
+        {required && <span className="text-accent-red ml-1">*</span>}
       </label>
       {helper && (
-        <p className={clsx('text-xs', error ? 'text-red-600' : 'text-smoke-400')}>
+        <p className={clsx('text-xs', error ? 'text-accent-red' : 'text-smoke-400')}>
           {helper}
         </p>
       )}

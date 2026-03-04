@@ -13,7 +13,7 @@ export default function Error({
 
   return (
     <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-4 text-center">
-      <h2 className="text-2xl font-bold text-red-600">
+      <h2 className="text-2xl font-bold text-accent-red">
         {t("error.title", { fallback: "Algo deu errado" })}
       </h2>
       <p className="max-w-md text-sm text-smoke-400">

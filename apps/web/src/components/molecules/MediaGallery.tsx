@@ -83,7 +83,7 @@ export function MediaGallery({ images, thumbnail, title, className }: MediaGalle
           <Image
             key={currentUrl}
             src={currentUrl}
-            alt={`${title} ${selectedIndex + 1}`}
+            alt={`${title} — imagem ${selectedIndex + 1} de ${media.length}`}
             variant="detail"
             className="aspect-square"
             priority={selectedIndex === 0}
@@ -151,7 +151,7 @@ export function MediaGallery({ images, thumbnail, title, className }: MediaGalle
                 ) : (
                   <Image
                     src={url}
-                    alt={`${title} ${i + 1}`}
+                    alt={`${title} — miniatura ${i + 1}`}
                     variant="thumbnail"
                     className="!h-full !w-full"
                   />

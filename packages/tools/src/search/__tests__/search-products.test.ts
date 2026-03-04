@@ -135,9 +135,9 @@ describe("searchProducts", () => {
       ).toThrow()
     })
 
-    it("rejects limit > 20", () => {
+    it("rejects limit > 100", () => {
       expect(() =>
-        SearchProductsInputSchema.parse({ query: "test", limit: 21 })
+        SearchProductsInputSchema.parse({ query: "test", limit: 101 })
       ).toThrow()
     })
 

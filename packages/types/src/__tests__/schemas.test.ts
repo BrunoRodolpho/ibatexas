@@ -61,7 +61,7 @@ describe("SearchProductsInputSchema (product)", () => {
   })
 
   it("applies limit constraints", () => {
-    const tooHigh = ProductSearchSchema.safeParse({ query: "x", limit: 21 })
+    const tooHigh = ProductSearchSchema.safeParse({ query: "x", limit: 101 })
     expect(tooHigh.success).toBe(false)
 
     const tooLow = ProductSearchSchema.safeParse({ query: "x", limit: 0 })

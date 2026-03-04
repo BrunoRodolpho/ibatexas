@@ -2,6 +2,7 @@
 
 import { ProductCard } from '../molecules/ProductCard'
 import { Text } from '../atoms'
+import { useTranslations } from 'next-intl'
 
 import type { ProductVariant } from '@ibatexas/types'
 
@@ -35,6 +36,7 @@ export const ProductGrid = ({
   isEmpty,
   emptyMessage,
 }: ProductGridProps) => {
+  const t = useTranslations()
   const gridColsClass = {
     1: 'grid-cols-1',
     2: 'grid-cols-1 md:grid-cols-2',
@@ -45,11 +47,11 @@ export const ProductGrid = ({
 
   if (isLoading) {
     return (
-      <div className={`grid ${gridColsClass} gap-6`}>
+      <div className={`grid ${gridColsClass} gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-8 lg:gap-y-10`}>
         {Array.from({ length: columns === 5 ? 10 : 8 }).map((_, i) => (
           <div key={i} className="overflow-hidden">
-            <div className="aspect-[4/5] rounded-sm skeleton" />
-            <div className="pt-4 space-y-2">
+            <div className="aspect-[4/5] rounded-card skeleton" />
+            <div className="pt-3 space-y-2">
               <div className="h-3.5 w-3/4 rounded-sm skeleton" />
               <div className="h-3 w-1/3 rounded-sm skeleton" />
             </div>
@@ -64,7 +66,7 @@ export const ProductGrid = ({
       <div className="flex flex-col items-center justify-center py-24 gap-4">
         <div className="w-16 h-px bg-smoke-200" />
         <p className="font-display text-xl text-smoke-300 tracking-display">
-          {emptyMessage || 'Nenhum produto encontrado'}
+          {emptyMessage || t('shop.no_products')}
         </p>
         <div className="w-16 h-px bg-smoke-200" />
       </div>
@@ -72,7 +74,7 @@ export const ProductGrid = ({
   }
 
   return (
-    <div className={`grid ${gridColsClass} gap-6`}>
+    <div className={`grid ${gridColsClass} gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-8 lg:gap-y-10`}>
       {products.map((product, index) => (
         <div
           key={product.id}
@@ -84,6 +86,7 @@ export const ProductGrid = ({
             variantCount={product.variants?.length}
             href={getProductHref?.(product)}
             onAddToCart={() => onAddToCart?.(product.id)}
+            priority={index < 4}
           />
         </div>
       ))}
