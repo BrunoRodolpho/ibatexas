@@ -49,4 +49,4 @@ Production-grade visibility:
 
 API documentation:
 
-- Swagger/OpenAPI at `/api/docs` — wire `@fastify/swagger` + `@fastify/swagger-ui` into existing Fastify route schemas
+- Swagger/OpenAPI at `/docs` — wire `@fastify/swagger` + `@fastify/swagger-ui` into existing Fastify route schemas

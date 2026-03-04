@@ -73,7 +73,7 @@ export const SERVICES: Record<string, ServiceDef> = {
     step: 4,
     urls: [
       { label: "API       ", url: "http://localhost:3001" },
-      { label: "Docs      ", url: "http://localhost:3001/api/docs" },
+      { label: "Docs      ", url: "http://localhost:3001/docs" },
     ],
   },
 
