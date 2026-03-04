@@ -98,7 +98,7 @@ export const CartItem: React.FC<CartItemProps> = ({
           icon="×"
           label="Remover do carrinho"
           onClick={onRemove}
-          className="text-red-600"
+          className="text-accent-red"
         />
       </div>
     </Card>

@@ -9,8 +9,8 @@ export default function AdminError({
 }) {
   return (
     <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-4 text-center">
-      <h2 className="text-2xl font-bold text-red-600">Erro no painel admin</h2>
-      <p className="max-w-md text-sm text-gray-600">
+      <h2 className="text-2xl font-bold text-accent-red">Erro no painel admin</h2>
+      <p className="max-w-md text-sm text-smoke-600">
         {error.message || "Erro inesperado. Tente novamente."}
       </p>
       <button

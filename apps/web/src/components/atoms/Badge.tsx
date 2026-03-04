@@ -6,23 +6,34 @@ import { forwardRef } from 'react'
 const badgeVariants = cva('inline-flex items-center px-2 py-0.5 rounded-sm text-[10px] font-medium uppercase tracking-editorial', {
   variants: {
     variant: {
-      default: 'bg-smoke-100 text-charcoal-900',
+      // ── 3-tier badge hierarchy ────────────────────────────
+      // Tier 1: Hero (dark inverted — highest status)
+      default: 'bg-smoke-100 text-smoke-600',
+      hero: 'bg-charcoal-900 text-smoke-50',
+      // Tier 2: Feature (brand-tinted — promotional)
+      feature: 'bg-brand-100 text-brand-700',
+      // Tier 3: Informational (neutral — dietary, metadata)
+      info: 'bg-smoke-100 text-smoke-600',
+
+      // ── Semantic mappings (map to tiers) ──────────────────
+      // Hero tier
+      popular: 'bg-charcoal-900 text-smoke-50',
+      chef_choice: 'bg-charcoal-900 text-smoke-50',
+      edicao_limitada: 'bg-charcoal-900 text-smoke-50',
+      // Feature tier
+      novo: 'bg-brand-100 text-brand-700',
+      exclusivo: 'bg-brand-100 text-brand-700',
+      kit: 'bg-brand-100 text-brand-700',
       primary: 'bg-brand-100 text-brand-700',
-      success: 'bg-green-100 text-green-800',
-      warning: 'bg-yellow-100 text-yellow-800',
-      danger: 'bg-red-100 text-red-800',
-      info: 'bg-blue-100 text-blue-800',
-      vegetariano: 'bg-green-100 text-green-800',
-      vegan: 'bg-emerald-100 text-emerald-800',
-      sem_gluten: 'bg-yellow-100 text-yellow-800',
-      sem_lactose: 'bg-blue-100 text-blue-800',
-      novo: 'bg-purple-100 text-purple-800',
-      popular: 'bg-pink-100 text-pink-800',
-      chef_choice: 'bg-brand-100 text-brand-700',
-      // Merchandise tag variants
-      exclusivo: 'bg-purple-100 text-purple-800',
-      edicao_limitada: 'bg-pink-100 text-pink-800',
-      kit: 'bg-blue-100 text-blue-800',
+      // Informational tier
+      vegetariano: 'bg-smoke-100 text-smoke-600',
+      vegan: 'bg-smoke-100 text-smoke-600',
+      sem_gluten: 'bg-smoke-100 text-smoke-600',
+      sem_lactose: 'bg-smoke-100 text-smoke-600',
+      // System
+      success: 'bg-smoke-100 text-accent-green',
+      warning: 'bg-brand-50 text-brand-800',
+      danger: 'bg-brand-50 text-accent-red',
     },
   },
   defaultVariants: {

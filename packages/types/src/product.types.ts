@@ -56,6 +56,15 @@ export interface ProductDTO {
   reviewCount?: number
   servings?: number // how many persons a portion serves
   compareAtPrice?: number // original price in centavos, before discount
+  stockCount?: number // enables scarcity ribbon ("Últimas 4 unidades!")
+  weight?: string // e.g., "500g", "1.2kg"
+  woodType?: string // e.g., "Nogueira", "Carvalho" — craft storytelling
+  smokeHours?: number // e.g., 12 — craft storytelling
+  isBundle?: boolean // enables bundle pricing UI
+  bundleServings?: number // bundle-specific servings (different from per-item)
+  pitmasterNote?: string // dynamic pitmaster quote per product
+  origin?: string // e.g., "Angus selecionado do Texas"
+  pairingTip?: string // harmonização suggestion per product
   createdAt: string // ISO 8601
   updatedAt: string // ISO 8601
 }
@@ -76,7 +85,7 @@ export const SearchProductsInputSchema = z
     excludeAllergens: z.array(z.string()).optional().describe("Hard filter: exclude allergens"),
     productType: z.enum(["food", "frozen", "merchandise"]).optional().describe("Filter by product type"),
     categoryHandle: z.string().optional().describe("Filter by category handle e.g. carnes-defumadas"),
-    limit: z.number().int().min(1).max(20).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
     offset: z.number().int().min(0).optional().describe("Pagination offset for infinite scroll"),
     sort: z
       .enum(["relevance", "price_asc", "price_desc", "rating_desc", "newest"])

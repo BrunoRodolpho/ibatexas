@@ -65,7 +65,7 @@ export const RadioGroup = React.forwardRef<HTMLDivElement, RadioGroupProps>(
         })}
       </fieldset>
       {errorMessage && error && (
-        <p className="text-xs text-red-600">{errorMessage}</p>
+        <p className="text-xs text-accent-red">{errorMessage}</p>
       )}
     </div>
   )

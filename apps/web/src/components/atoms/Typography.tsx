@@ -22,8 +22,8 @@ const textVariants = cva('', {
       secondary: 'text-charcoal-700',
       muted: 'text-smoke-400',
       accent: 'text-brand-500',
-      danger: 'text-red-600',
-      success: 'text-green-600',
+      danger: 'text-accent-red',
+      success: 'text-accent-green',
     },
     weight: {
       normal: 'font-normal',
@@ -55,7 +55,7 @@ const Heading = forwardRef<
 >(({ className, variant, textColor, weight, as: Tag = 'h1', ...props }, ref) => (
   <Tag
     ref={ref}
-    className={textVariants({ variant: (variant || Tag) as any, textColor, weight, className })}
+    className={textVariants({ variant: (variant || Tag) as HeadingProps['variant'], textColor, weight, className })}
     {...props}
   />
 ))

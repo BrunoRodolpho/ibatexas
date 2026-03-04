@@ -185,7 +185,7 @@ export default function EntrarPage() {
                   </div>
                 </div>
 
-                {error && <p className="text-xs text-red-600">{error}</p>}
+                {error && <p className="text-xs text-accent-red">{error}</p>}
 
                 <Button
                   type="submit"
@@ -228,7 +228,7 @@ export default function EntrarPage() {
                   ))}
                 </div>
 
-                {error && <p className="text-xs text-red-600 text-center">{error}</p>}
+                {error && <p className="text-xs text-accent-red text-center">{error}</p>}
 
                 {loading && (
                   <div className="flex justify-center">

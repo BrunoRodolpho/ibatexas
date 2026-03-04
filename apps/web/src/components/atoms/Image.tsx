@@ -3,6 +3,7 @@
 import NextImage, { ImageProps as NextImageProps } from 'next/image'
 import { forwardRef } from 'react'
 import clsx from 'clsx'
+import { BLUR_PLACEHOLDER } from '@/lib/constants'
 
 interface ImageProps extends Omit<NextImageProps, 'alt' | 'fill'> {
   alt: string
@@ -16,9 +17,9 @@ interface ImageProps extends Omit<NextImageProps, 'alt' | 'fill'> {
  *   image always respects the parent's dimensions.
  */
 const containerClass: Record<string, string> = {
-  thumbnail: 'relative h-[50px] w-[50px] flex-shrink-0 overflow-hidden rounded-md',
-  card:      'relative w-full overflow-hidden rounded-lg',
-  detail:    'relative w-full overflow-hidden rounded-lg',
+  thumbnail: 'relative h-[50px] w-[50px] flex-shrink-0 overflow-hidden rounded-sm',
+  card:      'relative w-full overflow-hidden rounded-card',
+  detail:    'relative w-full overflow-hidden rounded-card',
 }
 
 const Image = forwardRef<HTMLImageElement, ImageProps>(
@@ -31,6 +32,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(
           ref={ref}
           alt={alt}
           className="h-full w-full object-cover"
+          placeholder="blur"
+          blurDataURL={BLUR_PLACEHOLDER}
           sizes={sizes ?? (variant === 'detail' ? '(max-width: 768px) 100vw, 50vw' : '(max-width: 768px) 100vw, 33vw')}
           {...(isFill
             ? { fill: true }

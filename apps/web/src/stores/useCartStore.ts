@@ -26,6 +26,8 @@ interface CartState {
   estimatedDeliveryMinutes?: number
   /** Medusa cart ID — set when a cart is created via /api/cart */
   medusaCartId?: string
+  /** Timestamp (ms) of last cart modification — used for abandonment nudge */
+  lastModifiedAt?: number
 
   // Actions
   addItem: (product: ProductDTO, quantity: number, specialInstructions?: string, variant?: ProductVariant) => void
@@ -62,10 +64,12 @@ export const useCartStore = create<CartState>()(
             ? `${product.id}:${selectedVariant.id}`
             : product.id
           const itemPrice = selectedVariant?.price ?? product.price
+          const now = Date.now()
 
           const existing = state.items.find((item) => item.id === itemId)
           if (existing) {
             return {
+              lastModifiedAt: now,
               items: state.items.map((item) =>
                 item.id === itemId
                   ? { ...item, quantity: item.quantity + quantity, specialInstructions }
@@ -74,6 +78,7 @@ export const useCartStore = create<CartState>()(
             }
           }
           return {
+            lastModifiedAt: now,
             items: [
               ...state.items,
               {
@@ -94,6 +99,7 @@ export const useCartStore = create<CartState>()(
 
       updateItem: (itemId, updates) =>
         set((state) => ({
+          lastModifiedAt: Date.now(),
           items: state.items.map((item) =>
             item.id === itemId ? { ...item, ...updates } : item
           ),
@@ -101,6 +107,7 @@ export const useCartStore = create<CartState>()(
 
       removeItem: (itemId) =>
         set((state) => ({
+          lastModifiedAt: Date.now(),
           items: state.items.filter((item) => item.id !== itemId),
         })),
 
@@ -155,27 +162,28 @@ export const useCartStore = create<CartState>()(
     {
       name: 'cart_v1',
       version: 4,
-      migrate: (persistedState: any, version: number) => {
+      migrate: (persistedState: unknown, version: number) => {
+        const state = persistedState as Record<string, unknown>
         if (version < 3) {
           // Default existing items to "food" productType
-          if (persistedState?.items) {
-            persistedState.items = persistedState.items.map((item: any) => ({
+          if (Array.isArray(state?.items)) {
+            state.items = (state.items as Record<string, unknown>[]).map((item) => ({
               ...item,
-              productType: item.productType ?? "food"
+              productType: (item as Record<string, unknown>).productType ?? "food"
             }))
           }
         }
         if (version < 4) {
           // Migrate: add productId field (was missing), ensure variantId exists
-          if (persistedState?.items) {
-            persistedState.items = persistedState.items.map((item: any) => ({
+          if (Array.isArray(state?.items)) {
+            state.items = (state.items as Record<string, unknown>[]).map((item) => ({
               ...item,
-              productId: item.productId ?? item.id,
-              variantId: item.variantId ?? undefined,
+              productId: (item as Record<string, unknown>).productId ?? (item as Record<string, unknown>).id,
+              variantId: (item as Record<string, unknown>).variantId ?? undefined,
             }))
           }
         }
-        return persistedState
+        return state
       },
     }
   )

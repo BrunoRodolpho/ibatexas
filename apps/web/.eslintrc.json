@@ -1,6 +1,19 @@
 {
   "extends": "next/core-web-vitals",
+  "plugins": ["@typescript-eslint"],
   "rules": {
-    "react-hooks/exhaustive-deps": "warn"
+    "react-hooks/exhaustive-deps": "warn",
+    "@typescript-eslint/no-explicit-any": "error",
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "JSXAttribute[name.name='className'][value.type='Literal'][value.value=/(?:text|bg|border|ring)-(?:red|green|blue|yellow|orange|purple|pink|gray)-\\d{2,3}/]",
+        "message": "Use design-system tokens (accent-red, accent-green, brand-*, smoke-*, charcoal-*) instead of raw Tailwind colors."
+      },
+      {
+        "selector": "TSAsExpression > TSTypeReference[typeName.name='any']",
+        "message": "Avoid 'as any'. Use a proper type or unknown."
+      }
+    ]
   }
 }

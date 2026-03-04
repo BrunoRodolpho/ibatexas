@@ -13,13 +13,30 @@ function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PATHS.some((p) => withoutLocale === p || withoutLocale.startsWith(p + "/"))
 }
 
+/**
+ * Lightweight JWT decode + expiry check for Edge Runtime.
+ * Does NOT verify signature (leave that to the API server).
+ * Only decodes the payload to check if `exp` claim has passed.
+ */
+function isTokenExpired(token: string): boolean {
+  try {
+    const parts = token.split(".")
+    if (parts.length !== 3) return true
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")))
+    if (!payload.exp) return false // No exp claim — server must validate
+    return Date.now() >= payload.exp * 1000
+  } catch {
+    return true // Malformed token
+  }
+}
+
 export default function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl
 
   if (isProtectedPath(pathname)) {
     // Check for session token cookie (set by /api/auth/verify-otp)
     const token = request.cookies.get("token")?.value
-    if (!token) {
+    if (!token || isTokenExpired(token)) {
       const locale = pathname.startsWith("/pt-BR") ? "/pt-BR" : ""
       const entrar = new URL(`${locale}/entrar`, request.url)
       entrar.searchParams.set("next", pathname)

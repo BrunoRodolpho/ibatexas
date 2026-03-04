@@ -37,7 +37,7 @@ const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
           required={required}
           {...props}
         />
-        {error && <span className="text-sm text-red-600">{error}</span>}
+        {error && <span className="text-sm text-accent-red">{error}</span>}
         {helperText && !error && <span className="text-sm text-smoke-400">{helperText}</span>}
       </div>
     )

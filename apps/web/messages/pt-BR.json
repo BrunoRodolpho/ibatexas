@@ -103,12 +103,17 @@
     "allergens_exclude": "Excluir alérgenos",
     "available_now": "Disponível agora",
     "no_results": "Nenhum produto encontrado",
-    "no_results_for": "Nenhum produto encontrado para \"{query}\"",
+    "no_results_for": "Nenhum resultado para \"{query}\"",
+    "no_results_hint": "Explore nosso cardápio completo ou busque por nome.",
+    "no_results_hint_search": "Tente buscar com outros termos ou explore nossas categorias abaixo.",
     "start_searching": "Digite algo para começar a buscar ou selecione uma categoria",
     "reset_filters": "Limpar Filtros",
     "searching": "Buscando...",
     "results_count": "{count} resultado(s)",
+    "categories": "Categorias",
     "category": "Categoria",
+    "sort_label": "Ordenar",
+    "show_results": "Ver {count} resultado(s)",
     "characteristics": "Características",
     "price": "Preço",
     "sort": {
@@ -134,13 +139,24 @@
       "sobremesas": "Sobremesas",
       "bebidas": "Bebidas",
       "congelados": "Congelados"
-    }
+    },
+    "category_descriptions": {
+      "carnes-defumadas": "Defumadas por 14 horas em madeira de pecan, na tradição texana.",
+      "acompanhamentos": "Complementos artesanais que elevam cada prato.",
+      "sanduiches": "Pão artesanal, carne defumada, molhos autorais.",
+      "sobremesas": "Doces que encerram a refeição com a mesma excelência.",
+      "bebidas": "Selecionadas para harmonizar com defumados.",
+      "congelados": "Sabor de pitmaster, pronto quando você quiser."
+    },
+    "load_more": "Carregar mais"
   },
   "product": {
     "price": "Preço",
     "quantity": "Quantidade",
     "add_to_cart": "Adicionar ao Carrinho",
+    "adding": "Adicionando...",
     "added": "Adicionado ao carrinho!",
+    "add_error": "Erro ao adicionar ao carrinho",
     "nutritional_info": "Informação Nutricional",
     "allergens": "Alérgenos",
     "contains": "Contém:",
@@ -150,16 +166,40 @@
     "special_instructions": "Instruções especiais",
     "special_instructions_placeholder": "Ex: sem cebola, bem passado, molho separado",
     "variants": "Tamanhos Disponíveis",
+    "per_serving": "por porção",
     "in_stock": "Em Estoque",
     "out_of_stock": "Fora de Estoque",
     "preparation_time": "Tempo de Preparo",
-    "minutes": "min"
+    "minutes": "min",
+    "select_size": "Selecione um tamanho",
+    "per_person": "{price} por pessoa · Serve {servings}",
+    "reviews_count": "({count} avaliações)",
+    "quantity_label": "Quantidade:",
+    "trust_delivery": "Entrega refrigerada em até 24h",
+    "trust_smoke": "Defumado por {hours}h em lenha de {wood}",
+    "trust_smoke_default": "Defumado por 12h em lenha de nogueira",
+    "trust_quality": "100% carne Angus selecionada",
+    "about_cut": "Sobre este corte",
+    "process": "Processo",
+    "process_default": "Cada peça é preparada artesanalmente em nosso defumador a lenha, com temperatura controlada por até 12 horas. Utilizamos lenha de nogueira selecionada para atingir o equilíbrio perfeito de sabor e maciez.",
+    "pitmaster": "Pitmaster",
+    "pitmaster_default_quote": "Cada corte conta uma história. O segredo está na paciência — deixar o tempo e a fumaça fazerem o trabalho.",
+    "pitmaster_default_bio": "Pitmaster com 15 anos de experiência — Produção semanal limitada",
+    "origin": "Origem",
+    "origin_default": "Carne Angus selecionada de produtores parceiros do Texas. Cada peça passa por rigoroso controle de qualidade antes de entrar no defumador.",
+    "pairing": "Harmonização",
+    "pairing_default": "Sirva com coleslaw cremoso, cornbread artesanal e uma cerveja IPA bem gelada. Para uma experiência completa, acompanhe com nosso molho barbecue da casa.",
+    "cross_sell_title": "Para uma experiência completa",
+    "scarcity": "Últimas {count} unidades!",
+    "bundle_per_person": "{price} por pessoa · Bundle para {servings}"
   },
   "cart": {
     "title": "Seu Carrinho",
     "title_count": "Carrinho ({count} {count, plural, one {item} other {itens}})",
+    "drawer_title": "Seu carrinho ({count} {count, plural, one {item} other {itens}})",
     "empty": "Seu carrinho está vazio",
     "empty_subtitle": "Explore nosso menu e adicione seus pratos favoritos",
+    "explore_menu": "Explorar cardápio",
     "continue_shopping": "Continuar Comprando",
     "back_to_menu": "Voltar ao Menu",
     "item": "Item",
@@ -171,6 +211,9 @@
     "delivery_fee": "Taxa de Entrega",
     "tip": "Gorjeta",
     "total": "Total",
+    "checkout": "Finalizar pedido",
+    "view_full_cart": "Ver carrinho completo",
+    "remove_item": "Remover {title}",
     "delivery_type": "Tipo de Entrega",
     "delivery": "Entrega em Casa",
     "delivery_fee_label": "Taxa de entrega calculada pelo CEP",
@@ -320,6 +363,7 @@
       "product_not_found": "Produto não encontrado"
     },
     "back_to_shop": "Voltar à Loja",
+    "no_products": "Nenhum produto encontrado",
     "product_details": "Detalhes do Produto",
     "featured": "Produtos em Destaque",
     "view_all": "Ver Todos os Produtos",
@@ -388,7 +432,11 @@
     "required_field": "Campo obrigatório",
     "home": "Início",
     "all": "Todos",
-    "add": "Adicionar"
+    "add": "Adicionar",
+    "skip_to_content": "Pular para o conteúdo",
+    "decrease_quantity": "Diminuir quantidade",
+    "increase_quantity": "Aumentar quantidade",
+    "quantity_label": "Quantidade"
   },
   "footer": {
     "contact": "Contato",
@@ -402,5 +450,25 @@
     "privacy": "Política de Privacidade",
     "social": "Redes Sociais",
     "all_rights": "Todos os direitos reservados"
+  },
+  "toast": {
+    "added_to_cart": "Adicionado ao carrinho",
+    "add_to_cart_error": "Erro ao adicionar ao carrinho",
+    "cart_items_waiting": "Seus itens ainda estão no carrinho!",
+    "cart_abandonment": "Seus itens ainda estão no carrinho!"
+  },
+  "recently_viewed": {
+    "title": "Vistos Recentemente"
+  },
+  "wishlist": {
+    "title": "Favoritos",
+    "empty": "Você ainda não tem favoritos",
+    "empty_hint": "Toque no coração nos produtos para salvar seus favoritos",
+    "added": "Adicionado aos favoritos",
+    "removed": "Removido dos favoritos",
+    "browse_menu": "Explorar Cardápio"
+  },
+  "quick_view": {
+    "view_details": "Ver Detalhes"
   }
 }

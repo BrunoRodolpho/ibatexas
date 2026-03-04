@@ -7,7 +7,6 @@ interface UIState {
   selectedFilters: {
     tags: string[]
     category?: string
-    priceRange?: [number, number]
     sort?: string
   }
   toasts: Array<{ id: string; message: string; type: 'success' | 'error' | 'warning' | 'info' }>
