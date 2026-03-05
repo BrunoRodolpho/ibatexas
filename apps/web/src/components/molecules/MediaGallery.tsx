@@ -53,8 +53,9 @@ export function MediaGallery({ images, thumbnail, title, className }: MediaGalle
   // Empty state — no media at all
   if (media.length === 0) {
     return (
-      <div className={clsx('aspect-square rounded-sm bg-smoke-100 flex items-center justify-center', className)}>
-        <span className="font-display text-lg font-medium text-smoke-300/40 uppercase tracking-editorial">
+      <div className={clsx('aspect-square rounded-card bg-gradient-to-br from-smoke-100 to-smoke-200 flex items-center justify-center relative overflow-hidden', className)}>
+        <div className="grain-overlay" />
+        <span className="font-display text-lg font-medium text-smoke-300/30 uppercase tracking-editorial">
           Sem imagem
         </span>
       </div>
@@ -67,7 +68,7 @@ export function MediaGallery({ images, thumbnail, title, className }: MediaGalle
   return (
     <div className={clsx('space-y-3', className)}>
       {/* Main media — square aspect ratio */}
-      <div className="relative aspect-square overflow-hidden rounded-sm bg-smoke-100">
+      <div className="relative aspect-square overflow-hidden rounded-card surface-card">
         {currentIsVideo ? (
           <video
             key={currentUrl}
@@ -138,10 +139,10 @@ export function MediaGallery({ images, thumbnail, title, className }: MediaGalle
                 key={url}
                 onClick={() => handleSelect(i)}
                 className={clsx(
-                  'relative aspect-square overflow-hidden rounded-sm border-2 transition-all duration-300',
+                  'relative aspect-square overflow-hidden rounded-card transition-all duration-300',
                   i === selectedIndex
-                    ? 'border-charcoal-900'
-                    : 'border-transparent hover:border-smoke-300',
+                    ? 'ring-2 ring-charcoal-900 ring-offset-2'
+                    : 'opacity-60 hover:opacity-100',
                 )}
               >
                 {thumbIsVideo ? (

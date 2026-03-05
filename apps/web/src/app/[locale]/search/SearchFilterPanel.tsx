@@ -72,21 +72,20 @@ export function SearchFilterPanel({
       {/* Collapsible filter overlay (desktop) */}
       {isFilterOpen && (
         <div className="mb-12 animate-reveal">
-          <div className="border-t border-b border-smoke-200 py-8">
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-6">
+          <div className="surface-card rounded-card p-8">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
               {tags.map((tag) => {
                 const isActive = selectedTags.includes(tag.id)
                 return (
                   <button
                     key={tag.id}
                     onClick={() => onTagToggle(tag.id)}
-                    className={`text-left text-sm transition-colors duration-500 ease-luxury ${
+                    className={`px-3 py-2 rounded-sm text-sm transition-all duration-500 ease-luxury ${
                       isActive
-                        ? 'text-charcoal-900 font-medium'
-                        : 'text-smoke-400 hover:text-charcoal-900'
+                        ? 'bg-charcoal-900 text-smoke-50'
+                        : 'bg-smoke-100 text-smoke-500 hover:bg-smoke-200'
                     }`}
                   >
-                    {isActive && <span className="mr-1.5">·</span>}
                     {tag.label}
                   </button>
                 )
@@ -96,16 +95,16 @@ export function SearchFilterPanel({
         </div>
       )}
 
-      {/* Active filters: minimal inline text */}
+      {/* Active filters: tactile removable pills */}
       {hasActiveFilters && !isFilterOpen && (
-        <div className="mb-8 flex flex-wrap items-center gap-3">
+        <div className="mb-8 flex flex-wrap items-center gap-2">
           {selectedTags.map((tagId) => {
             const tag = tags.find((t) => t.id === tagId)
             return (
               <button
                 key={tagId}
                 onClick={() => onTagToggle(tagId)}
-                className="text-xs font-medium text-charcoal-900 border-b border-charcoal-900/30 pb-0.5 hover:border-charcoal-900 transition-colors duration-500 ease-luxury"
+                className="bg-smoke-100 rounded-sm px-3 py-1.5 text-xs font-medium text-charcoal-900 hover:bg-smoke-200 transition-colors duration-500 ease-luxury"
               >
                 {tag?.label || tagId} ✕
               </button>

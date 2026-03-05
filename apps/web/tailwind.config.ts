@@ -36,6 +36,7 @@ const config: Config = {
           900: "#1A1614",
           800: "#231F1C",
           700: "#2E2924",
+          600: "#3A352F",
         },
         accent: {
           green: "#2D6A4F",
@@ -74,7 +75,7 @@ const config: Config = {
 
       // ── Border Radius ──────────────────────────────────────────────
       borderRadius: {
-        card: "6px",
+        card: "10px",
       },
 
       // ── Spacing (luxury editorial rhythm) ────────────────────────────

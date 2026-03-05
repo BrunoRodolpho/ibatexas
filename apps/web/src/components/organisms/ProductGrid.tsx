@@ -49,7 +49,7 @@ export const ProductGrid = ({
     return (
       <div className={`grid ${gridColsClass} gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-8 lg:gap-y-10`}>
         {Array.from({ length: columns === 5 ? 10 : 8 }).map((_, i) => (
-          <div key={i} className="overflow-hidden">
+          <div key={i} className="overflow-hidden rounded-card">
             <div className="aspect-[4/5] rounded-card skeleton" />
             <div className="pt-3 space-y-2">
               <div className="h-3.5 w-3/4 rounded-sm skeleton" />
@@ -74,7 +74,7 @@ export const ProductGrid = ({
   }
 
   return (
-    <div className={`grid ${gridColsClass} gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-8 lg:gap-y-10`}>
+    <div className={`grid ${gridColsClass} gap-x-5 sm:gap-x-6 lg:gap-x-8 gap-y-10 lg:gap-y-14`}>
       {products.map((product, index) => (
         <div
           key={product.id}
