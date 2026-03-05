@@ -62,6 +62,11 @@
       radial-gradient(ellipse 60% 80% at 80% 50%, rgba(232,93,4,0.04), transparent);
   }
 
+  /* ── Surface tokens — semantic abstraction over raw colors ──── */
+  .surface-base     { @apply bg-smoke-50; }
+  .surface-card     { @apply bg-smoke-50 shadow-xs border border-smoke-200/60; }
+  .surface-elevated { @apply bg-white shadow-md; }
+  .surface-inverted { @apply bg-charcoal-900 text-smoke-100; }
 }
 
 @layer utilities {
@@ -102,6 +107,11 @@
   }
   .measure-reading {
     max-width: 55ch;
+  }
+
+  /* Semantic price typography */
+  .text-price {
+    @apply font-display text-display-2xs font-semibold text-charcoal-900 tabular-nums;
   }
 
   /* Marquee edge-fade mask */

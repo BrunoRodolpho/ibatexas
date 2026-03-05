@@ -10,7 +10,7 @@ import { track } from '@/lib/analytics'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
 
 /** Badge priority order — first match wins (only 1 badge shown) */
-const BADGE_PRIORITY = ['edicao_limitada', 'exclusivo', 'chef_choice', 'popular', 'novo'] as const
+const BADGE_PRIORITY = ['edicao_limitada', 'chef_choice', 'popular', 'novo'] as const
 
 interface ProductCardProps {
   id: string
@@ -87,9 +87,9 @@ export const ProductCard = ({
 
   return (
     <div className="group relative">
-      <div className="overflow-hidden transition-all duration-500 ease-luxury group-hover:translate-y-[-2px] group-hover:shadow-card">
+      <div className="surface-card rounded-card overflow-hidden transition-all duration-500 ease-luxury group-hover:shadow-md group-hover:-translate-y-0.5">
         {/* Image — 4:5 portrait, editorial food ratio */}
-        <div className="relative aspect-[4/5] overflow-hidden rounded-card bg-smoke-100">
+        <div className="relative aspect-[4/5] overflow-hidden bg-smoke-100">
           {displayImage ? (
             <>
               <NextImage
@@ -102,12 +102,22 @@ export const ProductCard = ({
                 sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
                 className="object-cover contrast-[1.08] group-hover:scale-[1.03] transition-transform duration-800 ease-luxury"
               />
+              {/* Secondary image on hover */}
+              {images && images.length >= 2 && images[1] !== displayImage && (
+                <NextImage
+                  src={images[1]}
+                  alt={`${title} — alternativa`}
+                  fill
+                  sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
+                  className="object-cover contrast-[1.08] absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 ease-luxury"
+                />
+              )}
               {/* Warm overlay — unifies product photos shot in different lighting */}
-              <div className="absolute inset-0 bg-brand-50/10 mix-blend-multiply pointer-events-none" />
+              <div className="absolute inset-0 bg-brand-50/5 mix-blend-multiply pointer-events-none" />
             </>
           ) : (
-            <div className="absolute inset-0 bg-gradient-to-br from-smoke-100 to-smoke-200 flex items-center justify-center">
-              <span className="font-display text-sm font-medium text-smoke-300/40 uppercase tracking-editorial">IbateXas</span>
+            <div className="absolute inset-0 bg-gradient-to-br from-smoke-100 to-smoke-200 grain-overlay flex items-center justify-center">
+              <span className="font-display text-xs tracking-[0.2em] text-smoke-300/30 uppercase">IbateXas</span>
             </div>
           )}
 
@@ -137,8 +147,8 @@ export const ProductCard = ({
         </div>
 
         {/* Details — minimal, below image */}
-        <div className="pt-3 pb-1">
-          <h3 className="font-display text-sm font-medium text-charcoal-900 leading-snug group-hover:text-charcoal-700 transition-colors duration-500 ease-luxury">
+        <div className="pt-3 pb-2 px-3">
+          <h3 className="font-display text-display-2xs tracking-display text-charcoal-900 leading-snug group-hover:text-charcoal-700 transition-colors duration-500 ease-luxury">
             <Link href={linkHref} className="after:absolute after:inset-0 after:content-['']" onClick={handleCardClick}>
               {title}
             </Link>
@@ -146,13 +156,13 @@ export const ProductCard = ({
 
           {/* Subtitle / weight+servings merged */}
           {(subtitle || weight || servings) && (
-            <p className="mt-0.5 text-xs text-smoke-400">
+            <p className="mt-1.5 text-xs text-smoke-500">
               {subtitle || [weight, servings ? `Serve ${servings}` : ''].filter(Boolean).join(' · ')}
             </p>
           )}
 
           {/* Price block */}
-          <p className="mt-1.5 text-sm tabular-nums">
+          <p className="mt-2 text-base tabular-nums">
             {hasMultipleVariants && (
               <span className="text-xs text-smoke-400 mr-1">a partir de</span>
             )}
@@ -161,15 +171,15 @@ export const ProductCard = ({
                 {(compareAtPrice / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
               </span>
             )}
-            <span className="font-semibold text-charcoal-900">{priceFormatted}</span>
+            <span className="font-semibold tracking-tight text-charcoal-900">{priceFormatted}</span>
             {hasDiscount && discountPercent > 0 && price < 15000 && (
-              <span className="text-xs text-brand-600 font-medium ml-1.5">-{discountPercent}%</span>
+              <span className="text-xs text-accent-green font-medium ml-1.5">-{discountPercent}%</span>
             )}
           </p>
 
           {/* Social proof — only if meaningful */}
           {showSocialProof && (
-            <p className="mt-1 text-[10px] text-smoke-400 inline-flex items-center gap-0.5">
+            <p className="mt-1.5 text-[10px] text-smoke-400 inline-flex items-center gap-0.5">
               <Star className="w-2.5 h-2.5 fill-brand-500 text-brand-500" />
               {rating.toFixed(1)}
               <span className="ml-0.5">({reviewCount})</span>

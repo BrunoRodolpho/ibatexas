@@ -185,17 +185,17 @@ export default function SearchContent() {
       <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16 lg:py-20">
         {/* ── Page header with inline controls ──────────────────── */}
         <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
-          <div>
-            <h1 className="font-display text-display-sm font-semibold text-charcoal-900 tracking-display inline-flex items-baseline gap-3">
+          <div className="flex flex-col gap-1">
+            <h1 className="font-display text-display-sm font-semibold text-charcoal-900 tracking-display">
               {t('search.title')}
-              {!isLoading && totalFound > 0 && (
-                <span className="text-sm font-sans font-medium text-smoke-400">· {totalFound}</span>
-              )}
             </h1>
+            {!isLoading && totalFound > 0 && (
+              <span className="text-sm font-sans font-medium text-smoke-400">{totalFound} produtos</span>
+            )}
             {hasActiveFilters && (
               <button
                 onClick={handleResetFilters}
-                className="mt-2 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+                className="mt-1 text-xs font-medium tracking-wide text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury self-start"
               >
                 {t('search.reset_filters')}
               </button>
@@ -240,10 +240,10 @@ export default function SearchContent() {
 
         {/* ── Active filter chips (category) ──────────────────────── */}
         {selectedFilters.category && !isFilterOpen && (
-          <div className="mb-8 flex flex-wrap items-center gap-3">
+          <div className="mb-8 flex flex-wrap items-center gap-2">
             <button
               onClick={() => handleCategoryChange(selectedFilters.category!)}
-              className="text-xs font-medium text-charcoal-900 border-b border-charcoal-900/30 pb-0.5 hover:border-charcoal-900 transition-colors duration-500 ease-luxury"
+              className="bg-smoke-100 rounded-sm px-3 py-1.5 text-xs font-medium text-charcoal-900 hover:bg-smoke-200 transition-colors duration-500 ease-luxury"
             >
               {CATEGORIES.find((c) => c.id === selectedFilters.category)?.label} ✕
             </button>
