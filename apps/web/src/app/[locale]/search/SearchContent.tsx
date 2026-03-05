@@ -11,7 +11,7 @@ import { useProducts } from '@/hooks/api'
 import { track } from '@/lib/analytics'
 import { SlidersHorizontal } from 'lucide-react'
 import { Sheet } from '@/components/molecules/Modal'
-import { SearchFilterPanel } from './SearchFilterPanel'
+import { SearchFilterControls, SearchFilterPanel } from './SearchFilterPanel'
 import { SearchCategoryRow } from './SearchCategoryRow'
 import { SearchEmptyState } from './SearchEmptyState'
 import type { ProductDTO } from '@ibatexas/types'
@@ -202,17 +202,13 @@ export default function SearchContent() {
             )}
           </div>
 
-          <SearchFilterPanel
-            tags={TAGS}
+          <SearchFilterControls
             sortOptions={SORT_OPTIONS}
             selectedTags={selectedFilters.tags}
             selectedSort={selectedFilters.sort || 'relevance'}
             isFilterOpen={isFilterOpen}
             onToggleFilter={() => setIsFilterOpen(!isFilterOpen)}
-            onTagToggle={handleTagToggle}
             onSortChange={handleSortChange}
-            onResetFilters={handleResetFilters}
-            hasActiveFilters={hasActiveFilters}
           />
 
           {/* Mobile filter trigger — opens bottom sheet */}
@@ -229,6 +225,15 @@ export default function SearchContent() {
             )}
           </button>
         </div>
+
+        {/* ── Filter overlay + active pills (block-level, outside header flex) ── */}
+        <SearchFilterPanel
+          tags={TAGS}
+          selectedTags={selectedFilters.tags}
+          isFilterOpen={isFilterOpen}
+          onTagToggle={handleTagToggle}
+          hasActiveFilters={hasActiveFilters}
+        />
 
         {/* ── Typographic category row ────────────────────────────── */}
         <SearchCategoryRow
