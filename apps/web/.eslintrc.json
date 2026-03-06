@@ -4,6 +4,17 @@
   "rules": {
     "react-hooks/exhaustive-deps": "warn",
     "@typescript-eslint/no-explicit-any": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "@/domains",
+            "message": "Import from the specific domain barrel (e.g., '@/domains/cart') to preserve tree-shaking."
+          }
+        ]
+      }
+    ],
     "no-restricted-syntax": [
       "error",
       {
