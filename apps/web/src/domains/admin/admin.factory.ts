@@ -12,12 +12,9 @@
 
 import { useEffect, useState } from 'react'
 import { apiFetch } from '@/lib/api'
+import type { HookResult } from '@/domains/shared.types'
 
-export interface AdminHookResult<T> {
-  data: T
-  loading: boolean
-  error: Error | null
-}
+export type AdminHookResult<T> = HookResult<T>
 
 interface CreateAdminHookOptions<TRaw, T> {
   /** Extract the desired data from the raw API response */

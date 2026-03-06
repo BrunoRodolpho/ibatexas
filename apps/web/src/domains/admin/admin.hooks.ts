@@ -46,10 +46,10 @@ export function useAdminProduct(id: string | null) {
   const [error, setError] = useState<Error | null>(null)
 
   useEffect(() => {
-    if (!id) { setData(null); return }
+    if (!id) { setData(null); setError(null); return }
     setLoading(true)
     setError(null)
-    apiFetch(`/api/admin/products/${id}`)
+    apiFetch(`/api/admin/products/${encodeURIComponent(id)}`)
       .then((res: { product: AdminProductDetail }) => setData(res.product))
       .catch(setError)
       .finally(() => setLoading(false))

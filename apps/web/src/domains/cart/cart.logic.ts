@@ -104,24 +104,35 @@ export function migrateCartState(
 
 // ── Cart Classification (extracted from cart.store.ts) ───────────────────
 
-export type CartType = "food" | "merchandise" | "mixed"
+export type CartType = "food" | "merchandise" | "mixed" | "empty"
+
+/** Classify items in a single pass with early break. Pure function. */
+function classifyItems(items: ReadonlyArray<Pick<CartItem, 'productType'>>): { hasFood: boolean; hasMerch: boolean } {
+  let hasFood = false
+  let hasMerch = false
+  for (const item of items) {
+    if (item.productType === "food" || item.productType === "frozen") hasFood = true
+    if (item.productType === "merchandise") hasMerch = true
+    if (hasFood && hasMerch) break
+  }
+  return { hasFood, hasMerch }
+}
 
 /** Determine cart type from items. Pure function. */
 export function getCartType(items: ReadonlyArray<Pick<CartItem, 'productType'>>): CartType {
-  const hasFood_ = items.some(item => item.productType === "food" || item.productType === "frozen")
-  const hasMerch = items.some(item => item.productType === "merchandise")
-
-  if (hasFood_ && hasMerch) return "mixed"
+  if (items.length === 0) return "empty"
+  const { hasFood, hasMerch } = classifyItems(items)
+  if (hasFood && hasMerch) return "mixed"
   if (hasMerch) return "merchandise"
   return "food"
 }
 
 /** Check if any items are merchandise. Pure function. */
 export function hasMerchandise(items: ReadonlyArray<Pick<CartItem, 'productType'>>): boolean {
-  return items.some(item => item.productType === "merchandise")
+  return classifyItems(items).hasMerch
 }
 
 /** Check if any items are food or frozen. Pure function. */
 export function hasFood(items: ReadonlyArray<Pick<CartItem, 'productType'>>): boolean {
-  return items.some(item => item.productType === "food" || item.productType === "frozen")
+  return classifyItems(items).hasFood
 }
