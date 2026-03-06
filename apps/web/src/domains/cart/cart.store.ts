@@ -50,7 +50,7 @@ interface CartState {
   // Computed
   getTotal: () => number
   getItemCount: () => number
-  getCartType: () => "food" | "merchandise" | "mixed"
+  getCartType: () => "food" | "merchandise" | "mixed" | "empty"
   hasMerchandise: () => boolean
   hasFood: () => boolean
 }
@@ -107,6 +107,8 @@ export const useCartStore = create<CartState>()(
           selectedTimeSlot: undefined,
           cep: undefined,
           deliveryFee: undefined,
+          estimatedDeliveryMinutes: undefined,
+          lastModifiedAt: undefined,
           medusaCartId: undefined,
         }),
 

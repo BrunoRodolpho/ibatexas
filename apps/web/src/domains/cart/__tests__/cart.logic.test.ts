@@ -85,7 +85,9 @@ describe('buildCartItem', () => {
   })
 
   it('falls back to product price when variant has no price', () => {
-    const variant = createVariant({ id: 'var_x', title: 'Default', price: undefined as unknown as number })
+    // Simulate a persisted variant that lost its price (e.g. migration gap).
+    // Runtime data can violate TS types, so we cast through unknown.
+    const variant = { id: 'var_x', title: 'Default', sku: null, price: undefined } as unknown as ProductVariant
     const item = buildCartItem(baseProduct, variant, 1)
     expect(item.price).toBe(8900)
   })
@@ -170,8 +172,8 @@ describe('getCartType', () => {
     expect(getCartType([{ productType: 'food' }, { productType: 'merchandise' }])).toBe('mixed')
   })
 
-  it('returns "food" for empty cart', () => {
-    expect(getCartType([])).toBe('food')
+  it('returns "empty" for empty cart', () => {
+    expect(getCartType([])).toBe('empty')
   })
 })
 

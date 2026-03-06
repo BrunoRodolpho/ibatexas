@@ -4,10 +4,26 @@ import { useEffect, useState } from "react"
 import { apiFetch } from "@/lib/api"
 import type { ProductDTO } from "@ibatexas/types"
 
-// ── Product Hooks ───────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────
+
+export interface Category {
+  id: string
+  name: string
+  handle: string
+}
+
+/** Shape the API may return before normalization. */
+interface RawProductsResponse {
+  items?: ProductDTO[]
+  products?: ProductDTO[]
+  total?: number
+  totalFound?: number
+  searchModel?: string
+  facetCounts?: Record<string, Array<{ value: string; count: number }>>
+}
 
 export interface ProductsResponse {
-  items: import('@ibatexas/types').ProductDTO[]
+  items: ProductDTO[]
   total: number
   searchModel?: string
   facetCounts?: Record<string, Array<{ value: string; count: number }>>
@@ -28,6 +44,8 @@ interface UseProductsOptions {
   availableNow?: boolean
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────
+
 /** Build the products API endpoint from filter options. Pure function. */
 function buildProductsEndpoint(opts: UseProductsOptions & { limit: number }): string {
   const params = new URLSearchParams()
@@ -44,19 +62,20 @@ function buildProductsEndpoint(opts: UseProductsOptions & { limit: number }): st
   if (opts.availableNow) params.set("availableNow", "true")
   params.set("limit", String(opts.limit))
 
-  const qs = params.toString()
-  return qs ? `/api/products?${qs}` : "/api/products"
+  return `/api/products?${params.toString()}`
 }
 
 /** Map the raw API response to our normalized ProductsResponse shape. */
-function transformProductResponse(res: Record<string, unknown>): ProductsResponse {
+function transformProductResponse(res: RawProductsResponse): ProductsResponse {
   return {
-    items: (res.items ?? res.products ?? []) as ProductDTO[],
-    total: (res.total ?? res.totalFound ?? 0) as number,
-    searchModel: res.searchModel as string | undefined,
-    facetCounts: res.facetCounts as ProductsResponse['facetCounts'],
+    items: res.items ?? res.products ?? [],
+    total: res.total ?? res.totalFound ?? 0,
+    searchModel: res.searchModel,
+    facetCounts: res.facetCounts,
   }
 }
+
+// ── Hooks ────────────────────────────────────────────────────────────────
 
 export function useProducts({
   query,
@@ -88,7 +107,7 @@ export function useProducts({
 
     setLoading(true)
     apiFetch(endpoint, { signal: controller.signal })
-      .then((res: Record<string, unknown>) => {
+      .then((res: RawProductsResponse) => {
         if (!controller.signal.aborted) setData(transformProductResponse(res))
       })
       .catch((err) => {
@@ -100,7 +119,7 @@ export function useProducts({
       })
 
     return () => controller.abort()
-  }, [query, tagsKey, limit, productType, categoryHandle, sort, minPrice, maxPrice, minRating, offset, allergensKey, availableNow, tags, excludeAllergens])
+  }, [query, tagsKey, limit, productType, categoryHandle, sort, minPrice, maxPrice, minRating, offset, allergensKey, availableNow])
 
   return { data, loading, error }
 }
@@ -132,13 +151,13 @@ export function useProductDetail(id: string) {
 }
 
 export function useCategories() {
-  const [data, setData] = useState<unknown[] | null>(null)
+  const [data, setData] = useState<Category[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
 
   useEffect(() => {
     apiFetch("/api/categories")
-      .then((res) => setData(res.categories))
+      .then((res: { categories: Category[] }) => setData(res.categories))
       .catch(setError)
       .finally(() => setLoading(false))
   }, [])
@@ -154,6 +173,17 @@ export function useCategories() {
 const STORAGE_KEY = 'ibx_recently_viewed'
 const MAX_ITEMS = 10
 
+function loadRecentlyViewed(): string[] {
+  try {
+    const stored = sessionStorage.getItem(STORAGE_KEY)
+    if (!stored) return []
+    const parsed: unknown = JSON.parse(stored)
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+  } catch {
+    return []
+  }
+}
+
 /**
  * Hook to manage recently viewed products.
  * Uses sessionStorage so the list persists within a tab but resets on close.
@@ -163,14 +193,7 @@ export function useRecentlyViewed() {
 
   // Load from sessionStorage on mount
   useEffect(() => {
-    try {
-      const stored = sessionStorage.getItem(STORAGE_KEY)
-      if (stored) {
-        setItems(JSON.parse(stored))
-      }
-    } catch {
-      // Silent fail
-    }
+    setItems(loadRecentlyViewed())
   }, [])
 
   const addProduct = (productId: string) => {
