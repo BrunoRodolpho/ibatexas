@@ -143,17 +143,57 @@ export default async function Home() {
       </section>
 
       {/* ── Product carousel ─────────────────────────────────────── */}
-      <section className="bg-smoke-50">
-        <div className="py-24 lg:py-32">
+      <section className="relative bg-smoke-50 overflow-hidden warm-glow">
+
+        {/* Top decorative area */}
+        <div className="relative pt-34 lg:pt-38">
+          <ScrollReveal animation="fade-up" delay={100}>
+            <div className="flex items-center justify-center gap-4 mb-8 lg:mb-10">
+              <div className="h-px w-12 sm:w-20 bg-smoke-300/30" />
+              <Flame className="w-4 h-4 text-brand-500/40" strokeWidth={1.5} />
+              <div className="h-px w-12 sm:w-20 bg-smoke-300/30" />
+            </div>
+          </ScrollReveal>
+
+          <ScrollReveal animation="fade-up" delay={200}>
+            <p className="text-center text-[10px] uppercase tracking-editorial text-smoke-500 font-medium mb-3">
+              {t('home.section_menu')}
+            </p>
+          </ScrollReveal>
+
+          <ScrollReveal animation="scale-up" delay={350}>
+            <Heading as="h2" className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 leading-tight tracking-display text-center max-w-[600px] mx-auto">
+              {t('home.featured_products')}
+            </Heading>
+          </ScrollReveal>
+
+          <ScrollReveal animation="fade-up" delay={500}>
+            <Text className="mt-3 sm:mt-4 text-sm sm:text-base text-smoke-500 leading-relaxed font-display italic text-center max-w-[440px] mx-auto">
+              {t('home.featured_subtitle')}
+            </Text>
+          </ScrollReveal>
+        </div>
+
+        {/* Carousel */}
+        <div className="relative pt-12 lg:pt-16 pb-34 lg:pb-38">
           <HomeCarousel />
         </div>
+
+        {/* Bottom decorative divider */}
+        <ScrollReveal animation="fade-up" delay={100}>
+          <div className="flex items-center justify-center gap-4 pb-6">
+            <div className="h-px w-12 sm:w-20 bg-smoke-300/30" />
+            <div className="w-1.5 h-1.5 rounded-full bg-smoke-400/40" />
+            <div className="h-px w-12 sm:w-20 bg-smoke-300/30" />
+          </div>
+        </ScrollReveal>
       </section>
 
       {/* ═══════════════════════════════════════════════════════════════
           SECTION 3 — Story + Process + Stats (unified dark section)
           ═══════════════════════════════════════════════════════════════ */}
       <section className="bg-charcoal-900 grain-overlay">
-        <div className="mx-auto max-w-[1280px] px-6 lg:px-8 py-24 lg:py-32">
+        <div className="mx-auto max-w-[1280px] px-6 lg:px-8 pt-10 lg:pt-14 pb-24 lg:pb-32">
           {/* Brand narrative */}
           <ScrollReveal animation="fade-up" delay={0}>
             <StoryBlock compact />
@@ -196,7 +236,7 @@ export default async function Home() {
                 <ScrollReveal key={i} animation="scale-up" delay={i * 150}>
                   <div className="flex flex-col items-center text-center">
                     <span className="font-display text-display-sm sm:text-display-md font-bold text-white tabular-nums">{stat.value}</span>
-                    <span className="mt-2 text-xs text-smoke-300/60">{stat.label}</span>
+                    <span className="mt-3 text-sm tracking-editorial text-smoke-300/70">{stat.label}</span>
                   </div>
                 </ScrollReveal>
               ))}

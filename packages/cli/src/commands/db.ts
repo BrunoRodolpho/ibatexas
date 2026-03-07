@@ -133,6 +133,20 @@ async function runSeedDomain() {
   }
 }
 
+async function runSeedHomepage() {
+  const spinner = ora("Seeding homepage data (customers + reviews)…").start()
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:homepage"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
+    spinner.succeed(chalk.green("Homepage seed completed"))
+  } catch {
+    spinner.fail(chalk.red("Homepage seed failed"))
+    process.exit(1)
+  }
+}
+
 async function runReset(force = false) {
   if (!force) {
     const confirmed = await confirm({
@@ -200,6 +214,12 @@ async function runReset(force = false) {
 
   step("Seeding domain tables…")
   await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:tables"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  })
+
+  step("Seeding homepage data (customers + reviews)…")
+  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:homepage"], {
     cwd: ROOT,
     stdio: "inherit",
   })
@@ -407,6 +427,10 @@ export function registerDbCommands(program: Command) {
     .description("Seed restaurant Tables and TimeSlots via Prisma")
     .action(runSeedDomain)
 
+  db.command("seed:homepage")
+    .description("Seed customers and reviews for homepage sections (Medusa must be running)")
+    .action(runSeedHomepage)
+
   db.command("reset")
     .description("⚠️  Drop + migrate (Medusa + domain) + reseed (destructive)")
     .option("-f, --force", "Skip the confirmation prompt")
@@ -421,5 +445,5 @@ export function registerDbCommands(program: Command) {
     .description("Show migration status for Medusa and domain (Prisma) schemas")
     .action(runStatus)
 
-  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runReset, runReindex }
+  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runReset, runReindex }
 }

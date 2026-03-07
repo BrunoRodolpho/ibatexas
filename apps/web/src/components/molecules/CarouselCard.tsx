@@ -38,7 +38,7 @@ export const CarouselCard = ({
   return (
     <Link
       href={linkHref}
-      className="group block flex-shrink-0 w-[min(630px,92vw)] rounded-sm overflow-hidden shadow-card hover:shadow-md transition-shadow duration-500 ease-luxury"
+      className="group block flex-shrink-0 w-[min(630px,92vw)] rounded-sm overflow-hidden shadow-card hover:shadow-xl hover:-translate-y-1 transition-all duration-500 ease-luxury"
     >
       {/* Image with frosted overlay */}
       <div className="relative w-full aspect-[16/10] overflow-hidden bg-smoke-100">
@@ -58,6 +58,9 @@ export const CarouselCard = ({
             </span>
           </div>
         )}
+
+        {/* Warm brand tint */}
+        <div className="absolute inset-0 bg-brand-50/5 mix-blend-multiply pointer-events-none z-[1]" />
 
         {/* Rating badge */}
         {rating && (
