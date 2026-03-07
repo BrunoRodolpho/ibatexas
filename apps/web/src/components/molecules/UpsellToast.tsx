@@ -98,15 +98,15 @@ export function UpsellToast() {
 
   return (
     <div className="fixed bottom-[7.5rem] sm:bottom-20 left-4 right-4 sm:left-auto sm:right-6 sm:max-w-sm z-50 animate-fade-up">
-      <div className="surface-card rounded-card p-3 flex items-center gap-3 shadow-lg">
+      <div className="surface-card rounded-card p-2.5 flex items-center gap-2.5 shadow-lg">
         {/* Product thumbnail */}
         {upsellProduct.imageUrl && (
-          <div className="relative w-10 h-10 rounded-sm overflow-hidden flex-shrink-0 bg-smoke-100">
+          <div className="relative w-9 h-9 rounded-sm overflow-hidden flex-shrink-0 bg-smoke-100">
             <NextImage
               src={upsellProduct.imageUrl}
               alt={upsellProduct.title}
               fill
-              sizes="40px"
+              sizes="36px"
               placeholder="blur"
               blurDataURL={BLUR_PLACEHOLDER}
               className="object-cover"
@@ -124,7 +124,7 @@ export function UpsellToast() {
         {/* Add button */}
         <button
           onClick={handleAdd}
-          className="flex-shrink-0 bg-brand-500 text-white h-8 px-3 rounded-sm flex items-center gap-1 text-xs font-medium hover:bg-brand-600 active:scale-95 transition-all duration-300 ease-luxury"
+          className="flex-shrink-0 bg-brand-500 text-white h-7 px-2.5 rounded-sm flex items-center gap-1 text-xs font-medium hover:bg-brand-600 active:scale-95 transition-all duration-300 ease-luxury"
         >
           <Plus className="w-3.5 h-3.5" strokeWidth={2} />
           {t('upsell.add')}

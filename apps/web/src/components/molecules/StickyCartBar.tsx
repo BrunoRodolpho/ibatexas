@@ -61,9 +61,7 @@ export function StickyCartBar() {
 
   return (
     <div
-      className={`fixed bottom-14 sm:bottom-4 left-0 sm:left-1/2 sm:-translate-x-1/2 right-0 sm:right-auto z-40 sm:max-w-md w-full px-0 sm:px-0 transition-all duration-500 ease-luxury ${
-        isBouncing ? 'animate-bounce-y' : ''
-      }`}
+      className="fixed bottom-14 sm:bottom-4 left-0 sm:left-1/2 sm:-translate-x-1/2 right-0 sm:right-auto z-40 sm:max-w-md w-full px-0 sm:px-0"
     >
       {/* Dismiss button */}
       <button
@@ -76,7 +74,9 @@ export function StickyCartBar() {
 
       <button
         onClick={handleClick}
-        className="w-full bg-charcoal-900 text-smoke-50 sm:rounded-card shadow-xl hover:bg-charcoal-800 active:scale-[0.98] transition-all duration-300 ease-luxury overflow-hidden"
+        className={`w-full bg-charcoal-900 text-smoke-50 sm:rounded-card shadow-xl hover:bg-charcoal-800 active:scale-[0.98] transition-all duration-300 ease-luxury overflow-hidden ${
+          isBouncing ? 'animate-bounce-y' : ''
+        }`}
       >
         {/* Free delivery progress bar */}
         <div className="h-[3px] w-full bg-charcoal-700">

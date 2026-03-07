@@ -2,7 +2,6 @@
 
 import React, { useRef, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
-import { track } from '@/domains/analytics'
 import { Flame, Sandwich, Salad, IceCream, GlassWater, Snowflake, UtensilsCrossed } from 'lucide-react'
 
 /** Category icons — mapped to category handles */
@@ -26,12 +25,12 @@ interface SearchCategoryRowProps {
   onCategoryChange: (categoryId: string) => void
   onClearCategory: () => void
   sticky?: boolean
-  productCount?: number
 }
 
 /**
  * Horizontal scrollable category row with icons, sticky behavior, and hover animations.
  * Pattern: DoorDash / Zomato food navigation.
+ * Scroll behavior is owned by SearchContent — this component is purely presentational.
  */
 export function SearchCategoryRow({
   categories,
@@ -39,13 +38,12 @@ export function SearchCategoryRow({
   onCategoryChange,
   onClearCategory,
   sticky = false,
-  productCount,
 }: SearchCategoryRowProps) {
   const t = useTranslations()
   const scrollRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLButtonElement>(null)
 
-  // Auto-scroll to active category when it changes
+  // Auto-scroll to active category pill when it changes
   useEffect(() => {
     if (activeRef.current && scrollRef.current) {
       const container = scrollRef.current
@@ -68,18 +66,7 @@ export function SearchCategoryRow({
         {/* "Todos" reset option */}
         <button
           ref={!selectedCategory ? activeRef : undefined}
-          onClick={() => {
-            onClearCategory()
-            track('filter_applied', { filterType: 'category', value: 'all' })
-            setTimeout(() => {
-              if ((productCount ?? 0) === 0) return
-              const el = document.getElementById('product-grid')
-              if (el) {
-                const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.20
-                window.scrollTo({ top: y, behavior: 'smooth' })
-              }
-            }, 100)
-          }}
+          onClick={() => onClearCategory()}
           className={`category-pill flex-shrink-0 snap-start flex items-center gap-2 text-sm font-medium tracking-wide px-4 py-2.5 rounded-full transition-all duration-500 ease-luxury focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
             !selectedCategory
               ? 'bg-charcoal-900 text-smoke-50 font-semibold shadow-md'
@@ -98,18 +85,7 @@ export function SearchCategoryRow({
             <button
               key={cat.id}
               ref={isActive ? activeRef : undefined}
-              onClick={() => {
-                onCategoryChange(cat.id)
-                // Smooth scroll to the product grid
-                setTimeout(() => {
-                  if ((productCount ?? 0) === 0) return
-                  const el = document.getElementById('product-grid')
-                  if (el) {
-                    const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.10
-                    window.scrollTo({ top: y, behavior: 'smooth' })
-                  }
-                }, 100)
-              }}
+              onClick={() => onCategoryChange(cat.id)}
               className={`category-pill flex-shrink-0 snap-start flex items-center gap-2 text-sm font-medium tracking-wide px-4 py-2.5 rounded-full transition-all duration-500 ease-luxury focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
                 isActive
                   ? 'bg-charcoal-900 text-smoke-50 font-semibold shadow-md'
