@@ -1,6 +1,6 @@
 "use client"
 
-import type { SpecialRequest } from "@/stores/useReservationStore"
+import type { SpecialRequest } from '@/domains/reservation'
 
 interface Props {
   value: SpecialRequest[]

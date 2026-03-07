@@ -62,6 +62,35 @@
       radial-gradient(ellipse 60% 80% at 80% 50%, rgba(232,93,4,0.04), transparent);
   }
 
+  /* ── Surface tokens — semantic abstraction over raw colors ──── */
+  .surface-base     { @apply bg-smoke-50; }
+  .surface-card     { @apply bg-smoke-50 shadow-card border border-smoke-200/40; }
+  .surface-elevated { @apply bg-white shadow-md; }
+  .surface-inverted { @apply bg-charcoal-900 text-smoke-100; }
+
+  /* Steam effect — CSS-only rising wisps */
+  .steam-effect {
+    position: relative;
+    overflow: visible;
+  }
+  .steam-effect::after {
+    content: '';
+    position: absolute;
+    top: -8px;
+    left: 20%;
+    right: 20%;
+    height: 40px;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(255,255,255,0.3) 0%, transparent 70%);
+    animation: steam-rise 3s ease-out infinite;
+    z-index: 3;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .steam-effect::after {
+      animation: none;
+      display: none;
+    }
+  }
 }
 
 @layer utilities {
@@ -104,10 +133,35 @@
     max-width: 55ch;
   }
 
+  /* Semantic price typography */
+  .text-price {
+    @apply font-display text-display-2xs font-semibold text-charcoal-900 tabular-nums;
+  }
+
   /* Marquee edge-fade mask */
   .marquee-mask {
     mask-image: linear-gradient(to right, transparent 0%, black 4%, black 96%, transparent 100%);
     -webkit-mask-image: linear-gradient(to right, transparent 0%, black 4%, black 96%, transparent 100%);
+  }
+
+  /* ── Category pill hover glow — smoke-tinted lift ── */
+  .category-pill {
+    will-change: transform;
+  }
+
+  /* ── Sticky cart bar safe area (avoid bottom nav overlap on mobile) ── */
+  .has-sticky-cart {
+    padding-bottom: 4.5rem;
+  }
+  @media (min-width: 640px) {
+    .has-sticky-cart {
+      padding-bottom: 0;
+    }
+  }
+
+  /* ── z-index layer: between z-10 and z-20 for sticky categories ── */
+  .z-15 {
+    z-index: 15;
   }
 
   /* Respect reduced motion */
@@ -124,7 +178,10 @@
     .animate-slide-up,
     .animate-slide-in-right,
     .animate-slide-in-left,
-    .animate-slide-in-bottom {
+    .animate-slide-in-bottom,
+    .animate-pulse-once,
+    .animate-cart-bounce,
+    .animate-fade-up {
       animation: none;
       opacity: 1;
       transform: none;

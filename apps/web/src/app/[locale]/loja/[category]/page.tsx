@@ -1,7 +1,7 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useProducts } from '@/hooks/api'
+import { useProducts } from '@/domains/product'
 import { ProductGrid } from '@/components/organisms'
 import { Heading, Text } from '@/components/atoms'
 import { notFound } from 'next/navigation'
@@ -42,9 +42,9 @@ export default function CategoryPage({ params }: CategoryPageProps) {
   const categoryKey = `shop.categories.${params.category}` as const
 
   return (
-    <div className="space-y-6">
+    <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16 lg:py-20">
       {/* Category Header */}
-      <div className="text-center py-8">
+      <div className="text-center mb-12">
         <Heading variant="h1" className="text-charcoal-900 mb-4">
           {t(categoryKey)}
         </Heading>

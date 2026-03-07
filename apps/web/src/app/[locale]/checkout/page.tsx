@@ -2,14 +2,16 @@
 
 import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
-import { useCartStore } from "@/stores/useCartStore"
-import { useSessionStore } from "@/stores/useSessionStore"
+import { useTranslations } from "next-intl"
+import { useCartStore } from '@/domains/cart'
+import { useSessionStore } from '@/domains/session'
 import { Link } from "@/i18n/navigation"
 import { getApiBase } from "@/lib/api"
-import { track, getSessionId } from "@/lib/analytics"
+import { track, getSessionId } from '@/domains/analytics'
 import { Heading, Text, Button } from "@/components/atoms"
 import Image from "next/image"
-import { CheckCircle } from "lucide-react"
+import { CheckCircle, Lock, ShieldCheck } from "lucide-react"
+import { useOrderHistory } from "@/domains/cart/useOrderHistory"
 
 function formatPrice(centavos: number): string {
   return (centavos / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
@@ -34,9 +36,12 @@ interface CheckoutResult {
 }
 
 export default function CheckoutPage() {
+  const t = useTranslations('checkout')
+  const tCart = useTranslations('cart')
   const router = useRouter()
   const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate, medusaCartId, clearCart } = useCartStore()
   const { customerId, isAuthenticated } = useSessionStore()
+  const { saveOrder } = useOrderHistory()
 
   const [stage, setStage] = useState<Stage>("summary")
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("pix")
@@ -75,6 +80,15 @@ export default function CheckoutPage() {
     })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Auto-calculate CEP on 8 digits ──────────────────────────────────
+  useEffect(() => {
+    const digits = cepInput.replace(/\D/g, "")
+    if (digits.length === 8 && deliveryType === "delivery" && !loadingEstimate) {
+      const timer = setTimeout(() => fetchDeliveryEstimate(digits), 500)
+      return () => clearTimeout(timer)
+    }
+  }, [cepInput, deliveryType]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Analytics: checkout_abandoned on page exit (supplementary signal) ──
   // Primary abandonment = PostHog funnel: checkout_started → checkout_completed drop-off
   // beforeunload is supplementary — fires on SPA navigation (false positives)
@@ -93,8 +107,8 @@ export default function CheckoutPage() {
     return (
       <div className="min-h-screen bg-smoke-50 flex items-center justify-center px-4">
         <div className="text-center">
-          <Heading as="h1" variant="h2" className="mb-4">Seu carrinho está vazio</Heading>
-          <Link href="/loja" className="text-brand-600 hover:underline text-sm">Continuar comprando →</Link>
+          <Heading as="h1" variant="h2" className="mb-4">{t('empty_cart')}</Heading>
+          <Link href="/loja" className="text-brand-600 hover:underline text-sm">{t('continue_shopping')}</Link>
         </div>
       </div>
     )
@@ -123,7 +137,7 @@ export default function CheckoutPage() {
 
   async function handleCheckout() {
     if (!medusaCartId) {
-      setError("Carrinho não encontrado. Por favor, adicione os itens novamente.")
+      setError(t('cart_not_found'))
       return
     }
     setLoading(true)
@@ -142,7 +156,7 @@ export default function CheckoutPage() {
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({})) as { message?: string }
-        throw new Error(data.message ?? "Erro ao processar pagamento.")
+        throw new Error(data.message ?? t('payment_error'))
       }
       const data = await res.json() as CheckoutResult
       setResult(data)
@@ -158,6 +172,22 @@ export default function CheckoutPage() {
           currency: 'BRL',
           ibx_session_id: getSessionId(),
         })
+
+        // Persist last order for reorder card
+        saveOrder({
+          items: items.map((item) => ({
+            productId: item.productId,
+            title: item.title,
+            price: item.price,
+            imageUrl: item.imageUrl ?? undefined,
+            quantity: item.quantity,
+            variantId: item.variantId ?? undefined,
+            variantTitle: item.variantTitle ?? undefined,
+          })),
+          total,
+          orderId: data.orderId,
+          date: new Date().toISOString(),
+        })
       }
 
       if (paymentMethod === "pix") {
@@ -172,7 +202,7 @@ export default function CheckoutPage() {
         }
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Erro ao processar pagamento."
+      const errorMessage = err instanceof Error ? err.message : t('payment_error')
       track('checkout_error', {
         step: 'payment',
         errorType: 'checkout_failed',
@@ -194,12 +224,22 @@ export default function CheckoutPage() {
               <CheckCircle className="w-7 h-7 text-accent-green" />
             </div>
           </div>
-          <Heading as="h1" variant="h2" className="mb-2">Pedido confirmado!</Heading>
+          <Heading as="h1" variant="h2" className="mb-2">{t('order_confirmation')}</Heading>
           <Text textColor="muted" className="mb-6">{result?.message}</Text>
           {result?.orderId && (
             <Link href={`/pedido/${result.orderId}`} className="text-brand-600 hover:underline text-sm">
-              Acompanhar pedido →
+              {t('track_order')}
             </Link>
+          )}
+          {process.env.NEXT_PUBLIC_WHATSAPP_URL && (
+            <a
+              href={`${process.env.NEXT_PUBLIC_WHATSAPP_URL}?text=${encodeURIComponent(`${t('whatsapp_order_msg')} ${result?.orderId ? `#${result.orderId}` : ''}`)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-4 inline-flex items-center gap-2 text-sm text-accent-green hover:underline"
+            >
+              {t('whatsapp_track')}
+            </a>
           )}
         </div>
       </div>
@@ -210,8 +250,8 @@ export default function CheckoutPage() {
     return (
       <div className="min-h-screen bg-smoke-50 flex items-center justify-center px-4">
         <div className="max-w-sm w-full text-center space-y-4">
-          <Heading as="h1" variant="h2">Pague via PIX</Heading>
-          <Text textColor="muted" variant="small">Escaneie o QR Code abaixo ou copie a chave PIX</Text>
+          <Heading as="h1" variant="h2">{t('pix_title')}</Heading>
+          <Text textColor="muted" variant="small">{t('pix_subtitle')}</Text>
           {result?.pixQrCode && (
             <Image src={result.pixQrCode} alt="QR Code PIX" width={192} height={192} unoptimized className="mx-auto border border-smoke-200 rounded-sm" />
           )}
@@ -223,14 +263,14 @@ export default function CheckoutPage() {
                 size="sm"
                 onClick={() => navigator.clipboard.writeText(result.pixCopyPaste!)}
               >
-                Copiar
+                {t('pix_copy')}
               </Button>
             </div>
           )}
-          <Text variant="small" textColor="muted">O pedido será confirmado automaticamente após o pagamento.</Text>
+          <Text variant="small" textColor="muted">{t('pix_auto_confirm')}</Text>
           {result?.orderId && (
             <Link href={`/pedido/${result.orderId}`} className="block text-sm text-brand-600 hover:underline">
-              Acompanhar pedido →
+              {t('track_order')}
             </Link>
           )}
         </div>
@@ -238,14 +278,43 @@ export default function CheckoutPage() {
     )
   }
 
+  const stepLabels = [t('step_summary'), t('step_payment'), t('step_confirmation')]
+
   return (
     <div className="min-h-screen bg-smoke-50 py-8 px-4">
       <div className="mx-auto max-w-lg space-y-6">
-        <Heading as="h1" variant="h1">Finalizar pedido</Heading>
+        <Heading as="h1" variant="h1">{t('title')}</Heading>
+
+        {/* ── Progress indicator ─────────────────────────────────────── */}
+        <div className="flex items-center justify-between max-w-xs mx-auto">
+          {(["summary", "payment", "confirmed"] as const).map((step, i) => {
+            const s = stage as Stage
+            const stageIndex = s === "summary" ? 0 : s === "pix_waiting" ? 1 : s === "confirmed" ? 2 : 1
+            const isActive = i === stageIndex
+            const isPast = i < stageIndex
+            return (
+              <div key={step} className="flex items-center">
+                {i > 0 && (
+                  <div className={`w-8 h-px mx-1 ${isPast ? "bg-brand-500" : "bg-smoke-200"}`} />
+                )}
+                <div className="flex flex-col items-center gap-1">
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold transition-colors ${
+                    isActive ? "bg-brand-500 text-white" : isPast ? "bg-brand-500 text-white" : "bg-smoke-200 text-smoke-400"
+                  }`}>
+                    {isPast ? "✓" : i + 1}
+                  </div>
+                  <span className={`text-[10px] ${isActive ? "text-brand-600 font-semibold" : "text-smoke-400"}`}>
+                    {stepLabels[i]}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
 
         {/* Cart summary */}
         <div className="bg-smoke-50 border border-smoke-200 rounded-sm p-5 space-y-2">
-          <h2 className="text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-3">Itens</h2>
+          <h2 className="text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-3">{t('items_label')}</h2>
           {items.map((item) => (
             <div key={item.id} className="flex justify-between text-sm text-charcoal-700">
               <span>{item.quantity}× {item.title}{item.variantTitle ? ` — ${item.variantTitle}` : ""}</span>
@@ -253,14 +322,14 @@ export default function CheckoutPage() {
             </div>
           ))}
           <div className="border-t border-smoke-200 pt-2 mt-2 flex justify-between font-semibold text-charcoal-900">
-            <span>Subtotal</span>
+            <span>{tCart('subtotal')}</span>
             <span>{formatPrice(subtotal)}</span>
           </div>
         </div>
 
         {/* Delivery type */}
         <div className="bg-smoke-50 border border-smoke-200 rounded-sm p-5 space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-editorial text-smoke-400">Entrega</h2>
+          <h2 className="text-xs font-semibold uppercase tracking-editorial text-smoke-400">{t('delivery_label')}</h2>
           <div className="flex gap-2">
             {(["delivery", "pickup", "dine-in"] as const).map((type) => (
               <button
@@ -268,28 +337,26 @@ export default function CheckoutPage() {
                 onClick={() => setDeliveryType(type)}
                 className={`flex-1 rounded-sm border py-2 text-sm font-medium transition-colors ${deliveryType === type ? "border-brand-600 bg-brand-50 text-brand-700" : "border-smoke-200 text-smoke-400 hover:border-smoke-300"}`}
               >
-                {type === "delivery" ? "Delivery" : type === "pickup" ? "Retirar" : "No restaurante"}
+                {type === "delivery" ? t('delivery_type_delivery') : type === "pickup" ? t('delivery_type_pickup') : t('delivery_type_dinein')}
               </button>
             ))}
           </div>
 
           {deliveryType === "delivery" && (
             <div className="space-y-2">
-              <div className="flex gap-2">
+              <div className="relative">
                 <input
                   type="text"
-                  placeholder="CEP"
+                  placeholder={t('cep_placeholder')}
                   value={cepInput}
                   onChange={(e) => setCepInput(e.target.value.replace(/\D/g, "").slice(0, 8))}
-                  className="flex-1 rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+                  className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
                 />
-                <Button
-                  onClick={() => fetchDeliveryEstimate(cepInput)}
-                  disabled={loadingEstimate || cepInput.length < 8}
-                  size="md"
-                >
-                  {loadingEstimate ? "…" : "Calcular"}
-                </Button>
+                {loadingEstimate && (
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                )}
               </div>
               {deliveryEstimate && (
                 <p className="text-sm text-charcoal-700">{deliveryEstimate.message} · {formatPrice(deliveryEstimate.feeInCentavos)}</p>
@@ -300,7 +367,7 @@ export default function CheckoutPage() {
 
         {/* Gorjeta */}
         <div className="bg-smoke-50 border border-smoke-200 rounded-sm p-5 space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-editorial text-smoke-400">Gorjeta (opcional)</h2>
+          <h2 className="text-xs font-semibold uppercase tracking-editorial text-smoke-400">{t('tip_label')}</h2>
           <div className="flex gap-2">
             {[0, 10, 15, 20].map((pct) => (
               <button
@@ -308,16 +375,16 @@ export default function CheckoutPage() {
                 onClick={() => setTipPercent(pct)}
                 className={`flex-1 rounded-sm border py-2 text-sm font-medium transition-colors ${tipPercent === pct ? "border-brand-600 bg-brand-50 text-brand-700" : "border-smoke-200 text-smoke-400 hover:border-smoke-300"}`}
               >
-                {pct === 0 ? "Nenhuma" : `${pct}%`}
+                {pct === 0 ? t('tip_none') : `${pct}%`}
               </button>
             ))}
           </div>
-          {tipPercent > 0 && <p className="text-sm text-charcoal-700">Gorjeta: {formatPrice(tipAmount)}</p>}
+          {tipPercent > 0 && <p className="text-sm text-charcoal-700">{t('tip_value', { value: formatPrice(tipAmount) })}</p>}
         </div>
 
         {/* Payment method */}
         <div className="bg-smoke-50 border border-smoke-200 rounded-sm p-5 space-y-3">
-          <h2 className="text-xs font-semibold uppercase tracking-editorial text-smoke-400">Pagamento</h2>
+          <h2 className="text-xs font-semibold uppercase tracking-editorial text-smoke-400">{t('payment_label')}</h2>
           <div className="flex gap-2">
             {(["pix", "card", "cash"] as const).map((method) => (
               <button
@@ -325,7 +392,7 @@ export default function CheckoutPage() {
                 onClick={() => setPaymentMethod(method)}
                 className={`flex-1 rounded-sm border py-2 text-sm font-medium transition-colors ${paymentMethod === method ? "border-brand-600 bg-brand-50 text-brand-700" : "border-smoke-200 text-smoke-400 hover:border-smoke-300"}`}
               >
-                {method === "pix" ? "PIX" : method === "card" ? "Cartão" : "Dinheiro"}
+                {method === "pix" ? t('pix') : method === "card" ? t('card') : t('cash')}
               </button>
             ))}
           </div>
@@ -335,20 +402,32 @@ export default function CheckoutPage() {
         <div className="bg-smoke-50 border border-smoke-200 rounded-sm p-5 space-y-2">
           {deliveryFeeAmount > 0 && (
             <div className="flex justify-between text-sm text-smoke-400">
-              <span>Taxa de entrega</span><span>{formatPrice(deliveryFeeAmount)}</span>
+              <span>{t('fee_delivery')}</span><span>{formatPrice(deliveryFeeAmount)}</span>
             </div>
           )}
           {tipAmount > 0 && (
             <div className="flex justify-between text-sm text-smoke-400">
-              <span>Gorjeta</span><span>{formatPrice(tipAmount)}</span>
+              <span>{t('fee_tip')}</span><span>{formatPrice(tipAmount)}</span>
             </div>
           )}
           <div className="flex justify-between font-bold text-charcoal-900 text-lg border-t border-smoke-200 pt-2">
-            <span>Total</span><span>{formatPrice(total)}</span>
+            <span>{t('total')}</span><span>{formatPrice(total)}</span>
           </div>
         </div>
 
         {error && <p className="text-sm text-accent-red">{error}</p>}
+
+        {/* Trust badges */}
+        <div className="flex items-center justify-center gap-6 text-smoke-400">
+          <div className="flex items-center gap-1.5">
+            <Lock className="w-3.5 h-3.5" />
+            <span className="text-xs">{t('trust_secure')}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span className="text-xs">{t('trust_guarantee')}</span>
+          </div>
+        </div>
 
         <Button
           variant="brand"
@@ -357,7 +436,7 @@ export default function CheckoutPage() {
           onClick={handleCheckout}
           disabled={loading || (deliveryType === "delivery" && !deliveryEstimate)}
         >
-          {loading ? "Processando…" : `Confirmar pedido · ${formatPrice(total)}`}
+          {loading ? t('processing') : t('confirm_order', { total: formatPrice(total) })}
         </Button>
       </div>
     </div>

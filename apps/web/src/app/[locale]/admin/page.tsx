@@ -11,7 +11,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { StatCard, DataTable, Badge } from '@/components/atoms'
-import { useAdminDashboard, useAdminOrders } from '@/hooks/admin'
+import { useAdminDashboard, useAdminOrders } from '@/domains/admin'
 import type { OrderSummary } from '@ibatexas/types'
 
 const col = createColumnHelper<OrderSummary>()

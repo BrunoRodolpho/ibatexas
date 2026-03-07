@@ -1,7 +1,7 @@
 "use client"
 
-import { useUIStore } from "@/stores"
-import { ToastContainer } from "@/components/molecules"
+import { useUIStore } from '@/domains/ui'
+import { ToastContainer, UpsellToast } from "@/components/molecules"
 
 export function ToastProvider() {
   const toasts = useUIStore((s) => s.toasts)
@@ -10,5 +10,10 @@ export function ToastProvider() {
   // Bridge toast shape → ToastProps by injecting onClose
   const toastProps = toasts.map((t) => ({ ...t, onClose: removeToast }))
 
-  return <ToastContainer toasts={toastProps} onClose={removeToast} />
+  return (
+    <>
+      <ToastContainer toasts={toastProps} onClose={removeToast} />
+      <UpsellToast />
+    </>
+  )
 }

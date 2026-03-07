@@ -7,13 +7,14 @@ import { Button, LinkButton } from '../atoms/Button'
 import { Heading, Text } from '../atoms/Typography'
 import { QuantitySelector } from './QuantitySelector'
 import NextImage from 'next/image'
-import { Star } from 'lucide-react'
+import { Star, Users, Scale } from 'lucide-react'
 import { formatBRL } from '@/lib/format'
-import { tagToBadgeVariant } from '@/lib/badge-utils'
+import { tagToBadgeVariant } from '@/domains/product'
 import { Badge } from '../atoms/Badge'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
-import { useCartStore, useUIStore } from '@/stores'
-import { track } from '@/lib/analytics'
+import { useCartStore } from '@/domains/cart'
+import { useUIStore } from '@/domains/ui'
+import { track } from '@/domains/analytics'
 import type { ProductDTO, ProductVariant } from '@ibatexas/types'
 
 interface QuickViewModalProps {
@@ -30,7 +31,6 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
   const t = useTranslations()
   const addToCart = useCartStore((s) => s.addItem)
   const { addToast } = useUIStore()
-  const openCartDrawer = useUIStore((s) => s.openCartDrawer)
   const [quantity, setQuantity] = useState(1)
   const [selectedVariantId, setSelectedVariantId] = useState<string>('')
   const [isAdding, setIsAdding] = useState(false)
@@ -56,8 +56,7 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
         quantity,
         source: 'quick_view',
       })
-      addToast(t('toast.added_to_cart'), 'success')
-      openCartDrawer?.()
+      addToast(t('toast.added_to_cart'), 'cart')
       onClose()
     } catch {
       addToast(t('toast.add_to_cart_error'), 'error')
@@ -136,6 +135,25 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
                 {product.rating.toFixed(1)}
                 {product.reviewCount ? ` (${product.reviewCount})` : ''}
               </span>
+            </div>
+          )}
+
+          {/* Serving / weight info */}
+          {(product.servings || product.weight) && (
+            <div className="flex items-center gap-2 mt-1.5 text-[11px] text-smoke-400">
+              {product.servings && (
+                <span className="inline-flex items-center gap-0.5">
+                  <Users className="w-3 h-3" />
+                  {t('product.serves', { count: product.servings })}
+                </span>
+              )}
+              {product.servings && product.weight && <span>·</span>}
+              {product.weight && (
+                <span className="inline-flex items-center gap-0.5">
+                  <Scale className="w-3 h-3" />
+                  {product.weight}
+                </span>
+              )}
             </div>
           )}
 

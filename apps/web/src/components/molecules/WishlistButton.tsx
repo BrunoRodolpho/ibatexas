@@ -1,10 +1,10 @@
 'use client'
 
 import { Heart } from 'lucide-react'
-import { useWishlistStore } from '@/stores/useWishlistStore'
+import { useWishlistStore } from '@/domains/wishlist'
 import { useTranslations } from 'next-intl'
-import { useUIStore } from '@/stores'
-import { track } from '@/lib/analytics'
+import { useUIStore } from '@/domains/ui'
+import { track } from '@/domains/analytics'
 import clsx from 'clsx'
 
 interface WishlistButtonProps {

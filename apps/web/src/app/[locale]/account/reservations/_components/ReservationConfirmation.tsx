@@ -2,7 +2,7 @@
 
 import { Link } from '@/i18n/navigation'
 
-import type { CreatedReservation } from "@/stores/useReservationStore"
+import type { CreatedReservation } from '@/domains/reservation'
 
 const LOCATION_LABELS: Record<string, string> = {
   indoor: "Salão interno",

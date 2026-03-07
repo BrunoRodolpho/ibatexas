@@ -2,8 +2,11 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useTranslations } from "next-intl"
-import { useChat } from "@/hooks/api"
-import { useChatStore, useSessionStore, useUIStore } from "@/stores"
+import { useChat } from '@/domains/chat'
+import { useCartStore } from '@/domains/cart'
+import { useChatStore } from '@/domains/chat'
+import { useSessionStore } from '@/domains/session'
+import { useUIStore } from '@/domains/ui'
 
 export function ChatWidget() {
   const t = useTranslations()
@@ -18,6 +21,7 @@ export function ChatWidget() {
   const isLoading = useChatStore((s) => s.isLoading)
   const error = useChatStore((s) => s.error)
   const { sendMessage } = useChat()
+  const hasCartItems = useCartStore((s) => s.items.length > 0)
 
   // ── Auto-hide FAB on scroll down, show on scroll up ──────
   const [fabVisible, setFabVisible] = useState(true)
@@ -71,7 +75,9 @@ export function ChatWidget() {
       {!isOpen && (
         <button
           onClick={() => setChat(true)}
-          className={`fixed bottom-6 max-sm:bottom-[4.5rem] right-6 z-40 flex items-center gap-2.5 rounded-lg bg-charcoal-900 px-4 py-3 text-white shadow-lg transition-all duration-500 ease-luxury hover:bg-charcoal-700 ${
+          className={`fixed right-6 z-40 flex items-center gap-2.5 rounded-lg bg-charcoal-900 px-4 py-3 text-white shadow-lg transition-all duration-500 ease-luxury hover:bg-charcoal-700 ${
+            hasCartItems ? 'bottom-6 max-sm:bottom-[8rem]' : 'bottom-6 max-sm:bottom-[4.5rem]'
+          } ${
             fabVisible ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0 pointer-events-none'
           }`}
           aria-label={t("chat.title")}

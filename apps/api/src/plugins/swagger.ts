@@ -8,6 +8,9 @@ const require = createRequire(import.meta.url);
 const { version } = require("../../package.json") as { version: string };
 
 export async function registerSwagger(server: FastifyInstance): Promise<void> {
+  // Only expose API docs in non-production environments
+  if (process.env.NODE_ENV === "production") return;
+
   await server.register(swagger, {
     openapi: {
       info: {

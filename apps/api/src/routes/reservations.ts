@@ -19,7 +19,7 @@ import {
   joinWaitlist,
 } from "@ibatexas/tools"
 import { SpecialRequestSchema, ReservationStatus } from "@ibatexas/types"
-import { optionalAuth } from "../middleware/auth.js"
+import { requireAuth } from "../middleware/auth.js"
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -37,34 +37,27 @@ const ReservationIdParams = z.object({
 })
 
 const CreateReservationBody = z.object({
-  // customerId from JWT preferred; accepted in body as fallback for agent/WhatsApp channel
-  customerId: z.string().min(1).optional(),
   timeSlotId: z.string().min(1),
   partySize: z.number().int().min(1).max(20),
   specialRequests: z.array(SpecialRequestSchema).optional().default([]),
 })
 
 const ModifyReservationBody = z.object({
-  // customerId from JWT preferred; accepted in body as fallback for agent/WhatsApp channel
-  customerId: z.string().min(1).optional(),
   newTimeSlotId: z.string().optional(),
   newPartySize: z.number().int().min(1).max(20).optional(),
   specialRequests: z.array(SpecialRequestSchema).optional(),
 })
 
 const CancelReservationBody = z.object({
-  customerId: z.string().min(1).optional(),
   reason: z.string().max(200).optional(),
 })
 
 const MyReservationsQuery = z.object({
-  customerId: z.string().min(1).optional(),
   status: z.nativeEnum(ReservationStatus).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional().default(10),
 })
 
 const JoinWaitlistBody = z.object({
-  customerId: z.string().min(1).optional(),
   partySize: z.number().int().min(1).max(20),
 })
 
@@ -98,13 +91,10 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         summary: "Criar reserva",
         body: CreateReservationBody,
       },
-      preHandler: optionalAuth,
+      preHandler: requireAuth,
     },
     async (request, reply) => {
-      const customerId = request.customerId ?? request.body.customerId
-      if (!customerId) {
-        return reply.status(401).send({ statusCode: 401, message: "Autenticação necessária para criar reserva." })
-      }
+      const customerId = request.customerId!
       const result = await createReservation({ ...request.body, customerId })
       return reply.status(201).send(result)
     },
@@ -119,13 +109,10 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         summary: "Listar minhas reservas",
         querystring: MyReservationsQuery,
       },
-      preHandler: optionalAuth,
+      preHandler: requireAuth,
     },
     async (request, reply) => {
-      const customerId = request.customerId ?? request.query.customerId
-      if (!customerId) {
-        return reply.status(401).send({ statusCode: 401, message: "Autenticação necessária." })
-      }
+      const customerId = request.customerId!
       const result = await getMyReservations({ ...request.query, customerId })
       return reply.send(result)
     },
@@ -141,13 +128,10 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         params: ReservationIdParams,
         body: ModifyReservationBody,
       },
-      preHandler: optionalAuth,
+      preHandler: requireAuth,
     },
     async (request, reply) => {
-      const customerId = request.customerId ?? request.body.customerId
-      if (!customerId) {
-        return reply.status(401).send({ statusCode: 401, message: "Autenticação necessária." })
-      }
+      const customerId = request.customerId!
       const result = await modifyReservation({
         ...request.body,
         customerId,
@@ -170,13 +154,10 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         params: ReservationIdParams,
         body: CancelReservationBody,
       },
-      preHandler: optionalAuth,
+      preHandler: requireAuth,
     },
     async (request, reply) => {
-      const customerId = request.customerId ?? request.body.customerId
-      if (!customerId) {
-        return reply.status(401).send({ statusCode: 401, message: "Autenticação necessária." })
-      }
+      const customerId = request.customerId!
       const result = await cancelReservation({
         ...request.body,
         customerId,
@@ -199,13 +180,10 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         params: ReservationIdParams,
         body: JoinWaitlistBody,
       },
-      preHandler: optionalAuth,
+      preHandler: requireAuth,
     },
     async (request, reply) => {
-      const customerId = request.customerId ?? request.body.customerId
-      if (!customerId) {
-        return reply.status(401).send({ statusCode: 401, message: "Autenticação necessária." })
-      }
+      const customerId = request.customerId!
       const result = await joinWaitlist({
         ...request.body,
         customerId,

@@ -85,13 +85,37 @@
 | `cart_drawer_opened` | Cart drawer opens | — |
 | `cross_sell_viewed` | Cross-sell section enters viewport | `productId`, `suggestedIds[]` |
 | `cross_sell_added` | Cross-sell item added to cart | `productId`, `suggestedId` |
+| `also_added_viewed` | "Also added" section enters viewport (PDP) | `productId`, `suggestedIds[]` |
+| `also_added_cart` | "Also added" item added to cart | `productId`, `suggestedId` |
+| `homepage_recs_clicked` | User clicks a recommended product on homepage | `productId` |
+
+### Conversion UX Events
+
+| Event | Trigger | Properties |
+|-------|---------|------------|
+| `upsell_toast_shown` | Cross-sell upsell toast appears after add-to-cart | `productId`, `crossCategory` |
+| `upsell_toast_added` | User adds the suggested product from upsell toast | `productId` |
+| `upsell_toast_dismissed` | User dismisses upsell toast (or auto-dismiss) | `productId`, `auto` (boolean) |
+| `quantity_changed_inline` | User changes quantity via inline controls on ProductCard | `productId`, `action` (increment\|decrement\|remove), `quantity` |
+| `layout_toggled` | User toggles grid/list layout on search page | `layout` (grid\|list) |
+| `combo_banner_clicked` | User clicks CTA on combo promotion banner | — |
+| `review_section_viewed` | Homepage reviews section enters viewport | — |
+| `people_also_ordered_added` | User adds a product from "People Also Ordered" section | `productId` |
+
+### Reorder Events
+
+| Event | Trigger | Properties |
+|-------|---------|------------|
+| `reorder_completed` | User re-orders from last order card | `orderId`, `itemCount` |
 
 ### Search Events
 
 | Event | Trigger | Properties |
 |-------|---------|------------|
 | `search_performed` | Search query executed | `query`, `resultCount` |
-| `filter_applied` | Filter/sort changed | `filterType` (tag\|category\|sort), `value` |
+| `filter_applied` | Filter/sort changed | `filterType` (tag\|category\|sort\|smart), `value` |
+| `search_synonym_resolved` | User query matched a synonym and was auto-resolved | `original`, `canonical` |
+| `trending_search_clicked` | User clicked a trending search pill | `term` |
 
 ### Checkout Events
 
@@ -115,6 +139,12 @@
 | Cross-sell conversion | >= 5-10% of PDP views | `cross_sell_added / cross_sell_viewed` |
 | PDP engagement | Storytelling reach > 60% | `storytelling_section_viewed / pdp_viewed` |
 | Time to Add-to-Cart | Median decreasing | `pdp_viewed` -> `add_to_cart` time within session |
+| Also-added conversion | >= 3-8% of PDP views | `also_added_cart / also_added_viewed` |
+| Reorder rate | >= 15% of returning users | `reorder_completed` / returning sessions |
+| Upsell toast conversion | >= 8-12% | `upsell_toast_added / upsell_toast_shown` |
+| Inline quantity usage | Increasing trend | `quantity_changed_inline` volume |
+| Review section reach | >= 40% of homepage visitors | `review_section_viewed / $pageview(/)` |
+| People Also Ordered conv | >= 5% | `people_also_ordered_added / impressions` |
 
 ---
 
@@ -167,9 +197,34 @@
 - `cross_sell_added` / `cross_sell_viewed`
 - Target: >= 5-10% of PDP views
 
+**Also-Added Performance:**
+- `also_added_cart` / `also_added_viewed`
+- Target: >= 3-8% of PDP views
+- Gated behind `recommendation_engine` feature flag
+
+**Reorder Adoption:**
+- `reorder_completed` volume and repeat rate
+- Shows returning user stickiness
+
 **Search Behavior:**
 - `search_performed` volume + top queries
 - `filter_applied` by filterType
+
+**Upsell Toast Performance:**
+- `upsell_toast_added` / `upsell_toast_shown` (conversion rate)
+- Auto-dismiss vs manual dismiss ratio
+- Revenue attributed to upsell adds
+
+**Inline Quantity Controls:**
+- `quantity_changed_inline` by action (increment vs decrement vs remove)
+- Shows cart editing behavior without opening drawer
+
+**People Also Ordered:**
+- `people_also_ordered_added` volume
+- Shows cross-sell effectiveness on menu page
+
+**Homepage Reviews:**
+- `review_section_viewed` reach (% of homepage visitors)
 
 ### Dashboard 3: Checkout & Revenue
 

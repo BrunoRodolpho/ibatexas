@@ -1,8 +1,19 @@
 'use client'
 
-import React from 'react'
+import React, { useRef, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
-import { track } from '@/lib/analytics'
+import { track } from '@/domains/analytics'
+import { Flame, Sandwich, Salad, IceCream, GlassWater, Snowflake, UtensilsCrossed } from 'lucide-react'
+
+/** Category icons — mapped to category handles */
+const CATEGORY_ICONS: Record<string, React.ElementType> = {
+  'carnes-defumadas': Flame,
+  'acompanhamentos': Salad,
+  'sanduiches': Sandwich,
+  'sobremesas': IceCream,
+  'bebidas': GlassWater,
+  'congelados': Snowflake,
+}
 
 interface CategoryOption {
   id: string
@@ -14,48 +25,99 @@ interface SearchCategoryRowProps {
   selectedCategory: string | undefined
   onCategoryChange: (categoryId: string) => void
   onClearCategory: () => void
+  sticky?: boolean
 }
 
 /**
- * Horizontal scrollable typographic category row with "Todos" reset.
+ * Horizontal scrollable category row with icons, sticky behavior, and hover animations.
+ * Pattern: DoorDash / Zomato food navigation.
  */
 export function SearchCategoryRow({
   categories,
   selectedCategory,
   onCategoryChange,
   onClearCategory,
+  sticky = false,
 }: SearchCategoryRowProps) {
   const t = useTranslations()
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const activeRef = useRef<HTMLButtonElement>(null)
+
+  // Auto-scroll to active category when it changes
+  useEffect(() => {
+    if (activeRef.current && scrollRef.current) {
+      const container = scrollRef.current
+      const active = activeRef.current
+      const scrollLeft = active.offsetLeft - container.offsetWidth / 2 + active.offsetWidth / 2
+      container.scrollTo({ left: scrollLeft, behavior: 'smooth' })
+    }
+  }, [selectedCategory])
 
   return (
-    <div className="flex items-center gap-6 mb-8 overflow-x-auto scrollbar-hide marquee-mask pb-1 mt-2">
-      {/* "Todos" reset option */}
-      <button
-        onClick={() => {
-          onClearCategory()
-          track('filter_applied', { filterType: 'category', value: 'all' })
-        }}
-        className={`flex-shrink-0 text-xs font-medium uppercase tracking-editorial py-3 transition-colors duration-500 ease-luxury focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
-          !selectedCategory
-            ? 'text-charcoal-900 font-semibold border-b-2 border-charcoal-900'
-            : 'text-smoke-400 hover:text-charcoal-900'
-        }`}
+    <div
+      className={`transition-shadow duration-500 ease-luxury ${
+        sticky ? 'sticky top-[104px] z-15 shadow-xs bg-smoke-50/95 backdrop-blur-sm py-1 mb-2' : ''
+      }`}
+    >
+      <div
+        ref={scrollRef}
+        className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide snap-x"
       >
-        {t('common.all')}
-      </button>
-      {categories.map((cat) => (
+        {/* "Todos" reset option */}
         <button
-          key={cat.id}
-          onClick={() => onCategoryChange(cat.id)}
-          className={`flex-shrink-0 text-xs font-medium uppercase tracking-editorial py-3 transition-colors duration-500 ease-luxury focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
-            selectedCategory === cat.id
-              ? 'text-charcoal-900 font-semibold border-b-2 border-charcoal-900'
-              : 'text-smoke-400 hover:text-charcoal-900'
+          ref={!selectedCategory ? activeRef : undefined}
+          onClick={() => {
+            onClearCategory()
+            track('filter_applied', { filterType: 'category', value: 'all' })
+            setTimeout(() => {
+              const el = document.getElementById('product-grid')
+              if (el) {
+                const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.20
+                window.scrollTo({ top: y, behavior: 'smooth' })
+              }
+            }, 100)
+          }}
+          className={`category-pill flex-shrink-0 snap-start flex items-center gap-2 text-sm font-medium tracking-wide px-4 py-2.5 rounded-full transition-all duration-500 ease-luxury focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
+            !selectedCategory
+              ? 'bg-charcoal-900 text-smoke-50 font-semibold shadow-md'
+              : 'text-smoke-500 hover:text-charcoal-900 hover:bg-smoke-100 hover:-translate-y-0.5 hover:shadow-sm'
           }`}
         >
-          {cat.label}
+          <UtensilsCrossed className="w-4 h-4" strokeWidth={1.5} />
+          {t('common.all')}
         </button>
-      ))}
+
+        {categories.map((cat) => {
+          const Icon = CATEGORY_ICONS[cat.id] || Flame
+          const isActive = selectedCategory === cat.id
+
+          return (
+            <button
+              key={cat.id}
+              ref={isActive ? activeRef : undefined}
+              onClick={() => {
+                onCategoryChange(cat.id)
+                // Smooth scroll to the product grid
+                setTimeout(() => {
+                  const el = document.getElementById('product-grid')
+              if (el) {
+                const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.10
+                window.scrollTo({ top: y, behavior: 'smooth' })
+              }
+                }, 100)
+              }}
+              className={`category-pill flex-shrink-0 snap-start flex items-center gap-2 text-sm font-medium tracking-wide px-4 py-2.5 rounded-full transition-all duration-500 ease-luxury focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
+                isActive
+                  ? 'bg-charcoal-900 text-smoke-50 font-semibold shadow-md'
+                  : 'text-smoke-500 hover:text-charcoal-900 hover:bg-smoke-100 hover:-translate-y-0.5 hover:shadow-sm'
+              }`}
+            >
+              <Icon className={`w-4 h-4 transition-colors duration-500 ${isActive ? 'text-brand-400' : ''}`} strokeWidth={1.5} />
+              {cat.label}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
