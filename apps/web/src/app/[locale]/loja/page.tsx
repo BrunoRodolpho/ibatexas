@@ -1,7 +1,7 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useProducts } from '@/hooks/api'
+import { useProducts } from '@/domains/product'
 import { ProductGrid } from '@/components/organisms'
 import { Text } from '@/components/atoms'
 import { Link } from '@/i18n/navigation'
@@ -24,13 +24,13 @@ export default function ShopPage() {
     <div>
       {/* ── Featured section: editorial grid ───────────────────── */}
       <section className="bg-smoke-50">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-24">
-          <div className="flex items-end justify-between mb-12">
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8 lg:py-12">
+          <div className="flex items-end justify-between mb-8">
             <h2 className="font-display text-display-sm font-semibold text-charcoal-900 tracking-display">
               {t('shop.featured')}
             </h2>
             <Link
-              href="/loja/camisetas"
+              href="/loja"
               className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
             >
               {t('shop.view_all')} →
@@ -45,6 +45,7 @@ export default function ShopPage() {
             <ProductGrid
               products={data.items}
               columns={4}
+              featured
               getProductHref={(product) => `/loja/produto/${product.id}`}
             />
           ) : (
@@ -62,7 +63,7 @@ export default function ShopPage() {
 
       {/* ── Categories: minimal stacked layout ─────────────────── */}
       <section className="bg-smoke-100">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-20 lg:py-24">
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-10 lg:py-12">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-smoke-200">
             <Link href="/loja/camisetas" className="group bg-smoke-100 p-8 lg:p-12 transition-colors duration-500 ease-luxury hover:bg-smoke-50">
               <div className="flex items-center gap-4 mb-4">

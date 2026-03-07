@@ -42,6 +42,71 @@ const PersonalizedQuery = z.object({
   limit: z.coerce.number().int().min(1).max(20).optional().default(10),
 });
 
+// ── Response schemas ─────────────────────────────────────────────────────────
+
+const ProductVariantSchema = z.object({
+  id: z.string(),
+  title: z.string().nullable(),
+  sku: z.string().nullable(),
+  price: z.number(),
+});
+
+const ProductDTOSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string().nullable(),
+  price: z.number(),
+  imageUrl: z.string().nullable(),
+  images: z.array(z.string()),
+  tags: z.array(z.string()),
+  availabilityWindow: z.string(),
+  allergens: z.array(z.string()),
+  variants: z.array(ProductVariantSchema),
+  productType: z.string(),
+  categoryHandle: z.string().optional(),
+  status: z.string().optional(),
+  inStock: z.boolean().optional(),
+  preparationTimeMinutes: z.number().optional(),
+  rating: z.number().optional(),
+  reviewCount: z.number().optional(),
+  servings: z.number().optional(),
+  compareAtPrice: z.number().optional(),
+  stockCount: z.number().optional(),
+  weight: z.string().optional(),
+  woodType: z.string().optional(),
+  smokeHours: z.number().optional(),
+  isBundle: z.boolean().optional(),
+  bundleServings: z.number().optional(),
+  pitmasterNote: z.string().optional(),
+  origin: z.string().optional(),
+  pairingTip: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const ProductListResponse = z.object({
+  items: z.array(ProductDTOSchema),
+  total: z.number(),
+  searchModel: z.string().optional(),
+  facetCounts: z.unknown().nullable(),
+});
+
+const ReviewResponse = z.object({
+  reviews: z.array(z.object({
+    id: z.string(),
+    rating: z.number(),
+    comment: z.string().nullable(),
+    createdAt: z.string(),
+    customerName: z.string(),
+  })),
+  total: z.number(),
+  averageRating: z.number().nullable(),
+});
+
+const CategoriesResponse = z.object({
+  categories: z.array(z.unknown()),
+});
+
 // Zod schemas for Medusa API response validation
 const MedusaProductResponse = z.object({
   product: z.object({
@@ -75,6 +140,7 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
         tags: ["catalog"],
         summary: "Buscar produtos",
         querystring: ProductsQuery,
+        response: { 200: ProductListResponse },
       },
     },
     async (request, reply) => {
@@ -178,6 +244,10 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
         tags: ["catalog"],
         summary: "Detalhe de produto",
         params: ProductParams,
+        response: {
+          200: ProductDTOSchema,
+          404: z.object({ statusCode: z.number(), error: z.string(), message: z.string() }),
+        },
       },
       preHandler: optionalAuth,
     },
@@ -241,6 +311,7 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
           limit: z.coerce.number().int().min(1).max(50).optional().default(10),
           offset: z.coerce.number().int().min(0).optional().default(0),
         }),
+        response: { 200: ReviewResponse },
       },
     },
     async (request, reply) => {
@@ -292,6 +363,7 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
       schema: {
         tags: ["catalog"],
         summary: "Listar categorias",
+        response: { 200: CategoriesResponse },
       },
     },
     async (_request, reply) => {

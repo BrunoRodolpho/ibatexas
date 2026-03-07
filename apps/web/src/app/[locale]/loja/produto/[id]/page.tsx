@@ -4,6 +4,9 @@ import { Skeleton } from '@/components/atoms/Skeleton'
 import PDPContent from './PDPContent'
 import { getApiBase } from '@/lib/api'
 
+/** ISR: revalidate product pages every 60s — keeps SEO content fresh */
+export const revalidate = 60
+
 interface ProductPageProps {
   params: { id: string; locale: string }
 }

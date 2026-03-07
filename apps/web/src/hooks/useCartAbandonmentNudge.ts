@@ -2,9 +2,9 @@
 
 import { useEffect, useRef } from 'react'
 import { useTranslations } from 'next-intl'
-import { useCartStore } from '@/stores/useCartStore'
-import { useUIStore } from '@/stores/useUIStore'
-import { track } from '@/lib/analytics'
+import { useCartStore } from '@/domains/cart'
+import { useUIStore } from '@/domains/ui'
+import { track } from '@/domains/analytics'
 
 const ABANDONMENT_THRESHOLD_MS = 30 * 60 * 1000 // 30 minutes
 const NUDGE_SESSION_KEY = 'cart_nudge_shown'
@@ -14,6 +14,9 @@ const NUDGE_SESSION_KEY = 'cart_nudge_shown'
  * modified in over 30 minutes: "Seus itens ainda estão no carrinho!"
  *
  * Only fires once per session (tracked via sessionStorage).
+ *
+ * This is an application-layer hook that orchestrates across domains
+ * (cart, UI, analytics) — intentionally lives outside any single domain.
  */
 export function useCartAbandonmentNudge() {
   const t = useTranslations('toast')

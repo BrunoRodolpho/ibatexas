@@ -36,6 +36,7 @@ const config: Config = {
           900: "#1A1614",
           800: "#231F1C",
           700: "#2E2924",
+          600: "#3A352F",
         },
         accent: {
           green: "#2D6A4F",
@@ -66,7 +67,8 @@ const config: Config = {
       // ── Box Shadows (warm-tinted, minimal) ──────────────────────────
       boxShadow: {
         "xs":   "0 1px 2px 0 rgba(120,80,40,0.04)",
-        "card": "0 1px 3px 0 rgba(120,80,40,0.04), 0 1px 2px -1px rgba(120,80,40,0.02)",
+        "card": "0 2px 8px -1px rgba(120,80,40,0.06), 0 1px 3px -1px rgba(120,80,40,0.04)",
+        "card-hover": "0 8px 24px -4px rgba(120,80,40,0.10), 0 4px 8px -2px rgba(120,80,40,0.04)",
         "md":   "0 4px 12px -2px rgba(120,80,40,0.06), 0 2px 4px -2px rgba(120,80,40,0.03)",
         "lg":   "0 10px 24px -4px rgba(120,80,40,0.08), 0 4px 8px -2px rgba(120,80,40,0.03)",
         "xl":   "0 20px 48px -8px rgba(120,80,40,0.10), 0 8px 16px -4px rgba(120,80,40,0.04)",
@@ -74,7 +76,7 @@ const config: Config = {
 
       // ── Border Radius ──────────────────────────────────────────────
       borderRadius: {
-        card: "6px",
+        card: "10px",
       },
 
       // ── Spacing (luxury editorial rhythm) ────────────────────────────
@@ -126,6 +128,13 @@ const config: Config = {
           "40%":  { transform: "scale(1.15)" },
           "100%": { transform: "scale(1)" },
         },
+        "bounce-y": {
+          "0%":   { transform: "translateY(0)" },
+          "30%":  { transform: "translateY(-8px)" },
+          "50%":  { transform: "translateY(0)" },
+          "70%":  { transform: "translateY(-4px)" },
+          "100%": { transform: "translateY(0)" },
+        },
         press: {
           "0%":   { transform: "scale(1)" },
           "100%": { transform: "scale(0.95)" },
@@ -146,6 +155,33 @@ const config: Config = {
           "0%":   { transform: "translateY(100%)" },
           "100%": { transform: "translateY(0)" },
         },
+        "pulse-once": {
+          "0%":   { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(232,93,4,0.4)" },
+          "50%":  { transform: "scale(1.05)", boxShadow: "0 0 0 8px rgba(232,93,4,0)" },
+          "100%": { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(232,93,4,0)" },
+        },
+        "cart-bounce": {
+          "0%":   { transform: "translateY(0)" },
+          "30%":  { transform: "translateY(-4px)" },
+          "50%":  { transform: "translateY(0)" },
+          "70%":  { transform: "translateY(-2px)" },
+          "100%": { transform: "translateY(0)" },
+        },
+        "steam-rise": {
+          "0%":   { opacity: "0", transform: "translateY(0) scaleX(1)" },
+          "30%":  { opacity: "0.4" },
+          "100%": { opacity: "0", transform: "translateY(-40px) scaleX(1.5)" },
+        },
+        "add-success": {
+          "0%":   { transform: "scale(1)" },
+          "20%":  { transform: "scale(0.95)" },
+          "40%":  { transform: "scale(1.05)" },
+          "100%": { transform: "scale(1)" },
+        },
+        "fade-up": {
+          "0%":   { opacity: "0", transform: "translateY(16px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
       },
       animation: {
         "fade-in":    "fade-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards",
@@ -155,11 +191,17 @@ const config: Config = {
         shimmer:      "shimmer 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite",
         marquee:      "marquee 40s linear infinite",
         "bounce-subtle": "bounce-subtle 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "bounce-y": "bounce-y 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards",
         press:         "press 0.1s cubic-bezier(0.16, 1, 0.3, 1) forwards",
         "snap-underline": "snap-underline 0.1s linear forwards",
         "slide-in-right":  "slide-in-right 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards",
         "slide-in-left":   "slide-in-left 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards",
         "slide-in-bottom": "slide-in-bottom 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "pulse-once": "pulse-once 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "cart-bounce": "cart-bounce 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "steam": "steam-rise 3s ease-out infinite",
+        "add-success": "add-success 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards",
+        "fade-up": "fade-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards",
       },
     },
   },

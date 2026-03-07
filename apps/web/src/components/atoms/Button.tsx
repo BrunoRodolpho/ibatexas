@@ -11,9 +11,9 @@ const buttonVariants = cva(
     variants: {
       variant: {
         primary: [
-          'bg-charcoal-900 text-white',
-          'hover:bg-charcoal-700',
-          'active:bg-charcoal-900',
+          'bg-charcoal-900 text-white shadow-xs tracking-wide',
+          'hover:bg-charcoal-700 hover:shadow-md',
+          'active:bg-charcoal-900 active:translate-y-[1px] active:shadow-xs',
           'focus-visible:ring-charcoal-900',
         ],
         secondary: [

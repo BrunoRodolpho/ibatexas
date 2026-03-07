@@ -1,7 +1,13 @@
 'use client'
 
+/**
+ * @deprecated Admin UI has moved to apps/admin (port 3002).
+ * These routes remain temporarily for backward compatibility.
+ * Remove once the team has fully migrated to the standalone admin app.
+ */
+
 import { useLocale, useTranslations } from 'next-intl'
-import { useSessionStore } from '@/stores'
+import { useSessionStore } from '@/domains/session'
 import { AdminSidebar } from '@/components/molecules/AdminSidebar'
 import { Button } from '@/components/atoms'
 import { LogOut, Shield, Search } from 'lucide-react'

@@ -2,7 +2,7 @@
 
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from "next-intl"
-import { useSessionStore } from "@/stores"
+import { useSessionStore } from '@/domains/session'
 import { Button } from "@/components/atoms"
 
 export default function AccountPage() {

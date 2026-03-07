@@ -4,16 +4,19 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/atoms'
-import { SearchInput } from '@/components/molecules'
 import { ProductGrid } from '@/components/organisms'
-import { useUIStore, useCartStore } from '@/stores'
-import { useProducts } from '@/hooks/api'
-import { track } from '@/lib/analytics'
+import { useUIStore } from '@/domains/ui'
+import { useCartStore } from '@/domains/cart'
+import { useProducts } from '@/domains/product'
+import { track } from '@/domains/analytics'
 import { SlidersHorizontal } from 'lucide-react'
 import { Sheet } from '@/components/molecules/Modal'
-import { SearchFilterPanel } from './SearchFilterPanel'
 import { SearchCategoryRow } from './SearchCategoryRow'
 import { SearchEmptyState } from './SearchEmptyState'
+import { PitmasterPick } from '@/components/molecules/PitmasterPick'
+import { GuidedSection } from '@/components/molecules/GuidedSection'
+import { MostOrderedSection } from '@/components/molecules/MostOrderedSection'
+import { resolveCanonical } from '@/domains/search'
 import type { ProductDTO } from '@ibatexas/types'
 
 const TAG_IDS = ['novo', 'popular', 'chef_choice', 'vegetariano', 'vegan', 'sem_gluten'] as const
@@ -28,7 +31,6 @@ export default function SearchContent() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const [searchQuery, setSearchQuery] = useState('')
-  const [isFilterOpen, setIsFilterOpen] = useState(false)
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const initializedRef = useRef(false)
@@ -36,6 +38,19 @@ export default function SearchContent() {
 
   const { selectedFilters, setFilters, resetFilters, addToast } = useUIStore()
   const addItem = useCartStore((s) => s.addItem)
+  const cartItems = useCartStore((s) => s.items)
+  const updateItem = useCartStore((s) => s.updateItem)
+  const removeItem = useCartStore((s) => s.removeItem)
+
+  const getCartQuantity = useCallback(
+    (productId: string) =>
+      cartItems.filter((item) => item.productId === productId).reduce((sum, item) => sum + item.quantity, 0),
+    [cartItems],
+  )
+  const getCartItemId = useCallback(
+    (productId: string) => cartItems.find((item) => item.productId === productId)?.id,
+    [cartItems],
+  )
 
   // ── Sync URL params → store on mount ──────────────────────────────────
   useEffect(() => {
@@ -95,6 +110,7 @@ export default function SearchContent() {
 
   const allProducts = productsData?.items ?? []
   const totalFound = productsData?.total ?? 0
+
   const products = allProducts.slice(0, visibleCount)
   const hasMore = visibleCount < allProducts.length
 
@@ -119,8 +135,13 @@ export default function SearchContent() {
   }, [hasMore, allProducts.length])
 
   const handleSearch = (query: string) => {
-    setSearchQuery(query)
-    updateURL(selectedFilters, query)
+    const canonical = resolveCanonical(query)
+    const effectiveQuery = canonical ?? query
+    setSearchQuery(effectiveQuery)
+    updateURL(selectedFilters, effectiveQuery)
+    if (canonical) {
+      track('search_synonym_resolved', { original: query, canonical })
+    }
   }
 
   // Fire search_performed once results settle
@@ -167,100 +188,158 @@ export default function SearchContent() {
   }
 
   const hasActiveFilters = selectedFilters.tags.length > 0 || !!selectedFilters.category
+  const hasNonCategoryFilters = selectedFilters.tags.length > 0 || (!!selectedFilters.sort && selectedFilters.sort !== 'relevance')
+
+  // ── Derived: pitmaster pick (chef_choice tag, first match) ──
+  const pitmasterProduct = useMemo(() => {
+    return allProducts.find((p) => p.tags?.includes('chef_choice')) ?? null
+  }, [allProducts])
+
+  // ── Derived: popular products for "Em Alta" carousel ──
+  const popularProducts = useMemo(() => {
+    return allProducts.filter((p) => p.tags?.includes('popular')).slice(0, 8)
+  }, [allProducts])
+
+  // ── Shared add-to-cart handler ──
+  const triggerUpsell = useUIStore((s) => s.triggerUpsell)
+
+  const handleAddToCart = useCallback(
+    (productId: string) => {
+      const product = allProducts.find((p) => p.id === productId)
+      if (product) {
+        const defaultVariant = product.variants?.[0]
+        addItem(product as ProductDTO, 1, undefined, defaultVariant)
+        track('add_to_cart', { productId, source: 'listing' })
+        addToast(t('product.added'), 'cart')
+        if (product.categoryHandle) {
+          triggerUpsell(product.categoryHandle)
+        }
+      }
+    },
+    [allProducts, addItem, addToast, t, triggerUpsell]
+  )
+
+  // Zero-state: no active search or category filter
+  const isZeroState = !searchQuery && !selectedFilters.category
 
   return (
     <div className="min-h-screen bg-smoke-50">
-      {/* ── Search bar ──────────────────────────────────────────── */}
-      <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-3">
-        <div className="max-w-[1200px] mx-auto">
-          <SearchInput
-            placeholder={t('search.placeholder')}
-            onSearch={handleSearch}
-            isLoading={isLoading}
-            debounceMs={300}
+      {/* ── Category row + filter trigger — sticky below header ── */}
+      <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200">
+      <div className="max-w-[1200px] mx-auto flex items-center gap-1 px-4 sm:px-6 py-2">
+        <div className="flex-1 overflow-hidden">
+          <SearchCategoryRow
+            categories={CATEGORIES}
+            selectedCategory={selectedFilters.category}
+            onCategoryChange={handleCategoryChange}
+            onClearCategory={handleClearCategory}
           />
         </div>
+        <button
+          onClick={() => setIsMobileFilterOpen(true)}
+          className={`relative flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full border transition-colors ${
+            hasNonCategoryFilters
+              ? 'border-charcoal-900 text-charcoal-900'
+              : 'border-smoke-200 text-smoke-400 hover:text-charcoal-900 hover:border-smoke-300'
+          }`}
+          aria-label={t('search.filter')}
+        >
+          <SlidersHorizontal className="w-3.5 h-3.5" />
+          {hasNonCategoryFilters && (
+            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-brand-500" />
+          )}
+        </button>
+      </div>
       </div>
 
-      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16 lg:py-20">
-        {/* ── Page header with inline controls ──────────────────── */}
-        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
-          <div>
-            <h1 className="font-display text-display-sm font-semibold text-charcoal-900 tracking-display inline-flex items-baseline gap-3">
-              {t('search.title')}
-              {!isLoading && totalFound > 0 && (
-                <span className="text-sm font-sans font-medium text-smoke-400">· {totalFound}</span>
+      <div className="max-w-[1200px] mx-auto px-4 sm:px-6">
+        {/* ══════════════════════════════════════════════════════════
+            BROWSE MODE — discovery-first layout
+            ══════════════════════════════════════════════════════════ */}
+        {isZeroState && !isLoading && (
+          <>
+            {/* 1. Pitmaster Recomenda — card variant, decent size */}
+            {pitmasterProduct && (
+              <div className="mt-8 mb-6">
+                <PitmasterPick
+                  product={pitmasterProduct as ProductDTO}
+                  onAddToCart={handleAddToCart}
+                  variant="card"
+                  cartQuantity={getCartQuantity(pitmasterProduct.id)}
+                  onUpdateQuantity={(qty) => {
+                    const itemId = getCartItemId(pitmasterProduct.id)
+                    if (itemId) updateItem(itemId, { quantity: qty })
+                  }}
+                  onRemoveFromCart={() => {
+                    const itemId = getCartItemId(pitmasterProduct.id)
+                    if (itemId) removeItem(itemId)
+                  }}
+                />
+              </div>
+            )}
+
+            {/* 2 + 3. Em Alta & Mais Pedidos — side by side on desktop, stacked on mobile */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 sm:gap-6 lg:gap-8 mb-6">
+              {popularProducts.length > 0 && (
+                <GuidedSection
+                  title={t('search.trending')}
+                  subtitle={t('search.trending_subtitle')}
+                  products={popularProducts as ProductDTO[]}
+                  onAddToCart={handleAddToCart}
+                />
               )}
-            </h1>
-            {hasActiveFilters && (
-              <button
-                onClick={handleResetFilters}
-                className="mt-2 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
-              >
-                {t('search.reset_filters')}
-              </button>
-            )}
-          </div>
-
-          <SearchFilterPanel
-            tags={TAGS}
-            sortOptions={SORT_OPTIONS}
-            selectedTags={selectedFilters.tags}
-            selectedSort={selectedFilters.sort || 'relevance'}
-            isFilterOpen={isFilterOpen}
-            onToggleFilter={() => setIsFilterOpen(!isFilterOpen)}
-            onTagToggle={handleTagToggle}
-            onSortChange={handleSortChange}
-            onResetFilters={handleResetFilters}
-            hasActiveFilters={hasActiveFilters}
-          />
-
-          {/* Mobile filter trigger — opens bottom sheet */}
-          <button
-            onClick={() => setIsMobileFilterOpen(true)}
-            className="sm:hidden inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            {t('search.filter')}
-            {selectedFilters.tags.length > 0 && (
-              <span className="inline-flex items-center justify-center h-4 min-w-[1rem] px-1 rounded-full bg-charcoal-900 text-smoke-50 text-[9px] font-semibold">
-                {selectedFilters.tags.length}
-              </span>
-            )}
-          </button>
-        </div>
-
-        {/* ── Typographic category row ────────────────────────────── */}
-        <SearchCategoryRow
-          categories={CATEGORIES}
-          selectedCategory={selectedFilters.category}
-          onCategoryChange={handleCategoryChange}
-          onClearCategory={handleClearCategory}
-        />
-
-        {/* ── Active filter chips (category) ──────────────────────── */}
-        {selectedFilters.category && !isFilterOpen && (
-          <div className="mb-8 flex flex-wrap items-center gap-3">
-            <button
-              onClick={() => handleCategoryChange(selectedFilters.category!)}
-              className="text-xs font-medium text-charcoal-900 border-b border-charcoal-900/30 pb-0.5 hover:border-charcoal-900 transition-colors duration-500 ease-luxury"
-            >
-              {CATEGORIES.find((c) => c.id === selectedFilters.category)?.label} ✕
-            </button>
-          </div>
+              {allProducts.length > 0 && (
+                <MostOrderedSection
+                  products={allProducts as ProductDTO[]}
+                  onAddToCart={handleAddToCart}
+                />
+              )}
+            </div>
+          </>
         )}
 
-        {/* ── Category intro banner (editorial strip) ──────────── */}
-        {selectedFilters.category && (
-          <div className="mb-2">
+        {/* ══════════════════════════════════════════════════════════
+            FILTERED / SEARCH MODE — category description + count
+            ══════════════════════════════════════════════════════════ */}
+        {!isZeroState && selectedFilters.category && (
+          <div className="mt-3 mb-4">
             <p className="font-display italic text-sm text-smoke-400 leading-relaxed">
               {t(`search.category_descriptions.${selectedFilters.category}`)}
             </p>
           </div>
         )}
+        {!isZeroState && !isLoading && (
+          <div className="flex items-center justify-between mt-2 mb-3">
+            <p className="text-sm text-smoke-400">
+              {totalFound} {totalFound === 1 ? 'produto' : 'produtos'}
+              {searchQuery && ` para "${searchQuery}"`}
+            </p>
+            {hasActiveFilters && (
+              <button
+                onClick={handleResetFilters}
+                className="text-xs font-medium text-smoke-400 hover:text-charcoal-900 transition-colors"
+              >
+                {t('search.reset_filters')}
+              </button>
+            )}
+          </div>
+        )}
 
-        {/* ── Product grid + Load More ────────────────────────────── */}
-        <div className="pt-6">
+        {/* ══════════════════════════════════════════════════════════
+            PRODUCT GRID — always shown
+            ══════════════════════════════════════════════════════════ */}
+        <div id="product-grid">
+          {/* Section divider for browse mode */}
+          {isZeroState && !isLoading && allProducts.length > 0 && (
+            <div className="flex items-center gap-3 mb-6">
+              <div className="h-px flex-1 bg-smoke-200" />
+              <span className="text-xs uppercase tracking-editorial text-smoke-400 font-medium">
+                {t('common.all')}
+              </span>
+              <div className="h-px flex-1 bg-smoke-200" />
+            </div>
+          )}
+
           {!isLoading && products.length === 0 ? (
             <SearchEmptyState
               searchQuery={searchQuery}
@@ -273,20 +352,12 @@ export default function SearchContent() {
                 products={products}
                 columns={4}
                 isLoading={isLoading}
-                onAddToCart={(productId) => {
-                  const product = allProducts.find((p) => p.id === productId)
-                  if (product) {
-                    const defaultVariant = product.variants?.[0]
-                    addItem(product as ProductDTO, 1, undefined, defaultVariant)
-                    track('add_to_cart', { productId, source: 'listing' })
-                    addToast(t('product.added'), 'success')
-                  }
-                }}
+                onAddToCart={handleAddToCart}
               />
 
               {/* Load More sentinel + button fallback */}
               {hasMore && (
-                <div ref={loadMoreRef} className="flex justify-center pt-12 pb-4">
+                <div ref={loadMoreRef} className="flex justify-center pt-8 pb-4">
                   <Button
                     variant="tertiary"
                     size="md"
@@ -301,11 +372,11 @@ export default function SearchContent() {
         </div>
       </div>
 
-      {/* ── Mobile bottom sheet: sort & filter ────────────────────── */}
+      {/* ── Filter sheet — sort, categories, tags ────────────────── */}
       <Sheet
         isOpen={isMobileFilterOpen}
         onClose={() => setIsMobileFilterOpen(false)}
-        title={t('search.filter')}
+        title={t('search.filters')}
         position="bottom"
         footer={
           <button
@@ -335,31 +406,6 @@ export default function SearchContent() {
                   }`}
                 >
                   {opt.label}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Categories */}
-        <div className="mb-6">
-          <h3 className="text-xs font-medium uppercase tracking-editorial text-smoke-400 mb-3">
-            {t('search.categories')}
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {CATEGORIES.map((cat) => {
-              const isActive = selectedFilters.category === cat.id
-              return (
-                <button
-                  key={cat.id}
-                  onClick={() => handleCategoryChange(cat.id)}
-                  className={`rounded-sm border px-3 py-2.5 text-sm transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
-                    isActive
-                      ? 'border-charcoal-900 bg-charcoal-900 text-smoke-50'
-                      : 'border-smoke-200 text-charcoal-700 hover:border-smoke-300'
-                  }`}
-                >
-                  {cat.label}
                 </button>
               )
             })}

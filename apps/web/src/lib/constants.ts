@@ -3,6 +3,9 @@
  * Single source of truth for values used across multiple components.
  */
 
+/** Free delivery threshold in centavos (R$150,00) */
+export const FREE_DELIVERY_THRESHOLD = 15000
+
 /** Tiny warm-gray SVG shimmer — used as blurDataURL for remote images */
 export const BLUR_PLACEHOLDER =
   'data:image/svg+xml;base64,' +

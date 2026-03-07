@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 const mockGetPostHogClient = vi.hoisted(() => vi.fn())
 
-vi.mock("../lib/posthog", () => ({
+vi.mock("@/lib/posthog", () => ({
   getPostHogClient: mockGetPostHogClient,
 }))
 
@@ -49,9 +49,9 @@ function teardownBrowserGlobals() {
 
 // ── Import after mocks ─────────────────────────────────────────────────────────
 
-let track: typeof import("../lib/analytics").track
-let getSessionId: typeof import("../lib/analytics").getSessionId
-let trackScrollDepth: typeof import("../lib/analytics").trackScrollDepth
+let track: typeof import("../domains/analytics/track").track
+let getSessionId: typeof import("../domains/analytics/track").getSessionId
+let trackScrollDepth: typeof import("../domains/analytics/track").trackScrollDepth
 
 describe("Analytics Layer", () => {
   beforeEach(async () => {
@@ -65,7 +65,7 @@ describe("Analytics Layer", () => {
 
     // Force re-import to reset module state (sessionId, isDev, etc.)
     vi.resetModules()
-    const mod = await import("../lib/analytics")
+    const mod = await import("../domains/analytics/track")
     track = mod.track
     getSessionId = mod.getSessionId
     trackScrollDepth = mod.trackScrollDepth

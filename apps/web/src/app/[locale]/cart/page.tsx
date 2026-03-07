@@ -6,9 +6,10 @@ import { useTranslations } from 'next-intl'
 
 import { Heading, Text, Button, RadioGroup } from '@/components/atoms'
 import { CartItem, Modal } from '@/components/molecules'
-import { useCartStore, useUIStore } from '@/stores'
+import { useCartStore } from '@/domains/cart'
+import { useUIStore } from '@/domains/ui'
 import { apiFetch } from '@/lib/api'
-import { track } from '@/lib/analytics'
+import { track } from '@/domains/analytics'
 import clsx from 'clsx'
 
 export default function CartPage() {
@@ -28,7 +29,7 @@ export default function CartPage() {
   const handleApplyCoupon = async () => {
     if (!couponInput.trim()) return
     try {
-      const res = await apiFetch('/api/coupons/validate', {
+      const res = await apiFetch<{ valid: boolean; discount?: number }>('/api/coupons/validate', {
         method: 'POST',
         body: JSON.stringify({ code: couponInput.toUpperCase() }),
       })
