@@ -106,6 +106,7 @@ ibx db migrate             # run pending Medusa migrations (Medusa must NOT be r
 ibx db migrate:domain      # run Prisma migrations for ibx_domain schema
 ibx db seed                # seed products into Medusa (Medusa must be running)
 ibx db seed:domain         # seed domain tables (DeliveryZone, Table, TimeSlot)
+ibx db seed:homepage       # seed customers + reviews for homepage sections (Medusa must be running)
 ibx db reset               # ⚠️  drop + migrate + reseed (destructive)
 ibx db reset --force       # skip confirmation prompt (for CI)
 ibx db reindex             # reindex Typesense from Medusa catalog

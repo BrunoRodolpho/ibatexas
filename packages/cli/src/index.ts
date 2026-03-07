@@ -60,11 +60,14 @@ function buildHelpText(): string {
     {
       title: "Data",
       commands: [
-        { usage: "db migrate",  desc: "Run Medusa migrations" },
-        { usage: "db seed",     desc: "Seed the product catalog" },
-        { usage: "db reindex",  desc: "Fetch products from Medusa → index into Typesense (--fresh to recreate)" },
-        { usage: "db reset",    desc: "⚠  Drop, migrate, and reseed" },
-        { usage: "db status",   desc: "Migration status for Medusa + Prisma schemas" },
+        { usage: "db migrate",        desc: "Run Medusa migrations" },
+        { usage: "db migrate:domain", desc: "Run Prisma (domain) migrations" },
+        { usage: "db seed",           desc: "Seed the product catalog" },
+        { usage: "db seed:domain",    desc: "Seed domain tables (Table, TimeSlot)" },
+        { usage: "db seed:homepage",  desc: "Seed customers + reviews for homepage" },
+        { usage: "db reindex",        desc: "Fetch products from Medusa → index into Typesense (--fresh to recreate)" },
+        { usage: "db reset",          desc: "⚠  Drop, migrate, and reseed" },
+        { usage: "db status",         desc: "Migration status for Medusa + Prisma schemas" },
       ],
     },
     {
