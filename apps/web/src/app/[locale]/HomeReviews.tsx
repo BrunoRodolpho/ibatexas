@@ -101,10 +101,10 @@ export function HomeReviews() {
   if (reviews.length === 0) return null
 
   return (
-    <section ref={sectionRef} className="bg-smoke-50">
-      <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-10 lg:py-14">
+    <section ref={sectionRef} className="bg-smoke-50 border-t border-smoke-200/30">
+      <div className="mx-auto max-w-[1280px] px-6 lg:px-8 py-16 lg:py-24">
         {/* Section header */}
-        <div className="mb-6">
+        <div className="mb-8">
           <h2 className="font-display text-display-xs sm:text-display-sm font-semibold text-charcoal-900 tracking-display">
             {t('reviews_section.title')}
           </h2>

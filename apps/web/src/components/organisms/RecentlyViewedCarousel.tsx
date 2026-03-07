@@ -31,7 +31,7 @@ export function RecentlyViewedCarousel({ excludeId }: RecentlyViewedCarouselProp
   if (recentIds.length < 2) return null
 
   return (
-    <section className="max-w-7xl mx-auto px-4 sm:px-6 py-12">
+    <section className="max-w-[1280px] mx-auto px-6 lg:px-8 py-16 lg:py-24 border-t border-smoke-200/30">
       <div className="mb-6">
         <div className="h-px w-12 bg-brand-500 mb-4" />
         <Heading as="h2" variant="h3" className="text-charcoal-900">
