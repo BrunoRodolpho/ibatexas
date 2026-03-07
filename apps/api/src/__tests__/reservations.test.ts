@@ -29,6 +29,18 @@ vi.mock("@ibatexas/tools", () => ({
   getProductDetails: vi.fn(),
 }))
 
+vi.mock("../middleware/auth.js", () => ({
+  requireAuth: async (request: any, reply: any) => {
+    const customerId = request.headers["x-customer-id"] as string | undefined
+    if (!customerId) {
+      return reply
+        .code(401)
+        .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." })
+    }
+    request.customerId = customerId
+  },
+}))
+
 // ── Server factory ─────────────────────────────────────────────────────────────
 
 import Fastify from "fastify"
@@ -144,8 +156,8 @@ describe("POST /api/reservations", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/reservations",
+      headers: { "x-customer-id": "cus_01" },
       payload: {
-        customerId: "cus_01",
         timeSlotId: "ts_01",
         partySize: 4,
       },
@@ -174,7 +186,8 @@ describe("POST /api/reservations", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/reservations",
-      payload: { customerId: "cus_01", timeSlotId: "ts_01", partySize: 25 },
+      headers: { "x-customer-id": "cus_01" },
+      payload: { timeSlotId: "ts_01", partySize: 25 },
     })
 
     expect(res.statusCode).toBe(400)
@@ -190,7 +203,8 @@ describe("GET /api/reservations", () => {
     const app = await buildTestServer()
     const res = await app.inject({
       method: "GET",
-      url: "/api/reservations?customerId=cus_01",
+      url: "/api/reservations",
+      headers: { "x-customer-id": "cus_01" },
     })
 
     expect(res.statusCode).toBe(200)
@@ -227,7 +241,8 @@ describe("PATCH /api/reservations/:id", () => {
     const res = await app.inject({
       method: "PATCH",
       url: "/api/reservations/res_01",
-      payload: { customerId: "cus_01", newPartySize: 6 },
+      headers: { "x-customer-id": "cus_01" },
+      payload: { newPartySize: 6 },
     })
 
     expect(res.statusCode).toBe(200)
@@ -247,7 +262,8 @@ describe("PATCH /api/reservations/:id", () => {
     const res = await app.inject({
       method: "PATCH",
       url: "/api/reservations/res_99",
-      payload: { customerId: "cus_01" },
+      headers: { "x-customer-id": "cus_01" },
+      payload: {},
     })
 
     expect(res.statusCode).toBe(400)
@@ -267,7 +283,8 @@ describe("DELETE /api/reservations/:id", () => {
     const res = await app.inject({
       method: "DELETE",
       url: "/api/reservations/res_01",
-      payload: { customerId: "cus_01" },
+      headers: { "x-customer-id": "cus_01" },
+      payload: {},
     })
 
     expect(res.statusCode).toBe(200)
@@ -286,7 +303,8 @@ describe("DELETE /api/reservations/:id", () => {
     const res = await app.inject({
       method: "DELETE",
       url: "/api/reservations/res_01",
-      payload: { customerId: "cus_WRONG" },
+      headers: { "x-customer-id": "cus_WRONG" },
+      payload: {},
     })
 
     expect(res.statusCode).toBe(400)
@@ -307,7 +325,8 @@ describe("POST /api/reservations/:id/waitlist", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/reservations/ts_01/waitlist",
-      payload: { customerId: "cus_01", partySize: 2 },
+      headers: { "x-customer-id": "cus_01" },
+      payload: { partySize: 2 },
     })
 
     expect(res.statusCode).toBe(201)
@@ -324,7 +343,8 @@ describe("POST /api/reservations/:id/waitlist", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/reservations/ts_01/waitlist",
-      payload: { customerId: "cus_01" },
+      headers: { "x-customer-id": "cus_01" },
+      payload: {},
     })
 
     expect(res.statusCode).toBe(400)
