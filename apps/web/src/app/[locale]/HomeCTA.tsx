@@ -9,7 +9,7 @@ export default function HomeCTA() {
   const setChat = useUIStore((s) => s.setChat)
 
   return (
-    <div className="mt-8 flex flex-col sm:flex-row items-center gap-3">
+    <div className="mt-8 flex flex-row items-center justify-center lg:justify-start gap-3">
       <LinkButton href="/search" variant="brand" size="lg">
         {t('home.cta_button_menu')}
       </LinkButton>
