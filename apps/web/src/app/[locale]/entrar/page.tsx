@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { useSessionStore } from "@/stores"
+import { useSessionStore } from '@/domains/session'
 import { getApiBase } from "@/lib/api"
 import { Heading, Text, Button } from "@/components/atoms"
 import { Smartphone } from "lucide-react"
@@ -82,7 +82,7 @@ export default function EntrarPage() {
           throw new Error(data.message ?? "Código inválido.")
         }
         const data = (await res.json()) as { customerId: string; token: string; userType?: string }
-        login(data.customerId, data.token)
+        login(data.customerId)
         router.push(nextPath)
       } catch (err) {
         setError(err instanceof Error ? err.message : "Código inválido.")

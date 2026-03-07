@@ -49,8 +49,8 @@ export function useAdminProduct(id: string | null) {
     if (!id) { setData(null); setError(null); return }
     setLoading(true)
     setError(null)
-    apiFetch(`/api/admin/products/${encodeURIComponent(id)}`)
-      .then((res: { product: AdminProductDetail }) => setData(res.product))
+    apiFetch<{ product: AdminProductDetail }>(`/api/admin/products/${encodeURIComponent(id)}`)
+      .then((res) => setData(res.product))
       .catch(setError)
       .finally(() => setLoading(false))
   }, [id])

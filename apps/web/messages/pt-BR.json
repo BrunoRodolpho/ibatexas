@@ -4,10 +4,12 @@
     "shop": "Cardápio",
     "buscar": "Buscar",
     "cart": "Carrinho",
-    "account": "Minha Conta",
+    "account": "Conta",
     "reservations": "Reservas",
     "loja": "Loja",
-    "admin": "Admin"
+    "admin": "Admin",
+    "comida": "Comida",
+    "home": "Início"
   },
   "home": {
     "title": "IbateXas — Churrasco Defumado",
@@ -108,6 +110,7 @@
     "no_results_hint_search": "Tente buscar com outros termos ou explore nossas categorias abaixo.",
     "start_searching": "Digite algo para começar a buscar ou selecione uma categoria",
     "reset_filters": "Limpar Filtros",
+    "social_proof_week": "Mais de 200 pedidos esta semana",
     "searching": "Buscando...",
     "results_count": "{count} resultado(s)",
     "categories": "Categorias",
@@ -148,7 +151,9 @@
       "bebidas": "Selecionadas para harmonizar com defumados.",
       "congelados": "Sabor de pitmaster, pronto quando você quiser."
     },
-    "load_more": "Carregar mais"
+    "load_more": "Carregar mais",
+    "trending": "Em Alta",
+    "trending_subtitle": "Os produtos mais populares do momento."
   },
   "product": {
     "price": "Preço",
@@ -156,6 +161,7 @@
     "add_to_cart": "Adicionar ao Carrinho",
     "adding": "Adicionando...",
     "added": "Adicionado ao carrinho!",
+    "added_short": "Adicionado",
     "add_error": "Erro ao adicionar ao carrinho",
     "nutritional_info": "Informação Nutricional",
     "allergens": "Alérgenos",
@@ -191,7 +197,24 @@
     "pairing_default": "Sirva com coleslaw cremoso, cornbread artesanal e uma cerveja IPA bem gelada. Para uma experiência completa, acompanhe com nosso molho barbecue da casa.",
     "cross_sell_title": "Para uma experiência completa",
     "scarcity": "Últimas {count} unidades!",
-    "bundle_per_person": "{price} por pessoa · Bundle para {servings}"
+    "bundle_per_person": "{price} por pessoa · Bundle para {servings}",
+    "serves": "Serve {count}",
+    "per_person_price": "{price}/pessoa",
+    "available_almoco": "Disponível 11h-15h",
+    "available_jantar": "Disponível 18h-23h",
+    "smoke_narrative": "Defumado por {hours}h em {wood}",
+    "smoke_narrative_no_wood": "Defumado por {hours}h",
+    "smoke_subtitle": "Fogo baixo, sem pressa.",
+    "pitmaster_name": "Pitmaster Luis",
+    "smoke_timeline_label": "{hours}h de defumação",
+    "also_added": "Clientes também adicionam",
+    "bundle_badge": "Combo",
+    "available_almoco_short": "Disponível 11h-15h",
+    "available_jantar_short": "Disponível 18h-23h",
+    "ordered_count": "Pedido {count}+ vezes este mês",
+    "from_price": "a partir de",
+    "per_person_short": "{price}/pessoa",
+    "orders_today": "{count} pedidos hoje"
   },
   "cart": {
     "title": "Seu Carrinho",
@@ -238,10 +261,12 @@
     "apply_coupon": "Aplicar Cupom",
     "apply": "Aplicar",
     "coupon_placeholder": "Ex: WELCOME10",
-    "coupon_hint": "Insira o código do cupom promocional"
+    "coupon_hint": "Insira o código do cupom promocional",
+    "you_might_like": "Combina com seu pedido",
+    "add_suggestion": "Adicionar"
   },
   "checkout": {
-    "title": "Checkout",
+    "title": "Finalizar pedido",
     "login_required": "Você precisa fazer login para checkout",
     "login_button": "Faça Login com WhatsApp",
     "order_summary": "Resumo do Pedido",
@@ -249,13 +274,44 @@
     "payment_method": "Método de Pagamento",
     "pix": "PIX",
     "credit_card": "Cartão de Crédito",
+    "card": "Cartão",
     "cash": "Dinheiro",
     "boleto": "Boleto",
     "place_order": "Confirmar Pedido",
-    "order_confirmation": "Seu pedido foi confirmado!",
+    "order_confirmation": "Pedido confirmado!",
     "order_number": "Número do Pedido",
     "estimated_delivery": "Entrega Estimada",
-    "track_order": "Rastrear Pedido"
+    "track_order": "Acompanhar pedido →",
+    "step_summary": "Resumo",
+    "step_payment": "Pagamento",
+    "step_confirmation": "Confirmação",
+    "trust_secure": "Pagamento 100% seguro",
+    "trust_guarantee": "Satisfação garantida",
+    "empty_cart": "Seu carrinho está vazio",
+    "continue_shopping": "Continuar comprando →",
+    "cart_not_found": "Carrinho não encontrado. Por favor, adicione os itens novamente.",
+    "payment_error": "Erro ao processar pagamento.",
+    "whatsapp_order_msg": "Olá! Gostaria de acompanhar meu pedido",
+    "whatsapp_track": "Acompanhe pelo WhatsApp →",
+    "pix_title": "Pague via PIX",
+    "pix_subtitle": "Escaneie o QR Code abaixo ou copie a chave PIX",
+    "pix_copy": "Copiar",
+    "pix_auto_confirm": "O pedido será confirmado automaticamente após o pagamento.",
+    "items_label": "Itens",
+    "delivery_label": "Entrega",
+    "delivery_type_delivery": "Delivery",
+    "delivery_type_pickup": "Retirar",
+    "delivery_type_dinein": "No restaurante",
+    "cep_placeholder": "CEP (8 dígitos)",
+    "tip_label": "Gorjeta (opcional)",
+    "tip_none": "Nenhuma",
+    "tip_value": "Gorjeta: {value}",
+    "payment_label": "Pagamento",
+    "fee_delivery": "Taxa de entrega",
+    "fee_tip": "Gorjeta",
+    "total": "Total",
+    "confirm_order": "Confirmar pedido · {total}",
+    "processing": "Processando…"
   },
   "account": {
     "title": "Minha Conta",
@@ -471,5 +527,103 @@
   },
   "quick_view": {
     "view_details": "Ver Detalhes"
+  },
+  "most_ordered": {
+    "title": "Mais Pedidos",
+    "subtitle": "Os favoritos dos nossos clientes esta semana."
+  },
+  "story": {
+    "title": "Defumado por 14 horas",
+    "body_1": "No IbateXas, cada brisket passa 14 horas em madeira de pecan.",
+    "body_2": "Sem pressa. Sem atalhos. Só fogo, fumaça e tempo.",
+    "tagline": "Tradição Texana"
+  },
+  "pitmaster_pick": {
+    "label": "Pitmaster Recomenda",
+    "description": "A escolha do nosso pitmaster para hoje."
+  },
+  "sticky_cart": {
+    "view": "Ver Carrinho",
+    "free_delivery_progress": "Falta {remaining} para frete grátis",
+    "free_delivery_reached": "Frete grátis!",
+    "estimated_delivery": "Entrega estimada: ~{minutes} min",
+    "delivery_fallback": "Entrega em até 24h"
+  },
+  "smart_filters": {
+    "best_seller": "Mais Vendidos",
+    "under_100": "Até R$100",
+    "combos": "Combos & Sanduíches",
+    "family": "Para a Família"
+  },
+  "delivery_promise": {
+    "title": "Garantias de Entrega",
+    "thermal": "Embalagem térmica — temperatura por 4h",
+    "vacuum_sealed": "Selada a vácuo para frescor",
+    "refrigerated": "Entrega refrigerada e rastreada",
+    "same_day": "Pedido até 14h, entrega no mesmo dia",
+    "delivery_time": "Entrega em até 24h"
+  },
+  "order": {
+    "timeline_pending": "Pedido recebido",
+    "timeline_processing": "Preparando seu pedido",
+    "timeline_shipped": "Saiu para entrega",
+    "timeline_delivered": "Entregue",
+    "timeline_canceled": "Pedido cancelado",
+    "whatsapp_updates": "Acompanhe pelo WhatsApp",
+    "whatsapp_updates_desc": "Receba atualizações automáticas sobre seu pedido."
+  },
+  "whatsapp": {
+    "float_label": "Fale conosco"
+  },
+  "guided": {
+    "perfect_for_2": "Para 2",
+    "perfect_for_2_subtitle": "Porções ideais para um jantar a dois.",
+    "quick_bites": "Rápidos e Prontos",
+    "quick_bites_subtitle": "Para quando a fome não pode esperar."
+  },
+  "first_visit": {
+    "title": "Novo aqui?",
+    "body": "Experimente nosso Kit Degustação — o favorito de quem está começando.",
+    "cta": "Ver Kit Degustação",
+    "dismiss": "Já conheço"
+  },
+  "reorder": {
+    "title": "Pedir de Novo",
+    "subtitle": "Seu último pedido · {total}",
+    "cta": "Repetir Pedido",
+    "added_all": "Itens adicionados ao carrinho!"
+  },
+  "greeting": {
+    "morning_title": "Bom dia! Que tal um café da manhã defumado?",
+    "morning_subtitle": "Comece o dia com sabor de verdade.",
+    "lunch_title": "Hora do almoço! Pratos quentes saindo agora.",
+    "lunch_subtitle": "Peça agora e receba quentinho.",
+    "afternoon_title": "Boa tarde! Preparando o melhor do defumado.",
+    "afternoon_subtitle": "Encomende para o jantar de hoje.",
+    "evening_title": "Boa noite! O jantar perfeito te espera.",
+    "evening_subtitle": "Defumados artesanais, direto para sua mesa."
+  },
+  "favorites": {
+    "title": "Seus Favoritos"
+  },
+  "recommendations": {
+    "title": "Recomendado para Você"
+  },
+  "upsell": {
+    "also_add": "Adicionar também?",
+    "add": "Adicionar"
+  },
+  "reviews_section": {
+    "title": "O Que Nossos Clientes Dizem",
+    "subtitle": "Avaliações reais de quem já provou"
+  },
+  "people_also_ordered": {
+    "title": "Clientes também pediram",
+    "subtitle": "Complemente seu pedido"
+  },
+  "combo_banner": {
+    "title": "Combos do Pitmaster",
+    "subtitle": "Economize até 20% nos kits para família.",
+    "cta": "Ver Combos"
   }
 }

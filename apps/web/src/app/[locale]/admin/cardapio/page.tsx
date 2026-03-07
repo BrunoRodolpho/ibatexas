@@ -8,7 +8,7 @@ import { ExternalLink, RefreshCw } from 'lucide-react'
 import { DataTable, Badge, Switch } from '@/components/atoms'
 import { SearchInput, FilterChip } from '@/components/molecules'
 import { MEDUSA_ADMIN_URL } from '@/lib/api'
-import { useAdminProducts } from '@/hooks/admin'
+import { useAdminProducts } from '@/domains/admin'
 import { apiFetch } from '@/lib/api'
 import type { AdminProductRow } from '@ibatexas/types'
 

@@ -1,6 +1,6 @@
 "use client"
 
-import type { AvailableSlot } from "@/stores/useReservationStore"
+import type { AvailableSlot } from '@/domains/reservation'
 
 interface Props {
   slots: AvailableSlot[]

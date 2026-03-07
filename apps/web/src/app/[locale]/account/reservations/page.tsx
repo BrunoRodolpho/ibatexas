@@ -4,8 +4,8 @@ import { useEffect, useCallback } from "react"
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from "next-intl"
 import { useRouter } from "next/navigation"
-import { useSessionStore } from "@/stores"
-import { useReservationStore } from "@/stores/useReservationStore"
+import { useSessionStore } from '@/domains/session'
+import { useReservationStore } from '@/domains/reservation'
 import { Heading, Text, Button, Card } from "@/components/atoms"
 import { CalendarDays, Users, Sparkles, Check, Clock } from "lucide-react"
 import type { ReservationDTO } from "@ibatexas/types"

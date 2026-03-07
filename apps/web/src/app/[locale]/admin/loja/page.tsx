@@ -8,7 +8,7 @@ import { ExternalLink, Package, Layers } from 'lucide-react'
 import { DataTable, Switch } from '@/components/atoms'
 import { SearchInput, Sheet } from '@/components/molecules'
 import { MEDUSA_ADMIN_URL } from '@/lib/api'
-import { useAdminProducts, useAdminProduct } from '@/hooks/admin'
+import { useAdminProducts, useAdminProduct } from '@/domains/admin'
 import { apiFetch } from '@/lib/api'
 import type { AdminProductRow } from '@ibatexas/types'
 

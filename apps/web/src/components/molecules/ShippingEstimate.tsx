@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { useShippingEstimate } from '@/hooks/api'
+import { useShippingEstimate } from '@/domains/shipping'
 import { Button, TextField, Text } from '../atoms'
 
 export const ShippingEstimate = () => {

@@ -1,7 +1,7 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useProducts } from '@/hooks/api'
+import { useProducts } from '@/domains/product'
 import { ProductGrid } from '@/components/organisms'
 import { Heading, Text } from '@/components/atoms'
 import { notFound } from 'next/navigation'
