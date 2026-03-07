@@ -31,6 +31,18 @@ vi.mock("@ibatexas/tools", () => ({
   joinWaitlist: mockJoinWaitlist,
 }))
 
+vi.mock("../middleware/auth.js", () => ({
+  requireAuth: async (request: any, reply: any) => {
+    const customerId = request.headers["x-customer-id"] as string | undefined
+    if (!customerId) {
+      return reply
+        .code(401)
+        .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." })
+    }
+    request.customerId = customerId
+  },
+}))
+
 import { reservationRoutes } from "../routes/reservations.js"
 
 async function buildTestServer(): Promise<FastifyInstance> {
@@ -119,8 +131,8 @@ describe("Reservation lifecycle integration", () => {
     const res = await server.inject({
       method: "POST",
       url: "/api/reservations",
+      headers: { "x-customer-id": CUSTOMER },
       payload: {
-        customerId: CUSTOMER,
         timeSlotId: TIMESLOT,
         partySize: 4,
         specialRequests: [],
@@ -160,7 +172,8 @@ describe("Reservation lifecycle integration", () => {
 
     const res = await server.inject({
       method: "GET",
-      url: `/api/reservations?customerId=${CUSTOMER}`,
+      url: "/api/reservations",
+      headers: { "x-customer-id": CUSTOMER },
     })
 
     expect(res.statusCode).toBe(200)
@@ -181,8 +194,8 @@ describe("Reservation lifecycle integration", () => {
     const res = await server.inject({
       method: "PATCH",
       url: `/api/reservations/${RESERVATION}`,
+      headers: { "x-customer-id": CUSTOMER },
       payload: {
-        customerId: CUSTOMER,
         newPartySize: 6,
       },
     })
@@ -205,8 +218,8 @@ describe("Reservation lifecycle integration", () => {
     const res = await server.inject({
       method: "PATCH",
       url: `/api/reservations/${RESERVATION}`,
+      headers: { "x-customer-id": CUSTOMER },
       payload: {
-        customerId: CUSTOMER,
         newPartySize: 6,
       },
     })
@@ -226,8 +239,8 @@ describe("Reservation lifecycle integration", () => {
     const res = await server.inject({
       method: "DELETE",
       url: `/api/reservations/${RESERVATION}`,
+      headers: { "x-customer-id": CUSTOMER },
       payload: {
-        customerId: CUSTOMER,
         reason: "Mudança de planos",
       },
     })
@@ -250,9 +263,8 @@ describe("Reservation lifecycle integration", () => {
     const res = await server.inject({
       method: "DELETE",
       url: `/api/reservations/${RESERVATION}`,
-      payload: {
-        customerId: CUSTOMER,
-      },
+      headers: { "x-customer-id": CUSTOMER },
+      payload: {},
     })
 
     expect(res.statusCode).toBe(400)
@@ -269,8 +281,8 @@ describe("Reservation lifecycle integration", () => {
     const res = await server.inject({
       method: "POST",
       url: `/api/reservations/${TIMESLOT}/waitlist`,
+      headers: { "x-customer-id": CUSTOMER },
       payload: {
-        customerId: CUSTOMER,
         partySize: 2,
       },
     })
