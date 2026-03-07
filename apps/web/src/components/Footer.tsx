@@ -17,12 +17,12 @@ export function Footer() {
 
   return (
     <footer className="bg-charcoal-900 text-smoke-300">
-      <div className="mx-auto max-w-[1280px] px-6 lg:px-8 py-16 lg:py-24">
+      <div className="mx-auto max-w-[1280px] px-6 lg:px-8 py-10 lg:py-14">
         {/* 3-column grid (mobile: stacked) */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
           {/* Column 1 — Brand + Social */}
           <div>
-            <p className="font-display text-xl font-semibold tracking-display text-smoke-50 mb-4">
+            <p className="font-display text-xl font-semibold tracking-display text-smoke-50 mb-3">
               Ibate<span className="text-brand-500">X</span>as
             </p>
             <div className="flex gap-2">
@@ -46,7 +46,7 @@ export function Footer() {
 
           {/* Column 2 — Info: hours, phone, address */}
           <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-editorial text-smoke-500 mb-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-editorial text-smoke-500 mb-2">
               {t('footer.hours')}
             </h3>
             <div className="space-y-2 text-sm text-smoke-400">
@@ -81,7 +81,7 @@ export function Footer() {
 
           {/* Column 3 — Navigation */}
           <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-editorial text-smoke-500 mb-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-editorial text-smoke-500 mb-2">
               {t('footer.links')}
             </h3>
             <nav className="flex flex-col gap-2 text-sm">

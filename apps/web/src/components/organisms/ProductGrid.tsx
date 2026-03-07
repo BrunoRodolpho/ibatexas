@@ -77,15 +77,16 @@ export const ProductGrid = ({
     5: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5',
   }[columns] || 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5'
 
-  if (isLoading) {
+  // Full skeleton — only on initial load when no stale data exists
+  if (isLoading && (!products || products.length === 0)) {
     return (
       <div className={`grid ${gridColsClass} gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-8 lg:gap-y-10`}>
         {Array.from({ length: columns === 5 ? 10 : 8 }).map((_, i) => (
-          <div key={i} className="overflow-hidden rounded-card">
-            <div className="aspect-[4/3] rounded-card skeleton" />
-            <div className="pt-3 space-y-2">
-              <div className="h-3.5 w-3/4 rounded-sm skeleton" />
-              <div className="h-3 w-1/3 rounded-sm skeleton" />
+          <div key={i} className="overflow-hidden rounded-card animate-pulse">
+            <div className="aspect-[4/3] rounded-card bg-smoke-200" />
+            <div className="pt-3 space-y-2.5">
+              <div className="h-4 w-3/4 rounded bg-smoke-200" />
+              <div className="h-3 w-1/3 rounded bg-smoke-200" />
             </div>
           </div>
         ))}
@@ -111,7 +112,16 @@ export const ProductGrid = ({
   const gridProducts = showFeatured ? products.slice(1) : products
 
   return (
-    <div className="space-y-10 lg:space-y-14">
+    <div className="relative">
+      {/* Refresh shimmer bar — visible when reloading with stale data */}
+      {isLoading && products.length > 0 && (
+        <div className="absolute top-0 left-0 right-0 h-0.5 skeleton rounded-full z-10" />
+      )}
+      <div
+        className={`space-y-10 lg:space-y-14 transition-opacity duration-300 ease-luxury ${
+          isLoading ? 'opacity-40 pointer-events-none' : 'opacity-100'
+        }`}
+      >
       {/* Hero card — full-width horizontal layout */}
       {heroProduct && (
         <div className="opacity-0 animate-reveal">
@@ -142,11 +152,15 @@ export const ProductGrid = ({
       {/* Standard grid */}
       {gridProducts.length > 0 && (
         <div className={`grid ${gridColsClass} gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8 gap-y-6 lg:gap-y-8`}>
-          {gridProducts.map((product, index) => (
+          {gridProducts.map((product, index) => {
+            // Only stagger first 8 cards; subsequent cards (infinite scroll) appear instantly
+            const baseIndex = showFeatured ? index + 1 : index
+            const delay = baseIndex < 8 ? baseIndex * 60 : 0
+            return (
             <div
               key={product.id}
-              className="opacity-0 animate-reveal h-full"
-              style={{ animationDelay: `${(showFeatured ? index + 1 : index) * 60}ms` }}
+              className={`h-full ${delay > 0 ? 'opacity-0 animate-reveal' : ''}`}
+              style={delay > 0 ? { animationDelay: `${delay}ms` } : undefined}
             >
               <ProductCard
                 {...product}
@@ -165,9 +179,11 @@ export const ProductGrid = ({
                 }}
               />
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
+      </div>
     </div>
   )
 }

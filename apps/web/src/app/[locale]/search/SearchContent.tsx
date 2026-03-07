@@ -9,8 +9,7 @@ import { useUIStore } from '@/domains/ui'
 import { useCartStore } from '@/domains/cart'
 import { useProducts } from '@/domains/product'
 import { track } from '@/domains/analytics'
-import { SlidersHorizontal } from 'lucide-react'
-import { Sheet } from '@/components/molecules/Modal'
+import { SlidersHorizontal, X } from 'lucide-react'
 import { SearchCategoryRow } from './SearchCategoryRow'
 import { SearchEmptyState } from './SearchEmptyState'
 import { PitmasterPick } from '@/components/molecules/PitmasterPick'
@@ -36,7 +35,25 @@ export default function SearchContent() {
   const initializedRef = useRef(false)
   const loadMoreRef = useRef<HTMLDivElement>(null)
 
-  const { selectedFilters, setFilters, resetFilters, addToast } = useUIStore()
+  // Disable browser scroll restoration on reload — always start at top
+  useEffect(() => {
+    if ('scrollRestoration' in window.history) {
+      window.history.scrollRestoration = 'manual'
+    }
+    window.scrollTo(0, 0)
+  }, [])
+
+  // Close filter dropdown on Escape key
+  useEffect(() => {
+    if (!isMobileFilterOpen) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsMobileFilterOpen(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [isMobileFilterOpen])
+
+  const { selectedFilters, setFilters, resetFilters } = useUIStore()
   const addItem = useCartStore((s) => s.addItem)
   const cartItems = useCartStore((s) => s.items)
   const updateItem = useCartStore((s) => s.updateItem)
@@ -128,7 +145,7 @@ export default function SearchContent() {
           setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, allProducts.length))
         }
       },
-      { rootMargin: '200px' }
+      { rootMargin: '100px' }
     )
     observer.observe(loadMoreRef.current)
     return () => observer.disconnect()
@@ -160,18 +177,45 @@ export default function SearchContent() {
     track('filter_applied', { filterType: 'tag', value: tagId })
   }
 
+  const scrollToProductGrid = () => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.getElementById('product-grid')
+        if (el) {
+          const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.20
+          window.scrollTo({ top: y, behavior: 'smooth' })
+        }
+      })
+    })
+  }
+
   const handleCategoryChange = (categoryId: string) => {
     const newCategory = categoryId === selectedFilters.category ? undefined : categoryId
     const newFilters = { ...selectedFilters, category: newCategory }
     setFilters(newFilters)
     updateURL(newFilters, searchQuery)
     track('filter_applied', { filterType: 'category', value: categoryId ?? 'all' })
+
+    // Scroll after React re-renders
+    if (!newCategory) {
+      // Toggling OFF → back to zero state, scroll to grid
+      scrollToProductGrid()
+    } else {
+      // Selecting or switching category → scroll to top
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          window.scrollTo({ top: 0, behavior: 'smooth' })
+        })
+      })
+    }
   }
 
   const handleClearCategory = () => {
     const newFilters = { ...selectedFilters, category: undefined }
     setFilters(newFilters)
     updateURL(newFilters, searchQuery)
+    track('filter_applied', { filterType: 'category', value: 'all' })
+    scrollToProductGrid()
   }
 
   const handleSortChange = (sortValue: string) => {
@@ -185,6 +229,14 @@ export default function SearchContent() {
     resetFilters()
     setSearchQuery('')
     router.replace(pathname, { scroll: false })
+  }
+
+  /** Clear only tags + category, keep sort intact */
+  const handleClearFiltersOnly = () => {
+    const newFilters = { ...selectedFilters, tags: [] as string[], category: undefined }
+    setFilters(newFilters)
+    setSearchQuery('')
+    updateURL(newFilters)
   }
 
   const hasActiveFilters = selectedFilters.tags.length > 0 || !!selectedFilters.category
@@ -210,47 +262,125 @@ export default function SearchContent() {
         const defaultVariant = product.variants?.[0]
         addItem(product as ProductDTO, 1, undefined, defaultVariant)
         track('add_to_cart', { productId, source: 'listing' })
-        addToast(t('product.added'), 'cart')
         if (product.categoryHandle) {
           triggerUpsell(product.categoryHandle)
         }
       }
     },
-    [allProducts, addItem, addToast, t, triggerUpsell]
+    [allProducts, addItem, triggerUpsell]
   )
 
   // Zero-state: no active search or category filter
   const isZeroState = !searchQuery && !selectedFilters.category
 
   return (
-    <div className="min-h-screen bg-smoke-50">
+    <div className="min-h-[60vh] bg-smoke-50">
       {/* ── Category row + filter trigger — sticky below header ── */}
       <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200">
-      <div className="max-w-[1200px] mx-auto flex items-center gap-1 px-4 sm:px-6 py-2">
-        <div className="flex-1 overflow-hidden">
-          <SearchCategoryRow
-            categories={CATEGORIES}
-            selectedCategory={selectedFilters.category}
-            onCategoryChange={handleCategoryChange}
-            onClearCategory={handleClearCategory}
-            productCount={allProducts.length}
-          />
-        </div>
-        <button
-          onClick={() => setIsMobileFilterOpen(true)}
-          className={`relative flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full border transition-colors ${
-            hasNonCategoryFilters
-              ? 'border-charcoal-900 text-charcoal-900'
-              : 'border-smoke-200 text-smoke-400 hover:text-charcoal-900 hover:border-smoke-300'
-          }`}
-          aria-label={t('search.filter')}
-        >
-          <SlidersHorizontal className="w-3.5 h-3.5" />
-          {hasNonCategoryFilters && (
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-brand-500" />
+        <div className="relative max-w-[1200px] mx-auto">
+          <div className="flex items-center gap-1 px-4 sm:px-6 py-2">
+            <div className="flex-1 overflow-hidden">
+              <SearchCategoryRow
+                categories={CATEGORIES}
+                selectedCategory={selectedFilters.category}
+                onCategoryChange={handleCategoryChange}
+                onClearCategory={handleClearCategory}
+              />
+            </div>
+            <button
+              onClick={() => setIsMobileFilterOpen((prev) => !prev)}
+              className={`relative flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full border transition-colors ${
+                hasNonCategoryFilters || isMobileFilterOpen
+                  ? 'border-charcoal-900 text-charcoal-900'
+                  : 'border-smoke-200 text-smoke-400 hover:text-charcoal-900 hover:border-smoke-300'
+              }`}
+              aria-label={t('search.filter')}
+            >
+              {isMobileFilterOpen ? (
+                <X className="w-3.5 h-3.5" strokeWidth={2} />
+              ) : (
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+              )}
+              {hasNonCategoryFilters && !isMobileFilterOpen && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-brand-500" />
+              )}
+            </button>
+          </div>
+
+          {/* ── Floating filter panel — continuous with sticky bar ──── */}
+          {isMobileFilterOpen && (
+            <>
+              {/* Backdrop to close on outside click */}
+              <div
+                className="fixed inset-0 z-10"
+                onClick={() => setIsMobileFilterOpen(false)}
+              />
+              {/* Unified single-row filter panel */}
+              <div className="absolute top-full left-0 right-0 z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 sm:px-6 py-2.5 animate-fade-up">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {/* Tags label + pills */}
+                  <span className="text-[10px] font-medium uppercase tracking-editorial text-smoke-400 mr-0.5">
+                    {t('search.tags')}
+                  </span>
+                  {TAGS.map((tag) => {
+                    const isActive = selectedFilters.tags.includes(tag.id)
+                    return (
+                      <button
+                        key={tag.id}
+                        onClick={() => handleTagToggle(tag.id)}
+                        className={`rounded-full border px-2 py-0.5 text-[11px] transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-1 ${
+                          isActive
+                            ? 'border-charcoal-900 bg-charcoal-900 text-smoke-50'
+                            : 'border-smoke-200 text-charcoal-700 hover:border-smoke-300'
+                        }`}
+                      >
+                        {tag.label}
+                      </button>
+                    )
+                  })}
+
+                  {/* Subtle vertical divider */}
+                  <div className="w-px h-4 bg-smoke-300 mx-1 hidden sm:block" />
+
+                  {/* Sort label + pills */}
+                  <span className="text-[10px] font-medium uppercase tracking-editorial text-smoke-400 mr-0.5">
+                    {t('search.sort_label')}
+                  </span>
+                  {SORT_OPTIONS.map((opt) => {
+                    const isActive = (selectedFilters.sort || 'relevance') === opt.value
+                    return (
+                      <button
+                        key={opt.value}
+                        onClick={() => handleSortChange(opt.value)}
+                        className={`rounded-full border px-2 py-0.5 text-[11px] transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-1 ${
+                          isActive
+                            ? 'border-charcoal-900 bg-charcoal-900 text-smoke-50'
+                            : 'border-smoke-200 text-charcoal-700 hover:border-smoke-300'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    )
+                  })}
+
+                  {/* Clear filters — inline, branded, visible (preserves sort) */}
+                  {hasActiveFilters && (
+                    <>
+                      <div className="w-px h-4 bg-smoke-300 mx-1 hidden sm:block" />
+                      <button
+                        onClick={handleClearFiltersOnly}
+                        className="flex items-center gap-0.5 rounded-full border border-brand-200 text-brand-500 px-2 py-0.5 text-[11px] font-medium hover:bg-brand-50 transition-colors"
+                      >
+                        <X className="w-3 h-3" />
+                        Limpar Filtros
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
           )}
-        </button>
-      </div>
+        </div>
       </div>
 
       <div className="max-w-[1200px] mx-auto px-4 sm:px-6">
@@ -312,7 +442,7 @@ export default function SearchContent() {
         {!isZeroState && !isLoading && (
           <div className="flex items-center justify-between mt-2 mb-3">
             <p className="text-sm text-smoke-400">
-              {totalFound} {totalFound === 1 ? 'produto' : 'produtos'}
+              {allProducts.length} {allProducts.length === 1 ? 'produto' : 'produtos'}
               {searchQuery && ` para "${searchQuery}"`}
             </p>
             {hasActiveFilters && (
@@ -357,16 +487,31 @@ export default function SearchContent() {
                 onAddToCart={handleAddToCart}
               />
 
-              {/* Load More sentinel + button fallback */}
+              {/* Load More sentinel + skeleton */}
               {hasMore && (
-                <div ref={loadMoreRef} className="flex justify-center pt-8 pb-4">
-                  <Button
-                    variant="tertiary"
-                    size="md"
-                    onClick={() => setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, allProducts.length))}
-                  >
-                    {t('search.load_more')}
-                  </Button>
+                <div ref={loadMoreRef} className="pt-6 pb-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8 gap-y-6">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <div key={i} className="overflow-hidden rounded-card animate-pulse">
+                        <div className="aspect-[4/3] rounded-card bg-smoke-200" />
+                        <div className="pt-3 space-y-2.5">
+                          <div className="h-4 w-3/4 rounded bg-smoke-200" />
+                          <div className="h-3 w-1/3 rounded bg-smoke-200" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* End of results indicator */}
+              {!hasMore && products.length > 0 && !isLoading && (
+                <div className="flex items-center justify-center gap-3 py-8">
+                  <div className="h-px w-12 bg-smoke-200" />
+                  <span className="text-xs text-smoke-400 uppercase tracking-editorial">
+                    {t('search.end_of_results')}
+                  </span>
+                  <div className="h-px w-12 bg-smoke-200" />
                 </div>
               )}
             </>
@@ -374,84 +519,7 @@ export default function SearchContent() {
         </div>
       </div>
 
-      {/* ── Filter sheet — sort, categories, tags ────────────────── */}
-      <Sheet
-        isOpen={isMobileFilterOpen}
-        onClose={() => setIsMobileFilterOpen(false)}
-        title={t('search.filters')}
-        position="bottom"
-        footer={
-          <button
-            onClick={() => setIsMobileFilterOpen(false)}
-            className="w-full rounded-sm bg-charcoal-900 px-4 py-3 text-sm font-medium text-smoke-50 active:scale-[0.97] transition-transform"
-          >
-            {t('search.show_results', { count: totalFound })}
-          </button>
-        }
-      >
-        {/* Sort */}
-        <div className="mb-6">
-          <h3 className="text-xs font-medium uppercase tracking-editorial text-smoke-400 mb-3">
-            {t('search.sort_label')}
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {SORT_OPTIONS.map((opt) => {
-              const isActive = (selectedFilters.sort || 'relevance') === opt.value
-              return (
-                <button
-                  key={opt.value}
-                  onClick={() => handleSortChange(opt.value)}
-                  className={`rounded-sm border px-3 py-2.5 text-sm transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
-                    isActive
-                      ? 'border-charcoal-900 bg-charcoal-900 text-smoke-50'
-                      : 'border-smoke-200 text-charcoal-700 hover:border-smoke-300'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Tags */}
-        <div>
-          <h3 className="text-xs font-medium uppercase tracking-editorial text-smoke-400 mb-3">
-            {t('search.tags')}
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {TAGS.map((tag) => {
-              const isActive = selectedFilters.tags.includes(tag.id)
-              return (
-                <button
-                  key={tag.id}
-                  onClick={() => handleTagToggle(tag.id)}
-                  className={`rounded-sm border px-3 py-2.5 text-sm transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
-                    isActive
-                      ? 'border-charcoal-900 bg-charcoal-900 text-smoke-50'
-                      : 'border-smoke-200 text-charcoal-700 hover:border-smoke-300'
-                  }`}
-                >
-                  {tag.label}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Reset link */}
-        {hasActiveFilters && (
-          <button
-            onClick={() => {
-              handleResetFilters()
-              setIsMobileFilterOpen(false)
-            }}
-            className="mt-6 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors"
-          >
-            {t('search.reset_filters')}
-          </button>
-        )}
-      </Sheet>
+      {/* Filter dropdown is now inline above (inside the sticky bar) */}
     </div>
   )
 }
