@@ -1,12 +1,13 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useRecentlyViewed } from '@/hooks/useRecentlyViewed'
-import { useProducts } from '@/hooks/api'
+import { useRecentlyViewed } from '@/domains/product'
+import { useProducts } from '@/domains/product'
 import { ProductCard } from '../molecules/ProductCard'
 import { Heading } from '../atoms'
-import { useCartStore, useUIStore } from '@/stores'
-import { track } from '@/lib/analytics'
+import { useCartStore } from '@/domains/cart'
+import { useUIStore } from '@/domains/ui'
+import { track } from '@/domains/analytics'
 import type { ProductDTO } from '@ibatexas/types'
 
 interface RecentlyViewedCarouselProps {

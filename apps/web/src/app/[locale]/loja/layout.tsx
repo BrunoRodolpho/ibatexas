@@ -20,11 +20,11 @@ export default function ShopLayout({ children }: ShopLayoutProps) {
 
   return (
     <div className="min-h-screen bg-smoke-50">
-      {/* Header with category navigation */}
-      <div className="border-b border-smoke-200 bg-smoke-50">
+      {/* Header with category navigation — sticky below header */}
+      <div className="sticky top-[56px] z-10 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200">
         <div className="max-w-[1200px] mx-auto px-4 sm:px-6">
           {/* Category Filter Bar — typographic, no pills */}
-          <div className="flex gap-6 pt-4 pb-4 overflow-x-auto scrollbar-hide">
+          <div className="flex gap-6 pt-3 pb-3 overflow-x-auto scrollbar-hide">
             <Link href={"/loja"}>
               <span
                 className={`text-xs font-medium uppercase tracking-editorial transition-colors duration-500 ease-luxury cursor-pointer ${
@@ -54,7 +54,7 @@ export default function ShopLayout({ children }: ShopLayoutProps) {
       </div>
 
       {/* Content */}
-      <main className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16">
+      <main className="max-w-[1200px] mx-auto px-4 sm:px-6 py-8">
         {children}
       </main>
     </div>

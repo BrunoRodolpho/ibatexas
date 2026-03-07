@@ -52,6 +52,58 @@ importers:
         specifier: ^1.6.0
         version: 1.6.1(@types/node@20.19.33)
 
+  apps/admin:
+    dependencies:
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      '@tanstack/react-table':
+        specifier: ^8.21.3
+        version: 8.21.3(react-dom@18.3.1)(react@18.3.1)
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      lucide-react:
+        specifier: ^0.575.0
+        version: 0.575.0(react@18.3.1)
+      next:
+        specifier: 14.2.0
+        version: 14.2.0(@opentelemetry/api@1.9.0)(react-dom@18.3.1)(react@18.3.1)
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.0
+        version: 18.3.1(react@18.3.1)
+      zod:
+        specifier: ^3.22.0
+        version: 3.25.76
+      zustand:
+        specifier: ^5.0.11
+        version: 5.0.11(@types/react@18.3.28)(react@18.3.1)
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.28
+      '@types/react-dom':
+        specifier: ^18.3.0
+        version: 18.3.7(@types/react@18.3.28)
+      autoprefixer:
+        specifier: ^10.4.0
+        version: 10.4.24(postcss@8.5.6)
+      postcss:
+        specifier: ^8.4.0
+        version: 8.5.6
+      tailwindcss:
+        specifier: ^3.4.0
+        version: 3.4.19
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+
   apps/agent:
     dependencies:
       '@anthropic-ai/sdk':

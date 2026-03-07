@@ -3,14 +3,14 @@
 import { useState, useMemo, useCallback, useRef } from "react"
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from "next-intl"
-import { useProductDetail, useProducts } from "@/hooks/api"
-import { useCartStore, useUIStore } from "@/stores"
+import { useProductDetail, useProducts } from '@/domains/product'
+import { useCartStore } from '@/domains/cart'
+import { useUIStore } from '@/domains/ui'
 import { MediaGallery } from "@/components/molecules/MediaGallery"
 import { QuantitySelector } from "@/components/molecules/QuantitySelector"
-import { Badge } from "@/components/atoms/Badge"
 import { ProductCard } from "@/components/molecules/ProductCard"
 import { Check } from "lucide-react"
-import { track } from "@/lib/analytics"
+import { track } from '@/domains/analytics'
 import type { ProductVariant } from "@ibatexas/types"
 
 export default function ProductPage({ params }: { params: { id: string } }) {
@@ -136,14 +136,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
         {/* Details */}
         <div>
-          <h1 className="font-display text-display-xs font-semibold tracking-display text-charcoal-900">{product.title}</h1>
-
-          {/* Craft markers — chef-statement tone */}
-          {product.servings && (
-            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] uppercase tracking-editorial text-smoke-400">
-              <span>Serve {product.servings} pessoas.</span>
-            </div>
-          )}
+          <h1 className="font-display text-display-sm font-semibold tracking-display text-charcoal-900">{product.title}</h1>
 
           {product.description && (
             <p className="mt-4 text-smoke-400 leading-relaxed">{product.description}</p>
@@ -154,29 +147,11 @@ export default function ProductPage({ params }: { params: { id: string } }) {
             <div className="flex items-baseline gap-2">
               <span className="font-display text-display-xs font-semibold text-charcoal-900">{price}</span>
             </div>
-            {product.servings && product.servings > 0 && (
-              <p className="mt-1 text-xs text-smoke-400">
-                {(displayPrice / product.servings / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} {t("product.per_serving")}
-              </p>
-            )}
-          </div>
-
-          {/* Stock */}
-          <div className="mt-4">
-            {product.inStock ? (
-              <Badge variant="success">
-                {t("product.in_stock")}
-              </Badge>
-            ) : (
-              <Badge variant="danger">
-                {t("product.out_of_stock")}
-              </Badge>
-            )}
           </div>
 
           {/* Variants */}
           {variants.length > 0 && (
-            <div className="mt-6 border-t border-smoke-200 pt-6">
+            <div className="mt-6">
               <h3 id="variant-group-label" className="text-sm font-medium text-charcoal-900">
                 {t("product.variants")}
               </h3>
@@ -211,8 +186,8 @@ export default function ProductPage({ params }: { params: { id: string } }) {
             </div>
           )}
 
-          {/* Quantity & Special Instructions */}
-          <div className="mt-6 border-t border-smoke-200 pt-6">
+          {/* Quantity */}
+          <div className="mt-6">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium text-charcoal-900">
@@ -228,20 +203,6 @@ export default function ProductPage({ params }: { params: { id: string } }) {
                   />
                 </div>
               </div>
-            </div>
-
-            {/* Special Instructions */}
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-charcoal-900">
-                {t("product.special_instructions")}
-              </label>
-              <textarea
-                value={specialInstructions}
-                onChange={(e) => setSpecialInstructions(e.target.value)}
-                placeholder={t("product.special_instructions_placeholder")}
-                className="mt-2 block w-full border-0 border-b border-smoke-200 px-0 py-2.5 text-sm focus:border-charcoal-900 focus:outline-none transition-colors duration-500"
-                rows={3}
-              />
             </div>
           </div>
 
@@ -265,13 +226,29 @@ export default function ProductPage({ params }: { params: { id: string } }) {
             )}
           </button>
 
-          {/* Back to Search */}
-          <Link
-            href={"/search"}
-            className="mt-4 block text-center text-sm font-medium tracking-wide text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
-          >
-            ← {t("common.back")}
-          </Link>
+          {/* Below-fold details */}
+          {/* Per-serving price + servings info */}
+          {product.servings && product.servings > 0 && (
+            <div className="mt-8">
+              <p className="text-xs text-smoke-400">
+                {(displayPrice / product.servings / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} {t("product.per_serving")} · Serve {product.servings} pessoas
+              </p>
+            </div>
+          )}
+
+          {/* Special Instructions */}
+          <div className="mt-8">
+            <label className="block text-sm font-medium text-charcoal-900">
+              {t("product.special_instructions")}
+            </label>
+            <textarea
+              value={specialInstructions}
+              onChange={(e) => setSpecialInstructions(e.target.value)}
+              placeholder={t("product.special_instructions_placeholder")}
+              className="mt-2 block w-full border-0 border-b border-smoke-200 px-0 py-2.5 text-sm focus:border-charcoal-900 focus:outline-none transition-colors duration-500"
+              rows={3}
+            />
+          </div>
         </div>
       </div>
 
@@ -294,7 +271,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
       {/* Nutritional Info & Allergens */}
       {product.allergens && product.allergens.length > 0 && (
-        <div className="mt-12 border-t border-smoke-200 pt-8">
+        <div className="mt-16">
           <h2 className="font-display text-lg font-semibold text-charcoal-900">
             {t("product.nutritional_info")}
           </h2>
@@ -314,7 +291,7 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
       {/* Cross-sell: related products */}
       {relatedProducts.length > 0 && (
-        <div className="mt-12 border-t border-smoke-200 pt-8">
+        <div className="mt-16">
           <h2 className="font-display text-lg font-semibold text-charcoal-900 mb-6">
             {t("product.related_products")}
           </h2>

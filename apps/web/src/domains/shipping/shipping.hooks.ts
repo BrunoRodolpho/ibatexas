@@ -20,7 +20,7 @@ export function useShippingEstimate(cep?: string) {
     setLoading(true)
     setError(null)
     
-    apiFetch(`/api/shipping/estimate?cep=${encodeURIComponent(cep)}`)
+    apiFetch<{ data: { options: Array<{ service: string; price: number; estimatedDays: number }> } }>(`/api/shipping/estimate?cep=${encodeURIComponent(cep)}`)
       .then((response) => setData(response.data))
       .catch(setError)
       .finally(() => setLoading(false))

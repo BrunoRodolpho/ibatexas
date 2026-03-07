@@ -2,9 +2,9 @@
 
 import { useTranslations } from 'next-intl'
 import { ProductCarousel } from '@/components/organisms/ProductCarousel'
-import { useProducts } from '@/hooks/api'
-import { useUIStore } from '@/stores/useUIStore'
-import { useCartStore } from '@/stores/useCartStore'
+import { useProducts } from '@/domains/product'
+import { useUIStore } from '@/domains/ui'
+import { useCartStore } from '@/domains/cart'
 import type { ProductDTO } from '@ibatexas/types'
 
 export default function HomeCarousel() {

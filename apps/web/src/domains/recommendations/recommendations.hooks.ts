@@ -44,8 +44,8 @@ export function useAlsoAdded(productId: string | undefined): HookResult<Recommen
     setLoading(true)
     setError(null)
 
-    apiFetch(`/api/recommendations/also-added?productId=${encodeURIComponent(productId)}`)
-      .then((res: AlsoAddedResponse) => {
+    apiFetch<AlsoAddedResponse>(`/api/recommendations/also-added?productId=${encodeURIComponent(productId)}`, { signal: controller.signal })
+      .then((res) => {
         if (!controller.signal.aborted) setData(res.products)
       })
       .catch((err) => {
@@ -85,8 +85,8 @@ export function useRecommendations(limit = 6): HookResult<RecommendedProduct[]> 
     setLoading(true)
     setError(null)
 
-    apiFetch(`/api/recommendations?limit=${limit}`)
-      .then((res: RecommendationsResponse) => {
+    apiFetch<RecommendationsResponse>(`/api/recommendations?limit=${limit}`, { signal: controller.signal })
+      .then((res) => {
         if (!controller.signal.aborted) setData(res.products)
       })
       .catch((err) => {

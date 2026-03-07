@@ -46,9 +46,9 @@ export function createAdminHook<T, TRaw = T>(
 
     useEffect(() => {
       setLoading(true)
-      apiFetch(endpoint)
-        .then((res: T & TRaw) => {
-          setData(options?.select ? options.select(res) : res)
+      apiFetch<TRaw>(endpoint)
+        .then((res) => {
+          setData(options?.select ? options.select(res) : res as unknown as T)
         })
         .catch(setError)
         .finally(() => setLoading(false))
@@ -98,8 +98,8 @@ export function createAdminListHook<TFilters, TRaw, T>(
     useEffect(() => {
       const params = options.buildParams(filters as TFilters)
       setLoading(true)
-      apiFetch(`${baseEndpoint}?${params}`)
-        .then((res: TRaw) => {
+      apiFetch<TRaw>(`${baseEndpoint}?${params}`)
+        .then((res) => {
           const result = options.select(res)
           setData(result.data)
           setCount(result.count)

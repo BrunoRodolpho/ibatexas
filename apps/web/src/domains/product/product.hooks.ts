@@ -106,8 +106,8 @@ export function useProducts({
     })
 
     setLoading(true)
-    apiFetch(endpoint, { signal: controller.signal })
-      .then((res: RawProductsResponse) => {
+    apiFetch<RawProductsResponse>(endpoint, { signal: controller.signal })
+      .then((res) => {
         if (!controller.signal.aborted) setData(transformProductResponse(res))
       })
       .catch((err) => {
@@ -132,7 +132,7 @@ export function useProductDetail(id: string) {
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
-    apiFetch(`/api/products/${id}`, { signal: controller.signal })
+    apiFetch<ProductDTO>(`/api/products/${id}`, { signal: controller.signal })
       .then((res) => {
         if (!controller.signal.aborted) setData(res)
       })
@@ -156,8 +156,8 @@ export function useCategories() {
   const [error, setError] = useState<Error | null>(null)
 
   useEffect(() => {
-    apiFetch("/api/categories")
-      .then((res: { categories: Category[] }) => setData(res.categories))
+    apiFetch<{ categories: Category[] }>("/api/categories")
+      .then((res) => setData(res.categories))
       .catch(setError)
       .finally(() => setLoading(false))
   }, [])

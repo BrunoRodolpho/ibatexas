@@ -128,6 +128,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         summary: "Stream SSE de resposta do agente",
         params: StreamParams,
       },
+      preHandler: optionalAuth,
     },
     async (request, reply) => {
       const { sessionId } = request.params;

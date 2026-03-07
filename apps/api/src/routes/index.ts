@@ -9,6 +9,7 @@ import { stripeWebhookRoutes } from "./stripe-webhook.js";
 import { adminRoutes } from "./admin/index.js";
 import { reservationRoutes } from "./reservations.js";
 import { analyticsRoutes } from "./analytics.js";
+import { recommendationRoutes } from "./recommendations.js";
 
 export async function registerRoutes(server: FastifyInstance): Promise<void> {
   // Stripe webhook must be registered before JSON body parser middlewares
@@ -23,4 +24,5 @@ export async function registerRoutes(server: FastifyInstance): Promise<void> {
   await server.register(adminRoutes);
   await server.register(reservationRoutes);
   await server.register(analyticsRoutes);
+  await server.register(recommendationRoutes);
 }
