@@ -13,6 +13,7 @@ interface SearchEmptyStateProps {
   searchQuery: string
   categories: CategoryOption[]
   onCategoryChange: (categoryId: string) => void
+  showCategories?: boolean
 }
 
 /**
@@ -22,6 +23,7 @@ export function SearchEmptyState({
   searchQuery,
   categories,
   onCategoryChange,
+  showCategories = true,
 }: SearchEmptyStateProps) {
   const t = useTranslations()
 
@@ -42,19 +44,23 @@ export function SearchEmptyState({
             : t('search.no_results_hint')}
         </p>
       </div>
-      <div className="h-px w-16 bg-smoke-200" />
-      {/* Suggested categories */}
-      <div className="flex flex-wrap justify-center gap-3">
-        {categories.slice(0, 4).map((cat) => (
-          <button
-            key={cat.id}
-            onClick={() => onCategoryChange(cat.id)}
-            className="px-4 py-3 rounded-sm border border-smoke-200 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 hover:border-charcoal-900 transition-all duration-500 ease-luxury"
-          >
-            {cat.label}
-          </button>
-        ))}
-      </div>
+      {showCategories && (
+        <>
+          <div className="h-px w-16 bg-smoke-200" />
+          {/* Suggested categories */}
+          <div className="flex flex-wrap justify-center gap-3">
+            {categories.slice(0, 4).map((cat) => (
+              <button
+                key={cat.id}
+                onClick={() => onCategoryChange(cat.id)}
+                className="px-4 py-3 rounded-sm border border-smoke-200 text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 hover:border-charcoal-900 transition-all duration-500 ease-luxury"
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

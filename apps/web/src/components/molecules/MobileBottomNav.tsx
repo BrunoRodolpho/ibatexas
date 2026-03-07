@@ -2,11 +2,10 @@
 
 import { Link, usePathname } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
-import { Home, Search, ShoppingBag, CalendarDays, User } from 'lucide-react'
+import { Home, ShoppingBag, CalendarDays, User } from 'lucide-react'
 
 const NAV_ITEMS = [
   { href: '/' as const, icon: Home, labelKey: 'nav.home' },
-  { href: '/search' as const, icon: Search, labelKey: 'nav.buscar' },
   { href: '/loja' as const, icon: ShoppingBag, labelKey: 'nav.loja' },
   { href: '/account/reservations' as const, icon: CalendarDays, labelKey: 'nav.reservations' },
   { href: '/account' as const, icon: User, labelKey: 'nav.account' },
