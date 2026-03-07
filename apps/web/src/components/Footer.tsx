@@ -17,7 +17,7 @@ export function Footer() {
 
   return (
     <footer className="bg-charcoal-900 text-smoke-300">
-      <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8 lg:py-10">
+      <div className="mx-auto max-w-[1280px] px-6 lg:px-8 py-16 lg:py-24">
         {/* 3-column grid (mobile: stacked) */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-6">
           {/* Column 1 — Brand + Social */}
@@ -104,7 +104,7 @@ export function Footer() {
 
       {/* Bottom row: Copyright + privacy */}
       <div className="border-t border-smoke-700/50">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6">
+        <div className="mx-auto max-w-[1280px] px-6 lg:px-8">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 py-4">
             <span className="text-xs text-smoke-500">
               &copy; {new Date().getFullYear()} IbateXas

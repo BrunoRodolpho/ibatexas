@@ -48,7 +48,7 @@ export function Header() {
     <header className="sticky top-0 z-30 bg-smoke-50/95 backdrop-blur-sm">
       {/* ── Main nav bar — compact, refined ──────────────────── */}
       <div className="border-b border-smoke-150">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6">
+        <div className="mx-auto max-w-[1280px] px-6 lg:px-8">
           <div className="flex h-11 items-center justify-between">
             {/* Logo */}
             <Link href="/" className="flex items-center">

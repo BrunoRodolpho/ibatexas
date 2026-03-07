@@ -4,6 +4,13 @@
 
 ---
 
+## Build & Test & Plan Mode
+
+- Skip `npm run build` verification after changes
+- Do not attempt to visually inspect or screenshot UI changes
+- Only run tests when explicitly requested
+- Do not start dev servers to verify changes
+
 ## The One Rule
 
 Use `ibx` for all dev operations. Run `ibx --help` or `ibx <command> --help` before writing code.
