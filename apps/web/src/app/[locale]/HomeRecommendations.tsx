@@ -49,10 +49,10 @@ export function HomeRecommendations() {
   }
 
   return (
-    <section className="bg-smoke-50">
-      <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-10 lg:py-14">
+    <section className="bg-smoke-50 border-t border-smoke-200/30">
+      <div className="mx-auto max-w-[1280px] px-6 lg:px-8 py-16 lg:py-24">
         {/* Section header */}
-        <div className="flex items-center gap-2 mb-6">
+        <div className="flex items-center gap-2 mb-8">
           <Sparkles className="w-5 h-5 text-brand-500" strokeWidth={2} />
           <Heading as="h2" className="font-display text-display-xs font-semibold text-charcoal-900 tracking-display">
             {t('recommendations.title')}
@@ -68,7 +68,7 @@ export function HomeRecommendations() {
             })
 
             return (
-              <div key={product.id} className="flex-shrink-0 snap-start w-[160px] sm:w-[180px] group">
+              <div key={product.id} className="flex-shrink-0 snap-start w-[172px] sm:w-[192px] group">
                 <div className="surface-card rounded-card overflow-hidden transition-all duration-500 ease-luxury group-hover:shadow-md group-hover:-translate-y-0.5">
                   {/* Image */}
                   <div className="relative aspect-square overflow-hidden bg-smoke-100">
@@ -106,16 +106,16 @@ export function HomeRecommendations() {
                   </div>
 
                   {/* Details */}
-                  <div className="p-2.5">
+                  <div className="p-3">
                     <h3 className="font-display text-sm font-medium text-charcoal-900 leading-snug truncate">
                       <Link href={`/loja/produto/${product.id}`} className="after:absolute after:inset-0 after:content-['']">
                         {product.title}
                       </Link>
                     </h3>
                     {product.reason && (
-                      <p className="text-[10px] text-smoke-400 mt-0.5 truncate">{product.reason}</p>
+                      <p className="text-[10px] text-smoke-400 mt-1 truncate">{product.reason}</p>
                     )}
-                    <p className="mt-1 text-sm font-semibold tabular-nums text-charcoal-900">
+                    <p className="mt-1.5 text-sm font-semibold tabular-nums text-charcoal-900">
                       {priceFormatted}
                     </p>
                   </div>

@@ -18,7 +18,7 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
           {Array.from({ length: 6 }).map((_, i) => (
             <div
               key={i}
-              className="flex-shrink-0 w-[300px] aspect-[16/10] rounded-sm skeleton"
+              className="flex-shrink-0 w-[630px] aspect-[16/10] rounded-sm skeleton"
             />
           ))}
         </div>

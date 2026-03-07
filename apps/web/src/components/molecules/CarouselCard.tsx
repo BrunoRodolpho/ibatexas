@@ -33,12 +33,12 @@ export const CarouselCard = ({
   const hasMultipleVariants = (variantCount ?? 0) > 1
 
   const displayImage = imageUrl || images?.[0] || null
-  const linkHref = `/products/${id}`
+  const linkHref = `/loja/produto/${id}`
 
   return (
     <Link
       href={linkHref}
-      className="group block flex-shrink-0 w-[min(300px,80vw)] rounded-sm overflow-hidden shadow-card hover:shadow-md transition-shadow duration-500 ease-luxury"
+      className="group block flex-shrink-0 w-[min(630px,92vw)] rounded-sm overflow-hidden shadow-card hover:shadow-md transition-shadow duration-500 ease-luxury"
     >
       {/* Image with frosted overlay */}
       <div className="relative w-full aspect-[16/10] overflow-hidden bg-smoke-100">
@@ -47,7 +47,7 @@ export const CarouselCard = ({
             src={displayImage}
             alt={title}
             fill
-            sizes="(max-width: 640px) 80vw, (max-width: 1024px) 40vw, 300px"
+            sizes="(max-width: 640px) 92vw, (max-width: 1024px) 60vw, 630px"
             loading="lazy"
             className="object-cover w-full h-full group-hover:scale-[1.02] transition-transform duration-800 ease-luxury"
           />

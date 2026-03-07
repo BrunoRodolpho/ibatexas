@@ -26,6 +26,7 @@ interface SearchCategoryRowProps {
   onCategoryChange: (categoryId: string) => void
   onClearCategory: () => void
   sticky?: boolean
+  productCount?: number
 }
 
 /**
@@ -38,6 +39,7 @@ export function SearchCategoryRow({
   onCategoryChange,
   onClearCategory,
   sticky = false,
+  productCount,
 }: SearchCategoryRowProps) {
   const t = useTranslations()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -70,6 +72,7 @@ export function SearchCategoryRow({
             onClearCategory()
             track('filter_applied', { filterType: 'category', value: 'all' })
             setTimeout(() => {
+              if ((productCount ?? 0) === 0) return
               const el = document.getElementById('product-grid')
               if (el) {
                 const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.20
@@ -99,11 +102,12 @@ export function SearchCategoryRow({
                 onCategoryChange(cat.id)
                 // Smooth scroll to the product grid
                 setTimeout(() => {
+                  if ((productCount ?? 0) === 0) return
                   const el = document.getElementById('product-grid')
-              if (el) {
-                const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.10
-                window.scrollTo({ top: y, behavior: 'smooth' })
-              }
+                  if (el) {
+                    const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.10
+                    window.scrollTo({ top: y, behavior: 'smooth' })
+                  }
                 }, 100)
               }}
               className={`category-pill flex-shrink-0 snap-start flex items-center gap-2 text-sm font-medium tracking-wide px-4 py-2.5 rounded-full transition-all duration-500 ease-luxury focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${

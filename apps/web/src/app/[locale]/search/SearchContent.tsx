@@ -233,6 +233,7 @@ export default function SearchContent() {
             selectedCategory={selectedFilters.category}
             onCategoryChange={handleCategoryChange}
             onClearCategory={handleClearCategory}
+            productCount={allProducts.length}
           />
         </div>
         <button
@@ -345,6 +346,7 @@ export default function SearchContent() {
               searchQuery={searchQuery}
               categories={CATEGORIES}
               onCategoryChange={handleCategoryChange}
+              showCategories={!!searchQuery || !!selectedFilters.category}
             />
           ) : (
             <>
