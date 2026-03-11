@@ -42,7 +42,7 @@ const nextConfig = {
               "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://app.posthog.com",
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com https://*.cloudinary.com",
-              `connect-src 'self' https://app.posthog.com ${apiUrl}`,
+              `connect-src 'self' https://app.posthog.com ${apiUrl}${isDev ? ' http://*:3001' : ''}`,
               "font-src 'self' https://fonts.gstatic.com",
               "media-src 'self'",
               "frame-ancestors 'none'",
