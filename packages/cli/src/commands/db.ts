@@ -147,6 +147,34 @@ async function runSeedHomepage() {
   }
 }
 
+async function runSeedDelivery() {
+  const spinner = ora("Seeding delivery data (zones + addresses + preferences)…").start()
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:delivery"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
+    spinner.succeed(chalk.green("Delivery seed completed"))
+  } catch {
+    spinner.fail(chalk.red("Delivery seed failed"))
+    process.exit(1)
+  }
+}
+
+async function runSeedOrders() {
+  const spinner = ora("Seeding order history + reservations (Medusa must be running)…").start()
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:orders"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
+    spinner.succeed(chalk.green("Orders seed completed"))
+  } catch {
+    spinner.fail(chalk.red("Orders seed failed"))
+    process.exit(1)
+  }
+}
+
 async function runReset(force = false) {
   if (!force) {
     const confirmed = await confirm({
@@ -224,7 +252,103 @@ async function runReset(force = false) {
     stdio: "inherit",
   })
 
+  step("Seeding delivery data (zones + addresses + preferences)…")
+  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:delivery"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  })
+
+  step("Seeding order history + reservations…")
+  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:orders"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  })
+
   console.log(chalk.green("\n  ✅  Database reset and reseed complete\n"))
+}
+
+async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
+  const scope = opts.all ? "ALL data (domain + Medusa products + Typesense + Redis)" : "domain data (customers, reservations, reviews, etc.)"
+
+  if (!opts.force) {
+    const confirmed = await confirm({
+      message: chalk.yellow(`⚠️  This will DELETE ${scope}. Continue?`),
+      default: false,
+    })
+    if (!confirmed) {
+      console.log(chalk.gray("Aborted."))
+      return
+    }
+  }
+
+  const step = (msg: string) =>
+    console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${msg}`))
+
+  // ── Domain tables (FK-safe order: children first) ───────────────────────
+  step("Cleaning domain tables…")
+  try {
+    const { prisma } = await import("@ibatexas/domain")
+
+    await prisma.reservationTable.deleteMany()
+    await prisma.waitlist.deleteMany()
+    await prisma.reservation.deleteMany()
+    await prisma.review.deleteMany()
+    await prisma.customerOrderItem.deleteMany()
+    await prisma.address.deleteMany()
+    await prisma.customerPreferences.deleteMany()
+    await prisma.customer.deleteMany()
+    await prisma.timeSlot.deleteMany()
+    await prisma.table.deleteMany()
+    await prisma.deliveryZone.deleteMany()
+
+    console.log(chalk.green("    All domain tables emptied"))
+    await prisma.$disconnect()
+  } catch (err) {
+    console.log(chalk.red(`    Domain clean failed: ${(err as Error).message}`))
+  }
+
+  // ── Medusa products (--all only) ────────────────────────────────────────
+  if (opts.all) {
+    step("Deleting Medusa products…")
+    try {
+      const token = await getAdminToken()
+      const base = getMedusaUrl()
+      const data = await medusaFetch("/admin/products?limit=200&fields=id", token)
+      const products = (data.products as Array<{ id: string }>) ?? []
+
+      for (const product of products) {
+        await fetch(`${base}/admin/products/${product.id}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      }
+      console.log(chalk.green(`    Deleted ${products.length} Medusa product(s)`))
+    } catch (err) {
+      console.log(chalk.yellow(`    Medusa clean skipped: ${(err as Error).message}`))
+    }
+
+    step("Clearing Typesense index…")
+    try {
+      const { recreateCollection } = await import("@ibatexas/tools")
+      await recreateCollection()
+      console.log(chalk.green("    Typesense collection recreated (empty)"))
+    } catch {
+      console.log(chalk.yellow("    Typesense clean skipped"))
+    }
+  }
+
+  // ── Redis cache ─────────────────────────────────────────────────────────
+  step("Clearing Redis cache…")
+  try {
+    const { invalidateAllQueryCache, closeRedisClient } = await import("@ibatexas/tools")
+    await invalidateAllQueryCache()
+    console.log(chalk.green("    Query cache cleared"))
+    await closeRedisClient()
+  } catch {
+    console.log(chalk.yellow("    Redis clean skipped (Redis unavailable)"))
+  }
+
+  console.log(chalk.green("\n  ✅  Clean complete\n"))
 }
 
 async function runReindex(fresh = false) {
@@ -389,6 +513,8 @@ async function runStatus() {
       prisma.reservation.count().then((n: number) => ({ table: "Reservation", count: n })),
       prisma.deliveryZone.count().then((n: number) => ({ table: "DeliveryZone", count: n })),
       prisma.customerOrderItem.count().then((n: number) => ({ table: "CustomerOrderItem", count: n })),
+      prisma.address.count().then((n: number) => ({ table: "Address", count: n })),
+      prisma.customerPreferences.count().then((n: number) => ({ table: "CustomerPreferences", count: n })),
     ])
 
     for (const { table, count } of counts) {
@@ -431,6 +557,20 @@ export function registerDbCommands(program: Command) {
     .description("Seed customers and reviews for homepage sections (Medusa must be running)")
     .action(runSeedHomepage)
 
+  db.command("seed:delivery")
+    .description("Seed delivery zones, customer addresses, and dietary preferences")
+    .action(runSeedDelivery)
+
+  db.command("seed:orders")
+    .description("Seed order history + reservations for intelligence features (Medusa must be running)")
+    .action(runSeedOrders)
+
+  db.command("clean")
+    .description("⚠️  Delete all domain data (--all to also clean Medusa + Typesense)")
+    .option("-f, --force", "Skip the confirmation prompt")
+    .option("-a, --all", "Also delete Medusa products, Typesense index, and Redis cache")
+    .action((opts: { force?: boolean; all?: boolean }) => runClean(opts))
+
   db.command("reset")
     .description("⚠️  Drop + migrate (Medusa + domain) + reseed (destructive)")
     .option("-f, --force", "Skip the confirmation prompt")
@@ -445,5 +585,5 @@ export function registerDbCommands(program: Command) {
     .description("Show migration status for Medusa and domain (Prisma) schemas")
     .action(runStatus)
 
-  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runReset, runReindex }
+  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runSeedDelivery, runSeedOrders, runClean, runReset, runReindex }
 }

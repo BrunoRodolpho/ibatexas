@@ -11,6 +11,22 @@ import { resolveServices, type ServiceDef } from "../services.js"
 
 const PID_FILE = path.join(ROOT, ".ibx-dev.pids")
 
+/** Resolve short filter names to full pnpm package names.
+ *  "ibx" | "cli" → "@ibatexas/cli", "web" → "@ibatexas/web", etc.
+ *  Already-scoped names ("@ibatexas/cli") pass through unchanged. */
+function resolveFilter(filter: string): string {
+  if (filter.startsWith("@")) return filter
+  const alias = filter === "ibx" ? "cli" : filter
+  const candidate = `@ibatexas/${alias}`
+  // Check if it exists in packages/ or apps/
+  const dirs = [
+    path.join(ROOT, "packages", alias),
+    path.join(ROOT, "apps", alias),
+  ]
+  if (dirs.some((d) => fs.existsSync(d))) return candidate
+  return filter // fallback to raw value
+}
+
 interface PidEntry { key: string; pid: number }
 
 function writePidEntries(entries: PidEntry[]): void {
@@ -553,18 +569,18 @@ export function registerDevCommands(dev: Command) {
   dev
     .command("build [filter]")
     .description("Build packages (runs turbo build)")
-    .action(async (filter: string | undefined) => {
+    .action(async (rawFilter: string | undefined) => {
+      const filter = rawFilter ? resolveFilter(rawFilter) : undefined
       const args = filter
         ? ["--filter", filter, "build"]
         : ["turbo", "build"]
-      const cmd = filter ? "pnpm" : "pnpm"
       const label = filter ? `pnpm --filter ${filter} build` : "pnpm turbo build"
 
       console.log(chalk.bold(`\n  ${chalk.cyan("→")} Building…\n`))
       console.log(chalk.gray(`    ${label}\n`))
 
       try {
-        await execa(cmd, args, { cwd: ROOT, stdio: "inherit" })
+        await execa("pnpm", args, { cwd: ROOT, stdio: "inherit" })
         console.log(chalk.green("\n  Build complete\n"))
       } catch {
         console.error(chalk.red("\n  Build failed\n"))
@@ -576,7 +592,8 @@ export function registerDevCommands(dev: Command) {
   dev
     .command("test [filter]")
     .description("Run tests (runs vitest via turbo)")
-    .action(async (filter: string | undefined) => {
+    .action(async (rawFilter: string | undefined) => {
+      const filter = rawFilter ? resolveFilter(rawFilter) : undefined
       const args = filter
         ? ["--filter", filter, "test"]
         : ["turbo", "test"]
