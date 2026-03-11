@@ -20,7 +20,9 @@
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
     "db:seed:tables": "tsx src/seed-tables.ts",
-    "db:seed:homepage": "tsx src/seed-homepage.ts"
+    "db:seed:homepage": "tsx src/seed-homepage.ts",
+    "db:seed:delivery": "tsx src/seed-delivery.ts",
+    "db:seed:orders": "tsx src/seed-orders.ts"
   },
   "dependencies": {
     "@ibatexas/types": "workspace:*",
