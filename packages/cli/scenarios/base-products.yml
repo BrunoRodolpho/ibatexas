@@ -1,0 +1,6 @@
+name: base-products
+description: Seed products + index into Typesense
+
+setup:
+  - seed-products
+  - reindex

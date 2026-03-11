@@ -6,16 +6,7 @@
 // Requires: Medusa running (to fetch product IDs and variant IDs)
 
 import { prisma } from "./client.js"
-
-// ── Seed customer phones (must match seed-homepage.ts) ──────────────────────
-
-const SEED_CUSTOMER_PHONES = [
-  "+5519900000001", // Maria Silva
-  "+5519900000002", // João Santos
-  "+5519900000003", // Ana Oliveira
-  "+5519900000004", // Carlos Pereira
-  "+5519900000005", // Fernanda Costa
-]
+import { SEED_CUSTOMER_PHONES } from "./seed-constants.js"
 
 // ── Medusa helpers ──────────────────────────────────────────────────────────
 
@@ -61,6 +52,8 @@ interface MedusaVariant {
   id: string
   title: string
   price_set?: MedusaPriceSet
+  /** Medusa v2 returns prices directly on variant (not nested in price_set). */
+  prices?: MedusaPrice[]
 }
 
 interface MedusaProduct {
@@ -93,11 +86,12 @@ async function fetchProductsWithVariants(): Promise<MedusaProduct[]> {
 }
 
 function extractVariantPrice(variant: MedusaVariant): number {
-  const prices = variant.price_set?.prices ?? []
+  // Medusa v2 returns prices on variant.prices[] (not variant.price_set.prices[])
+  const prices = variant.prices ?? variant.price_set?.prices ?? []
   const brl = prices.find((p) => p.currency_code === "brl") ?? prices[0]
   if (!brl?.amount) return 0
-  // Medusa v2 stores amounts in the smallest currency unit (centavos for BRL)
-  return Math.round(brl.amount)
+  // Medusa v2 stores amounts in BRL (reais), not centavos — convert to centavos
+  return Math.round(brl.amount * 100)
 }
 
 // ── Order templates ─────────────────────────────────────────────────────────
@@ -399,7 +393,7 @@ async function seedOrderItems(products: MedusaProduct[]) {
           productId: product.id,
           variantId: variant.id,
           quantity: item.quantity,
-          priceInCentavos: variant.price * item.quantity,
+          priceInCentavos: variant.price,
           orderedAt,
         },
       })

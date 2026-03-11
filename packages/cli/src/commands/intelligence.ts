@@ -2,40 +2,7 @@ import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Namespace a Redis key with APP_ENV to prevent cross-environment bleed. */
-const ENV_PREFIX = (process.env.APP_ENV ?? "development") as string
-const rk = (key: string) => `${ENV_PREFIX}:${key}`
-
-type RedisClient = Awaited<ReturnType<typeof import("@ibatexas/tools").getRedisClient>>
-
-async function getRedis(): Promise<RedisClient> {
-  const { getRedisClient } = await import("@ibatexas/tools")
-  return getRedisClient()
-}
-
-async function closeRedis(): Promise<void> {
-  const { closeRedisClient } = await import("@ibatexas/tools")
-  await closeRedisClient()
-}
-
-async function scanDelete(redis: RedisClient, pattern: string): Promise<number> {
-  let cursor = 0
-  let deleted = 0
-
-  do {
-    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 200 })
-    cursor = result.cursor
-
-    if (result.keys.length > 0) {
-      await redis.del(result.keys)
-      deleted += result.keys.length
-    }
-  } while (cursor !== 0)
-
-  return deleted
-}
+import { rk, getRedis, closeRedis, scanDelete } from "../lib/redis.js"
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 

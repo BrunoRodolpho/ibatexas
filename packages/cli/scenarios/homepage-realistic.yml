@@ -1,0 +1,59 @@
+name: homepage-realistic
+description: Homepage with simulated 30-day commerce activity (realistic behavior)
+category: ui
+estimatedTime: 20
+
+cleanup:
+  - reset-tags
+  - clear-reviews
+  - clear-orders
+  - clear-intel
+
+setup:
+  - seed-products
+  - reindex
+
+simulate:
+  customers: 40
+  days: 30
+  ordersPerDay: 15
+  seed: 42
+  behavior:
+    pitmaster: 0.15
+    family: 0.35
+    casual: 0.40
+    congelados: 0.05
+    superfan: 0.05
+  reviews:
+    probability: 0.35
+    ratingAvg: 4.3
+
+tags:
+  brisket-americano: [chef_choice]
+  costela-bovina-defumada: [popular]
+  pulled-pork: [popular]
+  frango-defumado-inteiro: [popular]
+  barriga-de-porco-defumada: [popular]
+  smash-burger-defumado: [popular]
+  linguica-artesanal-defumada: [popular]
+  combo-brisket: [novo]
+  kit-churrasco-ibatexas: [novo]
+
+rebuilds:
+  - sync-reviews
+  - intel-copurchase
+  - intel-global-score
+
+verify:
+  products:
+    min: 20
+  reviews:
+    min: 30
+  tag:popular:
+    min: 6
+  tag:chef_choice:
+    min: 1
+  global-score:
+    min: 10
+  copurchase:
+    exists: true

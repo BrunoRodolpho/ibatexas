@@ -1,0 +1,31 @@
+name: search
+description: Search browse mode — Pitmaster, Em Alta, Mais Pedidos
+category: ui
+estimatedTime: 10
+
+cleanup:
+  - reset-tags
+
+setup:
+  - seed-products
+  - reindex
+  - seed-orders
+
+tags:
+  brisket-americano: [chef_choice]
+  costela-bovina-defumada: [chef_choice]
+  pulled-pork: [popular]
+  frango-defumado-inteiro: [popular]
+  barriga-de-porco-defumada: [popular]
+  smash-burger-defumado: [popular]
+
+rebuilds:
+  - intel-global-score
+
+verify:
+  tag:chef_choice:
+    min: 2
+  tag:popular:
+    min: 4
+  global-score:
+    min: 5

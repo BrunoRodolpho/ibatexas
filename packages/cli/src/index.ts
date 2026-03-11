@@ -11,6 +11,14 @@ import { registerDbCommands }   from "./commands/db.js"
 import { registerEnvCommands }  from "./commands/env.js"
 import { registerGitCommands }  from "./commands/git.js"
 import { registerIntelligenceCommands } from "./commands/intelligence.js"
+import { registerTestCommands } from "./commands/test.js"
+import { registerTagCommands }  from "./commands/tag.js"
+import { registerScenarioCommands } from "./commands/scenario.js"
+import { registerDebugCommands } from "./commands/debug.js"
+import { registerInspectCommands } from "./commands/inspect.js"
+import { registerDoctorCommands } from "./commands/doctor.js"
+import { registerMatrixCommands } from "./commands/matrix.js"
+import { registerSimulateCommands } from "./commands/simulate.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
@@ -74,6 +82,25 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Testing",
+      commands: [
+        { usage: "test seed",               desc: "Full seed pipeline — products → reindex → domain → reviews → intel" },
+        { usage: "test seed --from=<task>",  desc: "Start from a specific task (skip earlier ones)" },
+        { usage: "test seed --skip=<pat>",   desc: "Skip tasks matching pattern(s), comma-separated" },
+        { usage: "test integration",         desc: "Seed for UI ↔ API testing (skips if products exist)" },
+        { usage: "test e2e [--force]",       desc: "⚠  Full clean + reseed (destructive)" },
+        { usage: "test status",              desc: "Dashboard — what's seeded and ready for each section" },
+      ],
+    },
+    {
+      title: "Tags",
+      commands: [
+        { usage: "tag add <handle> <tag>",   desc: "Add a tag to a product (triggers reindex + cache flush)" },
+        { usage: "tag remove <handle> <tag>",desc: "Remove a tag from a product" },
+        { usage: "tag list [handle]",        desc: "List tags — for a product or all products with tags" },
+      ],
+    },
+    {
       title: "Intelligence",
       commands: [
         { usage: "intel copurchase-reset",    desc: "Delete all co-purchase Redis sorted sets" },
@@ -81,6 +108,45 @@ function buildHelpText(): string {
         { usage: "intel global-score-rebuild",desc: "Rebuild global popularity scores (--reset)" },
         { usage: "intel scores-inspect [id]", desc: "Inspect co-purchase or global scores" },
         { usage: "intel cache-stats",          desc: "Redis memory usage for intelligence keys" },
+      ],
+    },
+    {
+      title: "Scenario",
+      commands: [
+        { usage: "scenario list",           desc: "Discover YAML scenario files" },
+        { usage: "scenario run <name>",     desc: "Run a scenario (--dry-run, --verify-only, --force)" },
+      ],
+    },
+    {
+      title: "Matrix",
+      commands: [
+        { usage: "matrix list",              desc: "List matrices with variable/state counts" },
+        { usage: "matrix run <name>",        desc: "Run a matrix (--state, --corners, --random)" },
+        { usage: "matrix states <name>",     desc: "List all states for a matrix (--corners)" },
+        { usage: "matrix run <name> --snapshot", desc: "Save results as snapshots" },
+        { usage: "matrix run <name> --verify",   desc: "Verify against saved snapshots" },
+      ],
+    },
+    {
+      title: "Simulate",
+      commands: [
+        { usage: "simulate full",             desc: "Full simulation — customers + orders + reviews + rebuild" },
+        { usage: "simulate full --scale=medium", desc: "Use scale preset (small, medium, large)" },
+        { usage: "simulate orders",           desc: "Generate only order history (no reviews)" },
+        { usage: "simulate profiles",         desc: "List behavior profiles and scale presets" },
+      ],
+    },
+    {
+      title: "Inspect & Debug",
+      commands: [
+        { usage: "inspect",                 desc: "System state dashboard" },
+        { usage: "inspect product <handle>",desc: "Product deep-dive (tags, orders, scores)" },
+        { usage: "inspect page <page>",     desc: "UI section state (homepage, search)" },
+        { usage: "inspect integrity",       desc: "Cross-system consistency check" },
+        { usage: "debug redis [pattern]",   desc: "Redis key inspection (--ttl)" },
+        { usage: "debug typesense [query]", desc: "Typesense inspection (--schema, --id)" },
+        { usage: "debug profile <id>",      desc: "Customer profile dump" },
+        { usage: "doctor",                  desc: "Full system diagnostics (--fix, --ci)" },
       ],
     },
     {
@@ -165,5 +231,45 @@ registerGitCommands(program)
 
 // ── Intelligence ─────────────────────────────────────────────────────────────
 registerIntelligenceCommands(program)
+
+// ── Testing: ibx test … ─────────────────────────────────────────────────────
+const testGroup = new Command("test")
+registerTestCommands(testGroup)
+program.addCommand(testGroup)
+
+// ── Tags: ibx tag … ─────────────────────────────────────────────────────────
+const tagGroup = new Command("tag")
+registerTagCommands(tagGroup)
+program.addCommand(tagGroup)
+
+// ── Scenario: ibx scenario … ────────────────────────────────────────────────
+const scenarioGroup = new Command("scenario")
+registerScenarioCommands(scenarioGroup)
+program.addCommand(scenarioGroup)
+
+// ── Debug: ibx debug … ──────────────────────────────────────────────────────
+const debugGroup = new Command("debug")
+registerDebugCommands(debugGroup)
+program.addCommand(debugGroup)
+
+// ── Inspect: ibx inspect … ──────────────────────────────────────────────────
+const inspectGroup = new Command("inspect")
+registerInspectCommands(inspectGroup)
+program.addCommand(inspectGroup)
+
+// ── Matrix: ibx matrix … ────────────────────────────────────────────────────
+const matrixGroup = new Command("matrix")
+registerMatrixCommands(matrixGroup)
+program.addCommand(matrixGroup)
+
+// ── Simulate: ibx simulate … ────────────────────────────────────────────────
+const simulateGroup = new Command("simulate")
+registerSimulateCommands(simulateGroup)
+program.addCommand(simulateGroup)
+
+// ── Doctor: ibx doctor ──────────────────────────────────────────────────────
+const doctorGroup = new Command("doctor")
+registerDoctorCommands(doctorGroup)
+program.addCommand(doctorGroup)
 
 program.parse()

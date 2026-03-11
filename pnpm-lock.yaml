@@ -332,6 +332,15 @@ importers:
       pg:
         specifier: ^8.11.0
         version: 8.18.0
+      seedrandom:
+        specifier: ^3.0.5
+        version: 3.0.5
+      yaml:
+        specifier: ^2.8.2
+        version: 2.8.2
+      zod:
+        specifier: ^3.22.0
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -339,6 +348,9 @@ importers:
       '@types/pg':
         specifier: ^8.11.0
         version: 8.16.0
+      '@types/seedrandom':
+        specifier: ^3.0.8
+        version: 3.0.8
       tsx:
         specifier: ^4.0.0
         version: 4.21.0
@@ -8902,6 +8914,10 @@ packages:
       '@types/prop-types': 15.7.15
       csstype: 3.2.3
 
+  /@types/seedrandom@3.0.8:
+    resolution: {integrity: sha512-TY1eezMU2zH2ozQoAFAQFOPpvP15g+ZgSfTZt31AUUH/Rxtnz3H+A/Sv1Snw2/amp//omibc+AEkTaA8KUeOLQ==}
+    dev: true
+
   /@types/send@0.17.6:
     resolution: {integrity: sha512-Uqt8rPBE8SY0RK8JB1EzVOIZ32uqy8HwdxCnoCOsYrvnswqmFZ/k+9Ikidlk/ImhsdvBsloHbAlewb2IEBV/Og==}
     dependencies:
@@ -15180,6 +15196,10 @@ packages:
   /secure-json-parse@4.1.0:
     resolution: {integrity: sha512-l4KnYfEyqYJxDwlNVyRfO2E4NTHfMKAWdUuA8J0yve2Dz/E/PdBepY03RvyJpssIpRFwJoCD55wA+mEDs6ByWA==}
     dev: true
+
+  /seedrandom@3.0.5:
+    resolution: {integrity: sha512-8OwmbklUNzwezjGInmZ+2clQmExQPvomqjL7LFqOYqtmuxRgQYqOD3mHaU+MvZn5FLUeVxVfQjwLZW/n/JFuqg==}
+    dev: false
 
   /semver@6.3.1:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}

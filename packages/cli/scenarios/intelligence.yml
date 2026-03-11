@@ -1,0 +1,41 @@
+name: intelligence
+description: Intelligence validation — copurchase relations + product ranking correctness
+category: intel
+estimatedTime: 10
+
+depends:
+  - base-customers
+
+rebuilds:
+  - sync-reviews
+  - intel-copurchase
+  - intel-global-score
+
+verify:
+  # ── Basic intelligence checks ──────────────────────────
+  global-score:
+    min: 10
+  copurchase:
+    exists: true
+  reviews:
+    min: 30
+
+  # ── Copurchase relation correctness ────────────────────
+  # Combo Brisket should be co-purchased with brownie-com-sorvete
+  # (family profile buys combos + desserts together)
+  copurchase:combo-brisket:
+    contains: [brownie-com-sorvete, coleslaw-da-casa]
+
+  # Brisket Americano should be co-purchased with molho-barbecue
+  # (pitmaster profile buys brisket + sauce together)
+  copurchase:brisket-americano:
+    contains: [molho-barbecue-artesanal]
+
+  # Smash Burger should have copurchase relations with sides
+  copurchase:smash-burger-defumado:
+    contains: [feijao-tropeiro]
+
+  # ── Product ranking correctness ────────────────────────
+  # combo-brisket (24) > smash-burger-defumado (21) > brisket-americano (11)
+  ranking:
+    order: [combo-brisket, smash-burger-defumado, brisket-americano]

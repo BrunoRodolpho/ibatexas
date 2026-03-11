@@ -1,0 +1,23 @@
+name: customer
+description: Customer data — profiles, addresses, preferences, order history
+category: customer
+estimatedTime: 10
+
+setup:
+  - seed-products
+  - seed-domain
+  - seed-homepage
+  - seed-delivery
+  - seed-orders
+
+verify:
+  customers:
+    min: 10
+  addresses:
+    min: 5
+  preferences:
+    min: 5
+  order-items:
+    min: 20
+  reservations:
+    min: 5

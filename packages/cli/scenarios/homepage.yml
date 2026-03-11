@@ -1,0 +1,49 @@
+name: homepage
+description: Homepage renders all merchandising sections
+category: ui
+estimatedTime: 15
+
+cleanup:
+  - reset-tags
+
+setup:
+  - seed-products
+  - reindex
+  - seed-domain
+  - seed-homepage
+  - seed-delivery
+  - seed-orders
+
+tags:
+  brisket-americano: [chef_choice]
+  costela-bovina-defumada: [popular]
+  pulled-pork: [popular]
+  frango-defumado-inteiro: [popular]
+  barriga-de-porco-defumada: [popular]
+  smash-burger-defumado: [popular]
+  linguica-artesanal-defumada: [popular]
+  brownie-com-sorvete: [popular]
+  combo-brisket: [novo]
+  kit-churrasco-ibatexas: [novo]
+  kit-presente-ibatexas: [novo]
+
+rebuilds:
+  - sync-reviews
+  - intel-copurchase
+  - intel-global-score
+
+verify:
+  products:
+    min: 20
+  reviews:
+    min: 50
+  tag:popular:
+    min: 6
+  tag:chef_choice:
+    min: 1
+  tag:novo:
+    min: 2
+  global-score:
+    min: 1
+  copurchase:
+    exists: true
