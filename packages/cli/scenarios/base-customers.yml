@@ -1,0 +1,10 @@
+name: base-customers
+description: Seed customers, reviews, delivery, orders
+depends:
+  - base-products
+
+setup:
+  - seed-domain
+  - seed-homepage
+  - seed-delivery
+  - seed-orders

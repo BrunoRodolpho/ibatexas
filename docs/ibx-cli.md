@@ -133,6 +133,49 @@ ibx env gen 64             # generate a 64-byte secret
 
 Generate secrets manually: `openssl rand -base64 32`
 
+### Testing — `ibx test`
+
+```bash
+ibx test seed                  # full seed pipeline: products → reindex → domain → reviews → intel
+ibx test seed --from=seed-homepage   # start from a specific task (skip earlier ones)
+ibx test seed --skip=intel     # skip tasks matching pattern(s), comma-separated
+ibx test seed --dry-run        # print the pipeline without executing
+ibx test integration           # seed for UI ↔ API testing (skips product seed if exists)
+ibx test e2e                   # ⚠️  full clean + reseed (destructive, requires confirmation)
+ibx test e2e --force           # skip confirmation prompt
+ibx test status                # dashboard — what's seeded and ready for each UI section
+```
+
+`ibx test seed` runs 9 steps in sequence:
+1. Seed Medusa products
+2. Reindex products into Typesense
+3. Seed domain tables (Table + TimeSlots)
+4. Seed customers + reviews (60 reviews across 15 products)
+5. Seed delivery zones + addresses
+6. Seed order history + reservations
+7. Sync review stats to Typesense
+8. Rebuild co-purchase matrix
+9. Rebuild global product scores
+
+`ibx test status` checks all UI data dependencies:
+- Products (Typesense), Reviews, Recommendations, Co-purchase
+- PitmasterPick (chef_choice tags), Em Alta (popular tags)
+- Reservations, Delivery Zones, Tables, Customers
+
+### Tags — `ibx tag`
+
+```bash
+ibx tag add <handle> <tag>     # add a tag to a product (triggers Typesense reindex)
+ibx tag remove <handle> <tag>  # remove a tag from a product
+ibx tag list                   # list all products that have tags
+ibx tag list <handle>          # show tags for a specific product
+```
+
+**Allowed tags:** `popular`, `chef_choice`, `sem_gluten`, `sem_lactose`, `vegano`,
+`vegetariano`, `novo`, `congelado`, `defumado`, `exclusivo`, `edicao_limitada`, `kit`
+
+Invalid tags are blocked with an error showing the full list.
+
 ### Intelligence — `ibx intel`
 
 ```bash
@@ -145,6 +188,176 @@ ibx intel scores-inspect                # show top products by global score
 ibx intel scores-inspect <productId>    # show co-purchase scores for a product
 ibx intel scores-inspect --top 20       # show top N results (default: 10)
 ibx intel cache-stats                   # Redis memory usage for intelligence keys
+```
+
+### Scenarios — `ibx scenario`
+
+YAML-driven state testing. Loads scenario files from `packages/cli/scenarios/*.yml`.
+
+```bash
+ibx scenario list                         # discover *.yml files, grouped by category
+ibx scenario homepage                     # run full pipeline: lock → cleanup → setup → tags → rebuilds → verify
+ibx scenario homepage --dry-run           # preview steps without executing
+ibx scenario homepage --verify-only       # only run verify checks (no setup/tags/rebuilds)
+ibx scenario homepage --skip=intel        # skip tasks matching pattern(s), comma-separated
+ibx scenario homepage --no-cache          # bypass step cache
+ibx scenario homepage --force             # override scenario lock
+ibx scenario homepage --file ./custom.yml # load from a custom file path
+```
+
+Execution order: **lock → load YAML → resolve dependency DAG → cleanup → setup → tags → rebuilds → verify → unlock**
+
+Available scenarios:
+| Scenario | Category | Description |
+|----------|----------|-------------|
+| `base-products` | ui | Seed + reindex products |
+| `base-customers` | ui | Seed customers, reviews, delivery, orders (depends: base-products) |
+| `homepage` | ui | Homepage renders all merchandising sections |
+| `search` | ui | Search browse mode — Pitmaster, Em Alta, Mais Pedidos |
+| `recommendations` | intel | Full intelligence layer (depends: base-customers) |
+| `customer` | customer | Customer data — profiles, addresses, preferences, order history |
+
+Adding a new scenario = creating a `.yml` file in `packages/cli/scenarios/`.
+
+### Debug — `ibx debug`
+
+Infrastructure-level inspection (raw Redis keys, Typesense docs, customer profiles).
+
+```bash
+# Redis
+ibx debug redis                        # key group summary (copurchase, global scores, search, etc.)
+ibx debug redis "copurchase:*"         # inspect keys matching pattern (type, TTL, size), limit 20
+ibx debug redis --ttl                  # add TTL column to group summary
+
+# Typesense
+ibx debug typesense                    # collection document count + field count
+ibx debug typesense "costela"          # raw search with results
+ibx debug typesense --schema           # full collection schema (fields, types, indexing)
+ibx debug typesense --id <productId>   # single document by ID (full JSON dump)
+
+# Customer profile
+ibx debug profile <customerId>         # full dump: addresses, preferences, orders, reviews, reservations
+```
+
+### Inspect — `ibx inspect`
+
+Business-level state inspection — what the UI sees, not raw infrastructure.
+
+```bash
+# System dashboard (default)
+ibx inspect                            # data counts, tags, intelligence state, scenario lock
+
+# Product deep-dive
+ibx inspect product brisket-americano  # tags, rating, price, orders, global score, copurchase, reviews
+
+# UI section state
+ibx inspect page homepage              # which homepage sections are ready (Em Alta, Pitmaster, etc.)
+ibx inspect page search                # which search sections are ready
+
+# Cross-system consistency
+ibx inspect integrity                  # Medusa ↔ Typesense count, customer completeness, copurchase validity
+```
+
+`ibx inspect page homepage` checks exact UI thresholds from the codebase:
+- **Em Alta**: ≥1 product with `popular` tag
+- **Pitmaster Recomenda**: ≥1 product with `chef_choice` tag
+- **Mais Pedidos**: ≥1 product in global score ZSET
+- **Reviews**: ≥1 review with rating≥4 + comment
+- **Recommendations**: copurchase + global scores ready
+
+### Doctor — `ibx doctor`
+
+Comprehensive system diagnostics. CI gate command.
+
+```bash
+ibx doctor                             # full system check (infrastructure + data + intel + UI)
+ibx doctor --fix                       # attempt auto-fixes (reindex, rebuild intel, sync reviews)
+ibx doctor --ci                        # exit code 1 on any error-severity failure (for CI pipelines)
+```
+
+Checks run in order:
+1. **Infrastructure** — Postgres, Redis, Typesense connectivity
+2. **Data Integrity** — product count (Medusa = Typesense), reviews, order items
+3. **Intelligence** — global scores, copurchase relations
+4. **UI Contracts** — popular tags, chef_choice tags
+
+`--fix` mode auto-repairs: reindexes Typesense if counts mismatch, rebuilds intelligence if empty, syncs review stats if stale.
+
+### Matrix — `ibx matrix`
+
+Combinatorial state testing. Generates 2^N state combinations from binary variables and verifies UI expectations.
+
+```bash
+ibx matrix list                            # list matrices with variable/state counts
+ibx matrix homepage                        # run all 32 states (5 variables)
+ibx matrix homepage --state=12             # run a specific state by index
+ibx matrix homepage --random               # run a random state
+ibx matrix homepage --corners              # corner cases: all-OFF, all-ON, each single-ON
+ibx matrix states homepage                 # list all states (index, binary, active vars)
+ibx matrix states homepage --corners       # list only corner case states
+ibx matrix homepage --snapshot             # save results as snapshots
+ibx matrix homepage --verify               # verify against saved snapshots (detect drift)
+ibx matrix homepage --corners --snapshot   # save corner case snapshots
+ibx matrix homepage --force                # override scenario lock
+```
+
+Available matrices:
+| Matrix | Variables | States | Description |
+|--------|-----------|--------|-------------|
+| `homepage` | 5 | 32 | popularProducts, chefChoiceProducts, reviewsPresent, ordersPresent, copurchasePresent |
+| `search` | 4 | 16 | popularProducts, chefChoiceProducts, ordersPresent, productsIndexed |
+| `product` | 4 | 16 | reviewsPresent, copurchasePresent, globalScorePresent, tagsPresent |
+| `intel` | 4 | 16 | ordersPresent, copurchaseBuilt, globalScoreBuilt, reviewStatsSync |
+
+Each variable has `apply()` and `remove()` functions. The engine cleans all variables, applies only active ones, then evaluates expectations.
+
+Snapshots are stored in `packages/cli/snapshots/<matrix>/state-<n>.json` and should be committed to git for drift detection.
+
+### Simulate — `ibx simulate`
+
+Generate realistic commerce behavior using seeded PRNG. Deterministic: same seed → same output.
+
+```bash
+ibx simulate full                          # full: 40 customers, 30 days, 15 orders/day, seed 42
+ibx simulate full --days=60 --per-day=25   # custom parameters
+ibx simulate full --scale=medium           # preset: 500 customers, 50 orders/day, 30 days
+ibx simulate full --seed=123               # different seed = different data
+ibx simulate full --no-rebuild             # skip intelligence rebuild
+ibx simulate orders                        # orders only, no reviews
+ibx simulate profiles                      # list behavior profiles + scale presets
+```
+
+Behavior profiles:
+| Profile | Frequency | Basket | Avg Spend | Categories |
+|---------|-----------|--------|-----------|------------|
+| `pitmaster` | Weekly | 3 items | R$150 | carnes-defumadas |
+| `family` | Bi-weekly | 5 items | R$120 | sanduiches, acompanhamentos, sobremesas |
+| `casual` | Monthly | 2 items | R$45 | sanduiches, bebidas |
+| `congelados` | 3 weeks | 2 items | R$80 | congelados |
+| `superfan` | 10 days | 4 items | R$200 | carnes, kits, camisetas |
+
+Scale presets:
+| Preset | Customers | Orders/day | Days |
+|--------|-----------|-----------|------|
+| `small` | 20 | 5 | 30 |
+| `medium` | 500 | 50 | 30 |
+| `large` | 10000 | 500 | 30 |
+
+Simulation can also be triggered from YAML scenarios with a `simulate:` block:
+
+```yaml
+simulate:
+  customers: 40
+  days: 30
+  ordersPerDay: 15
+  seed: 42
+  behavior:
+    pitmaster: 0.15
+    family: 0.35
+    casual: 0.50
+  reviews:
+    probability: 0.35
+    ratingAvg: 4.3
 ```
 
 ### VCS — `ibx git`
@@ -190,6 +403,57 @@ To start the API alongside Medusa:
 ibx dev api      # start Docker + Medusa + Fastify API
 ibx dev all      # start all available services
 ```
+
+---
+
+## Adding a New Scenario
+
+Create a `.yml` file in `packages/cli/scenarios/`. The engine discovers all YAML files at runtime.
+
+```yaml
+name: my-scenario
+description: What this scenario sets up
+category: ui                    # ui | intel | customer
+estimatedTime: 10               # optional, in seconds
+
+depends:                        # optional — other scenarios to run first (DAG resolved)
+  - base-products
+
+cleanup:                        # optional — runs BEFORE setup for deterministic state
+  - reset-tags                  # remove all tags from all products
+  # also: clear-reviews, clear-orders, clear-intel, clear-all
+
+setup:                          # seed steps to run
+  - seed-products
+  - reindex
+  - seed-domain
+  - seed-homepage
+  - seed-delivery
+  - seed-orders
+
+tags:                           # product handle → tag values to apply
+  brisket-americano: [chef_choice]
+  pulled-pork: [popular]
+
+rebuilds:                       # intelligence steps to run after setup + tags
+  - sync-reviews
+  - intel-copurchase
+  - intel-global-score
+
+verify:                         # validation rules (all must pass)
+  products:
+    min: 20
+  tag:popular:
+    min: 6
+  global-score:
+    min: 1
+  copurchase:
+    exists: true
+```
+
+Available step names: `seed-products`, `reindex`, `seed-domain`, `seed-homepage`, `seed-delivery`, `seed-orders`, `sync-reviews`, `intel-copurchase`, `intel-global-score`
+
+Available verify keys: `products`, `reviews`, `tag:<value>`, `global-score`, `copurchase`, `customers`, `addresses`, `preferences`, `order-items`, `reservations`, `tables`, `delivery-zones`
 
 ---
 

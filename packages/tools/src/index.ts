@@ -28,6 +28,7 @@ export { updatePreferences, UpdatePreferencesTool } from "./intelligence/update-
 export { submitReview, SubmitReviewTool } from "./intelligence/submit-review.js"
 export { getAlsoAdded, GetAlsoAddedTool } from "./intelligence/get-also-added.js"
 export { getOrderedTogether, GetOrderedTogetherTool } from "./intelligence/get-ordered-together.js"
+export { syncReviewStats } from "./intelligence/sync-review-stats.js"
 export { PROFILE_TTL_SECONDS, RECENTLY_VIEWED_MAX } from "./intelligence/types.js"
 
 // ── Embeddings ─────────────────────────────────────────────────────────────────

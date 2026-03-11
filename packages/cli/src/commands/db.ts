@@ -4,6 +4,8 @@ import chalk from "chalk"
 import ora from "ora"
 import { execa } from "execa"
 import { ROOT } from "../utils/root.js"
+import { guardDestructive } from "../lib/pipeline.js"
+import { getMedusaUrl, getAdminToken, medusaFetch } from "../lib/medusa.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -21,54 +23,6 @@ function parseDatabaseUrl() {
     password: url.password,
     dbName: url.pathname.slice(1),
   }
-}
-
-function getMedusaUrl(): string {
-  const url = process.env.MEDUSA_BACKEND_URL
-  if (!url) {
-    console.error(chalk.red("MEDUSA_BACKEND_URL is not set. Run: ibx env check"))
-    process.exit(1)
-  }
-  return url
-}
-
-/** Authenticate with Medusa admin API and return a bearer token. */
-async function getAdminToken(): Promise<string> {
-  const base = getMedusaUrl()
-  const email = process.env.MEDUSA_ADMIN_EMAIL ?? "admin@ibatexas.com.br"
-  const password = process.env.MEDUSA_ADMIN_PASSWORD ?? "IbateXas2024!"
-
-  const res = await fetch(`${base}/auth/user/emailpass`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  })
-
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(
-      `Admin auth failed (${res.status}): ${text}\n` +
-      `Set MEDUSA_ADMIN_EMAIL and MEDUSA_ADMIN_PASSWORD or create an admin user:\n` +
-      `  npx medusa user --email admin@ibatexas.com.br --password 'IbateXas2024!'`
-    )
-  }
-
-  const data = (await res.json()) as { token?: string }
-  if (!data.token) throw new Error("Admin auth response missing token")
-  return data.token
-}
-
-async function medusaFetch(path: string, token?: string): Promise<Record<string, unknown>> {
-  const base = getMedusaUrl()
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (token) headers["Authorization"] = `Bearer ${token}`
-
-  const res = await fetch(`${base}${path}`, { headers })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`Medusa API ${res.status}: ${text}`)
-  }
-  return res.json() as Promise<Record<string, unknown>>
 }
 
 async function runPsql(args: string[], env?: NodeJS.ProcessEnv) {
@@ -176,6 +130,7 @@ async function runSeedOrders() {
 }
 
 async function runReset(force = false) {
+  guardDestructive("db reset")
   if (!force) {
     const confirmed = await confirm({
       message: chalk.yellow(
@@ -268,6 +223,7 @@ async function runReset(force = false) {
 }
 
 async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
+  guardDestructive("db clean")
   const scope = opts.all ? "ALL data (domain + Medusa products + Typesense + Redis)" : "domain data (customers, reservations, reviews, etc.)"
 
   if (!opts.force) {
@@ -313,7 +269,7 @@ async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
     try {
       const token = await getAdminToken()
       const base = getMedusaUrl()
-      const data = await medusaFetch("/admin/products?limit=200&fields=id", token)
+      const data = await medusaFetch<Record<string, unknown>>("/admin/products?limit=200&fields=id", { token })
       const products = (data.products as Array<{ id: string }>) ?? []
 
       for (const product of products) {
@@ -391,9 +347,9 @@ async function runReindex(fresh = false) {
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const data = await medusaFetch(
+    const data = await medusaFetch<Record<string, unknown>>(
       `/admin/products?limit=${limit}&offset=${offset}&fields=*variants,*variants.price_set,*variants.price_set.prices,*tags,*categories,*images`,
-      token
+      { token },
     )
     const products = (data.products as unknown[] | undefined) ?? []
     allProducts.push(...products)

@@ -2,13 +2,14 @@ import type { Command } from "commander"
 import { input, select, checkbox } from "@inquirer/prompts"
 import chalk from "chalk"
 import ora from "ora"
-import crypto from "node:crypto"
 import { searchProducts, closeRedisClient, Channel } from "@ibatexas/tools"
 import { v4 as uuidv4 } from 'uuid';
 
+import { getMedusaUrl, medusaFetch } from "../lib/medusa.js"
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface MedusaProduct {
+interface ApiMedusaProduct {
   id: string
   title: string
   status: string
@@ -18,64 +19,8 @@ interface MedusaProduct {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getMedusaUrl(): string {
-  const url = process.env.MEDUSA_BACKEND_URL
-  if (!url) {
-    console.error(chalk.red("MEDUSA_BACKEND_URL is not set"))
-    process.exit(1)
-  }
-  return url
-}
-
 function getApiUrl(): string {
   return process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
-}
-
-let _adminToken: string | null = null
-
-/** Authenticate with Medusa admin API and cache the token for this CLI run. */
-async function getAdminToken(): Promise<string> {
-  if (_adminToken) return _adminToken
-  const base = getMedusaUrl()
-  const email = process.env.MEDUSA_ADMIN_EMAIL ?? "admin@ibatexas.com.br"
-  const password = process.env.MEDUSA_ADMIN_PASSWORD ?? "IbateXas2024!"
-
-  const res = await fetch(`${base}/auth/user/emailpass`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  })
-
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(
-      `Admin auth failed (${res.status}): ${text}\n` +
-      `Set MEDUSA_ADMIN_EMAIL and MEDUSA_ADMIN_PASSWORD or create an admin user.`
-    )
-  }
-
-  const data = (await res.json()) as { token?: string }
-  if (!data.token) throw new Error("Admin auth response missing token")
-  _adminToken = data.token
-  return _adminToken
-}
-
-async function medusaFetch(path: string, options?: RequestInit): Promise<Record<string, unknown>> {
-  const base = getMedusaUrl()
-  const token = await getAdminToken()
-  const res = await fetch(`${base}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`,
-      ...(options?.headers ?? {}),
-    },
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`Medusa API error ${res.status}: ${text}`)
-  }
-  return res.json() as Promise<Record<string, unknown>>
 }
 
 // ── Command registration ──────────────────────────────────────────────────────
@@ -93,12 +38,12 @@ export function registerApiCommands(api: Command) {
     .action(async (opts: { limit: string }) => {
       const spinner = ora("Fetching products...").start()
       try {
-        const data = await medusaFetch(
+        const data = await medusaFetch<Record<string, unknown>>(
           `/admin/products?limit=${opts.limit}&fields=id,title,status,categories,variants`
         )
         spinner.stop()
 
-        const items = (data.products as MedusaProduct[] | undefined) ?? []
+        const items = (data.products as ApiMedusaProduct[] | undefined) ?? []
         if (!items.length) {
           console.log(chalk.gray("No products found."))
           return
@@ -141,7 +86,7 @@ export function registerApiCommands(api: Command) {
       const spinner = ora("Loading categories...").start()
       let categories: { name: string; id: string }[] = []
       try {
-        const data = await medusaFetch("/admin/product-categories?limit=50")
+        const data = await medusaFetch<Record<string, unknown>>("/admin/product-categories?limit=50")
         categories = (data.product_categories as { name: string; id: string }[] | undefined) ?? []
         spinner.stop()
       } catch {
@@ -208,7 +153,7 @@ export function registerApiCommands(api: Command) {
 
         await medusaFetch("/admin/products", {
           method: "POST",
-          body: JSON.stringify({
+          body: {
             title,
             handle: title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
             description,
@@ -227,7 +172,7 @@ export function registerApiCommands(api: Command) {
               productType,
               allergens: allergenChoices,
             },
-          }),
+          },
         })
 
         spinner2.succeed(chalk.green(`Product "${title}" created`))

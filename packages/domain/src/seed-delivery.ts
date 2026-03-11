@@ -3,16 +3,7 @@
 // Or via:  ibx db seed:delivery
 
 import { prisma } from "./client.js"
-
-// ── Seed customer phones (must match seed-homepage.ts) ──────────────────────
-
-const SEED_CUSTOMER_PHONES = [
-  "+5519900000001", // Maria Silva
-  "+5519900000002", // João Santos
-  "+5519900000003", // Ana Oliveira
-  "+5519900000004", // Carlos Pereira
-  "+5519900000005", // Fernanda Costa
-]
+import { SEED_CUSTOMER_PHONES } from "./seed-constants.js"
 
 // ── Delivery zones ──────────────────────────────────────────────────────────
 
