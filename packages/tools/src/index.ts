@@ -81,5 +81,9 @@ export { cancelReservation, CancelReservationTool } from "./reservation/cancel-r
 export { getMyReservations, GetMyReservationsTool } from "./reservation/get-my-reservations.js"
 export { joinWaitlist, JoinWaitlistTool } from "./reservation/join-waitlist.js"
 
+// ── WhatsApp sender (dependency injection) ───────────────────────────────────
+export { setWhatsAppSender, getWhatsAppSender } from "./whatsapp/sender.js"
+export type { WhatsAppSender } from "./whatsapp/sender.js"
+
 // ── Re-export shared types consumed by CLI and other packages ─────────────────
 export { Channel } from "@ibatexas/types"

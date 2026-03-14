@@ -15,9 +15,11 @@ export default function AccountPage() {
         <h1 className="text-3xl font-display text-charcoal-900">{t("account.title")}</h1>
         <p className="mt-4 text-smoke-400">{t("account.login_required")}</p>
 
-        <Button variant="brand" size="lg" className="mt-8 w-full">
-          {t("checkout.login_button")}
-        </Button>
+        <Link href="/entrar?next=/account">
+          <Button variant="brand" size="lg" className="mt-8 w-full">
+            {t("checkout.login_button")}
+          </Button>
+        </Link>
 
         <p className="mt-6">
           <Link
@@ -97,16 +99,6 @@ export default function AccountPage() {
           </h2>
           <p className="mt-3 text-sm text-smoke-400">
             {t("account.addresses_description")}
-          </p>
-        </div>
-
-        {/* Payment Methods */}
-        <div className="rounded-sm border border-smoke-200 bg-smoke-50 p-5 hover:bg-smoke-100 transition-all duration-500">
-          <h2 className="text-[10px] font-semibold uppercase tracking-editorial text-smoke-400">
-            {t("account.payment_methods")}
-          </h2>
-          <p className="mt-3 text-sm text-smoke-400">
-            {t("account.payment_description")}
           </p>
         </div>
       </div>

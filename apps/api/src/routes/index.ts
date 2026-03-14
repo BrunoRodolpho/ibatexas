@@ -6,14 +6,16 @@ import { catalogRoutes } from "./catalog.js";
 import { cartRoutes } from "./cart.js";
 import { shippingRoutes } from "./shipping.js";
 import { stripeWebhookRoutes } from "./stripe-webhook.js";
+import { whatsappWebhookRoutes } from "./whatsapp-webhook.js";
 import { adminRoutes } from "./admin/index.js";
 import { reservationRoutes } from "./reservations.js";
 import { analyticsRoutes } from "./analytics.js";
 import { recommendationRoutes } from "./recommendations.js";
 
 export async function registerRoutes(server: FastifyInstance): Promise<void> {
-  // Stripe webhook must be registered before JSON body parser middlewares
+  // Webhooks must be registered before JSON body parser middlewares
   await server.register(stripeWebhookRoutes);
+  await server.register(whatsappWebhookRoutes);
 
   await server.register(healthRoutes);
   await server.register(authRoutes);

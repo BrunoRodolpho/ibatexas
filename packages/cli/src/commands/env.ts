@@ -144,6 +144,24 @@ const ENV_VARS: EnvVar[] = [
     secret: false,
     example: "VAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   },
+
+  // ── WhatsApp Channel ──────────────────────────────────────────────────────
+  {
+    key: "TWILIO_WHATSAPP_NUMBER",
+    desc: "Twilio WhatsApp sender number (Step 12 — WhatsApp channel)",
+    phase: 1,
+    step: 12,
+    secret: false,
+    example: "whatsapp:+14155238886",
+  },
+  {
+    key: "TWILIO_WEBHOOK_URL",
+    desc: "Public webhook URL for Twilio signature verification (Step 12)",
+    phase: 1,
+    step: 12,
+    secret: false,
+    example: "https://bot.ibatexas.com.br/api/webhooks/whatsapp",
+  },
 ]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

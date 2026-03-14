@@ -24,6 +24,10 @@ const envSchema = z.object({
   TWILIO_AUTH_TOKEN: z.string().min(1, "TWILIO_AUTH_TOKEN is required"),
   TWILIO_VERIFY_SID: z.string().min(1, "TWILIO_VERIFY_SID is required"),
 
+  // WhatsApp channel (Step 12)
+  TWILIO_WHATSAPP_NUMBER: z.string().startsWith("whatsapp:").optional(),
+  TWILIO_WEBHOOK_URL: z.string().url().optional(),
+
   // Payments — Stripe
   STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
   STRIPE_WEBHOOK_SECRET: z.string().min(1, "STRIPE_WEBHOOK_SECRET is required"),

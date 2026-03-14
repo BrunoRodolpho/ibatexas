@@ -9,12 +9,24 @@ import { Smartphone } from "lucide-react"
 
 type Step = "phone" | "code"
 
-// ── Phone mask: (XX) XXXXX-XXXX ─────────────────────────────────────────
-function formatPhone(value: string): string {
-  const digits = value.replace(/\D/g, "").slice(0, 11)
-  if (digits.length <= 2) return digits
-  if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`
-  return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`
+const COUNTRY_CODES = [
+  { code: "+55", label: "🇧🇷 +55", maxDigits: 11, placeholder: "(11) 99999-9999" },
+  { code: "+1", label: "🇺🇸 +1", maxDigits: 10, placeholder: "(217) 417-4509" },
+] as const
+
+// ── Phone mask by country ───────────────────────────────────────────────
+function formatPhone(value: string, countryCode: string): string {
+  if (countryCode === "+55") {
+    const digits = value.replace(/\D/g, "").slice(0, 11)
+    if (digits.length <= 2) return digits
+    if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`
+  }
+  // US format: (XXX) XXX-XXXX
+  const digits = value.replace(/\D/g, "").slice(0, 10)
+  if (digits.length <= 3) return digits
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
 }
 
 export default function EntrarPage() {
@@ -25,12 +37,14 @@ export default function EntrarPage() {
 
   const [step, setStep] = useState<Step>("phone")
   const [phone, setPhone] = useState("")
+  const [countryCode, setCountryCode] = useState("+55")
   const [otp, setOtp] = useState(["", "", "", "", "", ""])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const otpRefs = useRef<(HTMLInputElement | null)[]>([])
   const rawPhone = phone.replace(/\D/g, "")
+  const selectedCountry = COUNTRY_CODES.find((c) => c.code === countryCode) ?? COUNTRY_CODES[0]
 
   // Auto-focus first OTP input
   useEffect(() => {
@@ -51,7 +65,7 @@ export default function EntrarPage() {
       const res = await fetch(`${getApiBase()}/api/auth/send-otp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: `+55${rawPhone}` }),
+        body: JSON.stringify({ phone: `${countryCode}${rawPhone}` }),
         credentials: "include",
       })
       if (!res.ok) {
@@ -74,15 +88,15 @@ export default function EntrarPage() {
         const res = await fetch(`${getApiBase()}/api/auth/verify-otp`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ phone: `+55${rawPhone}`, code }),
+          body: JSON.stringify({ phone: `${countryCode}${rawPhone}`, code }),
           credentials: "include",
         })
         if (!res.ok) {
           const data = (await res.json().catch(() => ({}))) as { message?: string }
           throw new Error(data.message ?? "Código inválido.")
         }
-        const data = (await res.json()) as { customerId: string; token: string; userType?: string }
-        login(data.customerId)
+        const data = (await res.json()) as { id: string; phone: string; name: string | null; email: string | null }
+        login(data.id)
         router.push(nextPath)
       } catch (err) {
         setError(err instanceof Error ? err.message : "Código inválido.")
@@ -92,7 +106,7 @@ export default function EntrarPage() {
         setLoading(false)
       }
     },
-    [rawPhone, login, router, nextPath],
+    [countryCode, rawPhone, login, router, nextPath],
   )
 
   // ── OTP digit input handler ───────────────────────────────────────────
@@ -171,14 +185,25 @@ export default function EntrarPage() {
                     Celular
                   </label>
                   <div className="flex items-center border border-smoke-200 rounded-sm overflow-hidden focus-within:border-charcoal-900 transition-colors duration-300">
-                    <span className="px-3 text-sm text-smoke-400 bg-smoke-100 border-r border-smoke-200 py-2.5">
-                      +55
-                    </span>
+                    <select
+                      value={countryCode}
+                      onChange={(e) => {
+                        setCountryCode(e.target.value)
+                        setPhone("")
+                      }}
+                      className="px-2 text-sm text-smoke-500 bg-smoke-100 border-r border-smoke-200 py-2.5 outline-none cursor-pointer"
+                    >
+                      {COUNTRY_CODES.map((c) => (
+                        <option key={c.code} value={c.code}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
                     <input
                       type="tel"
                       value={phone}
-                      onChange={(e) => setPhone(formatPhone(e.target.value))}
-                      placeholder="(11) 99999-9999"
+                      onChange={(e) => setPhone(formatPhone(e.target.value, countryCode))}
+                      placeholder={selectedCountry.placeholder}
                       className="flex-1 px-3 py-2.5 text-sm text-charcoal-900 bg-transparent outline-none placeholder:text-smoke-300"
                       autoFocus
                     />
@@ -205,7 +230,7 @@ export default function EntrarPage() {
                 Código de verificação
               </Heading>
               <Text variant="small" textColor="muted" className="text-center mb-8">
-                Enviamos um código para +55 {phone}
+                Enviamos um código para {countryCode} {phone}
               </Text>
 
               <div className="space-y-6">

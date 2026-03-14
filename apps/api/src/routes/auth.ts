@@ -29,6 +29,14 @@ function verifySid(): string {
   return sid;
 }
 
+function otpChannel(): "sms" | "whatsapp" {
+  const ch = process.env.TWILIO_OTP_CHANNEL ?? "sms";
+  if (ch !== "sms" && ch !== "whatsapp") {
+    throw new Error(`TWILIO_OTP_CHANNEL must be "sms" or "whatsapp", got "${ch}"`);
+  }
+  return ch;
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 /** One-way hash of a phone number — safe to log. */
@@ -103,7 +111,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       try {
         await twilioClient().verify.v2
           .services(verifySid())
-          .verifications.create({ to: phone, channel: "whatsapp" });
+          .verifications.create({ to: phone, channel: otpChannel() });
       } catch (err) {
         server.log.error({ phone_hash: hash, ip, action: "send_otp_error", err }, "Twilio error");
         return reply.code(502).send({
@@ -156,8 +164,19 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         verification = await twilioClient().verify.v2
           .services(verifySid())
           .verificationChecks.create({ to: phone, code });
-      } catch (err) {
+      } catch (err: unknown) {
+        const twilioErr = err as { code?: number; status?: number; message?: string };
         server.log.error({ phone_hash: hash, ip, action: "verify_otp_error", err });
+
+        // 20404 = no pending verification for this phone (expired or never sent)
+        if (twilioErr.code === 20404) {
+          return reply.code(400).send({
+            statusCode: 400,
+            error: "Bad Request",
+            message: "Código expirado ou não encontrado. Solicite um novo código.",
+          });
+        }
+
         return reply.code(502).send({
           statusCode: 502,
           error: "Bad Gateway",

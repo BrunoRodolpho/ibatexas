@@ -286,162 +286,181 @@ export default function ReservationsPage() {
 
   // ── Main flow ──────────────────────────────────────────────────────────────
 
+  const hasReservations = myReservations.length > 0
+
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
 
-      {/* Header */}
+      {/* Header with back link */}
       <div className="mb-6">
-        <Heading as="h1" variant="h1" className="text-charcoal-900">
+        <Link
+          href="/account"
+          className="text-sm text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+        >
+          ← {t("account.title")}
+        </Link>
+        <Heading as="h1" variant="h1" className="text-charcoal-900 mt-2">
           {t("reservations.title")}
         </Heading>
       </div>
 
-      {/* Step progress */}
-      <StepProgress currentStep={step} />
-
-      {/* Step back indicator */}
-      {step !== "date-party" && (
-        <div className="mb-6 flex items-center gap-2">
-          <button
-            onClick={() => setStep("date-party")}
-            className="text-sm text-brand-500 hover:text-brand-600 transition-colors duration-300"
-          >
-            ← Voltar
-          </button>
-          <span className="text-smoke-300">·</span>
-          <Text variant="small" textColor="muted">
-            {step === "timeslot" && "Escolher horário"}
-            {step === "requests" && "Solicitações especiais"}
-          </Text>
+      {/* ── My reservations (only when they exist) ───────────────────────── */}
+      {(hasReservations || loadingMyReservations) && (
+        <div className="mb-12">
+          <MyReservations
+            reservations={myReservations}
+            loading={loadingMyReservations}
+            onCancel={cancelReservation}
+            onModify={handleModify}
+          />
         </div>
       )}
 
-      {/* ── Step 1: Date + Party size ─────────────────────────────────────── */}
-      {step === "date-party" && (
-        <Card className="p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-9 h-9 rounded-full bg-smoke-100 flex items-center justify-center">
-              <CalendarDays className="w-4 h-4 text-charcoal-900" strokeWidth={1.5} />
-            </div>
-            <Heading as="h2" variant="h3" className="text-charcoal-900">
+      {/* ── Booking form ─────────────────────────────────────────────────── */}
+      <div>
+        {/* Only show section heading when reservations exist above */}
+        {hasReservations && (
+          <div className="mb-6">
+            <Heading as="h2" variant="h2" className="text-charcoal-900">
               Nova reserva
             </Heading>
           </div>
+        )}
 
-          <div className="space-y-6">
-            <DatePicker value={selectedDate} onChange={setDate} />
-            <PartySizeSelector value={partySize} onChange={setPartySize} />
+        {/* Step progress */}
+        <StepProgress currentStep={step} />
+
+        {/* Step back indicator */}
+        {step !== "date-party" && (
+          <div className="mb-6 flex items-center gap-2">
+            <button
+              onClick={() => setStep("date-party")}
+              className="text-sm text-brand-500 hover:text-brand-600 transition-colors duration-300"
+            >
+              ← Voltar
+            </button>
+            <span className="text-smoke-300">·</span>
+            <Text variant="small" textColor="muted">
+              {step === "timeslot" && "Escolher horário"}
+              {step === "requests" && "Solicitações especiais"}
+            </Text>
           </div>
+        )}
 
-          <Button
-            disabled={!selectedDate}
-            onClick={fetchAvailability}
-            className="mt-8 w-full"
-            size="lg"
-          >
-            Ver horários disponíveis →
-          </Button>
-        </Card>
-      )}
-
-      {/* ── Step 2: Pick time slot ────────────────────────────────────────── */}
-      {step === "timeslot" && (
-        <Card className="p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-9 h-9 rounded-full bg-smoke-100 flex items-center justify-center">
-              <Clock className="w-4 h-4 text-charcoal-900" strokeWidth={1.5} />
-            </div>
-            <Heading as="h2" variant="h3" className="text-charcoal-900">
-              Horários disponíveis para {partySize} {partySize === 1 ? "pessoa" : "pessoas"} em{" "}
-              {new Date(selectedDate + "T00:00:00").toLocaleDateString("pt-BR", {
-                day: "numeric",
-                month: "long",
-              })}
-            </Heading>
-          </div>
-          <TimeslotGrid
-            slots={availableSlots}
-            loading={loadingSlots}
-            error={slotsError}
-            onSelect={selectSlot}
-          />
-        </Card>
-      )}
-
-      {/* ── Step 3: Special requests + confirm ───────────────────────────── */}
-      {step === "requests" && selectedSlot && (
-        <Card className="p-6">
-          {/* Summary card */}
-          <div className="mb-6 rounded-sm bg-charcoal-900 text-smoke-50 p-4">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-full bg-charcoal-800 flex items-center justify-center">
-                <Check className="w-4 h-4 text-brand-400" />
+        {/* ── Step 1: Date + Party size ─────────────────────────────────── */}
+        {step === "date-party" && (
+          <Card className="p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-9 h-9 rounded-full bg-smoke-100 flex items-center justify-center">
+                <CalendarDays className="w-4 h-4 text-charcoal-900" strokeWidth={1.5} />
               </div>
-              <div>
-                <Text className="font-semibold text-smoke-50">
-                  {new Date(selectedSlot.date + "T00:00:00").toLocaleDateString("pt-BR", {
-                    weekday: "long",
-                    day: "2-digit",
-                    month: "long",
-                  })}{" "}
-                  às {selectedSlot.startTime}
-                </Text>
-                <Text variant="small" className="text-smoke-200">
-                  {partySize} {partySize === 1 ? "pessoa" : "pessoas"} · {selectedSlot.durationMinutes} min
-                </Text>
-              </div>
+              <Heading as="h2" variant="h3" className="text-charcoal-900">
+                {hasReservations ? "Escolha a data" : "Nova reserva"}
+              </Heading>
             </div>
-          </div>
 
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-9 h-9 rounded-full bg-smoke-100 flex items-center justify-center">
-              <Sparkles className="w-4 h-4 text-charcoal-900" strokeWidth={1.5} />
+            <div className="space-y-6">
+              <DatePicker value={selectedDate} onChange={setDate} />
+              <PartySizeSelector value={partySize} onChange={setPartySize} />
             </div>
-            <Heading as="h2" variant="h3" className="text-charcoal-900">
-              Solicitações especiais
-            </Heading>
-          </div>
 
-          <SpecialRequestsForm value={specialRequests} onChange={setSpecialRequests} />
-
-          {createError && (
-            <div className="mt-4 rounded-sm border border-accent-red/20 bg-accent-red/10 p-3 text-sm text-accent-red">
-              {createError}
-            </div>
-          )}
-
-          <div className="mt-8 flex gap-3">
             <Button
-              variant="secondary"
-              onClick={() => setStep("timeslot")}
-              className="flex-1"
+              disabled={!selectedDate}
+              onClick={fetchAvailability}
+              className="mt-8 w-full"
               size="lg"
             >
-              Voltar
+              Ver horários disponíveis →
             </Button>
-            <Button
-              onClick={submitReservation}
-              disabled={creating}
-              className="flex-1"
-              size="lg"
-            >
-              {creating ? "Confirmando…" : "Confirmar reserva ✓"}
-            </Button>
-          </div>
-        </Card>
-      )}
+          </Card>
+        )}
 
-      {/* ── My reservations ──────────────────────────────────────────────── */}
-      <div className="mt-12">
-        <Heading as="h2" variant="h2" className="text-charcoal-900 mb-4">
-          {t("reservations.my_reservations")}
-        </Heading>
-        <MyReservations
-          reservations={myReservations}
-          loading={loadingMyReservations}
-          onCancel={cancelReservation}
-          onModify={handleModify}
-        />
+        {/* ── Step 2: Pick time slot ──────────────────────────────────────── */}
+        {step === "timeslot" && (
+          <Card className="p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-9 h-9 rounded-full bg-smoke-100 flex items-center justify-center">
+                <Clock className="w-4 h-4 text-charcoal-900" strokeWidth={1.5} />
+              </div>
+              <Heading as="h2" variant="h3" className="text-charcoal-900">
+                Horários disponíveis para {partySize} {partySize === 1 ? "pessoa" : "pessoas"} em{" "}
+                {new Date(selectedDate + "T00:00:00").toLocaleDateString("pt-BR", {
+                  day: "numeric",
+                  month: "long",
+                })}
+              </Heading>
+            </div>
+            <TimeslotGrid
+              slots={availableSlots}
+              loading={loadingSlots}
+              error={slotsError}
+              onSelect={selectSlot}
+            />
+          </Card>
+        )}
+
+        {/* ── Step 3: Special requests + confirm ─────────────────────────── */}
+        {step === "requests" && selectedSlot && (
+          <Card className="p-6">
+            {/* Summary card */}
+            <div className="mb-6 rounded-sm bg-charcoal-900 text-smoke-50 p-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-charcoal-800 flex items-center justify-center">
+                  <Check className="w-4 h-4 text-brand-400" />
+                </div>
+                <div>
+                  <Text className="font-semibold text-smoke-50">
+                    {new Date(selectedSlot.date + "T00:00:00").toLocaleDateString("pt-BR", {
+                      weekday: "long",
+                      day: "2-digit",
+                      month: "long",
+                    })}{" "}
+                    às {selectedSlot.startTime}
+                  </Text>
+                  <Text variant="small" className="text-smoke-200">
+                    {partySize} {partySize === 1 ? "pessoa" : "pessoas"} · {selectedSlot.durationMinutes} min
+                  </Text>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-full bg-smoke-100 flex items-center justify-center">
+                <Sparkles className="w-4 h-4 text-charcoal-900" strokeWidth={1.5} />
+              </div>
+              <Heading as="h2" variant="h3" className="text-charcoal-900">
+                Solicitações especiais
+              </Heading>
+            </div>
+
+            <SpecialRequestsForm value={specialRequests} onChange={setSpecialRequests} />
+
+            {createError && (
+              <div className="mt-4 rounded-sm border border-accent-red/20 bg-accent-red/10 p-3 text-sm text-accent-red">
+                {createError}
+              </div>
+            )}
+
+            <div className="mt-8 flex gap-3">
+              <Button
+                variant="secondary"
+                onClick={() => setStep("timeslot")}
+                className="flex-1"
+                size="lg"
+              >
+                Voltar
+              </Button>
+              <Button
+                onClick={submitReservation}
+                disabled={creating}
+                className="flex-1"
+                size="lg"
+              >
+                {creating ? "Confirmando…" : "Confirmar reserva ✓"}
+              </Button>
+            </div>
+          </Card>
+        )}
       </div>
     </div>
   )

@@ -21,6 +21,11 @@ Example: `development:cart:session:abc123`
 | `query:dynamic:{hash}` | String | 10 min | Availability-sensitive query cache |
 | `query:static:{hash}` | String | 1 h | Static catalog query cache |
 | `query:log:*` | List | 7 d | Query log entries for analytics |
+| `wa:phone:{phoneHash}` | Hash | 24 h | WhatsApp session — phone, sessionId, customerId, lastMessageAt, state |
+| `wa:rate:{phoneHash}` | String | 60 s | WhatsApp rate limit counter (max 20/min) |
+| `wa:webhook:{MessageSid}` | String | 24 h | WhatsApp webhook idempotency (prevents Twilio retry reprocessing) |
+| `wa:debounce:{phoneHash}` | String | 2 s | WhatsApp message debounce (batches rapid-fire messages) |
+| `wa:agent:{sessionId}` | String | 30 s | WhatsApp distributed agent lock (heartbeat extends TTL every 10s) |
 
 ---
 
