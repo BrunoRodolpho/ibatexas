@@ -168,13 +168,15 @@ model Review {
 
 /// Twilio-verified customer profile. Phone is the primary identity.
 model Customer {
-  id        String   @id @default(cuid())
-  phone     String   @unique
-  name      String?
-  email     String?
-  medusaId  String?  @unique @map("medusa_id")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id             String    @id @default(cuid())
+  phone          String    @unique
+  name           String?
+  email          String?
+  medusaId       String?   @unique @map("medusa_id")
+  source         String? /// Origin channel: 'web' | 'whatsapp'
+  firstContactAt DateTime? @map("first_contact_at") /// Timestamp of first interaction
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   addresses   Address[]
   preferences CustomerPreferences?

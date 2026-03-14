@@ -1,23 +1,12 @@
 # Next Steps — Remaining Build Order
 
-Steps 1–11 are complete. Steps 12–15 are below in order.
+Steps 1–12 are complete. Steps 13–15 are below in order.
 Remove a step from this file once it is done (git history is the record).
 
 > **Note:** Admin UI lives at `apps/admin` (port 3002) as a standalone Next.js app.
 > The deprecated admin routes in `apps/web/src/app/[locale]/admin/` should be
 > deleted once the team confirms the migration. After deleting, remove
 > `@tanstack/react-table` from `apps/web/package.json`.
-
----
-
-### Step 12 — WhatsApp Channel
-
-Connect the agent to WhatsApp via Twilio:
-
-- Incoming webhook → parse → build `AgentContext { channel: 'whatsapp' }` → run agent
-- Outgoing: text, image (product photos), list messages (menus), button messages (confirmations), payment links
-- Phone → customerId mapping in Redis
-- Same tools, same cart, same Medusa backend as web
 
 ---
 

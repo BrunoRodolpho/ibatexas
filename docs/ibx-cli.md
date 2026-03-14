@@ -360,6 +360,20 @@ simulate:
     ratingAvg: 4.3
 ```
 
+### Network — `ibx tunnel`
+
+```bash
+ibx tunnel                 # expose local API (port 3001) via ngrok
+ibx tunnel -p 3000         # expose a different port
+```
+
+Starts an ngrok tunnel and prints:
+1. The public HTTPS URL
+2. The full webhook URL (`<ngrok>/api/webhooks/whatsapp`)
+3. Setup instructions for `.env` and Twilio Console
+
+Use this for testing WhatsApp webhooks locally. Requires `ngrok` (`brew install ngrok`).
+
 ### VCS — `ibx git`
 
 ```bash

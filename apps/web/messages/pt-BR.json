@@ -548,7 +548,8 @@
     "free_delivery_progress": "Falta {remaining} para frete grátis",
     "free_delivery_reached": "Frete grátis!",
     "estimated_delivery": "Entrega estimada: ~{minutes} min",
-    "delivery_fallback": "Entrega em até 24h"
+    "delivery_fallback": "Entrega em até 24h",
+    "dismiss": "Fechar"
   },
   "smart_filters": {
     "best_seller": "Mais Vendidos",

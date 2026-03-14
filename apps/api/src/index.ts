@@ -4,6 +4,7 @@ import { startReviewPromptPoller, stopReviewPromptPoller } from "./jobs/review-p
 import { startAbandonedCartChecker, stopAbandonedCartChecker } from "./jobs/abandoned-cart-checker.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { closeNatsConnection } from "@ibatexas/nats-client";
+import { initWhatsAppSender } from "./whatsapp/init.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -24,6 +25,8 @@ const start = async (): Promise<void> => {
 
   try {
     await server.listen({ port: PORT, host: "0.0.0.0" });
+    // Initialize WhatsApp sender (before background jobs that may send notifications)
+    initWhatsAppSender();
     // Start background jobs and NATS subscribers after server is listening
     if (process.env.NODE_ENV !== "test") {
       startNoShowChecker();

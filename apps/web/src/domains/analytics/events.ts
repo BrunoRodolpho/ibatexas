@@ -53,3 +53,11 @@ export type AnalyticsEvent =
   | 'combo_banner_clicked'
   | 'review_section_viewed'
   | 'people_also_ordered_added'
+  // ── WhatsApp Channel ──────────────────────────────────────────
+  | 'whatsapp_message_received'
+  | 'whatsapp_message_sent'
+  | 'whatsapp_session_started'
+  | 'whatsapp_agent_error'
+  | 'whatsapp_interactive_list_sent'
+  | 'whatsapp_interactive_button_sent'
+  | 'whatsapp_interactive_selected'

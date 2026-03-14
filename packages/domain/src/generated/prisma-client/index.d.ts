@@ -7984,6 +7984,8 @@ export namespace Prisma {
     name: string | null
     email: string | null
     medusaId: string | null
+    source: string | null
+    firstContactAt: Date | null
     createdAt: Date | null
     updatedAt: Date | null
   }
@@ -7994,6 +7996,8 @@ export namespace Prisma {
     name: string | null
     email: string | null
     medusaId: string | null
+    source: string | null
+    firstContactAt: Date | null
     createdAt: Date | null
     updatedAt: Date | null
   }
@@ -8004,6 +8008,8 @@ export namespace Prisma {
     name: number
     email: number
     medusaId: number
+    source: number
+    firstContactAt: number
     createdAt: number
     updatedAt: number
     _all: number
@@ -8016,6 +8022,8 @@ export namespace Prisma {
     name?: true
     email?: true
     medusaId?: true
+    source?: true
+    firstContactAt?: true
     createdAt?: true
     updatedAt?: true
   }
@@ -8026,6 +8034,8 @@ export namespace Prisma {
     name?: true
     email?: true
     medusaId?: true
+    source?: true
+    firstContactAt?: true
     createdAt?: true
     updatedAt?: true
   }
@@ -8036,6 +8046,8 @@ export namespace Prisma {
     name?: true
     email?: true
     medusaId?: true
+    source?: true
+    firstContactAt?: true
     createdAt?: true
     updatedAt?: true
     _all?: true
@@ -8119,6 +8131,8 @@ export namespace Prisma {
     name: string | null
     email: string | null
     medusaId: string | null
+    source: string | null
+    firstContactAt: Date | null
     createdAt: Date
     updatedAt: Date
     _count: CustomerCountAggregateOutputType | null
@@ -8146,6 +8160,8 @@ export namespace Prisma {
     name?: boolean
     email?: boolean
     medusaId?: boolean
+    source?: boolean
+    firstContactAt?: boolean
     createdAt?: boolean
     updatedAt?: boolean
     addresses?: boolean | Customer$addressesArgs<ExtArgs>
@@ -8161,6 +8177,8 @@ export namespace Prisma {
     name?: boolean
     email?: boolean
     medusaId?: boolean
+    source?: boolean
+    firstContactAt?: boolean
     createdAt?: boolean
     updatedAt?: boolean
   }, ExtArgs["result"]["customer"]>
@@ -8171,6 +8189,8 @@ export namespace Prisma {
     name?: boolean
     email?: boolean
     medusaId?: boolean
+    source?: boolean
+    firstContactAt?: boolean
     createdAt?: boolean
     updatedAt?: boolean
   }
@@ -8198,6 +8218,14 @@ export namespace Prisma {
       name: string | null
       email: string | null
       medusaId: string | null
+      /**
+       * Origin channel: 'web' | 'whatsapp'
+       */
+      source: string | null
+      /**
+       * Timestamp of first interaction
+       */
+      firstContactAt: Date | null
       createdAt: Date
       updatedAt: Date
     }, ExtArgs["result"]["customer"]>
@@ -8602,6 +8630,8 @@ export namespace Prisma {
     readonly name: FieldRef<"Customer", 'String'>
     readonly email: FieldRef<"Customer", 'String'>
     readonly medusaId: FieldRef<"Customer", 'String'>
+    readonly source: FieldRef<"Customer", 'String'>
+    readonly firstContactAt: FieldRef<"Customer", 'DateTime'>
     readonly createdAt: FieldRef<"Customer", 'DateTime'>
     readonly updatedAt: FieldRef<"Customer", 'DateTime'>
   }
@@ -12991,6 +13021,8 @@ export namespace Prisma {
     name: 'name',
     email: 'email',
     medusaId: 'medusaId',
+    source: 'source',
+    firstContactAt: 'firstContactAt',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt'
   };
@@ -13647,6 +13679,8 @@ export namespace Prisma {
     name?: StringNullableFilter<"Customer"> | string | null
     email?: StringNullableFilter<"Customer"> | string | null
     medusaId?: StringNullableFilter<"Customer"> | string | null
+    source?: StringNullableFilter<"Customer"> | string | null
+    firstContactAt?: DateTimeNullableFilter<"Customer"> | Date | string | null
     createdAt?: DateTimeFilter<"Customer"> | Date | string
     updatedAt?: DateTimeFilter<"Customer"> | Date | string
     addresses?: AddressListRelationFilter
@@ -13661,6 +13695,8 @@ export namespace Prisma {
     name?: SortOrderInput | SortOrder
     email?: SortOrderInput | SortOrder
     medusaId?: SortOrderInput | SortOrder
+    source?: SortOrderInput | SortOrder
+    firstContactAt?: SortOrderInput | SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
     addresses?: AddressOrderByRelationAggregateInput
@@ -13678,6 +13714,8 @@ export namespace Prisma {
     NOT?: CustomerWhereInput | CustomerWhereInput[]
     name?: StringNullableFilter<"Customer"> | string | null
     email?: StringNullableFilter<"Customer"> | string | null
+    source?: StringNullableFilter<"Customer"> | string | null
+    firstContactAt?: DateTimeNullableFilter<"Customer"> | Date | string | null
     createdAt?: DateTimeFilter<"Customer"> | Date | string
     updatedAt?: DateTimeFilter<"Customer"> | Date | string
     addresses?: AddressListRelationFilter
@@ -13692,6 +13730,8 @@ export namespace Prisma {
     name?: SortOrderInput | SortOrder
     email?: SortOrderInput | SortOrder
     medusaId?: SortOrderInput | SortOrder
+    source?: SortOrderInput | SortOrder
+    firstContactAt?: SortOrderInput | SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
     _count?: CustomerCountOrderByAggregateInput
@@ -13708,6 +13748,8 @@ export namespace Prisma {
     name?: StringNullableWithAggregatesFilter<"Customer"> | string | null
     email?: StringNullableWithAggregatesFilter<"Customer"> | string | null
     medusaId?: StringNullableWithAggregatesFilter<"Customer"> | string | null
+    source?: StringNullableWithAggregatesFilter<"Customer"> | string | null
+    firstContactAt?: DateTimeNullableWithAggregatesFilter<"Customer"> | Date | string | null
     createdAt?: DateTimeWithAggregatesFilter<"Customer"> | Date | string
     updatedAt?: DateTimeWithAggregatesFilter<"Customer"> | Date | string
   }
@@ -14466,6 +14508,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     addresses?: AddressCreateNestedManyWithoutCustomerInput
@@ -14480,6 +14524,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     addresses?: AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -14494,6 +14540,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     addresses?: AddressUpdateManyWithoutCustomerNestedInput
@@ -14508,6 +14556,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     addresses?: AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -14522,6 +14572,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
   }
@@ -14532,6 +14584,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
@@ -14542,6 +14596,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
   }
@@ -15447,6 +15503,8 @@ export namespace Prisma {
     name?: SortOrder
     email?: SortOrder
     medusaId?: SortOrder
+    source?: SortOrder
+    firstContactAt?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
   }
@@ -15457,6 +15515,8 @@ export namespace Prisma {
     name?: SortOrder
     email?: SortOrder
     medusaId?: SortOrder
+    source?: SortOrder
+    firstContactAt?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
   }
@@ -15467,6 +15527,8 @@ export namespace Prisma {
     name?: SortOrder
     email?: SortOrder
     medusaId?: SortOrder
+    source?: SortOrder
+    firstContactAt?: SortOrder
     createdAt?: SortOrder
     updatedAt?: SortOrder
   }
@@ -16844,6 +16906,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     addresses?: AddressCreateNestedManyWithoutCustomerInput
@@ -16857,6 +16921,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     addresses?: AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -16886,6 +16952,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     addresses?: AddressUpdateManyWithoutCustomerNestedInput
@@ -16899,6 +16967,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     addresses?: AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -17152,6 +17222,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     preferences?: CustomerPreferencesCreateNestedOneWithoutCustomerInput
@@ -17165,6 +17237,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     preferences?: CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
@@ -17194,6 +17268,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     preferences?: CustomerPreferencesUpdateOneWithoutCustomerNestedInput
@@ -17207,6 +17283,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     preferences?: CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
@@ -17220,6 +17298,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     addresses?: AddressCreateNestedManyWithoutCustomerInput
@@ -17233,6 +17313,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     addresses?: AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -17262,6 +17344,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     addresses?: AddressUpdateManyWithoutCustomerNestedInput
@@ -17275,6 +17359,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     addresses?: AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -17288,6 +17374,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     addresses?: AddressCreateNestedManyWithoutCustomerInput
@@ -17301,6 +17389,8 @@ export namespace Prisma {
     name?: string | null
     email?: string | null
     medusaId?: string | null
+    source?: string | null
+    firstContactAt?: Date | string | null
     createdAt?: Date | string
     updatedAt?: Date | string
     addresses?: AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -17330,6 +17420,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     addresses?: AddressUpdateManyWithoutCustomerNestedInput
@@ -17343,6 +17435,8 @@ export namespace Prisma {
     name?: NullableStringFieldUpdateOperationsInput | string | null
     email?: NullableStringFieldUpdateOperationsInput | string | null
     medusaId?: NullableStringFieldUpdateOperationsInput | string | null
+    source?: NullableStringFieldUpdateOperationsInput | string | null
+    firstContactAt?: NullableDateTimeFieldUpdateOperationsInput | Date | string | null
     createdAt?: DateTimeFieldUpdateOperationsInput | Date | string
     updatedAt?: DateTimeFieldUpdateOperationsInput | Date | string
     addresses?: AddressUncheckedUpdateManyWithoutCustomerNestedInput

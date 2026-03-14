@@ -11,7 +11,7 @@
 
 import Anthropic from "@anthropic-ai/sdk"
 import type { MessageParam, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js"
-import type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
+import { Channel, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
 import { SYSTEM_PROMPT } from "./system-prompt.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 
@@ -83,13 +83,20 @@ export async function* runAgent(
     { role: "user", content: message },
   ]
 
+  // ── Channel-specific hint appended to system prompt ───────────────────────
+  const channelHint =
+    context.channel === Channel.WhatsApp
+      ? "\n\n[Canal atual: WhatsApp — respostas curtas, sem tabelas, URLs diretos]"
+      : "\n\n[Canal atual: Web — markdown completo]"
+  const systemPrompt = SYSTEM_PROMPT + channelHint
+
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // ── Stream one turn ─────────────────────────────────────────────────────
     let stream: ReturnType<typeof client.messages.stream>
     try {
       stream = client.messages.stream({
         model,
-        system: SYSTEM_PROMPT,
+        system: systemPrompt,
         messages,
         tools: TOOL_DEFINITIONS,
         max_tokens: AGENT_MAX_TOKENS,

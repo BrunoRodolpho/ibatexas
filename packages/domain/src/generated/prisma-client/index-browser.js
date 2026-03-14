@@ -193,6 +193,8 @@ exports.Prisma.CustomerScalarFieldEnum = {
   name: 'name',
   email: 'email',
   medusaId: 'medusaId',
+  source: 'source',
+  firstContactAt: 'firstContactAt',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 };

@@ -19,6 +19,8 @@ import { registerInspectCommands } from "./commands/inspect.js"
 import { registerDoctorCommands } from "./commands/doctor.js"
 import { registerMatrixCommands } from "./commands/matrix.js"
 import { registerSimulateCommands } from "./commands/simulate.js"
+import { registerTunnelCommands } from "./commands/tunnel.js"
+import { registerAuthCommands } from "./commands/auth.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
@@ -150,6 +152,19 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Auth",
+      commands: [
+        { usage: "auth flush [hash]",      desc: "Delete OTP rate-limit & fail keys (all or by phone hash)" },
+        { usage: "auth status [hash]",     desc: "Show current OTP rate-limit and fail counters" },
+      ],
+    },
+    {
+      title: "Network",
+      commands: [
+        { usage: "tunnel [-p port]",     desc: "Expose local API via ngrok for WhatsApp webhook testing" },
+      ],
+    },
+    {
       title: "Config",
       commands: [
         { usage: "env check [--step n]", desc: "Validate required environment variables" },
@@ -271,5 +286,13 @@ program.addCommand(simulateGroup)
 const doctorGroup = new Command("doctor")
 registerDoctorCommands(doctorGroup)
 program.addCommand(doctorGroup)
+
+// ── Auth: ibx auth … ──────────────────────────────────────────────────────
+const authGroup = new Command("auth")
+registerAuthCommands(authGroup)
+program.addCommand(authGroup)
+
+// ── Tunnel: ibx tunnel ─────────────────────────────────────────────────────
+registerTunnelCommands(program)
 
 program.parse()
