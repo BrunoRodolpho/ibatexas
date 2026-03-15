@@ -1,9 +1,8 @@
 'use client'
 
 import { cva, type VariantProps } from 'class-variance-authority'
-import { forwardRef } from 'react'
+import { forwardRef, type ComponentProps } from 'react'
 import { Link } from '@/i18n/navigation'
-import type { ComponentProps } from 'react'
 
 const buttonVariants = cva(
   'inline-flex items-center justify-center gap-2 font-medium rounded-sm text-sm transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed select-none',

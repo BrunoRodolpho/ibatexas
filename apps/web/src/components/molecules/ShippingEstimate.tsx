@@ -11,14 +11,14 @@ export const ShippingEstimate = () => {
   const [formattedCep, setFormattedCep] = useState('')
   
   // Only query when we have 8 digits
-  const cleanCep = cepInput.replace(/\D/g, '')
+  const cleanCep = cepInput.replaceAll(/\D/g, '')
   const { data, loading, error } = useShippingEstimate(
     cleanCep.length === 8 ? cleanCep : undefined
   )
 
   // Format CEP mask: 00000-000
   const handleCepChange = (value: string) => {
-    const numbers = value.replace(/\D/g, '').slice(0, 8)
+    const numbers = value.replaceAll(/\D/g, '').slice(0, 8)
     setCepInput(numbers)
     
     if (numbers.length >= 5) {

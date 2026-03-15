@@ -93,8 +93,8 @@ export const ProductCard = ({
     BADGE_PRIORITY.includes(tag as (typeof BADGE_PRIORITY)[number])
   )
 
-  // Social proof only when meaningful (≥ 4.0 AND ≥ 10 reviews)
-  const showSocialProof = rating && rating >= 4.0 && reviewCount && reviewCount >= 10
+  // Social proof only when meaningful (≥ 4 AND ≥ 10 reviews)
+  const showSocialProof = rating && rating >= 4 && reviewCount && reviewCount >= 10
 
   // Discount percentage for non-premium items
   const hasDiscount = compareAtPrice && compareAtPrice > price
@@ -260,7 +260,7 @@ export const ProductCard = ({
           ) : priorityTag && (
             <div className="absolute top-2 left-2 z-10">
               <Badge variant={priorityTag as BadgeProps['variant']}>
-                {priorityTag.replace(/_/g, ' ')}
+                {priorityTag.replaceAll("_", " ")}
               </Badge>
             </div>
           )}

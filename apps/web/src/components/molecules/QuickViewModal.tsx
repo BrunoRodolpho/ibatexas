@@ -116,7 +116,7 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
             <div className="flex flex-wrap gap-1 mb-2">
               {product.tags.slice(0, 3).map((tag) => (
                 <Badge key={tag} variant={tagToBadgeVariant(tag)}>
-                  {tag.replace(/_/g, ' ')}
+                  {tag.replaceAll("_", " ")}
                 </Badge>
               ))}
             </div>

@@ -71,7 +71,7 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
     if (!shouldAnimate) return
 
     // Respect prefers-reduced-motion — no auto-scroll, but touch drag still works
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const mq = globalThis.matchMedia('(prefers-reduced-motion: reduce)')
     prefersReducedMotion.current = mq.matches
     const onMqChange = (e: MediaQueryListEvent) => { prefersReducedMotion.current = e.matches }
     mq.addEventListener('change', onMqChange)

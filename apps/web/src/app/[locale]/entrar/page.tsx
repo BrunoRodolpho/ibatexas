@@ -17,13 +17,13 @@ const COUNTRY_CODES = [
 // ── Phone mask by country ───────────────────────────────────────────────
 function formatPhone(value: string, countryCode: string): string {
   if (countryCode === "+55") {
-    const digits = value.replace(/\D/g, "").slice(0, 11)
+    const digits = value.replaceAll(/\D/g, "").slice(0, 11)
     if (digits.length <= 2) return digits
     if (digits.length <= 7) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`
     return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`
   }
   // US format: (XXX) XXX-XXXX
-  const digits = value.replace(/\D/g, "").slice(0, 10)
+  const digits = value.replaceAll(/\D/g, "").slice(0, 10)
   if (digits.length <= 3) return digits
   if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`
   return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`
@@ -43,7 +43,7 @@ export default function EntrarPage() {
   const [error, setError] = useState<string | null>(null)
 
   const otpRefs = useRef<(HTMLInputElement | null)[]>([])
-  const rawPhone = phone.replace(/\D/g, "")
+  const rawPhone = phone.replaceAll(/\D/g, "")
   const selectedCountry = COUNTRY_CODES.find((c) => c.code === countryCode) ?? COUNTRY_CODES[0]
 
   // Auto-focus first OTP input
@@ -136,7 +136,7 @@ export default function EntrarPage() {
 
   const handleOTPPaste = (e: React.ClipboardEvent) => {
     e.preventDefault()
-    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6)
+    const pasted = e.clipboardData.getData("text").replaceAll(/\D/g, "").slice(0, 6)
     if (pasted.length === 0) return
 
     const newOtp = ["", "", "", "", "", ""]

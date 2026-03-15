@@ -250,7 +250,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
                 href={`/search?category=${product.categoryHandle}`}
                 className="hover:text-charcoal-900 transition-colors duration-300 capitalize"
               >
-                {product.categoryHandle.replace(/-/g, ' ')}
+                {product.categoryHandle.replaceAll("-", " ")}
               </Link>
             </>
           )}

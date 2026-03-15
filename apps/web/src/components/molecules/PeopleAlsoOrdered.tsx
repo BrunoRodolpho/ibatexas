@@ -129,7 +129,7 @@ export function PeopleAlsoOrdered({ allProducts, onAddToCart }: PeopleAlsoOrdere
                   <h4 className="text-sm font-medium text-charcoal-900 truncate">
                     {product.title}
                   </h4>
-                  {product.rating && product.rating >= 4.0 && product.reviewCount && product.reviewCount >= 10 && (
+                  {product.rating && product.rating >= 4 && product.reviewCount && product.reviewCount >= 10 && (
                     <div className="flex items-center gap-0.5 mt-0.5">
                       <Star className="w-3 h-3 fill-brand-500 text-brand-500" />
                       <span className="text-[11px] text-charcoal-900 font-medium tabular-nums">{product.rating.toFixed(1)}</span>

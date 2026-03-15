@@ -70,7 +70,7 @@ export function Footer() {
               )}
               {phone && (
                 <p className="pt-1">
-                  <a href={`tel:${phone.replace(/\D/g, '')}`} className="hover:text-smoke-50 transition-colors">
+                  <a href={`tel:${phone.replaceAll(/\D/g, '')}`} className="hover:text-smoke-50 transition-colors">
                     {phone}
                   </a>
                 </p>

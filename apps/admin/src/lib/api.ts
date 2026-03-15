@@ -12,10 +12,10 @@ function getApiBase(): string {
     const url = new URL(configured)
     if (
       (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
-      window.location.hostname !== 'localhost' &&
-      window.location.hostname !== '127.0.0.1'
+      globalThis.location.hostname !== 'localhost' &&
+      globalThis.location.hostname !== '127.0.0.1'
     ) {
-      url.hostname = window.location.hostname
+      url.hostname = globalThis.location.hostname
     }
     return url.origin
   } catch {
