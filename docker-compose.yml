@@ -4,24 +4,28 @@ services:
     image: postgres:15-alpine
     container_name: ibatexas-postgres
     environment:
-      POSTGRES_USER: ibatexas
-      POSTGRES_PASSWORD: ibatexas
-      POSTGRES_DB: ibatexas
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ibatexas"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   redis:
     image: redis:7-alpine
     container_name: ibatexas-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -29,15 +33,19 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   typesense:
     image: typesense/typesense:0.25.2
     container_name: ibatexas-typesense
     environment:
       TYPESENSE_DATA_DIR: /data
-      TYPESENSE_API_KEY: ibatexas-local-key
+      TYPESENSE_API_KEY: ${TYPESENSE_API_KEY}
     ports:
-      - "8108:8108"
+      - "127.0.0.1:8108:8108"
     volumes:
       - typesense_data:/data
     healthcheck:
@@ -45,14 +53,18 @@ services:
       interval: 5s
       timeout: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   nats:
     image: nats:2.10-alpine
     container_name: ibatexas-nats
-    command: ["--jetstream", "--store_dir", "/data"]
+    command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
     ports:
-      - "4222:4222"   # client connections
-      - "8222:8222"   # monitoring UI
+      - "127.0.0.1:4222:4222"   # client connections
+      - "127.0.0.1:8222:8222"   # monitoring UI
     volumes:
       - nats_data:/data
     healthcheck:
@@ -60,6 +72,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
 volumes:
   postgres_data:

@@ -1,0 +1,20 @@
+name: recommendations
+description: Full intelligence layer — profiles, co-purchase, global scores, reviews
+category: intel
+depends:
+  - base-customers
+
+rebuilds:
+  - sync-reviews
+  - intel-copurchase
+  - intel-global-score
+
+verify:
+  global-score:
+    min: 10
+  copurchase:
+    exists: true
+  reviews:
+    min: 50
+  customers:
+    min: 10

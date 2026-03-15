@@ -1,129 +1,109 @@
 # IbateXas
 
-AI-native conversational commerce platform for Brazil.
-Customers shop through natural language — web chat and WhatsApp — powered by a Claude-based agent that searches products, manages carts, and drives checkout.
+AI-powered platform for a Brazilian Smoked House restaurant — food ordering, reservations, and a branded shop.
+
+Monorepo: Next.js storefront, Fastify API, WhatsApp channel (planned), Claude AI agent with 25 tools, Medusa v2 commerce, owner admin panel.
 
 ---
 
-**Target market:** Brazilian food & goods e-commerce
-**Primary language:** Portuguese (pt-BR)
-**Core differentiator:** The shopping experience is a conversation, not a UI
+## Quick Start
 
----
-
-## Architecture
-
-```
-Customer (Web / WhatsApp)
-        │
-        ▼
-   API Gateway (Fastify)
-        │
-   ┌────┴────┐
-   │         │
-   ▼         ▼
- Agent    Commerce
-(Claude)  (Medusa)
-   │         │
-   └────┬────┘
-        │
-   PostgreSQL + Redis + Typesense
+```bash
+pnpm install
+cp .env.example .env  # fill in required keys (see .env.example for comments)
+ibx dev               # starts everything
 ```
 
-### Four Applications
+Explore commands:
 
-| App | Role |
-|---|---|
-| `apps/web` | Next.js chat interface |
-| `apps/api` | Fastify API + SSE streaming |
-| `apps/agent` | Claude orchestrator + tool registry |
-| `apps/commerce` | Medusa.js v2 commerce engine |
+```bash
+ibx --help
+ibx <command> --help
+```
 
-### Five Shared Packages
-
-| Package | Role |
-|---|---|
-| `@ibatexas/types` | Shared TypeScript types |
-| `@ibatexas/domain` | Domain models (conversations, events) |
-| `@ibatexas/llm-provider` | Claude adapter + provider interface |
-| `@ibatexas/tools` | Agent tool definitions + registry |
-| `@ibatexas/nats-client` | NATS event bus wrapper |
+See [docs/ibx-cli.md](docs/ibx-cli.md) for the full CLI reference.
 
 ---
 
-## Technology Stack
+## How It Works
 
-### Frontend
-- **Framework:** Next.js 14 (App Router)
-- **Language:** TypeScript 5+
-- **Styling:** Tailwind CSS + shadcn/ui
-- **Auth:** Clerk
-- **Analytics:** PostHog
+```
+  Customer (Web)    Customer (WhatsApp)    Admin (/admin)
+       │                    │                     │
+       └─────────┬──────────┘                     │
+                 │                                 │
+  ┌──────────────▼──────────────────────────────────▼──┐
+  │              Fastify API (apps/api)                 │
+  │       REST + SSE streaming + OTP auth               │
+  │       Swagger UI → /docs                            │
+  └──────────┬──────────────────────┬──────────────────┘
+             │                      │
+     ┌───────▼────────┐     ┌───────▼────────┐
+     │  Claude Agent  │────▶│  Agent Tools   │
+     │  Orchestrator  │     │  (25 tools)    │
+     └───────┬────────┘     └───────┬────────┘
+             │                      │
+  ┌──────────┼──────────┬───────────┤
+  │          │          │           │
+  ▼          ▼          ▼           ▼
+Medusa     Prisma      Redis     Typesense
+(catalog,  (reservas,  (sessions, (product
+ shop,      reviews,   profiles,   search)
+ orders)    customers)  co-purchase)
+  │
+  └──── NATS JetStream ──▶ PostHog (analytics)
 
-### Backend
-- **API:** Fastify
-- **Language:** TypeScript 5+ / Node.js 20+
-- **ORM:** Prisma
-- **Commerce:** Medusa.js v2
-- **Validation:** Zod
-
-### AI
-- **Primary LLM:** Claude Sonnet 4 (Anthropic)
-- **Fallback LLM:** GPT-4o (OpenAI)
-- **Embeddings:** Voyage AI
-- **Vector store:** Pinecone
-- **Abstraction:** Custom `LLMProvider` interface (swap models without code changes)
-
-### Data
-- **Primary DB:** PostgreSQL 15+ (AWS RDS)
-- **Cache + Sessions:** Redis (Upstash)
-- **Search:** Typesense
-- **Event streaming:** NATS JetStream
-- **Analytics DB:** ClickHouse (Phase 2+)
-
-### Infrastructure
-- **Cloud:** AWS (sa-east-1 — São Paulo)
-- **Compute:** ECS Fargate
-- **IaC:** Terraform
-- **CI/CD:** GitHub Actions
-- **CDN:** CloudFront
-- **DNS:** Route 53
-- **Secrets:** AWS Secrets Manager
-
-### Observability
-- **Errors:** Sentry
-- **Product analytics:** PostHog
-- **Uptime:** BetterStack
-- **Metrics/Logs/Traces:** Prometheus + Grafana Loki + Grafana Tempo (Phase 2+)
-
-### External Services (Brazil)
-- **WhatsApp:** Twilio API
-- **Payments:** Stripe + Pagar.me (PIX, boleto, credit card)
-- **Shipping:** Correios + EasyPost
-- **Address lookup:** ViaCEP
-- **Tax invoices:** Focus NFe
+  ┌──────────────────────────────────────────────────┐
+  │           Next.js Storefront (apps/web)           │
+  │  PDP · Search · Cart · Checkout · Login · Orders  │
+  │  PostHog analytics · sendBeacon → NATS            │
+  └──────────────────────────────────────────────────┘
+```
 
 ---
 
-## Agent Tools
+## Apps
 
-The agent interacts with commerce exclusively through typed, authorized tools. It cannot hallucinate prices or inventory — all facts come from tool responses.
+| App | Path | What |
+|-----|------|------|
+| Web | `apps/web` | Next.js 14 storefront — PDP, search, cart, checkout, OTP login, order tracking, analytics |
+| API | `apps/api` | Fastify REST API — 44 routes, SSE chat stream, Swagger docs |
+| Commerce | `apps/commerce` | Medusa v2 — catalog, cart, orders, payments, admin UI |
+| Agent | `apps/agent` | Claude agent orchestrator (library, runs inside API) |
 
-| Tool | What it does |
-|---|---|
-| `search_products` | Full-text product search via Typesense |
-| `get_product_details` | Product info, price, nutritional data |
-| `check_inventory` | Real-time stock check (FEFO-aware) |
-| `add_to_cart` | Add item, validates stock first |
-| `update_cart` | Change quantity of existing cart item |
-| `remove_from_cart` | Remove item from cart |
-| `create_checkout` | Generate checkout session (PIX/boleto/card) |
-| `estimate_delivery` | Delivery time + cost via CEP |
-| `check_order_status` | Order tracking for authenticated customer |
-| `get_nutritional_info` | ANVISA nutritional data per product |
-| `handoff_to_human` | Escalate to human support agent |
+For a full list of services and their URLs, see the [Local URLs](docs/setup/local-dev.md#local-urls) section in the setup guide.
 
-Authorization is enforced per tool, not per route. A guest can browse but not checkout. A customer cannot access another customer's orders.
+## Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 14, Tailwind CSS, PostHog analytics |
+| API | Fastify, TypeScript 5+, Swagger/OpenAPI, Node.js 20+ |
+| Agent | Claude Sonnet (Anthropic), tool-use API — 25 tools |
+| Commerce | Medusa.js v2 — catalog, cart, orders, payments |
+| Auth | Twilio Verify — WhatsApp OTP (no passwords, no Clerk) |
+| Database | PostgreSQL 15 (Medusa + Prisma `ibx_domain` schema) |
+| Cache | Redis — sessions, CustomerProfile (30d TTL), co-purchase matrix |
+| Search | Typesense — full-text + vector product search |
+| Events | NATS JetStream — domain events, analytics pipeline |
+| Analytics | PostHog (client-side) + sendBeacon → NATS (server-side) |
+| Payments | Stripe (card + PIX) |
+| Cloud | AWS sa-east-1 (ECS Fargate, RDS, CloudFront) |
 
 ---
 
+## Docs
+
+| Doc | Contents |
+|-----|---------|
+| [CLAUDE.md](CLAUDE.md) | AI agent guide — hard rules, naming conventions |
+| [docs/ibx-cli.md](docs/ibx-cli.md) | Full `ibx` command reference |
+| [docs/setup/local-dev.md](docs/setup/local-dev.md) | Prerequisites, env vars, setup |
+| [docs/design/bounded-contexts.md](docs/design/bounded-contexts.md) | 8 contexts, entity ownership |
+| [docs/design/domain-model.md](docs/design/domain-model.md) | Prisma schema, entities, NATS events |
+| [docs/design/agent-tools.md](docs/design/agent-tools.md) | 25 tools — auth level, inputs, outputs |
+| [docs/design/use-cases.md](docs/design/use-cases.md) | Web vs WhatsApp vs in-person matrix |
+| [docs/design/customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations, reviews, co-purchase |
+| [docs/analytics-dashboards.md](docs/analytics-dashboards.md) | Event taxonomy, PostHog dashboards, KPIs |
+| [docs/ops/redis-memory.md](docs/ops/redis-memory.md) | Redis key patterns, TTLs, ops commands |
+| [docs/next-steps.md](docs/next-steps.md) | Roadmap — remaining build steps |

@@ -1,3 +1,190 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    font-family: var(--font-inter, system-ui, sans-serif);
+    color: #1A1614;
+    background-color: #FAFAF9;
+  }
+
+  :focus-visible {
+    outline: 2px solid #1A1614;
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Luxury selection */
+  ::selection {
+    background-color: #FFE4CC;
+    color: #3D1800;
+  }
+}
+
+@layer components {
+  /* Grain overlay — applied to dark sections for materiality */
+  .grain-overlay {
+    position: relative;
+  }
+  .grain-overlay::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 256px 256px;
+    mix-blend-mode: overlay;
+    z-index: 1;
+  }
+  .grain-overlay > * {
+    position: relative;
+    z-index: 2;
+  }
+
+  /* Warm radial glow — used for hero atmospheric warmth */
+  .warm-glow {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(232,93,4,0.08), transparent),
+      radial-gradient(ellipse 60% 80% at 80% 50%, rgba(232,93,4,0.04), transparent);
+  }
+
+  /* ── Surface tokens — semantic abstraction over raw colors ──── */
+  .surface-base     { @apply bg-smoke-50; }
+  .surface-card     { @apply bg-smoke-50 shadow-card border border-smoke-200/40; }
+  .surface-elevated { @apply bg-white shadow-md; }
+  .surface-inverted { @apply bg-charcoal-900 text-smoke-100; }
+
+  /* Steam effect — CSS-only rising wisps */
+  .steam-effect {
+    position: relative;
+    overflow: visible;
+  }
+  .steam-effect::after {
+    content: '';
+    position: absolute;
+    top: -8px;
+    left: 20%;
+    right: 20%;
+    height: 40px;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(255,255,255,0.3) 0%, transparent 70%);
+    animation: steam-rise 3s ease-out infinite;
+    z-index: 3;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .steam-effect::after {
+      animation: none;
+      display: none;
+    }
+  }
+}
+
+@layer utilities {
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      #F5F3F0 25%,
+      #FAFAF9 50%,
+      #F5F3F0 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Luxury easing for all transitions */
+  .ease-luxury {
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Premium transition shorthand — one class for standard interactive transitions */
+  .transition-premium {
+    transition-property: all;
+    transition-duration: 500ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Editorial text measure */
+  .measure-narrow {
+    max-width: 38ch;
+  }
+  .measure-reading {
+    max-width: 55ch;
+  }
+
+  /* Semantic price typography */
+  .text-price {
+    @apply font-display text-display-2xs font-semibold text-charcoal-900 tabular-nums;
+  }
+
+  /* Marquee edge-fade mask */
+  .marquee-mask {
+    mask-image: linear-gradient(to right, transparent 0%, black 4%, black 96%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, black 4%, black 96%, transparent 100%);
+  }
+
+  /* ── Category pill hover glow — smoke-tinted lift ── */
+  .category-pill {
+    will-change: transform;
+  }
+
+  /* ── Sticky cart bar safe area (avoid bottom nav overlap on mobile) ── */
+  .has-sticky-cart {
+    padding-bottom: 4.5rem;
+  }
+  @media (min-width: 640px) {
+    .has-sticky-cart {
+      padding-bottom: 0;
+    }
+  }
+
+  /* ── z-index layer: between z-10 and z-20 for sticky categories ── */
+  .z-15 {
+    z-index: 15;
+  }
+
+  /* Respect reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .animate-marquee {
+      animation: none;
+    }
+    .animate-reveal,
+    .animate-reveal-slow,
+    .animate-bounce-subtle,
+    .animate-snap-underline,
+    .animate-press,
+    .animate-fade-in,
+    .animate-slide-up,
+    .animate-slide-in-right,
+    .animate-slide-in-left,
+    .animate-slide-in-bottom,
+    .animate-pulse-once,
+    .animate-cart-bounce,
+    .animate-fade-up {
+      animation: none;
+      opacity: 1;
+      transform: none;
+    }
+  }
+}

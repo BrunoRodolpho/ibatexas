@@ -35,3 +35,13 @@ pnpm-debug.log*
 
 # Claude Code local session files
 .claude/
+
+# ibx CLI runtime files
+.ibx-dev.pids
+.ibx/
+
+# Medusa auto-generated types
+apps/commerce/.medusa/types/query-entry-points.d.ts
+
+# Medusa admin file uploads
+apps/commerce/static/

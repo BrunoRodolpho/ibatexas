@@ -1,0 +1,19 @@
+// Centralized Redis key factory.
+// Every Redis key in the codebase must go through rk() — never build raw strings inline.
+// Prepends `${APP_ENV}:` to prevent cross-environment key bleed when staging and
+// production share a Redis instance (or when a backup is restored to a different env).
+//
+// APP_ENV must be set to 'development' | 'staging' | 'production'.
+// Falls back to 'development' so local runs always work without extra config.
+
+const ENV_PREFIX = (process.env.APP_ENV ?? "development") as string;
+
+/**
+ * Namespace a Redis key with the current APP_ENV prefix.
+ *
+ * @example
+ *   rk("customer:profile:cust_123")  // "production:customer:profile:cust_123"
+ */
+export function rk(key: string): string {
+  return `${ENV_PREFIX}:${key}`;
+}

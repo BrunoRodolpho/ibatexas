@@ -6,16 +6,22 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc",
-    "lint": "tsc --noEmit"
+    "build": "tsc --outDir dist",
+    "lint": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@ibatexas/domain": "workspace:*",
+    "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/types": "workspace:*",
+    "redis": "^4.6.0",
+    "stripe": "^14.0.0",
+    "typesense": "^1.8.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {

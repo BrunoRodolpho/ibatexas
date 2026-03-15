@@ -2,17 +2,21 @@
   "name": "@ibatexas/types",
   "version": "0.0.1",
   "private": true,
+  "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --outDir dist",
     "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.22.0"
   },
   "devDependencies": {
     "typescript": "^5.3.0"

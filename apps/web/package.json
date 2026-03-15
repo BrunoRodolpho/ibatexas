@@ -6,20 +6,30 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "check-bundle": "node ../../scripts/check-bundle-size.mjs"
   },
   "dependencies": {
-    "@clerk/nextjs": "^5.0.0",
     "@ibatexas/types": "workspace:*",
+    "@tanstack/react-table": "^8.21.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.575.0",
     "next": "14.2.0",
+    "next-intl": "^4.8.3",
     "posthog-js": "^1.96.0",
     "react": "^18.3.0",
-    "react-dom": "^18.3.0"
+    "react-dom": "^18.3.0",
+    "zod": "^3.22.0",
+    "zustand": "^5.0.11"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^7.2.0",
     "autoprefixer": "^10.4.0",
+    "eslint": "^8",
+    "eslint-config-next": "14.2.0",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.3.0"

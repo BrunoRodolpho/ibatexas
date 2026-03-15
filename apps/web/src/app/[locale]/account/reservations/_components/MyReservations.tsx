@@ -1,0 +1,119 @@
+"use client"
+
+import { Button, Card } from "@/components/atoms"
+import { Users, MapPin } from "lucide-react"
+import type { ReservationDTO } from "@ibatexas/types"
+
+interface Props {
+  reservations: ReservationDTO[]
+  loading: boolean
+  onCancel: (id: string) => void
+  onModify: (reservation: ReservationDTO) => void
+}
+
+const STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  pending: { label: "Aguardando confirmação", color: "bg-yellow-100 text-yellow-800" },
+  confirmed: { label: "Confirmada", color: "bg-green-100 text-green-800" },
+  seated: { label: "Em andamento", color: "bg-blue-100 text-blue-800" },
+  completed: { label: "Concluída", color: "bg-smoke-100 text-smoke-500" },
+  cancelled: { label: "Cancelada", color: "bg-red-100 text-red-700" },
+  no_show: { label: "Não compareceu", color: "bg-red-100 text-red-700" },
+}
+
+const LOCATION_LABELS: Record<string, string> = {
+  indoor: "Salão interno",
+  outdoor: "Área externa",
+  bar: "Bar",
+  terrace: "Terraço",
+}
+
+function formatDateBR(dateStr: string): string {
+  return new Date(dateStr + "T00:00:00").toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  })
+}
+
+export function MyReservations({ reservations, loading, onCancel, onModify }: Props) {
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        {[1, 2].map((i) => (
+          <div key={i} className="h-24 rounded-sm skeleton" />
+        ))}
+      </div>
+    )
+  }
+
+  if (reservations.length === 0) {
+    return (
+      <div className="py-8 text-center text-smoke-400">
+        <p>Você ainda não tem reservas.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {reservations.map((r) => {
+        const statusInfo = STATUS_LABELS[r.status] ?? { label: r.status, color: "bg-smoke-100 text-smoke-500" }
+        const canModifyOrCancel = ["pending", "confirmed"].includes(r.status)
+
+        return (
+          <Card key={r.id} className="p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-semibold text-charcoal-900">
+                    {formatDateBR(r.timeSlot.date)} às {r.timeSlot.startTime}
+                  </span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusInfo.color}`}>
+                    {statusInfo.label}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-3 text-sm text-smoke-400">
+                  <span className="inline-flex items-center gap-1"><Users className="w-3.5 h-3.5" /> {r.partySize} {r.partySize === 1 ? "pessoa" : "pessoas"}</span>
+                  {r.tableLocation && (
+                    <span className="inline-flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {LOCATION_LABELS[r.tableLocation] ?? r.tableLocation}</span>
+                  )}
+                </div>
+                {r.specialRequests.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {r.specialRequests.map((sr, i) => (
+                      <span
+                        key={i}
+                        className="rounded-full bg-brand-50 px-2 py-0.5 text-xs text-brand-700"
+                      >
+                        {sr.type}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {canModifyOrCancel && (
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onModify(r)}
+                  >
+                    Modificar
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => onCancel(r.id)}
+                  >
+                    Cancelar
+                  </Button>
+                </div>
+              )}
+            </div>
+          </Card>
+        )
+      })}
+    </div>
+  )
+}
