@@ -65,7 +65,14 @@ export function registerDebugCommands(group: Command): void {
               size = formatBytes(mem ?? 0)
             } catch { /* MEMORY USAGE may not be available */ }
 
-            const ttlStr = ttl === -1 ? chalk.dim("no TTL") : ttl === -2 ? chalk.red("expired") : chalk.dim(`${ttl}s`)
+            let ttlStr: string
+            if (ttl === -1) {
+              ttlStr = chalk.dim("no TTL")
+            } else if (ttl === -2) {
+              ttlStr = chalk.red("expired")
+            } else {
+              ttlStr = chalk.dim(`${ttl}s`)
+            }
             console.log(`    ${chalk.cyan(key.padEnd(50))} ${type.padEnd(8)} ${size.padEnd(10)} ${ttlStr}`)
           }
           if (keys.length > 20) {
@@ -126,7 +133,14 @@ export function registerDebugCommands(group: Command): void {
             const memColor = r.keys > 0 ? chalk.cyan : chalk.gray
             let line = `  ${r.label.padEnd(labelW)}${keysColor(String(r.keys).padStart(8))}   ${memColor(formatBytes(r.mem).padEnd(10))}`
             if (opts.ttl) {
-              const ttlStr = r.ttl === undefined ? "-" : r.ttl === -1 ? "none" : `${r.ttl}s`
+              let ttlStr: string
+              if (r.ttl === undefined) {
+                ttlStr = "-"
+              } else if (r.ttl === -1) {
+                ttlStr = "none"
+              } else {
+                ttlStr = `${r.ttl}s`
+              }
               line += `  ${chalk.dim(ttlStr)}`
             }
             console.log(line)

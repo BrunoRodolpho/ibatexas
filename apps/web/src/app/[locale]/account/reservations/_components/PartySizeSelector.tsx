@@ -6,8 +6,8 @@ const MIN_PARTY = 1
 const MAX_PARTY = 20
 
 interface Props {
-  value: number
-  onChange: (size: number) => void
+  readonly value: number
+  readonly onChange: (size: number) => void
 }
 
 export function PartySizeSelector({ value, onChange }: Props) {
@@ -15,10 +15,10 @@ export function PartySizeSelector({ value, onChange }: Props) {
 
   return (
     <div>
-      <label className="block text-sm font-medium text-charcoal-700 mb-2">
+      <span className="block text-sm font-medium text-charcoal-700 mb-2" id="party-size-label">
         {t("reservations.party_size")}
-      </label>
-      <div className="flex items-center gap-4">
+      </span>
+      <div className="flex items-center gap-4" role="group" aria-labelledby="party-size-label">
         <button
           type="button"
           onClick={() => onChange(Math.max(MIN_PARTY, value - 1))}

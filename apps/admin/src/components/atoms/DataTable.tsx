@@ -14,12 +14,12 @@ import { useState } from 'react'
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 
 interface DataTableProps<T> {
-  data: T[]
-  columns: ColumnDef<T, any>[]
-  pageSize?: number
-  isLoading?: boolean
-  emptyMessage?: string
-  onRowClick?: (row: T) => void
+  readonly data: T[]
+  readonly columns: ColumnDef<T, any>[]
+  readonly pageSize?: number
+  readonly isLoading?: boolean
+  readonly emptyMessage?: string
+  readonly onRowClick?: (row: T) => void
 }
 
 export function DataTable<T>({
@@ -55,7 +55,7 @@ export function DataTable<T>({
           <thead>
             <tr className="border-b border-smoke-100 bg-smoke-100/50">
               {columns.map((_, i) => (
-                <th key={i} className="px-4 py-2.5">
+                <th key={`skel-th-${i}`} className="px-4 py-2.5">
                   <div className="h-3 w-20 animate-pulse rounded bg-smoke-200" />
                 </th>
               ))}
@@ -63,9 +63,9 @@ export function DataTable<T>({
           </thead>
           <tbody>
             {Array.from({ length: 5 }).map((_, i) => (
-              <tr key={i} className="border-b border-smoke-100">
+              <tr key={`skel-tr-${i}`} className="border-b border-smoke-100">
                 {columns.map((_, j) => (
-                  <td key={j} className="px-4 py-2.5">
+                  <td key={`skel-td-${i}-${j}`} className="px-4 py-2.5">
                     <div className="h-3 w-full animate-pulse rounded bg-smoke-100" />
                   </td>
                 ))}
@@ -96,7 +96,10 @@ export function DataTable<T>({
                             ? 'flex cursor-pointer select-none items-center gap-1 hover:text-charcoal-900'
                             : 'flex items-center gap-1'
                         }
+                        role={header.column.getCanSort() ? 'button' : undefined}
+                        tabIndex={header.column.getCanSort() ? 0 : undefined}
                         onClick={header.column.getToggleSortingHandler()}
+                        onKeyDown={header.column.getCanSort() ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); header.column.getToggleSortingHandler()?.(e as unknown as MouseEvent) } } : undefined}
                       >
                         {flexRender(header.column.columnDef.header, header.getContext())}
                         {header.column.getCanSort() && (
@@ -134,7 +137,10 @@ export function DataTable<T>({
                   className={`border-b border-smoke-100 last:border-0 hover:bg-smoke-100/50 ${
                     onRowClick ? 'cursor-pointer' : ''
                   }`}
+                  role={onRowClick ? 'button' : undefined}
+                  tabIndex={onRowClick ? 0 : undefined}
                   onClick={() => onRowClick?.(row.original)}
+                  onKeyDown={onRowClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(row.original) } } : undefined}
                 >
                   {row.getVisibleCells().map((cell) => (
                     <td key={cell.id} className="px-4 py-2.5 text-charcoal-700">

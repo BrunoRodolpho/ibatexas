@@ -29,14 +29,14 @@ interface Product {
 }
 
 interface ProductGridProps {
-  products: Product[]
-  columns?: number
-  featured?: boolean
-  onAddToCart?: (productId: string) => void
-  getProductHref?: (product: Product) => string
-  isLoading?: boolean
-  isEmpty?: boolean
-  emptyMessage?: string
+  readonly products: Product[]
+  readonly columns?: number
+  readonly featured?: boolean
+  readonly onAddToCart?: (productId: string) => void
+  readonly getProductHref?: (product: Product) => string
+  readonly isLoading?: boolean
+  readonly isEmpty?: boolean
+  readonly emptyMessage?: string
 }
 
 export const ProductGrid = ({
@@ -82,7 +82,7 @@ export const ProductGrid = ({
     return (
       <div className={`grid ${gridColsClass} gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-8 lg:gap-y-10`}>
         {Array.from({ length: columns === 5 ? 10 : 8 }).map((_, i) => (
-          <div key={i} className="overflow-hidden rounded-card animate-pulse">
+          <div key={`skel-${i}`} className="overflow-hidden rounded-card animate-pulse">
             <div className="aspect-[4/3] rounded-card bg-smoke-200" />
             <div className="pt-3 space-y-2.5">
               <div className="h-4 w-3/4 rounded bg-smoke-200" />

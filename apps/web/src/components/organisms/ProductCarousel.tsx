@@ -5,8 +5,8 @@ import { CarouselCard } from '../molecules/CarouselCard'
 import type { ProductDTO } from '@ibatexas/types'
 
 interface ProductCarouselProps {
-  products: ProductDTO[]
-  isLoading?: boolean
+  readonly products: ProductDTO[]
+  readonly isLoading?: boolean
 }
 
 /** px/ms — gentle browsing pace (~60s per full cycle) */
@@ -156,7 +156,7 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
         <div className="flex gap-6 px-6">
           {Array.from({ length: 6 }).map((_, i) => (
             <div
-              key={i}
+              key={`skel-${i}`}
               className="flex-shrink-0 w-[630px] aspect-[16/10] rounded-sm skeleton"
             />
           ))}

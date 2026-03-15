@@ -12,8 +12,8 @@ const LOCATION_LABELS: Record<string, string> = {
 }
 
 interface Props {
-  reservation: CreatedReservation
-  onMakeAnother: () => void
+  readonly reservation: CreatedReservation
+  readonly onMakeAnother: () => void
 }
 
 export function ReservationConfirmation({ reservation, onMakeAnother }: Props) {

@@ -14,37 +14,37 @@ import { BLUR_PLACEHOLDER } from '@/lib/constants'
 const BADGE_PRIORITY = ['edicao_limitada', 'chef_choice', 'popular', 'novo'] as const
 
 interface ProductCardProps {
-  id: string
-  title: string
-  subtitle?: string
-  imageUrl?: string | null
-  images?: string[]
-  price: number
-  compareAtPrice?: number
-  variantCount?: number
-  rating?: number
-  reviewCount?: number
-  tags?: string[]
-  weight?: string
-  servings?: number
-  stockCount?: number
-  availabilityWindow?: string
-  description?: string | null
-  isBundle?: boolean
-  bundleServings?: number
-  href?: string
-  onAddToCart?: () => void
-  priority?: boolean
+  readonly id: string
+  readonly title: string
+  readonly subtitle?: string
+  readonly imageUrl?: string | null
+  readonly images?: string[]
+  readonly price: number
+  readonly compareAtPrice?: number
+  readonly variantCount?: number
+  readonly rating?: number
+  readonly reviewCount?: number
+  readonly tags?: string[]
+  readonly weight?: string
+  readonly servings?: number
+  readonly stockCount?: number
+  readonly availabilityWindow?: string
+  readonly description?: string | null
+  readonly isBundle?: boolean
+  readonly bundleServings?: number
+  readonly href?: string
+  readonly onAddToCart?: () => void
+  readonly priority?: boolean
   /** Current quantity in cart (0 or undefined = not in cart) */
-  cartQuantity?: number
+  readonly cartQuantity?: number
   /** Callback to update quantity in cart */
-  onUpdateQuantity?: (qty: number) => void
+  readonly onUpdateQuantity?: (qty: number) => void
   /** Callback to remove item from cart */
-  onRemoveFromCart?: () => void
+  readonly onRemoveFromCart?: () => void
   /** Number of orders today — shown as scarcity signal when >= 5 */
-  ordersToday?: number
+  readonly ordersToday?: number
   /** Card layout variant */
-  variant?: 'vertical' | 'horizontal'
+  readonly variant?: 'vertical' | 'horizontal'
 }
 
 export const ProductCard = ({

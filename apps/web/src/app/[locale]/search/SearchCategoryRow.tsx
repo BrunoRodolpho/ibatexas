@@ -15,16 +15,16 @@ const CATEGORY_ICONS: Record<string, React.ElementType> = {
 }
 
 interface CategoryOption {
-  id: string
-  label: string
+  readonly id: string
+  readonly label: string
 }
 
 interface SearchCategoryRowProps {
-  categories: CategoryOption[]
-  selectedCategory: string | undefined
-  onCategoryChange: (categoryId: string) => void
-  onClearCategory: () => void
-  sticky?: boolean
+  readonly categories: CategoryOption[]
+  readonly selectedCategory: string | undefined
+  readonly onCategoryChange: (categoryId: string) => void
+  readonly onClearCategory: () => void
+  readonly sticky?: boolean
 }
 
 /**

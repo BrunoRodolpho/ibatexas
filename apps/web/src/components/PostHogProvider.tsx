@@ -42,7 +42,7 @@ export function usePostHog() {
  * PostHogProvider — initializes PostHog and tracks pageviews on route changes.
  * Place in layout.tsx outside UI components (PostHog is infrastructure, not UI).
  */
-export function PostHogProvider({ children }: { children: React.ReactNode }) {
+export function PostHogProvider({ children }: { readonly children: React.ReactNode }) {
   // Initialize PostHog on mount
   useEffect(() => {
     getPostHogClient()

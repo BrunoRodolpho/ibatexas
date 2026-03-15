@@ -7,8 +7,8 @@ import { Heading, Text } from '@/components/atoms'
 import { notFound } from 'next/navigation'
 
 interface CategoryPageProps {
-  params: {
-    category: string
+  readonly params: {
+    readonly category: string
   }
 }
 

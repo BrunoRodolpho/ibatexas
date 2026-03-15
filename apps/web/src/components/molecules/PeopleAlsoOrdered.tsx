@@ -13,9 +13,9 @@ import type { ProductDTO } from '@ibatexas/types'
 
 interface PeopleAlsoOrderedProps {
   /** Full product list to pick suggestions from */
-  allProducts: ProductDTO[]
+  readonly allProducts: ProductDTO[]
   /** Add to cart handler (productId) */
-  onAddToCart: (productId: string) => void
+  readonly onAddToCart: (productId: string) => void
 }
 
 /**

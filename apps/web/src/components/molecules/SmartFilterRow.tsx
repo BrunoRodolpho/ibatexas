@@ -47,11 +47,11 @@ const SMART_FILTERS: SmartFilterDef[] = [
 
 interface SmartFilterRowProps {
   /** Active filters (toggle on/off) */
-  activeFilters: SmartFilterId[]
+  readonly activeFilters: SmartFilterId[]
   /** Toggle callback */
-  onToggle: (id: SmartFilterId) => void
+  readonly onToggle: (id: SmartFilterId) => void
   /** Full product list — used to show counts per filter */
-  products: ProductDTO[]
+  readonly products: ProductDTO[]
 }
 
 export function SmartFilterRow({ activeFilters, onToggle, products }: SmartFilterRowProps) {

@@ -9,8 +9,8 @@ interface Category {
 }
 
 interface CategoryCarouselProps {
-  categories: Category[]
-  activeHandle?: string
+  readonly categories: Category[]
+  readonly activeHandle?: string
 }
 
 export const CategoryCarousel = ({ categories, activeHandle }: CategoryCarouselProps) => {

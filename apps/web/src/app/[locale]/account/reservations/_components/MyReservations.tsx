@@ -5,10 +5,10 @@ import { Users, MapPin } from "lucide-react"
 import type { ReservationDTO } from "@ibatexas/types"
 
 interface Props {
-  reservations: ReservationDTO[]
-  loading: boolean
-  onCancel: (id: string) => void
-  onModify: (reservation: ReservationDTO) => void
+  readonly reservations: ReservationDTO[]
+  readonly loading: boolean
+  readonly onCancel: (id: string) => void
+  readonly onModify: (reservation: ReservationDTO) => void
 }
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
@@ -40,7 +40,7 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
     return (
       <div className="space-y-3">
         {[1, 2].map((i) => (
-          <div key={i} className="h-24 rounded-sm skeleton" />
+          <div key={`skel-${i}`} className="h-24 rounded-sm skeleton" />
         ))}
       </div>
     )
@@ -80,9 +80,9 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
                 </div>
                 {r.specialRequests.length > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1">
-                    {r.specialRequests.map((sr, i) => (
+                    {r.specialRequests.map((sr) => (
                       <span
-                        key={i}
+                        key={sr.type}
                         className="rounded-full bg-brand-50 px-2 py-0.5 text-xs text-brand-700"
                       >
                         {sr.type}

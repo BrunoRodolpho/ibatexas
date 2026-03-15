@@ -26,7 +26,7 @@ const STEPS = [
   { key: 'confirmation', label: 'Confirmação' },
 ] as const
 
-function StepProgress({ currentStep }: { currentStep: string }) {
+function StepProgress({ currentStep }: { readonly currentStep: string }) {
   const currentIndex = STEPS.findIndex((s) => s.key === currentStep)
 
   return (

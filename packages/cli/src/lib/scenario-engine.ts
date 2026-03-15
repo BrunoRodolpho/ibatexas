@@ -690,7 +690,14 @@ async function runVerifyOnlyMode(scenario: ScenarioFile): Promise<boolean> {
 
 function printVerifyResults(results: VerifyResult[]): void {
   for (const r of results) {
-    const icon = r.ok ? chalk.green("✅") : r.severity === "error" ? chalk.red("❌") : chalk.yellow("⚠️ ")
+    let icon: string
+    if (r.ok) {
+      icon = chalk.green("✅")
+    } else if (r.severity === "error") {
+      icon = chalk.red("❌")
+    } else {
+      icon = chalk.yellow("⚠️ ")
+    }
     const detail = r.ok ? chalk.dim(r.detail) : chalk.yellow(r.detail)
     console.log(`    ${icon}  ${r.key.padEnd(24)} ${detail}`)
   }

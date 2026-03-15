@@ -7,7 +7,7 @@ import { useTranslations } from 'next-intl'
  * Emotional story block — brand storytelling between menu sections.
  * Elevates brand perception and differentiates from commodity platforms.
  */
-export function StoryBlock({ compact = false }: { compact?: boolean }) {
+export function StoryBlock({ compact = false }: { readonly compact?: boolean }) {
   const t = useTranslations()
 
   if (compact) {

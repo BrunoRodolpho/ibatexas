@@ -2,12 +2,12 @@ import React from 'react'
 import { Badge } from '../atoms'
 
 interface FilterChipProps {
-  id: string
-  label: string
-  selected: boolean
-  onToggle: (id: string) => void
-  removable?: boolean
-  onRemove?: (id: string) => void
+  readonly id: string
+  readonly label: string
+  readonly selected: boolean
+  readonly onToggle: (id: string) => void
+  readonly removable?: boolean
+  readonly onRemove?: (id: string) => void
 }
 
 export const FilterChip: React.FC<FilterChipProps> = ({

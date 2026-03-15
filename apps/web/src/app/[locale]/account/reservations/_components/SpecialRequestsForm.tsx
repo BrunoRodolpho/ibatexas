@@ -3,8 +3,8 @@
 import type { SpecialRequest } from '@/domains/reservation'
 
 interface Props {
-  value: SpecialRequest[]
-  onChange: (requests: SpecialRequest[]) => void
+  readonly value: SpecialRequest[]
+  readonly onChange: (requests: SpecialRequest[]) => void
 }
 
 const SPECIAL_REQUEST_OPTIONS = [

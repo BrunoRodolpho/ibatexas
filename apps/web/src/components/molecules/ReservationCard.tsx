@@ -2,16 +2,16 @@ import React from 'react'
 import { Card, Heading, Text, Button } from '../atoms'
 
 interface ReservationCardProps {
-  id: string
-  date: string
-  time: string
-  partySize: number
-  customerName: string
-  status: 'pending' | 'confirmed' | 'completed' | 'cancelled'
-  notes?: string
-  onModify?: (id: string) => void
-  onCancel?: (id: string) => void
-  showActions?: boolean
+  readonly id: string
+  readonly date: string
+  readonly time: string
+  readonly partySize: number
+  readonly customerName: string
+  readonly status: 'pending' | 'confirmed' | 'completed' | 'cancelled'
+  readonly notes?: string
+  readonly onModify?: (id: string) => void
+  readonly onCancel?: (id: string) => void
+  readonly showActions?: boolean
 }
 
 const statusColors = {

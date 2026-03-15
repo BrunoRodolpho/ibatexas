@@ -3,11 +3,11 @@ import { TextField, Button } from '../atoms'
 import clsx from 'clsx'
 
 interface SearchInputProps {
-  placeholder?: string
-  onSearch: (query: string) => void
-  suggestions?: { id: string; label: string }[]
-  isLoading?: boolean
-  debounceMs?: number
+  readonly placeholder?: string
+  readonly onSearch: (query: string) => void
+  readonly suggestions?: { id: string; label: string }[]
+  readonly isLoading?: boolean
+  readonly debounceMs?: number
 }
 
 export const SearchInput: React.FC<SearchInputProps> = ({

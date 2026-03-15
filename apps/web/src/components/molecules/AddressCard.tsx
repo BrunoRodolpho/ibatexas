@@ -3,17 +3,17 @@ import { Card, Text } from '../atoms'
 import { Image } from '../atoms/Image'
 
 interface AddressCardProps {
-  id: string
-  street: string
-  number: string
-  neighborhood: string
-  city: string
-  state: string
-  complement?: string
-  isSelected?: boolean
-  onSelect: (id: string) => void
-  onEdit?: (id: string) => void
-  onDelete?: (id: string) => void
+  readonly id: string
+  readonly street: string
+  readonly number: string
+  readonly neighborhood: string
+  readonly city: string
+  readonly state: string
+  readonly complement?: string
+  readonly isSelected?: boolean
+  readonly onSelect: (id: string) => void
+  readonly onEdit?: (id: string) => void
+  readonly onDelete?: (id: string) => void
 }
 
 export const AddressCard: React.FC<AddressCardProps> = ({

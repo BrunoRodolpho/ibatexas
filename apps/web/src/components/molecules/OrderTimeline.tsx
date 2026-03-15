@@ -6,7 +6,7 @@ import { Check } from 'lucide-react'
 const STEP_KEYS = ['pending', 'processing', 'shipped', 'delivered'] as const
 
 interface OrderTimelineProps {
-  status: string
+  readonly status: string
 }
 
 export function OrderTimeline({ status }: OrderTimelineProps) {

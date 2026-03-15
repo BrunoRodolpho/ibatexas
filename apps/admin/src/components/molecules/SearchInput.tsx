@@ -3,9 +3,9 @@
 import { useState, useCallback } from 'react'
 
 interface SearchInputProps {
-  placeholder?: string
-  onSearch: (query: string) => void
-  debounceMs?: number
+  readonly placeholder?: string
+  readonly onSearch: (query: string) => void
+  readonly debounceMs?: number
 }
 
 export function SearchInput({

@@ -22,20 +22,27 @@ function isVideo(url: string): boolean {
 
 interface MediaGalleryProps {
   /** Full gallery URLs sorted by rank (from Typesense `images` field) */
-  images: string[]
+  readonly images: string[]
   /** Fallback thumbnail when gallery is empty */
-  thumbnail?: string | null
+  readonly thumbnail?: string | null
   /** Alt text for images */
-  title: string
+  readonly title: string
   /** Additional class for the outer container */
-  className?: string
+  readonly className?: string
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
 
 export function MediaGallery({ images, thumbnail, title, className }: MediaGalleryProps) {
   // Build the effective media list: prefer gallery, fall back to thumbnail
-  const media = images.length > 0 ? images : thumbnail ? [thumbnail] : []
+  let media: string[]
+  if (images.length > 0) {
+    media = images
+  } else if (thumbnail) {
+    media = [thumbnail]
+  } else {
+    media = []
+  }
   const [selectedIndex, setSelectedIndex] = useState(0)
 
   const handleSelect = useCallback((index: number) => {
@@ -117,7 +124,7 @@ export function MediaGallery({ images, thumbnail, title, className }: MediaGalle
         <div className="flex justify-center gap-1.5 lg:hidden">
           {media.map((_, i) => (
             <button
-              key={i}
+              key={`dot-${i}`}
               onClick={() => handleSelect(i)}
               aria-label={`Ir para imagem ${i + 1}`}
               className={clsx(

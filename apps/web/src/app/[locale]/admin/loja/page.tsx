@@ -198,7 +198,7 @@ export default function ShopManagement() {
               {productDetail.imageUrl ? (
                 <Image
                   src={productDetail.imageUrl}
-                  alt=""
+                  alt={productDetail.title}
                   className="h-14 w-14 shrink-0 rounded-lg object-cover"
                   width={56}
                   height={56}
@@ -223,10 +223,10 @@ export default function ShopManagement() {
               <table className="w-full text-sm">
                 <thead className="bg-smoke-100">
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium text-charcoal-700">Tamanho</th>
-                    <th className="px-3 py-2 text-left font-medium text-charcoal-700">SKU</th>
-                    <th className="px-3 py-2 text-right font-medium text-charcoal-700">Preço</th>
-                    <th className="px-3 py-2 text-right font-medium text-charcoal-700">Estoque</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">Tamanho</th>
+                    <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">SKU</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">Preço</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">Estoque</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-smoke-100">

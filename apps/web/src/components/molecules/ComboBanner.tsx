@@ -6,11 +6,11 @@ import { track } from '@/domains/analytics'
 
 interface ComboBannerProps {
   /** Whether combo products exist in the catalog */
-  hasComboProducts: boolean
+  readonly hasComboProducts: boolean
   /** Whether any filters are currently active */
-  hasActiveFilters: boolean
+  readonly hasActiveFilters: boolean
   /** Callback to apply the combo smart filter */
-  onApplyComboFilter: () => void
+  readonly onApplyComboFilter: () => void
 }
 
 /**

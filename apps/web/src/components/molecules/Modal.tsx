@@ -2,13 +2,13 @@ import React, { useEffect, useRef, useCallback } from 'react'
 import clsx from 'clsx'
 
 export interface ModalProps {
-  isOpen: boolean
-  title: string
-  children: React.ReactNode
-  onClose: () => void
-  closeButton?: boolean
-  footer?: React.ReactNode
-  size?: 'sm' | 'md' | 'lg'
+  readonly isOpen: boolean
+  readonly title: string
+  readonly children: React.ReactNode
+  readonly onClose: () => void
+  readonly closeButton?: boolean
+  readonly footer?: React.ReactNode
+  readonly size?: 'sm' | 'md' | 'lg'
 }
 
 const sizeClasses = {
@@ -112,13 +112,13 @@ export const Modal: React.FC<ModalProps> = ({
 }
 
 export interface SheetProps {
-  isOpen: boolean
-  title: string
-  children: React.ReactNode
-  onClose: () => void
-  closeButton?: boolean
-  footer?: React.ReactNode
-  position?: 'left' | 'right' | 'bottom'
+  readonly isOpen: boolean
+  readonly title: string
+  readonly children: React.ReactNode
+  readonly onClose: () => void
+  readonly closeButton?: boolean
+  readonly footer?: React.ReactNode
+  readonly position?: 'left' | 'right' | 'bottom'
 }
 
 export const Sheet: React.FC<SheetProps> = ({

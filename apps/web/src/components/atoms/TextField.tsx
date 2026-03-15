@@ -5,10 +5,10 @@ import clsx from 'clsx'
 import { Label } from './Label'
 
 interface TextFieldProps extends React.InputHTMLAttributes<HTMLInputElement> {
-  label?: string
-  error?: string
-  helperText?: string
-  required?: boolean
+  readonly label?: string
+  readonly error?: string
+  readonly helperText?: string
+  readonly required?: boolean
 }
 
 const TextField = forwardRef<HTMLInputElement, TextFieldProps>(

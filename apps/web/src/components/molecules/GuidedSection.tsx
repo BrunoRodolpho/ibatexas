@@ -11,10 +11,10 @@ import { useCartStore } from '@/domains/cart'
 import type { ProductDTO } from '@ibatexas/types'
 
 interface GuidedSectionProps {
-  title: string
-  subtitle?: string
-  products: ProductDTO[]
-  onAddToCart?: (productId: string) => void
+  readonly title: string
+  readonly subtitle?: string
+  readonly products: ProductDTO[]
+  readonly onAddToCart?: (productId: string) => void
 }
 
 /**
@@ -226,7 +226,7 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
         <div className="flex items-center justify-center gap-1.5 mt-3">
           {featured.map((_, i) => (
             <button
-              key={i}
+              key={`dot-${i}`}
               onClick={() => setCurrentIndex(i)}
               className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${
                 i === currentIndex ? 'bg-charcoal-900 w-4' : 'bg-smoke-300 hover:bg-smoke-400'

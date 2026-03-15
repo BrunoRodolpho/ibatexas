@@ -3,10 +3,10 @@
 import { useTranslations } from 'next-intl'
 
 interface ScarcityRibbonProps {
-  stockCount: number
+  readonly stockCount: number
   /** Maximum stock level to show the ribbon. Default: 5 */
-  threshold?: number
-  className?: string
+  readonly threshold?: number
+  readonly className?: string
 }
 
 /**

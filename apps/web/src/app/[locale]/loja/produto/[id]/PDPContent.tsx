@@ -25,7 +25,7 @@ import { Skeleton } from '@/components/atoms/Skeleton'
 import { AvailabilityWindow, type ProductDTO, type ProductVariant } from '@ibatexas/types'
 
 interface PDPContentProps {
-  productId: string
+  readonly productId: string
 }
 
 // ── Skeleton Loading ─────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ function PDPSkeleton() {
           <Skeleton variant="square" className="aspect-square" />
           <div className="flex gap-2">
             {[0, 1, 2, 3].map((i) => (
-              <Skeleton key={i} variant="square" className="w-16 h-16" />
+              <Skeleton key={`skel-thumb-${i}`} variant="square" className="w-16 h-16" />
             ))}
           </div>
         </div>
@@ -398,7 +398,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
                       <div className="flex items-center gap-2 mb-1">
                         <div className="flex">
                           {Array.from({ length: review.stars }).map((_, i) => (
-                            <span key={i} className="text-brand-500 text-xs">★</span>
+                            <span key={`star-${i}`} className="text-brand-500 text-xs">★</span>
                           ))}
                         </div>
                         <span className="text-xs font-medium text-charcoal-900">{review.name}</span>

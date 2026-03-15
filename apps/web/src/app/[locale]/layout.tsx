@@ -32,8 +32,8 @@ export default async function LocaleLayout({
   children,
   params,
 }: {
-  children: React.ReactNode
-  params: { locale: string }
+  readonly children: React.ReactNode
+  readonly params: { locale: string }
 }) {
   const { locale } = params
 

@@ -20,13 +20,13 @@ const iconColors: Record<string, string> = {
 }
 
 interface StatCardProps {
-  label: string
-  value: string | number
-  icon?: LucideIcon
-  variant?: 'default' | 'success' | 'warning' | 'danger' | 'info'
-  trend?: number
-  subLabel?: string
-  isLoading?: boolean
+  readonly label: string
+  readonly value: string | number
+  readonly icon?: LucideIcon
+  readonly variant?: 'default' | 'success' | 'warning' | 'danger' | 'info'
+  readonly trend?: number
+  readonly subLabel?: string
+  readonly isLoading?: boolean
 }
 
 export function StatCard({ label, value, icon: Icon, trend, subLabel, variant = 'default', isLoading }: StatCardProps) {
@@ -40,8 +40,20 @@ export function StatCard({ label, value, icon: Icon, trend, subLabel, variant = 
     )
   }
 
-  const TrendIcon = trend === undefined ? null : trend > 0 ? TrendingUp : trend < 0 ? TrendingDown : Minus
-  const trendColor = trend === undefined ? '' : trend > 0 ? 'text-emerald-600' : trend < 0 ? 'text-red-600' : 'text-smoke-400'
+  let TrendIcon: typeof TrendingUp | null = null
+  let trendColor = ''
+  if (trend !== undefined) {
+    if (trend > 0) {
+      TrendIcon = TrendingUp
+      trendColor = 'text-emerald-600'
+    } else if (trend < 0) {
+      TrendIcon = TrendingDown
+      trendColor = 'text-red-600'
+    } else {
+      TrendIcon = Minus
+      trendColor = 'text-smoke-400'
+    }
+  }
 
   return (
     <div className={`rounded-sm border border-smoke-200 border-l-2 ${accentColors[variant]} bg-smoke-50 p-5`}>

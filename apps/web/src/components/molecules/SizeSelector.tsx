@@ -7,10 +7,10 @@ import type { ProductVariant } from '@ibatexas/types'
 import { formatBRL } from '@/lib/format'
 
 interface SizeSelectorProps {
-  variants: ProductVariant[]
-  selectedVariant: string
-  onVariantChange: (variantId: string) => void
-  disabled?: boolean
+  readonly variants: ProductVariant[]
+  readonly selectedVariant: string
+  readonly onVariantChange: (variantId: string) => void
+  readonly disabled?: boolean
 }
 
 export const SizeSelector = ({
