@@ -329,7 +329,7 @@ async function detailNats(natsUrl: string): Promise<void> {
 
 // ── Summary (all services) ────────────────────────────────────────────────────
 
-async function checkAllSummary(): Promise<void> {
+function getInfraEnvVars(): { databaseUrl: string; redisUrl: string; typesenseHost: string; typesensePort: string; natsUrl: string } {
   const databaseUrl = process.env.DATABASE_URL
   const redisUrl = process.env.REDIS_URL
   const typesenseHost = process.env.TYPESENSE_HOST
@@ -348,15 +348,16 @@ async function checkAllSummary(): Promise<void> {
     process.exit(1)
   }
 
-  console.log(chalk.bold("\n  ibx svc health\n"))
+  return {
+    databaseUrl: databaseUrl!,
+    redisUrl: redisUrl!,
+    typesenseHost: typesenseHost!,
+    typesensePort,
+    natsUrl: natsUrl!,
+  }
+}
 
-  const results = await Promise.all([
-    checkPostgres(databaseUrl!),
-    checkRedis(redisUrl!),
-    checkTypesense(typesenseHost!, typesensePort),
-    checkNats(natsUrl!),
-  ])
-
+function printHealthResults(results: ServiceHealth[]): boolean {
   let allOk = true
   for (const r of results) {
     const icon = r.status === "ok" ? chalk.green("✓") : chalk.red("✗")
@@ -366,35 +367,55 @@ async function checkAllSummary(): Promise<void> {
     console.log(`  ${icon}  ${label.padEnd(14)} ${latency}${detail}`)
     if (r.status === "error") allOk = false
   }
+  return allOk
+}
+
+async function showTypesenseIndex(typesenseHost: string, typesensePort: string): Promise<void> {
+  const apiKey = process.env.TYPESENSE_API_KEY ?? ""
+  if (!apiKey) return
+
+  try {
+    const colRes = await fetch(
+      `http://${typesenseHost}:${typesensePort}/collections`,
+      { signal: AbortSignal.timeout(2000), headers: { "X-TYPESENSE-API-KEY": apiKey } }
+    )
+    if (!colRes.ok) return
+
+    const collections = (await colRes.json()) as Array<{ name: string; num_documents: number }>
+    const productsCol = collections.find((c) => c.name === "products")
+    if (productsCol) {
+      const count = productsCol.num_documents ?? 0
+      const countColor = count > 0 ? chalk.green : chalk.yellow
+      console.log(`\n  ${chalk.bold("Search Index")}  ${countColor(`${count} products indexed`)}`)
+      if (count === 0) {
+        console.log(chalk.yellow(`  ⚠  Run: ibx db reindex`))
+      }
+    } else if (collections.length === 0) {
+      console.log(chalk.yellow(`\n  ⚠  No Typesense collections — run: ibx db reindex`))
+    }
+  } catch {
+    // Non-critical — skip silently
+  }
+}
+
+async function checkAllSummary(): Promise<void> {
+  const { databaseUrl, redisUrl, typesenseHost, typesensePort, natsUrl } = getInfraEnvVars()
+
+  console.log(chalk.bold("\n  ibx svc health\n"))
+
+  const results = await Promise.all([
+    checkPostgres(databaseUrl),
+    checkRedis(redisUrl),
+    checkTypesense(typesenseHost, typesensePort),
+    checkNats(natsUrl),
+  ])
+
+  const allOk = printHealthResults(results)
 
   // Show Typesense collection data summary if healthy
   const tsResult = results.find((r) => r.service === "Typesense")
   if (tsResult?.status === "ok") {
-    const apiKey = process.env.TYPESENSE_API_KEY ?? ""
-    if (apiKey) {
-      try {
-        const colRes = await fetch(
-          `http://${typesenseHost}:${typesensePort}/collections`,
-          { signal: AbortSignal.timeout(2000), headers: { "X-TYPESENSE-API-KEY": apiKey } }
-        )
-        if (colRes.ok) {
-          const collections = (await colRes.json()) as Array<{ name: string; num_documents: number }>
-          const productsCol = collections.find((c) => c.name === "products")
-          if (productsCol) {
-            const count = productsCol.num_documents ?? 0
-            const countColor = count > 0 ? chalk.green : chalk.yellow
-            console.log(`\n  ${chalk.bold("Search Index")}  ${countColor(`${count} products indexed`)}`)
-            if (count === 0) {
-              console.log(chalk.yellow(`  ⚠  Run: ibx db reindex`))
-            }
-          } else if (collections.length === 0) {
-            console.log(chalk.yellow(`\n  ⚠  No Typesense collections — run: ibx db reindex`))
-          }
-        }
-      } catch {
-        // Non-critical — skip silently
-      }
-    }
+    await showTypesenseIndex(typesenseHost, typesensePort)
   }
 
   console.log()
@@ -403,53 +424,48 @@ async function checkAllSummary(): Promise<void> {
 
 // ── Status (running services table) ──────────────────────────────────────────
 
-async function showStatus(): Promise<void> {
+interface InfraCheckResult {
+  name: string
+  address: string
+  result: ServiceHealth
+}
+
+interface AppCheckResult {
+  name: string
+  address: string
+  status: string
+  latencyMs: number
+}
+
+async function collectInfraStatus(): Promise<InfraCheckResult[]> {
   const databaseUrl = process.env.DATABASE_URL ?? ""
   const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379"
   const typesenseHost = process.env.TYPESENSE_HOST ?? "localhost"
   const typesensePort = process.env.TYPESENSE_PORT ?? "8108"
   const natsUrl = process.env.NATS_URL ?? "nats://localhost:4222"
 
-  console.log(chalk.bold("\n  ibx svc status\n"))
-
-  // Infra checks
   const dbUrl = new URL(databaseUrl || "postgresql://localhost:5433/ibatexas")
   const redisUrlParsed = new URL(redisUrl)
   const natsUrlParsed = new URL(natsUrl)
 
   const infraChecks = [
-    {
-      name: "PostgreSQL",
-      address: `${dbUrl.hostname}:${dbUrl.port || 5433}`,
-      check: () => checkPostgres(databaseUrl),
-    },
-    {
-      name: "Redis",
-      address: `${redisUrlParsed.hostname}:${redisUrlParsed.port || 6379}`,
-      check: () => checkRedis(redisUrl),
-    },
-    {
-      name: "Typesense",
-      address: `http://${typesenseHost}:${typesensePort}`,
-      check: () => checkTypesense(typesenseHost, typesensePort),
-    },
-    {
-      name: "NATS",
-      address: `${natsUrlParsed.hostname}:${natsUrlParsed.port || 4222}`,
-      check: () => checkNats(natsUrl),
-    },
+    { name: "PostgreSQL", address: `${dbUrl.hostname}:${dbUrl.port || 5433}`, check: () => checkPostgres(databaseUrl) },
+    { name: "Redis", address: `${redisUrlParsed.hostname}:${redisUrlParsed.port || 6379}`, check: () => checkRedis(redisUrl) },
+    { name: "Typesense", address: `http://${typesenseHost}:${typesensePort}`, check: () => checkTypesense(typesenseHost, typesensePort) },
+    { name: "NATS", address: `${natsUrlParsed.hostname}:${natsUrlParsed.port || 4222}`, check: () => checkNats(natsUrl) },
   ]
 
-  const infraResults = await Promise.all(
+  return Promise.all(
     infraChecks.map(async ({ name, address, check }) => ({
       name,
       address,
       result: await check(),
     }))
   )
+}
 
-  // App service checks (from registry)
-  const appChecks = await Promise.all(
+async function collectAppStatus(): Promise<AppCheckResult[]> {
+  return Promise.all(
     Object.values(SERVICES).map(async (svc) => {
       if (!svc.healthUrl) {
         return { name: svc.name, address: `localhost:${svc.port}`, status: "unknown", latencyMs: 0 }
@@ -457,27 +473,15 @@ async function showStatus(): Promise<void> {
       const start = Date.now()
       try {
         const res = await fetch(svc.healthUrl, { signal: AbortSignal.timeout(2000) })
-        return {
-          name: svc.name,
-          address: `localhost:${svc.port}`,
-          status: res.ok ? "ok" : "error",
-          latencyMs: Date.now() - start,
-        }
+        return { name: svc.name, address: `localhost:${svc.port}`, status: res.ok ? "ok" : "error", latencyMs: Date.now() - start }
       } catch {
         return { name: svc.name, address: `localhost:${svc.port}`, status: "offline", latencyMs: Date.now() - start }
       }
     })
   )
+}
 
-  const nameW = 20
-  const addrW = 28
-  const statusW = 10
-
-  console.log(
-    `  ${chalk.bold("Name".padEnd(nameW))}${chalk.bold("Address".padEnd(addrW))}${chalk.bold("Status".padEnd(statusW))}${chalk.bold("Latency")}`
-  )
-  console.log(`  ${"─".repeat(nameW + addrW + statusW + 10)}`)
-
+function renderInfraStatusRows(infraResults: InfraCheckResult[], nameW: number, addrW: number, statusW: number): void {
   console.log(chalk.dim("  ─ Infrastructure ─"))
   for (const { name, address, result } of infraResults) {
     const icon = result.status === "ok" ? chalk.green("✓") : chalk.red("✗")
@@ -488,7 +492,9 @@ async function showStatus(): Promise<void> {
       `  ${icon} ${name.padEnd(nameW - 2)}${chalk.cyan(address.padEnd(addrW))}${status.padEnd(statusW + 10)}${ms}${errorHint}`
     )
   }
+}
 
+function renderAppStatusRows(appChecks: AppCheckResult[], nameW: number, addrW: number, statusW: number): void {
   console.log(chalk.dim("\n  ─ Services ─"))
   for (const svc of appChecks) {
     let statusColor: string
@@ -508,6 +514,25 @@ async function showStatus(): Promise<void> {
       `  ${icon} ${svc.name.padEnd(nameW - 2)}${chalk.cyan(svc.address.padEnd(addrW))}${statusColor.padEnd(statusW + 10)}${ms}`
     )
   }
+}
+
+async function showStatus(): Promise<void> {
+  console.log(chalk.bold("\n  ibx svc status\n"))
+
+  const infraResults = await collectInfraStatus()
+  const appChecks = await collectAppStatus()
+
+  const nameW = 20
+  const addrW = 28
+  const statusW = 10
+
+  console.log(
+    `  ${chalk.bold("Name".padEnd(nameW))}${chalk.bold("Address".padEnd(addrW))}${chalk.bold("Status".padEnd(statusW))}${chalk.bold("Latency")}`
+  )
+  console.log(`  ${"─".repeat(nameW + addrW + statusW + 10)}`)
+
+  renderInfraStatusRows(infraResults, nameW, addrW, statusW)
+  renderAppStatusRows(appChecks, nameW, addrW, statusW)
 
   console.log()
 }

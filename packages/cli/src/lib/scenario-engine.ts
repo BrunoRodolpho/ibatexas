@@ -125,66 +125,73 @@ async function resolveDAG(scenario: ScenarioFile, visited: Set<string> = new Set
 
 // ── Cleanup actions ──────────────────────────────────────────────────────────
 
+async function cleanupResetTags(): Promise<void> {
+  const count = await removeAllTagsFromAllProducts()
+  console.log(chalk.dim(`    Removed tags from ${count} product(s)`))
+}
+
+async function cleanupClearReviews(): Promise<void> {
+  const { prisma } = await import("@ibatexas/domain")
+  const deleted = await prisma.review.deleteMany()
+  console.log(chalk.dim(`    Deleted ${deleted.count} review(s)`))
+
+  // syncReviewStats doesn't reset zero-review products —
+  // explicitly set Typesense rating/reviewCount to null/0
+  try {
+    const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
+    const ts = getTypesenseClient()
+    const products = await fetchAllProductsWithTags()
+    for (const product of products) {
+      try {
+        await ts
+          .collections(COLLECTION)
+          .documents(product.id)
+          .update({ rating: 0, reviewCount: 0 })
+      } catch {
+        // Product might not be indexed — skip
+      }
+    }
+    console.log(chalk.dim(`    Reset Typesense rating/reviewCount for ${products.length} product(s)`))
+  } catch {
+    console.log(chalk.dim("    Typesense review stats reset skipped (unavailable)"))
+  }
+}
+
+async function cleanupClearOrders(): Promise<void> {
+  const { prisma } = await import("@ibatexas/domain")
+  const deleted = await prisma.customerOrderItem.deleteMany()
+  console.log(chalk.dim(`    Deleted ${deleted.count} order item(s)`))
+}
+
+async function cleanupClearIntel(): Promise<void> {
+  const redis = await getRedis()
+  const copurchaseDeleted = await scanDelete(redis, rk("copurchase:*"))
+  await redis.del(rk("product:global:score"))
+  console.log(chalk.dim(`    Deleted ${copurchaseDeleted} copurchase key(s) + global score`))
+}
+
 async function executeCleanup(actions: CleanupAction[]): Promise<void> {
   for (const action of actions) {
     emit({ type: "cleanup.start", timestamp: new Date().toISOString(), step: action })
     const start = Date.now()
 
     switch (action) {
-      case "reset-tags": {
-        const count = await removeAllTagsFromAllProducts()
-        console.log(chalk.dim(`    Removed tags from ${count} product(s)`))
+      case "reset-tags":
+        await cleanupResetTags()
         break
-      }
-
-      case "clear-reviews": {
-        const { prisma } = await import("@ibatexas/domain")
-        const deleted = await prisma.review.deleteMany()
-        console.log(chalk.dim(`    Deleted ${deleted.count} review(s)`))
-
-        // syncReviewStats doesn't reset zero-review products —
-        // explicitly set Typesense rating/reviewCount to null/0
-        try {
-          const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
-          const ts = getTypesenseClient()
-          const products = await fetchAllProductsWithTags()
-          for (const product of products) {
-            try {
-              await ts
-                .collections(COLLECTION)
-                .documents(product.id)
-                .update({ rating: 0, reviewCount: 0 })
-            } catch {
-              // Product might not be indexed — skip
-            }
-          }
-          console.log(chalk.dim(`    Reset Typesense rating/reviewCount for ${products.length} product(s)`))
-        } catch {
-          console.log(chalk.dim("    Typesense review stats reset skipped (unavailable)"))
-        }
+      case "clear-reviews":
+        await cleanupClearReviews()
         break
-      }
-
-      case "clear-orders": {
-        const { prisma } = await import("@ibatexas/domain")
-        const deleted = await prisma.customerOrderItem.deleteMany()
-        console.log(chalk.dim(`    Deleted ${deleted.count} order item(s)`))
+      case "clear-orders":
+        await cleanupClearOrders()
         break
-      }
-
-      case "clear-intel": {
-        const redis = await getRedis()
-        const copurchaseDeleted = await scanDelete(redis, rk("copurchase:*"))
-        await redis.del(rk("product:global:score"))
-        console.log(chalk.dim(`    Deleted ${copurchaseDeleted} copurchase key(s) + global score`))
+      case "clear-intel":
+        await cleanupClearIntel()
         break
-      }
-
-      case "clear-all": {
+      case "clear-all":
         // Run all cleanup actions in the correct FK-safe order
         await executeCleanup(["clear-intel", "clear-orders", "clear-reviews", "reset-tags"])
         return // avoid double-emit
-      }
     }
 
     const duration = Date.now() - start
@@ -258,187 +265,196 @@ async function runVerifyChecks(verifyMap: Record<string, VerifyRule>): Promise<V
   return results
 }
 
-async function runSingleCheck(key: string, rule: VerifyRule): Promise<VerifyResult> {
-  // ── products ──
-  if (key === "products") {
-    try {
-      const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
-      const ts = getTypesenseClient()
-      const info = await ts.collections(COLLECTION).retrieve()
-      const count = info.num_documents ?? 0
-      const ok = (rule.min === undefined || count >= rule.min) &&
-                 (rule.max === undefined || count <= rule.max)
-      return { key, ok, detail: `${count} indexed`, severity: "error" }
-    } catch {
-      return { key, ok: false, detail: "Typesense unavailable", severity: "error" }
+// ── Verify: helper for min/max bounds check ─────────────────────────────────
+
+function checkMinMax(count: number, rule: VerifyRule): boolean {
+  return (rule.min === undefined || count >= rule.min) &&
+         (rule.max === undefined || count <= rule.max)
+}
+
+// ── Verify: Prisma count checker ────────────────────────────────────────────
+
+async function checkPrismaCount(
+  key: string,
+  modelName: string,
+  countFn: () => Promise<number>,
+  rule: VerifyRule,
+): Promise<VerifyResult> {
+  const count = await countFn()
+  const ok = rule.min === undefined || count >= rule.min
+  return { key, ok, detail: `${count} ${modelName}`, severity: "error" }
+}
+
+// ── Verify: check type handlers ─────────────────────────────────────────────
+
+async function checkProducts(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  try {
+    const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
+    const ts = getTypesenseClient()
+    const info = await ts.collections(COLLECTION).retrieve()
+    const count = info.num_documents ?? 0
+    const ok = checkMinMax(count, rule)
+    return { key, ok, detail: `${count} indexed`, severity: "error" }
+  } catch {
+    return { key, ok: false, detail: "Typesense unavailable", severity: "error" }
+  }
+}
+
+async function checkReviews(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  const { prisma } = await import("@ibatexas/domain")
+  const count = await prisma.review.count()
+  const ok = checkMinMax(count, rule)
+  return { key, ok, detail: `${count} reviews`, severity: "error" }
+}
+
+async function checkTag(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  const tagValue = key.slice(4)
+  const products = await fetchAllProductsWithTags()
+  const tagged = products.filter((p) => p.tags?.some((t) => t.value === tagValue))
+  const count = tagged.length
+  const ok = checkMinMax(count, rule)
+  return { key, ok, detail: `${count} products with ${tagValue}`, severity: "error" }
+}
+
+async function checkGlobalScore(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  const redis = await getRedis()
+  const count = await redis.zCard(rk("product:global:score"))
+  const ok = (rule.min === undefined || count >= rule.min) &&
+             (rule.exists === undefined || (rule.exists ? count > 0 : count === 0))
+  return { key, ok, detail: `${count} products scored`, severity: "error" }
+}
+
+async function checkCopurchase(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  const redis = await getRedis()
+  const count = await scanCount(redis, rk("copurchase:*"))
+  const ok = rule.exists !== undefined ? (rule.exists ? count > 0 : count === 0) :
+             (rule.min === undefined || count >= rule.min)
+  return { key, ok, detail: `${count} copurchase keys`, severity: "error" }
+}
+
+async function checkCopurchaseHandle(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  const handle = key.slice(11)
+  const product = await findProductByHandle(handle)
+  if (!product) return { key, ok: false, detail: `Product "${handle}" not found`, severity: "error" }
+
+  const redis = await getRedis()
+  const members = await redis.zRangeWithScores(rk(`copurchase:${product.id}`), 0, -1, { REV: true })
+  const memberProductIds = members.map((m) => m.value)
+
+  if (rule.contains) {
+    return await checkCopurchaseContains(key, handle, rule.contains, memberProductIds)
+  }
+
+  const ok = rule.exists !== undefined ? (rule.exists ? members.length > 0 : members.length === 0) :
+             (rule.min === undefined || members.length >= rule.min)
+  return { key, ok, detail: `${members.length} copurchase relations for ${handle}`, severity: "error" }
+}
+
+async function checkCopurchaseContains(
+  key: string,
+  handle: string,
+  contains: string[],
+  memberProductIds: string[],
+): Promise<VerifyResult> {
+  for (const requiredHandle of contains) {
+    const reqProduct = await findProductByHandle(requiredHandle)
+    if (!reqProduct) return { key, ok: false, detail: `Required product "${requiredHandle}" not found`, severity: "error" }
+    if (!memberProductIds.includes(reqProduct.id)) {
+      return { key, ok: false, detail: `Missing copurchase: ${handle} → ${requiredHandle}`, severity: "error" }
     }
   }
+  return { key, ok: true, detail: `All copurchase relations present`, severity: "error" }
+}
 
-  // ── reviews ──
-  if (key === "reviews") {
-    const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.review.count()
-    const ok = (rule.min === undefined || count >= rule.min) &&
-               (rule.max === undefined || count <= rule.max)
-    return { key, ok, detail: `${count} reviews`, severity: "error" }
-  }
-
-  // ── tag:<value> ──
-  if (key.startsWith("tag:")) {
-    const tagValue = key.slice(4)
-    const products = await fetchAllProductsWithTags()
-    const tagged = products.filter((p) => p.tags?.some((t) => t.value === tagValue))
-    const count = tagged.length
-    const ok = (rule.min === undefined || count >= rule.min) &&
-               (rule.max === undefined || count <= rule.max)
-    return { key, ok, detail: `${count} products with ${tagValue}`, severity: "error" }
-  }
-
-  // ── global-score ──
-  if (key === "global-score") {
-    const redis = await getRedis()
-    const count = await redis.zCard(rk("product:global:score"))
+async function checkApiEndpoint(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  const path = key.slice(4)
+  const apiUrl = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
+  try {
+    const res = await fetch(`${apiUrl}${path}`, { signal: AbortSignal.timeout(5000) })
+    if (!res.ok) return { key, ok: false, detail: `API ${res.status}`, severity: "warning" }
+    const data = (await res.json()) as Record<string, unknown>
+    // Count array-like response
+    const items = Array.isArray(data) ? data : (data.products ?? data.items ?? data.results ?? [])
+    const count = Array.isArray(items) ? items.length : 0
     const ok = (rule.min === undefined || count >= rule.min) &&
                (rule.exists === undefined || (rule.exists ? count > 0 : count === 0))
-    return { key, ok, detail: `${count} products scored`, severity: "error" }
+    return { key, ok, detail: `${count} items from API`, severity: "warning" }
+  } catch {
+    return { key, ok: false, detail: "API unreachable (is ibx dev api running?)", severity: "warning" }
+  }
+}
+
+async function checkRanking(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  if (!rule.order) {
+    return { key, ok: false, detail: `Unknown verify key: ${key}`, severity: "warning" }
   }
 
-  // ── copurchase ──
-  if (key === "copurchase") {
-    const redis = await getRedis()
-    const count = await scanCount(redis, rk("copurchase:*"))
-    const ok = rule.exists !== undefined ? (rule.exists ? count > 0 : count === 0) :
-               (rule.min === undefined || count >= rule.min)
-    return { key, ok, detail: `${count} copurchase keys`, severity: "error" }
-  }
-
-  // ── copurchase:<handle> ──
-  if (key.startsWith("copurchase:")) {
-    const handle = key.slice(11)
+  const redis = await getRedis()
+  const scores: { handle: string; score: number }[] = []
+  for (const handle of rule.order) {
     const product = await findProductByHandle(handle)
     if (!product) return { key, ok: false, detail: `Product "${handle}" not found`, severity: "error" }
-
-    const redis = await getRedis()
-    const members = await redis.zRangeWithScores(rk(`copurchase:${product.id}`), 0, -1, { REV: true })
-    const memberProductIds = members.map((m) => m.value)
-
-    if (rule.contains) {
-      // Check that all required handles appear in copurchase relations
-      for (const requiredHandle of rule.contains) {
-        const reqProduct = await findProductByHandle(requiredHandle)
-        if (!reqProduct) return { key, ok: false, detail: `Required product "${requiredHandle}" not found`, severity: "error" }
-        if (!memberProductIds.includes(reqProduct.id)) {
-          return { key, ok: false, detail: `Missing copurchase: ${handle} → ${requiredHandle}`, severity: "error" }
-        }
-      }
-      return { key, ok: true, detail: `All copurchase relations present`, severity: "error" }
-    }
-
-    const ok = rule.exists !== undefined ? (rule.exists ? members.length > 0 : members.length === 0) :
-               (rule.min === undefined || members.length >= rule.min)
-    return { key, ok, detail: `${members.length} copurchase relations for ${handle}`, severity: "error" }
+    const score = await redis.zScore(rk("product:global:score"), product.id)
+    scores.push({ handle, score: score ?? 0 })
   }
+  // Check that scores are in descending order
+  for (let i = 0; i < scores.length - 1; i++) {
+    if (scores[i].score < scores[i + 1].score) {
+      return {
+        key,
+        ok: false,
+        detail: `${scores[i].handle} (${scores[i].score}) should rank higher than ${scores[i + 1].handle} (${scores[i + 1].score})`,
+        severity: "error",
+      }
+    }
+  }
+  return { key, ok: true, detail: "Ranking order correct", severity: "error" }
+}
 
-  // ── customers ──
+// ── Verify: dispatcher ──────────────────────────────────────────────────────
+
+async function runSingleCheck(key: string, rule: VerifyRule): Promise<VerifyResult> {
+  if (key === "products") return checkProducts(key, rule)
+  if (key === "reviews") return checkReviews(key, rule)
+  if (key.startsWith("tag:")) return checkTag(key, rule)
+  if (key === "global-score") return checkGlobalScore(key, rule)
+  if (key === "copurchase") return checkCopurchase(key, rule)
+  if (key.startsWith("copurchase:")) return checkCopurchaseHandle(key, rule)
+
+  // Prisma count checks
   if (key === "customers") {
     const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.customer.count()
-    const ok = (rule.min === undefined || count >= rule.min)
-    return { key, ok, detail: `${count} customers`, severity: "error" }
+    return checkPrismaCount(key, "customers", () => prisma.customer.count(), rule)
   }
-
-  // ── addresses ──
   if (key === "addresses") {
     const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.address.count()
-    const ok = (rule.min === undefined || count >= rule.min)
-    return { key, ok, detail: `${count} addresses`, severity: "error" }
+    return checkPrismaCount(key, "addresses", () => prisma.address.count(), rule)
   }
-
-  // ── preferences ──
   if (key === "preferences") {
     const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.customerPreferences.count()
-    const ok = (rule.min === undefined || count >= rule.min)
-    return { key, ok, detail: `${count} preferences`, severity: "error" }
+    return checkPrismaCount(key, "preferences", () => prisma.customerPreferences.count(), rule)
   }
-
-  // ── order-items ──
   if (key === "order-items") {
     const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.customerOrderItem.count()
-    const ok = (rule.min === undefined || count >= rule.min)
-    return { key, ok, detail: `${count} order items`, severity: "error" }
+    return checkPrismaCount(key, "order items", () => prisma.customerOrderItem.count(), rule)
   }
-
-  // ── reservations ──
   if (key === "reservations") {
     const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.reservation.count()
-    const ok = (rule.min === undefined || count >= rule.min)
-    return { key, ok, detail: `${count} reservations`, severity: "error" }
+    return checkPrismaCount(key, "reservations", () => prisma.reservation.count(), rule)
   }
-
-  // ── tables ──
   if (key === "tables") {
     const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.table.count()
-    const ok = (rule.min === undefined || count >= rule.min)
-    return { key, ok, detail: `${count} tables`, severity: "error" }
+    return checkPrismaCount(key, "tables", () => prisma.table.count(), rule)
   }
-
-  // ── delivery-zones ──
   if (key === "delivery-zones") {
     const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.deliveryZone.count({ where: { active: true } })
-    const ok = (rule.min === undefined || count >= rule.min)
-    return { key, ok, detail: `${count} active zones`, severity: "error" }
+    return checkPrismaCount(key, "active zones", () => prisma.deliveryZone.count({ where: { active: true } }), rule)
   }
 
-  // ── api:<path> ──
-  if (key.startsWith("api:")) {
-    const path = key.slice(4)
-    const apiUrl = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001"
-    try {
-      const res = await fetch(`${apiUrl}${path}`, { signal: AbortSignal.timeout(5000) })
-      if (!res.ok) return { key, ok: false, detail: `API ${res.status}`, severity: "warning" }
-      const data = (await res.json()) as Record<string, unknown>
-      // Count array-like response
-      const items = Array.isArray(data) ? data : (data.products ?? data.items ?? data.results ?? [])
-      const count = Array.isArray(items) ? items.length : 0
-      const ok = (rule.min === undefined || count >= rule.min) &&
-                 (rule.exists === undefined || (rule.exists ? count > 0 : count === 0))
-      return { key, ok, detail: `${count} items from API`, severity: "warning" }
-    } catch {
-      return { key, ok: false, detail: "API unreachable (is ibx dev api running?)", severity: "warning" }
-    }
-  }
+  if (key.startsWith("api:")) return checkApiEndpoint(key, rule)
+  if (key === "ranking") return checkRanking(key, rule)
 
-  // ── ranking ──
-  if (key === "ranking" && rule.order) {
-    const redis = await getRedis()
-    const scores: { handle: string; score: number }[] = []
-    for (const handle of rule.order) {
-      const product = await findProductByHandle(handle)
-      if (!product) return { key, ok: false, detail: `Product "${handle}" not found`, severity: "error" }
-      const score = await redis.zScore(rk("product:global:score"), product.id)
-      scores.push({ handle, score: score ?? 0 })
-    }
-    // Check that scores are in descending order
-    for (let i = 0; i < scores.length - 1; i++) {
-      if (scores[i].score < scores[i + 1].score) {
-        return {
-          key,
-          ok: false,
-          detail: `${scores[i].handle} (${scores[i].score}) should rank higher than ${scores[i + 1].handle} (${scores[i + 1].score})`,
-          severity: "error",
-        }
-      }
-    }
-    return { key, ok: true, detail: "Ranking order correct", severity: "error" }
-  }
-
-  // ── Unknown key ──
+  // Unknown key
   return { key, ok: false, detail: `Unknown verify key: ${key}`, severity: "warning" }
 }
 
@@ -481,92 +497,7 @@ export async function runScenario(nameOrPath: string, opts: ScenarioOptions = {}
 
   try {
     // 3. Resolve dependency DAG
-    const deps = await resolveDAG(scenario)
-    if (deps.length > 0) {
-      console.log(chalk.dim(`  Resolving dependencies: ${deps.map((d) => d.name).join(" → ")}\n`))
-      for (const dep of deps) {
-        // Run dependency setup steps
-        if (dep.setup.length > 0) {
-          const tasks = stepsToTasks(dep.setup as StepName[], opts)
-          const result = await runPipeline(tasks, { skip: opts.skip })
-          if (!result.ok) {
-            success = false
-            return success
-          }
-        }
-      }
-    }
-
-    // 4. Cleanup
-    if (scenario.cleanup && scenario.cleanup.length > 0) {
-      console.log(chalk.bold("  Cleanup"))
-      await executeCleanup(scenario.cleanup)
-      console.log()
-    }
-
-    // 5. Setup
-    if (scenario.setup.length > 0) {
-      console.log(chalk.bold("  Setup"))
-      const tasks = stepsToTasks(scenario.setup as StepName[], opts)
-      const result = await runPipeline(tasks, { skip: opts.skip })
-      if (!result.ok) {
-        success = false
-        return success
-      }
-      console.log()
-    }
-
-    // 6. Simulate (if present)
-    if (scenario.simulate) {
-      console.log(chalk.bold("  Simulate"))
-      const { runSimulation } = await import("./simulator.js")
-      const simResult = await runSimulation({
-        customers: scenario.simulate.customers,
-        days: scenario.simulate.days,
-        ordersPerDay: scenario.simulate.ordersPerDay,
-        seed: scenario.simulate.seed,
-        behavior: scenario.simulate.behavior,
-        reviews: scenario.simulate.reviews,
-      })
-      console.log(chalk.dim(`    ${simResult.customersCreated} customers, ${simResult.ordersCreated} orders, ${simResult.reviewsCreated} reviews`))
-      console.log()
-    }
-
-    // 7. Tags
-    const tagEntries = Object.entries(scenario.tags)
-    if (tagEntries.length > 0) {
-      const spinner = ora(`  Applying ${tagEntries.length} tag rule(s)…`).start()
-      const affectedProductIds = await applyTags(scenario.tags)
-      // Stabilize: reindex affected products to Typesense + flush cache (deterministic, no blind wait)
-      if (affectedProductIds.length > 0) {
-        spinner.text = `  Stabilizing ${affectedProductIds.length} product(s) in Typesense…`
-        await stabilizeProducts(affectedProductIds)
-      }
-      spinner.succeed(chalk.green(`  Applied ${tagEntries.length} tag rule(s)`))
-      console.log()
-    }
-
-    // 8. Rebuilds
-    if (scenario.rebuilds.length > 0) {
-      console.log(chalk.bold("  Rebuilds"))
-      const tasks = stepsToTasks(scenario.rebuilds as StepName[], opts)
-      const result = await runPipeline(tasks, { skip: opts.skip })
-      if (!result.ok) {
-        success = false
-        return success
-      }
-      console.log()
-    }
-
-    // 9. Verify
-    const verifyEntries = Object.entries(scenario.verify)
-    if (verifyEntries.length > 0) {
-      console.log(chalk.bold("  Verify\n"))
-      const results = await runVerifyChecks(scenario.verify)
-      printVerifyResults(results)
-      const failures = results.filter((r) => !r.ok && r.severity === "error")
-      if (failures.length > 0) success = false
-    }
+    success = await executeScenarioSteps(scenario, opts)
   } finally {
     // 10. Unlock
     if (releaseLock) {
@@ -594,6 +525,89 @@ export async function runScenario(nameOrPath: string, opts: ScenarioOptions = {}
   return success
 }
 
+// ── Scenario step execution ─────────────────────────────────────────────────
+
+async function executeScenarioSteps(scenario: ScenarioFile, opts: ScenarioOptions): Promise<boolean> {
+  // 3. Resolve dependency DAG
+  const deps = await resolveDAG(scenario)
+  if (deps.length > 0) {
+    console.log(chalk.dim(`  Resolving dependencies: ${deps.map((d) => d.name).join(" → ")}\n`))
+    for (const dep of deps) {
+      if (dep.setup.length > 0) {
+        const tasks = stepsToTasks(dep.setup as StepName[], opts)
+        const result = await runPipeline(tasks, { skip: opts.skip })
+        if (!result.ok) return false
+      }
+    }
+  }
+
+  // 4. Cleanup
+  if (scenario.cleanup && scenario.cleanup.length > 0) {
+    console.log(chalk.bold("  Cleanup"))
+    await executeCleanup(scenario.cleanup)
+    console.log()
+  }
+
+  // 5. Setup
+  if (scenario.setup.length > 0) {
+    console.log(chalk.bold("  Setup"))
+    const tasks = stepsToTasks(scenario.setup as StepName[], opts)
+    const result = await runPipeline(tasks, { skip: opts.skip })
+    if (!result.ok) return false
+    console.log()
+  }
+
+  // 6. Simulate (if present)
+  if (scenario.simulate) {
+    console.log(chalk.bold("  Simulate"))
+    const { runSimulation } = await import("./simulator.js")
+    const simResult = await runSimulation({
+      customers: scenario.simulate.customers,
+      days: scenario.simulate.days,
+      ordersPerDay: scenario.simulate.ordersPerDay,
+      seed: scenario.simulate.seed,
+      behavior: scenario.simulate.behavior,
+      reviews: scenario.simulate.reviews,
+    })
+    console.log(chalk.dim(`    ${simResult.customersCreated} customers, ${simResult.ordersCreated} orders, ${simResult.reviewsCreated} reviews`))
+    console.log()
+  }
+
+  // 7. Tags
+  const tagEntries = Object.entries(scenario.tags)
+  if (tagEntries.length > 0) {
+    const spinner = ora(`  Applying ${tagEntries.length} tag rule(s)…`).start()
+    const affectedProductIds = await applyTags(scenario.tags)
+    if (affectedProductIds.length > 0) {
+      spinner.text = `  Stabilizing ${affectedProductIds.length} product(s) in Typesense…`
+      await stabilizeProducts(affectedProductIds)
+    }
+    spinner.succeed(chalk.green(`  Applied ${tagEntries.length} tag rule(s)`))
+    console.log()
+  }
+
+  // 8. Rebuilds
+  if (scenario.rebuilds.length > 0) {
+    console.log(chalk.bold("  Rebuilds"))
+    const tasks = stepsToTasks(scenario.rebuilds as StepName[], opts)
+    const result = await runPipeline(tasks, { skip: opts.skip })
+    if (!result.ok) return false
+    console.log()
+  }
+
+  // 9. Verify
+  const verifyEntries = Object.entries(scenario.verify)
+  if (verifyEntries.length > 0) {
+    console.log(chalk.bold("  Verify\n"))
+    const results = await runVerifyChecks(scenario.verify)
+    printVerifyResults(results)
+    const failures = results.filter((r) => !r.ok && r.severity === "error")
+    if (failures.length > 0) return false
+  }
+
+  return true
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function stepsToTasks(steps: StepName[], opts: ScenarioOptions): PipelineTask[] {
@@ -608,30 +622,15 @@ function printDryRun(scenario: ScenarioFile): boolean {
   console.log(chalk.bold("  Dry Run — steps that would execute:\n"))
 
   if (scenario.cleanup?.length) {
-    console.log(chalk.dim("  Cleanup:"))
-    for (const action of scenario.cleanup) {
-      console.log(`    ${chalk.yellow("○")} ${action}`)
-    }
-    console.log()
+    printDryRunSection("Cleanup", scenario.cleanup, chalk.yellow)
   }
 
   if (scenario.setup.length > 0) {
-    console.log(chalk.dim("  Setup:"))
-    for (const step of scenario.setup) {
-      const def = StepRegistry[step as StepName]
-      console.log(`    ${chalk.cyan("○")} ${def?.label ?? step}`)
-    }
-    console.log()
+    printDryRunSteps("Setup", scenario.setup)
   }
 
   if (scenario.simulate) {
-    console.log(chalk.dim("  Simulate:"))
-    console.log(`    ${chalk.cyan("○")} ${scenario.simulate.customers} customers, ${scenario.simulate.days} days, ${scenario.simulate.ordersPerDay} orders/day, seed=${scenario.simulate.seed}`)
-    if (scenario.simulate.behavior) {
-      const dist = Object.entries(scenario.simulate.behavior).map(([k, v]) => `${k}=${(v * 100).toFixed(0)}%`).join(", ")
-      console.log(`    ${chalk.cyan("○")} Profiles: ${dist}`)
-    }
-    console.log()
+    printDryRunSimulate(scenario.simulate)
   }
 
   const tagEntries = Object.entries(scenario.tags)
@@ -644,12 +643,7 @@ function printDryRun(scenario: ScenarioFile): boolean {
   }
 
   if (scenario.rebuilds.length > 0) {
-    console.log(chalk.dim("  Rebuilds:"))
-    for (const step of scenario.rebuilds) {
-      const def = StepRegistry[step as StepName]
-      console.log(`    ${chalk.cyan("○")} ${def?.label ?? step}`)
-    }
-    console.log()
+    printDryRunSteps("Rebuilds", scenario.rebuilds)
   }
 
   const verifyEntries = Object.entries(scenario.verify)
@@ -665,6 +659,33 @@ function printDryRun(scenario: ScenarioFile): boolean {
   }
 
   return true
+}
+
+function printDryRunSection(label: string, items: string[], color: typeof chalk.yellow): void {
+  console.log(chalk.dim(`  ${label}:`))
+  for (const item of items) {
+    console.log(`    ${color("○")} ${item}`)
+  }
+  console.log()
+}
+
+function printDryRunSteps(label: string, steps: string[]): void {
+  console.log(chalk.dim(`  ${label}:`))
+  for (const step of steps) {
+    const def = StepRegistry[step as StepName]
+    console.log(`    ${chalk.cyan("○")} ${def?.label ?? step}`)
+  }
+  console.log()
+}
+
+function printDryRunSimulate(simulate: NonNullable<ScenarioFile["simulate"]>): void {
+  console.log(chalk.dim("  Simulate:"))
+  console.log(`    ${chalk.cyan("○")} ${simulate.customers} customers, ${simulate.days} days, ${simulate.ordersPerDay} orders/day, seed=${simulate.seed}`)
+  if (simulate.behavior) {
+    const dist = Object.entries(simulate.behavior).map(([k, v]) => `${k}=${(v * 100).toFixed(0)}%`).join(", ")
+    console.log(`    ${chalk.cyan("○")} Profiles: ${dist}`)
+  }
+  console.log()
 }
 
 async function runVerifyOnlyMode(scenario: ScenarioFile): Promise<boolean> {

@@ -17,6 +17,268 @@ function formatBytes(bytes: number): string {
   return `${val.toFixed(i > 0 ? 1 : 0)} ${units[i]}`
 }
 
+function formatTtl(ttl: number): string {
+  if (ttl === -1) return chalk.dim("no TTL")
+  if (ttl === -2) return chalk.red("expired")
+  return chalk.dim(`${ttl}s`)
+}
+
+function formatGroupTtl(ttl: number | undefined): string {
+  if (ttl === undefined) return "-"
+  if (ttl === -1) return "none"
+  return `${ttl}s`
+}
+
+// ── Redis: pattern match ────────────────────────────────────────────────────
+
+async function debugRedisPattern(pattern: string): Promise<void> {
+  const redis = await getRedis()
+  const fullPattern = pattern.includes(":") ? pattern : rk(pattern)
+
+  let cursor = 0
+  const keys: string[] = []
+  do {
+    const result = await redis.scan(cursor, { MATCH: fullPattern, COUNT: 200 })
+    cursor = result.cursor
+    keys.push(...result.keys)
+    if (keys.length >= 20) break
+  } while (cursor !== 0)
+
+  if (keys.length === 0) {
+    console.log(chalk.yellow(`\n  No keys matching: ${fullPattern}\n`))
+    return
+  }
+
+  console.log(chalk.bold(`\n  Keys matching: ${fullPattern} (${keys.length})\n`))
+
+  for (const key of keys.slice(0, 20)) {
+    const type = await redis.type(key)
+    const ttl = await redis.ttl(key)
+    let size = "?"
+    try {
+      const mem = await redis.memoryUsage(key)
+      size = formatBytes(mem ?? 0)
+    } catch { /* MEMORY USAGE may not be available */ }
+
+    console.log(`    ${chalk.cyan(key.padEnd(50))} ${type.padEnd(8)} ${size.padEnd(10)} ${formatTtl(ttl)}`)
+  }
+  if (keys.length > 20) {
+    console.log(chalk.dim(`    … and ${keys.length - 20} more`))
+  }
+  console.log()
+}
+
+// ── Redis: group summary ────────────────────────────────────────────────────
+
+async function debugRedisGroupSummary(showTtl: boolean): Promise<void> {
+  const redis = await getRedis()
+
+  const groups: { label: string; pattern: string }[] = [
+    { label: "Co-purchase sets",   pattern: rk("copurchase:*") },
+    { label: "Global scores",      pattern: rk("product:global:*") },
+    { label: "Search cache",       pattern: rk("search:*") },
+    { label: "Conversation state", pattern: rk("conv:*") },
+    { label: "Session data",       pattern: rk("session:*") },
+    { label: "Scenario lock",      pattern: rk("ibx:scenario:*") },
+  ]
+
+  const results: { label: string; keys: number; mem: number; ttl?: number }[] = []
+
+  for (const { label, pattern: p } of groups) {
+    let cursor2 = 0
+    let keyCount = 0
+    let totalMem = 0
+    let sampleTtl: number | undefined
+
+    do {
+      const result = await redis.scan(cursor2, { MATCH: p, COUNT: 200 })
+      cursor2 = result.cursor
+      for (const key of result.keys) {
+        keyCount++
+        try { totalMem += (await redis.memoryUsage(key)) ?? 0 } catch { /* skip */ }
+        if (showTtl && sampleTtl === undefined) {
+          sampleTtl = await redis.ttl(key)
+        }
+      }
+    } while (cursor2 !== 0)
+
+    results.push({ label, keys: keyCount, mem: totalMem, ttl: sampleTtl })
+  }
+
+  console.log(chalk.bold("\n  Redis Key Groups\n"))
+
+  const labelW = 22
+  const header = `  ${"Group".padEnd(labelW)}${"Keys".padStart(8)}   ${"Memory".padEnd(10)}${showTtl ? "  TTL" : ""}`
+  console.log(chalk.bold(header))
+  console.log(`  ${"─".repeat(labelW + 22 + (showTtl ? 8 : 0))}`)
+
+  let totalKeys = 0
+  let totalMem = 0
+  for (const r of results) {
+    totalKeys += r.keys
+    totalMem += r.mem
+    const keysColor = r.keys > 0 ? chalk.white : chalk.gray
+    const memColor = r.keys > 0 ? chalk.cyan : chalk.gray
+    let line = `  ${r.label.padEnd(labelW)}${keysColor(String(r.keys).padStart(8))}   ${memColor(formatBytes(r.mem).padEnd(10))}`
+    if (showTtl) {
+      line += `  ${chalk.dim(formatGroupTtl(r.ttl))}`
+    }
+    console.log(line)
+  }
+
+  console.log(`  ${"─".repeat(labelW + 22 + (showTtl ? 8 : 0))}`)
+  console.log(`  ${chalk.bold("Total".padEnd(labelW))}${chalk.white(String(totalKeys).padStart(8))}   ${chalk.cyan(formatBytes(totalMem))}`)
+  console.log()
+}
+
+// ── Typesense: schema ───────────────────────────────────────────────────────
+
+async function debugTypesenseSchema(): Promise<void> {
+  const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
+  const ts = getTypesenseClient()
+  const info = await ts.collections(COLLECTION).retrieve()
+
+  console.log(chalk.bold(`\n  Collection: ${COLLECTION}\n`))
+  console.log(chalk.dim(`  Documents: ${info.num_documents ?? 0}`))
+  console.log(chalk.dim(`  Fields:\n`))
+  for (const field of (info.fields ?? [])) {
+    const f = field as { name: string; type: string; optional?: boolean; index?: boolean }
+    const optional = f.optional ? chalk.dim(" (optional)") : ""
+    const indexed = f.index === false ? chalk.dim(" (not indexed)") : ""
+    console.log(`    ${f.name.padEnd(24)} ${chalk.cyan(f.type)}${optional}${indexed}`)
+  }
+  console.log()
+}
+
+// ── Typesense: document by ID ───────────────────────────────────────────────
+
+async function debugTypesenseDocument(id: string): Promise<void> {
+  const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
+  const ts = getTypesenseClient()
+
+  try {
+    const doc = await ts.collections(COLLECTION).documents(id).retrieve()
+    console.log(chalk.bold(`\n  Document: ${id}\n`))
+    console.log(JSON.stringify(doc, null, 2))
+    console.log()
+  } catch {
+    console.log(chalk.red(`Document "${id}" not found`))
+  }
+}
+
+// ── Typesense: search ───────────────────────────────────────────────────────
+
+async function debugTypesenseSearch(query: string): Promise<void> {
+  const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
+  const ts = getTypesenseClient()
+
+  const results = await ts.collections(COLLECTION).documents().search({
+    q: query,
+    query_by: "title,description,tags",
+    per_page: 10,
+  })
+
+  const hits = results.hits ?? []
+  console.log(chalk.bold(`\n  Typesense search: "${query}" — ${hits.length} hit(s)\n`))
+  for (const hit of hits) {
+    const doc = hit.document as Record<string, unknown>
+    console.log(`    ${chalk.cyan(String(doc.title).padEnd(40))} ${chalk.dim(String(doc.id).slice(0, 24))}`)
+  }
+  console.log()
+}
+
+// ── Typesense: collection summary ───────────────────────────────────────────
+
+async function debugTypesenseSummary(): Promise<void> {
+  const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
+  const ts = getTypesenseClient()
+  const info = await ts.collections(COLLECTION).retrieve()
+
+  console.log(chalk.bold(`\n  Typesense: ${COLLECTION}`))
+  console.log(`  Documents: ${chalk.cyan(String(info.num_documents ?? 0))}`)
+  console.log(`  Fields:    ${chalk.cyan(String((info.fields ?? []).length))}`)
+  console.log()
+}
+
+// ── Profile: section renderers ──────────────────────────────────────────────
+
+interface CustomerData {
+  id: string
+  name: string | null
+  phone: string
+  createdAt: Date
+  addresses: Array<{ street: string; number: string; district: string; city: string; isDefault: boolean }>
+  preferences: { dietaryRestrictions: unknown; allergenExclusions: unknown; favoriteCategories: unknown } | null
+  reviews: Array<{ rating: number; comment: string | null }>
+  orderItems: Array<{ orderedAt: Date; productId: string; quantity: number; priceInCentavos: number }>
+}
+
+function renderAddresses(addresses: CustomerData["addresses"]): void {
+  console.log(chalk.bold("\n  Addresses"))
+  if (addresses.length === 0) {
+    console.log(chalk.gray("    None"))
+    return
+  }
+  for (const addr of addresses) {
+    const def = addr.isDefault ? chalk.green(" (default)") : ""
+    console.log(`    ${addr.street}, ${addr.number} — ${addr.district}, ${addr.city}${def}`)
+  }
+}
+
+function renderPreferences(preferences: CustomerData["preferences"]): void {
+  console.log(chalk.bold("\n  Preferences"))
+  if (!preferences) {
+    console.log(chalk.gray("    None"))
+    return
+  }
+  const p = preferences
+  console.log(`    Dietary:    ${(p.dietaryRestrictions as string[]).join(", ") || "none"}`)
+  console.log(`    Allergens:  ${(p.allergenExclusions as string[]).join(", ") || "none"}`)
+  console.log(`    Favorites:  ${(p.favoriteCategories as string[]).join(", ") || "none"}`)
+}
+
+function renderOrders(orderItems: CustomerData["orderItems"]): void {
+  console.log(chalk.bold("\n  Recent Orders"))
+  if (orderItems.length === 0) {
+    console.log(chalk.gray("    None"))
+    return
+  }
+  for (const item of orderItems) {
+    console.log(`    ${chalk.dim(item.orderedAt.toISOString().slice(0, 10))}  ${item.productId.slice(0, 24)}  qty=${item.quantity}  R$${(item.priceInCentavos / 100).toFixed(2)}`)
+  }
+}
+
+function renderReviews(reviews: CustomerData["reviews"]): void {
+  console.log(chalk.bold("\n  Recent Reviews"))
+  if (reviews.length === 0) {
+    console.log(chalk.gray("    None"))
+    return
+  }
+  for (const review of reviews) {
+    const stars = "★".repeat(review.rating) + "☆".repeat(5 - review.rating)
+    console.log(`    ${stars}  ${review.comment?.slice(0, 50) ?? "(no comment)"}`)
+  }
+}
+
+interface ReservationData {
+  status: string
+  partySize: number
+  timeSlot: { date: unknown; startTime: string | null } | null
+}
+
+function renderReservations(reservations: ReservationData[]): void {
+  console.log(chalk.bold("\n  Reservations"))
+  if (reservations.length === 0) {
+    console.log(chalk.gray("    None"))
+    return
+  }
+  for (const res of reservations) {
+    const slotDate = res.timeSlot?.date ? new Date(res.timeSlot.date as string).toISOString().slice(0, 10) : "?"
+    const slotTime = res.timeSlot?.startTime ?? "?"
+    console.log(`    ${chalk.dim(slotDate)}  ${slotTime}  ${res.partySize} guest(s)  ${res.status}`)
+  }
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 export function registerDebugCommands(group: Command): void {
@@ -31,124 +293,14 @@ export function registerDebugCommands(group: Command): void {
       const spinner = ora("Connecting to Redis…").start()
 
       try {
-        const redis = await getRedis()
-
         if (pattern) {
-          // Inspect keys matching the pattern
-          const fullPattern = pattern.includes(":") ? pattern : rk(pattern)
-          spinner.text = `Scanning: ${fullPattern}`
-
-          let cursor = 0
-          const keys: string[] = []
-          do {
-            const result = await redis.scan(cursor, { MATCH: fullPattern, COUNT: 200 })
-            cursor = result.cursor
-            keys.push(...result.keys)
-            if (keys.length >= 20) break
-          } while (cursor !== 0)
-
+          spinner.text = `Scanning: ${pattern.includes(":") ? pattern : rk(pattern)}`
           spinner.stop()
-
-          if (keys.length === 0) {
-            console.log(chalk.yellow(`\n  No keys matching: ${fullPattern}\n`))
-            return
-          }
-
-          console.log(chalk.bold(`\n  Keys matching: ${fullPattern} (${keys.length})\n`))
-
-          for (const key of keys.slice(0, 20)) {
-            const type = await redis.type(key)
-            const ttl = await redis.ttl(key)
-            let size = "?"
-            try {
-              const mem = await redis.memoryUsage(key)
-              size = formatBytes(mem ?? 0)
-            } catch { /* MEMORY USAGE may not be available */ }
-
-            let ttlStr: string
-            if (ttl === -1) {
-              ttlStr = chalk.dim("no TTL")
-            } else if (ttl === -2) {
-              ttlStr = chalk.red("expired")
-            } else {
-              ttlStr = chalk.dim(`${ttl}s`)
-            }
-            console.log(`    ${chalk.cyan(key.padEnd(50))} ${type.padEnd(8)} ${size.padEnd(10)} ${ttlStr}`)
-          }
-          if (keys.length > 20) {
-            console.log(chalk.dim(`    … and ${keys.length - 20} more`))
-          }
-          console.log()
+          await debugRedisPattern(pattern)
         } else {
-          // Group summary
           spinner.text = "Scanning key groups…"
-
-          const groups: { label: string; pattern: string }[] = [
-            { label: "Co-purchase sets",   pattern: rk("copurchase:*") },
-            { label: "Global scores",      pattern: rk("product:global:*") },
-            { label: "Search cache",       pattern: rk("search:*") },
-            { label: "Conversation state", pattern: rk("conv:*") },
-            { label: "Session data",       pattern: rk("session:*") },
-            { label: "Scenario lock",      pattern: rk("ibx:scenario:*") },
-          ]
-
-          const results: { label: string; keys: number; mem: number; ttl?: number }[] = []
-
-          for (const { label, pattern: p } of groups) {
-            let cursor2 = 0
-            let keyCount = 0
-            let totalMem = 0
-            let sampleTtl: number | undefined
-
-            do {
-              const result = await redis.scan(cursor2, { MATCH: p, COUNT: 200 })
-              cursor2 = result.cursor
-              for (const key of result.keys) {
-                keyCount++
-                try { totalMem += (await redis.memoryUsage(key)) ?? 0 } catch { /* skip */ }
-                if (opts.ttl && sampleTtl === undefined) {
-                  sampleTtl = await redis.ttl(key)
-                }
-              }
-            } while (cursor2 !== 0)
-
-            results.push({ label, keys: keyCount, mem: totalMem, ttl: sampleTtl })
-          }
-
           spinner.stop()
-
-          console.log(chalk.bold("\n  Redis Key Groups\n"))
-
-          const labelW = 22
-          const header = `  ${"Group".padEnd(labelW)}${"Keys".padStart(8)}   ${"Memory".padEnd(10)}${opts.ttl ? "  TTL" : ""}`
-          console.log(chalk.bold(header))
-          console.log(`  ${"─".repeat(labelW + 22 + (opts.ttl ? 8 : 0))}`)
-
-          let totalKeys = 0
-          let totalMem = 0
-          for (const r of results) {
-            totalKeys += r.keys
-            totalMem += r.mem
-            const keysColor = r.keys > 0 ? chalk.white : chalk.gray
-            const memColor = r.keys > 0 ? chalk.cyan : chalk.gray
-            let line = `  ${r.label.padEnd(labelW)}${keysColor(String(r.keys).padStart(8))}   ${memColor(formatBytes(r.mem).padEnd(10))}`
-            if (opts.ttl) {
-              let ttlStr: string
-              if (r.ttl === undefined) {
-                ttlStr = "-"
-              } else if (r.ttl === -1) {
-                ttlStr = "none"
-              } else {
-                ttlStr = `${r.ttl}s`
-              }
-              line += `  ${chalk.dim(ttlStr)}`
-            }
-            console.log(line)
-          }
-
-          console.log(`  ${"─".repeat(labelW + 22 + (opts.ttl ? 8 : 0))}`)
-          console.log(`  ${chalk.bold("Total".padEnd(labelW))}${chalk.white(String(totalKeys).padStart(8))}   ${chalk.cyan(formatBytes(totalMem))}`)
-          console.log()
+          await debugRedisGroupSummary(!!opts.ttl)
         }
       } catch (err) {
         spinner.fail(chalk.red(`Failed: ${(err as Error).message}`))
@@ -168,65 +320,29 @@ export function registerDebugCommands(group: Command): void {
       const spinner = ora("Connecting to Typesense…").start()
 
       try {
-        const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
-        const ts = getTypesenseClient()
-
         if (opts.schema) {
-          const info = await ts.collections(COLLECTION).retrieve()
           spinner.stop()
-          console.log(chalk.bold(`\n  Collection: ${COLLECTION}\n`))
-          console.log(chalk.dim(`  Documents: ${info.num_documents ?? 0}`))
-          console.log(chalk.dim(`  Fields:\n`))
-          for (const field of (info.fields ?? [])) {
-            const f = field as { name: string; type: string; optional?: boolean; index?: boolean }
-            const optional = f.optional ? chalk.dim(" (optional)") : ""
-            const indexed = f.index === false ? chalk.dim(" (not indexed)") : ""
-            console.log(`    ${f.name.padEnd(24)} ${chalk.cyan(f.type)}${optional}${indexed}`)
-          }
-          console.log()
+          await debugTypesenseSchema()
           return
         }
 
         if (opts.id) {
           spinner.text = `Fetching document ${opts.id}…`
-          try {
-            const doc = await ts.collections(COLLECTION).documents(opts.id).retrieve()
-            spinner.stop()
-            console.log(chalk.bold(`\n  Document: ${opts.id}\n`))
-            console.log(JSON.stringify(doc, null, 2))
-            console.log()
-          } catch {
-            spinner.fail(chalk.red(`Document "${opts.id}" not found`))
-          }
+          spinner.stop()
+          await debugTypesenseDocument(opts.id)
           return
         }
 
         if (query) {
           spinner.text = `Searching: "${query}"…`
-          const results = await ts.collections(COLLECTION).documents().search({
-            q: query,
-            query_by: "title,description,tags",
-            per_page: 10,
-          })
           spinner.stop()
-
-          const hits = results.hits ?? []
-          console.log(chalk.bold(`\n  Typesense search: "${query}" — ${hits.length} hit(s)\n`))
-          for (const hit of hits) {
-            const doc = hit.document as Record<string, unknown>
-            console.log(`    ${chalk.cyan(String(doc.title).padEnd(40))} ${chalk.dim(String(doc.id).slice(0, 24))}`)
-          }
-          console.log()
+          await debugTypesenseSearch(query)
           return
         }
 
         // Default: show collection summary
-        const info = await ts.collections(COLLECTION).retrieve()
         spinner.stop()
-        console.log(chalk.bold(`\n  Typesense: ${COLLECTION}`))
-        console.log(`  Documents: ${chalk.cyan(String(info.num_documents ?? 0))}`)
-        console.log(`  Fields:    ${chalk.cyan(String((info.fields ?? []).length))}`)
-        console.log()
+        await debugTypesenseSummary()
       } catch (err) {
         spinner.fail(chalk.red(`Failed: ${(err as Error).message}`))
         process.exitCode = 1
@@ -266,66 +382,19 @@ export function registerDebugCommands(group: Command): void {
         console.log(chalk.dim(`  Phone: ${customer.phone}`))
         console.log(chalk.dim(`  Created: ${customer.createdAt.toISOString()}`))
 
-        // Addresses
-        console.log(chalk.bold("\n  Addresses"))
-        if (customer.addresses.length === 0) {
-          console.log(chalk.gray("    None"))
-        } else {
-          for (const addr of customer.addresses) {
-            const def = addr.isDefault ? chalk.green(" (default)") : ""
-            console.log(`    ${addr.street}, ${addr.number} — ${addr.district}, ${addr.city}${def}`)
-          }
-        }
-
-        // Preferences
-        console.log(chalk.bold("\n  Preferences"))
-        if (customer.preferences) {
-          const p = customer.preferences
-          console.log(`    Dietary:    ${(p.dietaryRestrictions as string[]).join(", ") || "none"}`)
-          console.log(`    Allergens:  ${(p.allergenExclusions as string[]).join(", ") || "none"}`)
-          console.log(`    Favorites:  ${(p.favoriteCategories as string[]).join(", ") || "none"}`)
-        } else {
-          console.log(chalk.gray("    None"))
-        }
-
-        // Orders
-        console.log(chalk.bold("\n  Recent Orders"))
-        if (customer.orderItems.length === 0) {
-          console.log(chalk.gray("    None"))
-        } else {
-          for (const item of customer.orderItems) {
-            console.log(`    ${chalk.dim(item.orderedAt.toISOString().slice(0, 10))}  ${item.productId.slice(0, 24)}  qty=${item.quantity}  R$${(item.priceInCentavos / 100).toFixed(2)}`)
-          }
-        }
-
-        // Reviews
-        console.log(chalk.bold("\n  Recent Reviews"))
-        if (customer.reviews.length === 0) {
-          console.log(chalk.gray("    None"))
-        } else {
-          for (const review of customer.reviews) {
-            const stars = "★".repeat(review.rating) + "☆".repeat(5 - review.rating)
-            console.log(`    ${stars}  ${review.comment?.slice(0, 50) ?? "(no comment)"}`)
-          }
-        }
+        renderAddresses(customer.addresses)
+        renderPreferences(customer.preferences)
+        renderOrders(customer.orderItems)
+        renderReviews(customer.reviews)
 
         // Reservations (separate query — no back-relation on Customer)
-        console.log(chalk.bold("\n  Reservations"))
         const reservations = await prisma.reservation.findMany({
           where: { customerId },
           take: 5,
           orderBy: { createdAt: "desc" },
           include: { timeSlot: true },
         })
-        if (reservations.length === 0) {
-          console.log(chalk.gray("    None"))
-        } else {
-          for (const res of reservations) {
-            const slotDate = res.timeSlot?.date ? new Date(res.timeSlot.date).toISOString().slice(0, 10) : "?"
-            const slotTime = res.timeSlot?.startTime ?? "?"
-            console.log(`    ${chalk.dim(slotDate)}  ${slotTime}  ${res.partySize} guest(s)  ${res.status}`)
-          }
-        }
+        renderReservations(reservations)
 
         console.log()
         await prisma.$disconnect()
