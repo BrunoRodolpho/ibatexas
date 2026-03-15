@@ -29,6 +29,51 @@ interface ReviewResponse {
   averageRating: number | null
 }
 
+/** Fetch reviews for a single product, filtering to 4+ stars with comments */
+async function fetchProductReviews(
+  product: { id: string; title: string },
+  signal: AbortSignal,
+): Promise<ReviewItem[]> {
+  try {
+    const data = await apiFetch<ReviewResponse>(
+      `/api/products/${product.id}/reviews?limit=3`,
+      { signal },
+    )
+    return data.reviews
+      .filter((r) => r.rating >= 4 && r.comment)
+      .map((r) => ({
+        ...r,
+        productId: product.id,
+        productTitle: product.title,
+      }))
+  } catch {
+    // Individual fetch failure — skip product
+    return []
+  }
+}
+
+/** Sort reviews by rating desc, then by date desc */
+function sortReviews(reviews: ReviewItem[]): ReviewItem[] {
+  return [...reviews].sort(
+    (a, b) => b.rating - a.rating || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  )
+}
+
+/** Fetch top reviews from popular products */
+async function loadTopReviews(signal: AbortSignal): Promise<ReviewItem[]> {
+  const res = await apiFetch<{ items?: Array<{ id: string; title: string }>; products?: Array<{ id: string; title: string }> }>(
+    '/api/products?sort=popular&limit=6',
+    { signal },
+  )
+  const products = (res.items ?? res.products ?? []).slice(0, 3)
+  if (products.length === 0) return []
+
+  const reviewSets = await Promise.all(
+    products.map((product) => fetchProductReviews(product, signal)),
+  )
+  return sortReviews(reviewSets.flat()).slice(0, 6)
+}
+
 /**
  * Customer reviews section for the homepage.
  * Fetches top reviews from popular product IDs and displays
@@ -49,46 +94,10 @@ export function HomeReviews() {
   useEffect(() => {
     const controller = new AbortController()
 
-    // Fetch products first, then get reviews from the top ones
-    apiFetch<{ items?: Array<{ id: string; title: string }>; products?: Array<{ id: string; title: string }> }>(
-      '/api/products?sort=popular&limit=6',
-      { signal: controller.signal },
-    )
-      .then(async (res) => {
-        const products = (res.items ?? res.products ?? []).slice(0, 3)
-        if (products.length === 0) return
-
-        const allReviews: ReviewItem[] = []
-
-        await Promise.all(
-          products.map(async (product) => {
-            try {
-              const data = await apiFetch<ReviewResponse>(
-                `/api/products/${product.id}/reviews?limit=3`,
-                { signal: controller.signal },
-              )
-              data.reviews
-                .filter((r) => r.rating >= 4 && r.comment)
-                .forEach((r) => {
-                  allReviews.push({
-                    ...r,
-                    productId: product.id,
-                    productTitle: product.title,
-                  })
-                })
-            } catch {
-              // Individual fetch failure — skip product
-            }
-          }),
-        )
-
+    loadTopReviews(controller.signal)
+      .then((loaded) => {
         if (!controller.signal.aborted) {
-          // Sort by rating desc, take top 6
-          setReviews(
-            [...allReviews]
-              .sort((a, b) => b.rating - a.rating || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-              .slice(0, 6),
-          )
+          setReviews(loaded)
         }
       })
       .catch(() => {

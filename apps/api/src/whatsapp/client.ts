@@ -37,6 +37,30 @@ export function phoneHash(phone: string): string {
 const MAX_WHATSAPP_LENGTH = 4096;
 
 /**
+ * Find the best split index in a chunk of text.
+ * Prefers sentence boundaries (.!?), then newline, then space, then hard split.
+ */
+function findSplitIndex(chunk: string): number {
+  // Prefer sentence boundary (search backwards from end to midpoint)
+  for (let i = chunk.length - 1; i > MAX_WHATSAPP_LENGTH * 0.5; i--) {
+    if (chunk[i] === "." || chunk[i] === "!" || chunk[i] === "?") {
+      return i + 1;
+    }
+  }
+
+  // Fallback to newline
+  const newlineIdx = chunk.lastIndexOf("\n");
+  if (newlineIdx !== -1) return newlineIdx + 1;
+
+  // Fallback to space
+  const spaceIdx = chunk.lastIndexOf(" ");
+  if (spaceIdx !== -1) return spaceIdx + 1;
+
+  // Hard split as last resort
+  return MAX_WHATSAPP_LENGTH;
+}
+
+/**
  * Split text at sentence boundaries (`.!?`), then newline, then space.
  * If split, each part is prefixed with `(1/N)`.
  */
@@ -48,30 +72,7 @@ export function splitForWhatsApp(text: string): string[] {
 
   while (remaining.length > MAX_WHATSAPP_LENGTH) {
     const chunk = remaining.slice(0, MAX_WHATSAPP_LENGTH);
-
-    // Prefer sentence boundary
-    let splitIdx = -1;
-    for (let i = chunk.length - 1; i > MAX_WHATSAPP_LENGTH * 0.5; i--) {
-      if (chunk[i] === "." || chunk[i] === "!" || chunk[i] === "?") {
-        splitIdx = i + 1;
-        break;
-      }
-    }
-
-    // Fallback to newline
-    if (splitIdx === -1) {
-      splitIdx = chunk.lastIndexOf("\n");
-      if (splitIdx !== -1) splitIdx += 1;
-    }
-
-    // Fallback to space
-    if (splitIdx === -1) {
-      splitIdx = chunk.lastIndexOf(" ");
-      if (splitIdx !== -1) splitIdx += 1;
-    }
-
-    // Hard split as last resort
-    if (splitIdx <= 0) splitIdx = MAX_WHATSAPP_LENGTH;
+    const splitIdx = findSplitIndex(chunk);
 
     parts.push(remaining.slice(0, splitIdx).trimEnd());
     remaining = remaining.slice(splitIdx).trimStart();

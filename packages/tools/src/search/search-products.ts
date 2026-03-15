@@ -85,37 +85,47 @@ interface FilterOptions {
   offset?: number
 }
 
+/** Check if a product passes availability filter */
+function passesAvailabilityFilter(product: ProductDTO, availableNow: boolean): boolean {
+  if (!availableNow) return true
+  return isAvailableNow(product.availabilityWindow)
+}
+
+/** Check if a product passes allergen filter */
+function passesAllergenFilter(product: ProductDTO, excludeAllergens?: string[]): boolean {
+  if (!excludeAllergens || excludeAllergens.length === 0) return true
+  return !product.allergens.some((a) => excludeAllergens.includes(a))
+}
+
+/** Check if a product passes price range filter */
+function passesPriceFilter(product: ProductDTO, minPrice?: number, maxPrice?: number): boolean {
+  if (minPrice === undefined && maxPrice === undefined) return true
+  const prices = (product.variants ?? []).map((v) => v.price).filter((p) => p > 0)
+  const lowestPrice = prices.length > 0 ? Math.min(...prices) : 0
+  if (minPrice !== undefined && lowestPrice < minPrice) return false
+  if (maxPrice !== undefined && lowestPrice > maxPrice) return false
+  return true
+}
+
+/** Check if a product passes rating filter */
+function passesRatingFilter(product: ProductDTO, minRating?: number): boolean {
+  if (minRating === undefined) return true
+  const rating = (product as { rating?: number }).rating ?? 0
+  return rating >= minRating
+}
+
 /**
  * Apply post-fetch filters that cannot be expressed as Typesense filter_by.
  * Tags are now handled by Typesense filter_by — no longer post-filtered here.
  * Availability window is time-dependent and product-specific.
  */
 function applyFilters(products: ProductDTO[], filters: FilterOptions): ProductDTO[] {
-  return products.filter((product) => {
-    if (filters.availableNow && !isAvailableNow(product.availabilityWindow)) {
-      return false
-    }
-
-    if (filters.excludeAllergens && filters.excludeAllergens.length > 0) {
-      if (product.allergens.some((a) => filters.excludeAllergens!.includes(a))) return false
-    }
-
-    // Price filter: use lowest variant price
-    if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
-      const prices = (product.variants ?? []).map((v) => v.price).filter((p) => p > 0)
-      const lowestPrice = prices.length > 0 ? Math.min(...prices) : 0
-      if (filters.minPrice !== undefined && lowestPrice < filters.minPrice) return false
-      if (filters.maxPrice !== undefined && lowestPrice > filters.maxPrice) return false
-    }
-
-    // Rating filter
-    if (filters.minRating !== undefined) {
-      const rating = (product as { rating?: number }).rating ?? 0
-      if (rating < filters.minRating) return false
-    }
-
-    return true
-  })
+  return products.filter((product) =>
+    passesAvailabilityFilter(product, filters.availableNow) &&
+    passesAllergenFilter(product, filters.excludeAllergens) &&
+    passesPriceFilter(product, filters.minPrice, filters.maxPrice) &&
+    passesRatingFilter(product, filters.minRating)
+  )
 }
 
 // ── Typesense search ──────────────────────────────────────────────────────────
@@ -139,38 +149,61 @@ interface TypesenseSearchOptions {
   offset?: number
 }
 
+/** Build Typesense filter_by string from search options */
+function buildFilterBy(opts: Pick<TypesenseSearchOptions, 'filterInStock' | 'productType' | 'categoryHandle' | 'tags'>): string {
+  const parts = ["status:published"]
+  if (opts.filterInStock !== false) parts.push("inStock:true")
+  if (opts.productType) parts.push(`productType:${opts.productType}`)
+  if (opts.categoryHandle) parts.push(`categoryHandle:${opts.categoryHandle}`)
+  if (opts.tags && opts.tags.length > 0) parts.push(`tags:=[${opts.tags.join(",")}]`)
+  return parts.join(" && ")
+}
+
+const SORT_BY_MAP: Record<string, string> = {
+  price_asc: "price:asc",
+  price_desc: "price:desc",
+  rating: "rating:desc",
+  popular: "orderCount:desc",
+}
+
+/** Extract hit scores from Typesense response */
+function extractHitsAndScores(hits: any[]): { docs: any[]; scores: Record<string, number> } {
+  const scores: Record<string, number> = {}
+  const docs: any[] = []
+
+  for (const hit of hits) {
+    const doc = hit.document as any
+    docs.push(doc)
+    if ((doc as any)?.id) {
+      const score =
+        ((hit as any).hybrid_search_info?.rank_fusion_score as number | undefined) ??
+        ((hit as any).text_match_score as number | undefined) ??
+        0
+      scores[(doc as any).id] = score
+    }
+  }
+
+  return { docs, scores }
+}
+
 /**
  * Execute Typesense hybrid search (vector + keyword).
  * Uses multi_search (POST) to avoid query-string length limits with large embeddings.
  */
 async function executeTypesenseSearch(opts: TypesenseSearchOptions): Promise<TypesenseResult> {
-  const { query, embedding, limit, filterInStock = true, productType, categoryHandle, tags, sort, offset } = opts
+  const { query, embedding, limit, sort, offset } = opts
   const typesenseClient = getTypesenseClient()
-
-  const filterParts = ["status:published"]
-  if (filterInStock) filterParts.push("inStock:true")
-  if (productType) filterParts.push(`productType:${productType}`)
-  if (categoryHandle) filterParts.push(`categoryHandle:${categoryHandle}`)
-  if (tags && tags.length > 0) filterParts.push(`tags:=[${tags.join(",")}]`)
-  
-  const filterBy = filterParts.join(" && ")
 
   const searchParams: Record<string, any> = {
     q: query,
     query_by: "title,description,tags",
-    filter_by: filterBy,
+    filter_by: buildFilterBy(opts),
     facet_by: "tags,availabilityWindow,allergens,productType",
     limit,
     per_page: limit,
     page: offset ? Math.floor(offset / limit) + 1 : 1,
   }
 
-  const SORT_BY_MAP: Record<string, string> = {
-    price_asc: "price:asc",
-    price_desc: "price:desc",
-    rating: "rating:desc",
-    popular: "orderCount:desc",
-  }
   if (sort && SORT_BY_MAP[sort]) {
     searchParams.sort_by = SORT_BY_MAP[sort]
   }
@@ -191,21 +224,7 @@ async function executeTypesenseSearch(opts: TypesenseSearchOptions): Promise<Typ
     return { hits: [], totalFound: 0, scores: {} }
   }
 
-  const hits = response.hits ?? []
-  const scores: Record<string, number> = {}
-  const docs: any[] = []
-
-  for (const hit of hits) {
-    const doc = hit.document as any
-    docs.push(doc)
-    if ((doc as any)?.id) {
-      const score =
-        ((hit as any).hybrid_search_info?.rank_fusion_score as number | undefined) ??
-        ((hit as any).text_match_score as number | undefined) ??
-        0
-      scores[(doc as any).id] = score
-    }
-  }
+  const { docs, scores } = extractHitsAndScores(response.hits ?? [])
 
   return {
     hits: docs,
@@ -455,6 +474,67 @@ async function publishViewedEvents(
   )
 }
 
+// ── Result merging ───────────────────────────────────────────────────────────
+
+interface MergedResults {
+  products: ProductDTO[]
+  mergedScores: Record<string, number>
+  anyLiveSearch: boolean
+  searchModel: "hybrid" | "keyword"
+  totalFound: number
+  hitCache: boolean
+}
+
+/** Deduplicate and merge results from multiple queries. First occurrence wins. */
+function mergeQueryResults(queryResults: SingleQueryResult[], limit: number): MergedResults {
+  const seen = new Set<string>()
+  const mergedProducts: ProductDTO[] = []
+  const mergedScores: Record<string, number> = {}
+  let anyLiveSearch = false
+  let anyHybrid = false
+
+  for (const result of queryResults) {
+    if (!result.hitCache) anyLiveSearch = true
+    if (result.searchModel === "hybrid") anyHybrid = true
+
+    for (const product of result.products) {
+      if (seen.has(product.id)) continue
+      seen.add(product.id)
+      mergedProducts.push(product)
+      if (result.scores[product.id] !== undefined) {
+        mergedScores[product.id] = result.scores[product.id]
+      }
+    }
+  }
+
+  return {
+    products: mergedProducts.slice(0, limit),
+    mergedScores,
+    anyLiveSearch,
+    searchModel: anyHybrid ? "hybrid" : "keyword",
+    totalFound: queryResults.reduce((sum, r) => sum + r.totalFound, 0),
+    hitCache: queryResults.every((r) => r.hitCache),
+  }
+}
+
+/** Pick the most informative noResultsReason from query results */
+function resolveNoResultsReason(
+  products: ProductDTO[],
+  queryResults: SingleQueryResult[],
+  isMultiQuery: boolean,
+): SearchProductsOutput["noResultsReason"] {
+  if (products.length > 0) return undefined
+  if (!isMultiQuery) return queryResults[0]?.noResultsReason
+
+  // All queries returned empty — pick the most informative reason by priority
+  const reasons = queryResults.map((r) => r.noResultsReason).filter(Boolean)
+  const REASON_PRIORITY: NoResultsReason[] = ["out_of_stock", "allergen_filtered", "not_available_now", "no_match"]
+  for (const reason of REASON_PRIORITY) {
+    if (reasons.includes(reason)) return reason
+  }
+  return "no_match"
+}
+
 // ── Main search function ──────────────────────────────────────────────────────
 
 /**
@@ -524,50 +604,11 @@ export async function searchProducts(
   )
 
   // ── Merge results ────────────────────────────────────────────────────────
-  // Deduplicate by product ID — first occurrence (highest-relevance query) wins
-  const seen = new Set<string>()
-  const mergedProducts: ProductDTO[] = []
-  const mergedScores: Record<string, number> = {}
-  let anyLiveSearch = false
-  let anyHybrid = false
-
-  for (const result of queryResults) {
-    if (!result.hitCache) anyLiveSearch = true
-    if (result.searchModel === "hybrid") anyHybrid = true
-
-    for (const product of result.products) {
-      if (!seen.has(product.id)) {
-        seen.add(product.id)
-        mergedProducts.push(product)
-        if (result.scores[product.id] !== undefined) {
-          mergedScores[product.id] = result.scores[product.id]
-        }
-      }
-    }
-  }
-
-  // Apply overall limit to merged products
-  const products = mergedProducts.slice(0, limit)
-
-  const totalFound = queryResults.reduce((sum, r) => sum + r.totalFound, 0)
-  const hitCache = queryResults.every((r) => r.hitCache)
-  const searchModel: "hybrid" | "keyword" = anyHybrid ? "hybrid" : "keyword"
+  const merged = mergeQueryResults(queryResults, limit)
+  const { products, mergedScores, anyLiveSearch, searchModel, totalFound, hitCache } = merged
 
   // ── noResultsReason (top-level, for single-query or fully-empty multi-query)
-  let noResultsReason: SearchProductsOutput["noResultsReason"]
-  if (products.length === 0) {
-    if (!isMultiQuery) {
-      noResultsReason = queryResults[0]?.noResultsReason
-    } else {
-      // All queries returned empty — pick the most informative reason
-      const reasons = queryResults.map((r) => r.noResultsReason).filter(Boolean)
-      // Priority: out_of_stock > allergen_filtered > not_available_now > no_match
-      if (reasons.includes("out_of_stock")) noResultsReason = "out_of_stock"
-      else if (reasons.includes("allergen_filtered")) noResultsReason = "allergen_filtered"
-      else if (reasons.includes("not_available_now")) noResultsReason = "not_available_now"
-      else noResultsReason = "no_match"
-    }
-  }
+  const noResultsReason = resolveNoResultsReason(products, queryResults, isMultiQuery)
 
   // ── Publish product.viewed events ────────────────────────────────────────
   try {

@@ -47,6 +47,234 @@ interface ProductCardProps {
   readonly variant?: 'vertical' | 'horizontal'
 }
 
+// ── Helper: format price as BRL ─────────────────────────────────────────────
+
+function formatBRL(centavos: number): string {
+  return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+}
+
+// ── Helper: resolve which badge to show ─────────────────────────────────────
+
+function resolvePriorityTag(tags?: string[]): string | undefined {
+  return tags?.find((tag) =>
+    BADGE_PRIORITY.includes(tag as (typeof BADGE_PRIORITY)[number])
+  )
+}
+
+// ── Helper: compute discount percentage ─────────────────────────────────────
+
+function computeDiscount(price: number, compareAtPrice?: number): { hasDiscount: boolean; discountPercent: number } {
+  const hasDiscount = Boolean(compareAtPrice && compareAtPrice > price)
+  const discountPercent = hasDiscount && compareAtPrice
+    ? Math.round(((compareAtPrice - price) / compareAtPrice) * 100)
+    : 0
+  return { hasDiscount, discountPercent }
+}
+
+// ── Sub-component: Quantity controls ────────────────────────────────────────
+
+function QuantityControls({
+  cartQuantity,
+  onDecrement,
+  onIncrement,
+  size,
+  t,
+}: {
+  cartQuantity: number
+  onDecrement: (e: React.MouseEvent) => void
+  onIncrement: (e: React.MouseEvent) => void
+  size: 'sm' | 'md'
+  t: ReturnType<typeof useTranslations>
+}) {
+  const isSmall = size === 'sm'
+  const btnClass = isSmall ? 'w-9 h-9' : 'w-12 h-10'
+  const iconClass = isSmall ? 'w-3.5 h-3.5' : 'w-4 h-4'
+  const containerClass = isSmall
+    ? 'flex items-center gap-0 bg-charcoal-900 rounded-full h-9 overflow-hidden'
+    : 'flex items-center justify-between bg-charcoal-900 rounded-sm h-10 overflow-hidden'
+  const textClass = isSmall
+    ? 'text-xs font-bold text-smoke-50 tabular-nums min-w-[1.25rem] text-center'
+    : 'text-sm font-bold text-smoke-50 tabular-nums'
+  const focusRing = isSmall ? '' : ' focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1'
+
+  return (
+    <div className={containerClass}>
+      <button
+        onClick={onDecrement}
+        className={`${btnClass} flex items-center justify-center hover:bg-charcoal-700 active:scale-90 transition-all${focusRing} ${cartQuantity === 1 ? 'text-accent-red' : 'text-smoke-50'}`}
+        aria-label={cartQuantity === 1 ? t('common.remove') : t('common.decrease_quantity')}
+      >
+        {cartQuantity === 1
+          ? <Trash2 className={iconClass} strokeWidth={2.5} />
+          : <Minus className={iconClass} strokeWidth={2.5} />}
+      </button>
+      <span className={textClass} aria-live={isSmall ? undefined : 'polite'}>{cartQuantity}</span>
+      <button
+        onClick={onIncrement}
+        className={`${btnClass} flex items-center justify-center text-smoke-50 hover:bg-charcoal-700 active:scale-90 transition-all${focusRing}`}
+        aria-label={t('common.increase_quantity')}
+      >
+        <Plus className={iconClass} strokeWidth={2.5} />
+      </button>
+    </div>
+  )
+}
+
+// ── Sub-component: Product image with overlay ───────────────────────────────
+
+function ProductImage({
+  displayImage,
+  title,
+  priority,
+  sizes,
+  hoverImage,
+  scaleOnHover,
+}: {
+  displayImage: string | null
+  title: string
+  priority?: boolean
+  sizes: string
+  hoverImage?: string | null
+  scaleOnHover?: boolean
+}) {
+  if (!displayImage) {
+    return (
+      <div className="absolute inset-0 bg-gradient-to-br from-smoke-100 to-smoke-200 grain-overlay flex items-center justify-center">
+        <span className="font-display text-xs tracking-[0.2em] text-smoke-300/30 uppercase">IbateXas</span>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <NextImage
+        src={displayImage}
+        alt={title}
+        fill
+        priority={priority}
+        placeholder={priority ? undefined : 'blur'}
+        blurDataURL={BLUR_PLACEHOLDER}
+        sizes={sizes}
+        className={`object-cover contrast-[1.08]${scaleOnHover ? ' group-hover:scale-[1.04] transition-transform duration-800 ease-luxury' : ''}`}
+      />
+      {hoverImage && (
+        <NextImage
+          src={hoverImage}
+          alt={`${title} — alternativa`}
+          fill
+          sizes={sizes}
+          className="object-cover contrast-[1.08] absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 ease-luxury"
+        />
+      )}
+      <div className="absolute inset-0 bg-brand-50/5 mix-blend-multiply pointer-events-none" />
+    </>
+  )
+}
+
+// ── Sub-component: Portion scale (servings + weight) ────────────────────────
+
+function PortionScale({
+  servings,
+  weight,
+  t,
+}: {
+  servings?: number
+  weight?: string
+  t: ReturnType<typeof useTranslations>
+}) {
+  if (!servings && !weight) return null
+
+  return (
+    <div className="mt-1 flex items-center gap-2 text-[11px] text-smoke-400">
+      {servings && (
+        <span className="inline-flex items-center gap-0.5">
+          <Users className="w-3 h-3" />
+          {t('product.serves', { count: servings })}
+        </span>
+      )}
+      {servings && weight && <span>·</span>}
+      {weight && (
+        <span className="inline-flex items-center gap-0.5">
+          <Scale className="w-3 h-3" />
+          {weight}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ── Sub-component: Social proof (rating + review count) ─────────────────────
+
+function SocialProof({
+  rating,
+  reviewCount,
+  tags,
+  t,
+}: {
+  rating?: number
+  reviewCount?: number
+  tags?: string[]
+  t: ReturnType<typeof useTranslations>
+}) {
+  const showRating = rating && rating >= 4 && reviewCount && reviewCount >= 10
+
+  return (
+    <>
+      {showRating && (
+        <div className="mt-1.5 inline-flex items-center gap-1">
+          <Star className="w-3 h-3 fill-brand-500 text-brand-500" />
+          <span className="text-[11px] text-charcoal-900 font-medium tabular-nums">
+            {rating.toFixed(1)}
+          </span>
+          <span className="text-[11px] text-smoke-400">({reviewCount})</span>
+        </div>
+      )}
+      {tags?.includes('popular') && reviewCount && reviewCount > 50 && (
+        <p className="text-[11px] text-smoke-400">{t('product.ordered_count', { count: reviewCount })}</p>
+      )}
+    </>
+  )
+}
+
+// ── Sub-component: Price block ──────────────────────────────────────────────
+
+function PriceBlock({
+  price,
+  priceFormatted,
+  compareAtPrice,
+  hasDiscount,
+  discountPercent,
+  hasMultipleVariants,
+  t,
+}: {
+  price: number
+  priceFormatted: string
+  compareAtPrice?: number
+  hasDiscount: boolean
+  discountPercent: number
+  hasMultipleVariants: boolean
+  t: ReturnType<typeof useTranslations>
+}) {
+  return (
+    <div className="mt-auto pt-2 flex items-baseline gap-1.5">
+      {hasMultipleVariants && (
+        <span className="text-[10px] text-smoke-400">{t('product.from_price')}</span>
+      )}
+      {hasDiscount && compareAtPrice && (
+        <span className="text-xs text-smoke-300 line-through">
+          {formatBRL(compareAtPrice)}
+        </span>
+      )}
+      <span className="text-lg font-semibold tracking-tight text-charcoal-900 tabular-nums">
+        {priceFormatted}
+      </span>
+      {hasDiscount && discountPercent > 0 && price < 15000 && (
+        <span className="text-xs text-accent-green font-medium">-{discountPercent}%</span>
+      )}
+    </div>
+  )
+}
+
 export const ProductCard = ({
   id,
   title,
@@ -78,10 +306,7 @@ export const ProductCard = ({
   const t = useTranslations()
   const [isAdded, setIsAdded] = useState(false)
 
-  const priceFormatted = (price / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const priceFormatted = formatBRL(price)
   const hasMultipleVariants = (variantCount ?? 0) > 1
 
   // Prefer thumbnail, fall back to first gallery image
@@ -89,18 +314,13 @@ export const ProductCard = ({
   const linkHref = href || `/products/${id}`
 
   // Single priority badge (first match wins)
-  const priorityTag = tags?.find((tag) =>
-    BADGE_PRIORITY.includes(tag as (typeof BADGE_PRIORITY)[number])
-  )
-
-  // Social proof only when meaningful (≥ 4 AND ≥ 10 reviews)
-  const showSocialProof = rating && rating >= 4 && reviewCount && reviewCount >= 10
+  const priorityTag = resolvePriorityTag(tags)
 
   // Discount percentage for non-premium items
-  const hasDiscount = compareAtPrice && compareAtPrice > price
-  const discountPercent = hasDiscount
-    ? Math.round(((compareAtPrice - price) / compareAtPrice) * 100)
-    : 0
+  const { hasDiscount, discountPercent } = computeDiscount(price, compareAtPrice)
+
+  // Secondary hover image for vertical card
+  const hoverImage = images && images.length >= 2 && images[1] !== displayImage ? images[1] : null
 
   const handleQuickAdd = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -144,25 +364,7 @@ export const ProductCard = ({
           <div className="flex flex-row">
             {/* Square thumbnail */}
             <div className="relative w-28 h-28 flex-shrink-0 overflow-hidden bg-smoke-100">
-              {displayImage ? (
-                <>
-                  <NextImage
-                    src={displayImage}
-                    alt={title}
-                    fill
-                    sizes="112px"
-                    priority={priority}
-                    placeholder={priority ? undefined : 'blur'}
-                    blurDataURL={BLUR_PLACEHOLDER}
-                    className="object-cover contrast-[1.08]"
-                  />
-                  <div className="absolute inset-0 bg-brand-50/5 mix-blend-multiply pointer-events-none" />
-                </>
-              ) : (
-                <div className="absolute inset-0 bg-gradient-to-br from-smoke-100 to-smoke-200 grain-overlay flex items-center justify-center">
-                  <span className="font-display text-[8px] tracking-[0.2em] text-smoke-300/30 uppercase">IbateXas</span>
-                </div>
-              )}
+              <ProductImage displayImage={displayImage} title={title} priority={priority} sizes="112px" />
             </div>
 
             {/* Content */}
@@ -185,15 +387,7 @@ export const ProductCard = ({
               {onAddToCart && (
                 <div className="relative z-10 flex-shrink-0 ml-2">
                   {cartQuantity > 0 && onUpdateQuantity ? (
-                    <div className="flex items-center gap-0 bg-charcoal-900 rounded-full h-9 overflow-hidden">
-                      <button onClick={handleDecrement} className={`w-9 h-9 flex items-center justify-center hover:bg-charcoal-700 active:scale-90 transition-all ${cartQuantity === 1 ? 'text-accent-red' : 'text-smoke-50'}`} aria-label={cartQuantity === 1 ? t('common.remove') : t('common.decrease_quantity')}>
-                        {cartQuantity === 1 ? <Trash2 className="w-3.5 h-3.5" strokeWidth={2.5} /> : <Minus className="w-3.5 h-3.5" strokeWidth={2.5} />}
-                      </button>
-                      <span className="text-xs font-bold text-smoke-50 tabular-nums min-w-[1.25rem] text-center">{cartQuantity}</span>
-                      <button onClick={handleIncrement} className="w-9 h-9 flex items-center justify-center text-smoke-50 hover:bg-charcoal-700 active:scale-90 transition-all" aria-label={t('common.increase_quantity')}>
-                        <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
-                      </button>
-                    </div>
+                    <QuantityControls cartQuantity={cartQuantity} onDecrement={handleDecrement} onIncrement={handleIncrement} size="sm" t={t} />
                   ) : (
                     <button
                       onClick={handleQuickAdd}
@@ -218,36 +412,14 @@ export const ProductCard = ({
       <div className="surface-card rounded-card overflow-hidden transition-all duration-500 ease-luxury group-hover:shadow-card-hover group-hover:-translate-y-1 h-full flex flex-col">
         {/* Image — 4:5 portrait, editorial food ratio */}
         <div className="relative aspect-[4/3] overflow-hidden bg-smoke-100">
-          {displayImage ? (
-            <>
-              <NextImage
-                src={displayImage}
-                alt={title}
-                fill
-                priority={priority}
-                placeholder={priority ? undefined : 'blur'}
-                blurDataURL={BLUR_PLACEHOLDER}
-                sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
-                className="object-cover contrast-[1.08] group-hover:scale-[1.04] transition-transform duration-800 ease-luxury"
-              />
-              {/* Secondary image on hover */}
-              {images && images.length >= 2 && images[1] !== displayImage && (
-                <NextImage
-                  src={images[1]}
-                  alt={`${title} — alternativa`}
-                  fill
-                  sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
-                  className="object-cover contrast-[1.08] absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 ease-luxury"
-                />
-              )}
-              {/* Warm overlay — unifies product photos shot in different lighting */}
-              <div className="absolute inset-0 bg-brand-50/5 mix-blend-multiply pointer-events-none" />
-            </>
-          ) : (
-            <div className="absolute inset-0 bg-gradient-to-br from-smoke-100 to-smoke-200 grain-overlay flex items-center justify-center">
-              <span className="font-display text-xs tracking-[0.2em] text-smoke-300/30 uppercase">IbateXas</span>
-            </div>
-          )}
+          <ProductImage
+            displayImage={displayImage}
+            title={title}
+            priority={priority}
+            sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
+            hoverImage={hoverImage}
+            scaleOnHover
+          />
 
           {/* Hover gradient overlay */}
           <div className="absolute inset-0 bg-gradient-to-t from-charcoal-900/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 ease-luxury pointer-events-none" />
@@ -288,21 +460,7 @@ export const ProductCard = ({
 
           {/* Portion scale — servings + weight */}
           {!subtitle && (servings || weight) && (
-            <div className="mt-1 flex items-center gap-2 text-[11px] text-smoke-400">
-              {servings && (
-                <span className="inline-flex items-center gap-0.5">
-                  <Users className="w-3 h-3" />
-                  {t('product.serves', { count: servings })}
-                </span>
-              )}
-              {servings && weight && <span>·</span>}
-              {weight && (
-                <span className="inline-flex items-center gap-0.5">
-                  <Scale className="w-3 h-3" />
-                  {weight}
-                </span>
-              )}
-            </div>
+            <PortionScale servings={servings} weight={weight} t={t} />
           )}
 
           {/* Description — 2 line clamp */}
@@ -318,18 +476,7 @@ export const ProductCard = ({
           )}
 
           {/* Social proof — star rating + order count */}
-          {showSocialProof && (
-            <div className="mt-1.5 inline-flex items-center gap-1">
-              <Star className="w-3 h-3 fill-brand-500 text-brand-500" />
-              <span className="text-[11px] text-charcoal-900 font-medium tabular-nums">
-                {rating.toFixed(1)}
-              </span>
-              <span className="text-[11px] text-smoke-400">({reviewCount})</span>
-            </div>
-          )}
-          {tags?.includes('popular') && reviewCount && reviewCount > 50 && (
-            <p className="text-[11px] text-smoke-400">{t('product.ordered_count', { count: reviewCount })}</p>
-          )}
+          <SocialProof rating={rating} reviewCount={reviewCount} tags={tags} t={t} />
 
           {/* Scarcity / popularity signal */}
           {ordersToday != null && ordersToday >= 5 && (
@@ -340,25 +487,18 @@ export const ProductCard = ({
           )}
 
           {/* Price block */}
-          <div className="mt-auto pt-2 flex items-baseline gap-1.5">
-            {hasMultipleVariants && (
-              <span className="text-[10px] text-smoke-400">{t('product.from_price')}</span>
-            )}
-            {hasDiscount && (
-              <span className="text-xs text-smoke-300 line-through">
-                {(compareAtPrice / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
-              </span>
-            )}
-            <span className="text-lg font-semibold tracking-tight text-charcoal-900 tabular-nums">
-              {priceFormatted}
-            </span>
-            {hasDiscount && discountPercent > 0 && price < 15000 && (
-              <span className="text-xs text-accent-green font-medium">-{discountPercent}%</span>
-            )}
-          </div>
+          <PriceBlock
+            price={price}
+            priceFormatted={priceFormatted}
+            compareAtPrice={compareAtPrice}
+            hasDiscount={hasDiscount}
+            discountPercent={discountPercent}
+            hasMultipleVariants={hasMultipleVariants}
+            t={t}
+          />
           {isBundle && bundleServings && bundleServings > 1 && (
             <p className="text-[11px] text-smoke-400">
-              {t('product.per_person_short', { price: (price / bundleServings / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) })}
+              {t('product.per_person_short', { price: formatBRL(Math.round(price / bundleServings)) })}
             </p>
           )}
 
@@ -366,24 +506,7 @@ export const ProductCard = ({
           {onAddToCart && (
             <div className="relative z-10 pt-3">
               {cartQuantity > 0 && onUpdateQuantity ? (
-                /* Quantity controls — shown when item is in cart */
-                <div className="flex items-center justify-between bg-charcoal-900 rounded-sm h-10 overflow-hidden">
-                  <button
-                    onClick={handleDecrement}
-                    className={`w-12 h-10 flex items-center justify-center hover:bg-charcoal-700 active:scale-90 transition-all focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 ${cartQuantity === 1 ? 'text-accent-red' : 'text-smoke-50'}`}
-                    aria-label={cartQuantity === 1 ? t('common.remove') : t('common.decrease_quantity')}
-                  >
-                    {cartQuantity === 1 ? <Trash2 className="w-4 h-4" strokeWidth={2.5} /> : <Minus className="w-4 h-4" strokeWidth={2.5} />}
-                  </button>
-                  <span className="text-sm font-bold text-smoke-50 tabular-nums" aria-live="polite">{cartQuantity}</span>
-                  <button
-                    onClick={handleIncrement}
-                    className="w-12 h-10 flex items-center justify-center text-smoke-50 hover:bg-charcoal-700 active:scale-90 transition-all focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1"
-                    aria-label={t('common.increase_quantity')}
-                  >
-                    <Plus className="w-4 h-4" strokeWidth={2.5} />
-                  </button>
-                </div>
+                <QuantityControls cartQuantity={cartQuantity} onDecrement={handleDecrement} onIncrement={handleIncrement} size="md" t={t} />
               ) : (
                 /* Add button — brand orange, always visible */
                 <button

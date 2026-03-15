@@ -10,7 +10,7 @@
 // Guard: max 10 agent turns prevents infinite loops.
 
 import Anthropic from "@anthropic-ai/sdk"
-import type { MessageParam, ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages.js"
+import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropic-ai/sdk/resources/messages.js"
 import { Channel, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
 import { SYSTEM_PROMPT } from "./system-prompt.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
@@ -60,6 +60,59 @@ async function executeWithRetry(
   return { error: lastError?.message ?? "Falha desconhecida", toolName: name }
 }
 
+// ── Stream helpers ────────────────────────────────────────────────────────────
+
+/** Stream text deltas from a Claude message stream, yielding StreamChunk for each delta. */
+async function* streamTextDeltas(
+  stream: ReturnType<Anthropic["messages"]["stream"]>,
+): AsyncGenerator<StreamChunk> {
+  for await (const event of stream) {
+    if (
+      event.type === "content_block_delta" &&
+      event.delta.type === "text_delta"
+    ) {
+      yield { type: "text_delta", delta: event.delta.text }
+    }
+  }
+}
+
+/** Process all tool_use blocks from a finalMessage, executing each with retry. */
+async function processToolCalls(
+  content: ContentBlock[],
+  context: AgentContext,
+  onChunk: (chunk: StreamChunk) => void,
+): Promise<ToolResultBlockParam[]> {
+  const toolResults: ToolResultBlockParam[] = []
+
+  for (const block of content) {
+    if (block.type !== "tool_use") continue
+
+    onChunk({ type: "tool_start", toolName: block.name, toolUseId: block.id })
+
+    const result = await executeWithRetry(block.name, block.input, context)
+    const isError = typeof result === "object" && result !== null && "error" in result
+
+    onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: !isError })
+
+    toolResults.push({
+      type: "tool_result",
+      tool_use_id: block.id,
+      content: JSON.stringify(result),
+    })
+  }
+
+  return toolResults
+}
+
+/** Build system prompt with channel-specific hint */
+function buildSystemPrompt(channel: Channel): string {
+  const channelHint =
+    channel === Channel.WhatsApp
+      ? "\n\n[Canal atual: WhatsApp — respostas curtas, sem tabelas, URLs diretos]"
+      : "\n\n[Canal atual: Web — markdown completo]"
+  return SYSTEM_PROMPT + channelHint
+}
+
 // ── Main agent loop ───────────────────────────────────────────────────────────
 
 /**
@@ -83,12 +136,7 @@ export async function* runAgent(
     { role: "user", content: message },
   ]
 
-  // ── Channel-specific hint appended to system prompt ───────────────────────
-  const channelHint =
-    context.channel === Channel.WhatsApp
-      ? "\n\n[Canal atual: WhatsApp — respostas curtas, sem tabelas, URLs diretos]"
-      : "\n\n[Canal atual: Web — markdown completo]"
-  const systemPrompt = SYSTEM_PROMPT + channelHint
+  const systemPrompt = buildSystemPrompt(context.channel)
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // ── Stream one turn ─────────────────────────────────────────────────────
@@ -109,14 +157,7 @@ export async function* runAgent(
 
     // Yield text deltas as they arrive
     try {
-      for await (const event of stream) {
-        if (
-          event.type === "content_block_delta" &&
-          event.delta.type === "text_delta"
-        ) {
-          yield { type: "text_delta", delta: event.delta.text }
-        }
-      }
+      yield* streamTextDeltas(stream)
     } catch (err) {
       console.error("[agent] Stream error:", err)
       yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
@@ -126,18 +167,8 @@ export async function* runAgent(
     const finalMessage = await stream.finalMessage()
     const { stop_reason, usage } = finalMessage
 
-    // ── End turn ────────────────────────────────────────────────────────────
-    if (stop_reason === "end_turn") {
-      yield {
-        type: "done",
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-      }
-      return
-    }
-
-    // ── Max tokens ─ yield partial text and finish gracefully ───────────
-    if (stop_reason === "max_tokens") {
+    // ── End turn or max tokens — finish gracefully ──────────────────────────
+    if (stop_reason === "end_turn" || stop_reason === "max_tokens") {
       yield {
         type: "done",
         inputTokens: usage.input_tokens,
@@ -148,26 +179,16 @@ export async function* runAgent(
 
     // ── Tool use ────────────────────────────────────────────────────────────
     if (stop_reason === "tool_use") {
-      // Append the full assistant message (may contain text + tool_use blocks)
       messages.push({ role: "assistant", content: finalMessage.content })
 
-      const toolResults: ToolResultBlockParam[] = []
-
-      for (const block of finalMessage.content) {
-        if (block.type !== "tool_use") continue
-
-        yield { type: "tool_start", toolName: block.name, toolUseId: block.id }
-
-        const result = await executeWithRetry(block.name, block.input, context)
-        const isError = typeof result === "object" && result !== null && "error" in result
-
-        yield { type: "tool_result", toolName: block.name, toolUseId: block.id, success: !isError }
-
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: JSON.stringify(result),
-        })
+      const pendingChunks: StreamChunk[] = []
+      const toolResults = await processToolCalls(
+        finalMessage.content,
+        context,
+        (chunk) => pendingChunks.push(chunk),
+      )
+      for (const chunk of pendingChunks) {
+        yield chunk
       }
 
       // Feed all tool results back to Claude as a single user message

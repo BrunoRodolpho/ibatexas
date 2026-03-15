@@ -49,6 +49,83 @@ const PhoneSchema = z
   .string()
   .regex(/^\+[1-9]\d{7,14}$/, "Telefone inválido — use formato internacional: +5511999999999");
 
+// ── Rate-limit helpers ────────────────────────────────────────────────────────
+
+interface RateLimitResult {
+  exceeded: boolean;
+  count: number;
+}
+
+async function checkSendRateLimit(hash: string): Promise<RateLimitResult> {
+  const redis = await getRedisClient();
+  const rateLimitKey = rk(`otp:rate:${hash}`);
+  const count = await redis.incr(rateLimitKey);
+  if (count === 1) {
+    await redis.expire(rateLimitKey, 600); // 10 min
+  }
+  return { exceeded: count > 3, count };
+}
+
+async function checkBruteForce(hash: string): Promise<boolean> {
+  const redis = await getRedisClient();
+  const failKey = rk(`otp:fail:${hash}`);
+  const currentFails = await redis.get(failKey);
+  return Boolean(currentFails && Number.parseInt(currentFails, 10) >= 5);
+}
+
+async function recordVerifyFailure(hash: string): Promise<number> {
+  const redis = await getRedisClient();
+  const failKey = rk(`otp:fail:${hash}`);
+  const failCount = await redis.incr(failKey);
+  await redis.expire(failKey, 3600); // 1h
+  return failCount;
+}
+
+async function clearVerifyFailures(hash: string): Promise<void> {
+  const redis = await getRedisClient();
+  const failKey = rk(`otp:fail:${hash}`);
+  await redis.del(failKey);
+}
+
+// ── Twilio OTP helpers ────────────────────────────────────────────────────────
+
+async function sendTwilioOtp(phone: string): Promise<void> {
+  await twilioClient().verify.v2
+    .services(verifySid())
+    .verifications.create({ to: phone, channel: otpChannel() });
+}
+
+interface VerifyOtpResult {
+  status: string;
+  twilioError?: { code?: number; status?: number; message?: string };
+}
+
+async function verifyTwilioOtp(phone: string, code: string): Promise<VerifyOtpResult> {
+  try {
+    const verification = await twilioClient().verify.v2
+      .services(verifySid())
+      .verificationChecks.create({ to: phone, code });
+    return { status: verification.status };
+  } catch (err: unknown) {
+    return { status: "error", twilioError: err as { code?: number; status?: number; message?: string } };
+  }
+}
+
+// ── JWT helpers ───────────────────────────────────────────────────────────────
+
+function issueJwtToken(
+  server: FastifyInstance,
+  customerId: string,
+): string {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) throw new Error("JWT_SECRET not set");
+
+  return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
+    sub: customerId,
+    userType: "customer",
+  }, { expiresIn: '24h' });
+}
+
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
 const SendOtpBody = z.object({
@@ -92,14 +169,8 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
 
       server.log.info({ phone_hash: hash, ip, action: "send_otp" }, "OTP send requested");
 
-      // Rate limit: max 3 sends per phone per 10 min
-      const redis = await getRedisClient();
-      const rateLimitKey = rk(`otp:rate:${hash}`);
-      const count = await redis.incr(rateLimitKey);
-      if (count === 1) {
-        await redis.expire(rateLimitKey, 600); // 10 min
-      }
-      if (count > 3) {
+      const rateLimit = await checkSendRateLimit(hash);
+      if (rateLimit.exceeded) {
         server.log.warn({ phone_hash: hash, ip, action: "send_otp_rate_limited" }, "OTP send rate limited");
         return reply.code(429).send({
           statusCode: 429,
@@ -109,9 +180,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       }
 
       try {
-        await twilioClient().verify.v2
-          .services(verifySid())
-          .verifications.create({ to: phone, channel: otpChannel() });
+        await sendTwilioOtp(phone);
       } catch (err) {
         server.log.error({ phone_hash: hash, ip, action: "send_otp_error", err }, "Twilio error");
         return reply.code(502).send({
@@ -141,13 +210,9 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       const hash = phoneHash(phone);
       const ip = request.ip;
 
-      // Track consecutive failures
-      const redis = await getRedisClient();
-      const failKey = rk(`otp:fail:${hash}`);
-
       // Block brute-force: reject after 5 failed attempts per phone per hour
-      const currentFails = await redis.get(failKey);
-      if (currentFails && Number.parseInt(currentFails, 10) >= 5) {
+      const blocked = await checkBruteForce(hash);
+      if (blocked) {
         server.log.warn(
           { action: "otp_brute_force_blocked", phone_hash: hash, ip },
           "OTP verify blocked — too many failures",
@@ -159,17 +224,13 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
-      let verification: { status: string };
-      try {
-        verification = await twilioClient().verify.v2
-          .services(verifySid())
-          .verificationChecks.create({ to: phone, code });
-      } catch (err: unknown) {
-        const twilioErr = err as { code?: number; status?: number; message?: string };
-        server.log.error({ phone_hash: hash, ip, action: "verify_otp_error", err });
+      const verification = await verifyTwilioOtp(phone, code);
+
+      if (verification.twilioError) {
+        server.log.error({ phone_hash: hash, ip, action: "verify_otp_error", err: verification.twilioError });
 
         // 20404 = no pending verification for this phone (expired or never sent)
-        if (twilioErr.code === 20404) {
+        if (verification.twilioError.code === 20404) {
           return reply.code(400).send({
             statusCode: 400,
             error: "Bad Request",
@@ -185,8 +246,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       }
 
       if (verification.status !== "approved") {
-        const failCount = await redis.incr(failKey);
-        await redis.expire(failKey, 3600); // 1h
+        const failCount = await recordVerifyFailure(hash);
         server.log.info(
           { phone_hash: hash, ip, action: "verify_otp", success: false, attempt_count: failCount },
           "OTP verification failed",
@@ -205,7 +265,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Clear failure counter on success
-      await redis.del(failKey);
+      await clearVerifyFailures(hash);
 
       // Upsert customer
       const customer = await prisma.customer.upsert({
@@ -220,14 +280,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       );
 
       // Issue JWT
-      const jwtSecret = process.env.JWT_SECRET;
-      if (!jwtSecret) throw new Error("JWT_SECRET not set");
-
-      const token = (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
-        sub: customer.id,
-        userType: "customer",
-      }, { expiresIn: '24h' });
-
+      const token = issueJwtToken(server, customer.id);
       const isProduction = process.env.NODE_ENV === "production";
       return reply
         .setCookie("token", token, {
