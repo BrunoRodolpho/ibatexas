@@ -43,7 +43,7 @@ describe("sendReservationConfirmation", () => {
 
     expect(consoleInfoSpy).toHaveBeenCalledOnce()
     const logArgs = consoleInfoSpy.mock.calls[0]!
-    expect(logArgs[0]).toContain("[WhatsApp stub]")
+    expect(logArgs[0]).toContain("[whatsapp.stub]")
     const payload = logArgs[1] as { to: string; message: string }
     expect(payload.to).toBe("+5511999999999")
     expect(payload.message).toContain("Reserva confirmada")
