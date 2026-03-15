@@ -7,7 +7,7 @@
 import { prisma } from "@ibatexas/domain"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 
-const GRACE_PERIOD_MINUTES = parseInt(process.env.NO_SHOW_GRACE_MINUTES || "15", 10)
+const GRACE_PERIOD_MINUTES = Number.parseInt(process.env.NO_SHOW_GRACE_MINUTES || "15", 10)
 const CHECK_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes
 const RESTAURANT_TZ = process.env.RESTAURANT_TIMEZONE || "America/Chicago"
 

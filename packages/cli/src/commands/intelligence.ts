@@ -181,7 +181,7 @@ export function registerIntelligenceCommands(program: Command): void {
 
       try {
         const redis = await getRedis()
-        const topN = parseInt(opts.top, 10) || 10
+        const topN = Number.parseInt(opts.top, 10) || 10
 
         if (productId) {
           // Co-purchase scores for a specific product
@@ -281,13 +281,9 @@ export function registerIntelligenceCommands(program: Command): void {
         const labelW = 22
         const keysW = 8
         console.log(
-          "  " +
-          chalk.bold("Group".padEnd(labelW)) +
-          chalk.bold("Keys".padStart(keysW)) +
-          "   " +
-          chalk.bold("Memory")
+          `  ${chalk.bold("Group".padEnd(labelW))}${chalk.bold("Keys".padStart(keysW))}   ${chalk.bold("Memory")}`
         )
-        console.log("  " + "─".repeat(labelW + keysW + 14))
+        console.log(`  ${"─".repeat(labelW + keysW + 14)}`)
 
         for (const r of results) {
           const mem = formatBytes(r.memoryBytes)
@@ -298,7 +294,7 @@ export function registerIntelligenceCommands(program: Command): void {
           )
         }
 
-        console.log("  " + "─".repeat(labelW + keysW + 14))
+        console.log(`  ${"─".repeat(labelW + keysW + 14)}`)
         console.log(
           `  ${chalk.bold("Total".padEnd(labelW))}${chalk.white(String(totalKeys).padStart(keysW))}   ${chalk.cyan(formatBytes(totalMem))}`
         )

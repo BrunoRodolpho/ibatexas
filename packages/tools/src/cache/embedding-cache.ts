@@ -29,7 +29,7 @@ export async function setEmbeddingCache(
 ): Promise<void> {
   try {
     const redisClient = await getRedisClient()
-    const ttl = ttlSeconds || parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
+    const ttl = ttlSeconds || Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
     const key = `product_embedding:${embedding.productId}`
     await redisClient.setEx(key, ttl, JSON.stringify(embedding.embedding))
   } catch (error) {
@@ -57,7 +57,7 @@ export async function batchSetEmbeddingCache(
   embeddings: ProductEmbedding[],
   ttlSeconds?: number
 ): Promise<{ success: number; failed: number }> {
-  const ttl = ttlSeconds || parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
+  const ttl = ttlSeconds || Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
   let success = 0
   let failed = 0
 

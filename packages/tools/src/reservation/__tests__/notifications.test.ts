@@ -2,8 +2,7 @@
 // Verifies that date-only strings don't produce off-by-one dates
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import type { ReservationDTO, WaitlistDTO } from "@ibatexas/types"
-import { ReservationStatus, TableLocation } from "@ibatexas/types"
+import { ReservationStatus, TableLocation, type ReservationDTO, type WaitlistDTO } from "@ibatexas/types"
 
 // Capture console.info calls to verify message content
 const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => {})

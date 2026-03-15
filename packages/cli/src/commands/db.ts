@@ -437,7 +437,7 @@ async function runStatus() {
       "pnpm", ["--filter", "@ibatexas/domain", "exec", "prisma", "migrate", "status"],
       { cwd: ROOT, reject: false }
     )
-    const output = (result.stdout + "\n" + result.stderr).trim()
+    const output = `${result.stdout}\n${result.stderr}`.trim()
 
     // Parse Prisma migrate status output
     const lines = output.split("\n").filter((l: string) => l.trim().length > 0)

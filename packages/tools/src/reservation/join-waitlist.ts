@@ -3,8 +3,7 @@
 // Auth: customer
 
 import { prisma } from "@ibatexas/domain"
-import type { JoinWaitlistInput, JoinWaitlistOutput } from "@ibatexas/types"
-import { JoinWaitlistInputSchema } from "@ibatexas/types"
+import { JoinWaitlistInputSchema, type JoinWaitlistInput, type JoinWaitlistOutput } from "@ibatexas/types"
 
 export async function joinWaitlist(input: JoinWaitlistInput): Promise<JoinWaitlistOutput> {
   const parsed = JoinWaitlistInputSchema.parse(input)
@@ -43,7 +42,7 @@ export async function joinWaitlist(input: JoinWaitlistInput): Promise<JoinWaitli
   }
 
   // 3. Create waitlist entry (expires in 24h by default — extended on notification)
-  const waitlistExpiryHours = parseInt(process.env.WAITLIST_EXPIRY_HOURS || "24", 10)
+  const waitlistExpiryHours = Number.parseInt(process.env.WAITLIST_EXPIRY_HOURS || "24", 10)
   const expiresAt = new Date(Date.now() + waitlistExpiryHours * 60 * 60 * 1000)
 
   const entry = await prisma.waitlist.create({

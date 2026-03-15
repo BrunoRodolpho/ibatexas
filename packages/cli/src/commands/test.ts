@@ -362,12 +362,9 @@ export function registerTestCommands(group: Command): void {
 
         console.log(chalk.bold("\n  ibx test status\n"))
         console.log(
-          "  " +
-          chalk.bold("Section".padEnd(sectionW)) +
-          chalk.bold("Status".padEnd(statusW)) +
-          chalk.bold("Details")
+          `  ${chalk.bold("Section".padEnd(sectionW))}${chalk.bold("Status".padEnd(statusW))}${chalk.bold("Details")}`
         )
-        console.log("  " + "─".repeat(sectionW + statusW + 30))
+        console.log(`  ${"─".repeat(sectionW + statusW + 30)}`)
 
         let allOk = true
         for (const check of checks) {
@@ -388,7 +385,7 @@ export function registerTestCommands(group: Command): void {
         }
 
         const elapsed = ((Date.now() - start) / 1000).toFixed(1)
-        console.log("  " + "─".repeat(sectionW + statusW + 30))
+        console.log(`  ${"─".repeat(sectionW + statusW + 30)}`)
 
         if (allOk) {
           console.log(chalk.green(`\n  Total: ready for testing ✅`))

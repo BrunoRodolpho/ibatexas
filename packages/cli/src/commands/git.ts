@@ -81,7 +81,7 @@ export function registerGitCommands(program: Command) {
       if (lines.length > 0) {
         console.log()
         for (const line of lines.slice(0, 20)) {
-          console.log("  " + chalk.gray(line))
+          console.log(`  ${chalk.gray(line)}`)
         }
         if (lines.length > 20) {
           console.log(chalk.gray(`  … and ${lines.length - 20} more`))
@@ -96,7 +96,7 @@ export function registerGitCommands(program: Command) {
     .description("Pretty-print recent commits")
     .option("-n, --number <n>", "Number of commits to show", "10")
     .action(async (opts: { number: string }) => {
-      const n = parseInt(opts.number, 10)
+      const n = Number.parseInt(opts.number, 10)
 
       const { stdout } = await execa("git", [
         "log",

@@ -176,7 +176,7 @@ export function registerAuthCommands(group: Command): void {
             if (rateCount) parts.push(`sends: ${rateCount}/3${rateTtl > 0 ? ` (${rateTtl}s)` : ""}`)
             if (failCount) parts.push(`fails: ${failCount}/5${failTtl > 0 ? ` (${failTtl}s)` : ""}`)
 
-            const blocked = (parseInt(rateCount ?? "0", 10) > 3) || (parseInt(failCount ?? "0", 10) >= 5)
+            const blocked = (Number.parseInt(rateCount ?? "0", 10) > 3) || (Number.parseInt(failCount ?? "0", 10) >= 5)
             const icon = blocked ? chalk.red("✗") : chalk.green("·")
 
             console.log(`  ${icon} ${chalk.cyan(hash)}  ${parts.join("  ")}`)

@@ -9,8 +9,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { Channel } from "@ibatexas/types";
-import type { ProductVariant } from "@ibatexas/types";
+import { Channel, type ProductVariant } from "@ibatexas/types";
 import { searchProducts, getProductDetails, buildPersonalizedQuery } from "@ibatexas/tools";
 import { medusaAdmin, medusaStore } from "./admin/_shared.js";
 import { optionalAuth } from "../middleware/auth.js";

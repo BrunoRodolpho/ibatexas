@@ -35,7 +35,7 @@ export function registerTunnelCommands(program: Command) {
     .option("-p, --port <port>", "API port to expose", String(API_PORT))
     .option("--domain <domain>", "ngrok domain (claim free at dashboard.ngrok.com/domains)")
     .action(async (opts: { port: string; domain?: string }) => {
-      const port = parseInt(opts.port, 10)
+      const port = Number.parseInt(opts.port, 10)
 
       console.log(chalk.cyan(`\n  Starting ngrok tunnel on port ${port}...\n`))
 

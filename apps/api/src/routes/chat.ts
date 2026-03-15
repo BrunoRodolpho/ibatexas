@@ -7,8 +7,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { Channel } from "@ibatexas/types";
-import type { AgentContext } from "@ibatexas/types";
+import { Channel, type AgentContext } from "@ibatexas/types";
 import { runAgent } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
 import { optionalAuth } from "../middleware/auth.js";
@@ -80,7 +79,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       const history = await loadSession(sessionId);
       const messageId = uuidv4();
 
-      await appendMessages(sessionId, [{ role: "user", content: message }], !!request.customerId);
+      await appendMessages(sessionId, [{ role: "user", content: message }], Boolean(request.customerId));
 
       createStream(sessionId);
 

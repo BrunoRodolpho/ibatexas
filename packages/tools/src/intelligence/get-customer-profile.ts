@@ -115,7 +115,7 @@ function parseRedisProfile(
   const orderedProductScore: Record<string, number> = {};
   for (const [key, value] of Object.entries(hash)) {
     if (key.startsWith("score:")) {
-      orderedProductScore[key.slice(6)] = parseFloat(value);
+      orderedProductScore[key.slice(6)] = Number.parseFloat(value);
     }
   }
 
@@ -123,7 +123,7 @@ function parseRedisProfile(
     customerId,
     recentlyViewed: safeParseJson(hash["recentlyViewed"], []),
     cartItems: safeParseJson(hash["cartItems"], []),
-    orderCount: parseInt(hash["orderCount"] ?? "0", 10),
+    orderCount: Number.parseInt(hash["orderCount"] ?? "0", 10),
     lastOrderAt: hash["lastOrderAt"] || null,
     lastOrderedProductIds: safeParseJson(hash["lastOrderedProductIds"], []),
     preferences: safeParseJson(hash["preferences"], null),

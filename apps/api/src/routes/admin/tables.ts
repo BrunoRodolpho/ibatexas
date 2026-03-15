@@ -90,8 +90,8 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
           durationMinutes: number
         }
 
-        const from = new Date(body.fromDate + "T00:00:00.000Z")
-        const to = new Date(body.toDate + "T00:00:00.000Z")
+        const from = new Date(`${body.fromDate}T00:00:00.000Z`)
+        const to = new Date(`${body.toDate}T00:00:00.000Z`)
         const rows: { date: Date; startTime: string; maxCovers: number; durationMinutes: number }[] = []
         const current = new Date(from)
 

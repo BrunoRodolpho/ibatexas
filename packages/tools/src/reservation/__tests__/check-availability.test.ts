@@ -36,7 +36,7 @@ function makeSlot(overrides: Partial<{
 }> = {}) {
   return {
     id: overrides.id ?? "ts_01",
-    date: new Date(DATE + "T00:00:00.000Z"),
+    date: new Date(`${DATE}T00:00:00.000Z`),
     startTime: overrides.startTime ?? "19:30",
     durationMinutes: overrides.durationMinutes ?? 90,
     maxCovers: overrides.maxCovers ?? 40,

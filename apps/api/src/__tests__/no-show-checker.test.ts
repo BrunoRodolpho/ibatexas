@@ -48,15 +48,15 @@ describe("no-show checker", () => {
   it("starts and stops without errors", () => {
     mockFindMany.mockResolvedValue([])
 
-    startNoShowChecker()
-    stopNoShowChecker()
+    expect(() => startNoShowChecker()).not.toThrow()
+    expect(() => stopNoShowChecker()).not.toThrow()
   })
 
   it("does not start twice", () => {
     mockFindMany.mockResolvedValue([])
 
-    startNoShowChecker()
-    startNoShowChecker() // second call should be a no-op
+    expect(() => startNoShowChecker()).not.toThrow()
+    expect(() => startNoShowChecker()).not.toThrow() // second call should be a no-op
 
     stopNoShowChecker()
   })

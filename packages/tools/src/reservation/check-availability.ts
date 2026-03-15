@@ -3,19 +3,20 @@
 // Auth: guest
 
 import { prisma } from "@ibatexas/domain"
-import type {
-  CheckAvailabilityInput,
-  CheckAvailabilityOutput,
-  AvailableSlot,
+import {
+  CheckAvailabilityInputSchema,
+  TableLocation,
+  type CheckAvailabilityInput,
+  type CheckAvailabilityOutput,
+  type AvailableSlot,
 } from "@ibatexas/types"
-import { CheckAvailabilityInputSchema, TableLocation } from "@ibatexas/types"
 
 export async function checkTableAvailability(
   input: CheckAvailabilityInput,
 ): Promise<CheckAvailabilityOutput> {
   const parsed = CheckAvailabilityInputSchema.parse(input)
 
-  const date = new Date(parsed.date + "T00:00:00.000Z")
+  const date = new Date(`${parsed.date}T00:00:00.000Z`)
 
   // Load all time slots for this date
   const slots = await prisma.timeSlot.findMany({

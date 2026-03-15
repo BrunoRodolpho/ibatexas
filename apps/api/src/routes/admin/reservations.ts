@@ -32,7 +32,7 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
 
         const where: Record<string, unknown> = {}
         if (status) where.status = status
-        if (date) where.timeSlot = { date: new Date(date + "T00:00:00.000Z") }
+        if (date) where.timeSlot = { date: new Date(`${date}T00:00:00.000Z`) }
 
         const [reservations, total] = await Promise.all([
           prisma.reservation.findMany({

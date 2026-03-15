@@ -16,13 +16,13 @@ describe("Admin Routes", () => {
     it("rejects request without x-admin-key", () => {
       // Simulate missing header scenario
       const hasKey = (headers: Record<string, string | undefined>) =>
-        !!headers["x-admin-key"]
+        Boolean(headers["x-admin-key"])
       expect(hasKey({})).toBe(false)
     })
 
     it("accepts request with valid x-admin-key", () => {
       const hasKey = (headers: Record<string, string | undefined>) =>
-        !!headers["x-admin-key"]
+        Boolean(headers["x-admin-key"])
       expect(hasKey({ "x-admin-key": "test-key" })).toBe(true)
     })
   })

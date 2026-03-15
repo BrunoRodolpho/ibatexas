@@ -17,7 +17,7 @@ function normalize(input: string): string {
     .toLowerCase()
     .trim()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+    .replaceAll(/[\u0300-\u036f]/g, "");
 }
 
 const SHORTCUT_MAP: Record<string, ShortcutAction> = {

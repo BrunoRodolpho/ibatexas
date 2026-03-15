@@ -10,8 +10,7 @@
 
 import { createHash } from "crypto"
 import { getRedisClient } from "../redis/client.js"
-import { Channel } from "@ibatexas/types"
-import type { QueryCacheEntry, QueryLogEntry, ProductDTO } from "@ibatexas/types"
+import { Channel, type QueryCacheEntry, type QueryLogEntry, type ProductDTO } from "@ibatexas/types"
 
 // ── Bucket ────────────────────────────────────────────────────────────────────
 
@@ -50,10 +49,10 @@ export function exactCacheKey(
   categoryHandle?: string,
   tags?: string[]
 ): string {
-  const normalized = query.toLowerCase().trim().replace(/\s+/g, " ")
+  const normalized = query.toLowerCase().trim().replaceAll(/\s+/g, " ")
   const productTypeStr = productType || "all"
   const categoryStr = categoryHandle || "all"
-  const tagsStr = tags && tags.length > 0 ? [...tags].sort().join(",") : "all"
+  const tagsStr = tags && tags.length > 0 ? [...tags].sort((a, b) => a.localeCompare(b)).join(",") : "all"
   const hash = createHash("sha256")
     .update(`${normalized}:${availabilityMode}:${allergenHash}:${productTypeStr}:${categoryStr}:${tagsStr}`)
     .digest("hex")
@@ -74,7 +73,7 @@ function semanticCacheKey(
   categoryHandle?: string,
   tags?: string[]
 ): string {
-  const tagsStr = tags && tags.length > 0 ? [...tags].sort().join(",") : "none"
+  const tagsStr = tags && tags.length > 0 ? [...tags].sort((a, b) => a.localeCompare(b)).join(",") : "none"
   return [
     "search_cache",
     channel,
@@ -125,7 +124,7 @@ export async function setExactQueryCache(
 ): Promise<void> {
   try {
     const redisClient = await getRedisClient()
-    const ttl = parseInt(process.env.QUERY_CACHE_EXACT_TTL_SECONDS || "300", 10)
+    const ttl = Number.parseInt(process.env.QUERY_CACHE_EXACT_TTL_SECONDS || "300", 10)
     const key = exactCacheKey(query, channel, availabilityMode, allergenHash, productType, categoryHandle, tags)
     const payload = { results, cachedAt: new Date().toISOString() }
     await redisClient.setEx(key, ttl, JSON.stringify(payload))
@@ -175,7 +174,7 @@ export async function setQueryCache(
   results: ProductDTO[],
   availabilityMode?: string,
   allergenHash?: string,
-  ttlSeconds = parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10),
+  ttlSeconds = Number.parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10),
   productType?: string,
   categoryHandle?: string,
   tags?: string[]
@@ -227,7 +226,7 @@ export async function incrementQueryCacheHits(
     entry.hitCount++
 
     const remainingTtl = Math.floor((new Date(entry.expiresAt).getTime() - Date.now()) / 1000)
-    const ttl = remainingTtl > 0 ? remainingTtl : parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10)
+    const ttl = remainingTtl > 0 ? remainingTtl : Number.parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10)
 
     await redisClient.setEx(key, ttl, JSON.stringify(entry))
   } catch (error) {
@@ -288,7 +287,7 @@ export async function logQuery(
     const redisClient = await getRedisClient()
     const timestamp = new Date().toISOString()
     const keyHash = Math.random().toString(36).slice(2, 8)
-    const ttl = parseInt(process.env.QUERY_LOG_TTL_SECONDS || "604800", 10)
+    const ttl = Number.parseInt(process.env.QUERY_LOG_TTL_SECONDS || "604800", 10)
 
     const entry: QueryLogEntry = {
       sessionId,
@@ -316,7 +315,7 @@ export function allergenFilterHash(allergens?: string[]): string {
   if (!allergens || allergens.length === 0) {
     return ""
   }
-  const sorted = [...allergens].sort().join(",")
+  const sorted = [...allergens].sort((a, b) => a.localeCompare(b)).join(",")
   let hash = 0
   for (let i = 0; i < sorted.length; i++) {
     hash = (hash << 5) - hash + sorted.charCodeAt(i)

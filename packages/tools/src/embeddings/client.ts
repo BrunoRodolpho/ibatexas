@@ -71,7 +71,7 @@ function generateDeterministicEmbedding(text: string): number[] {
 export async function generateEmbedding(
   text: string,
   cacheKey: string,
-  ttlSeconds = parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
+  ttlSeconds = Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
 ): Promise<number[]> {
   if (!text || text.length === 0) {
     throw new Error("Cannot embed empty text")
@@ -111,7 +111,7 @@ export async function generateEmbedding(
  */
 export async function generateEmbeddingsBatch(
   texts: Array<{ key: string; text: string }>,
-  ttlSeconds = parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
+  ttlSeconds = Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
 ): Promise<{
   embeddings: Map<string, number[]>
   failures: Array<{ key: string; error: string }>
