@@ -88,7 +88,7 @@ function sendToApi(payload: { event: string; properties: Record<string, unknown>
 
     const sent = navigator.sendBeacon?.(url, new Blob([body], { type: 'application/json' }))
     if (!sent) {
-      fetch(url, {
+      void fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,

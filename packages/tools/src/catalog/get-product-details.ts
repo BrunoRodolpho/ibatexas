@@ -17,7 +17,7 @@ export async function getProductDetails(productId: string, customerId?: string):
     const product = typesenseDocToDTO(doc as unknown as import("../mappers/product-mapper.js").TypesenseProductDoc)
 
     // Non-blocking: publish product.viewed for customer intelligence
-    publishNatsEvent("product.viewed", {
+    void publishNatsEvent("product.viewed", {
       eventType: "product.viewed",
       productId,
       customerId: customerId ?? null,

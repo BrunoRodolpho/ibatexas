@@ -8,6 +8,7 @@ import {
   incrementQueryCacheHits,
   invalidateAllQueryCache,
   setQueryCache,
+  type CacheFilterContext,
 } from "../query-cache.js"
 
 // ── Redis mock ─────────────────────────────────────────────────────────────────
@@ -32,6 +33,16 @@ function makeAsyncIterator(items: string[]) {
   return (async function* () {
     for (const item of items) yield item
   })()
+}
+
+/** Default cache filter context for tests */
+function defaultCtx(overrides?: Partial<CacheFilterContext>): CacheFilterContext {
+  return {
+    channel: Channel.Web,
+    availabilityMode: "all",
+    allergenHash: "",
+    ...overrides,
+  }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -143,7 +154,7 @@ describe("Query Cache", () => {
 
       mockRedis.get.mockResolvedValueOnce(JSON.stringify(existingEntry))
 
-      await incrementQueryCacheHits(Channel.Web, embedding)
+      await incrementQueryCacheHits(embedding, defaultCtx())
 
       // Must call setEx (write back), NOT just expire (resets TTL without saving hitCount)
       expect(mockRedis.setEx).toHaveBeenCalledOnce()
@@ -172,7 +183,7 @@ describe("Query Cache", () => {
 
       mockRedis.get.mockResolvedValueOnce(JSON.stringify(existingEntry))
 
-      await incrementQueryCacheHits(Channel.Web, embedding)
+      await incrementQueryCacheHits(embedding, defaultCtx())
 
       const [, ttl] = mockRedis.setEx.mock.calls[0]
       // TTL should be approximately 1800 (within ±5 seconds for test timing)
@@ -183,7 +194,7 @@ describe("Query Cache", () => {
     it("is a no-op when cache entry does not exist", async () => {
       mockRedis.get.mockResolvedValueOnce(null)
 
-      await incrementQueryCacheHits(Channel.Web, Array(1536).fill(0.5))
+      await incrementQueryCacheHits(Array(1536).fill(0.5), defaultCtx())
 
       expect(mockRedis.setEx).not.toHaveBeenCalled()
     })
@@ -249,7 +260,7 @@ describe("Query Cache", () => {
       process.env.QUERY_CACHE_TTL_SECONDS = "7200"
 
       const embedding = Array(1536).fill(0.3)
-      await setQueryCache(Channel.Web, embedding, [], "all", "")
+      await setQueryCache(embedding, [], defaultCtx())
 
       const [, ttl] = mockRedis.setEx.mock.calls[0]
       expect(ttl).toBe(7200)
@@ -269,7 +280,7 @@ describe("Query Cache", () => {
   describe("Channel enum as cache key component", () => {
     it("Channel.Web produces a valid cache key with 'web' segment", async () => {
       const embedding = Array(1536).fill(0.5)
-      await setQueryCache(Channel.Web, embedding, [], "all", "")
+      await setQueryCache(embedding, [], defaultCtx({ channel: Channel.Web }))
 
       const [key] = mockRedis.setEx.mock.calls[0]
       expect(key).toContain("web")
@@ -277,7 +288,7 @@ describe("Query Cache", () => {
 
     it("Channel.WhatsApp produces a valid cache key with 'whatsapp' segment", async () => {
       const embedding = Array(1536).fill(0.5)
-      await setQueryCache(Channel.WhatsApp, embedding, [], "all", "")
+      await setQueryCache(embedding, [], defaultCtx({ channel: Channel.WhatsApp }))
 
       const [key] = mockRedis.setEx.mock.calls[0]
       expect(key).toContain("whatsapp")
@@ -286,13 +297,13 @@ describe("Query Cache", () => {
     it("Channel.Web and Channel.WhatsApp produce different cache keys for the same embedding", async () => {
       const embedding = Array(1536).fill(0.5)
 
-      await setQueryCache(Channel.Web, embedding, [], "all", "")
+      await setQueryCache(embedding, [], defaultCtx({ channel: Channel.Web }))
       const webKey = mockRedis.setEx.mock.calls[0][0]
 
       vi.clearAllMocks()
       mockRedis.setEx.mockResolvedValue("OK")
 
-      await setQueryCache(Channel.WhatsApp, embedding, [], "all", "")
+      await setQueryCache(embedding, [], defaultCtx({ channel: Channel.WhatsApp }))
       const whatsappKey = mockRedis.setEx.mock.calls[0][0]
 
       expect(webKey).not.toBe(whatsappKey)
