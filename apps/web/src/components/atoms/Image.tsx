@@ -6,8 +6,8 @@ import clsx from 'clsx'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
 
 interface ImageProps extends Omit<NextImageProps, 'alt' | 'fill'> {
-  alt: string
-  variant?: 'thumbnail' | 'card' | 'detail'
+  readonly alt: string
+  readonly variant?: 'thumbnail' | 'card' | 'detail'
 }
 
 /**

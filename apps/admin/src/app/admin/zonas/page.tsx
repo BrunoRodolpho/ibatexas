@@ -134,8 +134,9 @@ export default function ZonasPage() {
           <h2 className="text-sm font-semibold text-charcoal-900">{editing ? 'Editar zona' : 'Nova zona'}</h2>
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
-              <label className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Nome</label>
+              <label htmlFor="zone-name" className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Nome</label>
               <input
+                id="zone-name"
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                 placeholder="Ex: Zona Sul"
@@ -143,10 +144,11 @@ export default function ZonasPage() {
               />
             </div>
             <div className="col-span-2">
-              <label className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">
+              <label htmlFor="zone-cep" className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">
                 Prefixos CEP (5 dígitos, separados por vírgula)
               </label>
               <input
+                id="zone-cep"
                 value={cepInput}
                 onChange={(e) => setCepInput(e.target.value)}
                 placeholder="01310, 01311, 01320"
@@ -154,8 +156,9 @@ export default function ZonasPage() {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Taxa (R$)</label>
+              <label htmlFor="zone-fee" className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Taxa (R$)</label>
               <input
+                id="zone-fee"
                 type="number"
                 step="0.01"
                 value={form.feeInCentavos / 100}
@@ -164,8 +167,9 @@ export default function ZonasPage() {
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Prazo (min)</label>
+              <label htmlFor="zone-time" className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Prazo (min)</label>
               <input
+                id="zone-time"
                 type="number"
                 value={form.estimatedMinutes}
                 onChange={(e) => setForm((f) => ({ ...f, estimatedMinutes: Number.parseInt(e.target.value || '60', 10) }))}

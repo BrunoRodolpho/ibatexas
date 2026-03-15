@@ -1,10 +1,10 @@
 'use client'
 
 interface FilterChipProps {
-  id: string
-  label: string
-  selected: boolean
-  onToggle: (id: string) => void
+  readonly id: string
+  readonly label: string
+  readonly selected: boolean
+  readonly onToggle: (id: string) => void
 }
 
 export function FilterChip({ id, label, selected, onToggle }: FilterChipProps) {

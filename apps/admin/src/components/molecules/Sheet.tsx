@@ -3,12 +3,12 @@
 import { useEffect, useRef, useCallback } from 'react'
 
 interface SheetProps {
-  isOpen: boolean
-  title: string
-  children: React.ReactNode
-  onClose: () => void
-  footer?: React.ReactNode
-  position?: 'left' | 'right' | 'bottom'
+  readonly isOpen: boolean
+  readonly title: string
+  readonly children: React.ReactNode
+  readonly onClose: () => void
+  readonly footer?: React.ReactNode
+  readonly position?: 'left' | 'right' | 'bottom'
 }
 
 export function Sheet({

@@ -8,9 +8,9 @@ import { track } from '@/domains/analytics'
 import clsx from 'clsx'
 
 interface WishlistButtonProps {
-  productId: string
-  className?: string
-  size?: 'sm' | 'md'
+  readonly productId: string
+  readonly className?: string
+  readonly size?: 'sm' | 'md'
 }
 
 /**

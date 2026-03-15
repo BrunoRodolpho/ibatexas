@@ -2,15 +2,15 @@ import React from 'react'
 import { Card, Heading, Text, Badge } from '../atoms'
 
 interface ReviewCardProps {
-  id: string
-  customerName: string
-  rating: number
-  comment: string
-  date: string
-  productName?: string
-  status?: 'new' | 'acknowledged' | 'resolved'
-  escalated?: boolean
-  onRespond?: (id: string) => void
+  readonly id: string
+  readonly customerName: string
+  readonly rating: number
+  readonly comment: string
+  readonly date: string
+  readonly productName?: string
+  readonly status?: 'new' | 'acknowledged' | 'resolved'
+  readonly escalated?: boolean
+  readonly onRespond?: (id: string) => void
 }
 
 export const ReviewCard: React.FC<ReviewCardProps> = ({

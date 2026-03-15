@@ -5,8 +5,8 @@ import { Modal } from './Modal'
 import { Text } from '../atoms'
 
 interface SizeGuideProps {
-  isOpen: boolean
-  onClose: () => void
+  readonly isOpen: boolean
+  readonly onClose: () => void
 }
 
 export const SizeGuide = ({ isOpen, onClose }: SizeGuideProps) => {
@@ -29,13 +29,13 @@ export const SizeGuide = ({ isOpen, onClose }: SizeGuideProps) => {
           <table className="w-full border-collapse border border-smoke-200">
             <thead>
               <tr className="bg-smoke-100">
-                <th className="border border-smoke-200 px-4 py-3 text-left font-medium">
+                <th scope="col" className="border border-smoke-200 px-4 py-3 text-left font-medium">
                   Tamanho
                 </th>
-                <th className="border border-smoke-200 px-4 py-3 text-center font-medium">
+                <th scope="col" className="border border-smoke-200 px-4 py-3 text-center font-medium">
                   {t('shop.size_guide.chest')}
                 </th>
-                <th className="border border-smoke-200 px-4 py-3 text-center font-medium">
+                <th scope="col" className="border border-smoke-200 px-4 py-3 text-center font-medium">
                   {t('shop.size_guide.length')}
                 </th>
               </tr>

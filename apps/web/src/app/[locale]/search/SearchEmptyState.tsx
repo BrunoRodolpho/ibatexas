@@ -4,15 +4,15 @@ import { useTranslations } from 'next-intl'
 import { UtensilsCrossed } from 'lucide-react'
 
 interface CategoryOption {
-  id: string
-  label: string
+  readonly id: string
+  readonly label: string
 }
 
 interface SearchEmptyStateProps {
-  searchQuery: string
-  categories: CategoryOption[]
-  onCategoryChange: (categoryId: string) => void
-  showCategories?: boolean
+  readonly searchQuery: string
+  readonly categories: CategoryOption[]
+  readonly onCategoryChange: (categoryId: string) => void
+  readonly showCategories?: boolean
 }
 
 /**

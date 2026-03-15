@@ -8,7 +8,7 @@ import { getApiBase } from '@/lib/api'
 export const revalidate = 60
 
 interface ProductPageProps {
-  params: { id: string; locale: string }
+  readonly params: { id: string; locale: string }
 }
 
 // ── SSR metadata for SEO ────────────────────────────────────────────────

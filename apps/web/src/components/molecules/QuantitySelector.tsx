@@ -3,11 +3,11 @@ import clsx from 'clsx'
 import { useTranslations } from 'next-intl'
 
 interface QuantitySelectorProps {
-  quantity: number
-  max?: number
-  min?: number
-  onQuantityChange: (quantity: number) => void
-  size?: 'sm' | 'md' | 'lg'
+  readonly quantity: number
+  readonly max?: number
+  readonly min?: number
+  readonly onQuantityChange: (quantity: number) => void
+  readonly size?: 'sm' | 'md' | 'lg'
 }
 
 export const QuantitySelector: React.FC<QuantitySelectorProps> = ({

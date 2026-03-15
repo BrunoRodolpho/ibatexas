@@ -12,7 +12,7 @@ import { AdminSidebar } from '@/components/molecules/AdminSidebar'
 import { Button } from '@/components/atoms'
 import { LogOut, Shield, Search } from 'lucide-react'
 
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
+export default function AdminLayout({ children }: { readonly children: React.ReactNode }) {
   const t = useTranslations()
   const locale = useLocale()
   const { userType, customerId, setCustomer, logout } = useSessionStore()

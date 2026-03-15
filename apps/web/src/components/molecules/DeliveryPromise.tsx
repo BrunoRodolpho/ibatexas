@@ -4,7 +4,7 @@ import { useTranslations } from 'next-intl'
 import { Thermometer, Shield, Truck, Clock } from 'lucide-react'
 
 interface DeliveryPromiseProps {
-  availabilityWindow?: string
+  readonly availabilityWindow?: string
 }
 
 export function DeliveryPromise({ availabilityWindow }: DeliveryPromiseProps) {

@@ -28,8 +28,8 @@ const iconButtonVariants = cva(
 export interface IconButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof iconButtonVariants> {
-  icon: React.ReactNode
-  label: string
+  readonly icon: React.ReactNode
+  readonly label: string
 }
 
 export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(

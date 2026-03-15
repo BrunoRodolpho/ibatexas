@@ -238,10 +238,11 @@ export default function ProductPage({ params }: { params: { id: string } }) {
 
           {/* Special Instructions */}
           <div className="mt-8">
-            <label className="block text-sm font-medium text-charcoal-900">
+            <label htmlFor="special-instructions" className="block text-sm font-medium text-charcoal-900">
               {t("product.special_instructions")}
             </label>
             <textarea
+              id="special-instructions"
               value={specialInstructions}
               onChange={(e) => setSpecialInstructions(e.target.value)}
               placeholder={t("product.special_instructions_placeholder")}

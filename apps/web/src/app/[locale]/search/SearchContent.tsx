@@ -492,7 +492,7 @@ export default function SearchContent() {
                 <div ref={loadMoreRef} className="pt-6 pb-4">
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8 gap-y-6">
                     {Array.from({ length: 4 }).map((_, i) => (
-                      <div key={i} className="overflow-hidden rounded-card animate-pulse">
+                      <div key={`skel-${i}`} className="overflow-hidden rounded-card animate-pulse">
                         <div className="aspect-[4/3] rounded-card bg-smoke-200" />
                         <div className="pt-3 space-y-2.5">
                           <div className="h-4 w-3/4 rounded bg-smoke-200" />

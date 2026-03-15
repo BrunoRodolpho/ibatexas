@@ -1,10 +1,10 @@
 "use client"
 
 interface Props {
-  value: string  // YYYY-MM-DD
-  onChange: (date: string) => void
-  minDate?: string
-  maxDate?: string
+  readonly value: string  // YYYY-MM-DD
+  readonly onChange: (date: string) => void
+  readonly minDate?: string
+  readonly maxDate?: string
 }
 
 function toInputMin(): string {

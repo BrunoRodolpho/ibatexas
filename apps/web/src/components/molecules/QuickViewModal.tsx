@@ -18,9 +18,9 @@ import { track } from '@/domains/analytics'
 import type { ProductDTO, ProductVariant } from '@ibatexas/types'
 
 interface QuickViewModalProps {
-  product: ProductDTO | null
-  isOpen: boolean
-  onClose: () => void
+  readonly product: ProductDTO | null
+  readonly isOpen: boolean
+  readonly onClose: () => void
 }
 
 /**

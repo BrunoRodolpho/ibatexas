@@ -2,10 +2,10 @@ import React from 'react'
 import clsx from 'clsx'
 
 export interface TextAreaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
-  error?: boolean
-  errorMessage?: string
-  counter?: boolean
-  maxLength?: number
+  readonly error?: boolean
+  readonly errorMessage?: string
+  readonly counter?: boolean
+  readonly maxLength?: number
 }
 
 export const TextArea = React.forwardRef<HTMLTextAreaElement, TextAreaProps>(

@@ -3,10 +3,10 @@
 import type { AvailableSlot } from '@/domains/reservation'
 
 interface Props {
-  slots: AvailableSlot[]
-  loading: boolean
-  error: string | null
-  onSelect: (slot: AvailableSlot) => void
+  readonly slots: AvailableSlot[]
+  readonly loading: boolean
+  readonly error: string | null
+  readonly onSelect: (slot: AvailableSlot) => void
 }
 
 const LOCATION_LABELS: Record<string, string> = {

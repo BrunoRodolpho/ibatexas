@@ -4,15 +4,15 @@ import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 
 interface CarouselCardProps {
-  id: string
-  title: string
-  description?: string | null
-  imageUrl?: string | null
-  images?: string[]
-  price: number
-  variantCount?: number
-  rating?: number
-  tags?: string[]
+  readonly id: string
+  readonly title: string
+  readonly description?: string | null
+  readonly imageUrl?: string | null
+  readonly images?: string[]
+  readonly price: number
+  readonly variantCount?: number
+  readonly rating?: number
+  readonly tags?: string[]
 }
 
 export const CarouselCard = ({

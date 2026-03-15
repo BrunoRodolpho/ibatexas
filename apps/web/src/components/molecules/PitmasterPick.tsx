@@ -11,16 +11,16 @@ import { useState, useCallback } from 'react'
 import type { ProductDTO } from '@ibatexas/types'
 
 interface PitmasterPickProps {
-  product: ProductDTO | null
-  onAddToCart?: (productId: string) => void
+  readonly product: ProductDTO | null
+  readonly onAddToCart?: (productId: string) => void
   /** Current quantity in cart */
-  cartQuantity?: number
+  readonly cartQuantity?: number
   /** Callback to update quantity in cart */
-  onUpdateQuantity?: (qty: number) => void
+  readonly onUpdateQuantity?: (qty: number) => void
   /** Callback to remove item from cart */
-  onRemoveFromCart?: () => void
+  readonly onRemoveFromCart?: () => void
   /** Display variant: 'card' (default, homepage) or 'inline' (compact, search page) */
-  variant?: 'card' | 'inline'
+  readonly variant?: 'card' | 'inline'
 }
 
 /**

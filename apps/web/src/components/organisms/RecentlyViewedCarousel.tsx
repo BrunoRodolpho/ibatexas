@@ -12,7 +12,7 @@ import type { ProductDTO } from '@ibatexas/types'
 
 interface RecentlyViewedCarouselProps {
   /** Product ID to exclude (e.g., the current PDP product) */
-  excludeId?: string
+  readonly excludeId?: string
 }
 
 /**

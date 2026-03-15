@@ -3,10 +3,10 @@
 import clsx from 'clsx'
 
 interface SkeletonProps {
-  variant?: 'text' | 'square' | 'circle' | 'rect'
-  width?: string
-  height?: string
-  className?: string
+  readonly variant?: 'text' | 'square' | 'circle' | 'rect'
+  readonly width?: string
+  readonly height?: string
+  readonly className?: string
 }
 
 /**

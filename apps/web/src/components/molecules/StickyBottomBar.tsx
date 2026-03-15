@@ -5,14 +5,14 @@ import { QuantitySelector } from './QuantitySelector'
 import clsx from 'clsx'
 
 interface StickyBottomBarProps {
-  price: string
-  quantity: number
-  onQuantityChange: (qty: number) => void
-  onAction: () => void
-  actionLabel: string
-  disabled?: boolean
-  isLoading?: boolean
-  className?: string
+  readonly price: string
+  readonly quantity: number
+  readonly onQuantityChange: (qty: number) => void
+  readonly onAction: () => void
+  readonly actionLabel: string
+  readonly disabled?: boolean
+  readonly isLoading?: boolean
+  readonly className?: string
 }
 
 /**

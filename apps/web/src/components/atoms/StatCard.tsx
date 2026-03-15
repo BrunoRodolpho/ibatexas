@@ -20,13 +20,13 @@ const iconColors: Record<string, string> = {
 }
 
 interface StatCardProps {
-  label: string
-  value: string | number
-  icon?: LucideIcon
-  variant?: 'default' | 'success' | 'warning' | 'danger' | 'info'
-  trend?: number
-  subLabel?: string
-  isLoading?: boolean
+  readonly label: string
+  readonly value: string | number
+  readonly icon?: LucideIcon
+  readonly variant?: 'default' | 'success' | 'warning' | 'danger' | 'info'
+  readonly trend?: number
+  readonly subLabel?: string
+  readonly isLoading?: boolean
 }
 
 export function StatCard({ label, value, icon: Icon, trend, subLabel, variant = 'default', isLoading }: StatCardProps) {

@@ -3,11 +3,11 @@ import clsx from 'clsx'
 import { ShoppingBag } from 'lucide-react'
 
 export interface ToastProps {
-  id: string
-  message: string
-  type: 'success' | 'error' | 'warning' | 'info' | 'cart'
-  duration?: number
-  onClose: (id: string) => void
+  readonly id: string
+  readonly message: string
+  readonly type: 'success' | 'error' | 'warning' | 'info' | 'cart'
+  readonly duration?: number
+  readonly onClose: (id: string) => void
 }
 
 const typeStyles = {
@@ -72,8 +72,8 @@ export const Toast: React.FC<ToastProps> = ({ id, message, type, duration, onClo
 }
 
 export interface ToastContainerProps {
-  toasts: ToastProps[]
-  onClose: (id: string) => void
+  readonly toasts: ToastProps[]
+  readonly onClose: (id: string) => void
 }
 
 export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onClose }) => {

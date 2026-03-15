@@ -181,7 +181,7 @@ export default function EntrarPage() {
 
               <form onSubmit={handleSendOtp} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-medium uppercase tracking-editorial text-smoke-400 mb-1.5">
+                  <label htmlFor="phone-input" className="block text-xs font-medium uppercase tracking-editorial text-smoke-400 mb-1.5">
                     Celular
                   </label>
                   <div className="flex items-center border border-smoke-200 rounded-sm overflow-hidden focus-within:border-charcoal-900 transition-colors duration-300">
@@ -200,6 +200,7 @@ export default function EntrarPage() {
                       ))}
                     </select>
                     <input
+                      id="phone-input"
                       type="tel"
                       value={phone}
                       onChange={(e) => setPhone(formatPhone(e.target.value, countryCode))}
@@ -237,7 +238,7 @@ export default function EntrarPage() {
                 <div className="flex justify-center gap-2" onPaste={handleOTPPaste}>
                   {otp.map((digit, index) => (
                     <input
-                      key={index}
+                      key={`otp-${index}`}
                       ref={(el) => {
                         otpRefs.current[index] = el
                       }}

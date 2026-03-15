@@ -169,7 +169,7 @@ export default async function Home() {
           {/* Process steps */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-8 lg:gap-6">
             {steps.map((step, i) => (
-              <ScrollReveal key={i} animation="fade-up" delay={300 + i * 150}>
+              <ScrollReveal key={`step-${step.title}`} animation="fade-up" delay={300 + i * 150}>
                 <div className="flex flex-col items-center text-center">
                   <div className="w-11 h-11 rounded-full bg-smoke-700/50 flex items-center justify-center mb-4">
                     <step.icon className="w-5 h-5 text-smoke-100" strokeWidth={1.5} />
@@ -189,7 +189,7 @@ export default async function Home() {
           <div className="mt-24 lg:mt-32 pt-24 border-t border-smoke-600/20">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-8 sm:gap-4">
               {stats.map((stat, i) => (
-                <ScrollReveal key={i} animation="scale-up" delay={i * 150}>
+                <ScrollReveal key={`stat-${stat.label}`} animation="scale-up" delay={i * 150}>
                   <div className="flex flex-col items-center text-center">
                     <span className="font-display text-display-sm sm:text-display-md font-bold text-white tabular-nums">{stat.value}</span>
                     <span className="mt-3 text-sm tracking-editorial text-smoke-300/70">{stat.label}</span>

@@ -9,13 +9,13 @@ export interface RadioOption {
 }
 
 export interface RadioGroupProps {
-  name: string
-  options: RadioOption[]
-  value?: string | number
-  onChange?: (value: string | number) => void
-  error?: boolean
-  errorMessage?: string
-  layout?: 'vertical' | 'horizontal'
+  readonly name: string
+  readonly options: RadioOption[]
+  readonly value?: string | number
+  readonly onChange?: (value: string | number) => void
+  readonly error?: boolean
+  readonly errorMessage?: string
+  readonly layout?: 'vertical' | 'horizontal'
 }
 
 export const RadioGroup = React.forwardRef<HTMLDivElement, RadioGroupProps>(

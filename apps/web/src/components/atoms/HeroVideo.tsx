@@ -4,9 +4,9 @@ import { useRef, useState, useEffect } from 'react'
 import Image from 'next/image'
 
 interface HeroVideoProps {
-  src: string
-  poster: string
-  className?: string
+  readonly src: string
+  readonly poster: string
+  readonly className?: string
 }
 
 /**

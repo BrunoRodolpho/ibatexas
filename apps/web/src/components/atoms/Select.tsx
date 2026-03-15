@@ -8,11 +8,11 @@ export interface SelectOption {
 }
 
 export interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
-  options: SelectOption[]
-  error?: boolean
-  errorMessage?: string
-  placeholder?: string
-  variant?: 'default' | 'minimal'
+  readonly options: SelectOption[]
+  readonly error?: boolean
+  readonly errorMessage?: string
+  readonly placeholder?: string
+  readonly variant?: 'default' | 'minimal'
 }
 
 export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(

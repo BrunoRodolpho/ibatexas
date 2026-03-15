@@ -2,9 +2,9 @@ import React from 'react'
 import clsx from 'clsx'
 
 export interface LabelProps extends React.LabelHTMLAttributes<HTMLLabelElement> {
-  required?: boolean
-  error?: boolean
-  helper?: string
+  readonly required?: boolean
+  readonly error?: boolean
+  readonly helper?: string
 }
 
 export const Label = React.forwardRef<HTMLLabelElement, LabelProps>(

@@ -4,8 +4,8 @@ import { forwardRef } from 'react'
 import clsx from 'clsx'
 
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
-  href?: string
-  interactive?: boolean
+  readonly href?: string
+  readonly interactive?: boolean
 }
 
 const Card = forwardRef<HTMLDivElement, CardProps>(

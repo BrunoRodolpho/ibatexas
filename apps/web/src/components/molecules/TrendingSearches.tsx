@@ -7,8 +7,8 @@ import { track } from '@/domains/analytics'
 import type { ProductDTO } from '@ibatexas/types'
 
 interface TrendingSearchesProps {
-  products: ProductDTO[]
-  onSearch: (query: string) => void
+  readonly products: ProductDTO[]
+  readonly onSearch: (query: string) => void
 }
 
 /**

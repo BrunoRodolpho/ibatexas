@@ -3,15 +3,15 @@ import { Card, Text, IconButton } from '../atoms'
 import { Image } from '../atoms/Image'
 
 interface CartItemProps {
-  id: string
-  title: string
-  price: number
-  imageUrl?: string
-  quantity: number
-  specialInstructions?: string
-  variantTitle?: string
-  onQuantityChange: (quantity: number) => void
-  onRemove: () => void
+  readonly id: string
+  readonly title: string
+  readonly price: number
+  readonly imageUrl?: string
+  readonly quantity: number
+  readonly specialInstructions?: string
+  readonly variantTitle?: string
+  readonly onQuantityChange: (quantity: number) => void
+  readonly onRemove: () => void
 }
 
 export const CartItem: React.FC<CartItemProps> = ({

@@ -3,14 +3,14 @@
 import { useRef, useEffect, useState, type ReactNode } from 'react'
 
 interface ScrollRevealProps {
-  children: ReactNode
-  className?: string
+  readonly children: ReactNode
+  readonly className?: string
   /** Delay in ms before the animation starts after entering viewport */
-  delay?: number
+  readonly delay?: number
   /** How much of the element must be visible (0–1) */
-  threshold?: number
+  readonly threshold?: number
   /** Animation variant */
-  animation?: 'fade-up' | 'scale-up' | 'slide-left' | 'slide-right' | 'zoom'
+  readonly animation?: 'fade-up' | 'scale-up' | 'slide-left' | 'slide-right' | 'zoom'
 }
 
 /**

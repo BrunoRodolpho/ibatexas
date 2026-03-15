@@ -2,9 +2,9 @@ import React from 'react'
 import clsx from 'clsx'
 
 export interface CheckboxProps extends React.InputHTMLAttributes<HTMLInputElement> {
-  label?: string
-  error?: boolean
-  errorMessage?: string
+  readonly label?: string
+  readonly error?: boolean
+  readonly errorMessage?: string
 }
 
 export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(

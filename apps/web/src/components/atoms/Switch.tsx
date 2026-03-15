@@ -1,11 +1,11 @@
 'use client'
 
 interface SwitchProps {
-  checked: boolean
-  onChange: (checked: boolean) => void
-  label?: string
-  disabled?: boolean
-  size?: 'sm' | 'md'
+  readonly checked: boolean
+  readonly onChange: (checked: boolean) => void
+  readonly label?: string
+  readonly disabled?: boolean
+  readonly size?: 'sm' | 'md'
 }
 
 export function Switch({ checked, onChange, label, disabled = false, size = 'md' }: SwitchProps) {

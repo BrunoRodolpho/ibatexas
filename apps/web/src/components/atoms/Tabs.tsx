@@ -7,10 +7,10 @@ interface TabItem {
 }
 
 interface TabsProps {
-  items: TabItem[]
-  activeKey: string
-  onChange: (key: string) => void
-  className?: string
+  readonly items: TabItem[]
+  readonly activeKey: string
+  readonly onChange: (key: string) => void
+  readonly className?: string
 }
 
 export function Tabs({ items, activeKey, onChange, className = '' }: TabsProps) {

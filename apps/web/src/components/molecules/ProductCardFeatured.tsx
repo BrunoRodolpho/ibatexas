@@ -13,22 +13,22 @@ import { useState, useCallback } from 'react'
 const BADGE_PRIORITY = ['edicao_limitada', 'chef_choice', 'popular', 'novo'] as const
 
 interface ProductCardFeaturedProps {
-  id: string
-  title: string
-  subtitle?: string
-  imageUrl?: string | null
-  images?: string[]
-  price: number
-  variantCount?: number
-  tags?: string[]
-  href?: string
-  onAddToCart?: () => void
+  readonly id: string
+  readonly title: string
+  readonly subtitle?: string
+  readonly imageUrl?: string | null
+  readonly images?: string[]
+  readonly price: number
+  readonly variantCount?: number
+  readonly tags?: string[]
+  readonly href?: string
+  readonly onAddToCart?: () => void
   /** Current quantity in cart (0 or undefined = not in cart) */
-  cartQuantity?: number
+  readonly cartQuantity?: number
   /** Callback to update quantity in cart */
-  onUpdateQuantity?: (qty: number) => void
+  readonly onUpdateQuantity?: (qty: number) => void
   /** Callback to remove item from cart */
-  onRemoveFromCart?: () => void
+  readonly onRemoveFromCart?: () => void
 }
 
 export const ProductCardFeatured = ({

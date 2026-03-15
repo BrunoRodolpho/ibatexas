@@ -9,7 +9,7 @@ import { LogOut, Shield, Search } from 'lucide-react'
  * Admin layout — standalone (no next-intl, no [locale] segment).
  * Auth: dev bypass stub. Step 11 replaces with Twilio Verify OTP.
  */
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
+export default function AdminLayout({ children }: { readonly children: React.ReactNode }) {
   const [isStaff, setIsStaff] = useState(process.env.NODE_ENV !== 'production')
 
   if (!isStaff) {

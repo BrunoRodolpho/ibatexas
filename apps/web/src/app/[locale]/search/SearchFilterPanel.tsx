@@ -4,26 +4,26 @@ import { useTranslations } from 'next-intl'
 import { Select } from '@/components/atoms'
 
 interface TagOption {
-  id: string
-  label: string
+  readonly id: string
+  readonly label: string
 }
 
 interface SortOption {
-  value: string
-  label: string
+  readonly value: string
+  readonly label: string
 }
 
 interface SearchFilterPanelProps {
-  tags: TagOption[]
-  sortOptions: SortOption[]
-  selectedTags: string[]
-  selectedSort: string
-  isFilterOpen: boolean
-  onToggleFilter: () => void
-  onTagToggle: (tagId: string) => void
-  onSortChange: (value: string) => void
-  onResetFilters: () => void
-  hasActiveFilters: boolean
+  readonly tags: TagOption[]
+  readonly sortOptions: SortOption[]
+  readonly selectedTags: string[]
+  readonly selectedSort: string
+  readonly isFilterOpen: boolean
+  readonly onToggleFilter: () => void
+  readonly onTagToggle: (tagId: string) => void
+  readonly onSortChange: (value: string) => void
+  readonly onResetFilters: () => void
+  readonly hasActiveFilters: boolean
 }
 
 /**
