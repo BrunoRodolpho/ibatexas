@@ -31,9 +31,12 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
     }
   }
 
-  const containerSize = size === 'sm' ? 'h-11' : size === 'lg' ? 'h-12' : 'h-11'
-  const btnSize = size === 'sm' ? 'w-11 h-11' : size === 'lg' ? 'w-12 h-12' : 'w-11 h-11'
-  const countSize = size === 'sm' ? 'w-10 text-xs' : size === 'lg' ? 'w-14 text-base' : 'w-12 text-sm'
+  const sizeMap = {
+    sm: { container: 'h-11', btn: 'w-11 h-11', count: 'w-10 text-xs' },
+    md: { container: 'h-11', btn: 'w-11 h-11', count: 'w-12 text-sm' },
+    lg: { container: 'h-12', btn: 'w-12 h-12', count: 'w-14 text-base' },
+  } as const
+  const { container: containerSize, btn: btnSize, count: countSize } = sizeMap[size]
 
   return (
     <div className={clsx('inline-flex items-center border border-smoke-200 rounded-sm w-fit', containerSize)}>

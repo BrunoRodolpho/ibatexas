@@ -35,7 +35,14 @@ interface MediaGalleryProps {
 
 export function MediaGallery({ images, thumbnail, title, className }: MediaGalleryProps) {
   // Build the effective media list: prefer gallery, fall back to thumbnail
-  const media = images.length > 0 ? images : thumbnail ? [thumbnail] : []
+  let media: string[]
+  if (images.length > 0) {
+    media = images
+  } else if (thumbnail) {
+    media = [thumbnail]
+  } else {
+    media = []
+  }
   const [selectedIndex, setSelectedIndex] = useState(0)
 
   const handleSelect = useCallback((index: number) => {

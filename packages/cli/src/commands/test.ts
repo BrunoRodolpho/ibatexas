@@ -71,9 +71,17 @@ async function runStatusChecks(): Promise<StatusCheck[]> {
     const reviewCount = await prisma.review.count()
     const avgResult = await prisma.review.aggregate({ _avg: { rating: true } })
     const avg = avgResult._avg.rating?.toFixed(1) ?? "0"
+    let reviewStatus: string
+    if (reviewCount >= 5) {
+      reviewStatus = "ok"
+    } else if (reviewCount > 0) {
+      reviewStatus = "warn"
+    } else {
+      reviewStatus = "empty"
+    }
     checks.push({
       section: "Reviews",
-      status: reviewCount >= 5 ? "ok" : reviewCount > 0 ? "warn" : "empty",
+      status: reviewStatus,
       count: String(reviewCount),
       details: `${reviewCount} reviews, avg ${avg}★`,
     })

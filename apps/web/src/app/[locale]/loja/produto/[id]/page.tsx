@@ -18,13 +18,15 @@ export async function generateMetadata({ params }: ProductPageProps): Promise<Me
     const res = await fetch(`${apiBase}/api/products/${params.id}`, { next: { revalidate: 60 } })
     if (!res.ok) return { title: 'Produto | IbateXas' }
     const product = await res.json()
+    const fallbackImages = product.imageUrl ? [product.imageUrl] : []
+    const ogImages = product.images?.length ? [product.images[0]] : fallbackImages
     return {
       title: `${product.title} | IbateXas`,
       description: product.description || `${product.title} — Churrasco defumado artesanal`,
       openGraph: {
         title: `${product.title} | IbateXas`,
         description: product.description || `${product.title} — Churrasco defumado artesanal`,
-        images: product.images?.length ? [product.images[0]] : product.imageUrl ? [product.imageUrl] : [],
+        images: ogImages,
       },
     }
   } catch {
