@@ -55,6 +55,7 @@ export {
   embeddingToBucket,
   allergenFilterHash,
   invalidateAllQueryCache,
+  type CacheFilterContext,
 } from "./cache/query-cache.js"
 
 // ── Embedding cache ────────────────────────────────────────────────────────────

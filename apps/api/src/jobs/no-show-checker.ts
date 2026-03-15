@@ -98,10 +98,10 @@ export function startNoShowChecker(): void {
   if (intervalHandle) return // already running
 
   // Run immediately on startup to catch any missed transitions
-  checkNoShows().catch((err) => console.error("[no-show] Initial check failed:", err))
+  void checkNoShows().catch((err) => console.error("[no-show] Initial check failed:", err))
 
   intervalHandle = setInterval(() => {
-    checkNoShows().catch((err) => console.error("[no-show] Check failed:", err))
+    void checkNoShows().catch((err) => console.error("[no-show] Check failed:", err))
   }, CHECK_INTERVAL_MS)
 
   console.info("[no-show] Checker started (every 5 minutes)")

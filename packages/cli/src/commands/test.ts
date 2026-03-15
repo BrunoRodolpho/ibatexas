@@ -219,6 +219,92 @@ async function runStatusChecks(): Promise<StatusCheck[]> {
   return checks
 }
 
+// ── E2E clean ──────────────────────────────────────────────────────────────
+
+async function cleanAllData(): Promise<boolean> {
+  const cleanSpinner = ora({ text: "Cleaning…", prefixText: "  " }).start()
+  try {
+    const { prisma } = await import("@ibatexas/domain")
+
+    // Domain tables (FK-safe order)
+    await prisma.reservationTable.deleteMany()
+    await prisma.waitlist.deleteMany()
+    await prisma.reservation.deleteMany()
+    await prisma.review.deleteMany()
+    await prisma.customerOrderItem.deleteMany()
+    await prisma.address.deleteMany()
+    await prisma.customerPreferences.deleteMany()
+    await prisma.customer.deleteMany()
+    await prisma.timeSlot.deleteMany()
+    await prisma.table.deleteMany()
+    await prisma.deliveryZone.deleteMany()
+
+    cleanSpinner.text = "Clearing Typesense…"
+    try {
+      const { recreateCollection } = await import("@ibatexas/tools")
+      await recreateCollection()
+    } catch {
+      // Typesense might not be running
+    }
+
+    cleanSpinner.text = "Clearing Redis cache…"
+    try {
+      const { invalidateAllQueryCache, closeRedisClient } = await import("@ibatexas/tools")
+      await invalidateAllQueryCache()
+      await closeRedisClient()
+    } catch {
+      // Redis might not be running
+    }
+
+    cleanSpinner.succeed(chalk.green("All data cleaned"))
+    return true
+  } catch (err) {
+    cleanSpinner.fail(chalk.red(`Clean failed: ${(err as Error).message}`))
+    return false
+  }
+}
+
+// ── Status table renderer ──────────────────────────────────────────────────
+
+function printStatusTable(checks: StatusCheck[], elapsed: string): void {
+  const sectionW = 24
+  const statusW = 10
+
+  console.log(chalk.bold("\n  ibx test status\n"))
+  console.log(
+    `  ${chalk.bold("Section".padEnd(sectionW))}${chalk.bold("Status".padEnd(statusW))}${chalk.bold("Details")}`
+  )
+  console.log(`  ${"─".repeat(sectionW + statusW + 30)}`)
+
+  const countW = 8
+  let allOk = true
+  for (const check of checks) {
+    const icon =
+      check.status === "ok" ? chalk.green("✅") :
+      check.status === "warn" ? chalk.yellow("⚠️ ") :
+      chalk.gray("○ ")
+    const countStr =
+      check.status === "ok" ? chalk.green(check.count.padEnd(countW)) :
+      check.status === "warn" ? chalk.yellow(check.count.padEnd(countW)) :
+      chalk.gray(check.count.padEnd(countW))
+
+    console.log(
+      `  ${check.section.padEnd(sectionW)}${icon} ${countStr} ${chalk.dim(check.details)}`
+    )
+
+    if (check.status !== "ok") allOk = false
+  }
+
+  console.log(`  ${"─".repeat(sectionW + statusW + 30)}`)
+
+  if (allOk) {
+    console.log(chalk.green(`\n  Total: ready for testing ✅`))
+  } else {
+    console.log(chalk.yellow(`\n  Some sections need seeding. Run: ibx test seed`))
+  }
+  console.log(chalk.dim(`\n  Ran in ${elapsed}s\n`))
+}
+
 // ── Command registration ────────────────────────────────────────────────────
 
 export function registerTestCommands(group: Command): void {
@@ -303,43 +389,8 @@ export function registerTestCommands(group: Command): void {
 
       // Step 1: Clean all data
       console.log(chalk.bold("\n  Step 1: Clean all data\n"))
-      const cleanSpinner = ora({ text: "Cleaning…", prefixText: "  " }).start()
-      try {
-        const { prisma } = await import("@ibatexas/domain")
-
-        // Domain tables (FK-safe order)
-        await prisma.reservationTable.deleteMany()
-        await prisma.waitlist.deleteMany()
-        await prisma.reservation.deleteMany()
-        await prisma.review.deleteMany()
-        await prisma.customerOrderItem.deleteMany()
-        await prisma.address.deleteMany()
-        await prisma.customerPreferences.deleteMany()
-        await prisma.customer.deleteMany()
-        await prisma.timeSlot.deleteMany()
-        await prisma.table.deleteMany()
-        await prisma.deliveryZone.deleteMany()
-
-        cleanSpinner.text = "Clearing Typesense…"
-        try {
-          const { recreateCollection } = await import("@ibatexas/tools")
-          await recreateCollection()
-        } catch {
-          // Typesense might not be running
-        }
-
-        cleanSpinner.text = "Clearing Redis cache…"
-        try {
-          const { invalidateAllQueryCache, closeRedisClient } = await import("@ibatexas/tools")
-          await invalidateAllQueryCache()
-          await closeRedisClient()
-        } catch {
-          // Redis might not be running
-        }
-
-        cleanSpinner.succeed(chalk.green("All data cleaned"))
-      } catch (err) {
-        cleanSpinner.fail(chalk.red(`Clean failed: ${(err as Error).message}`))
+      const cleanOk = await cleanAllData()
+      if (!cleanOk) {
         process.exitCode = 1
         return
       }
@@ -364,43 +415,8 @@ export function registerTestCommands(group: Command): void {
         const checks = await runStatusChecks()
         spinner.stop()
 
-        const sectionW = 24
-        const statusW = 10
-        const countW = 8
-
-        console.log(chalk.bold("\n  ibx test status\n"))
-        console.log(
-          `  ${chalk.bold("Section".padEnd(sectionW))}${chalk.bold("Status".padEnd(statusW))}${chalk.bold("Details")}`
-        )
-        console.log(`  ${"─".repeat(sectionW + statusW + 30)}`)
-
-        let allOk = true
-        for (const check of checks) {
-          const icon =
-            check.status === "ok" ? chalk.green("✅") :
-            check.status === "warn" ? chalk.yellow("⚠️ ") :
-            chalk.gray("○ ")
-          const countStr =
-            check.status === "ok" ? chalk.green(check.count.padEnd(countW)) :
-            check.status === "warn" ? chalk.yellow(check.count.padEnd(countW)) :
-            chalk.gray(check.count.padEnd(countW))
-
-          console.log(
-            `  ${check.section.padEnd(sectionW)}${icon} ${countStr} ${chalk.dim(check.details)}`
-          )
-
-          if (check.status !== "ok") allOk = false
-        }
-
         const elapsed = ((Date.now() - start) / 1000).toFixed(1)
-        console.log(`  ${"─".repeat(sectionW + statusW + 30)}`)
-
-        if (allOk) {
-          console.log(chalk.green(`\n  Total: ready for testing ✅`))
-        } else {
-          console.log(chalk.yellow(`\n  Some sections need seeding. Run: ibx test seed`))
-        }
-        console.log(chalk.dim(`\n  Ran in ${elapsed}s\n`))
+        printStatusTable(checks, elapsed)
       } catch (err) {
         spinner.fail(chalk.red(`Status check failed: ${(err as Error).message}`))
         process.exitCode = 1

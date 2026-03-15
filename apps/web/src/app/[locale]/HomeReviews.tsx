@@ -85,7 +85,7 @@ export function HomeReviews() {
         if (!controller.signal.aborted) {
           // Sort by rating desc, take top 6
           setReviews(
-            allReviews
+            [...allReviews]
               .sort((a, b) => b.rating - a.rating || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
               .slice(0, 6),
           )

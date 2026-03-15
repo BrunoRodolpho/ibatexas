@@ -12,6 +12,18 @@ import { createHash } from "crypto"
 import { getRedisClient } from "../redis/client.js"
 import { Channel, type QueryCacheEntry, type QueryLogEntry, type ProductDTO } from "@ibatexas/types"
 
+// ── Shared filter context ─────────────────────────────────────────────────────
+
+/** Common filter parameters shared by all cache key and cache access functions. */
+export interface CacheFilterContext {
+  channel: Channel
+  availabilityMode: string
+  allergenHash: string
+  productType?: string
+  categoryHandle?: string
+  tags?: string[]
+}
+
 // ── Bucket ────────────────────────────────────────────────────────────────────
 
 /**
@@ -40,48 +52,32 @@ export function embeddingToBucket(embedding: number[]): string {
  * L0 exact cache key — sha256 of normalized query + filters.
  * Zero embedding cost on hit (computed before embedding call).
  */
-export function exactCacheKey(
-  query: string,
-  channel: Channel,
-  availabilityMode: string,
-  allergenHash: string,
-  productType?: string,
-  categoryHandle?: string,
-  tags?: string[]
-): string {
+export function exactCacheKey(query: string, ctx: CacheFilterContext): string {
   const normalized = query.toLowerCase().trim().replaceAll(/\s+/g, " ")
-  const productTypeStr = productType || "all"
-  const categoryStr = categoryHandle || "all"
-  const tagsStr = tags && tags.length > 0 ? [...tags].sort((a, b) => a.localeCompare(b)).join(",") : "all"
+  const productTypeStr = ctx.productType || "all"
+  const categoryStr = ctx.categoryHandle || "all"
+  const tagsStr = ctx.tags && ctx.tags.length > 0 ? [...ctx.tags].sort((a, b) => a.localeCompare(b)).join(",") : "all"
   const hash = createHash("sha256")
-    .update(`${normalized}:${availabilityMode}:${allergenHash}:${productTypeStr}:${categoryStr}:${tagsStr}`)
+    .update(`${normalized}:${ctx.availabilityMode}:${ctx.allergenHash}:${productTypeStr}:${categoryStr}:${tagsStr}`)
     .digest("hex")
     .slice(0, 16)
-  return `search_exact:${channel}:${hash}`
+  return `search_exact:${ctx.channel}:${hash}`
 }
 
 /**
  * L1 semantic bucket cache key.
  * Example: search_cache:web:bucket_42:dynamic:ae3f2b
  */
-function semanticCacheKey(
-  channel: Channel,
-  bucket: string,
-  availabilityMode: string,
-  allergenHash: string,
-  productType?: string,
-  categoryHandle?: string,
-  tags?: string[]
-): string {
-  const tagsStr = tags && tags.length > 0 ? [...tags].sort((a, b) => a.localeCompare(b)).join(",") : "none"
+function semanticCacheKey(bucket: string, ctx: CacheFilterContext): string {
+  const tagsStr = ctx.tags && ctx.tags.length > 0 ? [...ctx.tags].sort((a, b) => a.localeCompare(b)).join(",") : "none"
   return [
     "search_cache",
-    channel,
+    ctx.channel,
     bucket,
-    availabilityMode || "all",
-    allergenHash || "none",
-    productType || "all",
-    categoryHandle || "all",
+    ctx.availabilityMode || "all",
+    ctx.allergenHash || "none",
+    ctx.productType || "all",
+    ctx.categoryHandle || "all",
     tagsStr,
   ].join(":")
 }
@@ -90,16 +86,11 @@ function semanticCacheKey(
 
 export async function getExactQueryCache(
   query: string,
-  channel: Channel,
-  availabilityMode: string,
-  allergenHash: string,
-  productType?: string,
-  categoryHandle?: string,
-  tags?: string[]
+  ctx: CacheFilterContext,
 ): Promise<{ hit: true; results: ProductDTO[]; cachedAt: string } | { hit: false }> {
   try {
     const redisClient = await getRedisClient()
-    const key = exactCacheKey(query, channel, availabilityMode, allergenHash, productType, categoryHandle, tags)
+    const key = exactCacheKey(query, ctx)
     const cached = await redisClient.get(key)
     if (cached) {
       const parsed = JSON.parse(cached) as { results: ProductDTO[]; cachedAt: string }
@@ -114,18 +105,13 @@ export async function getExactQueryCache(
 
 export async function setExactQueryCache(
   query: string,
-  channel: Channel,
-  availabilityMode: string,
-  allergenHash: string,
+  ctx: CacheFilterContext,
   results: ProductDTO[],
-  productType?: string,
-  categoryHandle?: string,
-  tags?: string[]
 ): Promise<void> {
   try {
     const redisClient = await getRedisClient()
     const ttl = Number.parseInt(process.env.QUERY_CACHE_EXACT_TTL_SECONDS || "300", 10)
-    const key = exactCacheKey(query, channel, availabilityMode, allergenHash, productType, categoryHandle, tags)
+    const key = exactCacheKey(query, ctx)
     const payload = { results, cachedAt: new Date().toISOString() }
     await redisClient.setEx(key, ttl, JSON.stringify(payload))
   } catch (error) {
@@ -139,18 +125,13 @@ export async function setExactQueryCache(
  * Get cached search results if available.
  */
 export async function getQueryCache(
-  channel: Channel,
   embedding: number[],
-  availabilityMode?: string,
-  allergenHash?: string,
-  productType?: string,
-  categoryHandle?: string,
-  tags?: string[]
+  ctx: CacheFilterContext,
 ): Promise<{ hit: true; results: ProductDTO[]; cachedAt: string } | { hit: false }> {
   try {
     const redisClient = await getRedisClient()
     const bucket = embeddingToBucket(embedding)
-    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none", productType, categoryHandle, tags)
+    const key = semanticCacheKey(bucket, ctx)
 
     const cached = await redisClient.get(key)
     if (cached) {
@@ -169,20 +150,15 @@ export async function getQueryCache(
  * Store search results in L1 semantic cache.
  */
 export async function setQueryCache(
-  channel: Channel,
   embedding: number[],
   results: ProductDTO[],
-  availabilityMode?: string,
-  allergenHash?: string,
+  ctx: CacheFilterContext,
   ttlSeconds = Number.parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10),
-  productType?: string,
-  categoryHandle?: string,
-  tags?: string[]
 ): Promise<void> {
   try {
     const redisClient = await getRedisClient()
     const bucket = embeddingToBucket(embedding)
-    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none", productType, categoryHandle, tags)
+    const key = semanticCacheKey(bucket, ctx)
     const now = new Date()
 
     const entry: QueryCacheEntry = {
@@ -206,18 +182,13 @@ export async function setQueryCache(
  * Uses remaining TTL from expiresAt to avoid resetting TTL to wrong value.
  */
 export async function incrementQueryCacheHits(
-  channel: Channel,
   embedding: number[],
-  availabilityMode?: string,
-  allergenHash?: string,
-  productType?: string,
-  categoryHandle?: string,
-  tags?: string[]
+  ctx: CacheFilterContext,
 ): Promise<void> {
   try {
     const redisClient = await getRedisClient()
     const bucket = embeddingToBucket(embedding)
-    const key = semanticCacheKey(channel, bucket, availabilityMode || "all", allergenHash || "none", productType, categoryHandle, tags)
+    const key = semanticCacheKey(bucket, ctx)
 
     const cached = await redisClient.get(key)
     if (!cached) return

@@ -422,6 +422,135 @@ async function startServices(
   await Promise.all(procs)
 }
 
+// ── Force stop ───────────────────────────────────────────────────────────────
+
+async function forceStop(serviceKey: string | undefined, stopAll: boolean): Promise<void> {
+  const { SERVICES } = await import("../services.js")
+  const targets = stopAll
+    ? Object.values(SERVICES)
+    : serviceKey ? [SERVICES[serviceKey]].filter(Boolean) : []
+
+  const ports = targets.map((s) => s.port)
+  console.log(chalk.bold.yellow(`\n  ⚡ Force-killing processes on ports: ${ports.join(", ")}\n`))
+
+  for (const port of ports) {
+    forceKillPort(port)
+  }
+
+  // Also clean up PID file
+  if (stopAll) {
+    removePidFile()
+  } else if (serviceKey) {
+    const entries = readPidEntries().filter((e) => e.key !== serviceKey)
+    entries.length > 0 ? writePidEntries(entries) : removePidFile()
+  }
+
+  // Docker too when stopping all — use 'stop' to preserve volumes
+  if (stopAll) {
+    await stopDockerContainers()
+  }
+
+  console.log(chalk.green("\n  Done.\n"))
+}
+
+function forceKillPort(port: number): void {
+  try {
+    const { stdout } = execaSync("lsof", ["-ti", `:${port}`], { reject: false })
+    const pids = (stdout ?? "").toString().trim().split("\n").filter(Boolean)
+    for (const pid of pids) {
+      try { process.kill(Number(pid), "SIGKILL") } catch { /* already gone */ }
+    }
+    if (pids.length > 0) {
+      console.log(chalk.green(`    ✓ Port ${port}: killed ${pids.length} process(es)`))
+    } else {
+      console.log(chalk.gray(`    · Port ${port}: nothing running`))
+    }
+  } catch {
+    console.log(chalk.gray(`    · Port ${port}: nothing running`))
+  }
+}
+
+// ── Graceful stop ────────────────────────────────────────────────────────────
+
+async function gracefulStop(serviceKey: string | undefined, stopAll: boolean): Promise<void> {
+  const killed = killTrackedServices(stopAll ? undefined : serviceKey)
+  if (killed > 0) {
+    const spinner = ora({ text: `Stopping ${killed} process(es)…`, indent: 2 }).start()
+    await new Promise((r) => setTimeout(r, 1500))
+    spinner.succeed(chalk.green(stopAll ? "All service processes stopped" : `${serviceKey} stopped`))
+  } else {
+    // Fallback: pattern-kill
+    const spinner = ora({ text: "No PID file — stopping via pattern match…", indent: 2 }).start()
+    if (stopAll) {
+      patternKillAll()
+    } else if (serviceKey) {
+      try { execaSync("pkill", ["-f", serviceKey], { reject: false }) } catch { /* noop */ }
+    }
+    await new Promise((r) => setTimeout(r, 800))
+    spinner.succeed(chalk.green("Done"))
+  }
+
+  // Only stop Docker when stopping everything — 'stop' preserves volumes
+  if (stopAll) {
+    await stopDockerContainers()
+  }
+}
+
+// ── Docker stop ──────────────────────────────────────────────────────────────
+
+async function stopDockerContainers(): Promise<void> {
+  const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
+  try {
+    await execa("docker", ["compose", "stop"], { cwd: ROOT })
+    dockerSpinner.succeed(chalk.green("Docker containers stopped (volumes preserved)"))
+  } catch {
+    dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
+    process.exit(1)
+  }
+}
+
+// ── Restart helper ───────────────────────────────────────────────────────────
+
+async function restartTarget(target: string): Promise<void> {
+  const killed = killTrackedServices(target === "all" ? undefined : target)
+  if (killed > 0) {
+    const spinner = ora({ text: `Stopping ${killed} process(es)…`, indent: 2 }).start()
+    await new Promise((r) => setTimeout(r, 1500))
+    spinner.succeed(chalk.green(`Stopped ${killed} process(es)`))
+  } else {
+    if (target === "all") {
+      patternKillAll()
+    } else {
+      try { execaSync("pkill", ["-f", target], { reject: false }) } catch { /* noop */ }
+    }
+    await new Promise((r) => setTimeout(r, 800))
+  }
+}
+
+// ── Build/test runner ────────────────────────────────────────────────────────
+
+async function runPnpmCommand(rawFilter: string | undefined, command: "build" | "test"): Promise<void> {
+  const filter = rawFilter ? resolveFilter(rawFilter) : undefined
+  const args = filter
+    ? ["--filter", filter, command]
+    : ["turbo", command]
+  const label = filter ? `pnpm --filter ${filter} ${command}` : `pnpm turbo ${command}`
+
+  const action = command === "build" ? "Building" : "Running tests"
+  console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${action}…\n`))
+  console.log(chalk.gray(`    ${label}\n`))
+
+  try {
+    await execa("pnpm", args, { cwd: ROOT, stdio: "inherit" })
+    const success = command === "build" ? "Build complete" : "Tests passed"
+    console.log(chalk.green(`\n  ${success}\n`))
+  } catch {
+    const failure = command === "build" ? "Build failed" : "Tests failed"
+    console.error(chalk.red(`\n  ${failure}\n`))
+    process.exit(1)
+  }
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 export function registerDevCommands(dev: Command) {
@@ -454,86 +583,10 @@ export function registerDevCommands(dev: Command) {
     .action(async (serviceKey: string | undefined, opts: { force?: boolean }) => {
       const stopAll = !serviceKey || serviceKey === "all"
 
-      // ── Force mode: kill anything on the known ports ──────────────────────
       if (opts.force) {
-        const { SERVICES } = await import("../services.js")
-        const targets = stopAll
-          ? Object.values(SERVICES)
-          : serviceKey ? [SERVICES[serviceKey]].filter(Boolean) : []
-
-        const ports = targets.map((s) => s.port)
-        console.log(chalk.bold.yellow(`\n  ⚡ Force-killing processes on ports: ${ports.join(", ")}\n`))
-
-        for (const port of ports) {
-          try {
-            const { stdout } = execaSync("lsof", ["-ti", `:${port}`], { reject: false })
-            const pids = (stdout ?? "").toString().trim().split("\n").filter(Boolean)
-            for (const pid of pids) {
-              try { process.kill(Number(pid), "SIGKILL") } catch { /* already gone */ }
-            }
-            if (pids.length > 0) {
-              console.log(chalk.green(`    ✓ Port ${port}: killed ${pids.length} process(es)`))
-            } else {
-              console.log(chalk.gray(`    · Port ${port}: nothing running`))
-            }
-          } catch {
-            console.log(chalk.gray(`    · Port ${port}: nothing running`))
-          }
-        }
-
-        // Also clean up PID file
-        if (stopAll) {
-          removePidFile()
-        } else if (serviceKey) {
-          const entries = readPidEntries().filter((e) => e.key !== serviceKey)
-          entries.length > 0 ? writePidEntries(entries) : removePidFile()
-        }
-
-        // Docker too when stopping all — use 'stop' to preserve volumes
-        if (stopAll) {
-          const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
-          try {
-            await execa("docker", ["compose", "stop"], { cwd: ROOT })
-            dockerSpinner.succeed(chalk.green("Docker containers stopped (volumes preserved)"))
-          } catch {
-            dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
-            process.exit(1)
-          }
-        }
-
-        console.log(chalk.green("\n  Done.\n"))
-        return
-      }
-
-      // ── Normal (graceful) stop ────────────────────────────────────────────
-      // Kill tracked processes
-      const killed = killTrackedServices(stopAll ? undefined : serviceKey)
-      if (killed > 0) {
-        const spinner = ora({ text: `Stopping ${killed} process(es)…`, indent: 2 }).start()
-        await new Promise((r) => setTimeout(r, 1500))
-        spinner.succeed(chalk.green(stopAll ? "All service processes stopped" : `${serviceKey} stopped`))
+        await forceStop(serviceKey, stopAll)
       } else {
-        // Fallback: pattern-kill
-        const spinner = ora({ text: "No PID file — stopping via pattern match…", indent: 2 }).start()
-        if (stopAll) {
-          patternKillAll()
-        } else if (serviceKey) {
-          try { execaSync("pkill", ["-f", serviceKey], { reject: false }) } catch { /* noop */ }
-        }
-        await new Promise((r) => setTimeout(r, 800))
-        spinner.succeed(chalk.green("Done"))
-      }
-
-      // Only stop Docker when stopping everything — 'stop' preserves volumes
-      if (stopAll) {
-        const dockerSpinner = ora({ text: "Stopping Docker containers…", indent: 2 }).start()
-        try {
-          await execa("docker", ["compose", "stop"], { cwd: ROOT })
-          dockerSpinner.succeed(chalk.green("Docker containers stopped (volumes preserved)"))
-        } catch {
-          dockerSpinner.fail(chalk.red("Failed to stop Docker containers"))
-          process.exit(1)
-        }
+        await gracefulStop(serviceKey, stopAll)
       }
     })
 
@@ -546,20 +599,7 @@ export function registerDevCommands(dev: Command) {
       const target = serviceKey ?? "all"
       console.log(chalk.bold.blue(`\n  ♻️  Restarting ${target}…\n`))
 
-      // Kill target processes
-      const killed = killTrackedServices(target === "all" ? undefined : target)
-      if (killed > 0) {
-        const spinner = ora({ text: `Stopping ${killed} process(es)…`, indent: 2 }).start()
-        await new Promise((r) => setTimeout(r, 1500))
-        spinner.succeed(chalk.green(`Stopped ${killed} process(es)`))
-      } else {
-        if (target === "all") {
-          patternKillAll()
-        } else {
-          try { execaSync("pkill", ["-f", target], { reject: false }) } catch { /* noop */ }
-        }
-        await new Promise((r) => setTimeout(r, 800))
-      }
+      await restartTarget(target)
 
       // Respawn — Docker is already running
       await startServices(target === "all" ? "all" : target, { skipDocker: true, wait: opts.wait })
@@ -569,45 +609,11 @@ export function registerDevCommands(dev: Command) {
   dev
     .command("build [filter]")
     .description("Build packages (runs turbo build)")
-    .action(async (rawFilter: string | undefined) => {
-      const filter = rawFilter ? resolveFilter(rawFilter) : undefined
-      const args = filter
-        ? ["--filter", filter, "build"]
-        : ["turbo", "build"]
-      const label = filter ? `pnpm --filter ${filter} build` : "pnpm turbo build"
-
-      console.log(chalk.bold(`\n  ${chalk.cyan("→")} Building…\n`))
-      console.log(chalk.gray(`    ${label}\n`))
-
-      try {
-        await execa("pnpm", args, { cwd: ROOT, stdio: "inherit" })
-        console.log(chalk.green("\n  Build complete\n"))
-      } catch {
-        console.error(chalk.red("\n  Build failed\n"))
-        process.exit(1)
-      }
-    })
+    .action((rawFilter: string | undefined) => runPnpmCommand(rawFilter, "build"))
 
   // ── ibx dev test [filter] ─────────────────────────────────────────────────
   dev
     .command("test [filter]")
     .description("Run tests (runs vitest via turbo)")
-    .action(async (rawFilter: string | undefined) => {
-      const filter = rawFilter ? resolveFilter(rawFilter) : undefined
-      const args = filter
-        ? ["--filter", filter, "test"]
-        : ["turbo", "test"]
-      const label = filter ? `pnpm --filter ${filter} test` : "pnpm turbo test"
-
-      console.log(chalk.bold(`\n  ${chalk.cyan("→")} Running tests…\n`))
-      console.log(chalk.gray(`    ${label}\n`))
-
-      try {
-        await execa("pnpm", args, { cwd: ROOT, stdio: "inherit" })
-        console.log(chalk.green("\n  Tests passed\n"))
-      } catch {
-        console.error(chalk.red("\n  Tests failed\n"))
-        process.exit(1)
-      }
-    })
+    .action((rawFilter: string | undefined) => runPnpmCommand(rawFilter, "test"))
 }

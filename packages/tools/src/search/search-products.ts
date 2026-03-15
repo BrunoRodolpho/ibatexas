@@ -34,6 +34,7 @@ import {
   logQuery,
   allergenFilterHash,
   embeddingToBucket,
+  type CacheFilterContext,
 } from "../cache/query-cache.js"
 import { typesenseDocToDTO } from "../mappers/product-mapper.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
@@ -126,22 +127,24 @@ interface TypesenseResult {
   facetCounts?: Record<string, Array<{ value: string; count: number }>>
 }
 
+interface TypesenseSearchOptions {
+  query: string
+  embedding: number[]
+  limit: number
+  filterInStock?: boolean
+  productType?: "food" | "frozen" | "merchandise"
+  categoryHandle?: string
+  tags?: string[]
+  sort?: string
+  offset?: number
+}
+
 /**
  * Execute Typesense hybrid search (vector + keyword).
  * Uses multi_search (POST) to avoid query-string length limits with large embeddings.
- * @param filterInStock — when false, omits `inStock:true` (diagnostic pass only)
  */
-async function executeTypesenseSearch(
-  query: string,
-  embedding: number[],
-  limit: number,
-  filterInStock = true,
-  productType?: "food" | "frozen" | "merchandise",
-  categoryHandle?: string,
-  tags?: string[],
-  sort?: string,
-  offset?: number
-): Promise<TypesenseResult> {
+async function executeTypesenseSearch(opts: TypesenseSearchOptions): Promise<TypesenseResult> {
+  const { query, embedding, limit, filterInStock = true, productType, categoryHandle, tags, sort, offset } = opts
   const typesenseClient = getTypesenseClient()
 
   const filterParts = ["status:published"]
@@ -245,7 +248,7 @@ async function diagnoseNoResults(
   if (rawDocs.length === 0) {
     // Typesense found nothing with inStock:true — check if OOS products exist
     try {
-      const diagResult = await executeTypesenseSearch(query, embedding, limit, false, filters.productType, filters.categoryHandle, filters.tags)
+      const diagResult = await executeTypesenseSearch({ query, embedding, limit, filterInStock: false, productType: filters.productType, categoryHandle: filters.categoryHandle, tags: filters.tags })
       if (diagResult.hits.length > 0) {
         return "out_of_stock"
       }
@@ -292,26 +295,27 @@ interface SingleQueryResult {
   noResultsReason?: NoResultsReason
 }
 
+interface SingleQuerySearchOptions {
+  query: string
+  filters: FilterOptions
+  userType: "guest" | "customer" | "staff"
+  sessionId: string
+  limit: number
+  cacheCtx: CacheFilterContext
+  cacheTtl: number
+  facetCountsRef?: { value?: Record<string, Array<{ value: string; count: number }>> }
+}
+
 /**
  * Run the full L0→embedding→L1→Typesense→filter→cache pipeline for a single query.
  * Does NOT publish NATS events (caller handles that after merging).
  */
-async function singleQuerySearch(
-  query: string,
-  filters: FilterOptions,
-  channel: Channel,
-  userType: "guest" | "customer" | "staff",
-  sessionId: string,
-  limit: number,
-  availabilityMode: "dynamic" | "all",
-  allergenHash: string,
-  cacheTtl: number,
-  facetCountsRef?: { value?: Record<string, Array<{ value: string; count: number }>> }
-): Promise<SingleQueryResult> {
+async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<SingleQueryResult> {
+  const { query, filters, userType, sessionId, limit, cacheCtx, cacheTtl, facetCountsRef } = opts
   const isWildcard = query === "*"
 
   // ── L0: Exact cache ──────────────────────────────────────────────────────
-  const l0 = await getExactQueryCache(query, channel, availabilityMode, allergenHash, filters.productType, filters.categoryHandle, filters.tags)
+  const l0 = await getExactQueryCache(query, cacheCtx)
   if (l0.hit) {
     return {
       query,
@@ -339,11 +343,11 @@ async function singleQuerySearch(
 
   // ── L1: Semantic bucket cache ────────────────────────────────────────────
   if (queryEmbedding.length > 0) {
-    const l1 = await getQueryCache(channel, queryEmbedding, availabilityMode, allergenHash, filters.productType, filters.categoryHandle, filters.tags)
+    const l1 = await getQueryCache(queryEmbedding, cacheCtx)
     if (l1.hit) {
       try {
-        await incrementQueryCacheHits(channel, queryEmbedding, availabilityMode, allergenHash, filters.productType, filters.categoryHandle, filters.tags)
-        await setExactQueryCache(query, channel, availabilityMode, allergenHash, l1.results, filters.productType, filters.categoryHandle, filters.tags)
+        await incrementQueryCacheHits(queryEmbedding, cacheCtx)
+        await setExactQueryCache(query, cacheCtx, l1.results)
       } catch (error) {
         console.warn("[Search] Cache backfill failed (non-critical):", error)
       }
@@ -362,7 +366,7 @@ async function singleQuerySearch(
   // ── L2: Typesense search ─────────────────────────────────────────────────
   let tsResult: TypesenseResult = { hits: [], totalFound: 0, scores: {} }
   try {
-    tsResult = await executeTypesenseSearch(query, queryEmbedding, limit, true, filters.productType, filters.categoryHandle, filters.tags, filters.sort, filters.offset)
+    tsResult = await executeTypesenseSearch({ query, embedding: queryEmbedding, limit, filterInStock: true, productType: filters.productType, categoryHandle: filters.categoryHandle, tags: filters.tags, sort: filters.sort, offset: filters.offset })
     if (facetCountsRef && tsResult.facetCounts) {
       facetCountsRef.value = tsResult.facetCounts
     }
@@ -387,9 +391,9 @@ async function singleQuerySearch(
   // ── Cache results ────────────────────────────────────────────────────────
   try {
     if (queryEmbedding.length > 0) {
-      await setQueryCache(channel, queryEmbedding, products, availabilityMode, allergenHash, cacheTtl, filters.productType, filters.categoryHandle, filters.tags)
+      await setQueryCache(queryEmbedding, products, cacheCtx, cacheTtl)
     }
-    await setExactQueryCache(query, channel, availabilityMode, allergenHash, products, filters.productType, filters.categoryHandle, filters.tags)
+    await setExactQueryCache(query, cacheCtx, products)
   } catch (error) {
     console.warn("[Search] Cache write failed (non-critical):", error)
   }
@@ -397,7 +401,7 @@ async function singleQuerySearch(
   // ── Log query ────────────────────────────────────────────────────────────
   try {
     const bucket = queryEmbedding.length > 0 ? embeddingToBucket(queryEmbedding) : "no-embedding"
-    await logQuery(sessionId, query, bucket, products.length, channel, userType)
+    await logQuery(sessionId, query, bucket, products.length, cacheCtx.channel, userType)
   } catch (error) {
     console.warn("[Search] Query log failed (non-critical):", error)
   }
@@ -481,6 +485,15 @@ export async function searchProducts(
   const staticTtl = Number.parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10)
   const cacheTtl = availableNow ? dynamicTtl : staticTtl
 
+  const cacheCtx: CacheFilterContext = {
+    channel,
+    availabilityMode,
+    allergenHash,
+    productType: validated.productType,
+    categoryHandle: validated.categoryHandle,
+    tags: validated.tags,
+  }
+
   const filters: FilterOptions = {
     tags: validated.tags,
     availableNow,
@@ -506,7 +519,7 @@ export async function searchProducts(
   const facetCountsRef: { value?: Record<string, Array<{ value: string; count: number }>> } = {}
   const queryResults = await Promise.all(
     queryList.map((q) =>
-      singleQuerySearch(q, filters, channel, userType, sessionId, limit, availabilityMode, allergenHash, cacheTtl, facetCountsRef)
+      singleQuerySearch({ query: q, filters, userType, sessionId, limit, cacheCtx, cacheTtl, facetCountsRef })
     )
   )
 
