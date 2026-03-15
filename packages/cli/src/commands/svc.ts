@@ -144,8 +144,8 @@ async function detailPostgres(databaseUrl: string): Promise<void> {
 
     const latencyMs = Date.now() - start
     const version: string = versionRes.rows[0].version
-    const activeConns: number = parseInt(connRes.rows[0].count, 10)
-    const maxConns: number = parseInt(maxRes.rows[0].max_connections, 10)
+    const activeConns: number = Number.parseInt(connRes.rows[0].count, 10)
+    const maxConns: number = Number.parseInt(maxRes.rows[0].max_connections, 10)
 
     const url = new URL(databaseUrl)
     const dbName = url.pathname.slice(1)
@@ -197,12 +197,12 @@ async function detailRedis(redisUrl: string): Promise<void> {
 
     const latencyMs = Date.now() - start
 
-    const versionMatch = result.match(/redis_version:(.+)/)
-    const uptimeMatch = result.match(/uptime_in_seconds:(.+)/)
-    const clientsMatch = result.match(/connected_clients:(.+)/)
+    const versionMatch = /redis_version:(.+)/.exec(result)
+    const uptimeMatch = /uptime_in_seconds:(.+)/.exec(result)
+    const clientsMatch = /connected_clients:(.+)/.exec(result)
     version = versionMatch?.[1]?.trim() ?? "unknown"
-    uptimeSeconds = parseInt(uptimeMatch?.[1]?.trim() ?? "0", 10)
-    connectedClients = parseInt(clientsMatch?.[1]?.trim() ?? "0", 10)
+    uptimeSeconds = Number.parseInt(uptimeMatch?.[1]?.trim() ?? "0", 10)
+    connectedClients = Number.parseInt(clientsMatch?.[1]?.trim() ?? "0", 10)
 
     const url = new URL(redisUrl)
     const host = `${url.hostname}:${url.port || 6379}`
@@ -474,12 +474,9 @@ async function showStatus(): Promise<void> {
   const statusW = 10
 
   console.log(
-    "  " + chalk.bold("Name".padEnd(nameW)) +
-    chalk.bold("Address".padEnd(addrW)) +
-    chalk.bold("Status".padEnd(statusW)) +
-    chalk.bold("Latency")
+    `  ${chalk.bold("Name".padEnd(nameW))}${chalk.bold("Address".padEnd(addrW))}${chalk.bold("Status".padEnd(statusW))}${chalk.bold("Latency")}`
   )
-  console.log("  " + "─".repeat(nameW + addrW + statusW + 10))
+  console.log(`  ${"─".repeat(nameW + addrW + statusW + 10)}`)
 
   console.log(chalk.dim("  ─ Infrastructure ─"))
   for (const { name, address, result } of infraResults) {

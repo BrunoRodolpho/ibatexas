@@ -75,7 +75,7 @@ function enrichProperties(properties?: Record<string, unknown>): Record<string, 
     sessionId: sessionId ?? 'unknown',
     ibx_session_id: sessionId ?? 'unknown',
     timestamp: new Date().toISOString(),
-    url: typeof window !== 'undefined' ? window.location.pathname : undefined,
+    url: typeof window !== 'undefined' ? globalThis.location.pathname : undefined,
   }
 }
 
@@ -142,7 +142,7 @@ export function track(
  */
 export function trackScrollDepth(productId: string): () => void {
   // Short page guard: if content fits in viewport, fire 100% immediately
-  if (document.body.scrollHeight <= window.innerHeight) {
+  if (document.body.scrollHeight <= globalThis.innerHeight) {
     track('pdp_scroll_depth', { productId, depth: 100 })
     return () => {}
   }
@@ -152,7 +152,7 @@ export function trackScrollDepth(productId: string): () => void {
 
   const handleScroll = () => {
     const scrollPercent = Math.round(
-      ((window.scrollY + window.innerHeight) / document.body.scrollHeight) * 100,
+      ((globalThis.scrollY + globalThis.innerHeight) / document.body.scrollHeight) * 100,
     )
     for (const t of thresholds) {
       if (scrollPercent < t || fired.has(t)) continue
@@ -161,8 +161,8 @@ export function trackScrollDepth(productId: string): () => void {
     }
   }
 
-  window.addEventListener('scroll', handleScroll, { passive: true })
-  return () => window.removeEventListener('scroll', handleScroll)
+  globalThis.addEventListener('scroll', handleScroll, { passive: true })
+  return () => globalThis.removeEventListener('scroll', handleScroll)
 }
 
 /**

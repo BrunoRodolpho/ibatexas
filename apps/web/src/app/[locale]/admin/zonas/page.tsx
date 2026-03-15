@@ -153,7 +153,7 @@ export default function ZonasPage() {
                 type="number"
                 step="0.01"
                 value={form.feeInCentavos / 100}
-                onChange={(e) => setForm((f) => ({ ...f, feeInCentavos: Math.round(parseFloat(e.target.value || '0') * 100) }))}
+                onChange={(e) => setForm((f) => ({ ...f, feeInCentavos: Math.round(Number.parseFloat(e.target.value || '0') * 100) }))}
                 className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
               />
             </div>
@@ -162,7 +162,7 @@ export default function ZonasPage() {
               <input
                 type="number"
                 value={form.estimatedMinutes}
-                onChange={(e) => setForm((f) => ({ ...f, estimatedMinutes: parseInt(e.target.value || '60', 10) }))}
+                onChange={(e) => setForm((f) => ({ ...f, estimatedMinutes: Number.parseInt(e.target.value || '60', 10) }))}
                 className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
               />
             </div>

@@ -58,7 +58,7 @@ export async function discoverScenarios(): Promise<{ name: string; path: string;
 
   try {
     const files = await readdir(SCENARIOS_DIR)
-    for (const file of files.sort()) {
+    for (const file of files.sort((a, b) => a.localeCompare(b))) {
       if (!file.endsWith(".yml") && !file.endsWith(".yaml")) continue
       const filePath = join(SCENARIOS_DIR, file)
       try {

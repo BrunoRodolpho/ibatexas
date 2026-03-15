@@ -108,7 +108,7 @@ export function registerMatrixCommands(group: Command): void {
       const header = `  ${"#".padStart(4)}  ${"Binary".padEnd(n + 2)}  Active Variables`
       console.log(chalk.bold(`\n  ${def.name}: ${states.length} state(s)\n`))
       console.log(chalk.bold(header))
-      console.log("  " + "─".repeat(4 + 2 + n + 2 + 2 + 30))
+      console.log(`  ${"─".repeat(4 + 2 + n + 2 + 2 + 30)}`)
 
       for (const state of states) {
         const binaryStr = state.stateIndex.toString(2).padStart(n, "0")
@@ -124,7 +124,7 @@ export function registerMatrixCommands(group: Command): void {
 // ── Helper ───────────────────────────────────────────────────────────────────
 
 function parseIntOption(value: string): number {
-  const parsed = parseInt(value, 10)
+  const parsed = Number.parseInt(value, 10)
   if (isNaN(parsed)) throw new Error(`Expected a number, got "${value}"`)
   return parsed
 }

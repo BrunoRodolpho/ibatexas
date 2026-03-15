@@ -6,8 +6,7 @@
 // - History with messages
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { Channel } from "@ibatexas/types"
-import type { AgentContext, StreamChunk } from "@ibatexas/types"
+import { Channel, type AgentContext, type StreamChunk } from "@ibatexas/types"
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 

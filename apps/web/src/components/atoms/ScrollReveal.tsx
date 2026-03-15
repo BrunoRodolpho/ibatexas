@@ -32,7 +32,7 @@ export function ScrollReveal({
     if (!el) return
 
     // Respect reduced-motion
-    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const prefersReduced = globalThis.matchMedia('(prefers-reduced-motion: reduce)').matches
     if (prefersReduced) {
       setIsVisible(true)
       return

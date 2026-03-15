@@ -2,8 +2,7 @@
 // GET /api/products, GET /api/products/:id, GET /api/categories
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Channel, AvailabilityWindow, ProductType } from "@ibatexas/types";
-import type { ProductDTO } from "@ibatexas/types";
+import { Channel, AvailabilityWindow, ProductType, type ProductDTO } from "@ibatexas/types";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 

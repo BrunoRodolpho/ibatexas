@@ -3,8 +3,7 @@
 // Auth: customer
 
 import { prisma } from "@ibatexas/domain"
-import type { CreateReservationInput, CreateReservationOutput } from "@ibatexas/types"
-import { CreateReservationInputSchema, TableLocation, ReservationStatus } from "@ibatexas/types"
+import { CreateReservationInputSchema, TableLocation, ReservationStatus, type CreateReservationInput, type CreateReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { assignTables, buildDateTime, formatDateBR, locationLabel } from "./utils.js"
 import { sendReservationConfirmation } from "./notifications.js"

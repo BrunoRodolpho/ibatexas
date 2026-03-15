@@ -147,7 +147,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
 
       // Block brute-force: reject after 5 failed attempts per phone per hour
       const currentFails = await redis.get(failKey);
-      if (currentFails && parseInt(currentFails, 10) >= 5) {
+      if (currentFails && Number.parseInt(currentFails, 10) >= 5) {
         server.log.warn(
           { action: "otp_brute_force_blocked", phone_hash: hash, ip },
           "OTP verify blocked — too many failures",

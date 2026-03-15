@@ -15,9 +15,9 @@ import { Channel, type AgentContext, type AgentMessage, type StreamChunk } from 
 import { SYSTEM_PROMPT } from "./system-prompt.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 
-const MAX_TURNS = parseInt(process.env.AGENT_MAX_TURNS || "10", 10)
-const MAX_TOOL_RETRIES = parseInt(process.env.AGENT_MAX_TOOL_RETRIES || "3", 10)
-const AGENT_MAX_TOKENS = parseInt(process.env.AGENT_MAX_TOKENS || "2048", 10)
+const MAX_TURNS = Number.parseInt(process.env.AGENT_MAX_TURNS || "10", 10)
+const MAX_TOOL_RETRIES = Number.parseInt(process.env.AGENT_MAX_TOOL_RETRIES || "3", 10)
+const AGENT_MAX_TOKENS = Number.parseInt(process.env.AGENT_MAX_TOKENS || "2048", 10)
 
 // ── Anthropic client (singleton) ──────────────────────────────────────────────
 

@@ -256,7 +256,7 @@ function printSummary(services: ServiceDef[], infra: InfraEntry[]): void {
   const border = "─".repeat(width)
 
   const line = (content: string) => {
-    const visible = content.replace(/\x1b\[[0-9;]*m/g, "")
+    const visible = content.replaceAll(/\x1b\[[0-9;]*m/g, "")
     const pad = Math.max(0, width - visible.length)
     console.log(`  │${content}${" ".repeat(pad)}│`)
   }

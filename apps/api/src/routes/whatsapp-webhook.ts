@@ -124,7 +124,7 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
 
       // ── 2. Guard empty messages ─────────────────────────────────────────────
       const messageBody = body.Body?.trim() || "";
-      const numMedia = parseInt(body.NumMedia || "0", 10);
+      const numMedia = Number.parseInt(body.NumMedia || "0", 10);
 
       if (!messageBody && numMedia === 0) {
         return reply.code(200).type("text/xml").send("<Response/>");

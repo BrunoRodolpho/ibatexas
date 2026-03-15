@@ -51,10 +51,10 @@ function isAvailableNow(availabilityWindow: string): boolean {
   const brazilTime = new Date(now.toLocaleString("en-US", { timeZone: tz }))
   const hour = brazilTime.getHours()
 
-  const lunchStart = parseInt(process.env.RESTAURANT_LUNCH_START_HOUR || "11", 10)
-  const lunchEnd = parseInt(process.env.RESTAURANT_LUNCH_END_HOUR || "15", 10)
-  const dinnerStart = parseInt(process.env.RESTAURANT_DINNER_START_HOUR || "18", 10)
-  const dinnerEnd = parseInt(process.env.RESTAURANT_DINNER_END_HOUR || "23", 10)
+  const lunchStart = Number.parseInt(process.env.RESTAURANT_LUNCH_START_HOUR || "11", 10)
+  const lunchEnd = Number.parseInt(process.env.RESTAURANT_LUNCH_END_HOUR || "15", 10)
+  const dinnerStart = Number.parseInt(process.env.RESTAURANT_DINNER_START_HOUR || "18", 10)
+  const dinnerEnd = Number.parseInt(process.env.RESTAURANT_DINNER_END_HOUR || "23", 10)
 
   switch (availabilityWindow) {
     case AvailabilityWindow.ALMOCO:
@@ -477,8 +477,8 @@ export async function searchProducts(
   const availabilityMode = availableNow ? "dynamic" : "all"
   const allergenHash = allergenFilterHash(validated.excludeAllergens)
 
-  const dynamicTtl = parseInt(process.env.QUERY_CACHE_DYNAMIC_TTL_SECONDS || "600", 10)
-  const staticTtl = parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10)
+  const dynamicTtl = Number.parseInt(process.env.QUERY_CACHE_DYNAMIC_TTL_SECONDS || "600", 10)
+  const staticTtl = Number.parseInt(process.env.QUERY_CACHE_TTL_SECONDS || "3600", 10)
   const cacheTtl = availableNow ? dynamicTtl : staticTtl
 
   const filters: FilterOptions = {

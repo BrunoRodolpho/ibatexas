@@ -64,7 +64,7 @@ describe("Query Cache", () => {
     it("bucket number is in range 0–999 (fixed 1000 bucket space)", () => {
       const embedding = Array(1536).fill(0.7)
       const bucket = embeddingToBucket(embedding)
-      const n = parseInt(bucket.replace("bucket_", ""), 10)
+      const n = Number.parseInt(bucket.replace("bucket_", ""), 10)
 
       expect(n).toBeGreaterThanOrEqual(0)
       expect(n).toBeLessThan(1000)
@@ -72,8 +72,8 @@ describe("Query Cache", () => {
 
     it("opposite-direction embeddings land in different buckets (sign-aware)", () => {
       // All positive vs all negative — semantically opposite queries
-      const positive = Array(1536).fill(1.0)
-      const negative = Array(1536).fill(-1.0)
+      const positive = Array(1536).fill(1)
+      const negative = Array(1536).fill(-1)
 
       expect(embeddingToBucket(positive)).not.toBe(embeddingToBucket(negative))
     })

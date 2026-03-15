@@ -2,9 +2,8 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useTranslations } from "next-intl"
-import { useChat } from '@/domains/chat'
+import { useChat, useChatStore } from '@/domains/chat'
 import { useCartStore } from '@/domains/cart'
-import { useChatStore } from '@/domains/chat'
 import { useSessionStore } from '@/domains/session'
 import { useUIStore } from '@/domains/ui'
 
@@ -28,9 +27,9 @@ export function ChatWidget() {
   const lastScrollY = useRef(0)
 
   const handleScroll = useCallback(() => {
-    const currentY = window.scrollY
+    const currentY = globalThis.scrollY
     // Hide on hero section (desktop) — first 600px
-    const isInHero = currentY < 600 && window.innerWidth >= 1024
+    const isInHero = currentY < 600 && globalThis.innerWidth >= 1024
     if (isInHero) {
       setFabVisible(false)
     } else if (currentY < lastScrollY.current) {
@@ -44,8 +43,8 @@ export function ChatWidget() {
   }, [])
 
   useEffect(() => {
-    window.addEventListener('scroll', handleScroll, { passive: true })
-    return () => window.removeEventListener('scroll', handleScroll)
+    globalThis.addEventListener('scroll', handleScroll, { passive: true })
+    return () => globalThis.removeEventListener('scroll', handleScroll)
   }, [handleScroll])
 
   useEffect(() => {

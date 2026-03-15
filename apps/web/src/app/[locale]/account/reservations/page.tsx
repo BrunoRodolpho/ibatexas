@@ -214,7 +214,7 @@ export default function ReservationsPage() {
     setPartySize(reservation.partySize)
     setSpecialRequests(reservation.specialRequests as { type: string; notes?: string }[])
     setStep("date-party")
-    window.scrollTo({ top: 0, behavior: "smooth" })
+    globalThis.scrollTo({ top: 0, behavior: "smooth" })
   }
 
   // ── Auth guard ─────────────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ export async function indexProduct(
     doc.embedding = await embedFn(
       embeddingText,
       `product_embedding:${product.id}`,
-      parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
+      Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
     )
   } catch (error) {
     console.warn(`[Typesense] Embedding generation failed for ${product.id} — indexing without embedding:`, error)
@@ -67,7 +67,7 @@ export async function indexProductsBatch(
   deps: { generateEmbedding?: typeof generateEmbedding } = {}
 ): Promise<void> {
   const embedFn = deps.generateEmbedding ?? generateEmbedding
-  const ttl = parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
+  const ttl = Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
 
   const docs = await Promise.all(
     products.map(async (product) => {

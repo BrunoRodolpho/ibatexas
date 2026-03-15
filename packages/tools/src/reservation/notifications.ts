@@ -16,7 +16,7 @@ export async function sendReservationConfirmation(
   phone?: string,
 ): Promise<void> {
   // Append T12:00:00Z to avoid UTC midnight → previous-day-in-São-Paulo issue
-  const dateStr = formatDateBR(new Date(reservation.timeSlot.date + "T12:00:00Z"))
+  const dateStr = formatDateBR(new Date(`${reservation.timeSlot.date}T12:00:00Z`))
   const location = locationLabel(reservation.tableLocation)
 
   const message = [
@@ -66,7 +66,7 @@ export async function notifyWaitlistSpotAvailable(
   startTime: string,
   phone?: string,
 ): Promise<void> {
-  const dateStr = formatDateBR(new Date(date + "T12:00:00Z"))
+  const dateStr = formatDateBR(new Date(`${date}T12:00:00Z`))
 
   const message = [
     `🎉 *IbateXas — Vaga disponível!*`,

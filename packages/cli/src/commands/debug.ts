@@ -115,7 +115,7 @@ export function registerDebugCommands(group: Command): void {
           const labelW = 22
           const header = `  ${"Group".padEnd(labelW)}${"Keys".padStart(8)}   ${"Memory".padEnd(10)}${opts.ttl ? "  TTL" : ""}`
           console.log(chalk.bold(header))
-          console.log("  " + "─".repeat(labelW + 22 + (opts.ttl ? 8 : 0)))
+          console.log(`  ${"─".repeat(labelW + 22 + (opts.ttl ? 8 : 0))}`)
 
           let totalKeys = 0
           let totalMem = 0
@@ -132,7 +132,7 @@ export function registerDebugCommands(group: Command): void {
             console.log(line)
           }
 
-          console.log("  " + "─".repeat(labelW + 22 + (opts.ttl ? 8 : 0)))
+          console.log(`  ${"─".repeat(labelW + 22 + (opts.ttl ? 8 : 0))}`)
           console.log(`  ${chalk.bold("Total".padEnd(labelW))}${chalk.white(String(totalKeys).padStart(8))}   ${chalk.cyan(formatBytes(totalMem))}`)
           console.log()
         }

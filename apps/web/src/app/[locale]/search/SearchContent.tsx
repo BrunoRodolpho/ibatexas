@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/atoms'
@@ -37,10 +37,10 @@ export default function SearchContent() {
 
   // Disable browser scroll restoration on reload — always start at top
   useEffect(() => {
-    if ('scrollRestoration' in window.history) {
-      window.history.scrollRestoration = 'manual'
+    if ('scrollRestoration' in globalThis.history) {
+      globalThis.history.scrollRestoration = 'manual'
     }
-    window.scrollTo(0, 0)
+    globalThis.scrollTo(0, 0)
   }, [])
 
   // Close filter dropdown on Escape key
@@ -182,8 +182,8 @@ export default function SearchContent() {
       requestAnimationFrame(() => {
         const el = document.getElementById('product-grid')
         if (el) {
-          const y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.20
-          window.scrollTo({ top: y, behavior: 'smooth' })
+          const y = el.getBoundingClientRect().top + globalThis.scrollY - globalThis.innerHeight * 0.20
+          globalThis.scrollTo({ top: y, behavior: 'smooth' })
         }
       })
     })
@@ -204,7 +204,7 @@ export default function SearchContent() {
       // Selecting or switching category → scroll to top
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          window.scrollTo({ top: 0, behavior: 'smooth' })
+          globalThis.scrollTo({ top: 0, behavior: 'smooth' })
         })
       })
     }

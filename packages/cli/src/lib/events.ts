@@ -58,7 +58,7 @@ export function onEvent(listener: EventListener): () => void {
 export function emit(event: ScenarioEvent): void {
   // JSON output for CI integration: ibx scenario homepage 2> events.jsonl
   if (process.env.IBX_EVENTS === "json") {
-    process.stderr.write(JSON.stringify(event) + "\n")
+    process.stderr.write(`${JSON.stringify(event)}\n`)
   }
 
   // Dispatch to internal listeners

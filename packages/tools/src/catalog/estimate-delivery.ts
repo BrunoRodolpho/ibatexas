@@ -20,7 +20,7 @@ export interface EstimateDeliveryOutput {
 const CEP_RE = /^\d{8}$/;
 
 export async function estimateDelivery(input: EstimateDeliveryInput): Promise<EstimateDeliveryOutput> {
-  const cep = input.cep.replace(/\D/g, "");
+  const cep = input.cep.replaceAll(/\D/g, "");
 
   if (!CEP_RE.test(cep)) {
     return { success: false, message: "CEP inválido. Informe 8 dígitos numéricos." };

@@ -3,8 +3,7 @@
 // Auth: customer
 
 import { prisma } from "@ibatexas/domain"
-import type { ModifyReservationInput, ModifyReservationOutput, ReservationDTO, SpecialRequest } from "@ibatexas/types"
-import { ModifyReservationInputSchema, TableLocation } from "@ibatexas/types"
+import { ModifyReservationInputSchema, TableLocation, type ModifyReservationInput, type ModifyReservationOutput, type ReservationDTO, type SpecialRequest } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { assignTables, reservationToDTO, type ReservationWithRelations } from "./utils.js"
 

@@ -12,7 +12,7 @@ let client: Client | null = null
 export function getTypesenseClient(): Client {
   if (!client) {
     const host = process.env.TYPESENSE_HOST
-    const port = parseInt(process.env.TYPESENSE_PORT || "8108", 10)
+    const port = Number.parseInt(process.env.TYPESENSE_PORT || "8108", 10)
     const apiKey = process.env.TYPESENSE_API_KEY
 
     if (!host || !apiKey) {
@@ -22,7 +22,7 @@ export function getTypesenseClient(): Client {
     client = new Client({
       nodes: [{ host, port, protocol: process.env.TYPESENSE_PROTOCOL || "http" }],
       apiKey,
-      connectionTimeoutSeconds: parseInt(process.env.TYPESENSE_TIMEOUT_SECONDS || "10", 10),
+      connectionTimeoutSeconds: Number.parseInt(process.env.TYPESENSE_TIMEOUT_SECONDS || "10", 10),
     })
   }
 

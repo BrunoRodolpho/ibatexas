@@ -3,8 +3,7 @@
 // Auth: customer
 
 import { prisma } from "@ibatexas/domain"
-import type { CancelReservationInput, CancelReservationOutput } from "@ibatexas/types"
-import { CancelReservationInputSchema } from "@ibatexas/types"
+import { CancelReservationInputSchema, type CancelReservationInput, type CancelReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { notifyWaitlistSpotAvailable } from "./notifications.js"
 
@@ -54,7 +53,7 @@ export async function cancelReservation(
   })
 
   if (nextInLine) {
-    const waitlistOfferMinutes = parseInt(process.env.WAITLIST_OFFER_MINUTES || "30", 10)
+    const waitlistOfferMinutes = Number.parseInt(process.env.WAITLIST_OFFER_MINUTES || "30", 10)
     const expiresAt = new Date(Date.now() + waitlistOfferMinutes * 60 * 1000)
 
     await prisma.waitlist.update({

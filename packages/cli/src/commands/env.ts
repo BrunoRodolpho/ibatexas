@@ -26,7 +26,7 @@ const ENV_VARS: EnvVar[] = [
     desc: "PostgreSQL connection string",
     phase: 1,
     secret: false,
-    example: "postgresql://ibatexas:ibatexas@localhost:5433/ibatexas",
+    example: "postgresql://user:pass@localhost:5433/dbname",
   },
   {
     key: "REDIS_URL",
@@ -184,7 +184,7 @@ export function registerEnvCommands(program: Command) {
     .description("Verify all required environment variables are set")
     .option("--step <n>", "Only check vars needed up to this step", "1")
     .action((opts: { step: string }) => {
-      const maxStep = parseInt(opts.step, 10)
+      const maxStep = Number.parseInt(opts.step, 10)
       const toCheck = ENV_VARS.filter(
         (v) => v.phase === 1 && (v.step === undefined || v.step <= maxStep)
       )
@@ -273,7 +273,7 @@ export function registerEnvCommands(program: Command) {
 
   // ── ibx env gen ────────────────────────────────────────────────────────────
   const genAction = (length: string) => {
-    const bytes = parseInt(length, 10)
+    const bytes = Number.parseInt(length, 10)
     if (isNaN(bytes) || bytes < 16) {
       console.error(chalk.red("Length must be at least 16"))
       process.exit(1)

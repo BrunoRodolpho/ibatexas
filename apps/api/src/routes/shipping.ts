@@ -35,7 +35,7 @@ export async function shippingRoutes(server: FastifyInstance): Promise<void> {
       const { cep } = request.query;
 
       // Get first digit of CEP to determine region
-      const firstDigit = parseInt(cep.charAt(0), 10);
+      const firstDigit = Number.parseInt(cep.charAt(0), 10);
       const rates = SHIPPING_RATES[firstDigit] ?? SHIPPING_RATE_DEFAULT;
 
       const options: ShippingOption[] = [

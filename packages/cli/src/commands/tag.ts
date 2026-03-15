@@ -197,7 +197,7 @@ export function registerTagCommands(group: Command): void {
           for (const p of withTags) {
             const tags = (p.tags ?? []).map((t) => chalk.cyan(t.value)).join(", ")
             const title = p.title.length > titleWidth
-              ? p.title.slice(0, titleWidth - 1) + "…"
+              ? `${p.title.slice(0, titleWidth - 1)}…`
               : p.title
             console.log(`    ${title.padEnd(titleWidth)}  ${tags}`)
           }

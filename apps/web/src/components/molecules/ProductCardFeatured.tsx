@@ -138,7 +138,7 @@ export const ProductCardFeatured = ({
             {priorityTag && (
               <div className="absolute top-3 left-3 z-10">
                 <Badge variant={priorityTag as BadgeProps['variant']}>
-                  {priorityTag.replace(/_/g, ' ')}
+                  {priorityTag.replaceAll("_", " ")}
                 </Badge>
               </div>
             )}

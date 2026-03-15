@@ -198,7 +198,7 @@ export function CartDrawer() {
                     <button
                       onClick={() => handleCrossSellAdd(rec)}
                       className="min-w-[32px] min-h-[32px] flex items-center justify-center rounded-sm border border-smoke-200 text-smoke-400 hover:border-brand-500 hover:text-brand-600 transition-colors"
-                      aria-label={t('add_suggestion') + ' ' + rec.title}
+                      aria-label={`${t('add_suggestion')} ${rec.title}`}
                     >
                       <Plus className="w-3.5 h-3.5" />
                     </button>

@@ -54,7 +54,7 @@ export function registerApiCommands(api: Command) {
             `\n  ${"ID".padEnd(30)} ${"Title".padEnd(35)} ${"Status".padEnd(12)} ${"Category".padEnd(22)} Variants`
           )
         )
-        console.log("  " + "─".repeat(110))
+        console.log(`  ${"─".repeat(110)}`)
 
         for (const p of items) {
           const category = p.categories?.[0]?.name ?? "—"
@@ -127,7 +127,7 @@ export function registerApiCommands(api: Command) {
       while (addMore) {
         const variantTitle = await input({ message: `Variant title (e.g. "500g"):` })
         const priceStr = await input({ message: `Price in BRL (e.g. 89.00):` })
-        const price = Math.round(parseFloat(priceStr) * 100)
+        const price = Math.round(Number.parseFloat(priceStr) * 100)
         variants.push({ title: variantTitle, price })
 
         const another = await select({
@@ -155,7 +155,7 @@ export function registerApiCommands(api: Command) {
           method: "POST",
           body: {
             title,
-            handle: title.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
+            handle: title.toLowerCase().replaceAll(/\s+/g, "-").replaceAll(/[^a-z0-9-]/g, ""),
             description,
             status: "published",
             categories: [{ id: categoryId }],
@@ -223,7 +223,7 @@ export function registerApiCommands(api: Command) {
           const result = await searchProducts(
             {
               query,
-              limit: parseInt(opts.limit, 10),
+              limit: Number.parseInt(opts.limit, 10),
               availableNow: opts.availableNow,
               excludeAllergens,
               tags,
@@ -248,7 +248,7 @@ export function registerApiCommands(api: Command) {
             console.log(
               `  ${"ID".padEnd(26)} ${"Title".padEnd(38)} ${"R$".padEnd(10)} ${"Tags".padEnd(25)} Allergens`
             )
-            console.log("  " + "─".repeat(115))
+            console.log(`  ${"─".repeat(115)}`)
 
             for (const p of products) {
               const priceInReais = (p.price / 100).toFixed(2)
@@ -315,7 +315,7 @@ export function registerApiCommands(api: Command) {
         console.log(
           `  ${"ID".padEnd(30)} ${"Title".padEnd(40)} ${"Price (R$)".padEnd(12)} Tags`
         )
-        console.log("  " + "─".repeat(100))
+        console.log(`  ${"─".repeat(100)}`)
 
         for (const hit of results) {
           const doc = hit.document

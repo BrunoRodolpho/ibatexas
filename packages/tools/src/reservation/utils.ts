@@ -1,8 +1,7 @@
 // Shared utilities for reservation tools.
 
 import { prisma } from "@ibatexas/domain"
-import type { ReservationDTO, SpecialRequest } from "@ibatexas/types"
-import { ReservationStatus, TableLocation } from "@ibatexas/types"
+import { ReservationStatus, TableLocation, type ReservationDTO, type SpecialRequest } from "@ibatexas/types"
 
 type TimeSlotRow = { id: string; date: Date; startTime: string; durationMinutes: number; maxCovers: number; reservedCovers: number; createdAt: Date }
 type TableRow = { id: string; number: string; capacity: number; location: string; active: boolean; createdAt: Date }

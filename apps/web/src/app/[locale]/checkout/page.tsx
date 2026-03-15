@@ -82,7 +82,7 @@ export default function CheckoutPage() {
 
   // ── Auto-calculate CEP on 8 digits ──────────────────────────────────
   useEffect(() => {
-    const digits = cepInput.replace(/\D/g, "")
+    const digits = cepInput.replaceAll(/\D/g, "")
     if (digits.length === 8 && deliveryType === "delivery" && !loadingEstimate) {
       const timer = setTimeout(() => fetchDeliveryEstimate(digits), 500)
       return () => clearTimeout(timer)
@@ -99,8 +99,8 @@ export default function CheckoutPage() {
         track('checkout_abandoned', { step: stage, cartTotal: total })
       }
     }
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+    globalThis.addEventListener('beforeunload', handleBeforeUnload)
+    return () => globalThis.removeEventListener('beforeunload', handleBeforeUnload)
   }, [stage, total])
 
   if (items.length === 0 && stage === "summary") {
@@ -115,7 +115,7 @@ export default function CheckoutPage() {
   }
 
   async function fetchDeliveryEstimate(cepValue: string) {
-    if (cepValue.replace(/\D/g, "").length !== 8) return
+    if (cepValue.replaceAll(/\D/g, "").length !== 8) return
     setLoadingEstimate(true)
     try {
       const res = await fetch(`${getApiBase()}/api/cart/delivery-estimate?cep=${encodeURIComponent(cepValue)}`, {
@@ -349,7 +349,7 @@ export default function CheckoutPage() {
                   type="text"
                   placeholder={t('cep_placeholder')}
                   value={cepInput}
-                  onChange={(e) => setCepInput(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                  onChange={(e) => setCepInput(e.target.value.replaceAll(/\D/g, "").slice(0, 8))}
                   className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
                 />
                 {loadingEstimate && (
