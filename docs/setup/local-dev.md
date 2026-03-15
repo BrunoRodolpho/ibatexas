@@ -99,7 +99,7 @@ ibx dev stop   # stops all processes + Docker containers
 | PostHog         | https://app.posthog.com         | Analytics dashboard (cloud) |
 | PostgreSQL      | localhost:5433                  | Port 5433 (not 5432!)     |
 
-**Medusa admin login:** `REDACTED_EMAIL` / `REDACTED_PASSWORD`
+**Medusa admin login:** definido pelas variáveis `MEDUSA_ADMIN_EMAIL` e `MEDUSA_ADMIN_PASSWORD` no seu `.env`
 
 ---
 

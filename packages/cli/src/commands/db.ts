@@ -180,8 +180,13 @@ async function runReset(force = false) {
     stdio: "inherit",
   })
 
-  const adminEmail = process.env.MEDUSA_ADMIN_EMAIL ?? "REDACTED_EMAIL"
-  const adminPassword = process.env.MEDUSA_ADMIN_PASSWORD ?? "REDACTED_PASSWORD"
+  const adminEmail = process.env.MEDUSA_ADMIN_EMAIL
+  const adminPassword = process.env.MEDUSA_ADMIN_PASSWORD
+  if (!adminEmail || !adminPassword) {
+    throw new Error(
+      "MEDUSA_ADMIN_EMAIL e MEDUSA_ADMIN_PASSWORD devem estar definidos no .env",
+    )
+  }
   step(`Creating admin user (${adminEmail})…`)
   await execa(
     "npx",

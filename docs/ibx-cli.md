@@ -396,7 +396,7 @@ ibx git log                # recent commits + open PR link
 | NATS Monitor    | http://localhost:8222           |
 | PostHog         | https://app.posthog.com         |
 
-**Admin credentials:** `REDACTED_EMAIL` / `REDACTED_PASSWORD`
+**Admin credentials:** definidos pelas variáveis `MEDUSA_ADMIN_EMAIL` e `MEDUSA_ADMIN_PASSWORD` no `.env`
 
 ---
 

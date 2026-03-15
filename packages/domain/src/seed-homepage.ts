@@ -128,8 +128,13 @@ interface MedusaProduct {
 
 async function getAdminToken(): Promise<string> {
   const base = getMedusaUrl()
-  const email = process.env.MEDUSA_ADMIN_EMAIL ?? "REDACTED_EMAIL"
-  const password = process.env.MEDUSA_ADMIN_PASSWORD ?? "REDACTED_PASSWORD"
+  const email = process.env.MEDUSA_ADMIN_EMAIL
+  const password = process.env.MEDUSA_ADMIN_PASSWORD
+  if (!email || !password) {
+    throw new Error(
+      "MEDUSA_ADMIN_EMAIL e MEDUSA_ADMIN_PASSWORD devem estar definidos no .env",
+    )
+  }
 
   const res = await fetch(`${base}/auth/user/emailpass`, {
     method: "POST",

@@ -46,8 +46,13 @@ let _adminToken: string | null = null
 export async function getAdminToken(): Promise<string> {
   if (_adminToken) return _adminToken
   const base = getMedusaUrl()
-  const email = process.env.MEDUSA_ADMIN_EMAIL ?? "REDACTED_EMAIL"
-  const password = process.env.MEDUSA_ADMIN_PASSWORD ?? "REDACTED_PASSWORD"
+  const email = process.env.MEDUSA_ADMIN_EMAIL
+  const password = process.env.MEDUSA_ADMIN_PASSWORD
+  if (!email || !password) {
+    throw new Error(
+      "MEDUSA_ADMIN_EMAIL e MEDUSA_ADMIN_PASSWORD devem estar definidos no .env",
+    )
+  }
 
   const res = await fetch(`${base}/auth/user/emailpass`, {
     method: "POST",
@@ -59,8 +64,7 @@ export async function getAdminToken(): Promise<string> {
     const text = await res.text()
     throw new Error(
       `Admin auth failed (${res.status}): ${text}\n` +
-      `Set MEDUSA_ADMIN_EMAIL and MEDUSA_ADMIN_PASSWORD or create an admin user:\n` +
-      `  npx medusa user --email REDACTED_EMAIL --password 'REDACTED_PASSWORD'`,
+      `Verifique MEDUSA_ADMIN_EMAIL e MEDUSA_ADMIN_PASSWORD no .env`,
     )
   }
 
