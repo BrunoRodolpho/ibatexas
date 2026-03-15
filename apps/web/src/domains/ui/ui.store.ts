@@ -7,6 +7,11 @@ export interface UpsellSuggestion {
   imageUrl?: string
 }
 
+/** Generate a unique toast ID */
+function generateToastId(): string {
+  return `toast-${Date.now()}-${Math.random()}`
+}
+
 interface UIState {
   isMobileNavOpen: boolean
   isChatOpen: boolean
@@ -77,7 +82,7 @@ export const useUIStore = create<UIState>((set) => ({
     }),
 
   addToast: (message, type, duration = 5000) => {
-    const id = `toast-${Date.now()}-${Math.random()}`
+    const id = generateToastId()
     set((state) => ({
       toasts: [...state.toasts, { id, message, type }],
     }))

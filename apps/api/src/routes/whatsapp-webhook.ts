@@ -15,7 +15,7 @@
 // Debounce:
 //   - 2s window via rk('wa:debounce:{phoneHash}') NX to batch rapid-fire messages
 
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { parse as parseQuerystring } from "node:querystring";
 import twilio from "twilio";
 import { getRedisClient, rk } from "@ibatexas/tools";
@@ -59,6 +59,107 @@ interface TwilioWebhookBody {
   ListTitle?: string;
 }
 
+// ── Webhook validation helpers ───────────────────────────────────────────────
+
+interface SignatureError {
+  code: number;
+  error: string;
+  logMessage: string;
+}
+
+function verifyTwilioSignature(
+  request: FastifyRequest,
+  body: TwilioWebhookBody,
+): SignatureError | null {
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const webhookUrl = process.env.TWILIO_WEBHOOK_URL;
+
+  if (!authToken || !webhookUrl) {
+    return { code: 500, error: "Webhook not configured", logMessage: "[whatsapp.config] TWILIO_AUTH_TOKEN or TWILIO_WEBHOOK_URL not set" };
+  }
+
+  const signature = request.headers["x-twilio-signature"];
+  if (typeof signature !== "string") {
+    return { code: 400, error: "Missing signature", logMessage: "[whatsapp.incoming] Missing X-Twilio-Signature" };
+  }
+
+  const isValid = twilio.validateRequest(authToken, signature, webhookUrl, body as Record<string, string>);
+  if (!isValid) {
+    return { code: 403, error: "Invalid signature", logMessage: "[whatsapp.incoming] Invalid Twilio signature" };
+  }
+
+  return null;
+}
+
+interface ParsedFields {
+  messageSid: string;
+  phone: string | null;
+  hash: string;
+}
+
+function parseIncomingFields(body: TwilioWebhookBody): ParsedFields | null {
+  const messageSid = body.MessageSid;
+  const fromRaw = body.From;
+
+  if (!messageSid || !fromRaw) return null;
+
+  try {
+    const phone = normalizePhone(fromRaw);
+    const hash = hashPhone(phone);
+    return { messageSid, phone, hash };
+  } catch {
+    return { messageSid, phone: null, hash: "" };
+  }
+}
+
+async function checkIdempotency(redis: Awaited<ReturnType<typeof getRedisClient>>, messageSid: string): Promise<boolean> {
+  const idempotencyKey = rk(`wa:webhook:${messageSid}`);
+  const wasSet = await redis.set(idempotencyKey, "1", { EX: 86400, NX: true });
+  return !wasSet;
+}
+
+async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisClient>>, hash: string): Promise<boolean> {
+  const rateKey = rk(`wa:rate:${hash}`);
+  const rateCount = await redis.incr(rateKey);
+  if (rateCount === 1) {
+    await redis.expire(rateKey, 60);
+  }
+  return rateCount > MAX_RATE_PER_MINUTE;
+}
+
+// ── Shortcut dispatch ────────────────────────────────────────────────────────
+
+async function handleShortcut(
+  shortcutType: string,
+  hash: string,
+): Promise<string | null> {
+  switch (shortcutType) {
+    case "help":
+      return buildHelpText();
+    case "menu":
+      await transitionTo(hash, "browsing");
+      return null; // Fall through to agent
+    case "cart":
+      return null; // Fall through to agent
+    case "reservation":
+      await transitionTo(hash, "reservation_flow");
+      return null; // Fall through to agent
+    default:
+      return null;
+  }
+}
+
+// ── Build user message from interactive selections ───────────────────────────
+
+function buildUserMessage(body: TwilioWebhookBody, messageBody: string): string {
+  if (!body.ListId && !body.ButtonPayload) return messageBody;
+
+  const selectionType = body.ListId ? "list" : "button";
+  const selectionId = body.ListId || body.ButtonPayload;
+  const selectionTitle = body.ListTitle || body.ButtonText || "";
+  return `Usuário selecionou: ${selectionTitle}\n[interactive_selection: type=${selectionType}, id=${selectionId}]`;
+}
+
 export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<void> {
   // Register custom content type parser for form-urlencoded (Twilio sends this)
   server.addContentTypeParser(
@@ -96,30 +197,10 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       const startMs = Date.now();
 
       // ── 1. Verify Twilio signature ──────────────────────────────────────────
-      const authToken = process.env.TWILIO_AUTH_TOKEN;
-      const webhookUrl = process.env.TWILIO_WEBHOOK_URL;
-
-      if (!authToken || !webhookUrl) {
-        server.log.error("[whatsapp.config] TWILIO_AUTH_TOKEN or TWILIO_WEBHOOK_URL not set");
-        return reply.code(500).send({ error: "Webhook not configured" });
-      }
-
-      const signature = request.headers["x-twilio-signature"];
-      if (typeof signature !== "string") {
-        server.log.warn({ ip: request.ip }, "[whatsapp.incoming] Missing X-Twilio-Signature");
-        return reply.code(400).send({ error: "Missing signature" });
-      }
-
-      const isValid = twilio.validateRequest(
-        authToken,
-        signature,
-        webhookUrl,
-        body as Record<string, string>,
-      );
-
-      if (!isValid) {
-        server.log.warn({ ip: request.ip }, "[whatsapp.incoming] Invalid Twilio signature");
-        return reply.code(403).send({ error: "Invalid signature" });
+      const signatureError = verifyTwilioSignature(request, body);
+      if (signatureError) {
+        server.log.warn({ ip: request.ip }, signatureError.logMessage);
+        return reply.code(signatureError.code).send({ error: signatureError.error });
       }
 
       // ── 2. Guard empty messages ─────────────────────────────────────────────
@@ -131,21 +212,15 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       }
 
       // ── 3. Extract and validate fields ──────────────────────────────────────
-      const messageSid = body.MessageSid;
-      const fromRaw = body.From;
-
-      if (!messageSid || !fromRaw) {
+      const parsed = parseIncomingFields(body);
+      if (!parsed) {
         server.log.warn("[whatsapp.incoming] Missing MessageSid or From");
         return reply.code(400).send({ error: "Missing required fields" });
       }
 
-      let phone: string;
-      let hash: string;
-      try {
-        phone = normalizePhone(fromRaw);
-        hash = hashPhone(phone);
-      } catch {
-        server.log.warn({ from: fromRaw }, "[whatsapp.incoming] Invalid phone format");
+      const { messageSid, phone, hash } = parsed;
+      if (!phone) {
+        server.log.warn({ from: body.From }, "[whatsapp.incoming] Invalid phone format");
         return reply.code(400).send({ error: "Invalid phone format" });
       }
 
@@ -156,21 +231,16 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
 
       // ── 4. Idempotency (BEFORE rate limit) ─────────────────────────────────
       const redis = await getRedisClient();
-      const idempotencyKey = rk(`wa:webhook:${messageSid}`);
-      const wasSet = await redis.set(idempotencyKey, "1", { EX: 86400, NX: true });
-      if (!wasSet) {
+      const isDuplicate = await checkIdempotency(redis, messageSid);
+      if (isDuplicate) {
         server.log.info({ message_sid: messageSid }, "[whatsapp.duplicate] Already processed");
         return reply.code(200).type("text/xml").send("<Response/>");
       }
 
       // ── 5. Rate limit ──────────────────────────────────────────────────────
-      const rateKey = rk(`wa:rate:${hash}`);
-      const rateCount = await redis.incr(rateKey);
-      if (rateCount === 1) {
-        await redis.expire(rateKey, 60);
-      }
-      if (rateCount > MAX_RATE_PER_MINUTE) {
-        server.log.warn({ phone_hash: hash, rate: rateCount }, "[whatsapp.rate] Rate limit exceeded");
+      const rateLimited = await checkWebhookRateLimit(redis, hash);
+      if (rateLimited) {
+        server.log.warn({ phone_hash: hash }, "[whatsapp.rate] Rate limit exceeded");
         return reply.code(429).type("text/xml").send("<Response/>");
       }
 
@@ -217,14 +287,7 @@ async function handleMessageAsync(
   await touchSession(hash);
 
   // ── Build user message (handle interactive selections) ──────────────────────
-  let userMessage = messageBody;
-
-  if (body.ListId || body.ButtonPayload) {
-    const selectionType = body.ListId ? "list" : "button";
-    const selectionId = body.ListId || body.ButtonPayload;
-    const selectionTitle = body.ListTitle || body.ButtonText || "";
-    userMessage = `Usuário selecionou: ${selectionTitle}\n[interactive_selection: type=${selectionType}, id=${selectionId}]`;
-  }
+  const userMessage = buildUserMessage(body, messageBody);
 
   // Append user message to session
   await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true);
@@ -263,24 +326,7 @@ async function handleMessageAsync(
     if (shortcut) {
       log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
 
-      let response: string | null = null;
-      switch (shortcut.type) {
-        case "help":
-          response = buildHelpText();
-          break;
-        case "menu":
-          await transitionTo(hash, "browsing");
-          // Fall through to agent for product search (agent calls search_products)
-          break;
-        case "cart":
-          // Fall through to agent for cart display (agent calls get_cart)
-          break;
-        case "reservation":
-          await transitionTo(hash, "reservation_flow");
-          // Fall through to agent for reservation flow
-          break;
-      }
-
+      const response = await handleShortcut(shortcut.type, hash);
       if (response) {
         await sendText(`whatsapp:${phone}`, response);
         await appendMessages(session.sessionId, [{ role: "assistant", content: response }]);

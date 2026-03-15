@@ -3,6 +3,32 @@
 import { useRef, useState, useEffect } from 'react'
 import Image from 'next/image'
 
+type RetryEntry = { type: string; handler: EventListener }
+
+const INTERACTION_EVENTS = ['touchstart', 'scroll', 'click'] as const
+
+/** Register interaction-based retry listeners for blocked autoplay */
+function registerRetryListeners(
+  video: HTMLVideoElement,
+  retryListeners: RetryEntry[],
+): void {
+  const retry = () => {
+    video.play().catch(() => {})
+    removeRetryListeners(retryListeners)
+  }
+  for (const type of INTERACTION_EVENTS) {
+    document.addEventListener(type, retry, { once: true, passive: true })
+    retryListeners.push({ type, handler: retry as EventListener })
+  }
+}
+
+/** Remove all tracked retry listeners */
+function removeRetryListeners(retryListeners: RetryEntry[]): void {
+  for (const { type, handler } of retryListeners) {
+    document.removeEventListener(type, handler)
+  }
+}
+
 interface HeroVideoProps {
   readonly src: string
   readonly poster: string
@@ -38,27 +64,14 @@ export function HeroVideo({ src, poster, className = '' }: HeroVideoProps) {
       // Nudge play in case autoPlay attribute was ignored
       video.play().catch(() => {
         // Blocked (Low Power Mode etc.) — retry on first interaction
-        const retry = () => {
-          video.play().catch(() => {})
-          retryListeners.forEach(({ type, handler }) =>
-            document.removeEventListener(type, handler),
-          )
-        }
-        const events = ['touchstart', 'scroll', 'click'] as const
-        events.forEach((type) => {
-          document.addEventListener(type, retry, { once: true, passive: true })
-          retryListeners.push({ type, handler: retry as EventListener })
-        })
+        registerRetryListeners(video, retryListeners)
       })
     }
 
     return () => {
       video.removeEventListener('playing', onPlaying)
       video.removeEventListener('pause', onPause)
-      // Unconditionally remove retry listeners on unmount
-      retryListeners.forEach(({ type, handler }) =>
-        document.removeEventListener(type, handler),
-      )
+      removeRetryListeners(retryListeners)
     }
   }, [])
 
