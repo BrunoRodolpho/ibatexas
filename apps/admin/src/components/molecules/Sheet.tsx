@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef } from 'react'
 
 interface SheetProps {
   readonly isOpen: boolean
@@ -11,6 +11,9 @@ interface SheetProps {
   readonly position?: 'left' | 'right' | 'bottom'
 }
 
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
+
 export function Sheet({
   isOpen,
   title,
@@ -19,12 +22,23 @@ export function Sheet({
   footer,
   position = 'right',
 }: SheetProps) {
-  const sheetRef = useRef<HTMLDivElement>(null)
+  const sheetRef = useRef<HTMLDialogElement>(null)
 
+  // Escape + focus trap (document-level to avoid inline handlers on <dialog>)
   useEffect(() => {
     if (!isOpen) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') { onClose(); return }
+      if (e.key !== 'Tab' || !sheetRef.current) return
+      const focusable = sheetRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last.focus() }
+      } else if (document.activeElement === last) {
+        e.preventDefault(); first.focus()
+      }
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
@@ -36,21 +50,6 @@ export function Sheet({
     document.body.style.overflow = 'hidden'
     return () => { document.body.style.overflow = prev }
   }, [isOpen])
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key !== 'Tab' || !sheetRef.current) return
-    const focusable = sheetRef.current.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
-    )
-    if (focusable.length === 0) return
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
-    if (e.shiftKey) {
-      if (document.activeElement === first) { e.preventDefault(); last.focus() }
-    } else if (document.activeElement === last) {
-      e.preventDefault(); first.focus()
-    }
-  }, [])
 
   if (!isOpen) return null
 
@@ -72,12 +71,10 @@ export function Sheet({
         aria-hidden="true"
       />
       {/* Dialog panel */}
-      <div
+      <dialog
         ref={sheetRef}
-        role="dialog"
-        aria-modal="true"
-        className={`fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto ${positionClasses}`}
-        onKeyDown={handleKeyDown}
+        open
+        className={`fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto p-0 border-none ${positionClasses}`}
         aria-labelledby="sheet-title"
       >
         <div className="sticky top-0 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-4 flex items-center justify-between">
@@ -100,7 +97,7 @@ export function Sheet({
             {footer}
           </div>
         )}
-      </div>
+      </dialog>
     </>
   )
 }

@@ -157,6 +157,18 @@ function handleSseEvent(event: SseEvent, sessionId: string): "continue" | "done"
   return "continue"
 }
 
+/** Parse a single SSE line into an event, or null if not a valid data line. */
+function parseSseLine(line: string): SseEvent | null {
+  if (!line.startsWith("data: ")) return null
+  const payload = line.slice(6).trim()
+  if (!payload) return null
+  try {
+    return JSON.parse(payload) as SseEvent
+  } catch {
+    return null
+  }
+}
+
 async function streamChatResponse(apiUrl: string, sessionId: string): Promise<void> {
   const sseRes = await fetch(`${apiUrl}/api/chat/stream/${sessionId}`)
   if (!sseRes.ok || !sseRes.body) {
@@ -172,18 +184,9 @@ async function streamChatResponse(apiUrl: string, sessionId: string): Promise<vo
     buf = lines.pop() ?? ""
 
     for (const line of lines) {
-      if (!line.startsWith("data: ")) continue
-      const payload = line.slice(6).trim()
-      if (!payload) continue
-
-      let parsed: SseEvent
-      try {
-        parsed = JSON.parse(payload) as SseEvent
-      } catch {
-        continue
-      }
-
-      const result = handleSseEvent(parsed, sessionId)
+      const event = parseSseLine(line)
+      if (!event) continue
+      const result = handleSseEvent(event, sessionId)
       if (result === "done") return
       if (result === "error") process.exit(1)
     }

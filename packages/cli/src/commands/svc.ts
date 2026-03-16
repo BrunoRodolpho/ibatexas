@@ -272,7 +272,14 @@ async function detailTypesense(host: string, port: string): Promise<void> {
     const connLabel = chalk.cyan(`${host}:${port}`)
     console.log(`  ${chalk.bold("Connection")}   ${connLabel}`)
     const okValue = healthData["ok"]
-    const okLabel = typeof okValue === 'boolean' ? String(okValue) : typeof okValue === 'string' ? okValue : 'true'
+    let okLabel: string
+    if (typeof okValue === 'boolean') {
+      okLabel = String(okValue)
+    } else if (typeof okValue === 'string') {
+      okLabel = okValue
+    } else {
+      okLabel = 'true'
+    }
     console.log(`  ${chalk.bold("Health")}       ${chalk.white(okLabel)}`)
 
     if (collectionsRes?.ok) {
