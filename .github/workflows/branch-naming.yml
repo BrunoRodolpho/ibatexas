@@ -1,0 +1,35 @@
+name: Branch naming convention
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  check-branch-name:
+    if: >
+      github.head_ref != 'main' &&
+      github.head_ref != 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch name
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const branch = context.payload.pull_request.head.ref;
+            const pattern = /^(feat|fix|chore|refactor|docs|test|ci|perf|style)\/[a-z0-9][a-z0-9-]*$/;
+
+            if (!pattern.test(branch)) {
+              core.setFailed(
+                `Branch name "${branch}" does not follow the naming convention.\n\n` +
+                `Expected format: <type>/<description>\n\n` +
+                `Allowed types: feat, fix, chore, refactor, docs, test, ci, perf, style\n` +
+                `Description: lowercase alphanumeric with hyphens (e.g. feat/add-dark-mode)\n\n` +
+                `Examples:\n` +
+                `  feat/user-auth\n` +
+                `  fix/badge-import\n` +
+                `  chore/update-deps\n` +
+                `  refactor/shared-ui`
+              );
+            } else {
+              console.log(`Branch name "${branch}" is valid.`);
+            }
