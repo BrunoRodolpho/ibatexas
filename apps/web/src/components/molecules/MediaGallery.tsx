@@ -122,9 +122,9 @@ export function MediaGallery({ images, thumbnail, title, className }: MediaGalle
       {/* Mobile dots indicator */}
       {media.length > 1 && (
         <div className="flex justify-center gap-1.5 lg:hidden">
-          {media.map((_, i) => (
+          {media.map((url, i) => (
             <button
-              key={`dot-${i}`}
+              key={`dot-${url}`}
               onClick={() => handleSelect(i)}
               aria-label={`Ir para imagem ${i + 1}`}
               className={clsx(

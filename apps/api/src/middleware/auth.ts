@@ -38,9 +38,10 @@ export const requireAuth: preHandlerHookHandler = async (
 ) => {
   await extractAuth(request);
   if (!request.customerId) {
-    return reply
+    void reply
       .code(401)
       .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." });
+    return;
   }
 };
 
@@ -48,6 +49,6 @@ export const requireAuth: preHandlerHookHandler = async (
  * preHandler: attaches auth fields if a valid JWT cookie is present.
  * Does nothing if the cookie is absent or invalid.
  */
-export const optionalAuth: preHandlerHookHandler = async (request: FastifyRequest) => {
+export const optionalAuth: preHandlerHookHandler = async (request: FastifyRequest): Promise<void> => {
   await extractAuth(request);
 };

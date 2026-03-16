@@ -24,11 +24,9 @@ const AGENT_MAX_TOKENS = Number.parseInt(process.env.AGENT_MAX_TOKENS || "2048",
 let _client: Anthropic | null = null
 
 function getClient(): Anthropic {
-  if (!_client) {
-    _client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    })
-  }
+  _client ??= new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  })
   return _client
 }
 

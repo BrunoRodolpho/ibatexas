@@ -89,7 +89,7 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         server.log.error(
           {
             eventType: event,
-            sessionId: (properties as Record<string, unknown> | undefined)?.sessionId,
+            sessionId: properties?.sessionId,
             error: String(err),
           },
           "[analytics] NATS publish failed",

@@ -3,7 +3,7 @@
 // Auth: customer
 
 import { prisma } from "@ibatexas/domain"
-import { GetMyReservationsInputSchema, ReservationStatus, type GetMyReservationsInput, type GetMyReservationsOutput } from "@ibatexas/types"
+import { GetMyReservationsInputSchema, type GetMyReservationsInput, type GetMyReservationsOutput } from "@ibatexas/types"
 import { reservationToDTO, type ReservationWithRelations } from "./utils.js"
 
 export async function getMyReservations(

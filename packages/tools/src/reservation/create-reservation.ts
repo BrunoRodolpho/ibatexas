@@ -37,7 +37,8 @@ export async function createReservation(
     select: { id: true, location: true },
   })
 
-  const tableLocation = tables.length > 0 ? (tables[0]!.location as TableLocation) : null
+  const firstTable = tables[0]
+  const tableLocation: TableLocation | null = firstTable ? (firstTable.location as TableLocation) : null
 
   // 4. Create reservation + tables + increment covers (transaction)
   const reservation = await prisma.$transaction(async (tx) => {
@@ -100,7 +101,7 @@ export async function createReservation(
     specialRequests: parsed.specialRequests ?? [],
     timeSlot: {
       id: slot.id,
-      date: slot.date.toISOString().split("T")[0]!,
+      date: slot.date.toISOString().split("T")[0] ?? "",
       startTime: slot.startTime,
       durationMinutes: slot.durationMinutes,
     },

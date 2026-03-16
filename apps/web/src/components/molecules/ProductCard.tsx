@@ -79,13 +79,13 @@ function QuantityControls({
   onIncrement,
   size,
   t,
-}: {
-  readonly cartQuantity: number
-  readonly onDecrement: (e: React.MouseEvent) => void
-  readonly onIncrement: (e: React.MouseEvent) => void
-  readonly size: 'sm' | 'md'
-  readonly t: ReturnType<typeof useTranslations>
-}) {
+}: Readonly<{
+  cartQuantity: number
+  onDecrement: (e: React.MouseEvent) => void
+  onIncrement: (e: React.MouseEvent) => void
+  size: 'sm' | 'md'
+  t: ReturnType<typeof useTranslations>
+}>) {
   const isSmall = size === 'sm'
   const btnClass = isSmall ? 'w-9 h-9' : 'w-12 h-10'
   const iconClass = isSmall ? 'w-3.5 h-3.5' : 'w-4 h-4'
@@ -129,14 +129,14 @@ function ProductImage({
   sizes,
   hoverImage,
   scaleOnHover,
-}: {
-  readonly displayImage: string | null
-  readonly title: string
-  readonly priority?: boolean
-  readonly sizes: string
-  readonly hoverImage?: string | null
-  readonly scaleOnHover?: boolean
-}) {
+}: Readonly<{
+  displayImage: string | null
+  title: string
+  priority?: boolean
+  sizes: string
+  hoverImage?: string | null
+  scaleOnHover?: boolean
+}>) {
   if (!displayImage) {
     return (
       <div className="absolute inset-0 bg-gradient-to-br from-smoke-100 to-smoke-200 grain-overlay flex items-center justify-center">
@@ -177,11 +177,11 @@ function PortionScale({
   servings,
   weight,
   t,
-}: {
-  readonly servings?: number
-  readonly weight?: string
-  readonly t: ReturnType<typeof useTranslations>
-}) {
+}: Readonly<{
+  servings?: number
+  weight?: string
+  t: ReturnType<typeof useTranslations>
+}>) {
   if (!servings && !weight) return null
 
   return (
@@ -210,12 +210,12 @@ function SocialProof({
   reviewCount,
   tags,
   t,
-}: {
-  readonly rating?: number
-  readonly reviewCount?: number
-  readonly tags?: readonly string[]
-  readonly t: ReturnType<typeof useTranslations>
-}) {
+}: Readonly<{
+  rating?: number
+  reviewCount?: number
+  tags?: readonly string[]
+  t: ReturnType<typeof useTranslations>
+}>) {
   const showRating = rating && rating >= 4 && reviewCount && reviewCount >= 10
 
   return (
@@ -246,15 +246,15 @@ function PriceBlock({
   discountPercent,
   hasMultipleVariants,
   t,
-}: {
-  readonly price: number
-  readonly priceFormatted: string
-  readonly compareAtPrice?: number
-  readonly hasDiscount: boolean
-  readonly discountPercent: number
-  readonly hasMultipleVariants: boolean
-  readonly t: ReturnType<typeof useTranslations>
-}) {
+}: Readonly<{
+  price: number
+  priceFormatted: string
+  compareAtPrice?: number
+  hasDiscount: boolean
+  discountPercent: number
+  hasMultipleVariants: boolean
+  t: ReturnType<typeof useTranslations>
+}>) {
   return (
     <div className="mt-auto pt-2 flex items-baseline gap-1.5">
       {hasMultipleVariants && (

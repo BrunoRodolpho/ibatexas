@@ -50,6 +50,6 @@ export function experimentPayload<T = unknown>(name: ExperimentName): T | null {
   const posthog = getPostHogClient()
   if (!posthog) return null
 
-  const payload = posthog.getFeatureFlagPayload(name)
-  return (payload as T) ?? null
+  const result = posthog.getFeatureFlagResult(name, { send_event: false })
+  return (result?.payload as T) ?? null
 }

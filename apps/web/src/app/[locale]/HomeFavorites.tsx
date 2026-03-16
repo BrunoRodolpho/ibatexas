@@ -9,7 +9,6 @@ import { ProductGrid } from '@/components/organisms'
 import { Heading } from '@/components/atoms'
 import { track } from '@/domains/analytics'
 import { useMemo } from 'react'
-import type { ProductDTO } from '@ibatexas/types'
 
 export function HomeFavorites() {
   const t = useTranslations()
@@ -33,7 +32,7 @@ export function HomeFavorites() {
     const product = favoriteProducts.find((p) => p.id === productId)
     if (product) {
       const defaultVariant = product.variants?.[0]
-      addItem(product as ProductDTO, 1, undefined, defaultVariant)
+      addItem(product, 1, undefined, defaultVariant)
       track('add_to_cart', { productId, source: 'favorites_homepage' })
       addToast(t('product.added'), 'cart')
     }

@@ -6,7 +6,7 @@
 // APP_ENV must be set to 'development' | 'staging' | 'production'.
 // Falls back to 'development' so local runs always work without extra config.
 
-const ENV_PREFIX = (process.env.APP_ENV ?? "development") as string;
+const ENV_PREFIX: string = process.env.APP_ENV ?? "development";
 
 /**
  * Namespace a Redis key with the current APP_ENV prefix.

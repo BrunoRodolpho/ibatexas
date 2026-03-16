@@ -164,7 +164,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
     const p = allProductsPool.find((prod) => prod.id === pid)
     if (!p) return
     const defaultVariant = p.variants?.[0]
-    addToCart(p as ProductDTO, 1, undefined, defaultVariant)
+    addToCart(p, 1, undefined, defaultVariant)
     track('people_also_ordered_added', { productId: product?.id ?? '', suggestedId: pid, source: 'pdp' })
     addToast(t('toast.added_to_cart'), 'cart')
   }, [allProductsPool, addToCart, addToast, t, product?.id])
@@ -230,7 +230,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
     const p = crossSellProducts.find((cp) => cp.id === crossProductId)
     if (!p) return
     const defaultVariant = p.variants?.[0]
-    addToCart(p as ProductDTO, 1, undefined, defaultVariant)
+    addToCart(p, 1, undefined, defaultVariant)
     track('cross_sell_added', { productId: product.id, suggestedId: crossProductId })
     addToast(t('toast.added_to_cart'), 'cart')
   }
@@ -551,7 +551,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
       {allProductsPool.length > 0 && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-8">
           <PeopleAlsoOrdered
-            allProducts={allProductsPool as ProductDTO[]}
+            allProducts={allProductsPool}
             onAddToCart={handlePeopleAlsoOrderedAdd}
           />
         </div>

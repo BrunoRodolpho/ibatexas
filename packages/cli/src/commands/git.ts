@@ -55,7 +55,7 @@ export function registerGitCommands(program: Command) {
       ])
 
       const lines = shortStatus.trim().split("\n").filter(Boolean)
-      const staged = lines.filter((l) => l[0] !== " " && l[0] !== "?").length
+      const staged = lines.filter((l) => !l.startsWith(" ") && !l.startsWith("?")).length
       const unstaged = lines.filter((l) => l[1] === "M" || l[1] === "D").length
       const untracked = lines.filter((l) => l.startsWith("??")).length
 
