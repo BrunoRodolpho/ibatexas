@@ -13,10 +13,12 @@ import { StepRegistry } from "../lib/steps.js"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+type DiagStatus = "ok" | "warn" | "error"
+
 interface DiagResult {
   section: string
   check: string
-  status: "ok" | "warn" | "error"
+  status: DiagStatus
   detail: string
 }
 
@@ -163,7 +165,7 @@ export function registerDoctorCommands(program: Command): void {
 
       await disconnectAll()
 
-      if (opts.ci && results.filter((r) => r.status === "error").length > 0) {
+      if (opts.ci && results.some((r) => r.status === "error")) {
         process.exitCode = 1
       }
     })
@@ -171,7 +173,7 @@ export function registerDoctorCommands(program: Command): void {
 
 // ── Check functions ─────────────────────────────────────────────────────────
 
-async function checkPostgresHealth(): Promise<{ status: "ok" | "warn" | "error"; detail: string }> {
+async function checkPostgresHealth(): Promise<{ status: DiagStatus; detail: string }> {
   try {
     const { prisma } = await import("@ibatexas/domain")
     await prisma.$queryRaw`SELECT 1`
@@ -182,7 +184,7 @@ async function checkPostgresHealth(): Promise<{ status: "ok" | "warn" | "error";
   }
 }
 
-async function checkRedisHealth(): Promise<{ status: "ok" | "warn" | "error"; detail: string }> {
+async function checkRedisHealth(): Promise<{ status: DiagStatus; detail: string }> {
   try {
     const redis = await getRedis()
     await redis.ping()
@@ -192,7 +194,7 @@ async function checkRedisHealth(): Promise<{ status: "ok" | "warn" | "error"; de
   }
 }
 
-async function checkTypesenseHealth(): Promise<{ status: "ok" | "warn" | "error"; detail: string }> {
+async function checkTypesenseHealth(): Promise<{ status: DiagStatus; detail: string }> {
   try {
     const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
     const ts = getTypesenseClient()
@@ -203,7 +205,7 @@ async function checkTypesenseHealth(): Promise<{ status: "ok" | "warn" | "error"
   }
 }
 
-async function checkProductsIntegrity(): Promise<{ status: "ok" | "warn" | "error"; detail: string }> {
+async function checkProductsIntegrity(): Promise<{ status: DiagStatus; detail: string }> {
   try {
     const products = await fetchAllProductsWithTags()
     const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
@@ -220,7 +222,7 @@ async function checkProductsIntegrity(): Promise<{ status: "ok" | "warn" | "erro
   }
 }
 
-async function checkReviewsIntegrity(): Promise<{ status: "ok" | "warn" | "error"; detail: string }> {
+async function checkReviewsIntegrity(): Promise<{ status: DiagStatus; detail: string }> {
   try {
     const { prisma } = await import("@ibatexas/domain")
     const count = await prisma.review.count()
@@ -231,7 +233,7 @@ async function checkReviewsIntegrity(): Promise<{ status: "ok" | "warn" | "error
   }
 }
 
-async function checkOrderItemsIntegrity(): Promise<{ status: "ok" | "warn" | "error"; detail: string }> {
+async function checkOrderItemsIntegrity(): Promise<{ status: DiagStatus; detail: string }> {
   try {
     const { prisma } = await import("@ibatexas/domain")
     const count = await prisma.customerOrderItem.count()
@@ -242,7 +244,7 @@ async function checkOrderItemsIntegrity(): Promise<{ status: "ok" | "warn" | "er
   }
 }
 
-async function checkTagCount(tagValue: string): Promise<{ status: "ok" | "warn" | "error"; detail: string }> {
+async function checkTagCount(tagValue: string): Promise<{ status: DiagStatus; detail: string }> {
   try {
     const products = await fetchAllProductsWithTags()
     const count = products.filter((p) => p.tags?.some((t) => t.value === tagValue)).length
@@ -257,7 +259,7 @@ async function checkTagCount(tagValue: string): Promise<{ status: "ok" | "warn" 
 async function runInfraCheck(
   results: DiagResult[],
   check: string,
-  fn: () => Promise<{ status: "ok" | "warn" | "error"; detail: string }>,
+  fn: () => Promise<{ status: DiagStatus; detail: string }>,
 ): Promise<void> {
   try {
     const result = await fn()

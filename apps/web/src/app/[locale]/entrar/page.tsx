@@ -236,20 +236,20 @@ export default function EntrarPage() {
 
               <div className="space-y-6">
                 <div className="flex justify-center gap-2" onPaste={handleOTPPaste}>
-                  {otp.map((digit, index) => (
+                  {(['otp-1', 'otp-2', 'otp-3', 'otp-4', 'otp-5', 'otp-6'] as const).map((id, position) => (
                     <input
-                      key={`otp-${index}`}
+                      key={id}
                       ref={(el) => {
-                        otpRefs.current[index] = el
+                        otpRefs.current[position] = el
                       }}
                       type="text"
                       inputMode="numeric"
                       maxLength={1}
-                      value={digit}
-                      onChange={(e) => handleOTPChange(index, e.target.value)}
-                      onKeyDown={(e) => handleOTPKeyDown(index, e)}
+                      value={otp[position]}
+                      onChange={(e) => handleOTPChange(position, e.target.value)}
+                      onKeyDown={(e) => handleOTPKeyDown(position, e)}
                       className="w-11 h-12 border border-smoke-200 rounded-sm text-center text-lg font-semibold text-charcoal-900 focus:border-charcoal-900 focus:outline-none transition-colors duration-300"
-                      aria-label={`Dígito ${index + 1}`}
+                      aria-label={`Dígito ${position + 1}`}
                     />
                   ))}
                 </div>

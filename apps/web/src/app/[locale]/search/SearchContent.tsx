@@ -16,7 +16,6 @@ import { PitmasterPick } from '@/components/molecules/PitmasterPick'
 import { GuidedSection } from '@/components/molecules/GuidedSection'
 import { MostOrderedSection } from '@/components/molecules/MostOrderedSection'
 import { resolveCanonical } from '@/domains/search'
-import type { ProductDTO } from '@ibatexas/types'
 
 const TAG_IDS = ['novo', 'popular', 'chef_choice', 'vegetariano', 'vegan', 'sem_gluten'] as const
 const CATEGORY_IDS = ['carnes-defumadas', 'acompanhamentos', 'sanduiches', 'sobremesas', 'bebidas', 'congelados'] as const
@@ -260,7 +259,7 @@ export default function SearchContent() {
       const product = allProducts.find((p) => p.id === productId)
       if (product) {
         const defaultVariant = product.variants?.[0]
-        addItem(product as ProductDTO, 1, undefined, defaultVariant)
+        addItem(product, 1, undefined, defaultVariant)
         track('add_to_cart', { productId, source: 'listing' })
         if (product.categoryHandle) {
           triggerUpsell(product.categoryHandle)
@@ -393,7 +392,7 @@ export default function SearchContent() {
             {pitmasterProduct && (
               <div className="mt-8 mb-6">
                 <PitmasterPick
-                  product={pitmasterProduct as ProductDTO}
+                  product={pitmasterProduct}
                   onAddToCart={handleAddToCart}
                   variant="card"
                   cartQuantity={getCartQuantity(pitmasterProduct.id)}
@@ -415,13 +414,13 @@ export default function SearchContent() {
                 <GuidedSection
                   title={t('search.trending')}
                   subtitle={t('search.trending_subtitle')}
-                  products={popularProducts as ProductDTO[]}
+                  products={popularProducts}
                   onAddToCart={handleAddToCart}
                 />
               )}
               {allProducts.length > 0 && (
                 <MostOrderedSection
-                  products={allProducts as ProductDTO[]}
+                  products={allProducts}
                   onAddToCart={handleAddToCart}
                 />
               )}

@@ -89,30 +89,26 @@ export function DataTable<T>({
                     key={header.id}
                     className="px-4 py-2.5 text-left text-[10px] uppercase tracking-wider font-medium text-smoke-400"
                   >
-                    {header.isPlaceholder ? null : (
-                      <div
-                        className={
-                          header.column.getCanSort()
-                            ? 'flex cursor-pointer select-none items-center gap-1 hover:text-charcoal-900'
-                            : 'flex items-center gap-1'
-                        }
-                        role={header.column.getCanSort() ? 'button' : undefined}
-                        tabIndex={header.column.getCanSort() ? 0 : undefined}
+                    {header.isPlaceholder ? null : header.column.getCanSort() ? (
+                      <button
+                        type="button"
+                        className="flex cursor-pointer select-none items-center gap-1 hover:text-charcoal-900"
                         onClick={header.column.getToggleSortingHandler()}
-                        onKeyDown={header.column.getCanSort() ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); header.column.getToggleSortingHandler()?.(e as unknown as MouseEvent) } } : undefined}
                       >
                         {flexRender(header.column.columnDef.header, header.getContext())}
-                        {header.column.getCanSort() && (
-                          <span className="text-smoke-300">
-                            {header.column.getIsSorted() === 'asc' ? (
-                              <ChevronUp className="h-3 w-3" />
-                            ) : header.column.getIsSorted() === 'desc' ? (
-                              <ChevronDown className="h-3 w-3" />
-                            ) : (
-                              <ChevronsUpDown className="h-3 w-3" />
-                            )}
-                          </span>
-                        )}
+                        <span className="text-smoke-300">
+                          {header.column.getIsSorted() === 'asc' ? (
+                            <ChevronUp className="h-3 w-3" />
+                          ) : header.column.getIsSorted() === 'desc' ? (
+                            <ChevronDown className="h-3 w-3" />
+                          ) : (
+                            <ChevronsUpDown className="h-3 w-3" />
+                          )}
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        {flexRender(header.column.columnDef.header, header.getContext())}
                       </div>
                     )}
                   </th>
@@ -137,7 +133,6 @@ export function DataTable<T>({
                   className={`border-b border-smoke-100 last:border-0 hover:bg-smoke-100/50 ${
                     onRowClick ? 'cursor-pointer' : ''
                   }`}
-                  role={onRowClick ? 'button' : undefined}
                   tabIndex={onRowClick ? 0 : undefined}
                   onClick={() => onRowClick?.(row.original)}
                   onKeyDown={onRowClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(row.original) } } : undefined}

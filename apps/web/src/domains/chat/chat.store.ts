@@ -35,7 +35,7 @@ export const useChatStore = create<ChatState>((set) => ({
 
   updateLastMessage: (delta) =>
     set((state) => {
-      const last = state.messages[state.messages.length - 1]
+      const last = state.messages.at(-1)
       if (last) {
         return {
           messages: [

@@ -19,6 +19,61 @@ function formatBRL(centavos: number) {
   return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
+// ── Cell renderer components (extracted to module level) ──────────────────────
+
+function ImageCell({ url }: { readonly url: string | null }) {
+  return url ? (
+    <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
+  ) : (
+    <div className="h-10 w-10 rounded-sm bg-smoke-100" />
+  )
+}
+
+function StockCell({ product, onToggle }: { readonly product: AdminProductRow; readonly onToggle: (p: AdminProductRow) => void }) {
+  return (
+    <Switch
+      checked={product.inStock}
+      onChange={() => onToggle(product)}
+      size="sm"
+      label={product.inStock ? 'Em estoque' : 'Sem estoque'}
+    />
+  )
+}
+
+function StatusCell({ product, onToggle }: { readonly product: AdminProductRow; readonly onToggle: (p: AdminProductRow) => void }) {
+  return (
+    <Switch
+      checked={product.status === 'published'}
+      onChange={() => onToggle(product)}
+      size="sm"
+    />
+  )
+}
+
+function ActionsCell({ productId, onSelect }: { readonly productId: string; readonly onSelect: (id: string) => void }) {
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={(e) => { e.stopPropagation(); onSelect(productId) }}
+        className="flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800 font-medium"
+      >
+        <Layers className="h-3 w-3" />
+        Variantes
+      </button>
+      <a
+        href={`${MEDUSA_ADMIN_URL}/app/products/${productId}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
+        onClick={(e) => e.stopPropagation()}
+      >
+        Editar
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    </div>
+  )
+}
+
 export default function ShopManagement() {
   const t = useTranslations()
   const [search, setSearch] = useState('')
@@ -58,14 +113,7 @@ export default function ShopManagement() {
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => {
-        const url = i.getValue() as string | null
-        return url ? (
-          <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
-        ) : (
-          <div className="h-10 w-10 rounded-sm bg-smoke-100" />
-        )
-      },
+      cell: (i) => <ImageCell url={i.getValue() as string | null} />,
     }),
     col.accessor('title', { header: t('admin.col_name') }),
     col.accessor('category', { header: t('admin.col_category') }),
@@ -75,55 +123,16 @@ export default function ShopManagement() {
     }),
     col.accessor('inStock', {
       header: t('admin.col_stock'),
-      cell: (i) => {
-        const product = i.row.original
-        return (
-          <Switch
-            checked={product.inStock}
-            onChange={() => handleToggleStock(product)}
-            size="sm"
-            label={product.inStock ? 'Em estoque' : 'Sem estoque'}
-          />
-        )
-      },
+      cell: (i) => <StockCell product={i.row.original} onToggle={handleToggleStock} />,
     }),
     col.accessor('status', {
       header: t('admin.col_status'),
-      cell: (i) => {
-        const product = i.row.original
-        return (
-          <Switch
-            checked={product.status === 'published'}
-            onChange={() => handleToggleStatus(product)}
-            size="sm"
-          />
-        )
-      },
+      cell: (i) => <StatusCell product={i.row.original} onToggle={handleToggleStatus} />,
     }),
     col.display({
       id: 'actions',
       header: '',
-      cell: (i) => (
-        <div className="flex items-center gap-3">
-          <button
-            onClick={(e) => { e.stopPropagation(); setSelectedId(i.row.original.id) }}
-            className="flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800 font-medium"
-          >
-            <Layers className="h-3 w-3" />
-            Variantes
-          </button>
-          <a
-            href={`${MEDUSA_ADMIN_URL}/app/products/${i.row.original.id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Editar
-            <ExternalLink className="h-3 w-3" />
-          </a>
-        </div>
-      ),
+      cell: (i) => <ActionsCell productId={i.row.original.id} onSelect={setSelectedId} />,
     }),
   ]
 

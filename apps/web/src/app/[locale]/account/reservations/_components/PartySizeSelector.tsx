@@ -14,11 +14,11 @@ export function PartySizeSelector({ value, onChange }: Props) {
   const t = useTranslations()
 
   return (
-    <div>
-      <span className="block text-sm font-medium text-charcoal-700 mb-2" id="party-size-label">
+    <fieldset>
+      <legend className="block text-sm font-medium text-charcoal-700 mb-2">
         {t("reservations.party_size")}
-      </span>
-      <div className="flex items-center gap-4" role="group" aria-labelledby="party-size-label">
+      </legend>
+      <div className="flex items-center gap-4">
         <button
           type="button"
           onClick={() => onChange(Math.max(MIN_PARTY, value - 1))}
@@ -49,6 +49,6 @@ export function PartySizeSelector({ value, onChange }: Props) {
           Para grupos grandes, podemos combinar mesas. Nossa equipe entrará em contato para confirmar.
         </p>
       )}
-    </div>
+    </fieldset>
   )
 }

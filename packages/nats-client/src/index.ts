@@ -35,10 +35,11 @@ export async function getNatsConnection(): Promise<NatsConnection> {
     natsConn = await pendingConnection
 
     // Observability: log connection lifecycle events (guard for test mocks)
-    if (natsConn && typeof natsConn.status === "function") {
+    const conn = natsConn
+    if (conn && typeof conn.status === "function") {
       ;(async () => {
         try {
-          for await (const status of natsConn!.status()) {
+          for await (const status of conn.status()) {
             switch (status.type) {
               case "disconnect":
                 console.warn("[nats] Disconnected from server")

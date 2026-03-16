@@ -534,7 +534,7 @@ async function executeScenarioSteps(scenario: ScenarioFile, opts: ScenarioOption
     console.log(chalk.dim(`  Resolving dependencies: ${deps.map((d) => d.name).join(" → ")}\n`))
     for (const dep of deps) {
       if (dep.setup.length > 0) {
-        const tasks = stepsToTasks(dep.setup as StepName[], opts)
+        const tasks = stepsToTasks(dep.setup, opts)
         const result = await runPipeline(tasks, { skip: opts.skip })
         if (!result.ok) return false
       }
@@ -551,7 +551,7 @@ async function executeScenarioSteps(scenario: ScenarioFile, opts: ScenarioOption
   // 5. Setup
   if (scenario.setup.length > 0) {
     console.log(chalk.bold("  Setup"))
-    const tasks = stepsToTasks(scenario.setup as StepName[], opts)
+    const tasks = stepsToTasks(scenario.setup, opts)
     const result = await runPipeline(tasks, { skip: opts.skip })
     if (!result.ok) return false
     console.log()
@@ -589,7 +589,7 @@ async function executeScenarioSteps(scenario: ScenarioFile, opts: ScenarioOption
   // 8. Rebuilds
   if (scenario.rebuilds.length > 0) {
     console.log(chalk.bold("  Rebuilds"))
-    const tasks = stepsToTasks(scenario.rebuilds as StepName[], opts)
+    const tasks = stepsToTasks(scenario.rebuilds, opts)
     const result = await runPipeline(tasks, { skip: opts.skip })
     if (!result.ok) return false
     console.log()

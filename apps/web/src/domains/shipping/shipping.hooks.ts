@@ -10,7 +10,7 @@ export function useShippingEstimate(cep?: string) {
 
   useEffect(() => {
     // Only fire when CEP is exactly 8 digits
-    if (!cep || cep.length !== 8 || !/^\d{8}$/.test(cep)) {
+    if (cep?.length !== 8 || !/^\d{8}$/.test(cep)) {
       setData(null)
       setLoading(false)
       setError(null)

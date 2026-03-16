@@ -65,7 +65,7 @@ export async function getCustomerProfile(
 
   // Get last order's product IDs
   const lastOrderItems = orderItems.filter(
-    (i) => orderItems[0] && i.medusaOrderId === orderItems[0].medusaOrderId,
+    (i) => i.medusaOrderId === orderItems[0]?.medusaOrderId,
   );
 
   const profile: CustomerProfileCache = {
