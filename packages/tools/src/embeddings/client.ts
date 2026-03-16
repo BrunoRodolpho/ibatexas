@@ -29,7 +29,8 @@ async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
     throw new Error(`Embedding API failed: ${response.statusText}`)
   }
 
-  const data = await response.json() as any
+  const raw: unknown = await response.json()
+  const data = raw as { data?: Array<{ embedding: number[] }> }
 
   if (!data.data || !Array.isArray(data.data) || data.data.length === 0) {
     throw new Error("No embeddings in OpenAI response")

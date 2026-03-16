@@ -90,7 +90,7 @@ export const useSessionStore = create<SessionState>()(
             set({ customerId: undefined, userType: 'guest' })
             return
           }
-          const data = await res.json() as { id: string; userType?: 'customer' | 'staff' }
+          const data: { id: string; userType?: 'customer' | 'staff' } = await res.json()
           set({
             customerId: data.id,
             userType: data.userType ?? 'customer',

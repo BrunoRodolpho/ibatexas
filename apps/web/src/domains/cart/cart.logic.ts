@@ -89,10 +89,10 @@ export function migrateCartState(
   persistedState: unknown,
   fromVersion: number,
 ): Record<string, unknown> {
-  const state = (persistedState ?? {}) as Record<string, unknown>
+  const state: Record<string, unknown> = (persistedState ?? {}) as Record<string, unknown>
   if (!Array.isArray(state.items)) return state
 
-  let items = state.items as LegacyItem[]
+  let items: LegacyItem[] = state.items as LegacyItem[]
   for (const [targetVersion, migrator] of MIGRATIONS) {
     if (fromVersion < targetVersion) {
       items = migrator(items)

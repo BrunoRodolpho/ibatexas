@@ -62,7 +62,8 @@ export async function apiFetch<T = unknown>(
     : null
 
   try {
-    const { schema, ...fetchOptions } = options ?? {} as ApiFetchOptions<T>
+    const opts: ApiFetchOptions<T> = options ?? {}
+    const { schema, ...fetchOptions } = opts
 
     const response = await fetch(url, {
       credentials: 'include',

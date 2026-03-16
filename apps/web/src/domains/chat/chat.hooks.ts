@@ -13,8 +13,9 @@ type StreamChunk =
 
 function isStreamChunk(value: unknown): value is StreamChunk {
   if (typeof value !== 'object' || value === null) return false
-  const obj = value as Record<string, unknown>
-  return obj.type === 'text_delta' || obj.type === 'error' || obj.type === 'done'
+  if (!('type' in value)) return false
+  const { type } = value
+  return type === 'text_delta' || type === 'error' || type === 'done'
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

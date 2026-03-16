@@ -80,11 +80,11 @@ function QuantityControls({
   size,
   t,
 }: {
-  cartQuantity: number
-  onDecrement: (e: React.MouseEvent) => void
-  onIncrement: (e: React.MouseEvent) => void
-  size: 'sm' | 'md'
-  t: ReturnType<typeof useTranslations>
+  readonly cartQuantity: number
+  readonly onDecrement: (e: React.MouseEvent) => void
+  readonly onIncrement: (e: React.MouseEvent) => void
+  readonly size: 'sm' | 'md'
+  readonly t: ReturnType<typeof useTranslations>
 }) {
   const isSmall = size === 'sm'
   const btnClass = isSmall ? 'w-9 h-9' : 'w-12 h-10'
@@ -130,12 +130,12 @@ function ProductImage({
   hoverImage,
   scaleOnHover,
 }: {
-  displayImage: string | null
-  title: string
-  priority?: boolean
-  sizes: string
-  hoverImage?: string | null
-  scaleOnHover?: boolean
+  readonly displayImage: string | null
+  readonly title: string
+  readonly priority?: boolean
+  readonly sizes: string
+  readonly hoverImage?: string | null
+  readonly scaleOnHover?: boolean
 }) {
   if (!displayImage) {
     return (
@@ -178,9 +178,9 @@ function PortionScale({
   weight,
   t,
 }: {
-  servings?: number
-  weight?: string
-  t: ReturnType<typeof useTranslations>
+  readonly servings?: number
+  readonly weight?: string
+  readonly t: ReturnType<typeof useTranslations>
 }) {
   if (!servings && !weight) return null
 
@@ -211,10 +211,10 @@ function SocialProof({
   tags,
   t,
 }: {
-  rating?: number
-  reviewCount?: number
-  tags?: string[]
-  t: ReturnType<typeof useTranslations>
+  readonly rating?: number
+  readonly reviewCount?: number
+  readonly tags?: readonly string[]
+  readonly t: ReturnType<typeof useTranslations>
 }) {
   const showRating = rating && rating >= 4 && reviewCount && reviewCount >= 10
 
@@ -247,13 +247,13 @@ function PriceBlock({
   hasMultipleVariants,
   t,
 }: {
-  price: number
-  priceFormatted: string
-  compareAtPrice?: number
-  hasDiscount: boolean
-  discountPercent: number
-  hasMultipleVariants: boolean
-  t: ReturnType<typeof useTranslations>
+  readonly price: number
+  readonly priceFormatted: string
+  readonly compareAtPrice?: number
+  readonly hasDiscount: boolean
+  readonly discountPercent: number
+  readonly hasMultipleVariants: boolean
+  readonly t: ReturnType<typeof useTranslations>
 }) {
   return (
     <div className="mt-auto pt-2 flex items-baseline gap-1.5">

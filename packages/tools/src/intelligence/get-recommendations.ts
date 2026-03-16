@@ -6,6 +6,7 @@ import type { AgentContext } from "@ibatexas/types";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
+import type { TypesenseProductDoc } from "../mappers/product-mapper.js";
 
 export interface GetRecommendationsOutput {
   products: Array<{
@@ -61,7 +62,7 @@ export async function getRecommendations(
     const { filterBy, sortBy } = await buildPersonalizedQuery(ctx.customerId, limit);
 
     const results = await typesense
-      .collections<Record<string, unknown>>(COLLECTION)
+      .collections<TypesenseProductDoc>(COLLECTION)
       .documents()
       .search({
         q: "*",
@@ -72,10 +73,10 @@ export async function getRecommendations(
       });
 
     const products = (results.hits ?? []).map((hit) => ({
-      id: String(hit.document["id"] ?? ""),
-      title: String(hit.document["title"] ?? ""),
-      price: Number(hit.document["price"] ?? 0),
-      imageUrl: hit.document["imageUrl"] as string | undefined,
+      id: hit.document.id,
+      title: hit.document.title,
+      price: hit.document.price ?? 0,
+      imageUrl: hit.document.imageUrl ?? undefined,
       reason: "Baseado nas suas preferências",
     }));
 
@@ -96,7 +97,7 @@ export async function getRecommendations(
   if (topIds.length > 0) {
     const productIds = topIds.map((e: { value: string; score: number }) => e.value);
     const results = await typesense
-      .collections<Record<string, unknown>>(COLLECTION)
+      .collections<TypesenseProductDoc>(COLLECTION)
       .documents()
       .search({
         q: "*",
@@ -106,10 +107,10 @@ export async function getRecommendations(
       });
 
     const products = (results.hits ?? []).map((hit) => ({
-      id: String(hit.document["id"] ?? ""),
-      title: String(hit.document["title"] ?? ""),
-      price: Number(hit.document["price"] ?? 0),
-      imageUrl: hit.document["imageUrl"] as string | undefined,
+      id: hit.document.id,
+      title: hit.document.title,
+      price: hit.document.price ?? 0,
+      imageUrl: hit.document.imageUrl ?? undefined,
       reason: "Mais pedidos",
     }));
 
@@ -123,7 +124,7 @@ export async function getRecommendations(
 
   // Cold start fallback: highest-rated products with reviewCount >= 5
   const fallbackResults = await typesense
-    .collections<Record<string, unknown>>(COLLECTION)
+    .collections<TypesenseProductDoc>(COLLECTION)
     .documents()
     .search({
       q: "*",
@@ -134,10 +135,10 @@ export async function getRecommendations(
     });
 
   const products = (fallbackResults.hits ?? []).map((hit) => ({
-    id: String(hit.document["id"] ?? ""),
-    title: String(hit.document["title"] ?? ""),
-    price: Number(hit.document["price"] ?? 0),
-    imageUrl: hit.document["imageUrl"] as string | undefined,
+    id: hit.document.id,
+    title: hit.document.title,
+    price: hit.document.price ?? 0,
+    imageUrl: hit.document.imageUrl ?? undefined,
     reason: "Bem avaliado por outros clientes",
   }));
 

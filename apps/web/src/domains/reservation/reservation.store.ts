@@ -64,8 +64,8 @@ interface ReservationState {
   reset: () => void
 }
 
-const initialState = {
-  step: "date-party" as ReservationStep,
+const initialState: Pick<ReservationState, 'step' | 'selectedDate' | 'partySize' | 'selectedSlot' | 'specialRequests' | 'availableSlots' | 'loadingSlots' | 'slotsError' | 'myReservations' | 'loadingMyReservations' | 'createdReservation' | 'creating' | 'createError'> = {
+  step: "date-party",
   selectedDate: "",
   partySize: 2,
   selectedSlot: null,

@@ -3,7 +3,7 @@
 // Auth: customer
 
 import { prisma } from "@ibatexas/domain"
-import { ModifyReservationInputSchema, TableLocation, type ModifyReservationInput, type ModifyReservationOutput, type ReservationDTO, type SpecialRequest } from "@ibatexas/types"
+import { ModifyReservationInputSchema, type ModifyReservationInput, type ModifyReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { assignTables, reservationToDTO, type ReservationWithRelations } from "./utils.js"
 
@@ -85,7 +85,7 @@ export async function modifyReservation(
       data: {
         timeSlotId: newTimeSlotId,
         partySize: newPartySize,
-        specialRequests: (parsed.specialRequests ?? (existing.specialRequests as SpecialRequest[]) ?? []),
+        specialRequests: (parsed.specialRequests ?? existing.specialRequests ?? []),
         tables: {
           create: newTableIds.map((tableId) => ({ tableId })),
         },

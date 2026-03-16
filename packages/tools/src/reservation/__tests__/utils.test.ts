@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from "vitest"
 import { reservationToDTO, buildDateTime, formatDateBR, locationLabel } from "../utils.js"
-import { ReservationStatus } from "@ibatexas/types"
+import { ReservationStatus, SpecialRequestType, TableLocation } from "@ibatexas/types"
 import type { ReservationWithRelations } from "../utils.js"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ function makeReservation(overrides: Partial<ReservationWithRelations> = {}): Res
     customerId: "cust_01",
     partySize: 4,
     status: ReservationStatus.CONFIRMED,
-    specialRequests: [{ type: "high_chair", notes: "1 cadeirão" }],
+    specialRequests: [{ type: SpecialRequestType.HIGHCHAIR, notes: "1 cadeirão" }],
     timeSlot: {
       id: "slot_01",
       date: new Date("2025-12-20"),
@@ -31,7 +31,7 @@ function makeReservation(overrides: Partial<ReservationWithRelations> = {}): Res
           id: "tbl_01",
           number: "A1",
           capacity: 4,
-          location: "indoor",
+          location: TableLocation.INDOOR,
           active: true,
           createdAt: new Date("2025-01-01"),
         },
@@ -57,7 +57,7 @@ describe("reservationToDTO", () => {
     expect(dto.customerId).toBe("cust_01")
     expect(dto.partySize).toBe(4)
     expect(dto.status).toBe(ReservationStatus.CONFIRMED)
-    expect(dto.specialRequests).toEqual([{ type: "high_chair", notes: "1 cadeirão" }])
+    expect(dto.specialRequests).toEqual([{ type: SpecialRequestType.HIGHCHAIR, notes: "1 cadeirão" }])
     expect(dto.timeSlot.startTime).toBe("19:30")
     expect(dto.timeSlot.durationMinutes).toBe(90)
     expect(dto.tableLocation).toBe("indoor")
@@ -72,6 +72,7 @@ describe("reservationToDTO", () => {
   })
 
   it("handles null specialRequests gracefully", () => {
+    // Prisma may return null from JSON fields — simulate edge case
     const dto = reservationToDTO(makeReservation({ specialRequests: null }))
     expect(dto.specialRequests).toEqual([])
   })

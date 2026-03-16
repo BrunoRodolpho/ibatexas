@@ -9,10 +9,16 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { Channel, type AgentContext } from "@ibatexas/types";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { getRecommendations, getAlsoAdded } from "@ibatexas/tools";
 import { optionalAuth } from "../middleware/auth.js";
+
+/** Build a minimal AgentContext for recommendation routes (no session/agent needed). */
+function buildRecsContext(customerId?: string): AgentContext {
+  return { channel: Channel.Web, sessionId: "rest-api", userType: customerId ? "customer" : "guest", customerId };
+}
 
 const RecsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(20).optional().default(6),
@@ -36,11 +42,11 @@ export async function recommendationRoutes(server: FastifyInstance): Promise<voi
     },
     async (request) => {
       const { limit, context } = request.query as z.infer<typeof RecsQuery>;
-      const customerId = (request as any).customerId as string | undefined;
+      const customerId = (request as { customerId?: string }).customerId;
 
       const result = await getRecommendations(
         { context, limit },
-        { customerId, channel: "web" } as any,
+        buildRecsContext(customerId),
       );
 
       return {
@@ -61,7 +67,7 @@ export async function recommendationRoutes(server: FastifyInstance): Promise<voi
 
       const result = await getAlsoAdded(
         { productId, limit },
-        { channel: "web" } as any,
+        buildRecsContext(),
       );
 
       return {

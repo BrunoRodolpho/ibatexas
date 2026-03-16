@@ -2,7 +2,7 @@
 
 import type { ProductDTO } from "@ibatexas/types"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
-import { typesenseDocToDTO } from "../mappers/product-mapper.js"
+import { typesenseDocToDTO, type TypesenseProductDoc } from "../mappers/product-mapper.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 
 /**
@@ -13,8 +13,8 @@ import { publishNatsEvent } from "@ibatexas/nats-client"
 export async function getProductDetails(productId: string, customerId?: string): Promise<ProductDTO | null> {
   const client = getTypesenseClient()
   try {
-    const doc = await client.collections(COLLECTION).documents(productId).retrieve()
-    const product = typesenseDocToDTO(doc as unknown as import("../mappers/product-mapper.js").TypesenseProductDoc)
+    const doc = await client.collections<TypesenseProductDoc>(COLLECTION).documents(productId).retrieve()
+    const product = typesenseDocToDTO(doc)
 
     // Non-blocking: publish product.viewed for customer intelligence
     void publishNatsEvent("product.viewed", {
@@ -29,7 +29,7 @@ export async function getProductDetails(productId: string, customerId?: string):
     return product
   } catch (err: unknown) {
     // Typesense 404 (ObjectNotFound) → return null
-    if (err && typeof err === "object" && "httpStatus" in err && (err as { httpStatus: number }).httpStatus === 404) {
+    if (err && typeof err === "object" && "httpStatus" in err && (err as Record<string, unknown>).httpStatus === 404) {
       return null
     }
     // All other errors (network, auth, server) → rethrow
