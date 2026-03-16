@@ -4,8 +4,7 @@
 
 import type { AgentContext } from "@ibatexas/types";
 import { prisma } from "@ibatexas/domain";
-import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
-import type { TypesenseProductDoc } from "../mappers/product-mapper.js";
+import { queryProductsByIds } from "./query-products-by-ids.js";
 
 export async function getOrderedTogether(
   input: { productId: string },
@@ -50,26 +49,12 @@ export async function getOrderedTogether(
   }
 
   const productIds = coItems.map((i) => i.productId);
-  const typesense = getTypesenseClient();
-
-  const results = await typesense
-    .collections<TypesenseProductDoc>(COLLECTION)
-    .documents()
-    .search({
-      q: "*",
-      query_by: "title",
-      filter_by: `id:[${productIds.join(",")}] && inStock:=true && published:=true`,
-      per_page: 5,
-    });
+  const summaries = await queryProductsByIds(productIds, 5);
 
   const countMap = new Map(coItems.map((i) => [i.productId, i._count.productId]));
-
-  const products = (results.hits ?? []).map((hit) => ({
-    id: hit.document.id,
-    title: hit.document.title,
-    price: hit.document.price ?? 0,
-    imageUrl: hit.document.imageUrl ?? undefined,
-    orderCount: countMap.get(hit.document.id) ?? 1,
+  const products = summaries.map((p) => ({
+    ...p,
+    orderCount: countMap.get(p.id) ?? 1,
   }));
 
   return { products, label: "Você costuma pedir junto" };

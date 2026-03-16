@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ['@ibatexas/types'],
+  transpilePackages: ['@ibatexas/types', '@ibatexas/ui'],
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: '**.medusajs.com' },

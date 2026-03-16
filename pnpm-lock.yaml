@@ -57,6 +57,9 @@ importers:
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@ibatexas/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@tanstack/react-table':
         specifier: ^8.21.3
         version: 8.21.3(react-dom@18.3.1)(react@18.3.1)
@@ -244,6 +247,9 @@ importers:
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@ibatexas/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@tanstack/react-table':
         specifier: ^8.21.3
         version: 8.21.3(react-dom@18.3.1)(react@18.3.1)
@@ -455,6 +461,34 @@ importers:
         specifier: ^3.22.0
         version: 3.25.76
     devDependencies:
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+
+  packages/ui:
+    dependencies:
+      '@tanstack/react-table':
+        specifier: ^8.21.3
+        version: 8.21.3(react-dom@18.3.1)(react@18.3.1)
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      lucide-react:
+        specifier: ^0.575.0
+        version: 0.575.0(react@18.3.1)
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.0
+        version: 18.3.1(react@18.3.1)
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.28
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
