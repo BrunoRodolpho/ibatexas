@@ -2,7 +2,7 @@
 
 import { useTranslations } from 'next-intl'
 import { X } from 'lucide-react'
-import { LinkButton } from '../atoms/Button'
+import { LinkButton } from '../atoms'
 import { useFirstVisit } from '@/domains/session/useFirstVisit'
 
 export function FirstVisitBanner() {

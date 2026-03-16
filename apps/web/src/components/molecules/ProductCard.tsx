@@ -4,7 +4,7 @@ import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
 import { Plus, Minus, Check, Star, Users, Scale, Flame, Trash2 } from 'lucide-react'
-import { Badge, type BadgeProps } from '../atoms/Badge'
+import { Badge, type BadgeProps } from '../atoms'
 import { track } from '@/domains/analytics'
 import { useState, useCallback } from 'react'
 
