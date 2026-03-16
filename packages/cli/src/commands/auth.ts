@@ -111,6 +111,31 @@ async function scanKeysForPattern(redis: RedisClient, pattern: string): Promise<
   return keys
 }
 
+function collectUniqueHashes(keys: string[]): Set<string> {
+  const hashes = new Set<string>()
+  for (const k of keys) {
+    const hash = k.split(":").pop()
+    if (hash) hashes.add(hash)
+  }
+  return hashes
+}
+
+async function renderHashStatus(redis: RedisClient, hash: string): Promise<void> {
+  const rateCount = await redis.get(rk(`otp:rate:${hash}`))
+  const failCount = await redis.get(rk(`otp:fail:${hash}`))
+  const rateTtl = await redis.ttl(rk(`otp:rate:${hash}`))
+  const failTtl = await redis.ttl(rk(`otp:fail:${hash}`))
+
+  const parts: string[] = []
+  if (rateCount) parts.push(`sends: ${rateCount}/3${rateTtl > 0 ? ` (${rateTtl}s)` : ""}`)
+  if (failCount) parts.push(`fails: ${failCount}/5${failTtl > 0 ? ` (${failTtl}s)` : ""}`)
+
+  const blocked = (Number.parseInt(rateCount ?? "0", 10) > 3) || (Number.parseInt(failCount ?? "0", 10) >= 5)
+  const icon = blocked ? chalk.red("✗") : chalk.green("·")
+
+  console.log(`  ${icon} ${chalk.cyan(hash)}  ${parts.join("  ")}`)
+}
+
 async function showStatusAll(redis: RedisClient): Promise<void> {
   const rateKeys = await scanKeysForPattern(redis, rk("otp:rate:*"))
   const failKeys = await scanKeysForPattern(redis, rk("otp:fail:*"))
@@ -122,27 +147,10 @@ async function showStatusAll(redis: RedisClient): Promise<void> {
     return
   }
 
-  // Collect all unique phone hashes
-  const hashes = new Set<string>()
-  for (const k of [...rateKeys, ...failKeys]) {
-    const hash = k.split(":").pop()
-    if (hash) hashes.add(hash)
-  }
+  const hashes = collectUniqueHashes([...rateKeys, ...failKeys])
 
   for (const hash of hashes) {
-    const rateCount = await redis.get(rk(`otp:rate:${hash}`))
-    const failCount = await redis.get(rk(`otp:fail:${hash}`))
-    const rateTtl = await redis.ttl(rk(`otp:rate:${hash}`))
-    const failTtl = await redis.ttl(rk(`otp:fail:${hash}`))
-
-    const parts: string[] = []
-    if (rateCount) parts.push(`sends: ${rateCount}/3${rateTtl > 0 ? ` (${rateTtl}s)` : ""}`)
-    if (failCount) parts.push(`fails: ${failCount}/5${failTtl > 0 ? ` (${failTtl}s)` : ""}`)
-
-    const blocked = (Number.parseInt(rateCount ?? "0", 10) > 3) || (Number.parseInt(failCount ?? "0", 10) >= 5)
-    const icon = blocked ? chalk.red("✗") : chalk.green("·")
-
-    console.log(`  ${icon} ${chalk.cyan(hash)}  ${parts.join("  ")}`)
+    await renderHashStatus(redis, hash)
   }
   console.log()
 }

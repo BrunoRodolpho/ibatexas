@@ -9,9 +9,43 @@ import {
   type ColumnDef,
   type SortingState,
   type PaginationState,
+  type Header,
 } from '@tanstack/react-table'
 import { useState } from 'react'
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
+
+// ── Sub-component: sort icon for column header ──────────────────────────────
+
+function SortIcon({ direction }: Readonly<{ direction: false | 'asc' | 'desc' }>) {
+  if (direction === 'asc') return <ChevronUp className="h-3 w-3" />
+  if (direction === 'desc') return <ChevronDown className="h-3 w-3" />
+  return <ChevronsUpDown className="h-3 w-3" />
+}
+
+// ── Sub-component: sortable column header ───────────────────────────────────
+
+function SortableHeader<T>({ header }: Readonly<{ header: Header<T, unknown> }>) {
+  if (header.isPlaceholder) return null
+
+  const rendered = flexRender(header.column.columnDef.header, header.getContext())
+
+  if (!header.column.getCanSort()) {
+    return <div className="flex items-center gap-1">{rendered}</div>
+  }
+
+  return (
+    <button
+      type="button"
+      className="flex cursor-pointer select-none items-center gap-1 hover:text-charcoal-900"
+      onClick={header.column.getToggleSortingHandler()}
+    >
+      {rendered}
+      <span className="text-smoke-300">
+        <SortIcon direction={header.column.getIsSorted()} />
+      </span>
+    </button>
+  )
+}
 
 interface DataTableProps<T> {
   readonly data: T[]
@@ -89,28 +123,7 @@ export function DataTable<T>({
                     key={header.id}
                     className="px-4 py-2.5 text-left text-[10px] uppercase tracking-wider font-medium text-smoke-400"
                   >
-                    {header.isPlaceholder ? null : header.column.getCanSort() ? (
-                      <button
-                        type="button"
-                        className="flex cursor-pointer select-none items-center gap-1 hover:text-charcoal-900"
-                        onClick={header.column.getToggleSortingHandler()}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                        <span className="text-smoke-300">
-                          {header.column.getIsSorted() === 'asc' ? (
-                            <ChevronUp className="h-3 w-3" />
-                          ) : header.column.getIsSorted() === 'desc' ? (
-                            <ChevronDown className="h-3 w-3" />
-                          ) : (
-                            <ChevronsUpDown className="h-3 w-3" />
-                          )}
-                        </span>
-                      </button>
-                    ) : (
-                      <div className="flex items-center gap-1">
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                      </div>
-                    )}
+                    <SortableHeader header={header} />
                   </th>
                 ))}
               </tr>

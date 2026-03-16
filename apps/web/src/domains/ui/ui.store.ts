@@ -12,6 +12,20 @@ function generateToastId(): string {
   return `toast-${Date.now()}-${Math.random()}`
 }
 
+type ToastType = 'success' | 'error' | 'warning' | 'info' | 'cart'
+interface Toast { id: string; message: string; type: ToastType }
+
+/** Build the new toasts array with the added toast */
+function appendToast(toasts: Toast[], message: string, type: ToastType): { newToasts: Toast[]; id: string } {
+  const id = generateToastId()
+  return { newToasts: [...toasts, { id, message, type }], id }
+}
+
+/** Remove a toast by ID from the array */
+function filterToast(toasts: Toast[], id: string): Toast[] {
+  return toasts.filter((t) => t.id !== id)
+}
+
 interface UIState {
   isMobileNavOpen: boolean
   isChatOpen: boolean
@@ -21,7 +35,7 @@ interface UIState {
     category?: string
     sort?: string
   }
-  toasts: Array<{ id: string; message: string; type: 'success' | 'error' | 'warning' | 'info' | 'cart' }>
+  toasts: Toast[]
 
   /** Category handle that triggered the upsell lookup */
   upsellTriggerCategory: string | null
@@ -38,7 +52,7 @@ interface UIState {
   toggleCartDrawer: () => void
   setFilters: (filters: UIState['selectedFilters']) => void
   resetFilters: () => void
-  addToast: (message: string, type: 'success' | 'error' | 'warning' | 'info' | 'cart', duration?: number) => void
+  addToast: (message: string, type: ToastType, duration?: number) => void
   removeToast: (id: string) => void
   triggerUpsell: (categoryHandle: string) => void
   setUpsellProduct: (product: UpsellSuggestion) => void
@@ -82,26 +96,24 @@ export const useUIStore = create<UIState>((set) => ({
     }),
 
   addToast: (message, type, duration = 5000) => {
-    const id = generateToastId()
-    set((state) => ({
-      toasts: [...state.toasts, { id, message, type }],
-    }))
+    let toastId = ''
+    set((state) => {
+      const { newToasts, id } = appendToast(state.toasts, message, type)
+      toastId = id
+      return { toasts: newToasts }
+    })
 
     if (duration > 0) {
       setTimeout(() => {
-        set((state) => ({
-          toasts: state.toasts.filter((t) => t.id !== id),
-        }))
+        set((state) => ({ toasts: filterToast(state.toasts, toastId) }))
       }, duration)
     }
 
-    return id
+    return toastId
   },
 
   removeToast: (id) =>
-    set((state) => ({
-      toasts: state.toasts.filter((t) => t.id !== id),
-    })),
+    set((state) => ({ toasts: filterToast(state.toasts, id) })),
 
   triggerUpsell: (categoryHandle) =>
     set({ upsellTriggerCategory: categoryHandle, upsellProduct: null }),
