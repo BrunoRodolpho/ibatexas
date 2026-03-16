@@ -1,7 +1,6 @@
 // Agent types — AgentContext, AgentMessage, StreamChunk
 
-import type { Channel } from "./product.types.js"
-import type { UserType } from "./product.types.js"
+import type { Channel, UserType } from "./product.types.js"
 
 export interface AgentContext {
   channel: Channel

@@ -199,37 +199,41 @@ export default function ZonasPage() {
         </div>
       )}
 
-      {loading ? (
-        <p className="text-sm text-smoke-400">Carregando…</p>
-      ) : zones.length === 0 ? (
-        <p className="text-sm text-smoke-400">Nenhuma zona de entrega cadastrada.</p>
-      ) : (
-        <div className="space-y-2">
-          {zones.map((zone) => (
-            <div key={zone.id} className="flex items-center justify-between rounded-sm border border-smoke-200 bg-smoke-50 p-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-charcoal-900">{zone.name}</span>
-                  {!zone.active && (
-                    <span className="text-xs rounded-full bg-smoke-200 px-2 py-0.5 text-smoke-400">Inativa</span>
-                  )}
+      {(() => {
+        if (loading) {
+          return <p className="text-sm text-smoke-400">Carregando…</p>
+        }
+        if (zones.length === 0) {
+          return <p className="text-sm text-smoke-400">Nenhuma zona de entrega cadastrada.</p>
+        }
+        return (
+          <div className="space-y-2">
+            {zones.map((zone) => (
+              <div key={zone.id} className="flex items-center justify-between rounded-sm border border-smoke-200 bg-smoke-50 p-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-charcoal-900">{zone.name}</span>
+                    {!zone.active && (
+                      <span className="text-xs rounded-full bg-smoke-200 px-2 py-0.5 text-smoke-400">Inativa</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-smoke-400 mt-0.5">
+                    CEPs: {zone.cepPrefixes.join(', ')} · {formatPrice(zone.feeInCentavos)} · {zone.estimatedMinutes} min
+                  </p>
                 </div>
-                <p className="text-xs text-smoke-400 mt-0.5">
-                  CEPs: {zone.cepPrefixes.join(', ')} · {formatPrice(zone.feeInCentavos)} · {zone.estimatedMinutes} min
-                </p>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => openEdit(zone)} className="p-1.5 rounded hover:bg-smoke-200 text-smoke-400 hover:text-charcoal-700">
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                  <button onClick={() => handleDelete(zone.id)} className="p-1.5 rounded hover:bg-accent-red/10 text-smoke-400 hover:text-accent-red">
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => openEdit(zone)} className="p-1.5 rounded hover:bg-smoke-200 text-smoke-400 hover:text-charcoal-700">
-                  <Pencil className="h-4 w-4" />
-                </button>
-                <button onClick={() => handleDelete(zone.id)} className="p-1.5 rounded hover:bg-accent-red/10 text-smoke-400 hover:text-accent-red">
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )
+      })()}
     </div>
   )
 }

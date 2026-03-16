@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useMemo } from 'react'
+import React from 'react'
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
 
@@ -10,11 +10,9 @@ import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
 import { apiFetch } from '@/lib/api'
 import { track } from '@/domains/analytics'
-import clsx from 'clsx'
-
 export default function CartPage() {
   const t = useTranslations()
-  const { items, deliveryType, couponCode, deliveryFee: storeDeliveryFee, getTotal, getItemCount, removeItem, updateItem, setDeliveryType, clearCart } =
+  const { items, deliveryType, couponCode, deliveryFee: storeDeliveryFee, getTotal, getItemCount, removeItem, updateItem, setDeliveryType } =
     useCartStore()
   const { addToast } = useUIStore()
 

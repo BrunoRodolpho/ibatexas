@@ -194,91 +194,99 @@ export default function ShopManagement() {
           ) : undefined
         }
       >
-        {detailLoading ? (
-          <div className="space-y-3">
-            {[1, 2, 3].map((n) => (
-              <div key={n} className="h-14 animate-pulse rounded-sm bg-smoke-100" />
-            ))}
-          </div>
-        ) : productDetail ? (
-          <div className="space-y-4">
-            {/* Product header */}
-            <div className="flex items-start gap-3">
-              {productDetail.imageUrl ? (
-                <Image
-                  src={productDetail.imageUrl}
-                  alt={productDetail.title}
-                  className="h-14 w-14 shrink-0 rounded-lg object-cover"
-                  width={56}
-                  height={56}
-                  unoptimized
-                />
-              ) : (
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-sm bg-smoke-100">
-                  <Package className="h-6 w-6 text-smoke-300" />
-                </div>
-              )}
-              <div className="min-w-0">
-                <p className="font-semibold text-charcoal-900">{productDetail.title}</p>
-                <p className="text-xs text-smoke-400">{productDetail.category}</p>
-                {productDetail.description && (
-                  <p className="mt-1 text-xs text-smoke-300 line-clamp-2">{productDetail.description}</p>
-                )}
-              </div>
-            </div>
-
-            {/* Variants table */}
-            <div className="overflow-hidden rounded-sm border border-smoke-200">
-              <table className="w-full text-sm">
-                <thead className="bg-smoke-100">
-                  <tr>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">Tamanho</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">SKU</th>
-                    <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">Preço</th>
-                    <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">Estoque</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-smoke-100">
-                  {productDetail.variants.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="px-3 py-4 text-center text-smoke-300">
-                        Nenhuma variante cadastrada
-                      </td>
-                    </tr>
-                  ) : (
-                    productDetail.variants.map((v) => (
-                      <tr key={v.id} className="hover:bg-smoke-100">
-                        <td className="px-3 py-2.5 font-medium text-charcoal-800">{v.title}</td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-smoke-300">{v.sku ?? '—'}</td>
-                        <td className="px-3 py-2.5 text-right text-charcoal-700">{formatBRL(v.price)}</td>
-                        <td className="px-3 py-2.5 text-right">
-                          {v.manageInventory ? (
-                            <span className={v.inventoryQuantity > 0 ? 'text-green-700' : 'text-red-600'}>
-                              {v.inventoryQuantity}
-                            </span>
-                          ) : (
-                            <span className="text-smoke-300">∞</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Tags */}
-            {productDetail.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {productDetail.tags.map((tag) => (
-                  <span key={tag} className="rounded-sm bg-smoke-100 px-2.5 py-0.5 text-xs text-charcoal-700">
-                    {tag}
-                  </span>
+        {(() => {
+          if (detailLoading) {
+            return (
+              <div className="space-y-3">
+                {[1, 2, 3].map((n) => (
+                  <div key={n} className="h-14 animate-pulse rounded-sm bg-smoke-100" />
                 ))}
               </div>
-            )}
-          </div>
-        ) : null}
+            )
+          }
+          if (productDetail) {
+            return (
+              <div className="space-y-4">
+                {/* Product header */}
+                <div className="flex items-start gap-3">
+                  {productDetail.imageUrl ? (
+                    <Image
+                      src={productDetail.imageUrl}
+                      alt={productDetail.title}
+                      className="h-14 w-14 shrink-0 rounded-lg object-cover"
+                      width={56}
+                      height={56}
+                      unoptimized
+                    />
+                  ) : (
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-sm bg-smoke-100">
+                      <Package className="h-6 w-6 text-smoke-300" />
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <p className="font-semibold text-charcoal-900">{productDetail.title}</p>
+                    <p className="text-xs text-smoke-400">{productDetail.category}</p>
+                    {productDetail.description && (
+                      <p className="mt-1 text-xs text-smoke-300 line-clamp-2">{productDetail.description}</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Variants table */}
+                <div className="overflow-hidden rounded-sm border border-smoke-200">
+                  <table className="w-full text-sm">
+                    <thead className="bg-smoke-100">
+                      <tr>
+                        <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">Tamanho</th>
+                        <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">SKU</th>
+                        <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">Preço</th>
+                        <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">Estoque</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-smoke-100">
+                      {productDetail.variants.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="px-3 py-4 text-center text-smoke-300">
+                            Nenhuma variante cadastrada
+                          </td>
+                        </tr>
+                      ) : (
+                        productDetail.variants.map((v) => (
+                          <tr key={v.id} className="hover:bg-smoke-100">
+                            <td className="px-3 py-2.5 font-medium text-charcoal-800">{v.title}</td>
+                            <td className="px-3 py-2.5 font-mono text-xs text-smoke-300">{v.sku ?? '—'}</td>
+                            <td className="px-3 py-2.5 text-right text-charcoal-700">{formatBRL(v.price)}</td>
+                            <td className="px-3 py-2.5 text-right">
+                              {v.manageInventory ? (
+                                <span className={v.inventoryQuantity > 0 ? 'text-green-700' : 'text-red-600'}>
+                                  {v.inventoryQuantity}
+                                </span>
+                              ) : (
+                                <span className="text-smoke-300">∞</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Tags */}
+                {productDetail.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {productDetail.tags.map((tag) => (
+                      <span key={tag} className="rounded-sm bg-smoke-100 px-2.5 py-0.5 text-xs text-charcoal-700">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          }
+          return null
+        })()}
       </Sheet>
     </div>
   )

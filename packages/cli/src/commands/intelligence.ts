@@ -249,26 +249,8 @@ export function registerIntelligenceCommands(program: Command): void {
         const results: { label: string; keys: number; memoryBytes: number }[] = []
 
         for (const { label, pattern } of groups) {
-          let cursor = 0
-          let keyCount = 0
-          let totalMem = 0
-
-          do {
-            const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 200 })
-            cursor = result.cursor
-
-            for (const key of result.keys) {
-              keyCount++
-              try {
-                const mem = await redis.memoryUsage(key)
-                totalMem += mem ?? 0
-              } catch {
-                // MEMORY USAGE not available — skip
-              }
-            }
-          } while (cursor !== 0)
-
-          results.push({ label, keys: keyCount, memoryBytes: totalMem })
+          const { keys, memoryBytes } = await scanGroupMemory(redis, pattern)
+          results.push({ label, keys, memoryBytes })
         }
 
         spinner.stop()
@@ -306,6 +288,32 @@ export function registerIntelligenceCommands(program: Command): void {
         await closeRedis()
       }
     })
+}
+
+async function scanGroupMemory(
+  redis: Awaited<ReturnType<typeof getRedis>>,
+  pattern: string,
+): Promise<{ keys: number; memoryBytes: number }> {
+  let cursor = 0
+  let keyCount = 0
+  let totalMem = 0
+
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 200 })
+    cursor = result.cursor
+
+    for (const key of result.keys) {
+      keyCount++
+      try {
+        const mem = await redis.memoryUsage(key)
+        totalMem += mem ?? 0
+      } catch {
+        // MEMORY USAGE not available — skip
+      }
+    }
+  } while (cursor !== 0)
+
+  return { keys: keyCount, memoryBytes: totalMem }
 }
 
 function formatBytes(bytes: number): string {

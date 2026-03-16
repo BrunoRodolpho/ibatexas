@@ -78,7 +78,7 @@ export default function CheckoutPage() {
   const [deliveryType, setDeliveryType] = useState<"delivery" | "pickup" | "dine-in">("delivery")
   const [cepInput, setCepInput] = useState(cep ?? "")
   const [deliveryEstimate, setDeliveryEstimateLocal] = useState<DeliveryEstimate | null>(
-    deliveryFee != null ? { feeInCentavos: deliveryFee, estimatedMinutes: estimatedDeliveryMinutes ?? 60, message: "" } : null
+    deliveryFee == null ? null : { feeInCentavos: deliveryFee, estimatedMinutes: estimatedDeliveryMinutes ?? 60, message: "" }
   )
   const [loadingEstimate, setLoadingEstimate] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -224,11 +224,9 @@ export default function CheckoutPage() {
       } else if (paymentMethod === "cash") {
         clearCart()
         setStage("confirmed")
-      } else {
+      } else if (data.orderId) {
         // Card: redirect to Stripe hosted
-        if (data.orderId) {
-          router.push(`/pedido/${data.orderId}`)
-        }
+        router.push(`/pedido/${data.orderId}`)
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : t('payment_error')
@@ -260,16 +258,21 @@ export default function CheckoutPage() {
               {t('track_order')}
             </Link>
           )}
-          {process.env.NEXT_PUBLIC_WHATSAPP_URL && (
-            <a
-              href={`${process.env.NEXT_PUBLIC_WHATSAPP_URL}?text=${encodeURIComponent(`${t('whatsapp_order_msg')} ${result?.orderId ? `#${result.orderId}` : ''}`)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-4 inline-flex items-center gap-2 text-sm text-accent-green hover:underline"
-            >
-              {t('whatsapp_track')}
-            </a>
-          )}
+          {process.env.NEXT_PUBLIC_WHATSAPP_URL && (() => {
+            const orderSuffix = result?.orderId ? " #" + result.orderId : ""
+            const whatsappMsg = t('whatsapp_order_msg') + orderSuffix
+            const whatsappHref = process.env.NEXT_PUBLIC_WHATSAPP_URL + "?text=" + encodeURIComponent(whatsappMsg)
+            return (
+              <a
+                href={whatsappHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-4 inline-flex items-center gap-2 text-sm text-accent-green hover:underline"
+              >
+                {t('whatsapp_track')}
+              </a>
+            )
+          })()}
         </div>
       </div>
     )

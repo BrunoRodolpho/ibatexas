@@ -11,7 +11,7 @@ interface OrderTimelineProps {
 
 export function OrderTimeline({ status }: OrderTimelineProps) {
   const t = useTranslations('order')
-  const currentIndex = STEP_KEYS.findIndex((s) => s === status)
+  const currentIndex = STEP_KEYS.indexOf(status as typeof STEP_KEYS[number])
   const isCanceled = status === 'canceled'
 
   if (isCanceled) {
@@ -37,20 +37,25 @@ export function OrderTimeline({ status }: OrderTimelineProps) {
       {STEP_KEYS.map((stepKey, i) => {
         const isPast = i < currentIndex
         const isCurrent = i === currentIndex
-        const isFuture = i > currentIndex
+
+        const circleClass = isPast
+          ? 'bg-accent-green text-white'
+          : isCurrent
+            ? 'bg-brand-500 text-white animate-pulse'
+            : 'bg-smoke-200 text-smoke-400'
+
+        const labelClass = isCurrent
+          ? 'text-charcoal-900 font-semibold'
+          : isPast
+            ? 'text-charcoal-700'
+            : 'text-smoke-400'
 
         return (
           <div key={stepKey} className="flex items-start gap-3">
             {/* Vertical line + circle */}
             <div className="flex flex-col items-center">
               <div
-                className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
-                  isPast
-                    ? 'bg-accent-green text-white'
-                    : isCurrent
-                      ? 'bg-brand-500 text-white animate-pulse'
-                      : 'bg-smoke-200 text-smoke-400'
-                }`}
+                className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${circleClass}`}
               >
                 {isPast ? (
                   <Check className="w-3.5 h-3.5" strokeWidth={2.5} />
@@ -66,15 +71,7 @@ export function OrderTimeline({ status }: OrderTimelineProps) {
             </div>
 
             {/* Label */}
-            <p
-              className={`text-sm pt-0.5 ${
-                isCurrent
-                  ? 'text-charcoal-900 font-semibold'
-                  : isPast
-                    ? 'text-charcoal-700'
-                    : 'text-smoke-400'
-              }`}
-            >
+            <p className={`text-sm pt-0.5 ${labelClass}`}>
               {t(labelKeys[i])}
             </p>
           </div>

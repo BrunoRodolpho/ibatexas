@@ -11,9 +11,9 @@ interface SwitchProps {
 export function Switch({ checked, onChange, label, disabled = false, size = 'md' }: SwitchProps) {
   const trackSize = size === 'sm' ? 'h-4 w-7' : 'h-5 w-9'
   const thumbSize = size === 'sm' ? 'h-3 w-3' : 'h-4 w-4'
-  const thumbTranslate = size === 'sm'
-    ? (checked ? 'translate-x-3' : 'translate-x-0.5')
-    : (checked ? 'translate-x-4' : 'translate-x-0.5')
+  let thumbTranslate: string
+  if (size === 'sm') thumbTranslate = checked ? 'translate-x-3' : 'translate-x-0.5'
+  else thumbTranslate = checked ? 'translate-x-4' : 'translate-x-0.5'
 
   return (
     <label className={`flex items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>

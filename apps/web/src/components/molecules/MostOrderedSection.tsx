@@ -75,7 +75,7 @@ export function MostOrderedSection({ products, onAddToCart }: MostOrderedSection
     }
   }, [getCartQuantity, getCartItemId, updateItem, removeItem])
 
-  if (!products || products.length === 0) return null
+  if (!products?.length) return null
 
   const topProducts = products.slice(0, 4)
   const product = topProducts[currentIndex]
@@ -230,9 +230,9 @@ export function MostOrderedSection({ products, onAddToCart }: MostOrderedSection
       {/* Dot indicators */}
       {topProducts.length > 1 && (
         <div className="flex items-center justify-center gap-1.5 mt-3">
-          {topProducts.map((_, i) => (
+          {topProducts.map((p, i) => (
             <button
-              key={`dot-${i}`}
+              key={`dot-${p.id}`}
               onClick={() => setCurrentIndex(i)}
               className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${
                 i === currentIndex ? 'bg-charcoal-900 w-4' : 'bg-smoke-300 hover:bg-smoke-400'

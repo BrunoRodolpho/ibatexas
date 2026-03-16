@@ -2,8 +2,7 @@
 // scheduleReviewPrompt() persists the review prompt in Redis for the cron poller.
 // Does NOT use setTimeout — survives restarts and horizontal scaling.
 
-import { getRedisClient } from "@ibatexas/tools";
-import { rk } from "@ibatexas/tools";
+import { getRedisClient, rk } from "@ibatexas/tools";
 
 const REVIEW_DELAY_MS = 30 * 60 * 1000; // 30 minutes after delivery
 

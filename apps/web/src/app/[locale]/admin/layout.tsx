@@ -6,7 +6,7 @@
  * Remove once the team has fully migrated to the standalone admin app.
  */
 
-import { useLocale, useTranslations } from 'next-intl'
+import { useTranslations } from 'next-intl'
 import { useSessionStore } from '@/domains/session'
 import { AdminSidebar } from '@/components/molecules/AdminSidebar'
 import { Button } from '@/components/atoms'
@@ -14,7 +14,6 @@ import { LogOut, Shield, Search } from 'lucide-react'
 
 export default function AdminLayout({ children }: { readonly children: React.ReactNode }) {
   const t = useTranslations()
-  const locale = useLocale()
   const { userType, customerId, setCustomer, logout } = useSessionStore()
 
   // ── Auth stub (replaced in Step 11 with real Twilio OTP) ──────────────────

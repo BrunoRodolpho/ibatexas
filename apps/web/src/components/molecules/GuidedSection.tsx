@@ -224,9 +224,9 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
       {/* Dot indicators */}
       {featured.length > 1 && (
         <div className="flex items-center justify-center gap-1.5 mt-3">
-          {featured.map((_, i) => (
+          {featured.map((p, i) => (
             <button
-              key={`dot-${i}`}
+              key={`dot-${p.id}`}
               onClick={() => setCurrentIndex(i)}
               className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${
                 i === currentIndex ? 'bg-charcoal-900 w-4' : 'bg-smoke-300 hover:bg-smoke-400'

@@ -8,7 +8,7 @@
 // never by client polling alone to avoid stuck-pending orders.
 
 import type { AgentContext } from "@ibatexas/types";
-import { medusaStoreFetch, medusaAdminFetch } from "./_shared.js";
+import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import Stripe from "stripe";
 
@@ -37,6 +37,46 @@ export interface CreateCheckoutOutput {
   // Cash
   orderId?: string;
   message: string;
+}
+
+async function retrievePixCheckout(paymentIntentId: string): Promise<CreateCheckoutOutput> {
+  try {
+    const stripe = getStripe();
+    const pi = await stripe.paymentIntents.retrieve(paymentIntentId) as Stripe.PaymentIntent & {
+      next_action?: {
+        pix_display_qr_code?: {
+          data?: string;
+          image_url_svg?: string;
+          expires_at?: number;
+        };
+      };
+    };
+
+    const pixData = pi.next_action?.pix_display_qr_code;
+
+    return {
+      success: true,
+      paymentMethod: "pix",
+      pixQrCodeUrl: pixData?.image_url_svg,
+      pixQrCodeText: pixData?.data,
+      pixExpiresAt: pixData?.expires_at
+        ? new Date(pixData.expires_at * 1000).toISOString()
+        : undefined,
+      message: pixData?.data
+        ? "PIX gerado com sucesso! Escaneie o QR code ou copie o código PIX. O pedido é confirmado automaticamente após o pagamento."
+        : "PIX iniciado. Finalize o pagamento no app do seu banco.",
+    };
+  } catch (err) {
+    console.error("[create_checkout] PIX QR retrieval error:", err);
+    return {
+      success: false,
+      paymentMethod: "pix",
+      orderId: paymentIntentId,
+      message:
+        "Erro ao gerar QR Code PIX. Seu pedido foi iniciado — entre em contato se o problema persistir. Referência: " +
+        paymentIntentId,
+    };
+  }
 }
 
 export async function createCheckout(
@@ -126,44 +166,7 @@ export async function createCheckout(
 
   // PIX — retrieve QR code from Stripe
   if (paymentMethod === "pix" && paymentIntentId) {
-    try {
-      const stripe = getStripe();
-      const pi = await stripe.paymentIntents.retrieve(paymentIntentId) as Stripe.PaymentIntent & {
-        next_action?: {
-          pix_display_qr_code?: {
-            data?: string;
-            image_url_svg?: string;
-            expires_at?: number;
-          };
-        };
-      };
-
-      const pixData = pi.next_action?.pix_display_qr_code;
-
-      return {
-        success: true,
-        paymentMethod: "pix",
-        pixQrCodeUrl: pixData?.image_url_svg,
-        pixQrCodeText: pixData?.data,
-        pixExpiresAt: pixData?.expires_at
-          ? new Date(pixData.expires_at * 1000).toISOString()
-          : undefined,
-        message: pixData?.data
-          ? "PIX gerado com sucesso! Escaneie o QR code ou copie o código PIX. O pedido é confirmado automaticamente após o pagamento."
-          : "PIX iniciado. Finalize o pagamento no app do seu banco.",
-      };
-    } catch (err) {
-      console.error("[create_checkout] PIX QR retrieval error:", err);
-      return {
-        success: false,
-        paymentMethod: "pix",
-        // Include paymentIntentId so the order can be recovered
-        orderId: paymentIntentId,
-        message:
-          "Erro ao gerar QR Code PIX. Seu pedido foi iniciado — entre em contato se o problema persistir. Referência: " +
-          paymentIntentId,
-      };
-    }
+    return retrievePixCheckout(paymentIntentId);
   }
 
   return {

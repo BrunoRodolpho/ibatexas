@@ -1,7 +1,7 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useProductDetail, useProducts } from '@/domains/product'
+import { useProductDetail, useProducts, tagToBadgeVariant, getCrossSellCategory } from '@/domains/product'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
 import { Heading, Text, Button, Badge, LinkButton } from '@/components/atoms'
@@ -14,8 +14,6 @@ import { Link } from '@/i18n/navigation'
 import { MediaGallery } from '@/components/molecules/MediaGallery'
 import { track, trackOnceVisible, trackScrollDepth } from '@/domains/analytics'
 import { formatBRL, splitBRL } from '@/lib/format'
-import { tagToBadgeVariant } from '@/domains/product'
-import { getCrossSellCategory } from '@/domains/product'
 import { useAlsoAdded } from '@/domains/recommendations'
 import { PeopleAlsoOrdered } from '@/components/molecules/PeopleAlsoOrdered'
 import { Skeleton } from '@/components/atoms/Skeleton'
@@ -394,9 +392,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
                     <div key={review.name} className="border border-smoke-200 rounded-sm p-3">
                       <div className="flex items-center gap-2 mb-1">
                         <div className="flex">
-                          {Array.from({ length: review.stars }).map((_, i) => (
-                            <span key={`star-${i}`} className="text-brand-500 text-xs">★</span>
-                          ))}
+                          <span className="text-brand-500 text-xs">{'★'.repeat(review.stars)}</span>
                         </div>
                         <span className="text-xs font-medium text-charcoal-900">{review.name}</span>
                       </div>

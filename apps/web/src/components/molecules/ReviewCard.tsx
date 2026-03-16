@@ -31,11 +31,6 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
   })
 
   const stars = '⭐'.repeat(rating)
-  const statusColors = {
-    new: 'bg-blue-100 text-blue-800',
-    acknowledged: 'bg-yellow-100 text-yellow-800',
-    resolved: 'bg-green-100 text-green-800',
-  }
   const statusLabels = { new: 'Nova', acknowledged: 'Reconhecida', resolved: 'Resolvida' }
 
   return (

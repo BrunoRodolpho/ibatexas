@@ -343,7 +343,8 @@ async function handleMessageAsync(
       );
       await transitionTo(hash, stateAction.nextState);
       // State machine returns an action to execute — delegate to agent with explicit instruction
-      const stateMessage = `[state_action: ${stateAction.action}${stateAction.params ? `, params=${JSON.stringify(stateAction.params)}` : ""}]`;
+      const paramsSuffix = stateAction.params ? `, params=${JSON.stringify(stateAction.params)}` : "";
+      const stateMessage = `[state_action: ${stateAction.action}${paramsSuffix}]`;
       // Append the state action as context for the agent
       await appendMessages(session.sessionId, [{ role: "user", content: stateMessage }], true);
     }
@@ -354,7 +355,7 @@ async function handleMessageAsync(
     const trimmedHistory = history.slice(-MAX_HISTORY_MESSAGES);
 
     // Get the last user message from history (may differ from userMessage if multiple arrived)
-    const lastUserMsg = trimmedHistory.filter((m) => m.role === "user").pop();
+    const lastUserMsg = [...trimmedHistory].reverse().find((m) => m.role === "user");
     const agentInput = lastUserMsg?.content || userMessage;
 
     const context = buildWhatsAppContext(session);

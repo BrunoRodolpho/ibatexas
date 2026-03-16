@@ -13,7 +13,7 @@ import { Check } from "lucide-react"
 import { track } from '@/domains/analytics'
 import type { ProductVariant } from "@ibatexas/types"
 
-export default function ProductPage({ params }: { params: { id: string } }) {
+export default function ProductPage({ params }: Readonly<{ params: { id: string } }>) {
   const t = useTranslations()
   const [quantity, setQuantity] = useState(1)
   const [specialInstructions, setSpecialInstructions] = useState("")
@@ -207,24 +207,29 @@ export default function ProductPage({ params }: { params: { id: string } }) {
           </div>
 
           {/* Add to Cart Button */}
-          <button
-            onClick={handleAddToCart}
-            disabled={!product.inStock || justAdded}
-            className={`mt-8 w-full rounded-sm px-6 py-3.5 text-sm font-medium tracking-wide shadow-md transition-all duration-500 ease-luxury active:scale-[0.97] active:shadow-xs disabled:cursor-not-allowed disabled:shadow-none ${
-              justAdded
-                ? "bg-accent-green text-smoke-50"
-                : "bg-charcoal-900 text-smoke-50 hover:bg-charcoal-700 hover:shadow-lg disabled:bg-smoke-200 disabled:text-smoke-400"
-            }`}
-          >
-            {justAdded ? (
-              <span className="inline-flex items-center justify-center gap-2">
-                <Check className="w-4 h-4" strokeWidth={2.5} />
-                {t("product.added")}
-              </span>
-            ) : (
-              product.inStock ? t("product.add_to_cart") : t("product.out_of_stock")
-            )}
-          </button>
+          {(() => {
+            const stockLabel = product.inStock ? t("product.add_to_cart") : t("product.out_of_stock")
+            return (
+              <button
+                onClick={handleAddToCart}
+                disabled={!product.inStock || justAdded}
+                className={`mt-8 w-full rounded-sm px-6 py-3.5 text-sm font-medium tracking-wide shadow-md transition-all duration-500 ease-luxury active:scale-[0.97] active:shadow-xs disabled:cursor-not-allowed disabled:shadow-none ${
+                  justAdded
+                    ? "bg-accent-green text-smoke-50"
+                    : "bg-charcoal-900 text-smoke-50 hover:bg-charcoal-700 hover:shadow-lg disabled:bg-smoke-200 disabled:text-smoke-400"
+                }`}
+              >
+                {justAdded ? (
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <Check className="w-4 h-4" strokeWidth={2.5} />
+                    {t("product.added")}
+                  </span>
+                ) : (
+                  stockLabel
+                )}
+              </button>
+            )
+          })()}
 
           {/* Below-fold details */}
           {/* Per-serving price + servings info */}

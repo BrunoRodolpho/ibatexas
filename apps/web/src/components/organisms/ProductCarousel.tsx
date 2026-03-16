@@ -154,9 +154,9 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
     return (
       <div className="overflow-hidden">
         <div className="flex gap-6 px-6">
-          {Array.from({ length: 6 }).map((_, i) => (
+          {['s1', 's2', 's3', 's4', 's5', 's6'].map((id) => (
             <div
-              key={`skel-${i}`}
+              key={id}
               className="flex-shrink-0 w-[630px] aspect-[16/10] rounded-sm skeleton"
             />
           ))}
@@ -179,6 +179,8 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
 
   return (
     <div
+      role="region"
+      aria-roledescription="carousel"
       className="overflow-hidden marquee-mask touch-pan-y"
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}

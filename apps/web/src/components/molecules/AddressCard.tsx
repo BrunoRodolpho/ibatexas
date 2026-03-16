@@ -1,6 +1,5 @@
 import React from 'react'
 import { Card, Text } from '../atoms'
-import { Image } from '../atoms/Image'
 
 interface AddressCardProps {
   readonly id: string
@@ -29,7 +28,8 @@ export const AddressCard: React.FC<AddressCardProps> = ({
   onEdit,
   onDelete,
 }) => {
-  const address = `${street}, ${number}${complement ? ` - ${complement}` : ''}, ${neighborhood}, ${city} - ${state}`
+  const complementSuffix = complement ? ` - ${complement}` : ''
+  const address = `${street}, ${number}${complementSuffix}, ${neighborhood}, ${city} - ${state}`
 
   return (
     <Card

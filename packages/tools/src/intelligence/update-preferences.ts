@@ -46,9 +46,9 @@ export async function updatePreferences(
       favoriteCategories,
     },
     update: {
-      ...(input.allergenExclusions !== undefined ? { allergenExclusions } : {}),
-      ...(input.dietaryRestrictions !== undefined ? { dietaryRestrictions } : {}),
-      ...(input.favoriteCategories !== undefined ? { favoriteCategories } : {}),
+      ...(input.allergenExclusions === undefined ? {} : { allergenExclusions }),
+      ...(input.dietaryRestrictions === undefined ? {} : { dietaryRestrictions }),
+      ...(input.favoriteCategories === undefined ? {} : { favoriteCategories }),
     },
   });
 

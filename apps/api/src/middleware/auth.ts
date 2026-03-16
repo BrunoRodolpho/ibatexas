@@ -6,7 +6,7 @@
 //   requireAuth  — throws 401 if no valid JWT
 //   optionalAuth — attaches fields if JWT present, no-op otherwise
 
-import type { FastifyRequest, FastifyReply, preHandlerAsyncHookHandler } from "fastify";
+import type { FastifyRequest, FastifyReply } from "fastify";
 
 // Extend Fastify's request type with our custom fields
 declare module "fastify" {
@@ -15,6 +15,8 @@ declare module "fastify" {
     userType?: "guest" | "customer" | "staff";
   }
 }
+
+type DoneCallback = (err?: Error) => void
 
 async function extractAuth(request: FastifyRequest): Promise<void> {
   try {
@@ -31,24 +33,34 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
 /**
  * preHandler: requires a valid JWT cookie.
  * Returns 401 if missing or invalid.
+ *
+ * Uses callback style to satisfy Fastify's preHandler type (S6544).
  */
-export const requireAuth: preHandlerAsyncHookHandler = async (
+export function requireAuth(
   request: FastifyRequest,
   reply: FastifyReply,
-) => {
-  await extractAuth(request);
-  if (!request.customerId) {
-    void reply
-      .code(401)
-      .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." });
-    return;
-  }
-};
+  done: DoneCallback,
+): void {
+  extractAuth(request).then(() => {
+    if (!request.customerId) {
+      void reply
+        .code(401)
+        .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." });
+    }
+    done();
+  }, done);
+}
 
 /**
  * preHandler: attaches auth fields if a valid JWT cookie is present.
  * Does nothing if the cookie is absent or invalid.
+ *
+ * Uses callback style to satisfy Fastify's preHandler type (S6544).
  */
-export const optionalAuth: preHandlerAsyncHookHandler = async (request: FastifyRequest): Promise<void> => {
-  await extractAuth(request);
-};
+export function optionalAuth(
+  request: FastifyRequest,
+  _reply: FastifyReply,
+  done: DoneCallback,
+): void {
+  extractAuth(request).then(() => done(), done);
+}

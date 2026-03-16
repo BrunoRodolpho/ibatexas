@@ -59,6 +59,7 @@ export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
           pendingEscalations: 0, // populated in Step 9
         });
       } catch (err) {
+        server.log.error(err, "Failed to load dashboard");
         reply.code(500).send({ error: "Failed to load dashboard" });
       }
     },

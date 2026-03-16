@@ -75,7 +75,7 @@ export async function cancelReservation(
 
     await notifyWaitlistSpotAvailable(
       waitlistDTO,
-      reservation.timeSlot.date.toISOString().split("T")[0]!,
+      reservation.timeSlot.date.toISOString().split("T")[0] ?? "",
       reservation.timeSlot.startTime,
     )
   }

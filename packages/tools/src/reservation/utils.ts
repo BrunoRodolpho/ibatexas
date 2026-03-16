@@ -38,7 +38,7 @@ export function reservationToDTO(r: ReservationWithRelations): ReservationDTO {
     specialRequests: r.specialRequests ?? [],
     timeSlot: {
       id: r.timeSlot.id,
-      date: r.timeSlot.date.toISOString().split("T")[0]!,
+      date: r.timeSlot.date.toISOString().split("T")[0] ?? "",
       startTime: r.timeSlot.startTime,
       durationMinutes: r.timeSlot.durationMinutes,
     },
@@ -122,7 +122,7 @@ export async function releaseReservation(reservationId: string): Promise<void> {
 
 /** Build an ISO 8601 datetime string from a date and startTime ('19:30'). */
 export function buildDateTime(date: Date, startTime: string): string {
-  const dateStr = date.toISOString().split("T")[0]!
+  const dateStr = date.toISOString().split("T")[0] ?? ""
   return `${dateStr}T${startTime}:00`
 }
 

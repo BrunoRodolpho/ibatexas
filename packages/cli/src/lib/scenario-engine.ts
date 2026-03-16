@@ -325,8 +325,9 @@ async function checkGlobalScore(key: string, rule: VerifyRule): Promise<VerifyRe
 async function checkCopurchase(key: string, rule: VerifyRule): Promise<VerifyResult> {
   const redis = await getRedis()
   const count = await scanCount(redis, rk("copurchase:*"))
-  const ok = rule.exists !== undefined ? (rule.exists ? count > 0 : count === 0) :
-             (rule.min === undefined || count >= rule.min)
+  let ok: boolean
+  if (rule.exists !== undefined) ok = rule.exists ? count > 0 : count === 0
+  else ok = rule.min === undefined || count >= rule.min
   return { key, ok, detail: `${count} copurchase keys`, severity: "error" }
 }
 
@@ -343,8 +344,9 @@ async function checkCopurchaseHandle(key: string, rule: VerifyRule): Promise<Ver
     return await checkCopurchaseContains(key, handle, rule.contains, memberProductIds)
   }
 
-  const ok = rule.exists !== undefined ? (rule.exists ? members.length > 0 : members.length === 0) :
-             (rule.min === undefined || members.length >= rule.min)
+  let ok: boolean
+  if (rule.exists !== undefined) ok = rule.exists ? members.length > 0 : members.length === 0
+  else ok = rule.min === undefined || members.length >= rule.min
   return { key, ok, detail: `${members.length} copurchase relations for ${handle}`, severity: "error" }
 }
 
@@ -462,7 +464,7 @@ export async function runScenario(nameOrPath: string, opts: ScenarioOptions = {}
   const totalStart = Date.now()
 
   // 1. Load scenario
-  const { scenario, filePath } = await loadScenarioFile(opts.file ?? nameOrPath)
+  const { scenario } = await loadScenarioFile(opts.file ?? nameOrPath)
   console.log(chalk.bold(`\n  Scenario: ${scenario.name}`))
   console.log(chalk.dim(`  ${scenario.description}`))
   if (scenario.estimatedTime) {

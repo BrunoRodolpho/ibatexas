@@ -15,8 +15,6 @@ export function Header() {
   const userType = useSessionStore((s) => s.userType)
   const openCartDrawer = useUIStore((s) => s.openCartDrawer)
 
-  const isHome = pathname === '/'
-
   // Nav link active state helper
   const isActive = (href: string) => {
     if (href === '/search') return pathname === '/search' || pathname.startsWith('/search')

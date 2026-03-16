@@ -90,7 +90,7 @@ export function TimeslotGrid({ slots, loading, error, onSelect }: Props) {
                   ))}
                 </div>
                 <div className="mt-2 text-xs text-accent-green">
-                  {slot.availableCovers} vaga{slot.availableCovers !== 1 ? "s" : ""}
+                  {slot.availableCovers} vaga{slot.availableCovers === 1 ? "" : "s"}
                 </div>
               </button>
             ))}

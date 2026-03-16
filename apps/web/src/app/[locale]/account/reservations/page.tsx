@@ -34,20 +34,22 @@ function StepProgress({ currentStep }: { readonly currentStep: string }) {
       {STEPS.map((s, i) => {
         const isCompleted = i < currentIndex
         const isActive = i === currentIndex
-        const isPending = i > currentIndex
+
+        let dotColor: string
+        if (isCompleted) {
+          dotColor = 'bg-brand-500 text-white'
+        } else if (isActive) {
+          dotColor = 'bg-charcoal-900 text-white'
+        } else {
+          dotColor = 'bg-smoke-200 text-smoke-400'
+        }
 
         return (
           <div key={s.key} className="flex items-center flex-1 last:flex-none">
             {/* Dot + label */}
             <div className="flex flex-col items-center">
               <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-colors duration-500 ${
-                  isCompleted
-                    ? 'bg-brand-500 text-white'
-                    : isActive
-                      ? 'bg-charcoal-900 text-white'
-                      : 'bg-smoke-200 text-smoke-400'
-                }`}
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-colors duration-500 ${dotColor}`}
               >
                 {isCompleted ? <Check className="w-3.5 h-3.5" /> : i + 1}
               </div>

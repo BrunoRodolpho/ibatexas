@@ -1,6 +1,4 @@
 import React, { useState, useCallback } from 'react'
-import { TextField, Button } from '../atoms'
-import clsx from 'clsx'
 
 interface SearchInputProps {
   readonly placeholder?: string

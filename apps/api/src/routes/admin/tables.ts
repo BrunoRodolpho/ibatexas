@@ -17,6 +17,7 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
         const tables = await prisma.table.findMany({ orderBy: { number: "asc" } })
         return reply.send({ tables })
       } catch (err) {
+        server.log.error(err, "Failed to fetch tables");
         reply.code(500).send({ error: "Failed to fetch tables" })
       }
     },
@@ -59,6 +60,7 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
         })
         return reply.status(201).send({ table })
       } catch (err) {
+        server.log.error(err, "Failed to upsert table");
         reply.code(500).send({ error: "Failed to upsert table" })
       }
     },
@@ -114,6 +116,7 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
 
         return reply.send({ created: result.count })
       } catch (err) {
+        server.log.error(err, "Failed to generate time slots");
         reply.code(500).send({ error: "Failed to generate time slots" })
       }
     },

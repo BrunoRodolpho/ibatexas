@@ -89,7 +89,7 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
       try {
         switch (event.type) {
           case "payment_intent.succeeded": {
-            const paymentIntent = event.data.object as Stripe.PaymentIntent;
+            const paymentIntent = event.data.object;
             const processingMs = Date.now() - startMs;
 
             server.log.info(
@@ -165,7 +165,7 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
           }
 
           case "payment_intent.payment_failed": {
-            const paymentIntent = event.data.object as Stripe.PaymentIntent;
+            const paymentIntent = event.data.object;
             const orderId = paymentIntent.metadata?.["medusaOrderId"];
 
             server.log.info(

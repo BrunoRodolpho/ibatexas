@@ -1,14 +1,9 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useRecentlyViewed } from '@/domains/product'
-import { useProducts } from '@/domains/product'
+import { useRecentlyViewed, useProducts } from '@/domains/product'
 import { ProductCard } from '../molecules/ProductCard'
 import { Heading } from '../atoms'
-import { useCartStore } from '@/domains/cart'
-import { useUIStore } from '@/domains/ui'
-import { track } from '@/domains/analytics'
-import type { ProductDTO } from '@ibatexas/types'
 
 interface RecentlyViewedCarouselProps {
   /** Product ID to exclude (e.g., the current PDP product) */
@@ -22,8 +17,6 @@ interface RecentlyViewedCarouselProps {
 export function RecentlyViewedCarousel({ excludeId }: RecentlyViewedCarouselProps) {
   const t = useTranslations()
   const { getIds } = useRecentlyViewed()
-  const addItem = useCartStore((s) => s.addItem)
-  const { addToast } = useUIStore()
 
   const recentIds = getIds(excludeId)
 
@@ -51,7 +44,7 @@ export function RecentlyViewedCarousel({ excludeId }: RecentlyViewedCarouselProp
 }
 
 /** Minimal card that fetches a single product by ID */
-function RecentlyViewedCard({ productId }: { productId: string }) {
+function RecentlyViewedCard({ productId }: Readonly<{ productId: string }>) {
   const { data: productsData } = useProducts({ query: productId, limit: 1 })
   const product = productsData?.items?.[0]
 

@@ -80,7 +80,7 @@ function killTrackedServices(serviceKey?: string): number {
 
 function patternKillAll(): void {
   try { execaSync("pkill", ["-f", "pnpm.*@ibatexas"], { reject: false }) } catch { /* noop */ }
-  try { execaSync("pkill", ["-f", "medusa\\s"], { reject: false }) } catch { /* noop */ }
+  try { execaSync("pkill", ["-f", String.raw`medusa\s`], { reject: false }) } catch { /* noop */ }
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -430,9 +430,10 @@ async function startServices(
 
 async function forceStop(serviceKey: string | undefined, stopAll: boolean): Promise<void> {
   const { SERVICES } = await import("../services.js")
-  const targets = stopAll
-    ? Object.values(SERVICES)
-    : serviceKey ? [SERVICES[serviceKey]].filter(Boolean) : []
+  let targets: (typeof SERVICES)[string][]
+  if (stopAll) targets = Object.values(SERVICES)
+  else if (serviceKey) targets = [SERVICES[serviceKey]].filter(Boolean)
+  else targets = []
 
   const ports = targets.map((s) => s.port)
   console.log(chalk.bold.yellow(`\n  ⚡ Force-killing processes on ports: ${ports.join(", ")}\n`))

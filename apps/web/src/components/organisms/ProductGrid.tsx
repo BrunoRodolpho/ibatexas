@@ -3,7 +3,6 @@
 import { useCallback } from 'react'
 import { ProductCard } from '../molecules/ProductCard'
 import { ProductCardFeatured } from '../molecules/ProductCardFeatured'
-import { Text } from '../atoms'
 import { useTranslations } from 'next-intl'
 import { useCartStore } from '@/domains/cart'
 

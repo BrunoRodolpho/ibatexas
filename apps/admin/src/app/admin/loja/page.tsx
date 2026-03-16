@@ -17,6 +17,14 @@ function formatBRL(centavos: number) {
   return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
+function ShopImageCell({ url }: Readonly<{ url: string | null }>) {
+  return url ? (
+    <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
+  ) : (
+    <div className="h-10 w-10 rounded-sm bg-smoke-100" />
+  )
+}
+
 export default function ShopManagement() {
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -55,14 +63,7 @@ export default function ShopManagement() {
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => {
-        const url = i.getValue() as string | null
-        return url ? (
-          <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
-        ) : (
-          <div className="h-10 w-10 rounded-sm bg-smoke-100" />
-        )
-      },
+      cell: (i) => <ShopImageCell url={i.getValue() as string | null} />,
     }),
     col.accessor('title', { header: 'Nome' }),
     col.accessor('category', { header: 'Categoria' }),
@@ -178,13 +179,14 @@ export default function ShopManagement() {
           ) : undefined
         }
       >
-        {detailLoading ? (
+        {detailLoading && (
           <div className="space-y-3">
             {[1, 2, 3].map((n) => (
               <div key={n} className="h-14 animate-pulse rounded-sm bg-smoke-100" />
             ))}
           </div>
-        ) : productDetail ? (
+        )}
+        {!detailLoading && productDetail && (
           <div className="space-y-4">
             <div className="flex items-start gap-3">
               {productDetail.imageUrl ? (
@@ -259,7 +261,7 @@ export default function ShopManagement() {
               </div>
             )}
           </div>
-        ) : null}
+        )}
       </Sheet>
     </div>
   )

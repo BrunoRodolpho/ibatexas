@@ -15,7 +15,6 @@ import { FREE_DELIVERY_THRESHOLD } from '@/lib/constants'
  */
 export function StickyCartBar() {
   const t = useTranslations()
-  const items = useCartStore((s) => s.items)
   const getTotal = useCartStore((s) => s.getTotal)
   const getItemCount = useCartStore((s) => s.getItemCount)
   const openCartDrawer = useUIStore((s) => s.openCartDrawer)

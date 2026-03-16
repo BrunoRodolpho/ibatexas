@@ -58,14 +58,14 @@ export function HeroVideo({ src, poster, className = '' }: HeroVideoProps) {
     const retryListeners: Array<{ type: string; handler: EventListener }> = []
 
     // autoPlay may have already started before React hydrated
-    if (!video.paused) {
-      setIsPlaying(true)
-    } else {
+    if (video.paused) {
       // Nudge play in case autoPlay attribute was ignored
       video.play().catch(() => {
         // Blocked (Low Power Mode etc.) — retry on first interaction
         registerRetryListeners(video, retryListeners)
       })
+    } else {
+      setIsPlaying(true)
     }
 
     return () => {
@@ -94,6 +94,7 @@ export function HeroVideo({ src, poster, className = '' }: HeroVideoProps) {
         muted
         playsInline
         preload="auto"
+        tabIndex={-1}
         className={`relative h-full w-full object-contain object-left brightness-[0.98] sepia-[0.03] transition-opacity duration-300 ${
           isPlaying ? 'opacity-100' : 'opacity-0'
         }`}

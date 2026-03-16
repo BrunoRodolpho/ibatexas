@@ -205,11 +205,13 @@ export default function ZonasPage() {
         </div>
       )}
 
-      {loading ? (
+      {loading && (
         <p className="text-sm text-smoke-400">Carregando…</p>
-      ) : zones.length === 0 ? (
+      )}
+      {!loading && zones.length === 0 && (
         <p className="text-sm text-smoke-400">Nenhuma zona de entrega cadastrada.</p>
-      ) : (
+      )}
+      {!loading && zones.length > 0 && (
         <div className="space-y-2">
           {zones.map((zone) => (
             <div key={zone.id} className="flex items-center justify-between rounded-sm border border-smoke-200 bg-smoke-50 p-4">

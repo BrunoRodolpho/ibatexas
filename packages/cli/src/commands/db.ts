@@ -395,24 +395,15 @@ async function runReindex(fresh = false) {
   console.log(chalk.green("\n  ✅  Reindex complete\n"))
 }
 
-async function runStatus() {
-  console.log(chalk.bold("\n  ibx db status\n"))
-
-  const step = (msg: string) =>
-    console.log(chalk.bold(`  ${chalk.cyan("●")} ${msg}\n`))
-
-  // ── Medusa migrations ─────────────────────────────────────────────────────
-  step("Medusa (MikroORM)")
+async function checkMedusaMigrations(): Promise<void> {
   try {
     const result = await execa("pnpm", ["--filter", "@ibatexas/commerce", "exec", "medusa", "db:migrate", "--skip"], {
       cwd: ROOT,
       reject: false,
     })
-    // If --skip is not supported, try just showing current state
     if (result.exitCode === 0) {
       console.log(chalk.green("    Migrations up to date"))
     } else {
-      // Fallback: check if Medusa command responds at all
       const healthCheck = await execa("pnpm", ["--filter", "@ibatexas/commerce", "exec", "medusa", "--version"], {
         cwd: ROOT,
         reject: false,
@@ -427,43 +418,40 @@ async function runStatus() {
   } catch {
     console.log(chalk.yellow("    Cannot determine Medusa migration status"))
   }
+}
 
-  console.log()
+function printPrismaStatusLine(trimmed: string): void {
+  if (trimmed.startsWith("Database schema is up to date")) {
+    console.log(chalk.green(`    ${trimmed}`))
+  } else if (trimmed.includes("migration") || trimmed.includes("Following")) {
+    console.log(chalk.white(`    ${trimmed}`))
+  } else if (trimmed.includes("not yet been applied")) {
+    console.log(chalk.yellow(`    ${trimmed}`))
+  } else if (trimmed.includes("applied")) {
+    console.log(chalk.green(`    ${trimmed}`))
+  }
+}
 
-  // ── Domain (Prisma) migrations ────────────────────────────────────────────
-  step("Domain (Prisma — ibx_domain)")
+async function checkPrismaMigrations(): Promise<void> {
   try {
     const result = await execa(
       "pnpm", ["--filter", "@ibatexas/domain", "exec", "prisma", "migrate", "status"],
       { cwd: ROOT, reject: false }
     )
     const output = `${result.stdout}\n${result.stderr}`.trim()
-
-    // Parse Prisma migrate status output
     const lines = output.split("\n").filter((l: string) => l.trim().length > 0)
     for (const line of lines) {
-      const trimmed = line.trim()
-      if (trimmed.startsWith("Database schema is up to date")) {
-        console.log(chalk.green(`    ${trimmed}`))
-      } else if (trimmed.includes("migration") || trimmed.includes("Following")) {
-        console.log(chalk.white(`    ${trimmed}`))
-      } else if (trimmed.includes("not yet been applied")) {
-        console.log(chalk.yellow(`    ${trimmed}`))
-      } else if (trimmed.includes("applied")) {
-        console.log(chalk.green(`    ${trimmed}`))
-      }
+      printPrismaStatusLine(line.trim())
     }
-
     if (result.exitCode !== 0 && lines.length === 0) {
       console.log(chalk.yellow("    Pending migrations — run: ibx db migrate:domain"))
     }
   } catch {
     console.log(chalk.yellow("    Cannot determine Prisma migration status"))
   }
+}
 
-  // ── Table counts ──────────────────────────────────────────────────────────
-  console.log()
-  step("Domain table counts")
+async function printDomainTableCounts(): Promise<void> {
   try {
     const { prisma } = await import("@ibatexas/domain")
 
@@ -496,6 +484,25 @@ async function runStatus() {
   } catch (err) {
     console.log(chalk.yellow(`    Cannot query domain tables: ${(err as Error).message}`))
   }
+}
+
+async function runStatus() {
+  console.log(chalk.bold("\n  ibx db status\n"))
+
+  const step = (msg: string) =>
+    console.log(chalk.bold(`  ${chalk.cyan("●")} ${msg}\n`))
+
+  step("Medusa (MikroORM)")
+  await checkMedusaMigrations()
+
+  console.log()
+
+  step("Domain (Prisma — ibx_domain)")
+  await checkPrismaMigrations()
+
+  console.log()
+  step("Domain table counts")
+  await printDomainTableCounts()
 
   console.log()
 }

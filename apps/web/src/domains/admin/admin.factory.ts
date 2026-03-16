@@ -96,7 +96,7 @@ export function createAdminListHook<TFilters, TRaw, T>(
     const deps = JSON.stringify(filters)
 
     useEffect(() => {
-      const params = options.buildParams(filters as TFilters)
+      const params = options.buildParams(filters)
       setLoading(true)
       apiFetch<TRaw>(`${baseEndpoint}?${params}`)
         .then((res) => {

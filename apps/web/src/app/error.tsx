@@ -3,10 +3,10 @@
 export default function RootError({
   error,
   reset,
-}: {
+}: Readonly<{
   error: Error & { digest?: string }
   reset: () => void
-}) {
+}>) {
   return (
     <html lang="pt-BR">
       <body style={{ fontFamily: "system-ui, sans-serif", margin: 0 }}>

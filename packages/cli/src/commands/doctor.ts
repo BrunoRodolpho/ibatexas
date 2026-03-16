@@ -254,6 +254,14 @@ async function checkTagCount(tagValue: string): Promise<{ status: DiagStatus; de
   }
 }
 
+// ── Icon helper ──────────────────────────────────────────────────────────────
+
+function statusIcon(status: DiagStatus): string {
+  if (status === "ok") return chalk.green("✅")
+  if (status === "warn") return chalk.yellow("⚠️ ")
+  return chalk.red("❌")
+}
+
 // ── Helper ───────────────────────────────────────────────────────────────────
 
 async function runInfraCheck(
@@ -265,10 +273,7 @@ async function runInfraCheck(
     const result = await fn()
     results.push({ section: "check", check, ...result })
 
-    const icon =
-      result.status === "ok" ? chalk.green("✅") :
-      result.status === "warn" ? chalk.yellow("⚠️ ") :
-      chalk.red("❌")
+    const icon = statusIcon(result.status)
     console.log(`    ${icon} ${check.padEnd(20)} ${chalk.dim(result.detail)}`)
   } catch (err) {
     results.push({ section: "check", check, status: "error", detail: (err as Error).message })

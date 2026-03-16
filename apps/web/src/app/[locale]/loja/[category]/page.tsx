@@ -12,12 +12,12 @@ interface CategoryPageProps {
   }
 }
 
-const validCategories = ['camisetas', 'acessorios', 'kits']
+const validCategories = new Set(['camisetas', 'acessorios', 'kits'])
 
 export default function CategoryPage({ params }: CategoryPageProps) {
   const t = useTranslations()
 
-  if (!validCategories.includes(params.category)) {
+  if (!validCategories.has(params.category)) {
     notFound()
   }
 
@@ -54,22 +54,30 @@ export default function CategoryPage({ params }: CategoryPageProps) {
       </div>
 
       {/* Products */}
-      {loading ? (
-        <div className="text-center py-12">
-          <Text>{t('common.loading')}</Text>
-        </div>
-      ) : filteredProducts.length ? (
-        <ProductGrid 
-          products={filteredProducts} 
-          getProductHref={(product) => `/loja/produto/${product.id}`}
-        />
-      ) : (
-        <div className="text-center py-12">
-          <Text variant="body" className="text-smoke-400">
-            {t('shop.empty_states.no_products')}
-          </Text>
-        </div>
-      )}
+      {(() => {
+        if (loading) {
+          return (
+            <div className="text-center py-12">
+              <Text>{t('common.loading')}</Text>
+            </div>
+          )
+        }
+        if (filteredProducts.length) {
+          return (
+            <ProductGrid
+              products={filteredProducts}
+              getProductHref={(product) => `/loja/produto/${product.id}`}
+            />
+          )
+        }
+        return (
+          <div className="text-center py-12">
+            <Text variant="body" className="text-smoke-400">
+              {t('shop.empty_states.no_products')}
+            </Text>
+          </div>
+        )
+      })()}
     </div>
   )
 }

@@ -26,7 +26,7 @@ export function useCartAbandonmentNudge() {
   useEffect(() => {
     // Only fire once per component lifecycle + once per session
     if (firedRef.current) return
-    if (typeof window === 'undefined') return
+    if (typeof globalThis.window === 'undefined') return
     if (sessionStorage.getItem(NUDGE_SESSION_KEY)) return
 
     const state = useCartStore.getState()

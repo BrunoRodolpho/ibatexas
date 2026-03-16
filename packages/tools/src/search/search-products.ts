@@ -40,6 +40,10 @@ import { typesenseDocToDTO } from "../mappers/product-mapper.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
 
+// ── Types ────────────────────────────────────────────────────────────────────
+
+type UserType = "guest" | "customer" | "staff"
+
 // ── Availability ──────────────────────────────────────────────────────────────
 
 /**
@@ -228,9 +232,9 @@ async function executeTypesenseSearch(opts: TypesenseSearchOptions): Promise<Typ
 
   return {
     hits: docs,
-    totalFound: (response as any).found ?? 0,
+    totalFound: response.found ?? 0,
     scores,
-    facetCounts: parseFacetCounts((response as any).facet_counts),
+    facetCounts: parseFacetCounts(response.facet_counts),
   }
 }
 
@@ -317,7 +321,7 @@ interface SingleQueryResult {
 interface SingleQuerySearchOptions {
   query: string
   filters: FilterOptions
-  userType: "guest" | "customer" | "staff"
+  userType: UserType
   sessionId: string
   limit: number
   cacheCtx: CacheFilterContext
@@ -418,7 +422,7 @@ async function cacheAndLogResults(
   cacheCtx: CacheFilterContext,
   cacheTtl: number,
   sessionId: string,
-  userType: "guest" | "customer" | "staff",
+  userType: UserType,
 ): Promise<void> {
   try {
     if (queryEmbedding.length > 0) {
@@ -485,7 +489,7 @@ interface SearchContext {
   sessionId: string
   channel: Channel
   userId?: string
-  userType?: "guest" | "customer" | "staff"
+  userType?: UserType
 }
 
 /**

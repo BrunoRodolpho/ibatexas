@@ -332,14 +332,10 @@ const RESERVATION_TEMPLATES: ReservationTemplate[] = [
 
 // ── Seeding functions ───────────────────────────────────────────────────────
 
-async function seedOrderItems(products: MedusaProduct[]) {
-  console.log("📦  Seeding order history…")
+type ProductLookup = Map<string, { id: string; variants: Map<string, { id: string; price: number }> }>
 
-  // Build lookup: handle → { id, variants: Map<title, { id, price }> }
-  const productMap = new Map<
-    string,
-    { id: string; variants: Map<string, { id: string; price: number }> }
-  >()
+function buildProductLookup(products: MedusaProduct[]): ProductLookup {
+  const productMap: ProductLookup = new Map()
   for (const p of products) {
     const variantMap = new Map<string, { id: string; price: number }>()
     for (const v of p.variants ?? []) {
@@ -347,6 +343,13 @@ async function seedOrderItems(products: MedusaProduct[]) {
     }
     productMap.set(p.handle, { id: p.id, variants: variantMap })
   }
+  return productMap
+}
+
+async function seedOrderItems(products: MedusaProduct[]) {
+  console.log("📦  Seeding order history…")
+
+  const productMap = buildProductLookup(products)
 
   // Look up customer IDs by phone
   const customers = await prisma.customer.findMany({
@@ -518,7 +521,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+try {
+  await main()
+} catch (err) {
   console.error(err)
   process.exit(1)
-})
+}

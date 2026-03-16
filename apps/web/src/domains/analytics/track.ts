@@ -18,20 +18,20 @@ let sessionId: string | null = null
 // ── Meaningful events that trigger session_started ────────────────────────
 // Bounced visitors don't count in RPS denominator.
 // checkout_started covers returning users who land on checkout with a persisted cart.
-const MEANINGFUL_EVENTS: AnalyticsEvent[] = [
+const MEANINGFUL_EVENTS = new Set<AnalyticsEvent>([
   'pdp_viewed',
   'search_performed',
   'add_to_cart',
   'checkout_started',
-]
+])
 
 /**
  * Fire session_started lazily on first meaningful interaction.
  * Uses sessionStorage flag to ensure once-per-session firing.
  */
 function ensureSessionStarted(event: AnalyticsEvent): void {
-  if (!MEANINGFUL_EVENTS.includes(event)) return
-  if (typeof window === 'undefined') return
+  if (!MEANINGFUL_EVENTS.has(event)) return
+  if (typeof globalThis.window === 'undefined') return
   if (sessionStorage.getItem('ibx_session_started')) return
   sessionStorage.setItem('ibx_session_started', '1')
   // Fire session_started — recursive call is safe because flag is now set
@@ -46,7 +46,7 @@ function registerPostHogSession(id: string): void {
 
 export function getSessionId(): string {
   if (sessionId) return sessionId
-  if (typeof window === 'undefined') return 'ssr'
+  if (typeof globalThis.window === 'undefined') return 'ssr'
 
   // Try to reuse existing session from sessionStorage
   const stored = sessionStorage.getItem('ibx_analytics_session')
@@ -72,7 +72,7 @@ function enrichProperties(properties?: Record<string, unknown>): Record<string, 
     sessionId: sessionId ?? 'unknown',
     ibx_session_id: sessionId ?? 'unknown',
     timestamp: new Date().toISOString(),
-    url: typeof window !== 'undefined' ? globalThis.location.pathname : undefined,
+    url: typeof globalThis.window !== 'undefined' ? globalThis.location.pathname : undefined,
   }
 }
 
@@ -119,7 +119,7 @@ export function track(
   event: AnalyticsEvent,
   properties?: Record<string, unknown>,
 ): void {
-  if (typeof window === 'undefined') return
+  if (typeof globalThis.window === 'undefined') return
 
   // Ensure session is initialised
   getSessionId()

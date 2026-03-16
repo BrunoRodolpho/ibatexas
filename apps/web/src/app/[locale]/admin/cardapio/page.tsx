@@ -5,11 +5,10 @@ import Image from 'next/image'
 import { useTranslations } from 'next-intl'
 import { createColumnHelper } from '@tanstack/react-table'
 import { ExternalLink, RefreshCw } from 'lucide-react'
-import { DataTable, Badge, Switch } from '@/components/atoms'
+import { DataTable, Switch } from '@/components/atoms'
 import { SearchInput, FilterChip } from '@/components/molecules'
-import { MEDUSA_ADMIN_URL } from '@/lib/api'
+import { MEDUSA_ADMIN_URL, apiFetch } from '@/lib/api'
 import { useAdminProducts } from '@/domains/admin'
-import { apiFetch } from '@/lib/api'
 import type { AdminProductRow } from '@ibatexas/types'
 
 const col = createColumnHelper<AdminProductRow>()
@@ -18,6 +17,47 @@ function formatBRL(centavos: number) {
   return centavos
     ? (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
     : '—'
+}
+
+// ── Cell renderer components (extracted to module level) ──────────────────────
+
+function ImageCell({ url }: { readonly url: string | null }) {
+  return url ? (
+    <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
+  ) : (
+    <div className="h-10 w-10 rounded-sm bg-smoke-100" />
+  )
+}
+
+const TYPE_LABELS: Record<string, string> = { food: 'Comida', frozen: 'Congelado', merchandise: 'Loja' }
+
+function TypeCell({ type }: { readonly type: string }) {
+  return <span className="capitalize">{TYPE_LABELS[type] ?? type}</span>
+}
+
+function StatusCell({ product, onToggle }: { readonly product: AdminProductRow; readonly onToggle: (p: AdminProductRow) => void }) {
+  return (
+    <Switch
+      checked={product.status === 'published'}
+      onChange={() => onToggle(product)}
+      size="sm"
+    />
+  )
+}
+
+function ActionsCell({ productId }: { readonly productId: string }) {
+  return (
+    <a
+      href={`${MEDUSA_ADMIN_URL}/app/products/${productId}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
+      onClick={(e) => e.stopPropagation()}
+    >
+      Editar
+      <ExternalLink className="h-3 w-3" />
+    </a>
+  )
 }
 
 export default function MenuManagement() {
@@ -47,54 +87,23 @@ export default function MenuManagement() {
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => {
-        const url = i.getValue() as string | null
-        return url ? (
-          <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
-        ) : (
-          <div className="h-10 w-10 rounded-sm bg-smoke-100" />
-        )
-      },
+      cell: (i) => <ImageCell url={i.getValue() as string | null} />,
     }),
     col.accessor('title', { header: t('admin.col_name') }),
     col.accessor('category', { header: t('admin.col_category') }),
     col.accessor('productType', {
       header: t('admin.col_type'),
-      cell: (i) => {
-        const type = i.getValue() as string
-        const labels: Record<string, string> = { food: 'Comida', frozen: 'Congelado', merchandise: 'Loja' }
-        return <span className="capitalize">{labels[type] ?? type}</span>
-      },
+      cell: (i) => <TypeCell type={i.getValue() as string} />,
     }),
     col.accessor('variantCount', { header: t('admin.col_variants') }),
     col.accessor('status', {
       header: t('admin.col_status'),
-      cell: (i) => {
-        const product = i.row.original
-        return (
-          <Switch
-            checked={product.status === 'published'}
-            onChange={() => handleToggleStatus(product)}
-            size="sm"
-          />
-        )
-      },
+      cell: (i) => <StatusCell product={i.row.original} onToggle={handleToggleStatus} />,
     }),
     col.display({
       id: 'actions',
       header: '',
-      cell: (i) => (
-        <a
-          href={`${MEDUSA_ADMIN_URL}/app/products/${i.row.original.id}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Editar
-          <ExternalLink className="h-3 w-3" />
-        </a>
-      ),
+      cell: (i) => <ActionsCell productId={i.row.original.id} />,
     }),
   ]
 

@@ -47,6 +47,7 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
 
         return reply.send({ reservations, total })
       } catch (err) {
+        server.log.error(err, "Failed to fetch reservations");
         reply.code(500).send({ error: "Failed to fetch reservations" })
       }
     },
@@ -71,6 +72,7 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         })
         return reply.send({ reservation: updated })
       } catch (err) {
+        server.log.error(err, "Failed to check in reservation");
         reply.code(500).send({ error: "Failed to check in reservation" })
       }
     },
@@ -95,6 +97,7 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         })
         return reply.send({ reservation: updated })
       } catch (err) {
+        server.log.error(err, "Failed to complete reservation");
         reply.code(500).send({ error: "Failed to complete reservation" })
       }
     },

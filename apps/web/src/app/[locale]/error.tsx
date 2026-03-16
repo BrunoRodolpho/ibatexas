@@ -5,10 +5,10 @@ import { useTranslations } from "next-intl"
 export default function ErrorPage({
   error,
   reset,
-}: {
+}: Readonly<{
   error: globalThis.Error & { digest?: string }
   reset: () => void
-}) {
+}>) {
   const t = useTranslations("common")
 
   return (

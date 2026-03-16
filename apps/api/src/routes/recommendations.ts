@@ -41,7 +41,7 @@ export async function recommendationRoutes(server: FastifyInstance): Promise<voi
       schema: { querystring: RecsQuery },
     },
     async (request) => {
-      const { limit, context } = request.query as z.infer<typeof RecsQuery>;
+      const { limit, context } = request.query;
       const customerId = (request as { customerId?: string }).customerId;
 
       const result = await getRecommendations(
@@ -63,7 +63,7 @@ export async function recommendationRoutes(server: FastifyInstance): Promise<voi
       schema: { querystring: AlsoAddedQuery },
     },
     async (request) => {
-      const { productId, limit } = request.query as z.infer<typeof AlsoAddedQuery>;
+      const { productId, limit } = request.query;
 
       const result = await getAlsoAdded(
         { productId, limit },

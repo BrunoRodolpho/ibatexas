@@ -1,8 +1,6 @@
 import { Suspense } from 'react'
 import type { Metadata } from 'next'
-import { Skeleton } from '@/components/atoms/Skeleton'
 import PDPContent from './PDPContent'
-import { getApiBase } from '@/lib/api'
 
 /** ISR: revalidate product pages every 60s — keeps SEO content fresh */
 export const revalidate = 60

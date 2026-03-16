@@ -74,10 +74,10 @@ export default async function ({ container }: ExecArgs) {
   }
 
   // Children (parents already in categoryMap)
-  const children = CATEGORIES.filter((c) => c.parent !== null)
+  const children = CATEGORIES.filter((c): c is typeof c & { parent: string } => c.parent !== null)
   const createdChildren = await productModule.createProductCategories(
     children.map((c) => {
-      const parentId = categoryMap.get(c.parent!)
+      const parentId = categoryMap.get(c.parent)
       if (!parentId) {
         throw new Error(`Parent category '${c.parent}' not found for child '${c.handle}'`)
       }

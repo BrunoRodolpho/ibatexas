@@ -52,5 +52,5 @@ export const config = {
   // - API routes
   // - Next.js internals (_next)
   // - Static files (favicon, images, etc.)
-  matcher: ["/((?!api|_next|.*\\..*).*)"],
+  matcher: [String.raw`/((?!api|_next|.*\..*).*)` ],
 }

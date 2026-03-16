@@ -101,7 +101,7 @@ async function showProductTypesenseData(productId: string): Promise<void> {
     const ts = getTypesenseClient()
     const doc = await ts.collections(COLLECTION).documents(productId).retrieve() as Record<string, unknown>
     const rating = doc.rating ? `${Number(doc.rating).toFixed(1)}★` : "n/a"
-    const reviewCount = doc.reviewCount ?? 0
+    const reviewCount = Number(doc.reviewCount ?? 0)
     const price = doc.price ? `R$${(Number(doc.price) / 100).toFixed(2)}` : "n/a"
     const ratingLabel = chalk.cyan(`${rating} (${reviewCount} reviews)`)
     console.log(`  Rating        ${ratingLabel}`)
@@ -128,7 +128,7 @@ async function showProductIntelligence(productId: string): Promise<void> {
   try {
     const redis = await getRedis()
     const score = await redis.zScore(rk("product:global:score"), productId)
-    console.log(`  Global Score  ${chalk.cyan(score !== null ? String(score) : "none")}`)
+    console.log(`  Global Score  ${chalk.cyan(score === null ? "none" : String(score))}`)
 
     // Copurchase
     const members = await redis.zRangeWithScores(rk(`copurchase:${productId}`), 0, 9, { REV: true })

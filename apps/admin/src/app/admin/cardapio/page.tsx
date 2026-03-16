@@ -18,6 +18,19 @@ function formatBRL(centavos: number) {
     : '—'
 }
 
+function ImageCell({ url }: Readonly<{ url: string | null }>) {
+  return url ? (
+    <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
+  ) : (
+    <div className="h-10 w-10 rounded-sm bg-smoke-100" />
+  )
+}
+
+function ProductTypeCell({ type }: Readonly<{ type: string }>) {
+  const labels: Record<string, string> = { food: 'Comida', frozen: 'Congelado', merchandise: 'Loja' }
+  return <span className="capitalize">{labels[type] ?? type}</span>
+}
+
 export default function MenuManagement() {
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'food' | 'frozen' | ''>('')
@@ -44,24 +57,13 @@ export default function MenuManagement() {
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => {
-        const url = i.getValue() as string | null
-        return url ? (
-          <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
-        ) : (
-          <div className="h-10 w-10 rounded-sm bg-smoke-100" />
-        )
-      },
+      cell: (i) => <ImageCell url={i.getValue() as string | null} />,
     }),
     col.accessor('title', { header: 'Nome' }),
     col.accessor('category', { header: 'Categoria' }),
     col.accessor('productType', {
       header: 'Tipo',
-      cell: (i) => {
-        const type = i.getValue() as string
-        const labels: Record<string, string> = { food: 'Comida', frozen: 'Congelado', merchandise: 'Loja' }
-        return <span className="capitalize">{labels[type] ?? type}</span>
-      },
+      cell: (i) => <ProductTypeCell type={i.getValue() as string} />,
     }),
     col.accessor('variantCount', { header: 'Variantes' }),
     col.accessor('status', {

@@ -88,8 +88,10 @@ async function checkReviews(): Promise<StatusCheck> {
   const reviewCount = await prisma.review.count()
   const avgResult = await prisma.review.aggregate({ _avg: { rating: true } })
   const avg = avgResult._avg.rating?.toFixed(1) ?? "0"
-  const reviewStatus: "ok" | "warn" | "empty" =
-    reviewCount >= 5 ? "ok" : reviewCount > 0 ? "warn" : "empty"
+  let reviewStatus: "ok" | "warn" | "empty"
+  if (reviewCount >= 5) reviewStatus = "ok"
+  else if (reviewCount > 0) reviewStatus = "warn"
+  else reviewStatus = "empty"
   return {
     section: "Reviews",
     status: reviewStatus,
@@ -235,14 +237,15 @@ function printStatusTable(checks: StatusCheck[], elapsed: string): void {
   const countW = 8
   let allOk = true
   for (const check of checks) {
-    const icon =
-      check.status === "ok" ? chalk.green("✅") :
-      check.status === "warn" ? chalk.yellow("⚠️ ") :
-      chalk.gray("○ ")
-    const countStr =
-      check.status === "ok" ? chalk.green(check.count.padEnd(countW)) :
-      check.status === "warn" ? chalk.yellow(check.count.padEnd(countW)) :
-      chalk.gray(check.count.padEnd(countW))
+    let icon: string
+    if (check.status === "ok") icon = chalk.green("✅")
+    else if (check.status === "warn") icon = chalk.yellow("⚠️ ")
+    else icon = chalk.gray("○ ")
+
+    let countStr: string
+    if (check.status === "ok") countStr = chalk.green(check.count.padEnd(countW))
+    else if (check.status === "warn") countStr = chalk.yellow(check.count.padEnd(countW))
+    else countStr = chalk.gray(check.count.padEnd(countW))
 
     console.log(
       `  ${check.section.padEnd(sectionW)}${icon} ${countStr} ${chalk.dim(check.details)}`

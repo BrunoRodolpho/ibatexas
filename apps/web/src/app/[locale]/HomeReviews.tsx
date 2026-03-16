@@ -134,7 +134,7 @@ export function HomeReviews() {
                 <div className="flex items-center gap-0.5 mb-3">
                   {Array.from({ length: 5 }).map((_, i) => (
                     <Star
-                      key={`star-${i}`}
+                      key={`${review.id}-star-${i}`}
                       className={`w-3.5 h-3.5 ${
                         i < review.rating
                           ? 'fill-brand-500 text-brand-500'

@@ -230,6 +230,26 @@ async function detailRedis(redisUrl: string): Promise<void> {
   }
 }
 
+function renderTypesenseCollections(
+  collections: Array<{ name: string; num_documents: number }>,
+): void {
+  console.log(`\n  ${chalk.bold("Collections")}  ${collections.length}`)
+  for (const col of collections) {
+    const docCount = col.num_documents ?? 0
+    const docColor = docCount > 0 ? chalk.green : chalk.yellow
+    const docLabel = docColor(`${docCount} docs`)
+    console.log(`    · ${chalk.white(col.name.padEnd(20))} ${docLabel}`)
+  }
+  if (collections.length === 0) {
+    console.log(chalk.yellow(`    No collections found — run: ibx db reindex`))
+  } else {
+    const productsCol = collections.find((c) => c.name === "products")
+    if (productsCol?.num_documents === 0) {
+      console.log(chalk.yellow(`\n  ⚠  products collection is empty — run: ibx db reindex`))
+    }
+  }
+}
+
 async function detailTypesense(host: string, port: string): Promise<void> {
   console.log(chalk.bold(`\n  ${chalk.cyan("●")} Typesense — Detailed Health\n`))
 
@@ -258,21 +278,7 @@ async function detailTypesense(host: string, port: string): Promise<void> {
 
     if (collectionsRes?.ok) {
       const collections = (await collectionsRes.json()) as Array<{ name: string; num_documents: number }>
-      console.log(`\n  ${chalk.bold("Collections")}  ${collections.length}`)
-      for (const col of collections) {
-        const docCount = col.num_documents ?? 0
-        const docColor = docCount > 0 ? chalk.green : chalk.yellow
-        const docLabel = docColor(`${docCount} docs`)
-        console.log(`    · ${chalk.white(col.name.padEnd(20))} ${docLabel}`)
-      }
-      if (collections.length === 0) {
-        console.log(chalk.yellow(`    No collections found — run: ibx db reindex`))
-      } else {
-        const productsCol = collections.find((c) => c.name === "products")
-        if (productsCol && productsCol.num_documents === 0) {
-          console.log(chalk.yellow(`\n  ⚠  products collection is empty — run: ibx db reindex`))
-        }
-      }
+      renderTypesenseCollections(collections)
     } else if (!apiKey) {
       console.log(chalk.gray(`\n  Set TYPESENSE_API_KEY to see collection details`))
     }

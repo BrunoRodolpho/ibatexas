@@ -26,7 +26,7 @@ export const Modal: React.FC<ModalProps> = ({
   footer,
   size = 'md',
 }) => {
-  const overlayRef = useRef<HTMLDivElement>(null)
+  const overlayRef = useRef<HTMLDialogElement>(null)
 
   // Escape key handler
   useEffect(() => {
@@ -57,21 +57,18 @@ export const Modal: React.FC<ModalProps> = ({
     const last = focusable[focusable.length - 1]
     if (e.shiftKey) {
       if (document.activeElement === first) { e.preventDefault(); last.focus() }
-    } else {
-      if (document.activeElement === last) { e.preventDefault(); first.focus() }
-    }
+    } else if (document.activeElement === last) { e.preventDefault(); first.focus() }
   }, [])
 
   if (!isOpen) return null
 
   return (
-    <div
+    <dialog
       ref={overlayRef}
-      className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center"
+      open
+      className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center w-full h-full m-0 max-w-none max-h-none p-0 border-none bg-transparent"
       onClick={onClose}
       onKeyDown={handleKeyDown}
-      role="dialog"
-      aria-modal="true"
       aria-labelledby="modal-title"
     >
       <div
@@ -80,7 +77,6 @@ export const Modal: React.FC<ModalProps> = ({
           sizeClasses[size]
         )}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-smoke-50 border-b border-smoke-200 px-6 py-4 flex items-center justify-between rounded-t-sm">
           <h2 id="modal-title" className="text-base font-semibold text-charcoal-900">
@@ -108,7 +104,7 @@ export const Modal: React.FC<ModalProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </dialog>
   )
 }
 
@@ -131,7 +127,7 @@ export const Sheet: React.FC<SheetProps> = ({
   footer,
   position = 'right',
 }) => {
-  const sheetRef = useRef<HTMLDivElement>(null)
+  const sheetRef = useRef<HTMLDialogElement>(null)
 
   // Escape key handler
   useEffect(() => {
@@ -162,9 +158,7 @@ export const Sheet: React.FC<SheetProps> = ({
     const last = focusable[focusable.length - 1]
     if (e.shiftKey) {
       if (document.activeElement === first) { e.preventDefault(); last.focus() }
-    } else {
-      if (document.activeElement === last) { e.preventDefault(); first.focus() }
-    }
+    } else if (document.activeElement === last) { e.preventDefault(); first.focus() }
   }, [])
 
   // Auto-focus first focusable element on open
@@ -181,13 +175,12 @@ export const Sheet: React.FC<SheetProps> = ({
   if (!isOpen) return null
 
   return (
-    <div
+    <dialog
       ref={sheetRef}
-      className="fixed inset-0 z-50 overflow-y-auto bg-black/50 animate-fade-in"
+      open
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/50 animate-fade-in w-full h-full m-0 max-w-none max-h-none p-0 border-none bg-transparent"
       onClick={onClose}
       onKeyDown={handleKeyDown}
-      role="dialog"
-      aria-modal="true"
       aria-labelledby="sheet-title"
     >
       <div
@@ -200,7 +193,6 @@ export const Sheet: React.FC<SheetProps> = ({
           position === 'left' && 'left-0 animate-slide-in-left',
         )}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-4 flex items-center justify-between">
           <h2 id="sheet-title" className="text-base font-semibold text-charcoal-900">
@@ -228,6 +220,6 @@ export const Sheet: React.FC<SheetProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </dialog>
   )
 }

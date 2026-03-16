@@ -7,7 +7,7 @@ import { Button } from "@/components/atoms"
 
 export default function AccountPage() {
   const t = useTranslations()
-  const { customerId, userType, logout } = useSessionStore()
+  const { customerId, logout } = useSessionStore()
 
   if (!customerId) {
     return (

@@ -89,18 +89,18 @@ export function DataTable<T>({
         <table className="w-full text-[13px]">
           <thead>
             <tr className="border-b border-smoke-100 bg-smoke-100/50">
-              {columns.map((_, i) => (
-                <th key={`skel-th-${i}`} className="px-4 py-2.5">
+              {columns.map((col) => (
+                <th key={`skel-th-${col.id ?? String(col.header)}`} className="px-4 py-2.5">
                   <div className="h-3 w-20 animate-pulse rounded bg-smoke-200" />
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {Array.from({ length: 5 }).map((_, i) => (
-              <tr key={`skel-tr-${i}`} className="border-b border-smoke-100">
-                {columns.map((_, j) => (
-                  <td key={`skel-td-${i}-${j}`} className="px-4 py-2.5">
+            {['skel-row-0', 'skel-row-1', 'skel-row-2', 'skel-row-3', 'skel-row-4'].map((rowKey) => (
+              <tr key={rowKey} className="border-b border-smoke-100">
+                {columns.map((col) => (
+                  <td key={`${rowKey}-${col.id ?? String(col.header)}`} className="px-4 py-2.5">
                     <div className="h-3 w-full animate-pulse rounded bg-smoke-100" />
                   </td>
                 ))}

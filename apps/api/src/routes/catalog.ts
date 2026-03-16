@@ -267,7 +267,7 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
       const needsEnrichment =
         !product.variants ||
         product.variants.length === 0 ||
-        product.variants.every((v) => v.price === 0);
+        (product.variants.length > 0 && product.variants.every((v) => v.price === 0));
       if (needsEnrichment) {
         try {
           const data = await medusaAdmin(

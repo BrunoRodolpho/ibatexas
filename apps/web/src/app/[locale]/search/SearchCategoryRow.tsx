@@ -65,12 +65,12 @@ export function SearchCategoryRow({
       >
         {/* "Todos" reset option */}
         <button
-          ref={!selectedCategory ? activeRef : undefined}
+          ref={selectedCategory ? undefined : activeRef}
           onClick={() => onClearCategory()}
           className={`category-pill flex-shrink-0 snap-start flex items-center gap-2 text-sm font-medium tracking-wide px-4 py-2.5 rounded-full transition-all duration-500 ease-luxury focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-2 ${
-            !selectedCategory
-              ? 'bg-charcoal-900 text-smoke-50 font-semibold shadow-md'
-              : 'text-smoke-500 hover:text-charcoal-900 hover:bg-smoke-100 hover:-translate-y-0.5 hover:shadow-sm'
+            selectedCategory
+              ? 'text-smoke-500 hover:text-charcoal-900 hover:bg-smoke-100 hover:-translate-y-0.5 hover:shadow-sm'
+              : 'bg-charcoal-900 text-smoke-50 font-semibold shadow-md'
           }`}
         >
           <UtensilsCrossed className="w-4 h-4" strokeWidth={1.5} />

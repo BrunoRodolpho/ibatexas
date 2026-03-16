@@ -143,7 +143,7 @@ export function compareSnapshot(
 
   // Check for new sections in current that aren't in snapshot
   for (const curCheck of current.checks) {
-    if (!snapshot.checks.find((s) => s.section === curCheck.section)) {
+    if (!snapshot.checks.some((s) => s.section === curCheck.section)) {
       diffs.push({
         section: curCheck.section,
         expected: curCheck.expected,

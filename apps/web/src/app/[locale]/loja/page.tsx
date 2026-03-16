@@ -37,27 +37,35 @@ export default function ShopPage() {
             </Link>
           </div>
 
-          {loading ? (
-            <div className="text-center py-16">
-              <Text className="text-smoke-400">{t('common.loading')}</Text>
-            </div>
-          ) : data?.items?.length ? (
-            <ProductGrid
-              products={data.items}
-              columns={4}
-              featured
-              getProductHref={(product) => `/loja/produto/${product.id}`}
-            />
-          ) : (
-            <div className="py-20 text-center">
-              <p className="font-display text-2xl text-smoke-300 tracking-display">
-                Em breve
-              </p>
-              <p className="mt-3 text-sm text-smoke-400">
-                {t('shop.empty_states.no_featured')}
-              </p>
-            </div>
-          )}
+          {(() => {
+            if (loading) {
+              return (
+                <div className="text-center py-16">
+                  <Text className="text-smoke-400">{t('common.loading')}</Text>
+                </div>
+              )
+            }
+            if (data?.items?.length) {
+              return (
+                <ProductGrid
+                  products={data.items}
+                  columns={4}
+                  featured
+                  getProductHref={(product) => `/loja/produto/${product.id}`}
+                />
+              )
+            }
+            return (
+              <div className="py-20 text-center">
+                <p className="font-display text-2xl text-smoke-300 tracking-display">
+                  Em breve
+                </p>
+                <p className="mt-3 text-sm text-smoke-400">
+                  {t('shop.empty_states.no_featured')}
+                </p>
+              </div>
+            )
+          })()}
         </div>
       </section>
 

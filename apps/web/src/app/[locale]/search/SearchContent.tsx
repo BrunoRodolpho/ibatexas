@@ -3,7 +3,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
-import { Button } from '@/components/atoms'
 import { ProductGrid } from '@/components/organisms'
 import { useUIStore } from '@/domains/ui'
 import { useCartStore } from '@/domains/cart'
@@ -15,7 +14,6 @@ import { SearchEmptyState } from './SearchEmptyState'
 import { PitmasterPick } from '@/components/molecules/PitmasterPick'
 import { GuidedSection } from '@/components/molecules/GuidedSection'
 import { MostOrderedSection } from '@/components/molecules/MostOrderedSection'
-import { resolveCanonical } from '@/domains/search'
 
 const TAG_IDS = ['novo', 'popular', 'chef_choice', 'vegetariano', 'vegan', 'sem_gluten'] as const
 const CATEGORY_IDS = ['carnes-defumadas', 'acompanhamentos', 'sanduiches', 'sobremesas', 'bebidas', 'congelados'] as const
@@ -150,16 +148,6 @@ export default function SearchContent() {
     return () => observer.disconnect()
   }, [hasMore, allProducts.length])
 
-  const handleSearch = (query: string) => {
-    const canonical = resolveCanonical(query)
-    const effectiveQuery = canonical ?? query
-    setSearchQuery(effectiveQuery)
-    updateURL(selectedFilters, effectiveQuery)
-    if (canonical) {
-      track('search_synonym_resolved', { original: query, canonical })
-    }
-  }
-
   // Fire search_performed once results settle
   useEffect(() => {
     if (isLoading || !searchQuery) return
@@ -181,7 +169,7 @@ export default function SearchContent() {
       requestAnimationFrame(() => {
         const el = document.getElementById('product-grid')
         if (el) {
-          const y = el.getBoundingClientRect().top + globalThis.scrollY - globalThis.innerHeight * 0.20
+          const y = el.getBoundingClientRect().top + globalThis.scrollY - globalThis.innerHeight * 0.2
           globalThis.scrollTo({ top: y, behavior: 'smooth' })
         }
       })
@@ -196,16 +184,16 @@ export default function SearchContent() {
     track('filter_applied', { filterType: 'category', value: categoryId ?? 'all' })
 
     // Scroll after React re-renders
-    if (!newCategory) {
-      // Toggling OFF → back to zero state, scroll to grid
-      scrollToProductGrid()
-    } else {
+    if (newCategory) {
       // Selecting or switching category → scroll to top
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           globalThis.scrollTo({ top: 0, behavior: 'smooth' })
         })
       })
+    } else {
+      // Toggling OFF → back to zero state, scroll to grid
+      scrollToProductGrid()
     }
   }
 
@@ -310,11 +298,11 @@ export default function SearchContent() {
           {isMobileFilterOpen && (
             <>
               {/* Backdrop to close on outside click */}
+              {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
               <div
                 className="fixed inset-0 z-10"
                 onClick={() => setIsMobileFilterOpen(false)}
-                onKeyDown={(e) => { if (e.key === 'Escape') setIsMobileFilterOpen(false) }}
-                role="presentation"
+                aria-hidden="true"
               />
               {/* Unified single-row filter panel */}
               <div className="absolute top-full left-0 right-0 z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 sm:px-6 py-2.5 animate-fade-up">

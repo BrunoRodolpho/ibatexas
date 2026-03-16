@@ -247,7 +247,7 @@ function resolveSimConfig(opts: SimulationOptions): SimConfig {
   const behaviorDist = opts.behavior ?? {
     pitmaster: 0.15,
     family: 0.35,
-    casual: 0.40,
+    casual: 0.4,
     congelados: 0.05,
     superfan: 0.05,
   }
@@ -306,7 +306,7 @@ function buildOrder(
 
   for (let item = 0; item < numItems; item++) {
     const product = pickProductForProfile(catalog, customer.profile, rng)
-    if (product && !orderProducts.find((p) => p.id === product.id)) {
+    if (product && !orderProducts.some((p) => p.id === product.id)) {
       orderProducts.push(product)
     }
   }

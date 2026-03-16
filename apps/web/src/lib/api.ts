@@ -7,7 +7,7 @@ import type { ZodType } from 'zod'
  * current hostname so the phone can actually reach the Mac's API server.
  */
 function getApiBase(): string {
-  if (typeof window === "undefined") {
+  if (typeof globalThis.window === "undefined") {
     return process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
   }
   const configured = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
@@ -56,7 +56,7 @@ export async function apiFetch<T = unknown>(
   const url = `${API_BASE}${endpoint}`
 
   // Apply a default timeout unless the caller already provides a signal
-  const timeoutController = !options?.signal ? new AbortController() : null
+  const timeoutController = options?.signal ? null : new AbortController()
   const timeoutId = timeoutController
     ? setTimeout(() => timeoutController.abort(), DEFAULT_TIMEOUT_MS)
     : null
@@ -121,8 +121,8 @@ export const apiStream = async (endpoint: string, onChunk: (chunk: unknown) => v
           try {
             const data = JSON.parse(line.slice(6))
             onChunk(data)
-          } catch (err) {
-            console.warn("Failed to parse chunk:", line)
+          } catch {
+            // Malformed JSON chunk — skip and continue processing stream
           }
         }
       }

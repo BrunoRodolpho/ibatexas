@@ -1,10 +1,9 @@
 'use client'
 
-import { ChefHat } from 'lucide-react'
+import { ChefHat, Plus, Minus, Check } from 'lucide-react'
 import { useTranslations } from 'next-intl'
 import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
-import { Plus, Minus, Check } from 'lucide-react'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
 import { track } from '@/domains/analytics'
 import { useState, useCallback } from 'react'

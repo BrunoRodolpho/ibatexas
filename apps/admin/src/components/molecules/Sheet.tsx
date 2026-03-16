@@ -47,28 +47,30 @@ export function Sheet({
     const last = focusable[focusable.length - 1]
     if (e.shiftKey) {
       if (document.activeElement === first) { e.preventDefault(); last.focus() }
-    } else {
-      if (document.activeElement === last) { e.preventDefault(); first.focus() }
+    } else if (document.activeElement === last) {
+      e.preventDefault(); first.focus()
     }
   }, [])
 
   if (!isOpen) return null
 
-  const positionClasses =
-    position === 'bottom'
-      ? 'bottom-0 left-0 right-0 max-h-[85vh] rounded-t-lg animate-slide-in-bottom'
-      : `top-0 bottom-0 w-[90vw] max-w-sm ${
-          position === 'right' ? 'right-0 animate-slide-in-right' : 'left-0 animate-slide-in-left'
-        }`
+  let positionClasses: string
+  if (position === 'bottom') {
+    positionClasses = 'bottom-0 left-0 right-0 max-h-[85vh] rounded-t-lg animate-slide-in-bottom'
+  } else {
+    const side = position === 'right' ? 'right-0 animate-slide-in-right' : 'left-0 animate-slide-in-left'
+    positionClasses = `top-0 bottom-0 w-[90vw] max-w-sm ${side}`
+  }
 
   return (
     <>
       {/* Backdrop — closes sheet on click */}
+      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events -- backdrop is non-interactive; keyboard close handled via Escape listener */}
       <div
         className="fixed inset-0 z-50 bg-black/50 animate-fade-in"
         onClick={onClose}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClose() }}
         role="presentation"
+        aria-hidden="true"
       />
       {/* Dialog panel */}
       <div

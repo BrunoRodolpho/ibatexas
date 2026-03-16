@@ -17,7 +17,7 @@ let intervalHandle: ReturnType<typeof setInterval> | null = null
  * Build a Date from a slot's date + startTime in the restaurant's timezone.
  */
 function slotToLocalDate(date: Date, startTime: string): Date {
-  const dateStr = date.toISOString().split("T")[0]!
+  const dateStr = date.toISOString().split("T")[0]
   const [hours, minutes] = startTime.split(":").map(Number)
   if (hours == null || minutes == null || Number.isNaN(hours) || Number.isNaN(minutes)) {
     throw new Error(`Invalid startTime format: ${startTime}`)
@@ -35,7 +35,7 @@ async function checkNoShows(): Promise<void> {
   const now = new Date()
 
   // Only load confirmed reservations for today (not all historical ones)
-  const todayStr = now.toISOString().split("T")[0]!
+  const todayStr = now.toISOString().split("T")[0]
   const todayDate = new Date(todayStr)
   const candidates = await prisma.reservation.findMany({
     where: {

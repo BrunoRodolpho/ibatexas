@@ -16,7 +16,12 @@ export interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElemen
 }
 
 export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
-  ({ className, options, error, errorMessage, placeholder, variant = 'default', ...props }, ref) => (
+  ({ className, options, error, errorMessage, placeholder, variant = 'default', ...props }, ref) => {
+    const errorClass = error
+      ? 'border-accent-red text-accent-red focus-visible:border-accent-red'
+      : 'border-smoke-200 text-charcoal-900 focus-visible:border-charcoal-900'
+
+    return (
     <div className={variant === 'minimal' ? 'inline-flex' : 'space-y-1'}>
       <select
         ref={ref}
@@ -26,9 +31,7 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
             ? 'border-0 px-0 py-0 text-xs'
             : clsx(
                 'w-full px-0 py-2 border-0 border-b text-sm',
-                error
-                  ? 'border-accent-red text-accent-red focus-visible:border-accent-red'
-                  : 'border-smoke-200 text-charcoal-900 focus-visible:border-charcoal-900',
+                errorClass,
                 'disabled:bg-transparent disabled:text-smoke-400 disabled:cursor-not-allowed'
               ),
           className
@@ -63,7 +66,8 @@ export const Select = React.forwardRef<HTMLSelectElement, SelectProps>(
         <p className="text-xs text-accent-red">{errorMessage}</p>
       )}
     </div>
-  )
+    )
+  }
 )
 
 Select.displayName = 'Select'

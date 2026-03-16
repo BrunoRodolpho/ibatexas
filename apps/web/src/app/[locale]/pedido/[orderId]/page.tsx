@@ -11,15 +11,6 @@ function formatPrice(centavos: number): string {
   return (centavos / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  pending: "Aguardando pagamento",
-  processing: "Preparando",
-  shipped: "Em entrega",
-  delivered: "Entregue",
-  canceled: "Cancelado",
-  requires_action: "Ação necessária",
-}
-
 interface OrderItem {
   id: string
   title: string
@@ -88,8 +79,6 @@ export default function OrderTrackingPage() {
     )
   }
 
-  const statusLabel = STATUS_LABELS[order.status] ?? order.status
-
   return (
     <div className="min-h-screen bg-smoke-50 py-8 px-4">
       <div className="mx-auto max-w-lg space-y-6">
@@ -104,7 +93,7 @@ export default function OrderTrackingPage() {
         {/* WhatsApp updates */}
         {process.env.NEXT_PUBLIC_WHATSAPP_URL && (
           <a
-            href={`${process.env.NEXT_PUBLIC_WHATSAPP_URL}?text=${encodeURIComponent(`Olá! Gostaria de acompanhar meu pedido #${order.display_id}`)}`}
+            href={`${process.env.NEXT_PUBLIC_WHATSAPP_URL}?text=${encodeURIComponent("Olá! Gostaria de acompanhar meu pedido #" + String(order.display_id))}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-3 border border-smoke-200 rounded-sm p-4 hover:border-accent-green/40 transition-colors"

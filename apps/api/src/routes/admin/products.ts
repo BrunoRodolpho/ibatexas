@@ -88,6 +88,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
 
         return reply.send({ products: rows, count: rows.length });
       } catch (err) {
+        server.log.error(err, "Failed to fetch products from Medusa");
         reply.code(502).send({ error: "Failed to fetch products from Medusa" });
       }
     },
@@ -115,6 +116,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
         });
         return reply.send({ product: data.product });
       } catch (err) {
+        server.log.error(err, "Failed to update product");
         reply.code(502).send({ error: "Failed to update product" });
       }
     },
@@ -192,6 +194,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
           },
         });
       } catch (err) {
+        server.log.error(err, "Failed to fetch product detail");
         reply.code(502).send({ error: "Failed to fetch product detail" });
       }
     },

@@ -8,13 +8,15 @@ interface Props {
 }
 
 function toInputMin(): string {
-  return new Date().toISOString().split("T")[0]!
+  const [date] = new Date().toISOString().split("T")
+  return date ?? ""
 }
 
 function toInputMax(): string {
   const d = new Date()
   d.setDate(d.getDate() + 60)
-  return d.toISOString().split("T")[0]!
+  const [date] = d.toISOString().split("T")
+  return date ?? ""
 }
 
 export function DatePicker({ value, onChange, minDate, maxDate }: Props) {
