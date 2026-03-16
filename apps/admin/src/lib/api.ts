@@ -4,7 +4,7 @@
  */
 
 function getApiBase(): string {
-  if (typeof globalThis.window === 'undefined') {
+  if (globalThis.window === undefined) {
     return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
   }
   const configured = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'

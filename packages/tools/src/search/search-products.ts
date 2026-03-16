@@ -176,14 +176,14 @@ function extractHitsAndScores(hits: any[]): { docs: any[]; scores: Record<string
   const docs: any[] = []
 
   for (const hit of hits) {
-    const doc = hit.document as any
+    const doc = hit.document
     docs.push(doc)
-    if ((doc as any)?.id) {
+    if (doc?.id) {
       const score =
-        ((hit as any).hybrid_search_info?.rank_fusion_score as number | undefined) ??
-        ((hit as any).text_match_score as number | undefined) ??
+        hit.hybrid_search_info?.rank_fusion_score ??
+        hit.text_match_score ??
         0
-      scores[(doc as any).id] = score
+      scores[doc.id] = score
     }
   }
 
@@ -574,10 +574,10 @@ function resolveNoResultsReason(
   if (!isMultiQuery) return queryResults[0]?.noResultsReason
 
   // All queries returned empty — pick the most informative reason by priority
-  const reasons = queryResults.map((r) => r.noResultsReason).filter(Boolean)
+  const reasons = new Set(queryResults.map((r) => r.noResultsReason).filter(Boolean))
   const REASON_PRIORITY: NoResultsReason[] = ["out_of_stock", "allergen_filtered", "not_available_now", "no_match"]
   for (const reason of REASON_PRIORITY) {
-    if (reasons.includes(reason)) return reason
+    if (reasons.has(reason)) return reason
   }
   return "no_match"
 }

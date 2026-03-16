@@ -31,7 +31,7 @@ const MEANINGFUL_EVENTS = new Set<AnalyticsEvent>([
  */
 function ensureSessionStarted(event: AnalyticsEvent): void {
   if (!MEANINGFUL_EVENTS.has(event)) return
-  if (typeof globalThis.window === 'undefined') return
+  if (globalThis.window === undefined) return
   if (sessionStorage.getItem('ibx_session_started')) return
   sessionStorage.setItem('ibx_session_started', '1')
   // Fire session_started — recursive call is safe because flag is now set
@@ -46,7 +46,7 @@ function registerPostHogSession(id: string): void {
 
 export function getSessionId(): string {
   if (sessionId) return sessionId
-  if (typeof globalThis.window === 'undefined') return 'ssr'
+  if (globalThis.window === undefined) return 'ssr'
 
   // Try to reuse existing session from sessionStorage
   const stored = sessionStorage.getItem('ibx_analytics_session')
@@ -72,7 +72,7 @@ function enrichProperties(properties?: Record<string, unknown>): Record<string, 
     sessionId: sessionId ?? 'unknown',
     ibx_session_id: sessionId ?? 'unknown',
     timestamp: new Date().toISOString(),
-    url: typeof globalThis.window !== 'undefined' ? globalThis.location.pathname : undefined,
+    url: globalThis.window === undefined ? undefined : globalThis.location.pathname,
   }
 }
 
@@ -119,7 +119,7 @@ export function track(
   event: AnalyticsEvent,
   properties?: Record<string, unknown>,
 ): void {
-  if (typeof globalThis.window === 'undefined') return
+  if (globalThis.window === undefined) return
 
   // Ensure session is initialised
   getSessionId()

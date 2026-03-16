@@ -19,7 +19,7 @@ export function Sheet({
   footer,
   position = 'right',
 }: SheetProps) {
-  const sheetRef = useRef<HTMLDivElement>(null)
+  const sheetRef = useRef<HTMLDialogElement>(null)
 
   useEffect(() => {
     if (!isOpen) return
@@ -69,16 +69,14 @@ export function Sheet({
       <div
         className="fixed inset-0 z-50 bg-black/50 animate-fade-in"
         onClick={onClose}
-        role="presentation"
         aria-hidden="true"
       />
       {/* Dialog panel */}
-      <div
+      <dialog
         ref={sheetRef}
-        className={`fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto ${positionClasses}`}
+        open
+        className={`fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto p-0 ${positionClasses}`}
         onKeyDown={handleKeyDown}
-        role="dialog"
-        aria-modal="true"
         aria-labelledby="sheet-title"
       >
         <div className="sticky top-0 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-4 flex items-center justify-between">
@@ -101,7 +99,7 @@ export function Sheet({
             {footer}
           </div>
         )}
-      </div>
+      </dialog>
     </>
   )
 }

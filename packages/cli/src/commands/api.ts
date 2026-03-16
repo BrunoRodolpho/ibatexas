@@ -44,14 +44,11 @@ function printFullSearchResults(
   const modelLabel = searchModel === "hybrid" ? chalk.cyan("hybrid") : chalk.yellow("keyword-only")
 
   console.log(
-    chalk.bold(`\n  "${query}" — ${products.length} result${products.length !== 1 ? "s" : ""} `) +
+    chalk.bold(`\n  "${query}" — ${products.length} result${products.length === 1 ? "" : "s"} `) +
     `[${modelLabel}] [${cacheLabel}]\n`
   )
 
-  if (!products.length) {
-    console.log(chalk.yellow("  No products found."))
-    console.log(chalk.gray("  Tip: ibx db seed — then wait ~2s for indexing"))
-  } else {
+  if (products.length) {
     console.log(
       `  ${"ID".padEnd(26)} ${"Title".padEnd(38)} ${"R$".padEnd(10)} ${"Tags".padEnd(25)} Allergens`
     )
@@ -66,6 +63,9 @@ function printFullSearchResults(
         `  ${chalk.gray(p.id.substring(0, 26).padEnd(26))} ${p.title.padEnd(38)} ${priceInReais.padEnd(10)} ${tags.substring(0, 25).padEnd(25)} ${allergens}${stock}`
       )
     }
+  } else {
+    console.log(chalk.yellow("  No products found."))
+    console.log(chalk.gray("  Tip: ibx db seed — then wait ~2s for indexing"))
   }
 
   const cacheNote = hitCache
@@ -86,7 +86,7 @@ function printDirectSearchResults(
     return
   }
 
-  console.log(chalk.bold(`\n  Search results for: "${query}" (${results.length} hit${results.length !== 1 ? "s" : ""}) [Typesense direct]\n`))
+  console.log(chalk.bold(`\n  Search results for: "${query}" (${results.length} hit${results.length === 1 ? "" : "s"}) [Typesense direct]\n`))
   console.log(
     `  ${"ID".padEnd(30)} ${"Title".padEnd(40)} ${"Price (R$)".padEnd(12)} Tags`
   )

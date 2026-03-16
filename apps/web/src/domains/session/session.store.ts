@@ -124,7 +124,7 @@ export const useSessionStore = create<SessionState>()(
 )
 
 // Initialize session on first load and hydrate auth state from server cookie
-if (typeof globalThis.window !== 'undefined') {
+if (globalThis.window !== undefined) {
   const state = useSessionStore.getState()
   if (!state.sessionId) {
     state.initSession()

@@ -266,10 +266,10 @@ export function registerEnvCommands(program: Command) {
         console.log(`  ${v.key.padEnd(24)}  ${displayVal}${stepTag}`)
       }
 
-      if (!opts.reveal) {
-        console.log(chalk.gray("\n  Secrets are masked. Use --reveal to show full values.\n"))
-      } else {
+      if (opts.reveal) {
         console.log()
+      } else {
+        console.log(chalk.gray("\n  Secrets are masked. Use --reveal to show full values.\n"))
       }
     })
 

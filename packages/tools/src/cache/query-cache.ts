@@ -8,7 +8,7 @@
 // Invalidation: invalidateAllQueryCache() flushes both layers atomically.
 // Called by product.updated and product.deleted subscribers.
 
-import { createHash } from "crypto"
+import { createHash } from "node:crypto"
 import { getRedisClient } from "../redis/client.js"
 import { Channel, type QueryCacheEntry, type QueryLogEntry, type ProductDTO } from "@ibatexas/types"
 
@@ -41,7 +41,7 @@ export function embeddingToBucket(embedding: number[]): string {
   let hash = 5381
   for (const v of embedding) {
     const scaled = Math.round(v * 10) // quantize to 1 decimal; preserves sign
-    hash = ((hash << 5) + hash + scaled) | 0 // djb2, 32-bit overflow
+    hash = Math.trunc((hash << 5) + hash + scaled) // djb2, 32-bit overflow
   }
   return `bucket_${Math.abs(hash) % 1000}`
 }
@@ -289,7 +289,7 @@ export function allergenFilterHash(allergens?: string[]): string {
   const sorted = [...allergens].sort((a, b) => a.localeCompare(b)).join(",")
   let hash = 0
   for (let i = 0; i < sorted.length; i++) {
-    hash = (hash << 5) - hash + sorted.charCodeAt(i)
+    hash = (hash << 5) - hash + (sorted.codePointAt(i) ?? 0)
     hash = hash & hash
   }
   return Math.abs(hash).toString(16).slice(0, 6)

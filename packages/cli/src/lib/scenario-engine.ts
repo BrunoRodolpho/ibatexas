@@ -326,8 +326,8 @@ async function checkCopurchase(key: string, rule: VerifyRule): Promise<VerifyRes
   const redis = await getRedis()
   const count = await scanCount(redis, rk("copurchase:*"))
   let ok: boolean
-  if (rule.exists !== undefined) ok = rule.exists ? count > 0 : count === 0
-  else ok = rule.min === undefined || count >= rule.min
+  if (rule.exists === undefined) ok = rule.min === undefined || count >= rule.min
+  else ok = rule.exists ? count > 0 : count === 0
   return { key, ok, detail: `${count} copurchase keys`, severity: "error" }
 }
 
@@ -345,8 +345,8 @@ async function checkCopurchaseHandle(key: string, rule: VerifyRule): Promise<Ver
   }
 
   let ok: boolean
-  if (rule.exists !== undefined) ok = rule.exists ? members.length > 0 : members.length === 0
-  else ok = rule.min === undefined || members.length >= rule.min
+  if (rule.exists === undefined) ok = rule.min === undefined || members.length >= rule.min
+  else ok = rule.exists ? members.length > 0 : members.length === 0
   return { key, ok, detail: `${members.length} copurchase relations for ${handle}`, severity: "error" }
 }
 

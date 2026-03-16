@@ -18,7 +18,9 @@ function formatBRL(centavos: number) {
     : '—'
 }
 
-function ImageCell({ url }: Readonly<{ url: string | null }>) {
+// ── Cell renderers (module-level to satisfy S6478) ──────────────────────────
+
+function renderImage(url: string | null) {
   return url ? (
     <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
   ) : (
@@ -26,9 +28,35 @@ function ImageCell({ url }: Readonly<{ url: string | null }>) {
   )
 }
 
-function ProductTypeCell({ type }: Readonly<{ type: string }>) {
-  const labels: Record<string, string> = { food: 'Comida', frozen: 'Congelado', merchandise: 'Loja' }
-  return <span className="capitalize">{labels[type] ?? type}</span>
+const TYPE_LABELS: Record<string, string> = { food: 'Comida', frozen: 'Congelado', merchandise: 'Loja' }
+
+function renderProductType(type: string) {
+  return <span className="capitalize">{TYPE_LABELS[type] ?? type}</span>
+}
+
+function renderStatusSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
+  return (
+    <Switch
+      checked={product.status === 'published'}
+      onChange={() => onToggle(product)}
+      size="sm"
+    />
+  )
+}
+
+function renderEditAction(productId: string) {
+  return (
+    <a
+      href={`${MEDUSA_ADMIN_URL}/app/products/${productId}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
+      onClick={(e) => e.stopPropagation()}
+    >
+      Editar
+      <ExternalLink className="h-3 w-3" />
+    </a>
+  )
 }
 
 export default function MenuManagement() {
@@ -57,43 +85,23 @@ export default function MenuManagement() {
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => <ImageCell url={i.getValue() as string | null} />,
+      cell: (i) => renderImage(i.getValue() as string | null),
     }),
     col.accessor('title', { header: 'Nome' }),
     col.accessor('category', { header: 'Categoria' }),
     col.accessor('productType', {
       header: 'Tipo',
-      cell: (i) => <ProductTypeCell type={i.getValue() as string} />,
+      cell: (i) => renderProductType(i.getValue() as string),
     }),
     col.accessor('variantCount', { header: 'Variantes' }),
     col.accessor('status', {
       header: 'Status',
-      cell: (i) => {
-        const product = i.row.original
-        return (
-          <Switch
-            checked={product.status === 'published'}
-            onChange={() => handleToggleStatus(product)}
-            size="sm"
-          />
-        )
-      },
+      cell: (i) => renderStatusSwitch(i.row.original, handleToggleStatus),
     }),
     col.display({
       id: 'actions',
       header: '',
-      cell: (i) => (
-        <a
-          href={`${MEDUSA_ADMIN_URL}/app/products/${i.row.original.id}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
-          onClick={(e) => e.stopPropagation()}
-        >
-          Editar
-          <ExternalLink className="h-3 w-3" />
-        </a>
-      ),
+      cell: (i) => renderEditAction(i.row.original.id),
     }),
   ]
 

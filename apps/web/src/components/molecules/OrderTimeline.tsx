@@ -5,6 +5,18 @@ import { Check } from 'lucide-react'
 
 const STEP_KEYS = ['pending', 'processing', 'shipped', 'delivered'] as const
 
+function getCircleClass(isPast: boolean, isCurrent: boolean): string {
+  if (isPast) return 'bg-accent-green text-white'
+  if (isCurrent) return 'bg-brand-500 text-white animate-pulse'
+  return 'bg-smoke-200 text-smoke-400'
+}
+
+function getLabelClass(isPast: boolean, isCurrent: boolean): string {
+  if (isCurrent) return 'text-charcoal-900 font-semibold'
+  if (isPast) return 'text-charcoal-700'
+  return 'text-smoke-400'
+}
+
 interface OrderTimelineProps {
   readonly status: string
 }
@@ -38,17 +50,8 @@ export function OrderTimeline({ status }: OrderTimelineProps) {
         const isPast = i < currentIndex
         const isCurrent = i === currentIndex
 
-        const circleClass = isPast
-          ? 'bg-accent-green text-white'
-          : isCurrent
-            ? 'bg-brand-500 text-white animate-pulse'
-            : 'bg-smoke-200 text-smoke-400'
-
-        const labelClass = isCurrent
-          ? 'text-charcoal-900 font-semibold'
-          : isPast
-            ? 'text-charcoal-700'
-            : 'text-smoke-400'
+        const circleClass = getCircleClass(isPast, isCurrent)
+        const labelClass = getLabelClass(isPast, isCurrent)
 
         return (
           <div key={stepKey} className="flex items-start gap-3">

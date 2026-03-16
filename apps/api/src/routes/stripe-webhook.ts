@@ -22,6 +22,78 @@ function getStripe(): Stripe {
   return new Stripe(key);
 }
 
+async function handlePaymentSucceeded(
+  event: Stripe.Event,
+  startMs: number,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+): Promise<void> {
+  const paymentIntent = event.data.object as Stripe.PaymentIntent;
+  const processingMs = Date.now() - startMs;
+
+  logger.info(
+    { event_id: event.id, type: event.type, processing_ms: processingMs },
+    "Stripe webhook received",
+  );
+
+  const orderId = paymentIntent.metadata?.["medusaOrderId"];
+  if (!orderId) {
+    logger.warn({ event_id: event.id }, "payment_intent.succeeded missing medusaOrderId metadata");
+    return;
+  }
+
+  let order: {
+    status: string;
+    customer_id?: string;
+    metadata?: Record<string, string>;
+    items?: Array<{ variant_id: string; quantity: number; unit_price: number; title: string; product_id?: string }>;
+  };
+  try {
+    const data = await medusaAdmin(`/admin/orders/${orderId}?expand=items`) as { order: typeof order };
+    order = data.order;
+  } catch (err) {
+    logger.error({ event_id: event.id, order_id: orderId, error: String(err) }, "Failed to fetch Medusa order");
+    throw err;
+  }
+
+  if (order.status !== "pending") {
+    logger.info({ event_id: event.id, order_id: orderId, status: order.status }, "Order already processed — no-op");
+    return;
+  }
+
+  if (order.metadata?.["stripePaymentIntentId"]) {
+    logger.info({ event_id: event.id, order_id: orderId }, "stripePaymentIntentId already set — no-op");
+    return;
+  }
+
+  await medusaAdmin(`/admin/orders/${orderId}/capture-payment`, { method: "POST" });
+
+  await medusaAdmin(`/admin/orders/${orderId}`, {
+    method: "POST",
+    body: JSON.stringify({ metadata: { stripePaymentIntentId: paymentIntent.id } }),
+  });
+
+  const orderItems = (order.items ?? []).map((item) => ({
+    productId: item.product_id ?? item.variant_id,
+    variantId: item.variant_id,
+    quantity: item.quantity,
+    priceInCentavos: item.unit_price ?? 0,
+  }));
+  const customerId = order.customer_id ?? order.metadata?.["customerId"];
+
+  await publishNatsEvent("ibatexas.order.placed", {
+    eventType: "order.placed",
+    orderId,
+    customerId,
+    items: orderItems,
+    stripePaymentIntentId: paymentIntent.id,
+  });
+
+  logger.info(
+    { event_id: event.id, order_id: orderId, processing_ms: Date.now() - startMs },
+    "payment_intent.succeeded processed",
+  );
+}
+
 export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
   // Register with raw body content type so we get the Buffer
   server.addContentTypeParser(
@@ -89,78 +161,7 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
       try {
         switch (event.type) {
           case "payment_intent.succeeded": {
-            const paymentIntent = event.data.object;
-            const processingMs = Date.now() - startMs;
-
-            server.log.info(
-              { event_id: event.id, type: event.type, processing_ms: processingMs },
-              "Stripe webhook received",
-            );
-
-            // Find Medusa order by paymentIntentId metadata
-            const orderId = paymentIntent.metadata?.["medusaOrderId"];
-            if (!orderId) {
-              server.log.warn({ event_id: event.id }, "payment_intent.succeeded missing medusaOrderId metadata");
-              break;
-            }
-
-            // DB-layer double defense: fetch order and assert it is still pending
-            let order: {
-              status: string;
-              customer_id?: string;
-              metadata?: Record<string, string>;
-              items?: Array<{ variant_id: string; quantity: number; unit_price: number; title: string; product_id?: string }>;
-            };
-            try {
-              const data = await medusaAdmin(`/admin/orders/${orderId}?expand=items`) as { order: typeof order };
-              order = data.order;
-            } catch (err) {
-              server.log.error({ event_id: event.id, order_id: orderId, error: String(err) }, "Failed to fetch Medusa order");
-              throw err; // rethrow so Redis key is NOT set (allow retry)
-            }
-
-            // Guard 1: order already captured or cancelled
-            if (order.status !== "pending") {
-              server.log.info({ event_id: event.id, order_id: orderId, status: order.status }, "Order already processed — no-op");
-              break;
-            }
-
-            // Guard 2: stripePaymentIntentId already stored
-            if (order.metadata?.["stripePaymentIntentId"]) {
-              server.log.info({ event_id: event.id, order_id: orderId }, "stripePaymentIntentId already set — no-op");
-              break;
-            }
-
-            // Capture payment via Medusa workflow
-            await medusaAdmin(`/admin/orders/${orderId}/capture-payment`, { method: "POST" });
-
-            // Store stripePaymentIntentId on order metadata
-            await medusaAdmin(`/admin/orders/${orderId}`, {
-              method: "POST",
-              body: JSON.stringify({ metadata: { stripePaymentIntentId: paymentIntent.id } }),
-            });
-
-            // Publish order.placed NATS event with items for intelligence tracking
-            const orderItems = (order.items ?? []).map((item) => ({
-              productId: item.product_id ?? item.variant_id,
-              variantId: item.variant_id,
-              quantity: item.quantity,
-              priceInCentavos: item.unit_price ?? 0,
-            }));
-            const customerId = order.customer_id ?? order.metadata?.["customerId"];
-
-            await publishNatsEvent("ibatexas.order.placed", {
-              eventType: "order.placed",
-              orderId,
-              customerId,
-              items: orderItems,
-              stripePaymentIntentId: paymentIntent.id,
-            });
-
-            server.log.info(
-              { event_id: event.id, order_id: orderId, processing_ms: Date.now() - startMs },
-              "payment_intent.succeeded processed",
-            );
+            await handlePaymentSucceeded(event, startMs, server.log);
             break;
           }
 

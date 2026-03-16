@@ -16,7 +16,7 @@ let posthogClient: PostHog | null = null
 let initialized = false
 
 export function getPostHogClient(): PostHog | null {
-  if (typeof globalThis.window === 'undefined') return null
+  if (globalThis.window === undefined) return null
 
   if (initialized) return posthogClient
 

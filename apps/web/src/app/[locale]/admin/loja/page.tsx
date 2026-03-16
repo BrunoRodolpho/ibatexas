@@ -7,9 +7,8 @@ import { createColumnHelper } from '@tanstack/react-table'
 import { ExternalLink, Package, Layers } from 'lucide-react'
 import { DataTable, Switch } from '@/components/atoms'
 import { SearchInput, Sheet } from '@/components/molecules'
-import { MEDUSA_ADMIN_URL } from '@/lib/api'
+import { MEDUSA_ADMIN_URL, apiFetch } from '@/lib/api'
 import { useAdminProducts, useAdminProduct } from '@/domains/admin'
-import { apiFetch } from '@/lib/api'
 import type { AdminProductRow } from '@ibatexas/types'
 
 const col = createColumnHelper<AdminProductRow>()
@@ -19,9 +18,9 @@ function formatBRL(centavos: number) {
   return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
-// ── Cell renderer components (extracted to module level) ──────────────────────
+// ── Cell renderers (module-level to satisfy S6478) ──────────────────────────
 
-function ImageCell({ url }: { readonly url: string | null }) {
+function renderShopImage(url: string | null) {
   return url ? (
     <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
   ) : (
@@ -29,7 +28,7 @@ function ImageCell({ url }: { readonly url: string | null }) {
   )
 }
 
-function StockCell({ product, onToggle }: { readonly product: AdminProductRow; readonly onToggle: (p: AdminProductRow) => void }) {
+function renderStockSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
   return (
     <Switch
       checked={product.inStock}
@@ -40,7 +39,7 @@ function StockCell({ product, onToggle }: { readonly product: AdminProductRow; r
   )
 }
 
-function StatusCell({ product, onToggle }: { readonly product: AdminProductRow; readonly onToggle: (p: AdminProductRow) => void }) {
+function renderStatusSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
   return (
     <Switch
       checked={product.status === 'published'}
@@ -50,7 +49,7 @@ function StatusCell({ product, onToggle }: { readonly product: AdminProductRow; 
   )
 }
 
-function ActionsCell({ productId, onSelect }: { readonly productId: string; readonly onSelect: (id: string) => void }) {
+function renderShopActions(productId: string, onSelect: (id: string) => void) {
   return (
     <div className="flex items-center gap-3">
       <button
@@ -113,7 +112,7 @@ export default function ShopManagement() {
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => <ImageCell url={i.getValue() as string | null} />,
+      cell: (i) => renderShopImage(i.getValue() as string | null),
     }),
     col.accessor('title', { header: t('admin.col_name') }),
     col.accessor('category', { header: t('admin.col_category') }),
@@ -123,16 +122,16 @@ export default function ShopManagement() {
     }),
     col.accessor('inStock', {
       header: t('admin.col_stock'),
-      cell: (i) => <StockCell product={i.row.original} onToggle={handleToggleStock} />,
+      cell: (i) => renderStockSwitch(i.row.original, handleToggleStock),
     }),
     col.accessor('status', {
       header: t('admin.col_status'),
-      cell: (i) => <StatusCell product={i.row.original} onToggle={handleToggleStatus} />,
+      cell: (i) => renderStatusSwitch(i.row.original, handleToggleStatus),
     }),
     col.display({
       id: 'actions',
       header: '',
-      cell: (i) => <ActionsCell productId={i.row.original.id} onSelect={setSelectedId} />,
+      cell: (i) => renderShopActions(i.row.original.id, setSelectedId),
     }),
   ]
 

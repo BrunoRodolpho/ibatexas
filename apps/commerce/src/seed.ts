@@ -7,8 +7,8 @@
  *   or: ibx db seed
  */
 
-import type { ExecArgs } from "@medusajs/framework/types"
 import type {
+  ExecArgs,
   IProductModuleService,
   IPricingModuleService,
   IRegionModuleService,
@@ -18,7 +18,7 @@ import type {
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import { CATEGORIES, SEED_PRODUCTS } from "./seed-data"
 
-export default async function ({ container }: ExecArgs) {
+export default async function seed({ container }: ExecArgs) {
   const productModule =
     container.resolve<IProductModuleService>(Modules.PRODUCT)
   const pricingModule =

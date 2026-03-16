@@ -178,8 +178,8 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
   }
 
   return (
-    <div
-      role="region"
+    <section
+      aria-label="Product carousel"
       aria-roledescription="carousel"
       className="overflow-hidden marquee-mask touch-pan-y"
       onMouseEnter={onMouseEnter}
@@ -196,6 +196,6 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
         {products.map((p) => renderCard(p, 'a'))}
         {products.map((p) => renderCard(p, 'b'))}
       </div>
-    </div>
+    </section>
   )
 }

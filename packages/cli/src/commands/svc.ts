@@ -172,9 +172,6 @@ async function detailRedis(redisUrl: string): Promise<void> {
   console.log(chalk.bold(`\n  ${chalk.cyan("●")} Redis — Detailed Health\n`))
 
   const start = Date.now()
-  let version = "unknown"
-  let uptimeSeconds = 0
-  let connectedClients = 0
 
   try {
     const result = await new Promise<string>((resolve, reject) => {
@@ -200,9 +197,9 @@ async function detailRedis(redisUrl: string): Promise<void> {
     const versionMatch = /redis_version:(.+)/.exec(result)
     const uptimeMatch = /uptime_in_seconds:(.+)/.exec(result)
     const clientsMatch = /connected_clients:(.+)/.exec(result)
-    version = versionMatch?.[1]?.trim() ?? "unknown"
-    uptimeSeconds = Number.parseInt(uptimeMatch?.[1]?.trim() ?? "0", 10)
-    connectedClients = Number.parseInt(clientsMatch?.[1]?.trim() ?? "0", 10)
+    const version = versionMatch?.[1]?.trim() ?? "unknown"
+    const uptimeSeconds = Number.parseInt(uptimeMatch?.[1]?.trim() ?? "0", 10)
+    const connectedClients = Number.parseInt(clientsMatch?.[1]?.trim() ?? "0", 10)
 
     const url = new URL(redisUrl)
     const host = `${url.hostname}:${url.port || 6379}`
@@ -274,7 +271,7 @@ async function detailTypesense(host: string, port: string): Promise<void> {
     console.log(`  ${chalk.bold("Status")}       ${chalk.green("✓  ok")}`)
     const connLabel = chalk.cyan(`${host}:${port}`)
     console.log(`  ${chalk.bold("Connection")}   ${connLabel}`)
-    console.log(`  ${chalk.bold("Health")}       ${chalk.white(String(healthData.ok ?? true))}`)
+    console.log(`  ${chalk.bold("Health")}       ${chalk.white(String(healthData["ok"] ?? true))}`)
 
     if (collectionsRes?.ok) {
       const collections = (await collectionsRes.json()) as Array<{ name: string; num_documents: number }>
@@ -316,11 +313,11 @@ async function detailNats(natsUrl: string): Promise<void> {
 
     if (varzRes?.ok) {
       const varz = (await varzRes.json()) as Record<string, unknown>
-      console.log(`\n  ${chalk.bold("Server")}      NATS ${varz.version ?? "unknown"}`)
-      console.log(`  ${chalk.bold("Connections")} ${varz.connections ?? 0} active`)
-      console.log(`  ${chalk.bold("Subscriptions")} ${varz.subscriptions ?? 0}`)
-      const inMsgs = varz.in_msgs ?? 0
-      const outMsgs = varz.out_msgs ?? 0
+      console.log(`\n  ${chalk.bold("Server")}      NATS ${String(varz.version ?? "unknown")}`)
+      console.log(`  ${chalk.bold("Connections")} ${String(varz.connections ?? 0)} active`)
+      console.log(`  ${chalk.bold("Subscriptions")} ${String(varz.subscriptions ?? 0)}`)
+      const inMsgs = String(varz.in_msgs ?? 0)
+      const outMsgs = String(varz.out_msgs ?? 0)
       console.log(`  ${chalk.bold("Messages")}    ${inMsgs} in  /  ${outMsgs} out`)
     }
 

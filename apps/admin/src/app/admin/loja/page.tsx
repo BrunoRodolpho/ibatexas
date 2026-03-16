@@ -17,11 +17,58 @@ function formatBRL(centavos: number) {
   return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
-function ShopImageCell({ url }: Readonly<{ url: string | null }>) {
+// ── Cell renderers (module-level to satisfy S6478) ──────────────────────────
+
+function renderShopImage(url: string | null) {
   return url ? (
     <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
   ) : (
     <div className="h-10 w-10 rounded-sm bg-smoke-100" />
+  )
+}
+
+function renderStockSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
+  return (
+    <Switch
+      checked={product.inStock}
+      onChange={() => onToggle(product)}
+      size="sm"
+      label={product.inStock ? 'Em estoque' : 'Sem estoque'}
+    />
+  )
+}
+
+function renderStatusSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
+  return (
+    <Switch
+      checked={product.status === 'published'}
+      onChange={() => onToggle(product)}
+      size="sm"
+    />
+  )
+}
+
+function renderShopActions(productId: string, onSelect: (id: string) => void) {
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        onClick={(e) => { e.stopPropagation(); onSelect(productId) }}
+        className="flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800 font-medium"
+      >
+        <Layers className="h-3 w-3" />
+        Variantes
+      </button>
+      <a
+        href={`${MEDUSA_ADMIN_URL}/app/products/${productId}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
+        onClick={(e) => e.stopPropagation()}
+      >
+        Editar
+        <ExternalLink className="h-3 w-3" />
+      </a>
+    </div>
   )
 }
 
@@ -63,7 +110,7 @@ export default function ShopManagement() {
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => <ShopImageCell url={i.getValue() as string | null} />,
+      cell: (i) => renderShopImage(i.getValue() as string | null),
     }),
     col.accessor('title', { header: 'Nome' }),
     col.accessor('category', { header: 'Categoria' }),
@@ -73,55 +120,16 @@ export default function ShopManagement() {
     }),
     col.accessor('inStock', {
       header: 'Estoque',
-      cell: (i) => {
-        const product = i.row.original
-        return (
-          <Switch
-            checked={product.inStock}
-            onChange={() => handleToggleStock(product)}
-            size="sm"
-            label={product.inStock ? 'Em estoque' : 'Sem estoque'}
-          />
-        )
-      },
+      cell: (i) => renderStockSwitch(i.row.original, handleToggleStock),
     }),
     col.accessor('status', {
       header: 'Status',
-      cell: (i) => {
-        const product = i.row.original
-        return (
-          <Switch
-            checked={product.status === 'published'}
-            onChange={() => handleToggleStatus(product)}
-            size="sm"
-          />
-        )
-      },
+      cell: (i) => renderStatusSwitch(i.row.original, handleToggleStatus),
     }),
     col.display({
       id: 'actions',
       header: '',
-      cell: (i) => (
-        <div className="flex items-center gap-3">
-          <button
-            onClick={(e) => { e.stopPropagation(); setSelectedId(i.row.original.id) }}
-            className="flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800 font-medium"
-          >
-            <Layers className="h-3 w-3" />
-            Variantes
-          </button>
-          <a
-            href={`${MEDUSA_ADMIN_URL}/app/products/${i.row.original.id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Editar
-            <ExternalLink className="h-3 w-3" />
-          </a>
-        </div>
-      ),
+      cell: (i) => renderShopActions(i.row.original.id, setSelectedId),
     }),
   ]
 

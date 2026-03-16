@@ -19,9 +19,9 @@ function formatBRL(centavos: number) {
     : '—'
 }
 
-// ── Cell renderer components (extracted to module level) ──────────────────────
+// ── Cell renderers (module-level to satisfy S6478) ──────────────────────────
 
-function ImageCell({ url }: { readonly url: string | null }) {
+function renderImage(url: string | null) {
   return url ? (
     <Image src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
   ) : (
@@ -31,11 +31,11 @@ function ImageCell({ url }: { readonly url: string | null }) {
 
 const TYPE_LABELS: Record<string, string> = { food: 'Comida', frozen: 'Congelado', merchandise: 'Loja' }
 
-function TypeCell({ type }: { readonly type: string }) {
+function renderProductType(type: string) {
   return <span className="capitalize">{TYPE_LABELS[type] ?? type}</span>
 }
 
-function StatusCell({ product, onToggle }: { readonly product: AdminProductRow; readonly onToggle: (p: AdminProductRow) => void }) {
+function renderStatusSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
   return (
     <Switch
       checked={product.status === 'published'}
@@ -45,7 +45,7 @@ function StatusCell({ product, onToggle }: { readonly product: AdminProductRow; 
   )
 }
 
-function ActionsCell({ productId }: { readonly productId: string }) {
+function renderEditAction(productId: string) {
   return (
     <a
       href={`${MEDUSA_ADMIN_URL}/app/products/${productId}`}
@@ -87,23 +87,23 @@ export default function MenuManagement() {
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => <ImageCell url={i.getValue() as string | null} />,
+      cell: (i) => renderImage(i.getValue() as string | null),
     }),
     col.accessor('title', { header: t('admin.col_name') }),
     col.accessor('category', { header: t('admin.col_category') }),
     col.accessor('productType', {
       header: t('admin.col_type'),
-      cell: (i) => <TypeCell type={i.getValue() as string} />,
+      cell: (i) => renderProductType(i.getValue() as string),
     }),
     col.accessor('variantCount', { header: t('admin.col_variants') }),
     col.accessor('status', {
       header: t('admin.col_status'),
-      cell: (i) => <StatusCell product={i.row.original} onToggle={handleToggleStatus} />,
+      cell: (i) => renderStatusSwitch(i.row.original, handleToggleStatus),
     }),
     col.display({
       id: 'actions',
       header: '',
-      cell: (i) => <ActionsCell productId={i.row.original.id} />,
+      cell: (i) => renderEditAction(i.row.original.id),
     }),
   ]
 

@@ -66,17 +66,20 @@ export const Modal: React.FC<ModalProps> = ({
     <dialog
       ref={overlayRef}
       open
+      role="dialog"
       className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center w-full h-full m-0 max-w-none max-h-none p-0 border-none bg-transparent"
       onClick={onClose}
       onKeyDown={handleKeyDown}
       aria-labelledby="modal-title"
     >
       <div
+        role="presentation"
         className={clsx(
           'bg-smoke-50 rounded-sm shadow-xl max-h-screen overflow-y-auto w-full mx-4',
           sizeClasses[size]
         )}
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-smoke-50 border-b border-smoke-200 px-6 py-4 flex items-center justify-between rounded-t-sm">
           <h2 id="modal-title" className="text-base font-semibold text-charcoal-900">
@@ -178,12 +181,14 @@ export const Sheet: React.FC<SheetProps> = ({
     <dialog
       ref={sheetRef}
       open
+      role="dialog"
       className="fixed inset-0 z-50 overflow-y-auto bg-black/50 animate-fade-in w-full h-full m-0 max-w-none max-h-none p-0 border-none bg-transparent"
       onClick={onClose}
       onKeyDown={handleKeyDown}
       aria-labelledby="sheet-title"
     >
       <div
+        role="presentation"
         className={clsx(
           'fixed bg-smoke-50 shadow-xl overflow-y-auto',
           position === 'bottom'
@@ -193,6 +198,7 @@ export const Sheet: React.FC<SheetProps> = ({
           position === 'left' && 'left-0 animate-slide-in-left',
         )}
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-4 flex items-center justify-between">
           <h2 id="sheet-title" className="text-base font-semibold text-charcoal-900">
