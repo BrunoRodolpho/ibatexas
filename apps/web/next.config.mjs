@@ -7,7 +7,7 @@ const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  transpilePackages: ["@ibatexas/types"],
+  transpilePackages: ["@ibatexas/types", "@ibatexas/ui"],
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "**.medusajs.com" },

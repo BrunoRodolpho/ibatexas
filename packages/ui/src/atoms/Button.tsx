@@ -35,22 +35,36 @@ const buttonVariants = cva(
           'active:bg-brand-700',
           'focus-visible:ring-brand-500',
         ],
+        'primary-inverse': [
+          'bg-smoke-50 text-charcoal-900',
+          'hover:bg-smoke-100',
+          'active:bg-smoke-200',
+          'focus-visible:ring-smoke-300',
+        ],
+        'secondary-inverse': [
+          'border border-smoke-300 bg-transparent text-white',
+          'hover:border-white',
+          'focus-visible:ring-white',
+        ],
       },
       size: {
-        sm: 'px-3 py-1.5 text-xs',
-        md: 'px-4 py-2 text-sm',
-        lg: 'px-6 py-3 text-sm',
+        sm:   'px-3 py-1.5 text-xs',
+        md:   'px-4 py-2 text-sm',
+        lg:   'px-6 py-3 text-sm',
         icon: 'p-2',
       },
     },
-    defaultVariants: { variant: 'primary', size: 'md' },
+    defaultVariants: {
+      variant: 'primary',
+      size: 'md',
+    },
   }
 )
 
 export interface ButtonProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
-  isLoading?: boolean
+  readonly isLoading?: boolean
 }
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(

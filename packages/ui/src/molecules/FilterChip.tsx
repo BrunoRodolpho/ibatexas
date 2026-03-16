@@ -1,13 +1,24 @@
 'use client'
 
+import React from 'react'
+
 interface FilterChipProps {
   readonly id: string
   readonly label: string
   readonly selected: boolean
   readonly onToggle: (id: string) => void
+  readonly removable?: boolean
+  readonly onRemove?: (id: string) => void
 }
 
-export function FilterChip({ id, label, selected, onToggle }: FilterChipProps) {
+export const FilterChip: React.FC<FilterChipProps> = ({
+  id,
+  label,
+  selected,
+  onToggle,
+  removable = false,
+  onRemove,
+}) => {
   return (
     <button
       onClick={() => onToggle(id)}
@@ -19,6 +30,18 @@ export function FilterChip({ id, label, selected, onToggle }: FilterChipProps) {
       aria-pressed={selected}
     >
       {label}
+      {removable && selected && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove?.(id)
+          }}
+          className="text-sm leading-none hover:opacity-70"
+          aria-label={`Remover filtro ${label}`}
+        >
+          ×
+        </button>
+      )}
     </button>
   )
 }
