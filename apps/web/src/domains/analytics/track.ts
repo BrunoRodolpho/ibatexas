@@ -57,10 +57,7 @@ export function getSessionId(): string {
   }
 
   // Create new session
-  sessionId =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  sessionId = crypto.randomUUID()
 
   sessionStorage.setItem('ibx_analytics_session', sessionId)
   registerPostHogSession(sessionId)

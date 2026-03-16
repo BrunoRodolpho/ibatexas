@@ -80,6 +80,7 @@ export const Modal: React.FC<ModalProps> = ({
           sizeClasses[size]
         )}
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-smoke-50 border-b border-smoke-200 px-6 py-4 flex items-center justify-between rounded-t-sm">
           <h2 id="modal-title" className="text-base font-semibold text-charcoal-900">
@@ -199,6 +200,7 @@ export const Sheet: React.FC<SheetProps> = ({
           position === 'left' && 'left-0 animate-slide-in-left',
         )}
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-4 flex items-center justify-between">
           <h2 id="sheet-title" className="text-base font-semibold text-charcoal-900">

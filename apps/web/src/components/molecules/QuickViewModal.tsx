@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Sheet } from './Modal'
-import { Button, LinkButton, Badge, Heading, Text } from '../atoms'
+import { Button, LinkButton, Badge, Text } from '../atoms'
 import { QuantitySelector } from './QuantitySelector'
 import NextImage from 'next/image'
 import { Star, Users, Scale } from 'lucide-react'

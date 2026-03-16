@@ -35,6 +35,35 @@ interface CheckoutResult {
   message: string
 }
 
+function getStageIndex(stage: Stage): number {
+  if (stage === "summary") return 0
+  if (stage === "confirmed") return 2
+  return 1
+}
+
+function getStepClasses(isActive: boolean, isPast: boolean): string {
+  if (isActive || isPast) return "bg-brand-500 text-white"
+  return "bg-smoke-200 text-smoke-400"
+}
+
+function getDeliveryTypeLabel(
+  type: "delivery" | "pickup" | "dine-in",
+  t: (key: string) => string,
+): string {
+  if (type === "delivery") return t('delivery_type_delivery')
+  if (type === "pickup") return t('delivery_type_pickup')
+  return t('delivery_type_dinein')
+}
+
+function getPaymentMethodLabel(
+  method: PaymentMethod,
+  t: (key: string) => string,
+): string {
+  if (method === "pix") return t('pix')
+  if (method === "card") return t('card')
+  return t('cash')
+}
+
 export default function CheckoutPage() {
   const t = useTranslations('checkout')
   const tCart = useTranslations('cart')
@@ -288,8 +317,7 @@ export default function CheckoutPage() {
         {/* ── Progress indicator ─────────────────────────────────────── */}
         <div className="flex items-center justify-between max-w-xs mx-auto">
           {(["summary", "payment", "confirmed"] as const).map((step, i) => {
-            const s = stage as Stage
-            const stageIndex = s === "summary" ? 0 : s === "pix_waiting" ? 1 : s === "confirmed" ? 2 : 1
+            const stageIndex = getStageIndex(stage)
             const isActive = i === stageIndex
             const isPast = i < stageIndex
             return (
@@ -298,9 +326,7 @@ export default function CheckoutPage() {
                   <div className={`w-8 h-px mx-1 ${isPast ? "bg-brand-500" : "bg-smoke-200"}`} />
                 )}
                 <div className="flex flex-col items-center gap-1">
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold transition-colors ${
-                    isActive ? "bg-brand-500 text-white" : isPast ? "bg-brand-500 text-white" : "bg-smoke-200 text-smoke-400"
-                  }`}>
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold transition-colors ${getStepClasses(isActive, isPast)}`}>
                     {isPast ? "✓" : i + 1}
                   </div>
                   <span className={`text-[10px] ${isActive ? "text-brand-600 font-semibold" : "text-smoke-400"}`}>
@@ -337,7 +363,7 @@ export default function CheckoutPage() {
                 onClick={() => setDeliveryType(type)}
                 className={`flex-1 rounded-sm border py-2 text-sm font-medium transition-colors ${deliveryType === type ? "border-brand-600 bg-brand-50 text-brand-700" : "border-smoke-200 text-smoke-400 hover:border-smoke-300"}`}
               >
-                {type === "delivery" ? t('delivery_type_delivery') : type === "pickup" ? t('delivery_type_pickup') : t('delivery_type_dinein')}
+                {getDeliveryTypeLabel(type, t)}
               </button>
             ))}
           </div>
@@ -392,7 +418,7 @@ export default function CheckoutPage() {
                 onClick={() => setPaymentMethod(method)}
                 className={`flex-1 rounded-sm border py-2 text-sm font-medium transition-colors ${paymentMethod === method ? "border-brand-600 bg-brand-50 text-brand-700" : "border-smoke-200 text-smoke-400 hover:border-smoke-300"}`}
               >
-                {method === "pix" ? t('pix') : method === "card" ? t('card') : t('cash')}
+                {getPaymentMethodLabel(method, t)}
               </button>
             ))}
           </div>

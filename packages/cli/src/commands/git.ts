@@ -60,9 +60,8 @@ export function registerGitCommands(program: Command) {
       const untracked = lines.filter((l) => l.startsWith("??")).length
 
       console.log(chalk.bold("\n  Git status\n"))
-      console.log(
-        `  Branch    ${chalk.cyan(branch.trim())} ${upstream ? chalk.gray(`→ ${upstream}`) : ""}`
-      )
+      const upstreamLabel = upstream ? chalk.gray(`→ ${upstream}`) : ""
+      console.log(`  Branch    ${chalk.cyan(branch.trim())} ${upstreamLabel}`)
 
       if (upstream && !upstream.includes("no upstream")) {
         const aheadStr =
@@ -72,11 +71,10 @@ export function registerGitCommands(program: Command) {
         console.log(`  Remote    ${aheadStr}  ${behindStr}`)
       }
 
-      console.log(
-        `  Changes   ${staged > 0 ? chalk.green(`${staged} staged`) : chalk.gray("0 staged")}  ` +
-          `${unstaged > 0 ? chalk.yellow(`${unstaged} unstaged`) : chalk.gray("0 unstaged")}  ` +
-          `${untracked > 0 ? chalk.gray(`${untracked} untracked`) : chalk.gray("0 untracked")}`
-      )
+      const stagedLabel = staged > 0 ? chalk.green(`${staged} staged`) : chalk.gray("0 staged")
+      const unstagedLabel = unstaged > 0 ? chalk.yellow(`${unstaged} unstaged`) : chalk.gray("0 unstaged")
+      const untrackedLabel = untracked > 0 ? chalk.gray(`${untracked} untracked`) : chalk.gray("0 untracked")
+      console.log(`  Changes   ${stagedLabel}  ${unstagedLabel}  ${untrackedLabel}`)
 
       if (lines.length > 0) {
         console.log()
@@ -116,7 +114,8 @@ export function registerGitCommands(program: Command) {
           '"\(.number)|\(.url)|\(.title)"',
         ])
         const [num, url] = prOut.trim().split("|")
-        prLine = `\n  ${chalk.bold("PR")}        ${chalk.cyan(`#${num}`)} ${chalk.gray(url)}`
+        const prNum = chalk.cyan(`#${num}`)
+        prLine = `\n  ${chalk.bold("PR")}        ${prNum} ${chalk.gray(url)}`
       } catch {
         // gh CLI not available or no PR
       }

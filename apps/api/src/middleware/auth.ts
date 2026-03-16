@@ -6,7 +6,7 @@
 //   requireAuth  — throws 401 if no valid JWT
 //   optionalAuth — attaches fields if JWT present, no-op otherwise
 
-import type { FastifyRequest, FastifyReply, preHandlerHookHandler } from "fastify";
+import type { FastifyRequest, FastifyReply, preHandlerAsyncHookHandler } from "fastify";
 
 // Extend Fastify's request type with our custom fields
 declare module "fastify" {
@@ -32,7 +32,7 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
  * preHandler: requires a valid JWT cookie.
  * Returns 401 if missing or invalid.
  */
-export const requireAuth: preHandlerHookHandler = async (
+export const requireAuth: preHandlerAsyncHookHandler = async (
   request: FastifyRequest,
   reply: FastifyReply,
 ) => {
@@ -49,6 +49,6 @@ export const requireAuth: preHandlerHookHandler = async (
  * preHandler: attaches auth fields if a valid JWT cookie is present.
  * Does nothing if the cookie is absent or invalid.
  */
-export const optionalAuth: preHandlerHookHandler = async (request: FastifyRequest): Promise<void> => {
+export const optionalAuth: preHandlerAsyncHookHandler = async (request: FastifyRequest): Promise<void> => {
   await extractAuth(request);
 };

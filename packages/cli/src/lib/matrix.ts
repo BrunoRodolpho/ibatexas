@@ -139,7 +139,9 @@ export function generateCornerStates(variables: StateVariable[]): StateCombinati
  */
 export function generateRandomState(variables: StateVariable[]): StateCombination[] {
   const all = generateAllStates(variables)
-  const idx = Math.floor(Math.random() * all.length)
+  const randomBytes = new Uint32Array(1)
+  crypto.getRandomValues(randomBytes)
+  const idx = randomBytes[0] % all.length
   return [all[idx]]
 }
 
@@ -220,6 +222,91 @@ async function evaluateExpectations(
   }
 }
 
+// ── Main engine helpers ──────────────────────────────────────────────────────
+
+/** Build a failure result with zero states run. */
+function failResult(name: string, totalStates: number, start: number): MatrixRunResult {
+  return { matrix: name, totalStates, statesRun: 0, results: [], ok: false, durationMs: Date.now() - start }
+}
+
+/** Select which states to run based on options. Returns null on error (already logged). */
+function selectStates(
+  variables: StateVariable[],
+  opts: MatrixRunOptions,
+): StateCombination[] | null {
+  if (opts.state !== undefined) {
+    const all = generateAllStates(variables)
+    const found = all.find((s) => s.stateIndex === opts.state)
+    if (!found) {
+      console.error(chalk.red(`  State ${opts.state} not found (max: ${all.length - 1})`))
+      return null
+    }
+    return [found]
+  }
+  if (opts.random) return generateRandomState(variables)
+  if (opts.corners) return generateCornerStates(variables)
+  return generateAllStates(variables)
+}
+
+/** Execute a single state: apply variables, evaluate expectations, report via spinner. */
+async function executeState(
+  definition: MatrixDefinition,
+  state: StateCombination,
+): Promise<MatrixStateResult> {
+  const binaryStr = state.stateIndex.toString(2).padStart(definition.variables.length, "0")
+  const activeStr = state.activeVars.length > 0
+    ? state.activeVars.join(", ")
+    : chalk.dim("(all OFF)")
+  const label = `  State ${state.stateIndex} [${binaryStr}]: ${activeStr}`
+  const spinner = ora(label).start()
+
+  try {
+    await applyState(definition.variables, state)
+    const result = await evaluateExpectations(definition.expectations, state)
+    reportStateResult(spinner, result, label)
+    return result
+  } catch (err) {
+    spinner.fail(chalk.red(`${label}: ERROR — ${(err as Error).message}`))
+    return { stateIndex: state.stateIndex, activeVars: state.activeVars, checks: [], ok: false }
+  }
+}
+
+function reportStateResult(
+  spinner: ReturnType<typeof ora>,
+  result: MatrixStateResult,
+  label: string,
+): void {
+  if (result.ok) {
+    spinner.succeed(chalk.green(`${label} — PASS`))
+    return
+  }
+  spinner.fail(chalk.red(`${label} — FAIL`))
+  for (const check of result.checks.filter((c) => c.actual === "fail")) {
+    console.log(chalk.red(`      ✖ ${check.section}: expected ${check.expected}, ${check.detail}`))
+  }
+}
+
+function printMatrixSummary(name: string, results: MatrixStateResult[], durationMs: number): void {
+  const passed = results.filter((r) => r.ok).length
+  const failed = results.filter((r) => !r.ok).length
+  const secs = (durationMs / 1000).toFixed(1)
+  console.log()
+  if (failed === 0) {
+    console.log(chalk.green(`  ✅  Matrix "${name}": ${passed}/${results.length} states passed (${secs}s)\n`))
+  } else {
+    console.log(chalk.red(`  ❌  Matrix "${name}": ${failed}/${results.length} states failed (${secs}s)\n`))
+  }
+}
+
+async function disconnectAll(releaseLock?: () => Promise<void>): Promise<void> {
+  if (releaseLock) await releaseLock()
+  try { await closeRedis() } catch { /* best effort */ }
+  try {
+    const { prisma } = await import("@ibatexas/domain")
+    await prisma.$disconnect()
+  } catch { /* best effort */ }
+}
+
 // ── Main engine ──────────────────────────────────────────────────────────────
 
 export async function runMatrix(
@@ -227,10 +314,11 @@ export async function runMatrix(
   opts: MatrixRunOptions = {},
 ): Promise<MatrixRunResult> {
   const start = Date.now()
+  const totalStates = 1 << definition.variables.length
 
   console.log(chalk.bold(`\n  Matrix: ${definition.name}`))
   console.log(chalk.dim(`  ${definition.description}`))
-  console.log(chalk.dim(`  Variables: ${definition.variables.length} → ${1 << definition.variables.length} states`))
+  console.log(chalk.dim(`  Variables: ${definition.variables.length} → ${totalStates} states`))
   console.log()
 
   // 1. Acquire lock
@@ -239,14 +327,7 @@ export async function runMatrix(
     releaseLock = await acquireScenarioLock(`matrix:${definition.name}`, { force: opts.force })
   } catch (err) {
     console.error(chalk.red(`  ${(err as Error).message}`))
-    return {
-      matrix: definition.name,
-      totalStates: 1 << definition.variables.length,
-      statesRun: 0,
-      results: [],
-      ok: false,
-      durationMs: Date.now() - start,
-    }
+    return failResult(definition.name, totalStates, start)
   }
 
   try {
@@ -259,117 +340,36 @@ export async function runMatrix(
         run: StepRegistry[name].run,
       }))
       const result = await runPipeline(tasks)
-      if (!result.ok) {
-        return {
-          matrix: definition.name,
-          totalStates: 1 << definition.variables.length,
-          statesRun: 0,
-          results: [],
-          ok: false,
-          durationMs: Date.now() - start,
-        }
-      }
+      if (!result.ok) return failResult(definition.name, totalStates, start)
       console.log()
     }
 
     // 3. Select states to run
-    let states: StateCombination[]
-    if (opts.state !== undefined) {
-      const all = generateAllStates(definition.variables)
-      const found = all.find((s) => s.stateIndex === opts.state)
-      if (!found) {
-        console.error(chalk.red(`  State ${opts.state} not found (max: ${all.length - 1})`))
-        return {
-          matrix: definition.name,
-          totalStates: all.length,
-          statesRun: 0,
-          results: [],
-          ok: false,
-          durationMs: Date.now() - start,
-        }
-      }
-      states = [found]
-    } else if (opts.random) {
-      states = generateRandomState(definition.variables)
-    } else if (opts.corners) {
-      states = generateCornerStates(definition.variables)
-    } else {
-      states = generateAllStates(definition.variables)
-    }
+    const states = selectStates(definition.variables, opts)
+    if (!states) return failResult(definition.name, totalStates, start)
 
     console.log(chalk.bold(`  Running ${states.length} state(s)\n`))
 
-    // 4. Execute states (sequential for now — parallel in future)
+    // 4. Execute each state
     const results: MatrixStateResult[] = []
-
     for (const state of states) {
-      const binaryStr = state.stateIndex.toString(2).padStart(definition.variables.length, "0")
-      const activeStr = state.activeVars.length > 0
-        ? state.activeVars.join(", ")
-        : chalk.dim("(all OFF)")
-
-      const spinner = ora(`  State ${state.stateIndex} [${binaryStr}]: ${activeStr}`).start()
-
-      try {
-        // Apply state
-        await applyState(definition.variables, state)
-
-        // Evaluate expectations
-        const result = await evaluateExpectations(definition.expectations, state)
-        results.push(result)
-
-        if (result.ok) {
-          spinner.succeed(chalk.green(`  State ${state.stateIndex} [${binaryStr}]: ${activeStr} — PASS`))
-        } else {
-          spinner.fail(chalk.red(`  State ${state.stateIndex} [${binaryStr}]: ${activeStr} — FAIL`))
-          // Print failing checks
-          for (const check of result.checks.filter((c) => c.actual === "fail")) {
-            console.log(chalk.red(`      ✖ ${check.section}: expected ${check.expected}, ${check.detail}`))
-          }
-        }
-      } catch (err) {
-        spinner.fail(chalk.red(`  State ${state.stateIndex} [${binaryStr}]: ERROR — ${(err as Error).message}`))
-        results.push({
-          stateIndex: state.stateIndex,
-          activeVars: state.activeVars,
-          checks: [],
-          ok: false,
-        })
-      }
+      results.push(await executeState(definition, state))
     }
 
     // 5. Summary
-    const passed = results.filter((r) => r.ok).length
+    printMatrixSummary(definition.name, results, Date.now() - start)
+
     const failed = results.filter((r) => !r.ok).length
-    const totalDuration = Date.now() - start
-
-    console.log()
-    if (failed === 0) {
-      console.log(chalk.green(`  ✅  Matrix "${definition.name}": ${passed}/${results.length} states passed (${(totalDuration / 1000).toFixed(1)}s)\n`))
-    } else {
-      console.log(chalk.red(`  ❌  Matrix "${definition.name}": ${failed}/${results.length} states failed (${(totalDuration / 1000).toFixed(1)}s)\n`))
-    }
-
     return {
       matrix: definition.name,
-      totalStates: 1 << definition.variables.length,
+      totalStates,
       statesRun: results.length,
       results,
       ok: failed === 0,
-      durationMs: totalDuration,
+      durationMs: Date.now() - start,
     }
   } finally {
-    // 6. Unlock
-    if (releaseLock) {
-      await releaseLock()
-    }
-
-    // Disconnect
-    try { await closeRedis() } catch { /* best effort */ }
-    try {
-      const { prisma } = await import("@ibatexas/domain")
-      await prisma.$disconnect()
-    } catch { /* best effort */ }
+    await disconnectAll(releaseLock)
   }
 }
 

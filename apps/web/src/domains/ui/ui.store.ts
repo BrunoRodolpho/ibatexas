@@ -9,7 +9,7 @@ export interface UpsellSuggestion {
 
 /** Generate a unique toast ID */
 function generateToastId(): string {
-  return `toast-${Date.now()}-${Math.random()}`
+  return `toast-${Date.now()}-${crypto.randomUUID()}`
 }
 
 type ToastType = 'success' | 'error' | 'warning' | 'info' | 'cart'

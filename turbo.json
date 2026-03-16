@@ -21,7 +21,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "outputs": [],
+      "outputs": ["coverage/**"],
       "cache": true
     },
     "db:migrate": {

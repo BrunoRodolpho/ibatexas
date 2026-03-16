@@ -12,8 +12,7 @@ import { runPipeline, type PipelineTask } from "./pipeline.js"
 import { StepRegistry, type StepName } from "./steps.js"
 import { ScenarioFileSchema, type ScenarioFile, type CleanupAction, type VerifyRule } from "./scenario-schema.js"
 import { acquireScenarioLock } from "./lock.js"
-import { isStepCached, cacheStep } from "./step-cache.js"
-import { emit, emitScenarioStart, emitScenarioFinish, emitStepStart, emitStepFinish } from "./events.js"
+import { emit, emitScenarioStart, emitScenarioFinish } from "./events.js"
 import {
   getAdminToken,
   findOrCreateTag,
@@ -110,8 +109,7 @@ async function resolveDAG(scenario: ScenarioFile, visited: Set<string> = new Set
     const { scenario: depScenario } = await loadScenarioFile(depName)
     // Recursively resolve transitive dependencies
     const transitive = await resolveDAG(depScenario, visited)
-    deps.push(...transitive)
-    deps.push(depScenario)
+    deps.push(...transitive, depScenario)
   }
 
   // Deduplicate by name (keep first occurrence — topological order)

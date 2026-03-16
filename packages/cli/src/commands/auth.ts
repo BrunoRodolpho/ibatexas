@@ -95,8 +95,10 @@ async function showStatusForHash(redis: RedisClient, phoneHash: string): Promise
   const failTtl = await redis.ttl(failKey)
 
   console.log(chalk.bold(`\n  OTP status for ${chalk.cyan(phoneHash)}\n`))
-  console.log(`  Send attempts:   ${rateCount ?? "0"}/3${rateTtl > 0 ? chalk.gray(` (resets in ${rateTtl}s)`) : ""}`)
-  console.log(`  Failed verifies: ${failCount ?? "0"}/5${failTtl > 0 ? chalk.gray(` (resets in ${failTtl}s)`) : ""}`)
+  const rateReset = rateTtl > 0 ? chalk.gray(` (resets in ${rateTtl}s)`) : ""
+  const failReset = failTtl > 0 ? chalk.gray(` (resets in ${failTtl}s)`) : ""
+  console.log(`  Send attempts:   ${rateCount ?? "0"}/3${rateReset}`)
+  console.log(`  Failed verifies: ${failCount ?? "0"}/5${failReset}`)
   console.log()
 }
 
@@ -127,8 +129,10 @@ async function renderHashStatus(redis: RedisClient, hash: string): Promise<void>
   const failTtl = await redis.ttl(rk(`otp:fail:${hash}`))
 
   const parts: string[] = []
-  if (rateCount) parts.push(`sends: ${rateCount}/3${rateTtl > 0 ? ` (${rateTtl}s)` : ""}`)
-  if (failCount) parts.push(`fails: ${failCount}/5${failTtl > 0 ? ` (${failTtl}s)` : ""}`)
+  const rateTtlSuffix = rateTtl > 0 ? ` (${rateTtl}s)` : ""
+  const failTtlSuffix = failTtl > 0 ? ` (${failTtl}s)` : ""
+  if (rateCount) parts.push(`sends: ${rateCount}/3${rateTtlSuffix}`)
+  if (failCount) parts.push(`fails: ${failCount}/5${failTtlSuffix}`)
 
   const blocked = (Number.parseInt(rateCount ?? "0", 10) > 3) || (Number.parseInt(failCount ?? "0", 10) >= 5)
   const icon = blocked ? chalk.red("✗") : chalk.green("·")

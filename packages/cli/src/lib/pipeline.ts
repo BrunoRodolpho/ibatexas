@@ -45,6 +45,68 @@ export function guardDestructive(commandName: string): void {
   }
 }
 
+// ── Pipeline helpers ─────────────────────────────────────────────────────────
+
+/** Resolve the --from flag to a starting index. Exits on unknown task name. */
+function resolveStartIndex(tasks: PipelineTask[], from?: string): number {
+  if (!from) return 0
+  const idx = tasks.findIndex((t) => t.name === from)
+  if (idx === -1) {
+    const available = tasks.map((t) => t.name).join(", ")
+    console.error(chalk.red(`\n  Unknown task "${from}". Available: ${available}\n`))
+    process.exit(1)
+  }
+  return idx
+}
+
+/** Print the dry-run plan and return an empty success result. */
+function printDryRun(
+  tasks: PipelineTask[],
+  startIdx: number,
+  shouldSkip: (name: string) => boolean,
+): PipelineResult {
+  console.log(chalk.bold("\n  Pipeline (dry run):\n"))
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i]
+    const skipped = i < startIdx || shouldSkip(task.name)
+    const marker = skipped ? chalk.gray("  skip") : chalk.green("  run ")
+    console.log(`  ${marker}  ${i + 1}. ${task.label}`)
+  }
+  console.log()
+  return { steps: [], totalMs: 0, ok: true }
+}
+
+function skipResult(task: PipelineTask): PipelineStepResult {
+  return { name: task.name, label: task.label, durationMs: 0, status: "skipped" }
+}
+
+/** Execute a single pipeline task with spinner and timing. */
+async function executeTask(task: PipelineTask): Promise<PipelineStepResult> {
+  const spinner = ora({ text: task.label, prefixText: "  " }).start()
+  const stepStart = Date.now()
+
+  try {
+    await task.run()
+    const elapsed = Date.now() - stepStart
+    const timeStr = formatDuration(elapsed)
+    const dots = "·".repeat(Math.max(2, 48 - task.label.length - timeStr.length))
+    spinner.stopAndPersist({
+      symbol: chalk.green("  ●"),
+      text: `${task.label} ${chalk.gray(dots)} ${chalk.cyan(timeStr)}`,
+    })
+    return { name: task.name, label: task.label, durationMs: elapsed, status: "ok" }
+  } catch (err) {
+    const elapsed = Date.now() - stepStart
+    const msg = (err as Error).message
+    spinner.stopAndPersist({
+      symbol: chalk.red("  ✖"),
+      text: `${task.label} ${chalk.red("— FAILED")}`,
+    })
+    console.error(chalk.red(`\n    ${msg}\n`))
+    return { name: task.name, label: task.label, durationMs: elapsed, status: "failed", error: msg }
+  }
+}
+
 // ── Pipeline runner ──────────────────────────────────────────────────────────
 
 export async function runPipeline(
@@ -54,114 +116,35 @@ export async function runPipeline(
   const results: PipelineStepResult[] = []
   const pipelineStart = Date.now()
 
-  // Resolve --from: find the starting index
-  let startIdx = 0
-  if (opts.from) {
-    const idx = tasks.findIndex((t) => t.name === opts.from)
-    if (idx === -1) {
-      const available = tasks.map((t) => t.name).join(", ")
-      console.error(
-        chalk.red(`\n  Unknown task "${opts.from}". Available: ${available}\n`)
-      )
-      process.exit(1)
-    }
-    startIdx = idx
-  }
-
-  // Resolve --skip patterns
+  const startIdx = resolveStartIndex(tasks, opts.from)
   const skipPatterns = opts.skip ?? []
   const shouldSkip = (name: string): boolean =>
     skipPatterns.some((p) => name.includes(p))
 
-  // Dry-run: just print what would execute
-  if (opts.dryRun) {
-    console.log(chalk.bold("\n  Pipeline (dry run):\n"))
-    for (let i = 0; i < tasks.length; i++) {
-      const task = tasks[i]
-      const skipped = i < startIdx || shouldSkip(task.name)
-      const marker = skipped
-        ? chalk.gray("  skip")
-        : chalk.green("  run ")
-      console.log(`  ${marker}  ${i + 1}. ${task.label}`)
-    }
-    console.log()
-    return { steps: [], totalMs: 0, ok: true }
-  }
+  if (opts.dryRun) return printDryRun(tasks, startIdx, shouldSkip)
 
   // Header
   const activeCount = tasks.filter(
     (_, i) => i >= startIdx && !shouldSkip(tasks[i].name)
   ).length
-  console.log(
-    chalk.bold(`\n  Pipeline: ${activeCount} task(s)\n`)
-  )
+  console.log(chalk.bold(`\n  Pipeline: ${activeCount} task(s)\n`))
 
   // Execute tasks
   for (let i = 0; i < tasks.length; i++) {
     const task = tasks[i]
 
-    // Skip tasks before --from
-    if (i < startIdx) {
-      results.push({
-        name: task.name,
-        label: task.label,
-        durationMs: 0,
-        status: "skipped",
-      })
+    if (i < startIdx || shouldSkip(task.name)) {
+      if (i >= startIdx) {
+        console.log(chalk.gray(`  ○ ${task.label} ${"·".repeat(Math.max(2, 48 - task.label.length))} skipped`))
+      }
+      results.push(skipResult(task))
       continue
     }
 
-    // Skip tasks matching --skip pattern
-    if (shouldSkip(task.name)) {
-      console.log(
-        chalk.gray(`  ○ ${task.label} ${"·".repeat(Math.max(2, 48 - task.label.length))} skipped`)
-      )
-      results.push({
-        name: task.name,
-        label: task.label,
-        durationMs: 0,
-        status: "skipped",
-      })
-      continue
-    }
+    const stepResult = await executeTask(task)
+    results.push(stepResult)
 
-    // Run the task with timing
-    const spinner = ora({ text: task.label, prefixText: "  " }).start()
-    const stepStart = Date.now()
-
-    try {
-      await task.run()
-      const elapsed = Date.now() - stepStart
-      const timeStr = formatDuration(elapsed)
-      const dots = "·".repeat(Math.max(2, 48 - task.label.length - timeStr.length))
-      spinner.stopAndPersist({
-        symbol: chalk.green("  ●"),
-        text: `${task.label} ${chalk.gray(dots)} ${chalk.cyan(timeStr)}`,
-      })
-      results.push({
-        name: task.name,
-        label: task.label,
-        durationMs: elapsed,
-        status: "ok",
-      })
-    } catch (err) {
-      const elapsed = Date.now() - stepStart
-      const msg = (err as Error).message
-      spinner.stopAndPersist({
-        symbol: chalk.red("  ✖"),
-        text: `${task.label} ${chalk.red("— FAILED")}`,
-      })
-      console.error(chalk.red(`\n    ${msg}\n`))
-
-      results.push({
-        name: task.name,
-        label: task.label,
-        durationMs: elapsed,
-        status: "failed",
-        error: msg,
-      })
-
-      // Print summary of what completed before failure
+    if (stepResult.status === "failed") {
       printSummary(results, Date.now() - pipelineStart, false)
       return { steps: results, totalMs: Date.now() - pipelineStart, ok: false }
     }

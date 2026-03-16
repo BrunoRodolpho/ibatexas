@@ -467,16 +467,25 @@ async function runStatus() {
   try {
     const { prisma } = await import("@ibatexas/domain")
 
-    const counts = await Promise.all([
-      prisma.customer.count().then((n: number) => ({ table: "Customer", count: n })),
-      prisma.table.count().then((n: number) => ({ table: "Table", count: n })),
-      prisma.timeSlot.count().then((n: number) => ({ table: "TimeSlot", count: n })),
-      prisma.reservation.count().then((n: number) => ({ table: "Reservation", count: n })),
-      prisma.deliveryZone.count().then((n: number) => ({ table: "DeliveryZone", count: n })),
-      prisma.customerOrderItem.count().then((n: number) => ({ table: "CustomerOrderItem", count: n })),
-      prisma.address.count().then((n: number) => ({ table: "Address", count: n })),
-      prisma.customerPreferences.count().then((n: number) => ({ table: "CustomerPreferences", count: n })),
-    ])
+    const tableNames = [
+      "Customer", "Table", "TimeSlot", "Reservation",
+      "DeliveryZone", "CustomerOrderItem", "Address", "CustomerPreferences",
+    ] as const
+
+    const countFns: Record<typeof tableNames[number], () => Promise<number>> = {
+      Customer: () => prisma.customer.count(),
+      Table: () => prisma.table.count(),
+      TimeSlot: () => prisma.timeSlot.count(),
+      Reservation: () => prisma.reservation.count(),
+      DeliveryZone: () => prisma.deliveryZone.count(),
+      CustomerOrderItem: () => prisma.customerOrderItem.count(),
+      Address: () => prisma.address.count(),
+      CustomerPreferences: () => prisma.customerPreferences.count(),
+    }
+
+    const counts = await Promise.all(
+      tableNames.map(async (table) => ({ table, count: await countFns[table]() }))
+    )
 
     for (const { table, count } of counts) {
       const color = count > 0 ? chalk.green : chalk.yellow

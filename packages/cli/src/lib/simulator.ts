@@ -137,7 +137,7 @@ function pickWeighted<T>(items: T[], weights: number[], rng: () => number): T {
     roll -= weights[i]
     if (roll <= 0) return items[i]
   }
-  return items[items.length - 1]
+  return items.at(-1)!
 }
 
 function normalRandom(mean: number, stddev: number, rng: () => number): number {
@@ -163,6 +163,29 @@ interface CatalogProduct {
   variantId: string
 }
 
+/** Extract price (centavos) from a Medusa variant's price_set, defaulting to R$50. */
+function extractVariantPrice(variant: Record<string, unknown>): number {
+  const priceSet = variant.price_set as Record<string, unknown> | undefined
+  const prices = priceSet?.prices as Array<{ amount?: number }> | undefined
+  return prices?.[0]?.amount ?? 5000
+}
+
+/** Parse a single MedusaProduct into a CatalogProduct, or return undefined if not usable. */
+function parseCatalogProduct(p: MedusaProduct): CatalogProduct | undefined {
+  if (p.status !== "published") return undefined
+  const variant = (p.variants as Array<Record<string, unknown>>)?.[0]
+  if (!variant) return undefined
+
+  return {
+    id: p.id,
+    handle: p.handle,
+    title: p.title,
+    category: (p.categories as Array<{ name?: string }>)?.[0]?.name ?? "uncategorized",
+    price: extractVariantPrice(variant),
+    variantId: variant.id as string,
+  }
+}
+
 async function loadCatalog(): Promise<CatalogProduct[]> {
   const token = await getAdminToken()
   const allProducts: CatalogProduct[] = []
@@ -178,30 +201,8 @@ async function loadCatalog(): Promise<CatalogProduct[]> {
     const products = data.products ?? []
 
     for (const p of products) {
-      if (p.status !== "published") continue
-      const variant = (p.variants as Array<Record<string, unknown>>)?.[0]
-      if (!variant) continue
-
-      // Extract price from variant price set
-      let price = 5000 // default R$50
-      const priceSet = variant.price_set as Record<string, unknown> | undefined
-      if (priceSet) {
-        const prices = priceSet.prices as Array<{ amount?: number }> | undefined
-        if (prices?.[0]?.amount) {
-          price = prices[0].amount
-        }
-      }
-
-      const category = (p.categories as Array<{ name?: string }>)?.[0]?.name ?? "uncategorized"
-
-      allProducts.push({
-        id: p.id,
-        handle: p.handle,
-        title: p.title,
-        category,
-        price,
-        variantId: variant.id as string,
-      })
+      const parsed = parseCatalogProduct(p)
+      if (parsed) allProducts.push(parsed)
     }
 
     if (products.length < limit) break
@@ -211,12 +212,31 @@ async function loadCatalog(): Promise<CatalogProduct[]> {
   return allProducts
 }
 
-// ── Simulation engine ────────────────────────────────────────────────────────
+// ── Product selection by profile ─────────────────────────────────────────────
 
-export async function runSimulation(opts: SimulationOptions): Promise<SimulationResult> {
-  const start = Date.now()
+function pickProductForProfile(
+  catalog: CatalogProduct[],
+  profile: BehaviorProfile,
+  rng: () => number,
+): CatalogProduct | undefined {
+  const weights = catalog.map((p) => {
+    if (profile.preferredProducts.includes(p.handle)) return 5
+    if (profile.preferredCategories.some((cat) => p.category.toLowerCase().includes(cat.toLowerCase()))) return 3
+    return 1
+  })
+  return pickWeighted(catalog, weights, rng)
+}
 
-  // Apply scale preset if specified
+// ── Simulation sub-steps ─────────────────────────────────────────────────────
+
+interface SimConfig {
+  profileNames: string[]
+  profileWeights: number[]
+  reviewProb: number
+  ratingAvg: number
+}
+
+function resolveSimConfig(opts: SimulationOptions): SimConfig {
   if (opts.scale && SCALE_PRESETS[opts.scale]) {
     const preset = SCALE_PRESETS[opts.scale]
     opts.customers = preset.customers
@@ -224,10 +244,6 @@ export async function runSimulation(opts: SimulationOptions): Promise<Simulation
     opts.days = preset.days
   }
 
-  // Seeded PRNG
-  const rng = seedrandom(String(opts.seed))
-
-  // Resolve behavior distribution
   const behaviorDist = opts.behavior ?? {
     pitmaster: 0.15,
     family: 0.35,
@@ -236,34 +252,24 @@ export async function runSimulation(opts: SimulationOptions): Promise<Simulation
     superfan: 0.05,
   }
 
-  const profileNames = Object.keys(behaviorDist)
-  const profileWeights = Object.values(behaviorDist)
-
-  // Review config
-  const reviewProb = opts.reviews?.probability ?? 0.3
-  const ratingAvg = opts.reviews?.ratingAvg ?? 4.3
-
-  console.log(chalk.bold("\n  Simulation Configuration"))
-  console.log(chalk.dim(`  Customers: ${opts.customers}, Days: ${opts.days}, Orders/day: ${opts.ordersPerDay}`))
-  console.log(chalk.dim(`  Seed: ${opts.seed}, Profiles: ${profileNames.join(", ")}`))
-  console.log()
-
-  // 1. Load product catalog
-  const spinner = ora("Loading product catalog…").start()
-  const catalog = await loadCatalog()
-  if (catalog.length === 0) {
-    spinner.fail(chalk.red("No products found — run ibx db seed first"))
-    return { customersCreated: 0, ordersCreated: 0, reviewsCreated: 0, durationMs: Date.now() - start }
+  return {
+    profileNames: Object.keys(behaviorDist),
+    profileWeights: Object.values(behaviorDist),
+    reviewProb: opts.reviews?.probability ?? 0.3,
+    ratingAvg: opts.reviews?.ratingAvg ?? 4.3,
   }
-  spinner.text = `Catalog: ${catalog.length} products`
+}
 
-  // 2. Generate customers
-  spinner.text = `Generating ${opts.customers} customers…`
+async function generateCustomers(
+  count: number,
+  config: SimConfig,
+  rng: () => number,
+): Promise<SimCustomer[]> {
   const { prisma } = await import("@ibatexas/domain")
-
   const customers: SimCustomer[] = []
-  for (let i = 0; i < opts.customers; i++) {
-    const profileName = pickWeighted(profileNames, profileWeights, rng)
+
+  for (let i = 0; i < count; i++) {
+    const profileName = pickWeighted(config.profileNames, config.profileWeights, rng)
     const profile = PROFILES[profileName]
     const firstName = FIRST_NAMES[Math.floor(rng() * FIRST_NAMES.length)]
     const lastName = LAST_NAMES[Math.floor(rng() * LAST_NAMES.length)]
@@ -272,10 +278,7 @@ export async function runSimulation(opts: SimulationOptions): Promise<Simulation
     const customer = await prisma.customer.upsert({
       where: { phone },
       update: { name: `${firstName} ${lastName}` },
-      create: {
-        phone,
-        name: `${firstName} ${lastName}`,
-      },
+      create: { phone, name: `${firstName} ${lastName}` },
     })
 
     customers.push({
@@ -283,12 +286,81 @@ export async function runSimulation(opts: SimulationOptions): Promise<Simulation
       phone,
       name: `${firstName} ${lastName}`,
       profile,
-      lastOrderDay: -profile.frequencyDays, // ensure first order is eligible
+      lastOrderDay: -profile.frequencyDays,
     })
   }
 
-  // 3. Generate orders over days
-  spinner.text = "Generating orders…"
+  return customers
+}
+
+/** Build a single order for a customer, or return undefined if no products were selected. */
+function buildOrder(
+  customer: SimCustomer,
+  catalog: CatalogProduct[],
+  orderId: string,
+  dayDate: Date,
+  rng: () => number,
+): SimOrder | undefined {
+  const numItems = Math.max(1, Math.round(normalRandom(customer.profile.avgItemsPerOrder, 1, rng)))
+  const orderProducts: CatalogProduct[] = []
+
+  for (let item = 0; item < numItems; item++) {
+    const product = pickProductForProfile(catalog, customer.profile, rng)
+    if (product && !orderProducts.find((p) => p.id === product.id)) {
+      orderProducts.push(product)
+    }
+  }
+
+  if (orderProducts.length === 0) return undefined
+
+  const hour = 11 + Math.floor(rng() * 10)
+  const minute = Math.floor(rng() * 60)
+  const orderedAt = new Date(dayDate)
+  orderedAt.setHours(hour, minute, 0, 0)
+
+  return {
+    customerId: customer.id,
+    orderId,
+    productIds: orderProducts.map((p) => p.id),
+    variantIds: orderProducts.map((p) => p.variantId),
+    quantities: orderProducts.map(() => Math.max(1, Math.round(normalRandom(1, 0.5, rng)))),
+    prices: orderProducts.map((p) => p.price),
+    orderedAt,
+  }
+}
+
+/** Maybe generate a review for an order. Returns undefined if RNG decides no review. */
+function maybeBuildReview(
+  order: SimOrder,
+  config: SimConfig,
+  rng: () => number,
+): SimReview | undefined {
+  if (rng() >= config.reviewProb) return undefined
+
+  const productIdx = Math.floor(rng() * order.productIds.length)
+  const rating = clamp(Math.round(normalRandom(config.ratingAvg, 0.8, rng)), 1, 5)
+  const comments = REVIEW_COMMENTS[rating] ?? REVIEW_COMMENTS[3]
+  const comment = rng() < 0.7 ? comments[Math.floor(rng() * comments.length)] : null
+
+  return {
+    customerId: order.customerId,
+    orderId: order.orderId,
+    productId: order.productIds[productIdx],
+    rating,
+    comment,
+    channel: rng() < 0.7 ? "web" : "whatsapp",
+    createdAt: new Date(order.orderedAt.getTime() + Math.floor(rng() * 3 * 24 * 60 * 60 * 1000)),
+  }
+}
+
+/** Generate all orders and reviews over the simulation day range. */
+function generateOrdersAndReviews(
+  opts: SimulationOptions,
+  config: SimConfig,
+  customers: SimCustomer[],
+  catalog: CatalogProduct[],
+  rng: () => number,
+): { orders: SimOrder[]; reviews: SimReview[] } {
   const orders: SimOrder[] = []
   const reviews: SimReview[] = []
   const now = new Date()
@@ -296,74 +368,32 @@ export async function runSimulation(opts: SimulationOptions): Promise<Simulation
 
   for (let day = 0; day < opts.days; day++) {
     const dayDate = new Date(startDate.getTime() + day * 24 * 60 * 60 * 1000)
-
-    // Poisson-ish variation on orders per day
     const ordersToday = Math.max(1, Math.round(opts.ordersPerDay + normalRandom(0, opts.ordersPerDay * 0.2, rng)))
 
     for (let o = 0; o < ordersToday; o++) {
-      // Pick a random customer who is "due" for an order
-      const eligibleCustomers = customers.filter((c) => day - c.lastOrderDay >= c.profile.frequencyDays * 0.7)
-      if (eligibleCustomers.length === 0) continue
+      const eligible = customers.filter((c) => day - c.lastOrderDay >= c.profile.frequencyDays * 0.7)
+      if (eligible.length === 0) continue
 
-      const customer = eligibleCustomers[Math.floor(rng() * eligibleCustomers.length)]
+      const customer = eligible[Math.floor(rng() * eligible.length)]
       customer.lastOrderDay = day
 
-      // Determine number of items
-      const numItems = Math.max(1, Math.round(normalRandom(customer.profile.avgItemsPerOrder, 1, rng)))
+      const order = buildOrder(customer, catalog, `sim-${opts.seed}-${day}-${o}`, dayDate, rng)
+      if (!order) continue
 
-      // Pick products weighted by profile preferences
-      const orderProducts: CatalogProduct[] = []
-      for (let item = 0; item < numItems; item++) {
-        const product = pickProductForProfile(catalog, customer.profile, rng)
-        if (product && !orderProducts.find((p) => p.id === product.id)) {
-          orderProducts.push(product)
-        }
-      }
-
-      if (orderProducts.length === 0) continue
-
-      // Random time of day (11am–9pm)
-      const hour = 11 + Math.floor(rng() * 10)
-      const minute = Math.floor(rng() * 60)
-      const orderedAt = new Date(dayDate)
-      orderedAt.setHours(hour, minute, 0, 0)
-
-      const orderId = `sim-${opts.seed}-${day}-${o}`
-
-      orders.push({
-        customerId: customer.id,
-        orderId,
-        productIds: orderProducts.map((p) => p.id),
-        variantIds: orderProducts.map((p) => p.variantId),
-        quantities: orderProducts.map(() => Math.max(1, Math.round(normalRandom(1, 0.5, rng)))),
-        prices: orderProducts.map((p) => p.price),
-        orderedAt,
-      })
-
-      // Maybe generate a review
-      if (rng() < reviewProb) {
-        const reviewProduct = orderProducts[Math.floor(rng() * orderProducts.length)]
-        const rating = clamp(Math.round(normalRandom(ratingAvg, 0.8, rng)), 1, 5)
-        const comments = REVIEW_COMMENTS[rating] ?? REVIEW_COMMENTS[3]
-        const comment = rng() < 0.7 ? comments[Math.floor(rng() * comments.length)] : null
-
-        reviews.push({
-          customerId: customer.id,
-          orderId,
-          productId: reviewProduct.id,
-          rating,
-          comment,
-          channel: rng() < 0.7 ? "web" : "whatsapp",
-          createdAt: new Date(orderedAt.getTime() + Math.floor(rng() * 3 * 24 * 60 * 60 * 1000)), // 0–3 days later
-        })
-      }
+      orders.push(order)
+      const review = maybeBuildReview(order, config, rng)
+      if (review) reviews.push(review)
     }
   }
 
-  // 4. Write orders to DB
-  spinner.text = `Writing ${orders.length} orders to database…`
-  let ordersCreated = 0
+  return { orders, reviews }
+}
 
+async function writeOrdersToDB(
+  orders: SimOrder[],
+  prisma: Awaited<typeof import("@ibatexas/domain")>["prisma"],
+): Promise<number> {
+  let created = 0
   for (const order of orders) {
     for (let i = 0; i < order.productIds.length; i++) {
       try {
@@ -378,17 +408,20 @@ export async function runSimulation(opts: SimulationOptions): Promise<Simulation
             orderedAt: order.orderedAt,
           },
         })
-        ordersCreated++
+        created++
       } catch {
         // Duplicate — skip (idempotent)
       }
     }
   }
+  return created
+}
 
-  // 5. Write reviews to DB
-  spinner.text = `Writing ${reviews.length} reviews to database…`
-  let reviewsCreated = 0
-
+async function writeReviewsToDB(
+  reviews: SimReview[],
+  prisma: Awaited<typeof import("@ibatexas/domain")>["prisma"],
+): Promise<number> {
+  let created = 0
   for (const review of reviews) {
     try {
       await prisma.review.create({
@@ -403,11 +436,51 @@ export async function runSimulation(opts: SimulationOptions): Promise<Simulation
           createdAt: review.createdAt,
         },
       })
-      reviewsCreated++
+      created++
     } catch {
       // Duplicate (unique constraint on orderId+customerId) — skip
     }
   }
+  return created
+}
+
+// ── Simulation engine ────────────────────────────────────────────────────────
+
+export async function runSimulation(opts: SimulationOptions): Promise<SimulationResult> {
+  const start = Date.now()
+  const config = resolveSimConfig(opts)
+  const rng = seedrandom(String(opts.seed))
+
+  console.log(chalk.bold("\n  Simulation Configuration"))
+  console.log(chalk.dim(`  Customers: ${opts.customers}, Days: ${opts.days}, Orders/day: ${opts.ordersPerDay}`))
+  console.log(chalk.dim(`  Seed: ${opts.seed}, Profiles: ${config.profileNames.join(", ")}`))
+  console.log()
+
+  // 1. Load product catalog
+  const spinner = ora("Loading product catalog…").start()
+  const catalog = await loadCatalog()
+  if (catalog.length === 0) {
+    spinner.fail(chalk.red("No products found — run ibx db seed first"))
+    return { customersCreated: 0, ordersCreated: 0, reviewsCreated: 0, durationMs: Date.now() - start }
+  }
+  spinner.text = `Catalog: ${catalog.length} products`
+
+  // 2. Generate customers
+  spinner.text = `Generating ${opts.customers} customers…`
+  const customers = await generateCustomers(opts.customers, config, rng)
+
+  // 3. Generate orders and reviews
+  spinner.text = "Generating orders…"
+  const { orders, reviews } = generateOrdersAndReviews(opts, config, customers, catalog, rng)
+
+  // 4. Write to DB
+  const { prisma } = await import("@ibatexas/domain")
+
+  spinner.text = `Writing ${orders.length} orders to database…`
+  const ordersCreated = await writeOrdersToDB(orders, prisma)
+
+  spinner.text = `Writing ${reviews.length} reviews to database…`
+  const reviewsCreated = await writeReviewsToDB(reviews, prisma)
 
   await prisma.$disconnect()
   spinner.succeed(chalk.green(`  Simulation complete: ${customers.length} customers, ${ordersCreated} order items, ${reviewsCreated} reviews`))
@@ -418,23 +491,6 @@ export async function runSimulation(opts: SimulationOptions): Promise<Simulation
     reviewsCreated,
     durationMs: Date.now() - start,
   }
-}
-
-// ── Product selection by profile ─────────────────────────────────────────────
-
-function pickProductForProfile(
-  catalog: CatalogProduct[],
-  profile: BehaviorProfile,
-  rng: () => number,
-): CatalogProduct | undefined {
-  // Build weights: preferred products get 5×, preferred categories get 3×, others 1×
-  const weights = catalog.map((p) => {
-    if (profile.preferredProducts.includes(p.handle)) return 5
-    if (profile.preferredCategories.some((cat) => p.category.toLowerCase().includes(cat.toLowerCase()))) return 3
-    return 1
-  })
-
-  return pickWeighted(catalog, weights, rng)
 }
 
 // ── Rebuild intelligence after simulation ────────────────────────────────────

@@ -308,8 +308,10 @@ function printSummary(services: ServiceDef[], infra: InfraEntry[]): void {
 
 // ── Step header ───────────────────────────────────────────────────────────────
 
-const step = (n: number, total: number, msg: string) =>
-  console.log(chalk.bold(`\n${chalk.cyan(`[${n}/${total}]`)} ${msg}`))
+const step = (n: number, total: number, msg: string) => {
+  const label = chalk.cyan(`[${n}/${total}]`)
+  console.log(chalk.bold(`\n${label} ${msg}`))
+}
 
 // ── Shared start logic ────────────────────────────────────────────────────────
 
@@ -355,9 +357,10 @@ async function startServices(
 
   if (services.length > 1) {
     const coloredPrefixes = services.map((s) => s.logColor(`[${s.logPrefix}]`)).join("  ")
-    console.log(chalk.gray(`    Log prefixes: ${coloredPrefixes}\n`))
+    console.log(chalk.gray("    Log prefixes: " + coloredPrefixes + "\n"))
   } else {
-    console.log(chalk.gray(`    Logs prefixed with ${services[0].logColor(`[${services[0].logPrefix}]`)}\n`))
+    const prefix = services[0].logColor(`[${services[0].logPrefix}]`)
+    console.log(chalk.gray("    Logs prefixed with " + prefix + "\n"))
   }
 
   const procs = services.map((svc) => {
@@ -401,7 +404,8 @@ async function startServices(
         const ready = await waitForService(svc, 180_000, 2_000)
         const elapsed = ((Date.now() - startTs) / 1000).toFixed(1)
         if (ready) {
-          spinner.succeed(chalk.green(`${svc.name} ready  ${chalk.gray(`(${elapsed}s)`)}`))
+          const elapsedLabel = chalk.gray(`(${elapsed}s)`)
+          spinner.succeed(chalk.green(`${svc.name} ready  ${elapsedLabel}`))
         } else {
           spinner.fail(chalk.red(`${svc.name} did not become ready within 180s`))
           procs[i].kill("SIGTERM")

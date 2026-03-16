@@ -2,7 +2,7 @@
 // Prevents concurrent scenario/matrix execution from corrupting state.
 // Uses SET NX EX 300 (5-min auto-expire as safety net).
 
-import { getRedis, closeRedis, rk } from "./redis.js"
+import { getRedis, rk } from "./redis.js"
 
 const LOCK_KEY = "ibx:scenario:lock"
 const LOCK_TTL_SECONDS = 300 // 5 minutes

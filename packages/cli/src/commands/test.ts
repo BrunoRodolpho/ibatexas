@@ -41,182 +41,138 @@ interface StatusCheck {
   details: string
 }
 
+/** Run a single status check, catching errors and returning a warn result on failure. */
+async function safeCheck(
+  section: string,
+  failDetail: string,
+  fn: () => Promise<StatusCheck | StatusCheck[]>,
+): Promise<StatusCheck[]> {
+  try {
+    const result = await fn()
+    return Array.isArray(result) ? result : [result]
+  } catch {
+    return [{ section, status: "warn", count: "?", details: failDetail }]
+  }
+}
+
+/** Count-based status: ok if count > 0, else empty. */
+function countStatus(section: string, count: number, details: string): StatusCheck {
+  return {
+    section,
+    status: count > 0 ? "ok" : "empty",
+    count: String(count),
+    details,
+  }
+}
+
+/** Ready/Empty status based on a boolean flag. */
+function readyStatus(section: string, ready: boolean, details: string): StatusCheck {
+  return {
+    section,
+    status: ready ? "ok" : "empty",
+    count: ready ? "Ready" : "Empty",
+    details,
+  }
+}
+
+async function checkTypesense(): Promise<StatusCheck> {
+  const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
+  const ts = getTypesenseClient()
+  const info = await ts.collections(COLLECTION).retrieve()
+  const count = info.num_documents ?? 0
+  return countStatus("Products (Typesense)", count, `${count} products indexed`)
+}
+
+async function checkReviews(): Promise<StatusCheck> {
+  const { prisma } = await import("@ibatexas/domain")
+  const reviewCount = await prisma.review.count()
+  const avgResult = await prisma.review.aggregate({ _avg: { rating: true } })
+  const avg = avgResult._avg.rating?.toFixed(1) ?? "0"
+  const reviewStatus: "ok" | "warn" | "empty" =
+    reviewCount >= 5 ? "ok" : reviewCount > 0 ? "warn" : "empty"
+  return {
+    section: "Reviews",
+    status: reviewStatus,
+    count: String(reviewCount),
+    details: `${reviewCount} reviews, avg ${avg}★`,
+  }
+}
+
+async function checkRecommendations(): Promise<StatusCheck> {
+  const { getRedisClient, closeRedisClient } = await import("@ibatexas/tools")
+  const redis = await getRedisClient()
+  const key = rk("product:global:score")
+  const count = await redis.zCard(key)
+  await closeRedisClient()
+  return readyStatus("Recommendations", count > 0, `${count} products in global scores`)
+}
+
+async function checkCopurchase(): Promise<StatusCheck> {
+  const { getRedisClient, closeRedisClient } = await import("@ibatexas/tools")
+  const redis = await getRedisClient()
+  const result = await redis.scan(0, { MATCH: rk("copurchase:*"), COUNT: 1 })
+  const hasKeys = result.keys.length > 0
+  await closeRedisClient()
+  return readyStatus("Co-purchase", hasKeys, hasKeys ? "Co-purchase data indexed" : "No co-purchase data")
+}
+
+async function checkTags(): Promise<StatusCheck[]> {
+  const token = await getAdminToken()
+  const base = getMedusaUrl()
+  const res = await fetch(`${base}/admin/products?limit=100&fields=id,*tags`, {
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) return []
+  const data = (await res.json()) as { products?: Array<{ tags?: Array<{ value: string }> }> }
+  const products = data.products ?? []
+  const chefCount = products.filter((p) => p.tags?.some((t) => t.value === "chef_choice")).length
+  const popularCount = products.filter((p) => p.tags?.some((t) => t.value === "popular")).length
+  return [
+    readyStatus("PitmasterPick", chefCount > 0, `${chefCount} products with chef_choice`),
+    readyStatus("Em Alta", popularCount > 0, `${popularCount} products with popular`),
+  ]
+}
+
+async function checkTables(): Promise<StatusCheck> {
+  const { prisma } = await import("@ibatexas/domain")
+  const tableCount = await prisma.table.count()
+  const slotCount = await prisma.timeSlot.count()
+  const capacityResult = await prisma.table.aggregate({ _sum: { capacity: true } })
+  const covers = capacityResult._sum.capacity ?? 0
+  return countStatus("Tables", tableCount, `${tableCount} tables, ${covers} covers, ${slotCount} slots`)
+}
+
+async function checkPrismaCount(
+  section: string,
+  detail: (n: number) => string,
+  query: () => Promise<number>,
+): Promise<StatusCheck> {
+  const count = await query()
+  return countStatus(section, count, detail(count))
+}
+
 async function runStatusChecks(): Promise<StatusCheck[]> {
-  const checks: StatusCheck[] = []
+  const { prisma } = await import("@ibatexas/domain")
 
-  // Products (Typesense)
-  try {
-    const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
-    const ts = getTypesenseClient()
-    const info = await ts.collections(COLLECTION).retrieve()
-    const count = info.num_documents ?? 0
-    checks.push({
-      section: "Products (Typesense)",
-      status: count > 0 ? "ok" : "empty",
-      count: String(count),
-      details: `${count} products indexed`,
-    })
-  } catch {
-    checks.push({
-      section: "Products (Typesense)",
-      status: "warn",
-      count: "?",
-      details: "Typesense unavailable",
-    })
-  }
+  const groups = await Promise.all([
+    safeCheck("Products (Typesense)", "Typesense unavailable", checkTypesense),
+    safeCheck("Reviews", "DB unavailable", checkReviews),
+    safeCheck("Recommendations", "Redis unavailable", checkRecommendations),
+    safeCheck("Co-purchase", "Redis unavailable", checkCopurchase),
+    safeCheck("Tags", "Medusa unavailable", checkTags),
+    safeCheck("Reservations", "DB unavailable", () =>
+      checkPrismaCount("Reservations", (n) => `${n} reservations`, () => prisma.reservation.count()),
+    ),
+    safeCheck("Delivery Zones", "DB unavailable", () =>
+      checkPrismaCount("Delivery Zones", (n) => `${n} zones active`, () => prisma.deliveryZone.count({ where: { active: true } })),
+    ),
+    safeCheck("Tables", "DB unavailable", checkTables),
+    safeCheck("Customers", "DB unavailable", () =>
+      checkPrismaCount("Customers", (n) => `${n} customers seeded`, () => prisma.customer.count()),
+    ),
+  ])
 
-  // Reviews
-  try {
-    const { prisma } = await import("@ibatexas/domain")
-    const reviewCount = await prisma.review.count()
-    const avgResult = await prisma.review.aggregate({ _avg: { rating: true } })
-    const avg = avgResult._avg.rating?.toFixed(1) ?? "0"
-    let reviewStatus: "ok" | "warn" | "empty"
-    if (reviewCount >= 5) {
-      reviewStatus = "ok"
-    } else if (reviewCount > 0) {
-      reviewStatus = "warn"
-    } else {
-      reviewStatus = "empty"
-    }
-    checks.push({
-      section: "Reviews",
-      status: reviewStatus,
-      count: String(reviewCount),
-      details: `${reviewCount} reviews, avg ${avg}★`,
-    })
-  } catch {
-    checks.push({ section: "Reviews", status: "warn", count: "?", details: "DB unavailable" })
-  }
-
-  // Recommendations (global scores)
-  try {
-    const { getRedisClient, closeRedisClient } = await import("@ibatexas/tools")
-    const redis = await getRedisClient()
-    const key = rk("product:global:score")
-    const count = await redis.zCard(key)
-    checks.push({
-      section: "Recommendations",
-      status: count > 0 ? "ok" : "empty",
-      count: count > 0 ? "Ready" : "Empty",
-      details: `${count} products in global scores`,
-    })
-    await closeRedisClient()
-  } catch {
-    checks.push({ section: "Recommendations", status: "warn", count: "?", details: "Redis unavailable" })
-  }
-
-  // Co-purchase (EXISTS check on a known key pattern)
-  try {
-    const { getRedisClient, closeRedisClient } = await import("@ibatexas/tools")
-    const redis = await getRedisClient()
-    // Use SCAN with COUNT 1 just to check existence
-    const result = await redis.scan(0, { MATCH: rk("copurchase:*"), COUNT: 1 })
-    const hasKeys = result.keys.length > 0
-    checks.push({
-      section: "Co-purchase",
-      status: hasKeys ? "ok" : "empty",
-      count: hasKeys ? "Ready" : "Empty",
-      details: hasKeys ? "Co-purchase data indexed" : "No co-purchase data",
-    })
-    await closeRedisClient()
-  } catch {
-    checks.push({ section: "Co-purchase", status: "warn", count: "?", details: "Redis unavailable" })
-  }
-
-  // Tags — chef_choice + popular
-  try {
-    const token = await getAdminToken()
-    const base = getMedusaUrl()
-    const res = await fetch(`${base}/admin/products?limit=100&fields=id,*tags`, {
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    })
-    if (res.ok) {
-      const data = (await res.json()) as { products?: Array<{ tags?: Array<{ value: string }> }> }
-      const products = data.products ?? []
-      const chefCount = products.filter(
-        (p) => p.tags?.some((t) => t.value === "chef_choice"),
-      ).length
-      const popularCount = products.filter(
-        (p) => p.tags?.some((t) => t.value === "popular"),
-      ).length
-      checks.push({
-        section: "PitmasterPick",
-        status: chefCount > 0 ? "ok" : "empty",
-        count: chefCount > 0 ? "Ready" : "Empty",
-        details: `${chefCount} products with chef_choice`,
-      })
-      checks.push({
-        section: "Em Alta",
-        status: popularCount > 0 ? "ok" : "empty",
-        count: popularCount > 0 ? "Ready" : "Empty",
-        details: `${popularCount} products with popular`,
-      })
-    }
-  } catch {
-    checks.push({ section: "Tags", status: "warn", count: "?", details: "Medusa unavailable" })
-  }
-
-  // Reservations
-  try {
-    const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.reservation.count()
-    checks.push({
-      section: "Reservations",
-      status: count > 0 ? "ok" : "empty",
-      count: String(count),
-      details: `${count} reservations`,
-    })
-  } catch {
-    checks.push({ section: "Reservations", status: "warn", count: "?", details: "DB unavailable" })
-  }
-
-  // Delivery Zones
-  try {
-    const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.deliveryZone.count({ where: { active: true } })
-    checks.push({
-      section: "Delivery Zones",
-      status: count > 0 ? "ok" : "empty",
-      count: String(count),
-      details: `${count} zones active`,
-    })
-  } catch {
-    checks.push({ section: "Delivery Zones", status: "warn", count: "?", details: "DB unavailable" })
-  }
-
-  // Tables + TimeSlots
-  try {
-    const { prisma } = await import("@ibatexas/domain")
-    const tableCount = await prisma.table.count()
-    const slotCount = await prisma.timeSlot.count()
-    const capacityResult = await prisma.table.aggregate({ _sum: { capacity: true } })
-    const covers = capacityResult._sum.capacity ?? 0
-    checks.push({
-      section: "Tables",
-      status: tableCount > 0 ? "ok" : "empty",
-      count: String(tableCount),
-      details: `${tableCount} tables, ${covers} covers, ${slotCount} slots`,
-    })
-  } catch {
-    checks.push({ section: "Tables", status: "warn", count: "?", details: "DB unavailable" })
-  }
-
-  // Customers
-  try {
-    const { prisma } = await import("@ibatexas/domain")
-    const count = await prisma.customer.count()
-    checks.push({
-      section: "Customers",
-      status: count > 0 ? "ok" : "empty",
-      count: String(count),
-      details: `${count} customers seeded`,
-    })
-  } catch {
-    checks.push({ section: "Customers", status: "warn", count: "?", details: "DB unavailable" })
-  }
-
-  return checks
+  return groups.flat()
 }
 
 // ── E2E clean ──────────────────────────────────────────────────────────────

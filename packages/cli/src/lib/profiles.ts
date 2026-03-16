@@ -80,7 +80,7 @@ export const PROFILES: Record<string, BehaviorProfile> = {
     avgOrderValue: 4500, // R$45
     frequencyDays: 30,
     reviewProbability: 0.15,
-    ratingAvg: 4.0,
+    ratingAvg: 4,
   },
 
   congelados: {

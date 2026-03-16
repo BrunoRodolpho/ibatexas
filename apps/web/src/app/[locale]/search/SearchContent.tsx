@@ -313,6 +313,8 @@ export default function SearchContent() {
               <div
                 className="fixed inset-0 z-10"
                 onClick={() => setIsMobileFilterOpen(false)}
+                onKeyDown={(e) => { if (e.key === 'Escape') setIsMobileFilterOpen(false) }}
+                role="presentation"
               />
               {/* Unified single-row filter panel */}
               <div className="absolute top-full left-0 right-0 z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 sm:px-6 py-2.5 animate-fade-up">
@@ -490,8 +492,8 @@ export default function SearchContent() {
               {hasMore && (
                 <div ref={loadMoreRef} className="pt-6 pb-4">
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8 gap-y-6">
-                    {Array.from({ length: 4 }).map((_, i) => (
-                      <div key={`skel-${i}`} className="overflow-hidden rounded-card animate-pulse">
+                    {['skel-a', 'skel-b', 'skel-c', 'skel-d'].map((id) => (
+                      <div key={id} className="overflow-hidden rounded-card animate-pulse">
                         <div className="aspect-[4/3] rounded-card bg-smoke-200" />
                         <div className="pt-3 space-y-2.5">
                           <div className="h-4 w-3/4 rounded bg-smoke-200" />

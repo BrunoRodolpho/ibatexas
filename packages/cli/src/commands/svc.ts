@@ -252,7 +252,8 @@ async function detailTypesense(host: string, port: string): Promise<void> {
     const latencyMs = Date.now() - start
 
     console.log(`  ${chalk.bold("Status")}       ${chalk.green("✓  ok")}`)
-    console.log(`  ${chalk.bold("Connection")}   ${chalk.cyan(`${host}:${port}`)}`)
+    const connLabel = chalk.cyan(`${host}:${port}`)
+    console.log(`  ${chalk.bold("Connection")}   ${connLabel}`)
     console.log(`  ${chalk.bold("Health")}       ${chalk.white(String(healthData.ok ?? true))}`)
 
     if (collectionsRes?.ok) {
@@ -261,7 +262,8 @@ async function detailTypesense(host: string, port: string): Promise<void> {
       for (const col of collections) {
         const docCount = col.num_documents ?? 0
         const docColor = docCount > 0 ? chalk.green : chalk.yellow
-        console.log(`    · ${chalk.white(col.name.padEnd(20))} ${docColor(`${docCount} docs`)}`)
+        const docLabel = docColor(`${docCount} docs`)
+        console.log(`    · ${chalk.white(col.name.padEnd(20))} ${docLabel}`)
       }
       if (collections.length === 0) {
         console.log(chalk.yellow(`    No collections found — run: ibx db reindex`))
@@ -302,8 +304,9 @@ async function detailNats(natsUrl: string): Promise<void> {
     const latencyMs = Date.now() - start
 
     console.log(`  ${chalk.bold("Status")}      ${chalk.green("✓  ok")}`)
-    console.log(`  ${chalk.bold("Connection")} ${chalk.cyan(`${url.hostname}:${url.port || 4222}`)}`)
-    console.log(`  ${chalk.bold("Monitor")}     ${chalk.cyan(`${monitorUrl}/`)}`)
+    const natsConn = chalk.cyan(`${url.hostname}:${url.port || 4222}`)
+    console.log(`  ${chalk.bold("Connection")} ${natsConn}`)
+    console.log(`  ${chalk.bold("Monitor")}     ${chalk.cyan(monitorUrl + "/")}`)
 
     if (varzRes?.ok) {
       const varz = (await varzRes.json()) as Record<string, unknown>
@@ -386,7 +389,8 @@ async function showTypesenseIndex(typesenseHost: string, typesensePort: string):
     if (productsCol) {
       const count = productsCol.num_documents ?? 0
       const countColor = count > 0 ? chalk.green : chalk.yellow
-      console.log(`\n  ${chalk.bold("Search Index")}  ${countColor(`${count} products indexed`)}`)
+      const indexLabel = countColor(`${count} products indexed`)
+      console.log(`\n  ${chalk.bold("Search Index")}  ${indexLabel}`)
       if (count === 0) {
         console.log(chalk.yellow(`  ⚠  Run: ibx db reindex`))
       }

@@ -2,11 +2,11 @@
 
 import { useTranslations } from "next-intl"
 
-export default function Error({
+export default function ErrorPage({
   error,
   reset,
 }: {
-  error: Error & { digest?: string }
+  error: globalThis.Error & { digest?: string }
   reset: () => void
 }) {
   const t = useTranslations("common")

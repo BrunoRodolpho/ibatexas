@@ -189,7 +189,8 @@ export function registerEnvCommands(program: Command) {
         (v) => v.phase === 1 && (v.step === undefined || v.step <= maxStep)
       )
 
-      console.log(chalk.bold(`\n  ibx env check  ${chalk.gray(`(step ≤ ${maxStep})`)}\n`))
+      const stepLabel = chalk.gray(`(step ≤ ${maxStep})`)
+      console.log(chalk.bold(`\n  ibx env check  ${stepLabel}\n`))
 
       let missing = 0
       let warnings = 0
@@ -211,8 +212,9 @@ export function registerEnvCommands(program: Command) {
 
         // Length validation for secrets
         if (v.minLength && val.length < v.minLength) {
+          const lengthWarning = chalk.gray(`${v.desc} — too short (${val.length} < ${v.minLength} chars)`)
           console.log(
-            `  ${chalk.yellow("!")}  ${chalk.yellow(v.key.padEnd(24))}  ${chalk.gray(`${v.desc} — too short (${val.length} < ${v.minLength} chars)`)}`
+            `  ${chalk.yellow("!")}  ${chalk.yellow(v.key.padEnd(24))}  ${lengthWarning}`
           )
           warnings++
           continue
@@ -274,7 +276,7 @@ export function registerEnvCommands(program: Command) {
   // ── ibx env gen ────────────────────────────────────────────────────────────
   const genAction = (length: string) => {
     const bytes = Number.parseInt(length, 10)
-    if (isNaN(bytes) || bytes < 16) {
+    if (Number.isNaN(bytes) || bytes < 16) {
       console.error(chalk.red("Length must be at least 16"))
       process.exit(1)
     }

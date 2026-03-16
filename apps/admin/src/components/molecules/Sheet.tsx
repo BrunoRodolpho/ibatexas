@@ -62,18 +62,22 @@ export function Sheet({
         }`
 
   return (
-    <div
-      ref={sheetRef}
-      className="fixed inset-0 z-50 overflow-y-auto bg-black/50 animate-fade-in"
-      onClick={onClose}
-      onKeyDown={handleKeyDown}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="sheet-title"
-    >
+    <>
+      {/* Backdrop — closes sheet on click */}
       <div
-        className={`fixed bg-smoke-50 shadow-xl overflow-y-auto ${positionClasses}`}
-        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 z-50 bg-black/50 animate-fade-in"
+        onClick={onClose}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClose() }}
+        role="presentation"
+      />
+      {/* Dialog panel */}
+      <div
+        ref={sheetRef}
+        className={`fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto ${positionClasses}`}
+        onKeyDown={handleKeyDown}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="sheet-title"
       >
         <div className="sticky top-0 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-4 flex items-center justify-between">
           <h2 id="sheet-title" className="text-base font-semibold text-charcoal-900">
@@ -96,6 +100,6 @@ export function Sheet({
           </div>
         )}
       </div>
-    </div>
+    </>
   )
 }

@@ -112,6 +112,6 @@ export function registerSimulateCommands(group: Command): void {
 
 function parseIntOption(value: string): number {
   const parsed = Number.parseInt(value, 10)
-  if (isNaN(parsed)) throw new Error(`Expected a number, got "${value}"`)
+  if (Number.isNaN(parsed)) throw new Error(`Expected a number, got "${value}"`)
   return parsed
 }

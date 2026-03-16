@@ -22,10 +22,12 @@ export function registerMatrixCommands(group: Command): void {
         const def = MATRIX_DEFINITIONS[name]
         const states = 1 << def.variables.length
         console.log(`  ${chalk.cyan(name.padEnd(16))} ${def.description}`)
-        console.log(`  ${"".padEnd(16)} ${chalk.dim(`${def.variables.length} variables → ${states} states`)}`)
+        const varStatesSummary = chalk.dim(`${def.variables.length} variables → ${states} states`)
+        console.log(`  ${"".padEnd(16)} ${varStatesSummary}`)
 
         for (const v of def.variables) {
-          console.log(`  ${"".padEnd(18)} ${chalk.dim(`• ${v.name}: ${v.description}`)}`)
+          const varDetail = chalk.dim(`• ${v.name}: ${v.description}`)
+          console.log(`  ${"".padEnd(18)} ${varDetail}`)
         }
         console.log()
       }
@@ -125,6 +127,6 @@ export function registerMatrixCommands(group: Command): void {
 
 function parseIntOption(value: string): number {
   const parsed = Number.parseInt(value, 10)
-  if (isNaN(parsed)) throw new Error(`Expected a number, got "${value}"`)
+  if (Number.isNaN(parsed)) throw new Error(`Expected a number, got "${value}"`)
   return parsed
 }

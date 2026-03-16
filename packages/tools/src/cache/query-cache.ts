@@ -257,7 +257,7 @@ export async function logQuery(
   try {
     const redisClient = await getRedisClient()
     const timestamp = new Date().toISOString()
-    const keyHash = Math.random().toString(36).slice(2, 8)
+    const keyHash = crypto.randomUUID().slice(0, 8)
     const ttl = Number.parseInt(process.env.QUERY_LOG_TTL_SECONDS || "604800", 10)
 
     const entry: QueryLogEntry = {

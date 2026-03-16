@@ -83,7 +83,8 @@ async function showDashboardSystem(): Promise<void> {
     const lock = await isScenarioLocked()
     if (lock.locked && lock.owner) {
       const elapsed = Math.round((Date.now() - new Date(lock.owner.startedAt).getTime()) / 1000)
-      console.log(`    Scenario Lock           ${chalk.yellow(`${lock.owner.scenario} (${elapsed}s ago)`)}`)
+      const lockLabel = chalk.yellow(`${lock.owner.scenario} (${elapsed}s ago)`)
+      console.log(`    Scenario Lock           ${lockLabel}`)
     } else {
       console.log(`    Scenario Lock           ${chalk.green("unlocked")}`)
     }
@@ -102,7 +103,8 @@ async function showProductTypesenseData(productId: string): Promise<void> {
     const rating = doc.rating ? `${Number(doc.rating).toFixed(1)}★` : "n/a"
     const reviewCount = doc.reviewCount ?? 0
     const price = doc.price ? `R$${(Number(doc.price) / 100).toFixed(2)}` : "n/a"
-    console.log(`  Rating        ${chalk.cyan(`${rating} (${reviewCount} reviews)`)}`)
+    const ratingLabel = chalk.cyan(`${rating} (${reviewCount} reviews)`)
+    console.log(`  Rating        ${ratingLabel}`)
     console.log(`  Price         ${chalk.cyan(price)}`)
   } catch {
     console.log(`  Typesense     ${chalk.yellow("unavailable")}`)
@@ -178,7 +180,8 @@ async function showAnalyticsOrders(): Promise<{ orderItems: Array<{ priceInCenta
   )
   console.log(chalk.bold("  Orders"))
   console.log(`    Order Items             ${chalk.cyan(String(totalItems))}`)
-  console.log(`    Revenue                 ${chalk.cyan(`R$${(totalRevenue / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`)}`)
+  const revenueFormatted = `R$${(totalRevenue / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`
+  console.log(`    Revenue                 ${chalk.cyan(revenueFormatted)}`)
 
   return { orderItems }
 }
@@ -219,7 +222,8 @@ async function showAnalyticsReviews(): Promise<void> {
   const avgResult = await prisma.review.aggregate({ _avg: { rating: true } })
   const avg = avgResult._avg.rating?.toFixed(1) ?? "0"
   console.log(`    Total                   ${chalk.cyan(String(reviewCount))}`)
-  console.log(`    Average Rating          ${chalk.cyan(`${avg}★`)}`)
+  const avgLabel = chalk.cyan(`${avg}★`)
+  console.log(`    Average Rating          ${avgLabel}`)
 
   // Rating distribution
   const ratingDist = await prisma.review.groupBy({
@@ -524,6 +528,7 @@ async function checkSection(
     const icon = result.ready ? chalk.green("✅") : chalk.yellow("⚠️ ")
     console.log(`  ${icon} ${name.padEnd(24)} ${chalk.dim(result.detail)}`)
   } catch (err) {
-    console.log(`  ${chalk.yellow("⚠️ ")} ${name.padEnd(24)} ${chalk.dim(`Error: ${(err as Error).message}`)}`)
+    const errDetail = chalk.dim(`Error: ${(err as Error).message}`)
+    console.log(`  ${chalk.yellow("⚠️ ")} ${name.padEnd(24)} ${errDetail}`)
   }
 }

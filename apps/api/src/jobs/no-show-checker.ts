@@ -19,7 +19,7 @@ let intervalHandle: ReturnType<typeof setInterval> | null = null
 function slotToLocalDate(date: Date, startTime: string): Date {
   const dateStr = date.toISOString().split("T")[0]!
   const [hours, minutes] = startTime.split(":").map(Number)
-  if (hours == null || minutes == null || isNaN(hours) || isNaN(minutes)) {
+  if (hours == null || minutes == null || Number.isNaN(hours) || Number.isNaN(minutes)) {
     throw new Error(`Invalid startTime format: ${startTime}`)
   }
 
