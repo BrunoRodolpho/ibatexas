@@ -4,14 +4,14 @@ import { prisma } from "@ibatexas/domain"
 import { ReservationStatus, TableLocation, type ReservationDTO, type SpecialRequest } from "@ibatexas/types"
 
 type TimeSlotRow = { id: string; date: Date; startTime: string; durationMinutes: number; maxCovers: number; reservedCovers: number; createdAt: Date }
-type TableRow = { id: string; number: string; capacity: number; location: string; active: boolean; createdAt: Date }
+type TableRow = { id: string; number: string; capacity: number; location: TableLocation; active: boolean; createdAt: Date }
 type ReservationTableRow = { reservationId: string; tableId: string; table: TableRow }
 export type ReservationWithRelations = {
   id: string
   customerId: string
   partySize: number
   status: ReservationStatus
-  specialRequests: unknown
+  specialRequests: SpecialRequest[] | null
   timeSlot: TimeSlotRow
   tables: ReservationTableRow[]
   confirmedAt: Date | null
@@ -27,15 +27,15 @@ export type ReservationWithRelations = {
 
 export function reservationToDTO(r: ReservationWithRelations): ReservationDTO {
   // Derive table location from assigned tables (use the most common, or first)
-  const locations = r.tables.map((rt) => rt.table.location as TableLocation)
+  const locations = r.tables.map((rt) => rt.table.location)
   const tableLocation = locations.length > 0 ? (locations[0] ?? null) : null
 
   return {
     id: r.id,
     customerId: r.customerId,
     partySize: r.partySize,
-    status: r.status as ReservationStatus,
-    specialRequests: (r.specialRequests as SpecialRequest[]) ?? [],
+    status: r.status,
+    specialRequests: r.specialRequests ?? [],
     timeSlot: {
       id: r.timeSlot.id,
       date: r.timeSlot.date.toISOString().split("T")[0]!,

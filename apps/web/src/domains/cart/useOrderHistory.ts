@@ -26,7 +26,8 @@ export function useOrderHistory() {
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
       if (stored) {
-        setLastOrder(JSON.parse(stored) as LastOrder)
+        const parsed: LastOrder = JSON.parse(stored)
+        setLastOrder(parsed)
       }
     } catch {
       // localStorage not available

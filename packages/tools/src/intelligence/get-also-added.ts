@@ -6,6 +6,7 @@ import type { AgentContext } from "@ibatexas/types";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
+import type { TypesenseProductDoc } from "../mappers/product-mapper.js";
 
 export async function getAlsoAdded(
   input: { productId: string; limit?: number },
@@ -29,7 +30,7 @@ export async function getAlsoAdded(
   const typesense = getTypesenseClient();
 
   const results = await typesense
-    .collections<Record<string, unknown>>(COLLECTION)
+    .collections<TypesenseProductDoc>(COLLECTION)
     .documents()
     .search({
       q: "*",
@@ -39,10 +40,10 @@ export async function getAlsoAdded(
     });
 
   const products = (results.hits ?? []).map((hit) => ({
-    id: String(hit.document["id"] ?? ""),
-    title: String(hit.document["title"] ?? ""),
-    price: Number(hit.document["price"] ?? 0),
-    imageUrl: hit.document["imageUrl"] as string | undefined,
+    id: hit.document.id,
+    title: hit.document.title,
+    price: hit.document.price ?? 0,
+    imageUrl: hit.document.imageUrl ?? undefined,
   }));
 
   return { products, label: "Clientes também adicionam" };
