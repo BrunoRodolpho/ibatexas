@@ -19,7 +19,7 @@ export function Sheet({
   footer,
   position = 'right',
 }: SheetProps) {
-  const sheetRef = useRef<HTMLDialogElement>(null)
+  const sheetRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!isOpen) return
@@ -72,10 +72,11 @@ export function Sheet({
         aria-hidden="true"
       />
       {/* Dialog panel */}
-      <dialog
+      <div
         ref={sheetRef}
-        open
-        className={`fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto p-0 ${positionClasses}`}
+        role="dialog"
+        aria-modal="true"
+        className={`fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto ${positionClasses}`}
         onKeyDown={handleKeyDown}
         aria-labelledby="sheet-title"
       >
@@ -99,7 +100,7 @@ export function Sheet({
             {footer}
           </div>
         )}
-      </dialog>
+      </div>
     </>
   )
 }

@@ -109,7 +109,7 @@ export function registerGitCommands(program: Command) {
           "--json",
           "number,url,title",
           "--jq",
-          '"\\(.number)|\\(.url)|\\(.title)"',
+          String.raw`"\(.number)|\(.url)|\(.title)"`,
         ])
         const [num, url] = prOut.trim().split("|")
         const prNum = chalk.cyan(`#${num}`)

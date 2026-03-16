@@ -68,7 +68,7 @@ export default function CheckoutPage() {
   const t = useTranslations('checkout')
   const tCart = useTranslations('cart')
   const router = useRouter()
-  const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate, medusaCartId, clearCart } = useCartStore()
+  const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate: persistDeliveryEstimate, medusaCartId, clearCart } = useCartStore()
   const { customerId, isAuthenticated } = useSessionStore()
   const { saveOrder } = useOrderHistory()
 
@@ -77,7 +77,7 @@ export default function CheckoutPage() {
   const [tipPercent, setTipPercent] = useState(0)
   const [deliveryType, setDeliveryType] = useState<"delivery" | "pickup" | "dine-in">("delivery")
   const [cepInput, setCepInput] = useState(cep ?? "")
-  const [deliveryEstimate, setDeliveryEstimateLocal] = useState<DeliveryEstimate | null>(
+  const [deliveryEstimate, setDeliveryEstimate] = useState<DeliveryEstimate | null>(
     deliveryFee == null ? null : { feeInCentavos: deliveryFee, estimatedMinutes: estimatedDeliveryMinutes ?? 60, message: "" }
   )
   const [loadingEstimate, setLoadingEstimate] = useState(false)
@@ -152,8 +152,8 @@ export default function CheckoutPage() {
       })
       if (res.ok) {
         const data = await res.json() as DeliveryEstimate
-        setDeliveryEstimateLocal(data)
-        setDeliveryEstimate(data.feeInCentavos, data.estimatedMinutes)
+        setDeliveryEstimate(data)
+        persistDeliveryEstimate(data.feeInCentavos, data.estimatedMinutes)
         setCep(cepValue)
         track('checkout_step_completed', { step: 'delivery', cep: cepValue })
       }

@@ -26,7 +26,7 @@ export const Modal: React.FC<ModalProps> = ({
   footer,
   size = 'md',
 }) => {
-  const overlayRef = useRef<HTMLDialogElement>(null)
+  const overlayRef = useRef<HTMLDivElement>(null)
 
   // Escape key handler
   useEffect(() => {
@@ -63,51 +63,56 @@ export const Modal: React.FC<ModalProps> = ({
   if (!isOpen) return null
 
   return (
-    <dialog
-      ref={overlayRef}
-      open
-      role="dialog"
-      className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center w-full h-full m-0 max-w-none max-h-none p-0 border-none bg-transparent"
-      onClick={onClose}
-      onKeyDown={handleKeyDown}
-      aria-labelledby="modal-title"
-    >
+    <>
+      {/* Backdrop */}
       <div
-        role="presentation"
-        className={clsx(
-          'bg-smoke-50 rounded-sm shadow-xl max-h-screen overflow-y-auto w-full mx-4',
-          sizeClasses[size]
-        )}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
+        className="fixed inset-0 z-50 bg-black bg-opacity-50"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      {/* Dialog */}
+      <div
+        ref={overlayRef}
+        role="dialog"
+        aria-modal="true"
+        className="fixed inset-0 z-50 overflow-y-auto flex items-center justify-center pointer-events-none"
+        onKeyDown={handleKeyDown}
+        aria-labelledby="modal-title"
       >
-        <div className="sticky top-0 bg-smoke-50 border-b border-smoke-200 px-6 py-4 flex items-center justify-between rounded-t-sm">
-          <h2 id="modal-title" className="text-base font-semibold text-charcoal-900">
-            {title}
-          </h2>
-          {closeButton && (
-            <button
-              onClick={onClose}
-              className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-smoke-400 hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
-              style={{ transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)' }}
-              aria-label="Fechar"
-            >
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+        <div
+          className={clsx(
+            'bg-smoke-50 rounded-sm shadow-xl max-h-screen overflow-y-auto w-full mx-4 pointer-events-auto',
+            sizeClasses[size]
+          )}
+        >
+          <div className="sticky top-0 bg-smoke-50 border-b border-smoke-200 px-6 py-4 flex items-center justify-between rounded-t-sm">
+            <h2 id="modal-title" className="text-base font-semibold text-charcoal-900">
+              {title}
+            </h2>
+            {closeButton && (
+              <button
+                onClick={onClose}
+                className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-smoke-400 hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
+                style={{ transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)' }}
+                aria-label="Fechar"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+
+          <div className="px-6 py-4">{children}</div>
+
+          {footer && (
+            <div className="border-t border-smoke-200 px-6 py-4 bg-smoke-100 rounded-b-sm">
+              {footer}
+            </div>
           )}
         </div>
-
-        <div className="px-6 py-4">{children}</div>
-
-        {footer && (
-          <div className="border-t border-smoke-200 px-6 py-4 bg-smoke-100 rounded-b-sm">
-            {footer}
-          </div>
-        )}
       </div>
-    </dialog>
+    </>
   )
 }
 
@@ -130,7 +135,7 @@ export const Sheet: React.FC<SheetProps> = ({
   footer,
   position = 'right',
 }) => {
-  const sheetRef = useRef<HTMLDialogElement>(null)
+  const sheetRef = useRef<HTMLDivElement>(null)
 
   // Escape key handler
   useEffect(() => {
@@ -178,27 +183,28 @@ export const Sheet: React.FC<SheetProps> = ({
   if (!isOpen) return null
 
   return (
-    <dialog
-      ref={sheetRef}
-      open
-      role="dialog"
-      className="fixed inset-0 z-50 overflow-y-auto bg-black/50 animate-fade-in w-full h-full m-0 max-w-none max-h-none p-0 border-none bg-transparent"
-      onClick={onClose}
-      onKeyDown={handleKeyDown}
-      aria-labelledby="sheet-title"
-    >
+    <>
+      {/* Backdrop */}
       <div
-        role="presentation"
+        className="fixed inset-0 z-50 bg-black/50 animate-fade-in"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      {/* Sheet panel */}
+      <div
+        ref={sheetRef}
+        role="dialog"
+        aria-modal="true"
         className={clsx(
-          'fixed bg-smoke-50 shadow-xl overflow-y-auto',
+          'fixed z-50 bg-smoke-50 shadow-xl overflow-y-auto',
           position === 'bottom'
             ? 'bottom-0 left-0 right-0 max-h-[85vh] rounded-t-lg animate-slide-in-bottom'
             : 'top-0 bottom-0 w-[90vw] max-w-sm',
           position === 'right' && 'right-0 animate-slide-in-right',
           position === 'left' && 'left-0 animate-slide-in-left',
         )}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
+        onKeyDown={handleKeyDown}
+        aria-labelledby="sheet-title"
       >
         <div className="sticky top-0 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-4 flex items-center justify-between">
           <h2 id="sheet-title" className="text-base font-semibold text-charcoal-900">
@@ -226,6 +232,6 @@ export const Sheet: React.FC<SheetProps> = ({
           </div>
         )}
       </div>
-    </dialog>
+    </>
   )
 }

@@ -105,6 +105,91 @@ function printDirectSearchResults(
   console.log(chalk.gray(`  Typesense: ${typesenseUrl}\n`))
 }
 
+// ── Chat helpers ─────────────────────────────────────────────────────────────
+
+interface SseEvent {
+  type: string
+  delta?: string
+  message?: string
+  toolName?: string
+}
+
+async function postChatMessage(
+  apiUrl: string,
+  sessionId: string,
+  message: string,
+  channel: string,
+): Promise<string> {
+  const res = await fetch(`${apiUrl}/api/chat/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, message, channel }),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`API ${res.status}: ${text}`)
+  }
+  const data = (await res.json()) as { messageId: string }
+  return data.messageId
+}
+
+/** Process a single SSE event; returns 'done' or 'error' to signal stream end, 'continue' otherwise. */
+function handleSseEvent(event: SseEvent, sessionId: string): "continue" | "done" | "error" {
+  if (event.type === "text_delta" && event.delta) {
+    process.stdout.write(event.delta)
+    return "continue"
+  }
+  if (event.type === "tool_start") {
+    process.stdout.write(chalk.gray(`\n  [tool: ${event.toolName}]\n  `))
+    return "continue"
+  }
+  if (event.type === "done") {
+    process.stdout.write("\n")
+    console.log(chalk.green("\n  Done.\n"))
+    console.log(chalk.gray(`  Reuse session: ibx api chat "..." --session ${sessionId}\n`))
+    return "done"
+  }
+  if (event.type === "error") {
+    process.stdout.write("\n")
+    console.log(chalk.red(`\n  Agent error: ${event.message}\n`))
+    return "error"
+  }
+  return "continue"
+}
+
+async function streamChatResponse(apiUrl: string, sessionId: string): Promise<void> {
+  const sseRes = await fetch(`${apiUrl}/api/chat/stream/${sessionId}`)
+  if (!sseRes.ok || !sseRes.body) {
+    throw new Error(`SSE error ${sseRes.status}`)
+  }
+
+  const decoder = new TextDecoder()
+  let buf = ""
+
+  for await (const rawChunk of sseRes.body as AsyncIterable<Uint8Array>) {
+    buf += decoder.decode(rawChunk, { stream: true })
+    const lines = buf.split("\n")
+    buf = lines.pop() ?? ""
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue
+      const payload = line.slice(6).trim()
+      if (!payload) continue
+
+      let parsed: SseEvent
+      try {
+        parsed = JSON.parse(payload) as SseEvent
+      } catch {
+        continue
+      }
+
+      const result = handleSseEvent(parsed, sessionId)
+      if (result === "done") return
+      if (result === "error") process.exit(1)
+    }
+  }
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 export function registerApiCommands(api: Command) {
@@ -379,72 +464,21 @@ export function registerApiCommands(api: Command) {
       console.log(chalk.gray(`  channel : ${opts.channel}`))
       console.log(chalk.gray(`  message : ${message}\n`))
 
-      // 1. POST the message
       const spinner = ora("Sending message to agent...").start()
       try {
-        const res = await fetch(`${apiUrl}/api/chat/messages`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, message, channel: opts.channel }),
-        })
-        if (!res.ok) {
-          const text = await res.text()
-          throw new Error(`API ${res.status}: ${text}`)
-        }
-        const data = (await res.json()) as { messageId: string }
-        spinner.succeed(chalk.green(`Message queued — messageId: ${data.messageId}`))
+        const messageId = await postChatMessage(apiUrl, sessionId, message, opts.channel)
+        spinner.succeed(chalk.green(`Message queued — messageId: ${messageId}`))
       } catch (err) {
         spinner.fail(chalk.red("Failed to send message"))
         console.error(chalk.gray(String(err)))
         process.exit(1)
       }
 
-      // 2. Stream SSE response
       console.log(chalk.bold("\n  Agent:\n"))
       process.stdout.write("  ")
 
       try {
-        const sseRes = await fetch(`${apiUrl}/api/chat/stream/${sessionId}`)
-        if (!sseRes.ok || !sseRes.body) {
-          throw new Error(`SSE error ${sseRes.status}`)
-        }
-
-        const decoder = new TextDecoder()
-        let buf = ""
-
-        for await (const rawChunk of sseRes.body as AsyncIterable<Uint8Array>) {
-          buf += decoder.decode(rawChunk, { stream: true })
-          const lines = buf.split("\n")
-          buf = lines.pop() ?? ""
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue
-            const payload = line.slice(6).trim()
-            if (!payload) continue
-
-            let parsed: { type: string; delta?: string; message?: string; toolName?: string }
-            try {
-              parsed = JSON.parse(payload) as typeof parsed
-            } catch {
-              continue
-            }
-
-            if (parsed.type === "text_delta" && parsed.delta) {
-              process.stdout.write(parsed.delta)
-            } else if (parsed.type === "tool_start") {
-              process.stdout.write(chalk.gray(`\n  [tool: ${parsed.toolName}]\n  `))
-            } else if (parsed.type === "done") {
-              process.stdout.write("\n")
-              console.log(chalk.green("\n  Done.\n"))
-              console.log(chalk.gray(`  Reuse session: ibx api chat "..." --session ${sessionId}\n`))
-              return
-            } else if (parsed.type === "error") {
-              process.stdout.write("\n")
-              console.log(chalk.red(`\n  Agent error: ${parsed.message}\n`))
-              process.exit(1)
-            }
-          }
-        }
+        await streamChatResponse(apiUrl, sessionId)
       } catch (err) {
         process.stdout.write("\n")
         console.error(chalk.red("  Failed to stream response"))

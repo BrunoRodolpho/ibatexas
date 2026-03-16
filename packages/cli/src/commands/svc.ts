@@ -271,7 +271,9 @@ async function detailTypesense(host: string, port: string): Promise<void> {
     console.log(`  ${chalk.bold("Status")}       ${chalk.green("✓  ok")}`)
     const connLabel = chalk.cyan(`${host}:${port}`)
     console.log(`  ${chalk.bold("Connection")}   ${connLabel}`)
-    console.log(`  ${chalk.bold("Health")}       ${chalk.white(String(healthData["ok"] ?? true))}`)
+    const okValue = healthData["ok"]
+    const okLabel = typeof okValue === 'boolean' ? String(okValue) : typeof okValue === 'string' ? okValue : 'true'
+    console.log(`  ${chalk.bold("Health")}       ${chalk.white(okLabel)}`)
 
     if (collectionsRes?.ok) {
       const collections = (await collectionsRes.json()) as Array<{ name: string; num_documents: number }>
@@ -313,11 +315,14 @@ async function detailNats(natsUrl: string): Promise<void> {
 
     if (varzRes?.ok) {
       const varz = (await varzRes.json()) as Record<string, unknown>
-      console.log(`\n  ${chalk.bold("Server")}      NATS ${String(varz.version ?? "unknown")}`)
-      console.log(`  ${chalk.bold("Connections")} ${String(varz.connections ?? 0)} active`)
-      console.log(`  ${chalk.bold("Subscriptions")} ${String(varz.subscriptions ?? 0)}`)
-      const inMsgs = String(varz.in_msgs ?? 0)
-      const outMsgs = String(varz.out_msgs ?? 0)
+      const version = typeof varz.version === 'string' ? varz.version : 'unknown'
+      const connections = typeof varz.connections === 'number' ? varz.connections : 0
+      const subscriptions = typeof varz.subscriptions === 'number' ? varz.subscriptions : 0
+      const inMsgs = typeof varz.in_msgs === 'number' ? varz.in_msgs : 0
+      const outMsgs = typeof varz.out_msgs === 'number' ? varz.out_msgs : 0
+      console.log(`\n  ${chalk.bold("Server")}      NATS ${version}`)
+      console.log(`  ${chalk.bold("Connections")} ${connections} active`)
+      console.log(`  ${chalk.bold("Subscriptions")} ${subscriptions}`)
       console.log(`  ${chalk.bold("Messages")}    ${inMsgs} in  /  ${outMsgs} out`)
     }
 
