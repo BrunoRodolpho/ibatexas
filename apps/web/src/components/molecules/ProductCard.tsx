@@ -236,6 +236,89 @@ function SocialProof({
   )
 }
 
+// ── Sub-component: Priority badge (bundle or tag) ───────────────────────────
+
+function PriorityBadge({
+  isBundle,
+  priorityTag,
+  t,
+}: Readonly<{
+  isBundle?: boolean
+  priorityTag?: string
+  t: ReturnType<typeof useTranslations>
+}>) {
+  if (isBundle) {
+    return (
+      <div className="absolute top-2 left-2 z-10">
+        <Badge variant="popular">{t('product.bundle_badge')}</Badge>
+      </div>
+    )
+  }
+  if (!priorityTag) return null
+  return (
+    <div className="absolute top-2 left-2 z-10">
+      <Badge variant={priorityTag as BadgeProps['variant']}>
+        {priorityTag.replaceAll("_", " ")}
+      </Badge>
+    </div>
+  )
+}
+
+// ── Sub-component: Availability window label ────────────────────────────────
+
+function AvailabilityLabel({
+  availabilityWindow,
+  t,
+}: Readonly<{
+  availabilityWindow?: string
+  t: ReturnType<typeof useTranslations>
+}>) {
+  if (availabilityWindow !== 'ALMOCO' && availabilityWindow !== 'JANTAR') return null
+  return (
+    <p className="mt-1 text-[11px] text-amber-600 font-medium">
+      {availabilityWindow === 'ALMOCO' ? t('product.available_almoco_short') : t('product.available_jantar_short')}
+    </p>
+  )
+}
+
+// ── Sub-component: Add-to-cart CTA button ───────────────────────────────────
+
+function AddToCartButton({
+  isAdded,
+  title,
+  onQuickAdd,
+  t,
+}: Readonly<{
+  isAdded: boolean
+  title: string
+  onQuickAdd: (e: React.MouseEvent) => void
+  t: ReturnType<typeof useTranslations>
+}>) {
+  const stateClass = isAdded
+    ? 'bg-accent-green text-white animate-add-success'
+    : 'bg-brand-500 text-white hover:bg-brand-600 shadow-xs hover:shadow-md'
+
+  return (
+    <button
+      onClick={onQuickAdd}
+      className={`w-full h-10 flex items-center justify-center gap-1.5 rounded-sm text-xs font-semibold transition-all duration-500 ease-luxury active:scale-95 focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 ${stateClass}`}
+      aria-label={`${t('product.add_to_cart')} - ${title}`}
+    >
+      {isAdded ? (
+        <>
+          <Check className="w-4 h-4" strokeWidth={2.5} />
+          <span>{t('product.added_short')}</span>
+        </>
+      ) : (
+        <>
+          <Plus className="w-4 h-4" strokeWidth={2} />
+          <span>{t('common.add')}</span>
+        </>
+      )}
+    </button>
+  )
+}
+
 // ── Sub-component: Price block ──────────────────────────────────────────────
 
 function PriceBlock({
@@ -425,17 +508,7 @@ export const ProductCard = ({
           <div className="absolute inset-0 bg-gradient-to-t from-charcoal-900/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 ease-luxury pointer-events-none" />
 
           {/* Single priority badge — top left */}
-          {isBundle ? (
-            <div className="absolute top-2 left-2 z-10">
-              <Badge variant="popular">{t('product.bundle_badge')}</Badge>
-            </div>
-          ) : priorityTag && (
-            <div className="absolute top-2 left-2 z-10">
-              <Badge variant={priorityTag as BadgeProps['variant']}>
-                {priorityTag.replaceAll("_", " ")}
-              </Badge>
-            </div>
-          )}
+          <PriorityBadge isBundle={isBundle} priorityTag={priorityTag} t={t} />
 
           {/* Scarcity indicator */}
           {stockCount != null && stockCount > 0 && stockCount <= 5 && (
@@ -469,11 +542,7 @@ export const ProductCard = ({
           )}
 
           {/* Availability window */}
-          {availabilityWindow && (availabilityWindow === 'ALMOCO' || availabilityWindow === 'JANTAR') && (
-            <p className="mt-1 text-[11px] text-amber-600 font-medium">
-              {availabilityWindow === 'ALMOCO' ? t('product.available_almoco_short') : t('product.available_jantar_short')}
-            </p>
-          )}
+          <AvailabilityLabel availabilityWindow={availabilityWindow} t={t} />
 
           {/* Social proof — star rating + order count */}
           <SocialProof rating={rating} reviewCount={reviewCount} tags={tags} t={t} />
@@ -509,27 +578,7 @@ export const ProductCard = ({
                 <QuantityControls cartQuantity={cartQuantity} onDecrement={handleDecrement} onIncrement={handleIncrement} size="md" t={t} />
               ) : (
                 /* Add button — brand orange, always visible */
-                <button
-                  onClick={handleQuickAdd}
-                  className={`w-full h-10 flex items-center justify-center gap-1.5 rounded-sm text-xs font-semibold transition-all duration-500 ease-luxury active:scale-95 focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 ${
-                    isAdded
-                      ? 'bg-accent-green text-white animate-add-success'
-                      : 'bg-brand-500 text-white hover:bg-brand-600 shadow-xs hover:shadow-md'
-                  }`}
-                  aria-label={`${t('product.add_to_cart')} - ${title}`}
-                >
-                  {isAdded ? (
-                    <>
-                      <Check className="w-4 h-4" strokeWidth={2.5} />
-                      <span>{t('product.added_short')}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Plus className="w-4 h-4" strokeWidth={2} />
-                      <span>{t('common.add')}</span>
-                    </>
-                  )}
-                </button>
+                <AddToCartButton isAdded={isAdded} title={title} onQuickAdd={handleQuickAdd} t={t} />
               )}
             </div>
           )}

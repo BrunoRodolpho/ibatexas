@@ -525,86 +525,101 @@ export async function runScenario(nameOrPath: string, opts: ScenarioOptions = {}
   return success
 }
 
+// ── Scenario step execution — phase helpers ──────────────────────────────────
+
+async function resolveDAGPhase(scenario: ScenarioFile, opts: ScenarioOptions): Promise<boolean> {
+  const deps = await resolveDAG(scenario)
+  if (deps.length === 0) return true
+
+  console.log(chalk.dim(`  Resolving dependencies: ${deps.map((d) => d.name).join(" → ")}\n`))
+  for (const dep of deps) {
+    if (dep.setup.length > 0) {
+      const tasks = stepsToTasks(dep.setup, opts)
+      const result = await runPipeline(tasks, { skip: opts.skip })
+      if (!result.ok) return false
+    }
+  }
+  return true
+}
+
+async function cleanupPhase(scenario: ScenarioFile): Promise<void> {
+  if (!scenario.cleanup || scenario.cleanup.length === 0) return
+  console.log(chalk.bold("  Cleanup"))
+  await executeCleanup(scenario.cleanup)
+  console.log()
+}
+
+async function setupPhase(scenario: ScenarioFile, opts: ScenarioOptions): Promise<boolean> {
+  if (scenario.setup.length === 0) return true
+  console.log(chalk.bold("  Setup"))
+  const tasks = stepsToTasks(scenario.setup, opts)
+  const result = await runPipeline(tasks, { skip: opts.skip })
+  if (!result.ok) return false
+  console.log()
+  return true
+}
+
+async function simulatePhase(scenario: ScenarioFile): Promise<void> {
+  if (!scenario.simulate) return
+  console.log(chalk.bold("  Simulate"))
+  const { runSimulation } = await import("./simulator.js")
+  const simResult = await runSimulation({
+    customers: scenario.simulate.customers,
+    days: scenario.simulate.days,
+    ordersPerDay: scenario.simulate.ordersPerDay,
+    seed: scenario.simulate.seed,
+    behavior: scenario.simulate.behavior,
+    reviews: scenario.simulate.reviews,
+  })
+  console.log(chalk.dim(`    ${simResult.customersCreated} customers, ${simResult.ordersCreated} orders, ${simResult.reviewsCreated} reviews`))
+  console.log()
+}
+
+async function tagsPhase(scenario: ScenarioFile): Promise<void> {
+  const tagEntries = Object.entries(scenario.tags)
+  if (tagEntries.length === 0) return
+
+  const spinner = ora(`  Applying ${tagEntries.length} tag rule(s)…`).start()
+  const affectedProductIds = await applyTags(scenario.tags)
+  if (affectedProductIds.length > 0) {
+    spinner.text = `  Stabilizing ${affectedProductIds.length} product(s) in Typesense…`
+    await stabilizeProducts(affectedProductIds)
+  }
+  spinner.succeed(chalk.green(`  Applied ${tagEntries.length} tag rule(s)`))
+  console.log()
+}
+
+async function rebuildsPhase(scenario: ScenarioFile, opts: ScenarioOptions): Promise<boolean> {
+  if (scenario.rebuilds.length === 0) return true
+  console.log(chalk.bold("  Rebuilds"))
+  const tasks = stepsToTasks(scenario.rebuilds, opts)
+  const result = await runPipeline(tasks, { skip: opts.skip })
+  if (!result.ok) return false
+  console.log()
+  return true
+}
+
+async function verifyPhase(scenario: ScenarioFile): Promise<boolean> {
+  const verifyEntries = Object.entries(scenario.verify)
+  if (verifyEntries.length === 0) return true
+
+  console.log(chalk.bold("  Verify\n"))
+  const results = await runVerifyChecks(scenario.verify)
+  printVerifyResults(results)
+  const failures = results.filter((r) => !r.ok && r.severity === "error")
+  return failures.length === 0
+}
+
 // ── Scenario step execution ─────────────────────────────────────────────────
 
 async function executeScenarioSteps(scenario: ScenarioFile, opts: ScenarioOptions): Promise<boolean> {
-  // 3. Resolve dependency DAG
-  const deps = await resolveDAG(scenario)
-  if (deps.length > 0) {
-    console.log(chalk.dim(`  Resolving dependencies: ${deps.map((d) => d.name).join(" → ")}\n`))
-    for (const dep of deps) {
-      if (dep.setup.length > 0) {
-        const tasks = stepsToTasks(dep.setup, opts)
-        const result = await runPipeline(tasks, { skip: opts.skip })
-        if (!result.ok) return false
-      }
-    }
-  }
-
-  // 4. Cleanup
-  if (scenario.cleanup && scenario.cleanup.length > 0) {
-    console.log(chalk.bold("  Cleanup"))
-    await executeCleanup(scenario.cleanup)
-    console.log()
-  }
-
-  // 5. Setup
-  if (scenario.setup.length > 0) {
-    console.log(chalk.bold("  Setup"))
-    const tasks = stepsToTasks(scenario.setup, opts)
-    const result = await runPipeline(tasks, { skip: opts.skip })
-    if (!result.ok) return false
-    console.log()
-  }
-
-  // 6. Simulate (if present)
-  if (scenario.simulate) {
-    console.log(chalk.bold("  Simulate"))
-    const { runSimulation } = await import("./simulator.js")
-    const simResult = await runSimulation({
-      customers: scenario.simulate.customers,
-      days: scenario.simulate.days,
-      ordersPerDay: scenario.simulate.ordersPerDay,
-      seed: scenario.simulate.seed,
-      behavior: scenario.simulate.behavior,
-      reviews: scenario.simulate.reviews,
-    })
-    console.log(chalk.dim(`    ${simResult.customersCreated} customers, ${simResult.ordersCreated} orders, ${simResult.reviewsCreated} reviews`))
-    console.log()
-  }
-
-  // 7. Tags
-  const tagEntries = Object.entries(scenario.tags)
-  if (tagEntries.length > 0) {
-    const spinner = ora(`  Applying ${tagEntries.length} tag rule(s)…`).start()
-    const affectedProductIds = await applyTags(scenario.tags)
-    if (affectedProductIds.length > 0) {
-      spinner.text = `  Stabilizing ${affectedProductIds.length} product(s) in Typesense…`
-      await stabilizeProducts(affectedProductIds)
-    }
-    spinner.succeed(chalk.green(`  Applied ${tagEntries.length} tag rule(s)`))
-    console.log()
-  }
-
-  // 8. Rebuilds
-  if (scenario.rebuilds.length > 0) {
-    console.log(chalk.bold("  Rebuilds"))
-    const tasks = stepsToTasks(scenario.rebuilds, opts)
-    const result = await runPipeline(tasks, { skip: opts.skip })
-    if (!result.ok) return false
-    console.log()
-  }
-
-  // 9. Verify
-  const verifyEntries = Object.entries(scenario.verify)
-  if (verifyEntries.length > 0) {
-    console.log(chalk.bold("  Verify\n"))
-    const results = await runVerifyChecks(scenario.verify)
-    printVerifyResults(results)
-    const failures = results.filter((r) => !r.ok && r.severity === "error")
-    if (failures.length > 0) return false
-  }
-
+  if (!await resolveDAGPhase(scenario, opts)) return false
+  await cleanupPhase(scenario)
+  if (!await setupPhase(scenario, opts)) return false
+  await simulatePhase(scenario)
+  await tagsPhase(scenario)
+  if (!await rebuildsPhase(scenario, opts)) return false
+  if (!await verifyPhase(scenario)) return false
   return true
 }
 

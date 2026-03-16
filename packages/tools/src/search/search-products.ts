@@ -325,64 +325,76 @@ interface SingleQuerySearchOptions {
   facetCountsRef?: { value?: Record<string, Array<{ value: string; count: number }>> }
 }
 
-/**
- * Run the full L0→embedding→L1→Typesense→filter→cache pipeline for a single query.
- * Does NOT publish NATS events (caller handles that after merging).
- */
-async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<SingleQueryResult> {
-  const { query, filters, userType, sessionId, limit, cacheCtx, cacheTtl, facetCountsRef } = opts
-  const isWildcard = query === "*"
+// ── Pipeline helpers (extracted from singleQuerySearch to reduce complexity) ─
 
-  // ── L0: Exact cache ──────────────────────────────────────────────────────
+/** L0: Check exact query cache. Returns a cache-hit result or null to continue. */
+async function checkL0Cache(
+  query: string,
+  cacheCtx: CacheFilterContext,
+  isWildcard: boolean,
+): Promise<SingleQueryResult | null> {
   const l0 = await getExactQueryCache(query, cacheCtx)
-  if (l0.hit) {
-    return {
+  if (!l0.hit) return null
+  return {
+    query,
+    products: l0.results,
+    totalFound: l0.results.length,
+    scores: {},
+    hitCache: true,
+    cachedAt: l0.cachedAt,
+    searchModel: isWildcard ? "keyword" : "hybrid",
+  }
+}
+
+/** Generate query embedding. Returns empty array for wildcards or on error. */
+async function generateQueryEmbedding(query: string, isWildcard: boolean): Promise<number[]> {
+  if (isWildcard) return []
+  try {
+    return await generateEmbedding(
       query,
-      products: l0.results,
-      totalFound: l0.results.length,
-      scores: {},
-      hitCache: true,
-      cachedAt: l0.cachedAt,
-      searchModel: isWildcard ? "keyword" : "hybrid",
-    }
+      `embedding:query:${Buffer.from(query).toString("base64")}`
+    )
+  } catch (error) {
+    console.warn("[Search] Query embedding failed; falling back to keyword search:", error)
+    return []
   }
+}
 
-  // ── Generate query embedding (skip for wildcard browse queries) ──────────
-  let queryEmbedding: number[] = []
-  if (!isWildcard) {
-    try {
-      queryEmbedding = await generateEmbedding(
-        query,
-        `embedding:query:${Buffer.from(query).toString("base64")}`
-      )
-    } catch (error) {
-      console.warn("[Search] Query embedding failed; falling back to keyword search:", error)
-    }
+/** L1: Check semantic bucket cache. Returns a cache-hit result or null to continue. */
+async function checkL1Cache(
+  query: string,
+  queryEmbedding: number[],
+  cacheCtx: CacheFilterContext,
+): Promise<SingleQueryResult | null> {
+  if (queryEmbedding.length === 0) return null
+  const l1 = await getQueryCache(queryEmbedding, cacheCtx)
+  if (!l1.hit) return null
+
+  try {
+    await incrementQueryCacheHits(queryEmbedding, cacheCtx)
+    await setExactQueryCache(query, cacheCtx, l1.results)
+  } catch (error) {
+    console.warn("[Search] Cache backfill failed (non-critical):", error)
   }
-
-  // ── L1: Semantic bucket cache ────────────────────────────────────────────
-  if (queryEmbedding.length > 0) {
-    const l1 = await getQueryCache(queryEmbedding, cacheCtx)
-    if (l1.hit) {
-      try {
-        await incrementQueryCacheHits(queryEmbedding, cacheCtx)
-        await setExactQueryCache(query, cacheCtx, l1.results)
-      } catch (error) {
-        console.warn("[Search] Cache backfill failed (non-critical):", error)
-      }
-      return {
-        query,
-        products: l1.results,
-        totalFound: l1.results.length,
-        scores: {},
-        hitCache: true,
-        cachedAt: l1.cachedAt,
-        searchModel: "hybrid",
-      }
-    }
+  return {
+    query,
+    products: l1.results,
+    totalFound: l1.results.length,
+    scores: {},
+    hitCache: true,
+    cachedAt: l1.cachedAt,
+    searchModel: "hybrid",
   }
+}
 
-  // ── L2: Typesense search ─────────────────────────────────────────────────
+/** L2: Execute Typesense hybrid search and apply post-filters. */
+async function searchTypesense(
+  query: string,
+  queryEmbedding: number[],
+  filters: FilterOptions,
+  limit: number,
+  facetCountsRef?: { value?: Record<string, Array<{ value: string; count: number }>> },
+): Promise<{ products: ProductDTO[]; rawDTOs: ProductDTO[]; tsResult: TypesenseResult }> {
   let tsResult: TypesenseResult = { hits: [], totalFound: 0, scores: {} }
   try {
     tsResult = await executeTypesenseSearch({ query, embedding: queryEmbedding, limit, filterInStock: true, productType: filters.productType, categoryHandle: filters.categoryHandle, tags: filters.tags, sort: filters.sort, offset: filters.offset })
@@ -391,23 +403,23 @@ async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<Single
     }
   } catch (error) {
     console.error("[Search] Typesense search failed:", error)
-    // Graceful degradation — return empty
   }
 
   const rawDTOs = tsResult.hits.map((doc) => typesenseDocToDTO(doc))
   const products = applyFilters(rawDTOs, filters)
+  return { products, rawDTOs, tsResult }
+}
 
-  // ── noResultsReason diagnostic (empty results only) ──────────────────────
-  let noResultsReason: NoResultsReason | undefined
-  if (products.length === 0) {
-    try {
-      noResultsReason = await diagnoseNoResults(query, queryEmbedding, limit, rawDTOs, filters)
-    } catch (error) {
-      console.warn("[Search] Diagnostic query failed (non-critical):", error)
-    }
-  }
-
-  // ── Cache results ────────────────────────────────────────────────────────
+/** Cache search results and log the query. Non-critical — errors are swallowed. */
+async function cacheAndLogResults(
+  query: string,
+  queryEmbedding: number[],
+  products: ProductDTO[],
+  cacheCtx: CacheFilterContext,
+  cacheTtl: number,
+  sessionId: string,
+  userType: "guest" | "customer" | "staff",
+): Promise<void> {
   try {
     if (queryEmbedding.length > 0) {
       await setQueryCache(queryEmbedding, products, cacheCtx, cacheTtl)
@@ -417,13 +429,44 @@ async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<Single
     console.warn("[Search] Cache write failed (non-critical):", error)
   }
 
-  // ── Log query ────────────────────────────────────────────────────────────
   try {
     const bucket = queryEmbedding.length > 0 ? embeddingToBucket(queryEmbedding) : "no-embedding"
     await logQuery(sessionId, query, bucket, products.length, cacheCtx.channel, userType)
   } catch (error) {
     console.warn("[Search] Query log failed (non-critical):", error)
   }
+}
+
+// ── Single-query search (orchestrator) ──────────────────────────────────────
+
+/**
+ * Run the full L0→embedding→L1→Typesense→filter→cache pipeline for a single query.
+ * Does NOT publish NATS events (caller handles that after merging).
+ */
+async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<SingleQueryResult> {
+  const { query, filters, userType, sessionId, limit, cacheCtx, cacheTtl, facetCountsRef } = opts
+  const isWildcard = query === "*"
+
+  const l0Result = await checkL0Cache(query, cacheCtx, isWildcard)
+  if (l0Result) return l0Result
+
+  const queryEmbedding = await generateQueryEmbedding(query, isWildcard)
+
+  const l1Result = await checkL1Cache(query, queryEmbedding, cacheCtx)
+  if (l1Result) return l1Result
+
+  const { products, rawDTOs, tsResult } = await searchTypesense(query, queryEmbedding, filters, limit, facetCountsRef)
+
+  let noResultsReason: NoResultsReason | undefined
+  if (products.length === 0) {
+    try {
+      noResultsReason = await diagnoseNoResults(query, queryEmbedding, limit, rawDTOs, filters)
+    } catch (error) {
+      console.warn("[Search] Diagnostic query failed (non-critical):", error)
+    }
+  }
+
+  await cacheAndLogResults(query, queryEmbedding, products, cacheCtx, cacheTtl, sessionId, userType)
 
   return {
     query,

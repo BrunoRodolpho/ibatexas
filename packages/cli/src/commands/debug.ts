@@ -68,45 +68,47 @@ async function debugRedisPattern(pattern: string): Promise<void> {
   console.log()
 }
 
-// ── Redis: group summary ────────────────────────────────────────────────────
+// ── Redis: scan and accumulate keys for a pattern ────────────────────────────
 
-async function debugRedisGroupSummary(showTtl: boolean): Promise<void> {
-  const redis = await getRedis()
+type RedisClientDebug = Awaited<ReturnType<typeof getRedis>>
 
-  const groups: { label: string; pattern: string }[] = [
-    { label: "Co-purchase sets",   pattern: rk("copurchase:*") },
-    { label: "Global scores",      pattern: rk("product:global:*") },
-    { label: "Search cache",       pattern: rk("search:*") },
-    { label: "Conversation state", pattern: rk("conv:*") },
-    { label: "Session data",       pattern: rk("session:*") },
-    { label: "Scenario lock",      pattern: rk("ibx:scenario:*") },
-  ]
+interface ScanGroupResult {
+  keyCount: number
+  totalMem: number
+  sampleTtl?: number
+}
 
-  const results: { label: string; keys: number; mem: number; ttl?: number }[] = []
+async function scanRedisKeys(
+  redis: RedisClientDebug,
+  pattern: string,
+  showTtl: boolean,
+): Promise<ScanGroupResult> {
+  let cursor = 0
+  let keyCount = 0
+  let totalMem = 0
+  let sampleTtl: number | undefined
 
-  for (const { label, pattern: p } of groups) {
-    let cursor2 = 0
-    let keyCount = 0
-    let totalMem = 0
-    let sampleTtl: number | undefined
-
-    do {
-      const result = await redis.scan(cursor2, { MATCH: p, COUNT: 200 })
-      cursor2 = result.cursor
-      for (const key of result.keys) {
-        keyCount++
-        try { totalMem += (await redis.memoryUsage(key)) ?? 0 } catch { /* skip */ }
-        if (showTtl && sampleTtl === undefined) {
-          sampleTtl = await redis.ttl(key)
-        }
+  do {
+    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 200 })
+    cursor = result.cursor
+    for (const key of result.keys) {
+      keyCount++
+      try { totalMem += (await redis.memoryUsage(key)) ?? 0 } catch { /* skip */ }
+      if (showTtl && sampleTtl === undefined) {
+        sampleTtl = await redis.ttl(key)
       }
-    } while (cursor2 !== 0)
+    }
+  } while (cursor !== 0)
 
-    results.push({ label, keys: keyCount, mem: totalMem, ttl: sampleTtl })
-  }
+  return { keyCount, totalMem, sampleTtl }
+}
 
-  console.log(chalk.bold("\n  Redis Key Groups\n"))
+// ── Redis: render group summary table ────────────────────────────────────────
 
+function renderGroupSummaryTable(
+  results: { label: string; keys: number; mem: number; ttl?: number }[],
+  showTtl: boolean,
+): void {
   const labelW = 22
   const header = `  ${"Group".padEnd(labelW)}${"Keys".padStart(8)}   ${"Memory".padEnd(10)}${showTtl ? "  TTL" : ""}`
   console.log(chalk.bold(header))
@@ -129,6 +131,31 @@ async function debugRedisGroupSummary(showTtl: boolean): Promise<void> {
   console.log(`  ${"─".repeat(labelW + 22 + (showTtl ? 8 : 0))}`)
   console.log(`  ${chalk.bold("Total".padEnd(labelW))}${chalk.white(String(totalKeys).padStart(8))}   ${chalk.cyan(formatBytes(totalMem))}`)
   console.log()
+}
+
+// ── Redis: group summary ────────────────────────────────────────────────────
+
+async function debugRedisGroupSummary(showTtl: boolean): Promise<void> {
+  const redis = await getRedis()
+
+  const groups: { label: string; pattern: string }[] = [
+    { label: "Co-purchase sets",   pattern: rk("copurchase:*") },
+    { label: "Global scores",      pattern: rk("product:global:*") },
+    { label: "Search cache",       pattern: rk("search:*") },
+    { label: "Conversation state", pattern: rk("conv:*") },
+    { label: "Session data",       pattern: rk("session:*") },
+    { label: "Scenario lock",      pattern: rk("ibx:scenario:*") },
+  ]
+
+  const results: { label: string; keys: number; mem: number; ttl?: number }[] = []
+
+  for (const { label, pattern: p } of groups) {
+    const scan = await scanRedisKeys(redis, p, showTtl)
+    results.push({ label, keys: scan.keyCount, mem: scan.totalMem, ttl: scan.sampleTtl })
+  }
+
+  console.log(chalk.bold("\n  Redis Key Groups\n"))
+  renderGroupSummaryTable(results, showTtl)
 }
 
 // ── Typesense: schema ───────────────────────────────────────────────────────
