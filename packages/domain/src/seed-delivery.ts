@@ -161,44 +161,18 @@ async function seedAddresses(customerMap: Map<string, string>) {
   console.log("🏠  Seeding customer addresses…")
 
   let count = 0
-  for (const addr of SEED_ADDRESSES) {
-    const customerId = customerMap.get(addr.phone)
+  for (const { phone, ...addrData } of SEED_ADDRESSES) {
+    const customerId = customerMap.get(phone)
     if (!customerId) {
-      console.log(`  ⚠️  Customer ${addr.phone} not found, skipping address`)
+      console.log(`  ⚠️  Customer ${phone} not found, skipping address`)
       continue
     }
 
-    const existing = await prisma.address.findFirst({
-      where: { customerId, isDefault: true },
-    })
+    const existing = await prisma.address.findFirst({ where: { customerId, isDefault: true } })
     if (existing) {
-      await prisma.address.update({
-        where: { id: existing.id },
-        data: {
-          street: addr.street,
-          number: addr.number,
-          complement: addr.complement,
-          district: addr.district,
-          city: addr.city,
-          state: addr.state,
-          cep: addr.cep,
-          isDefault: addr.isDefault,
-        },
-      })
+      await prisma.address.update({ where: { id: existing.id }, data: addrData })
     } else {
-      await prisma.address.create({
-        data: {
-          customerId,
-          street: addr.street,
-          number: addr.number,
-          complement: addr.complement,
-          district: addr.district,
-          city: addr.city,
-          state: addr.state,
-          cep: addr.cep,
-          isDefault: addr.isDefault,
-        },
-      })
+      await prisma.address.create({ data: { customerId, ...addrData } })
     }
     count++
   }
@@ -210,26 +184,17 @@ async function seedPreferences(customerMap: Map<string, string>) {
   console.log("🥗  Seeding customer preferences…")
 
   let count = 0
-  for (const pref of SEED_PREFERENCES) {
-    const customerId = customerMap.get(pref.phone)
+  for (const { phone, ...prefData } of SEED_PREFERENCES) {
+    const customerId = customerMap.get(phone)
     if (!customerId) {
-      console.log(`  ⚠️  Customer ${pref.phone} not found, skipping preferences`)
+      console.log(`  ⚠️  Customer ${phone} not found, skipping preferences`)
       continue
     }
 
     await prisma.customerPreferences.upsert({
       where: { customerId },
-      update: {
-        dietaryRestrictions: pref.dietaryRestrictions,
-        allergenExclusions: pref.allergenExclusions,
-        favoriteCategories: pref.favoriteCategories,
-      },
-      create: {
-        customerId,
-        dietaryRestrictions: pref.dietaryRestrictions,
-        allergenExclusions: pref.allergenExclusions,
-        favoriteCategories: pref.favoriteCategories,
-      },
+      update: prefData,
+      create: { customerId, ...prefData },
     })
     count++
   }

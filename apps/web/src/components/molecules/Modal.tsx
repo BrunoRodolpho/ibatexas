@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useRef } from 'react'
 import clsx from 'clsx'
+import { useEscapeAndFocusTrap, useScrollLock } from '@ibatexas/ui'
 
 export interface ModalProps {
   readonly isOpen: boolean
@@ -17,9 +18,6 @@ const sizeClasses = {
   lg: 'max-w-lg',
 }
 
-const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
-
 export const Modal: React.FC<ModalProps> = ({
   isOpen,
   title,
@@ -31,31 +29,8 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const dialogRef = useRef<HTMLDialogElement>(null)
 
-  // Escape + focus trap (document-level to avoid inline handlers on <dialog>)
-  useEffect(() => {
-    if (!isOpen) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return }
-      if (e.key !== 'Tab' || !dialogRef.current) return
-      const focusable = dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
-      if (focusable.length === 0) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (e.shiftKey) {
-        if (document.activeElement === first) { e.preventDefault(); last.focus() }
-      } else if (document.activeElement === last) { e.preventDefault(); first.focus() }
-    }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [isOpen, onClose])
-
-  // Scroll lock
-  useEffect(() => {
-    if (!isOpen) return
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = prev }
-  }, [isOpen])
+  useEscapeAndFocusTrap(isOpen, onClose, dialogRef)
+  useScrollLock(isOpen)
 
   if (!isOpen) return null
 
@@ -132,40 +107,8 @@ export const Sheet: React.FC<SheetProps> = ({
 }) => {
   const sheetRef = useRef<HTMLDialogElement>(null)
 
-  // Escape + focus trap (document-level to avoid inline handlers on <dialog>)
-  useEffect(() => {
-    if (!isOpen) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return }
-      if (e.key !== 'Tab' || !sheetRef.current) return
-      const focusable = sheetRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
-      if (focusable.length === 0) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (e.shiftKey) {
-        if (document.activeElement === first) { e.preventDefault(); last.focus() }
-      } else if (document.activeElement === last) { e.preventDefault(); first.focus() }
-    }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [isOpen, onClose])
-
-  // Scroll lock
-  useEffect(() => {
-    if (!isOpen) return
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = prev }
-  }, [isOpen])
-
-  // Auto-focus first focusable element on open
-  useEffect(() => {
-    if (!isOpen || !sheetRef.current) return
-    const focusable = sheetRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
-    if (focusable.length > 0) {
-      focusable[0].focus()
-    }
-  }, [isOpen])
+  useEscapeAndFocusTrap(isOpen, onClose, sheetRef)
+  useScrollLock(isOpen)
 
   if (!isOpen) return null
 

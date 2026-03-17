@@ -220,79 +220,34 @@ program
     },
   })
 
-// ── SDLC: ibx dev … ──────────────────────────────────────────────────────────
-const devGroup = new Command("dev")
-registerDevCommands(devGroup)
-program.addCommand(devGroup)
+// ── Register grouped commands ────────────────────────────────────────────────
 
-// ── Services: ibx svc … ──────────────────────────────────────────────────────
-const svcGroup = new Command("svc").description("Services — infrastructure and app health")
-registerSvcCommands(svcGroup)
-program.addCommand(svcGroup)
+const groupedCommands: { name: string; register: (cmd: Command) => void; description?: string }[] = [
+  { name: "dev",      register: registerDevCommands },
+  { name: "svc",      register: registerSvcCommands,      description: "Services — infrastructure and app health" },
+  { name: "api",      register: registerApiCommands,      description: "API — catalog and service queries" },
+  { name: "test",     register: registerTestCommands },
+  { name: "tag",      register: registerTagCommands },
+  { name: "scenario", register: registerScenarioCommands },
+  { name: "debug",    register: registerDebugCommands },
+  { name: "inspect",  register: registerInspectCommands },
+  { name: "matrix",   register: registerMatrixCommands },
+  { name: "simulate", register: registerSimulateCommands },
+  { name: "doctor",   register: registerDoctorCommands },
+  { name: "auth",     register: registerAuthCommands },
+]
 
-// ── API: ibx api … ───────────────────────────────────────────────────────────
-const apiGroup = new Command("api").description("API — catalog and service queries")
-registerApiCommands(apiGroup)
-program.addCommand(apiGroup)
+for (const { name, register, description } of groupedCommands) {
+  const group = new Command(name)
+  if (description) group.description(description)
+  register(group)
+  program.addCommand(group)
+}
 
-// ── Data ──────────────────────────────────────────────────────────────────────
-registerDbCommands(program)
-
-// ── Config ────────────────────────────────────────────────────────────────────
-registerEnvCommands(program)
-
-// ── VCS ───────────────────────────────────────────────────────────────────────
-registerGitCommands(program)
-
-// ── Intelligence ─────────────────────────────────────────────────────────────
-registerIntelligenceCommands(program)
-
-// ── Testing: ibx test … ─────────────────────────────────────────────────────
-const testGroup = new Command("test")
-registerTestCommands(testGroup)
-program.addCommand(testGroup)
-
-// ── Tags: ibx tag … ─────────────────────────────────────────────────────────
-const tagGroup = new Command("tag")
-registerTagCommands(tagGroup)
-program.addCommand(tagGroup)
-
-// ── Scenario: ibx scenario … ────────────────────────────────────────────────
-const scenarioGroup = new Command("scenario")
-registerScenarioCommands(scenarioGroup)
-program.addCommand(scenarioGroup)
-
-// ── Debug: ibx debug … ──────────────────────────────────────────────────────
-const debugGroup = new Command("debug")
-registerDebugCommands(debugGroup)
-program.addCommand(debugGroup)
-
-// ── Inspect: ibx inspect … ──────────────────────────────────────────────────
-const inspectGroup = new Command("inspect")
-registerInspectCommands(inspectGroup)
-program.addCommand(inspectGroup)
-
-// ── Matrix: ibx matrix … ────────────────────────────────────────────────────
-const matrixGroup = new Command("matrix")
-registerMatrixCommands(matrixGroup)
-program.addCommand(matrixGroup)
-
-// ── Simulate: ibx simulate … ────────────────────────────────────────────────
-const simulateGroup = new Command("simulate")
-registerSimulateCommands(simulateGroup)
-program.addCommand(simulateGroup)
-
-// ── Doctor: ibx doctor ──────────────────────────────────────────────────────
-const doctorGroup = new Command("doctor")
-registerDoctorCommands(doctorGroup)
-program.addCommand(doctorGroup)
-
-// ── Auth: ibx auth … ──────────────────────────────────────────────────────
-const authGroup = new Command("auth")
-registerAuthCommands(authGroup)
-program.addCommand(authGroup)
-
-// ── Tunnel: ibx tunnel ─────────────────────────────────────────────────────
-registerTunnelCommands(program)
+// ── Register root-level commands (no subgroup) ──────────────────────────────
+const rootRegistrations = [registerDbCommands, registerEnvCommands, registerGitCommands, registerIntelligenceCommands, registerTunnelCommands]
+for (const register of rootRegistrations) {
+  register(program)
+}
 
 program.parse()

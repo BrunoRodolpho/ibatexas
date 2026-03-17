@@ -53,53 +53,40 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
   )
 
-  // POST /api/admin/reservations/:id/checkin
-  app.post(
-    "/api/admin/reservations/:id/checkin",
-    {
-      schema: {
-        tags: ["admin"],
-        summary: "Check-in do hóspede (admin)",
-        params: z.object({ id: z.string() }),
+  // ── Shared handler for reservation status transitions ─────────────────────
+  function registerStatusTransition(
+    path: string,
+    summary: string,
+    buildData: () => Record<string, unknown>,
+    errorMsg: string,
+  ) {
+    app.post(
+      path,
+      { schema: { tags: ["admin"], summary, params: z.object({ id: z.string() }) } },
+      async (request, reply) => {
+        try {
+          const { id } = request.params as { id: string }
+          const updated = await prisma.reservation.update({ where: { id }, data: buildData() })
+          return reply.send({ reservation: updated })
+        } catch (err) {
+          server.log.error(err, errorMsg)
+          reply.code(500).send({ error: errorMsg })
+        }
       },
-    },
-    async (request, reply) => {
-      try {
-        const { id } = request.params as { id: string }
-        const updated = await prisma.reservation.update({
-          where: { id },
-          data: { status: "seated", checkedInAt: new Date() },
-        })
-        return reply.send({ reservation: updated })
-      } catch (err) {
-        server.log.error(err, "Failed to check in reservation");
-        reply.code(500).send({ error: "Failed to check in reservation" })
-      }
-    },
+    )
+  }
+
+  registerStatusTransition(
+    "/api/admin/reservations/:id/checkin",
+    "Check-in do hóspede (admin)",
+    () => ({ status: "seated", checkedInAt: new Date() }),
+    "Failed to check in reservation",
   )
 
-  // POST /api/admin/reservations/:id/complete
-  app.post(
+  registerStatusTransition(
     "/api/admin/reservations/:id/complete",
-    {
-      schema: {
-        tags: ["admin"],
-        summary: "Marcar reserva como concluída (admin)",
-        params: z.object({ id: z.string() }),
-      },
-    },
-    async (request, reply) => {
-      try {
-        const { id } = request.params as { id: string }
-        const updated = await prisma.reservation.update({
-          where: { id },
-          data: { status: "completed" },
-        })
-        return reply.send({ reservation: updated })
-      } catch (err) {
-        server.log.error(err, "Failed to complete reservation");
-        reply.code(500).send({ error: "Failed to complete reservation" })
-      }
-    },
+    "Marcar reserva como concluída (admin)",
+    () => ({ status: "completed" }),
+    "Failed to complete reservation",
   )
 }

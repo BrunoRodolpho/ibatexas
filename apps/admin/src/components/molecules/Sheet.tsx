@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
+import { useEscapeAndFocusTrap, useScrollLock } from '@ibatexas/ui'
 
 interface SheetProps {
   readonly isOpen: boolean
@@ -10,9 +11,6 @@ interface SheetProps {
   readonly footer?: React.ReactNode
   readonly position?: 'left' | 'right' | 'bottom'
 }
-
-const FOCUSABLE_SELECTOR =
-  'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])'
 
 export function Sheet({
   isOpen,
@@ -24,32 +22,8 @@ export function Sheet({
 }: SheetProps) {
   const sheetRef = useRef<HTMLDialogElement>(null)
 
-  // Escape + focus trap (document-level to avoid inline handlers on <dialog>)
-  useEffect(() => {
-    if (!isOpen) return
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return }
-      if (e.key !== 'Tab' || !sheetRef.current) return
-      const focusable = sheetRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
-      if (focusable.length === 0) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
-      if (e.shiftKey) {
-        if (document.activeElement === first) { e.preventDefault(); last.focus() }
-      } else if (document.activeElement === last) {
-        e.preventDefault(); first.focus()
-      }
-    }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [isOpen, onClose])
-
-  useEffect(() => {
-    if (!isOpen) return
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = prev }
-  }, [isOpen])
+  useEscapeAndFocusTrap(isOpen, onClose, sheetRef)
+  useScrollLock(isOpen)
 
   if (!isOpen) return null
 
