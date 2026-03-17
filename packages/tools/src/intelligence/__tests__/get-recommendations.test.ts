@@ -39,6 +39,7 @@ vi.mock("../query-products-by-ids.js", () => ({
 
 // -- Imports ──────────────────────────────────────────────────────────────────
 
+import { Channel } from "@ibatexas/types"
 import {
   getRecommendations,
   buildPersonalizedQuery,
@@ -48,13 +49,13 @@ import {
 
 const CTX_AUTH = {
   customerId: "cus_01",
-  channel: "whatsapp" as const,
+  channel: Channel.WhatsApp,
   sessionId: "sess_01",
   userType: "customer" as const,
 }
 
 const CTX_GUEST = {
-  channel: "web" as const,
+  channel: Channel.Web,
   sessionId: "sess_02",
   userType: "guest" as const,
 }

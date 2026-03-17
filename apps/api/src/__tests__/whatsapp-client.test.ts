@@ -152,13 +152,20 @@ describe("sendText", () => {
   });
 
   it("throws after 3 failed attempts", async () => {
-    mockMessagesCreate.mockRejectedValue(new Error("Twilio down"));
+    const err = new Error("Twilio down");
+    mockMessagesCreate
+      .mockRejectedValueOnce(err)
+      .mockRejectedValueOnce(err)
+      .mockRejectedValueOnce(err);
 
-    const promise = sendText("whatsapp:+5511999887766", "Oi");
+    // Attach rejection handler immediately to prevent unhandled rejection
+    const promise = sendText("whatsapp:+5511999887766", "Oi").catch((e) => e);
     // Advance past all retry delays
     await vi.advanceTimersByTimeAsync(5000);
 
-    await expect(promise).rejects.toThrow("Twilio down");
+    const result = await promise;
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toBe("Twilio down");
     expect(mockMessagesCreate).toHaveBeenCalledTimes(3);
   });
 });

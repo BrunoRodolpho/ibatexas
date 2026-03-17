@@ -39,19 +39,20 @@ vi.mock("@ibatexas/nats-client", () => ({
 
 // -- Imports ──────────────────────────────────────────────────────────────────
 
+import { Channel } from "@ibatexas/types"
 import { submitReview } from "../submit-review.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
 
 const CTX_AUTH = {
   customerId: "cus_01",
-  channel: "whatsapp" as const,
+  channel: Channel.WhatsApp,
   sessionId: "sess_01",
   userType: "customer" as const,
 }
 
 const CTX_GUEST = {
-  channel: "web" as const,
+  channel: Channel.Web,
   sessionId: "sess_02",
   userType: "guest" as const,
 }

@@ -53,6 +53,7 @@ vi.mock("@ibatexas/domain", () => ({
 
 // -- Imports ──────────────────────────────────────────────────────────────────
 
+import { Channel } from "@ibatexas/types"
 import { getCustomerProfile } from "../get-customer-profile.js"
 import { PROFILE_TTL_SECONDS } from "../types.js"
 
@@ -60,13 +61,13 @@ import { PROFILE_TTL_SECONDS } from "../types.js"
 
 const CTX_AUTH = {
   customerId: "cus_01",
-  channel: "whatsapp" as const,
+  channel: Channel.WhatsApp,
   sessionId: "sess_01",
   userType: "customer" as const,
 }
 
 const CTX_GUEST = {
-  channel: "web" as const,
+  channel: Channel.Web,
   sessionId: "sess_02",
   userType: "guest" as const,
 }
