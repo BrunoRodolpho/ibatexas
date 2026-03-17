@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./atoms": "./src/atoms/index.ts",
-    "./molecules": "./src/molecules/index.ts"
+    "./molecules": "./src/molecules/index.ts",
+    "./organisms": "./src/organisms/index.ts"
   },
   "scripts": {
     "lint": "tsc --noEmit"
@@ -18,6 +19,7 @@
     "react-dom": "^18.3.0"
   },
   "dependencies": {
+    "@ibatexas/types": "workspace:*",
     "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

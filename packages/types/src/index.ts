@@ -11,7 +11,10 @@ export type {
   AdminProductDetail,
   AdminVariant,
   OrderSummary,
+  MedusaOrderRaw,
 } from "./admin.types.js"
+
+export { mapMedusaOrderToSummary } from "./admin.types.js"
 
 // Product types
 export {

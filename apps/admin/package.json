@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@ibatexas/ui": "workspace:*",
     "@tanstack/react-table": "^8.21.3",

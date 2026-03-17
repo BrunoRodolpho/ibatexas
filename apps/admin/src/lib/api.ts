@@ -1,33 +1,11 @@
 /**
  * API client for the admin app.
- * Same as @ibatexas/web's lib/api.ts but scoped to the admin app.
  */
+import { getApiBase, MEDUSA_ADMIN_URL } from '@ibatexas/tools/api'
 
-function getApiBase(): string {
-  if (globalThis.window === undefined) {
-    return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
-  }
-  const configured = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
-  try {
-    const url = new URL(configured)
-    if (
-      (url.hostname === 'localhost' || url.hostname === '127.0.0.1') &&
-      globalThis.location.hostname !== 'localhost' &&
-      globalThis.location.hostname !== '127.0.0.1'
-    ) {
-      url.hostname = globalThis.location.hostname
-    }
-    return url.origin
-  } catch {
-    return configured
-  }
-}
-
-export { getApiBase }
+export { getApiBase, MEDUSA_ADMIN_URL }
 
 const API_BASE = getApiBase()
-
-export const MEDUSA_ADMIN_URL = process.env.NEXT_PUBLIC_MEDUSA_BACKEND_URL || 'http://localhost:9000'
 
 export const apiFetch = async (endpoint: string, options?: RequestInit) => {
   const url = `${API_BASE}${endpoint}`

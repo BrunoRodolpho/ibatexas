@@ -86,5 +86,8 @@ export { joinWaitlist, JoinWaitlistTool } from "./reservation/join-waitlist.js"
 export { setWhatsAppSender, getWhatsAppSender } from "./whatsapp/sender.js"
 export type { WhatsAppSender } from "./whatsapp/sender.js"
 
+// ── API base URL ──────────────────────────────────────────────────────────────
+export { getApiBase, MEDUSA_ADMIN_URL } from "./api/base-url.js"
+
 // ── Re-export shared types consumed by CLI and other packages ─────────────────
 export { Channel } from "@ibatexas/types"

@@ -157,14 +157,8 @@ async function seedDeliveryZones() {
   console.log(`✅  ${count} delivery zones seeded`)
 }
 
-async function seedAddresses() {
+async function seedAddresses(customerMap: Map<string, string>) {
   console.log("🏠  Seeding customer addresses…")
-
-  const customers = await prisma.customer.findMany({
-    where: { phone: { in: SEED_CUSTOMER_PHONES } },
-    select: { id: true, phone: true },
-  })
-  const customerMap = new Map(customers.map((c) => [c.phone, c.id]))
 
   let count = 0
   for (const addr of SEED_ADDRESSES) {
@@ -212,14 +206,8 @@ async function seedAddresses() {
   console.log(`✅  ${count} addresses seeded`)
 }
 
-async function seedPreferences() {
+async function seedPreferences(customerMap: Map<string, string>) {
   console.log("🥗  Seeding customer preferences…")
-
-  const customers = await prisma.customer.findMany({
-    where: { phone: { in: SEED_CUSTOMER_PHONES } },
-    select: { id: true, phone: true },
-  })
-  const customerMap = new Map(customers.map((c) => [c.phone, c.id]))
 
   let count = 0
   for (const pref of SEED_PREFERENCES) {
@@ -254,8 +242,16 @@ async function seedPreferences() {
 async function main() {
   try {
     await seedDeliveryZones()
-    await seedAddresses()
-    await seedPreferences()
+
+    // Single customer lookup shared by addresses + preferences
+    const customers = await prisma.customer.findMany({
+      where: { phone: { in: SEED_CUSTOMER_PHONES } },
+      select: { id: true, phone: true },
+    })
+    const customerMap = new Map(customers.map((c) => [c.phone, c.id]))
+
+    await seedAddresses(customerMap)
+    await seedPreferences(customerMap)
     console.log("\n🎉  Delivery seed complete\n")
   } finally {
     await prisma.$disconnect()

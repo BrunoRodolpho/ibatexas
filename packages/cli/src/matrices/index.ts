@@ -40,7 +40,7 @@ async function removeTagFromAllProducts(tagValue: string): Promise<void> {
   }
 }
 
-// ── Homepage Matrix — 5 variables → 32 states ──────────────────────────────
+// ── Handle sets ──────────────────────────────────────────────────────────────
 
 const POPULAR_HANDLES = [
   "costela-bovina-defumada",
@@ -56,19 +56,110 @@ const CHEF_CHOICE_HANDLES = [
   "costela-bovina-defumada",
 ]
 
+// ── Shared state variable factories ──────────────────────────────────────────
+
+function makeTagVariable(name: string, description: string, handles: string[], tagValue: string): StateVariable {
+  return {
+    name,
+    description,
+    apply: () => applyTagToProducts(handles, tagValue),
+    remove: () => removeTagFromAllProducts(tagValue),
+  }
+}
+
+function makePopularVar(): StateVariable {
+  return makeTagVariable("popularProducts", "Products tagged popular (Em Alta section)", POPULAR_HANDLES, "popular")
+}
+
+function makeChefChoiceVar(): StateVariable {
+  return makeTagVariable("chefChoiceProducts", "Products tagged chef_choice (Pitmaster section)", CHEF_CHOICE_HANDLES, "chef_choice")
+}
+
+function makeCopurchaseVar(name = "copurchasePresent", description = "Co-purchase relations (Also Added on PDP)"): StateVariable {
+  return {
+    name,
+    description,
+    apply: async () => { await StepRegistry["intel-copurchase"].run() },
+    remove: async () => {
+      const redis = await getRedis()
+      await scanDelete(redis, rk("copurchase:*"))
+    },
+  }
+}
+
+function makeGlobalScoreVar(name = "globalScorePresent", description = "Global scores exist (popularity ranking)"): StateVariable {
+  return {
+    name,
+    description,
+    apply: async () => { await StepRegistry["intel-global-score"].run() },
+    remove: async () => {
+      const redis = await getRedis()
+      await redis.del(rk("product:global:score"))
+    },
+  }
+}
+
+// ── Shared expectation factories ─────────────────────────────────────────────
+
+function makeTagExpectation(section: string, tagValue: string, requires: string[], severity: "error" | "warning"): MatrixExpectation {
+  return {
+    section,
+    requires,
+    severity,
+    check: async () => {
+      const products = await fetchAllProductsWithTags()
+      const count = products.filter((p) => p.tags?.some((t) => t.value === tagValue)).length
+      return { ok: count > 0, detail: `${count} products with ${tagValue}` }
+    },
+  }
+}
+
+function makeGlobalScoreExpectation(section: string, requires: string[], severity: "error" | "warning"): MatrixExpectation {
+  return {
+    section,
+    requires,
+    severity,
+    check: async () => {
+      const redis = await getRedis()
+      const count = await redis.zCard(rk("product:global:score"))
+      return { ok: count > 0, detail: `${count} products in global score` }
+    },
+  }
+}
+
+function makeCopurchaseExpectation(section: string, requires: string[], severity: "error" | "warning"): MatrixExpectation {
+  return {
+    section,
+    requires,
+    severity,
+    check: async () => {
+      const redis = await getRedis()
+      const count = await scanCount(redis, rk("copurchase:*"))
+      return { ok: count > 0, detail: `${count} copurchase relations` }
+    },
+  }
+}
+
+// ── Typesense rating reset helper ────────────────────────────────────────────
+
+async function resetTypesenseRatings(): Promise<void> {
+  try {
+    const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
+    const ts = getTypesenseClient()
+    const products = await fetchAllProductsWithTags()
+    for (const product of products) {
+      try {
+        await ts.collections(COLLECTION).documents(product.id).update({ rating: 0, reviewCount: 0 })
+      } catch { /* skip — product may not be indexed */ }
+    }
+  } catch { /* Typesense unavailable */ }
+}
+
+// ── Homepage Matrix — 5 variables → 32 states ──────────────────────────────
+
 const homepageVariables: StateVariable[] = [
-  {
-    name: "popularProducts",
-    description: "Products tagged popular (Em Alta section)",
-    apply: () => applyTagToProducts(POPULAR_HANDLES, "popular"),
-    remove: () => removeTagFromAllProducts("popular"),
-  },
-  {
-    name: "chefChoiceProducts",
-    description: "Products tagged chef_choice (Pitmaster section)",
-    apply: () => applyTagToProducts(CHEF_CHOICE_HANDLES, "chef_choice"),
-    remove: () => removeTagFromAllProducts("chef_choice"),
-  },
+  makePopularVar(),
+  makeChefChoiceVar(),
   {
     name: "reviewsPresent",
     description: "Reviews in database (HomeReviews section)",
@@ -79,17 +170,7 @@ const homepageVariables: StateVariable[] = [
     remove: async () => {
       const { prisma } = await import("@ibatexas/domain")
       await prisma.review.deleteMany()
-      // Reset Typesense rating/reviewCount so stale data doesn't persist
-      try {
-        const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
-        const ts = getTypesenseClient()
-        const products = await fetchAllProductsWithTags()
-        for (const product of products) {
-          try {
-            await ts.collections(COLLECTION).documents(product.id).update({ rating: 0, reviewCount: 0 })
-          } catch { /* skip — product may not be indexed */ }
-        }
-      } catch { /* Typesense unavailable */ }
+      await resetTypesenseRatings()
       await prisma.$disconnect()
     },
   },
@@ -108,40 +189,12 @@ const homepageVariables: StateVariable[] = [
       await prisma.$disconnect()
     },
   },
-  {
-    name: "copurchasePresent",
-    description: "Co-purchase relations (Also Added on PDP)",
-    apply: async () => {
-      await StepRegistry["intel-copurchase"].run()
-    },
-    remove: async () => {
-      const redis = await getRedis()
-      await scanDelete(redis, rk("copurchase:*"))
-    },
-  },
+  makeCopurchaseVar(),
 ]
 
 const homepageExpectations: MatrixExpectation[] = [
-  {
-    section: "Em Alta",
-    requires: ["popularProducts"],
-    severity: "error",
-    check: async () => {
-      const products = await fetchAllProductsWithTags()
-      const count = products.filter((p) => p.tags?.some((t) => t.value === "popular")).length
-      return { ok: count > 0, detail: `${count} products with popular tag` }
-    },
-  },
-  {
-    section: "Pitmaster Recomenda",
-    requires: ["chefChoiceProducts"],
-    severity: "error",
-    check: async () => {
-      const products = await fetchAllProductsWithTags()
-      const count = products.filter((p) => p.tags?.some((t) => t.value === "chef_choice")).length
-      return { ok: count > 0, detail: `${count} products with chef_choice tag` }
-    },
-  },
+  makeTagExpectation("Em Alta", "popular", ["popularProducts"], "error"),
+  makeTagExpectation("Pitmaster Recomenda", "chef_choice", ["chefChoiceProducts"], "error"),
   {
     section: "HomeReviews",
     requires: ["reviewsPresent"],
@@ -153,43 +206,15 @@ const homepageExpectations: MatrixExpectation[] = [
       return { ok: count > 0, detail: `${count} reviews with rating≥4 + comment` }
     },
   },
-  {
-    section: "Mais Pedidos",
-    requires: ["ordersPresent"],
-    severity: "error",
-    check: async () => {
-      const redis = await getRedis()
-      const count = await redis.zCard(rk("product:global:score"))
-      return { ok: count > 0, detail: `${count} products in global score` }
-    },
-  },
-  {
-    section: "Also Added (PDP)",
-    requires: ["copurchasePresent"],
-    severity: "warning",
-    check: async () => {
-      const redis = await getRedis()
-      const count = await scanCount(redis, rk("copurchase:*"))
-      return { ok: count > 0, detail: `${count} copurchase relations` }
-    },
-  },
+  makeGlobalScoreExpectation("Mais Pedidos", ["ordersPresent"], "error"),
+  makeCopurchaseExpectation("Also Added (PDP)", ["copurchasePresent"], "warning"),
 ]
 
 // ── Search Matrix — 4 variables → 16 states ────────────────────────────────
 
 const searchVariables: StateVariable[] = [
-  {
-    name: "popularProducts",
-    description: "Products tagged popular (Em Alta section)",
-    apply: () => applyTagToProducts(POPULAR_HANDLES, "popular"),
-    remove: () => removeTagFromAllProducts("popular"),
-  },
-  {
-    name: "chefChoiceProducts",
-    description: "Products tagged chef_choice (Pitmaster Pick)",
-    apply: () => applyTagToProducts(CHEF_CHOICE_HANDLES, "chef_choice"),
-    remove: () => removeTagFromAllProducts("chef_choice"),
-  },
+  makePopularVar(),
+  makeChefChoiceVar(),
   {
     name: "ordersPresent",
     description: "Global scores exist (Mais Pedidos)",
@@ -208,11 +233,8 @@ const searchVariables: StateVariable[] = [
   {
     name: "productsIndexed",
     description: "Products indexed in Typesense (Categorias)",
-    apply: async () => {
-      await StepRegistry["reindex"].run()
-    },
+    apply: async () => { await StepRegistry["reindex"].run() },
     remove: async () => {
-      // Drop the Typesense collection
       try {
         const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
         const ts = getTypesenseClient()
@@ -223,36 +245,9 @@ const searchVariables: StateVariable[] = [
 ]
 
 const searchExpectations: MatrixExpectation[] = [
-  {
-    section: "Pitmaster Pick",
-    requires: ["chefChoiceProducts"],
-    severity: "error",
-    check: async () => {
-      const products = await fetchAllProductsWithTags()
-      const count = products.filter((p) => p.tags?.some((t) => t.value === "chef_choice")).length
-      return { ok: count > 0, detail: `${count} products with chef_choice` }
-    },
-  },
-  {
-    section: "Em Alta",
-    requires: ["popularProducts"],
-    severity: "error",
-    check: async () => {
-      const products = await fetchAllProductsWithTags()
-      const count = products.filter((p) => p.tags?.some((t) => t.value === "popular")).length
-      return { ok: count > 0, detail: `${count} products with popular` }
-    },
-  },
-  {
-    section: "Mais Pedidos",
-    requires: ["ordersPresent"],
-    severity: "error",
-    check: async () => {
-      const redis = await getRedis()
-      const count = await redis.zCard(rk("product:global:score"))
-      return { ok: count > 0, detail: `${count} products in global score` }
-    },
-  },
+  makeTagExpectation("Pitmaster Pick", "chef_choice", ["chefChoiceProducts"], "error"),
+  makeTagExpectation("Em Alta", "popular", ["popularProducts"], "error"),
+  makeGlobalScoreExpectation("Mais Pedidos", ["ordersPresent"], "error"),
   {
     section: "Categorias",
     requires: ["productsIndexed"],
@@ -287,28 +282,8 @@ const productVariables: StateVariable[] = [
       await prisma.$disconnect()
     },
   },
-  {
-    name: "copurchasePresent",
-    description: "Co-purchase data exists (Also Added section)",
-    apply: async () => {
-      await StepRegistry["intel-copurchase"].run()
-    },
-    remove: async () => {
-      const redis = await getRedis()
-      await scanDelete(redis, rk("copurchase:*"))
-    },
-  },
-  {
-    name: "globalScorePresent",
-    description: "Global scores exist (popularity ranking)",
-    apply: async () => {
-      await StepRegistry["intel-global-score"].run()
-    },
-    remove: async () => {
-      const redis = await getRedis()
-      await redis.del(rk("product:global:score"))
-    },
-  },
+  makeCopurchaseVar(),
+  makeGlobalScoreVar(),
   {
     name: "tagsPresent",
     description: "Product has tags (tag badges displayed)",
@@ -329,26 +304,8 @@ const productExpectations: MatrixExpectation[] = [
       return { ok: count > 0, detail: `${count} reviews` }
     },
   },
-  {
-    section: "Also Added",
-    requires: ["copurchasePresent"],
-    severity: "warning",
-    check: async () => {
-      const redis = await getRedis()
-      const count = await scanCount(redis, rk("copurchase:*"))
-      return { ok: count > 0, detail: `${count} copurchase relations` }
-    },
-  },
-  {
-    section: "Global Score",
-    requires: ["globalScorePresent"],
-    severity: "warning",
-    check: async () => {
-      const redis = await getRedis()
-      const count = await redis.zCard(rk("product:global:score"))
-      return { ok: count > 0, detail: `${count} products scored` }
-    },
-  },
+  makeCopurchaseExpectation("Also Added", ["copurchasePresent"], "warning"),
+  makeGlobalScoreExpectation("Global Score", ["globalScorePresent"], "warning"),
   {
     section: "Tag Badges",
     requires: ["tagsPresent"],
@@ -367,56 +324,20 @@ const intelVariables: StateVariable[] = [
   {
     name: "ordersPresent",
     description: "Order history exists",
-    apply: async () => {
-      await StepRegistry["seed-orders"].run()
-    },
+    apply: async () => { await StepRegistry["seed-orders"].run() },
     remove: async () => {
       const { prisma } = await import("@ibatexas/domain")
       await prisma.customerOrderItem.deleteMany()
       await prisma.$disconnect()
     },
   },
-  {
-    name: "copurchaseBuilt",
-    description: "Co-purchase matrix has been rebuilt",
-    apply: async () => {
-      await StepRegistry["intel-copurchase"].run()
-    },
-    remove: async () => {
-      const redis = await getRedis()
-      await scanDelete(redis, rk("copurchase:*"))
-    },
-  },
-  {
-    name: "globalScoreBuilt",
-    description: "Global scores have been rebuilt",
-    apply: async () => {
-      await StepRegistry["intel-global-score"].run()
-    },
-    remove: async () => {
-      const redis = await getRedis()
-      await redis.del(rk("product:global:score"))
-    },
-  },
+  makeCopurchaseVar("copurchaseBuilt", "Co-purchase matrix has been rebuilt"),
+  makeGlobalScoreVar("globalScoreBuilt", "Global scores have been rebuilt"),
   {
     name: "reviewStatsSync",
     description: "Review stats synced to Typesense",
-    apply: async () => {
-      await StepRegistry["sync-reviews"].run()
-    },
-    remove: async () => {
-      // Reset Typesense rating fields
-      try {
-        const { getTypesenseClient, COLLECTION } = await import("@ibatexas/tools")
-        const ts = getTypesenseClient()
-        const products = await fetchAllProductsWithTags()
-        for (const product of products) {
-          try {
-            await ts.collections(COLLECTION).documents(product.id).update({ rating: 0, reviewCount: 0 })
-          } catch { /* skip */ }
-        }
-      } catch { /* Typesense unavailable */ }
-    },
+    apply: async () => { await StepRegistry["sync-reviews"].run() },
+    remove: async () => { await resetTypesenseRatings() },
   },
 ]
 
@@ -432,26 +353,8 @@ const intelExpectations: MatrixExpectation[] = [
       return { ok: count > 0, detail: `${count} order items` }
     },
   },
-  {
-    section: "Copurchase Matrix",
-    requires: ["copurchaseBuilt"],
-    severity: "error",
-    check: async () => {
-      const redis = await getRedis()
-      const count = await scanCount(redis, rk("copurchase:*"))
-      return { ok: count > 0, detail: `${count} copurchase keys` }
-    },
-  },
-  {
-    section: "Global Scores",
-    requires: ["globalScoreBuilt"],
-    severity: "error",
-    check: async () => {
-      const redis = await getRedis()
-      const count = await redis.zCard(rk("product:global:score"))
-      return { ok: count > 0, detail: `${count} products scored` }
-    },
-  },
+  makeCopurchaseExpectation("Copurchase Matrix", ["copurchaseBuilt"], "error"),
+  makeGlobalScoreExpectation("Global Scores", ["globalScoreBuilt"], "error"),
   {
     section: "Review Stats",
     requires: ["reviewStatsSync"],
