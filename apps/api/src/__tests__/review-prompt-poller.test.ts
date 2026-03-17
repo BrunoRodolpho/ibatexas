@@ -87,7 +87,8 @@ describe("review-prompt-poller", () => {
     startReviewPromptPoller(); // should be a no-op
     await vi.advanceTimersByTimeAsync(100);
 
-    stopReviewPromptPoller();
+    // Only one interval should be active — stop clears it cleanly
+    expect(() => stopReviewPromptPoller()).not.toThrow();
   });
 
   it("stopReviewPromptPoller is safe to call when not started", () => {

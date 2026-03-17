@@ -48,26 +48,30 @@ function fetchResource<T, TRaw>(
     .finally(() => setLoading(false))
 }
 
+interface ListSetters<T> {
+  setData: (d: T) => void
+  setCount: (c: number) => void
+  setError: (e: Error) => void
+  setLoading: (l: boolean) => void
+}
+
 function fetchList<TFilters, TRaw, T>(
   fetcher: Fetcher,
   baseEndpoint: string,
   filters: TFilters,
   options: FilterableOptions<TFilters, TRaw, T>,
-  setData: (d: T) => void,
-  setCount: (c: number) => void,
-  setError: (e: Error) => void,
-  setLoading: (l: boolean) => void,
+  setters: ListSetters<T>,
 ) {
   const params = options.buildParams(filters)
-  setLoading(true)
+  setters.setLoading(true)
   fetcher<TRaw>(`${baseEndpoint}?${params}`)
     .then((res) => {
       const result = options.select(res)
-      setData(result.data)
-      setCount(result.count)
+      setters.setData(result.data)
+      setters.setCount(result.count)
     })
-    .catch(setError)
-    .finally(() => setLoading(false))
+    .catch(setters.setError)
+    .finally(() => setters.setLoading(false))
 }
 
 // ── Factory creator ──────────────────────────────────────────────────────────
@@ -105,7 +109,7 @@ export function createAdminHookFactory(fetcher: Fetcher) {
       const deps = JSON.stringify(filters)
 
       useEffect(() => {
-        fetchList(fetcher, baseEndpoint, filters, options, setData, setCount, setError, setLoading)
+        fetchList(fetcher, baseEndpoint, filters, options, { setData, setCount, setError, setLoading })
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [deps])
 
