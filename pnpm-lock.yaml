@@ -54,6 +54,9 @@ importers:
 
   apps/admin:
     dependencies:
+      '@ibatexas/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -244,6 +247,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@ibatexas/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -467,6 +473,12 @@ importers:
 
   packages/ui:
     dependencies:
+      '@ibatexas/tools':
+        specifier: workspace:*
+        version: link:../tools
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../types
       '@tanstack/react-table':
         specifier: ^8.21.3
         version: 8.21.3(react-dom@18.3.1)(react@18.3.1)

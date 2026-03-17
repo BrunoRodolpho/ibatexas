@@ -6,6 +6,7 @@ import { execa } from "execa"
 import { ROOT } from "../utils/root.js"
 import { guardDestructive } from "../lib/pipeline.js"
 import { getMedusaUrl, getAdminToken, medusaFetch } from "../lib/medusa.js"
+import { cleanDomainTables } from "../lib/clean.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -250,17 +251,7 @@ async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
   try {
     const { prisma } = await import("@ibatexas/domain")
 
-    await prisma.reservationTable.deleteMany()
-    await prisma.waitlist.deleteMany()
-    await prisma.reservation.deleteMany()
-    await prisma.review.deleteMany()
-    await prisma.customerOrderItem.deleteMany()
-    await prisma.address.deleteMany()
-    await prisma.customerPreferences.deleteMany()
-    await prisma.customer.deleteMany()
-    await prisma.timeSlot.deleteMany()
-    await prisma.table.deleteMany()
-    await prisma.deliveryZone.deleteMany()
+    await cleanDomainTables(prisma)
 
     console.log(chalk.green("    All domain tables emptied"))
     await prisma.$disconnect()

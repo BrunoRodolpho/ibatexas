@@ -9,6 +9,7 @@ import { runPipeline, guardDestructive, type PipelineTask } from "../lib/pipelin
 import { getMedusaUrl, getAdminToken } from "../lib/medusa.js"
 import { rk } from "../lib/redis.js"
 import { StepRegistry, type StepName } from "../lib/steps.js"
+import { cleanDomainTables } from "../lib/clean.js"
 
 // ── Pipeline task builders ──────────────────────────────────────────────────
 
@@ -185,17 +186,7 @@ async function cleanAllData(): Promise<boolean> {
     const { prisma } = await import("@ibatexas/domain")
 
     // Domain tables (FK-safe order)
-    await prisma.reservationTable.deleteMany()
-    await prisma.waitlist.deleteMany()
-    await prisma.reservation.deleteMany()
-    await prisma.review.deleteMany()
-    await prisma.customerOrderItem.deleteMany()
-    await prisma.address.deleteMany()
-    await prisma.customerPreferences.deleteMany()
-    await prisma.customer.deleteMany()
-    await prisma.timeSlot.deleteMany()
-    await prisma.table.deleteMany()
-    await prisma.deliveryZone.deleteMany()
+    await cleanDomainTables(prisma)
 
     cleanSpinner.text = "Clearing Typesense…"
     try {
