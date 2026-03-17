@@ -12,7 +12,7 @@ export function AdminComingSoonPage({
   icon: Icon,
   title,
   description = 'Módulo em desenvolvimento.',
-}: AdminComingSoonPageProps) {
+}: Readonly<AdminComingSoonPageProps>) {
   return (
     <div className="flex h-full min-h-[400px] items-center justify-center">
       <div className="max-w-sm text-center">

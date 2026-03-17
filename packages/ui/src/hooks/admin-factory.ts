@@ -29,6 +29,47 @@ export interface FilterableOptions<TFilters, TRaw, T> {
   initialData: T
 }
 
+// ── Standalone effect helpers (avoid nesting >4 levels) ─────────────────────
+
+function fetchResource<T, TRaw>(
+  fetcher: Fetcher,
+  endpoint: string,
+  select: ((raw: TRaw) => T) | undefined,
+  setData: (d: T) => void,
+  setError: (e: Error) => void,
+  setLoading: (l: boolean) => void,
+) {
+  setLoading(true)
+  fetcher<TRaw>(endpoint)
+    .then((res) => {
+      setData(select ? select(res) : res as unknown as T)
+    })
+    .catch(setError)
+    .finally(() => setLoading(false))
+}
+
+function fetchList<TFilters, TRaw, T>(
+  fetcher: Fetcher,
+  baseEndpoint: string,
+  filters: TFilters,
+  options: FilterableOptions<TFilters, TRaw, T>,
+  setData: (d: T) => void,
+  setCount: (c: number) => void,
+  setError: (e: Error) => void,
+  setLoading: (l: boolean) => void,
+) {
+  const params = options.buildParams(filters)
+  setLoading(true)
+  fetcher<TRaw>(`${baseEndpoint}?${params}`)
+    .then((res) => {
+      const result = options.select(res)
+      setData(result.data)
+      setCount(result.count)
+    })
+    .catch(setError)
+    .finally(() => setLoading(false))
+}
+
 // ── Factory creator ──────────────────────────────────────────────────────────
 
 export function createAdminHookFactory(fetcher: Fetcher) {
@@ -44,13 +85,7 @@ export function createAdminHookFactory(fetcher: Fetcher) {
       const [error, setError] = useState<Error | null>(null)
 
       useEffect(() => {
-        setLoading(true)
-        fetcher<TRaw>(endpoint)
-          .then((res) => {
-            setData(options?.select ? options.select(res) : res as unknown as T)
-          })
-          .catch(setError)
-          .finally(() => setLoading(false))
+        fetchResource<T, TRaw>(fetcher, endpoint, options?.select, setData, setError, setLoading)
       }, [])
 
       return { data, loading, error }
@@ -70,16 +105,7 @@ export function createAdminHookFactory(fetcher: Fetcher) {
       const deps = JSON.stringify(filters)
 
       useEffect(() => {
-        const params = options.buildParams(filters)
-        setLoading(true)
-        fetcher<TRaw>(`${baseEndpoint}?${params}`)
-          .then((res) => {
-            const result = options.select(res)
-            setData(result.data)
-            setCount(result.count)
-          })
-          .catch(setError)
-          .finally(() => setLoading(false))
+        fetchList(fetcher, baseEndpoint, filters, options, setData, setCount, setError, setLoading)
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [deps])
 

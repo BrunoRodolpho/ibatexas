@@ -1,7 +1,8 @@
 import type { ZodType } from 'zod'
-import { getApiBase, MEDUSA_ADMIN_URL } from '@ibatexas/tools/api'
 
-export { getApiBase, MEDUSA_ADMIN_URL }
+export { getApiBase, MEDUSA_ADMIN_URL } from '@ibatexas/tools/api'
+
+import { getApiBase } from '@ibatexas/tools/api'
 
 const API_BASE = getApiBase()
 

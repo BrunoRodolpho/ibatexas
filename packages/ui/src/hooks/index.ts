@@ -1,2 +1,5 @@
 export { createAdminHookFactory } from './admin-factory'
 export type { Fetcher, AdminHookResult, AdminListResult, CreateAdminHookOptions, FilterableOptions } from './admin-factory'
+export { buildAdminHooks } from './admin-hooks'
+export type { AdminProductsFilters, AdminOrdersFilters } from './admin-hooks'
+export { useEscapeAndFocusTrap, useScrollLock } from './use-overlay'

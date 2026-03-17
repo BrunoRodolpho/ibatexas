@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type ComponentType, type ReactNode } from 'react'
+import type { ComponentType } from 'react'
 import { createColumnHelper } from '@tanstack/react-table'
 import { ExternalLink, RefreshCw } from 'lucide-react'
 import { DataTable } from '../atoms/DataTable'
@@ -84,7 +84,7 @@ export function AdminCardapioPage({
   onToggleStatus,
   SearchInputComponent,
   ImageComponent,
-}: AdminCardapioPageProps) {
+}: Readonly<AdminCardapioPageProps>) {
   const columns = [
     col.accessor('imageUrl', {
       header: '',
