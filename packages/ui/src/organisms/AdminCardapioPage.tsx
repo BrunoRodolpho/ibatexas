@@ -3,9 +3,9 @@
 import { useState, type ComponentType, type ReactNode } from 'react'
 import { createColumnHelper } from '@tanstack/react-table'
 import { ExternalLink, RefreshCw } from 'lucide-react'
-import { DataTable } from '../atoms/DataTable.js'
-import { Switch } from '../atoms/Switch.js'
-import { FilterChip } from '../molecules/FilterChip.js'
+import { DataTable } from '../atoms/DataTable'
+import { Switch } from '../atoms/Switch'
+import { FilterChip } from '../molecules/FilterChip'
 import type { AdminProductRow } from '@ibatexas/types'
 
 const col = createColumnHelper<AdminProductRow>()

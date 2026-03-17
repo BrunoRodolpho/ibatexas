@@ -9,9 +9,9 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { createColumnHelper } from '@tanstack/react-table'
-import { StatCard } from '../atoms/StatCard.js'
-import { DataTable } from '../atoms/DataTable.js'
-import { Badge } from '../atoms/Badge.js'
+import { StatCard } from '../atoms/StatCard'
+import { DataTable } from '../atoms/DataTable'
+import { Badge } from '../atoms/Badge'
 import type { AdminDashboardMetrics, OrderSummary } from '@ibatexas/types'
 
 const col = createColumnHelper<OrderSummary>()

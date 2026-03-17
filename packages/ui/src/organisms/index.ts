@@ -3,21 +3,21 @@ export {
   type AdminSidebarBaseProps,
   type AdminSidebarNavItem,
   type AdminSidebarNavGroup,
-} from './AdminSidebar.js'
-export { AdminZonasPage } from './AdminZonasPage.js'
+} from './AdminSidebar'
+export { AdminZonasPage } from './AdminZonasPage'
 export {
   AdminComingSoonPage,
   type AdminComingSoonPageProps,
-} from './AdminComingSoonPage.js'
+} from './AdminComingSoonPage'
 export {
   AdminDashboardPage,
   type AdminDashboardPageProps,
-} from './AdminDashboardPage.js'
+} from './AdminDashboardPage'
 export {
   AdminCardapioPage,
   type AdminCardapioPageProps,
-} from './AdminCardapioPage.js'
+} from './AdminCardapioPage'
 export {
   AdminLojaPage,
   type AdminLojaPageProps,
-} from './AdminLojaPage.js'
+} from './AdminLojaPage'

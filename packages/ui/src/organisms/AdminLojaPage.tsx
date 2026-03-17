@@ -3,8 +3,8 @@
 import type { ComponentType, ReactNode } from 'react'
 import { createColumnHelper } from '@tanstack/react-table'
 import { ExternalLink, Package, Layers } from 'lucide-react'
-import { DataTable } from '../atoms/DataTable.js'
-import { Switch } from '../atoms/Switch.js'
+import { DataTable } from '../atoms/DataTable'
+import { Switch } from '../atoms/Switch'
 import type { AdminProductRow, AdminProductDetail } from '@ibatexas/types'
 
 const col = createColumnHelper<AdminProductRow>()
