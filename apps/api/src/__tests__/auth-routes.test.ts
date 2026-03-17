@@ -77,10 +77,11 @@ async function buildTestServer() {
   await app.register(sensible);
   await app.register(cookie);
 
-  // Decorate with jwt.sign for issueJwtToken
-  app.decorate("jwt", {
+  // Decorate with jwt.sign for issueJwtToken (cast to any for test mock)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any).jwt = {
     sign: (payload: object, _options?: object) => `mock-jwt-token-${(payload as { sub: string }).sub}`,
-  });
+  };
 
   await app.register(authRoutes);
   await app.ready();
