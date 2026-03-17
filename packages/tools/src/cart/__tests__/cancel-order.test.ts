@@ -1,0 +1,153 @@
+// Tests for cancel_order tool
+// Mock-based; no network required.
+//
+// Scenarios:
+// - Happy path → cancels order, returns success
+// - Missing auth → throws with pt-BR message
+// - Wrong customer → {success: false, message: "Pedido n\u00e3o encontrado."}
+// - Non-cancellable status → {success: false} with status in message
+// - Medusa admin fetch error on cancel → throws
+
+import { describe, it, expect, beforeEach, vi } from "vitest"
+
+// ── Hoisted mocks ────────────────────────────────────────────────────────────
+
+const mockMedusaAdminFetch = vi.hoisted(() => vi.fn())
+
+vi.mock("../_shared.js", () => ({
+  medusaAdminFetch: mockMedusaAdminFetch,
+}))
+
+// ── Imports ──────────────────────────────────────────────────────────────────
+
+import { cancelOrder } from "../cancel-order.js"
+import { makeCtx, makeGuestCtx, orderResponse } from "./fixtures/medusa.js"
+
+// ── Fixtures ─────────────────────────────────────────────────────────────────
+
+const INPUT = { orderId: "order_01" }
+const CTX = makeCtx()
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+describe("cancelOrder", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockMedusaAdminFetch.mockResolvedValue(orderResponse({ status: "pending", customer_id: "cus_01" }))
+  })
+
+  it("throws when customerId is missing (no auth)", async () => {
+    const guestCtx = makeGuestCtx()
+
+    await expect(cancelOrder(INPUT, guestCtx)).rejects.toThrow("Autentica\u00e7\u00e3o necess\u00e1ria")
+  })
+
+  it("returns success:false when order belongs to different customer", async () => {
+    mockMedusaAdminFetch.mockResolvedValue(
+      orderResponse({ customer_id: "cus_OTHER", status: "pending" }),
+    )
+
+    const result = await cancelOrder(INPUT, CTX)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe("Pedido n\u00e3o encontrado.")
+  })
+
+  it("returns success:false when order has non-cancellable status", async () => {
+    mockMedusaAdminFetch.mockResolvedValue(
+      orderResponse({ customer_id: "cus_01", status: "completed" }),
+    )
+
+    const result = await cancelOrder(INPUT, CTX)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain("completed")
+    expect(result.message).toContain("n\u00e3o pode ser cancelado")
+  })
+
+  it("returns success:false for shipped status", async () => {
+    mockMedusaAdminFetch.mockResolvedValue(
+      orderResponse({ customer_id: "cus_01", status: "shipped" }),
+    )
+
+    const result = await cancelOrder(INPUT, CTX)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain("shipped")
+  })
+
+  it("cancels order with pending status and returns success", async () => {
+    mockMedusaAdminFetch
+      .mockResolvedValueOnce(orderResponse({ customer_id: "cus_01", status: "pending" }))
+      .mockResolvedValueOnce({}) // cancel POST response
+
+    const result = await cancelOrder(INPUT, CTX)
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain("cancelado com sucesso")
+  })
+
+  it("cancels order with requires_action status", async () => {
+    mockMedusaAdminFetch
+      .mockResolvedValueOnce(orderResponse({ customer_id: "cus_01", status: "requires_action" }))
+      .mockResolvedValueOnce({})
+
+    const result = await cancelOrder(INPUT, CTX)
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain("cancelado com sucesso")
+  })
+
+  it("calls correct admin endpoints: fetch then cancel", async () => {
+    mockMedusaAdminFetch
+      .mockResolvedValueOnce(orderResponse({ customer_id: "cus_01", status: "pending" }))
+      .mockResolvedValueOnce({})
+
+    await cancelOrder(INPUT, CTX)
+
+    expect(mockMedusaAdminFetch).toHaveBeenCalledTimes(2)
+    expect(mockMedusaAdminFetch).toHaveBeenNthCalledWith(1, "/admin/orders/order_01")
+    expect(mockMedusaAdminFetch).toHaveBeenNthCalledWith(2, "/admin/orders/order_01/cancel", { method: "POST" })
+  })
+
+  it("allows cancel when customer_id is in metadata", async () => {
+    mockMedusaAdminFetch
+      .mockResolvedValueOnce({
+        order: {
+          status: "pending",
+          customer_id: undefined,
+          metadata: { customerId: "cus_01" },
+        },
+      })
+      .mockResolvedValueOnce({})
+
+    const result = await cancelOrder(INPUT, CTX)
+
+    expect(result.success).toBe(true)
+  })
+
+  it("returns success:false when metadata customerId does not match", async () => {
+    mockMedusaAdminFetch.mockResolvedValue({
+      order: {
+        status: "pending",
+        customer_id: undefined,
+        metadata: { customerId: "cus_WRONG" },
+      },
+    })
+
+    const result = await cancelOrder(INPUT, CTX)
+
+    expect(result.success).toBe(false)
+    expect(result.message).toBe("Pedido n\u00e3o encontrado.")
+  })
+
+  it("error message directs customer to support for non-cancellable orders", async () => {
+    mockMedusaAdminFetch.mockResolvedValue(
+      orderResponse({ customer_id: "cus_01", status: "fulfilled" }),
+    )
+
+    const result = await cancelOrder(INPUT, CTX)
+
+    expect(result.message).toContain("atendimento")
+  })
+})
