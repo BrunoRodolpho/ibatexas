@@ -473,9 +473,6 @@ importers:
 
   packages/ui:
     dependencies:
-      '@ibatexas/tools':
-        specifier: workspace:*
-        version: link:../tools
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types

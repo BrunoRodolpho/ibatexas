@@ -19,7 +19,6 @@
     "react-dom": "^18.3.0"
   },
   "dependencies": {
-    "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",

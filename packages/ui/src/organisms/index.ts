@@ -4,7 +4,7 @@ export {
   type AdminSidebarNavItem,
   type AdminSidebarNavGroup,
 } from './AdminSidebar'
-export { AdminZonasPage } from './AdminZonasPage'
+export { AdminZonasPage, type AdminZonasPageProps } from './AdminZonasPage'
 export {
   AdminComingSoonPage,
   type AdminComingSoonPageProps,

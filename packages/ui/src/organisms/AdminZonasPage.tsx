@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react'
 import { MapPin, Plus, Trash2, Pencil } from 'lucide-react'
-import { getApiBase } from '@ibatexas/tools'
 
 function formatPrice(centavos: number): string {
   return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
@@ -25,7 +24,11 @@ const emptyZone = (): Omit<DeliveryZone, 'id'> => ({
   active: true,
 })
 
-export function AdminZonasPage() {
+export interface AdminZonasPageProps {
+  apiBase: string
+}
+
+export function AdminZonasPage({ apiBase }: AdminZonasPageProps) {
   const [zones, setZones] = useState<DeliveryZone[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -37,7 +40,7 @@ export function AdminZonasPage() {
 
   async function loadZones() {
     try {
-      const res = await fetch(`${getApiBase()}/api/admin/delivery-zones`, { credentials: 'include' })
+      const res = await fetch(`${apiBase}/api/admin/delivery-zones`, { credentials: 'include' })
       if (!res.ok) throw new Error('Erro ao carregar zonas')
       const data = await res.json() as { zones: DeliveryZone[] }
       setZones(data.zones)
@@ -77,8 +80,8 @@ export function AdminZonasPage() {
     const payload = { ...form, cepPrefixes: parsedCeps }
     try {
       const url = editing
-        ? `${getApiBase()}/api/admin/delivery-zones/${editing.id}`
-        : `${getApiBase()}/api/admin/delivery-zones`
+        ? `${apiBase}/api/admin/delivery-zones/${editing.id}`
+        : `${apiBase}/api/admin/delivery-zones`
       const res = await fetch(url, {
         method: editing ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -99,7 +102,7 @@ export function AdminZonasPage() {
   async function handleDelete(id: string) {
     if (!confirm('Excluir esta zona de entrega?')) return
     try {
-      await fetch(`${getApiBase()}/api/admin/delivery-zones/${id}`, {
+      await fetch(`${apiBase}/api/admin/delivery-zones/${id}`, {
         method: 'DELETE',
         credentials: 'include',
       })
