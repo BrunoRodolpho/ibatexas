@@ -75,14 +75,14 @@ describe('Experimentation Domain', () => {
     it('returns the payload from PostHog', () => {
       const payload = { showBadge: true, color: 'red' }
       mockGetPostHogClient.mockReturnValue({
-        getFeatureFlagPayload: () => payload,
+        getFeatureFlagResult: () => ({ payload }),
       })
       expect(experimentPayload('hero_layout')).toEqual(payload)
     })
 
     it('returns null when PostHog returns undefined payload', () => {
       mockGetPostHogClient.mockReturnValue({
-        getFeatureFlagPayload: () => undefined,
+        getFeatureFlagResult: () => undefined,
       })
       expect(experimentPayload('hero_layout')).toBeNull()
     })
@@ -122,7 +122,7 @@ describe('Experimentation Domain', () => {
     it('returns the payload from PostHog', () => {
       const testPayload = { maxDiscount: 20 }
       mockGetPostHogClient.mockReturnValue({
-        getFeatureFlagPayload: () => testPayload,
+        getFeatureFlagResult: () => ({ payload: testPayload }),
       })
       expect(flagPayload('promotions_banner')).toEqual(testPayload)
     })

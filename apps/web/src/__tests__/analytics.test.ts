@@ -37,6 +37,10 @@ function setupBrowserGlobals() {
 
   vi.stubGlobal("navigator", { sendBeacon: mockSendBeacon })
 
+  // trackScrollDepth uses globalThis.addEventListener/removeEventListener directly
+  vi.stubGlobal("addEventListener", vi.fn())
+  vi.stubGlobal("removeEventListener", vi.fn())
+
   vi.stubGlobal("crypto", {
     randomUUID: () => "test-session-uuid-1234",
   })
@@ -230,33 +234,38 @@ describe("Analytics Layer", () => {
       sessionStore.set("ibx_session_started", "1")
 
       let scrollHandler: (() => void) | null = null
+      const mockAddEventListener = vi.fn((event: string, handler: () => void) => {
+        if (event === "scroll") scrollHandler = handler
+      })
       vi.stubGlobal("window", {
         scrollY: 0,
         innerHeight: 800,
-        addEventListener: vi.fn((event: string, handler: () => void) => {
-          if (event === "scroll") scrollHandler = handler
-        }),
+        addEventListener: mockAddEventListener,
         removeEventListener: vi.fn(),
         location: { pathname: "/test" },
       })
+      vi.stubGlobal("addEventListener", mockAddEventListener)
+      vi.stubGlobal("removeEventListener", vi.fn())
+      vi.stubGlobal("scrollY", 0)
+      vi.stubGlobal("innerHeight", 800)
       vi.stubGlobal("document", { body: { scrollHeight: 3200 } })
 
       const cleanup = trackScrollDepth("prod_01")
 
       // 25%: 0+800=800, 800/3200=25%
-      ;(window as unknown as Record<string, unknown>).scrollY = 0
+      vi.stubGlobal("scrollY", 0)
       scrollHandler?.()
 
       // 50%: 800+800=1600, 1600/3200=50%
-      ;(window as unknown as Record<string, unknown>).scrollY = 800
+      vi.stubGlobal("scrollY", 800)
       scrollHandler?.()
 
       // 75%: 1600+800=2400, 2400/3200=75%
-      ;(window as unknown as Record<string, unknown>).scrollY = 1600
+      vi.stubGlobal("scrollY", 1600)
       scrollHandler?.()
 
       // 100%: 2400+800=3200, 3200/3200=100%
-      ;(window as unknown as Record<string, unknown>).scrollY = 2400
+      vi.stubGlobal("scrollY", 2400)
       scrollHandler?.()
 
       const scrollCalls = consoleSpy.mock.calls.filter(
@@ -277,21 +286,26 @@ describe("Analytics Layer", () => {
       sessionStore.set("ibx_session_started", "1")
 
       let scrollHandler: (() => void) | null = null
+      const mockAddEventListener = vi.fn((event: string, handler: () => void) => {
+        if (event === "scroll") scrollHandler = handler
+      })
       vi.stubGlobal("window", {
         scrollY: 0,
         innerHeight: 800,
-        addEventListener: vi.fn((event: string, handler: () => void) => {
-          if (event === "scroll") scrollHandler = handler
-        }),
+        addEventListener: mockAddEventListener,
         removeEventListener: vi.fn(),
         location: { pathname: "/test" },
       })
+      vi.stubGlobal("addEventListener", mockAddEventListener)
+      vi.stubGlobal("removeEventListener", vi.fn())
+      vi.stubGlobal("scrollY", 0)
+      vi.stubGlobal("innerHeight", 800)
       vi.stubGlobal("document", { body: { scrollHeight: 3200 } })
 
       const cleanup = trackScrollDepth("prod_01")
 
       // Scroll to 50% multiple times
-      ;(window as unknown as Record<string, unknown>).scrollY = 800
+      vi.stubGlobal("scrollY", 800)
       scrollHandler?.()
       scrollHandler?.()
       scrollHandler?.()
@@ -317,6 +331,9 @@ describe("Analytics Layer", () => {
         removeEventListener: vi.fn(),
         location: { pathname: "/test" },
       })
+      vi.stubGlobal("addEventListener", vi.fn())
+      vi.stubGlobal("removeEventListener", vi.fn())
+      vi.stubGlobal("innerHeight", 800)
 
       const cleanup = trackScrollDepth("prod_short")
 
@@ -341,6 +358,9 @@ describe("Analytics Layer", () => {
         removeEventListener: mockRemoveEventListener,
         location: { pathname: "/test" },
       })
+      vi.stubGlobal("addEventListener", vi.fn())
+      vi.stubGlobal("removeEventListener", mockRemoveEventListener)
+      vi.stubGlobal("innerHeight", 800)
       vi.stubGlobal("document", { body: { scrollHeight: 3200 } })
 
       const cleanup = trackScrollDepth("prod_01")

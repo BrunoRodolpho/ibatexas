@@ -72,7 +72,7 @@ function enrichProperties(properties?: Record<string, unknown>): Record<string, 
     sessionId: sessionId ?? 'unknown',
     ibx_session_id: sessionId ?? 'unknown',
     timestamp: new Date().toISOString(),
-    url: globalThis.window === undefined ? undefined : globalThis.location.pathname,
+    url: globalThis.window === undefined ? undefined : (globalThis.window as Window)?.location?.pathname,
   }
 }
 
