@@ -1,5 +1,5 @@
 import type { ZodType } from 'zod'
-import { getApiBase, MEDUSA_ADMIN_URL } from '@ibatexas/tools'
+import { getApiBase, MEDUSA_ADMIN_URL } from '@ibatexas/tools/api'
 
 export { getApiBase, MEDUSA_ADMIN_URL }
 

@@ -8,6 +8,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./api": {
+      "types": "./dist/api/base-url.d.ts",
+      "default": "./dist/api/base-url.js"
     }
   },
   "scripts": {
