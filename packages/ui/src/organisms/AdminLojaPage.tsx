@@ -47,6 +47,41 @@ function renderStatusSwitch(product: AdminProductRow, onToggle: (p: AdminProduct
   )
 }
 
+function renderDetailImage(
+  imageUrl: string | null | undefined,
+  title: string,
+  ImageComponent?: ComponentType<Record<string, unknown>>,
+) {
+  if (!imageUrl) {
+    return (
+      <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-sm bg-smoke-100">
+        <Package className="h-6 w-6 text-smoke-300" />
+      </div>
+    )
+  }
+  if (ImageComponent) {
+    return (
+      <ImageComponent
+        src={imageUrl}
+        alt={title}
+        className="h-14 w-14 shrink-0 rounded-lg object-cover"
+        width={56}
+        height={56}
+        unoptimized
+      />
+    )
+  }
+  return (
+    <img
+      src={imageUrl}
+      alt={title}
+      className="h-14 w-14 shrink-0 rounded-lg object-cover"
+      width={56}
+      height={56}
+    />
+  )
+}
+
 function renderShopActions(productId: string, onSelect: (id: string) => void, medusaAdminUrl: string) {
   return (
     <div className="flex items-center gap-3">
@@ -104,7 +139,7 @@ export function AdminLojaPage({
   SearchInputComponent,
   SheetComponent,
   ImageComponent,
-}: AdminLojaPageProps) {
+}: Readonly<AdminLojaPageProps>) {
   const columns = [
     col.accessor('imageUrl', {
       header: '',
@@ -196,30 +231,7 @@ export function AdminLojaPage({
         {!detailLoading && productDetail && (
           <div className="space-y-4">
             <div className="flex items-start gap-3">
-              {productDetail.imageUrl ? (
-                ImageComponent ? (
-                  <ImageComponent
-                    src={productDetail.imageUrl}
-                    alt={productDetail.title}
-                    className="h-14 w-14 shrink-0 rounded-lg object-cover"
-                    width={56}
-                    height={56}
-                    unoptimized
-                  />
-                ) : (
-                  <img
-                    src={productDetail.imageUrl}
-                    alt={productDetail.title}
-                    className="h-14 w-14 shrink-0 rounded-lg object-cover"
-                    width={56}
-                    height={56}
-                  />
-                )
-              ) : (
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-sm bg-smoke-100">
-                  <Package className="h-6 w-6 text-smoke-300" />
-                </div>
-              )}
+              {renderDetailImage(productDetail.imageUrl, productDetail.title, ImageComponent)}
               <div className="min-w-0">
                 <p className="font-semibold text-charcoal-900">{productDetail.title}</p>
                 <p className="text-xs text-smoke-400">{productDetail.category}</p>

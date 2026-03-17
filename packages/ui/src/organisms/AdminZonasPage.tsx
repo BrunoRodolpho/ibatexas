@@ -28,7 +28,7 @@ export interface AdminZonasPageProps {
   apiBase: string
 }
 
-export function AdminZonasPage({ apiBase }: AdminZonasPageProps) {
+export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
   const [zones, setZones] = useState<DeliveryZone[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

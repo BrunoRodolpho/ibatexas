@@ -1,9 +1,9 @@
 /**
  * API client for the admin app.
  */
-import { getApiBase, MEDUSA_ADMIN_URL } from '@ibatexas/tools/api'
+export { getApiBase, MEDUSA_ADMIN_URL } from '@ibatexas/tools/api'
 
-export { getApiBase, MEDUSA_ADMIN_URL }
+import { getApiBase } from '@ibatexas/tools/api'
 
 const API_BASE = getApiBase()
 

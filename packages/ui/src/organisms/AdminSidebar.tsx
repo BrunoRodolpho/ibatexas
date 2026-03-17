@@ -33,7 +33,7 @@ export function AdminSidebarBase({
   groups,
   pathname,
   medusaAdminUrl,
-}: AdminSidebarBaseProps) {
+}: Readonly<AdminSidebarBaseProps>) {
   return (
     <aside className="flex h-full w-[240px] shrink-0 flex-col border-r border-smoke-200 bg-smoke-50">
       <div className="flex h-14 items-center px-5">

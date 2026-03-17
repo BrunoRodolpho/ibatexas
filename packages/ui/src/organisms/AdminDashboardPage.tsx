@@ -1,6 +1,5 @@
 'use client'
 
-import type { ComponentType, ReactNode } from 'react'
 import {
   ShoppingCart,
   DollarSign,
@@ -58,7 +57,7 @@ export function AdminDashboardPage({
   orders,
   ordersLoading,
   medusaAdminUrl,
-}: AdminDashboardPageProps) {
+}: Readonly<AdminDashboardPageProps>) {
   return (
     <div className="space-y-6">
       <div>
