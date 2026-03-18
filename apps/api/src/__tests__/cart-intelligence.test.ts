@@ -10,11 +10,8 @@ const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const MOCK_PROFILE_TTL_SECONDS = vi.hoisted(() => 604800); // 7 days
-const mockPrisma = vi.hoisted(() => ({
-  customerOrderItem: {
-    createMany: vi.fn(),
-  },
-}));
+const mockRecordOrderItems = vi.hoisted(() => vi.fn());
+const mockGetWhatsAppSender = vi.hoisted(() => vi.fn());
 
 // Store registered handlers so we can invoke them in tests
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
@@ -32,10 +29,18 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
   PROFILE_TTL_SECONDS: MOCK_PROFILE_TTL_SECONDS,
+  getWhatsAppSender: mockGetWhatsAppSender,
 }));
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: mockPrisma,
+  createCustomerService: () => ({
+    recordOrderItems: mockRecordOrderItems,
+    getById: vi.fn().mockResolvedValue(null),
+  }),
+}));
+
+vi.mock("../jobs/review-prompt.js", () => ({
+  scheduleReviewPrompt: vi.fn().mockResolvedValue(undefined),
 }));
 
 // ── Import after mocks ────────────────────────────────────────────────────────
@@ -62,6 +67,7 @@ function createMockRedis(overrides: Record<string, unknown> = {}) {
     hIncrBy: vi.fn().mockResolvedValue(1),
     hSet: vi.fn().mockResolvedValue(true),
     hDel: vi.fn().mockResolvedValue(1),
+    hKeys: vi.fn().mockResolvedValue([]),
     multi: vi.fn().mockReturnValue(pipeline),
     _pipeline: pipeline,
     ...overrides,
@@ -90,7 +96,7 @@ describe("isNewEvent (tested via order.placed handler)", () => {
   it("processes new event when SET NX returns OK", async () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPrisma.customerOrderItem.createMany.mockResolvedValue({ count: 1 });
+    mockRecordOrderItems.mockResolvedValue({ count: 1 });
 
     await natsHandlers["order.placed"]({
       customerId: "cus_01",
@@ -98,8 +104,8 @@ describe("isNewEvent (tested via order.placed handler)", () => {
       items: [{ productId: "prod_01", variantId: "var_01", quantity: 1, priceInCentavos: 5000 }],
     });
 
-    // createMany should be called for a new event
-    expect(mockPrisma.customerOrderItem.createMany).toHaveBeenCalled();
+    // recordOrderItems should be called for a new event
+    expect(mockRecordOrderItems).toHaveBeenCalled();
   });
 
   it("skips duplicate event when SET NX returns null", async () => {
@@ -112,8 +118,8 @@ describe("isNewEvent (tested via order.placed handler)", () => {
       items: [{ productId: "prod_01", variantId: "var_01", quantity: 1 }],
     });
 
-    // createMany should NOT be called for a duplicate
-    expect(mockPrisma.customerOrderItem.createMany).not.toHaveBeenCalled();
+    // recordOrderItems should NOT be called for a duplicate
+    expect(mockRecordOrderItems).not.toHaveBeenCalled();
   });
 });
 
@@ -139,7 +145,7 @@ describe("updateCopurchaseScores (tested via order.placed handler)", () => {
       multi: vi.fn().mockReturnValue(pipeline),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPrisma.customerOrderItem.createMany.mockResolvedValue({ count: 1 });
+    mockRecordOrderItems.mockResolvedValue({ count: 1 });
 
     await natsHandlers["order.placed"]({
       customerId: "cus_01",
@@ -169,7 +175,7 @@ describe("updateCopurchaseScores (tested via order.placed handler)", () => {
       multi: vi.fn().mockReturnValue(pipeline),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPrisma.customerOrderItem.createMany.mockResolvedValue({ count: 2 });
+    mockRecordOrderItems.mockResolvedValue({ count: 2 });
 
     await natsHandlers["order.placed"]({
       customerId: "cus_01",
@@ -210,7 +216,7 @@ describe("updateGlobalScores (tested via order.placed handler)", () => {
       multi: vi.fn().mockReturnValue(pipeline),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPrisma.customerOrderItem.createMany.mockResolvedValue({ count: 1 });
+    mockRecordOrderItems.mockResolvedValue({ count: 1 });
 
     await natsHandlers["order.placed"]({
       customerId: "cus_01",
@@ -242,7 +248,7 @@ describe("resetProfileTtl (tested via order.placed handler)", () => {
   it("calls expire with PROFILE_TTL_SECONDS", async () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPrisma.customerOrderItem.createMany.mockResolvedValue({ count: 1 });
+    mockRecordOrderItems.mockResolvedValue({ count: 1 });
 
     await natsHandlers["order.placed"]({
       customerId: "cus_01",
@@ -302,13 +308,13 @@ describe("order.placed handler", () => {
     });
 
     expect(mockGetRedisClient).not.toHaveBeenCalled();
-    expect(mockPrisma.customerOrderItem.createMany).not.toHaveBeenCalled();
+    expect(mockRecordOrderItems).not.toHaveBeenCalled();
   });
 
   it("creates CustomerOrderItem rows via createMany", async () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPrisma.customerOrderItem.createMany.mockResolvedValue({ count: 2 });
+    mockRecordOrderItems.mockResolvedValue({ count: 2 });
 
     await natsHandlers["order.placed"]({
       customerId: "cus_01",
@@ -319,33 +325,30 @@ describe("order.placed handler", () => {
       ],
     });
 
-    expect(mockPrisma.customerOrderItem.createMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.arrayContaining([
-          expect.objectContaining({
-            customerId: "cus_01",
-            productId: "prod_01",
-            variantId: "var_01",
-            quantity: 1,
-            priceInCentavos: 5000,
-            medusaOrderId: "order_items",
-          }),
-          expect.objectContaining({
-            customerId: "cus_01",
-            productId: "prod_02",
-            variantId: "var_02",
-            quantity: 2,
-            priceInCentavos: 8900,
-          }),
-        ]),
-      }),
+    expect(mockRecordOrderItems).toHaveBeenCalledWith(
+      "cus_01",
+      "order_items",
+      expect.arrayContaining([
+        expect.objectContaining({
+          productId: "prod_01",
+          variantId: "var_01",
+          quantity: 1,
+          priceInCentavos: 5000,
+        }),
+        expect.objectContaining({
+          productId: "prod_02",
+          variantId: "var_02",
+          quantity: 2,
+          priceInCentavos: 8900,
+        }),
+      ]),
     );
   });
 
   it("updates Redis profile counters on order placed", async () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPrisma.customerOrderItem.createMany.mockResolvedValue({ count: 1 });
+    mockRecordOrderItems.mockResolvedValue({ count: 1 });
 
     await natsHandlers["order.placed"]({
       customerId: "cus_profile",
@@ -384,13 +387,13 @@ describe("order.placed handler", () => {
       items: [{ productId: "prod_01", variantId: "var_01", quantity: 1 }],
     });
 
-    expect(mockPrisma.customerOrderItem.createMany).not.toHaveBeenCalled();
+    expect(mockRecordOrderItems).not.toHaveBeenCalled();
   });
 
   it("defaults priceInCentavos to 0 when not provided", async () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPrisma.customerOrderItem.createMany.mockResolvedValue({ count: 1 });
+    mockRecordOrderItems.mockResolvedValue({ count: 1 });
 
     await natsHandlers["order.placed"]({
       customerId: "cus_01",
@@ -398,12 +401,12 @@ describe("order.placed handler", () => {
       items: [{ productId: "prod_01", variantId: "var_01", quantity: 1 }],
     });
 
-    expect(mockPrisma.customerOrderItem.createMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.arrayContaining([
-          expect.objectContaining({ priceInCentavos: 0 }),
-        ]),
-      }),
+    expect(mockRecordOrderItems).toHaveBeenCalledWith(
+      "cus_01",
+      "order_no_price",
+      expect.arrayContaining([
+        expect.objectContaining({ priceInCentavos: 0 }),
+      ]),
     );
   });
 });
@@ -512,12 +515,20 @@ describe("startCartIntelligenceSubscribers", () => {
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
-  it("subscribes to cart.abandoned, order.placed, and product.viewed", async () => {
+  it("subscribes to all intelligence event handlers", async () => {
     await registerSubscribers();
 
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("cart.abandoned", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("order.placed", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("product.viewed", expect.any(Function));
-    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(3);
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("order.payment_failed", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("review.prompt.schedule", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("notification.send", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("reservation.created", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("reservation.modified", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("reservation.cancelled", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("reservation.no_show", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("review.prompt", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(11);
   });
 });

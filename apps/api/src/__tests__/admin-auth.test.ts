@@ -13,18 +13,29 @@ import type { FastifyInstance } from "fastify"
 // ── Mock dependencies for admin routes ────────────────────────────────────────
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: {
-    reservation: { findMany: vi.fn(async () => []) },
-    table: {
-      findMany: vi.fn(async () => []),
-      upsert: vi.fn(async (args: { create: { number: string } }) => ({ id: "t1", ...args.create })),
-    },
-    timeSlot: { createMany: vi.fn(async () => ({ count: 0 })) },
-  },
+  createReservationService: () => ({
+    findAll: vi.fn(async () => []),
+    findConfirmedForDate: vi.fn(async () => []),
+    checkAvailability: vi.fn(async () => []),
+    transition: vi.fn(async () => {}),
+    getTodaySummary: vi.fn(async () => ({ total: 0, confirmed: 0, seated: 0, completed: 0, cancelled: 0, noShow: 0, covers: 0 })),
+  }),
+  createTableService: () => ({
+    listAll: vi.fn(async () => []),
+    upsert: vi.fn(async (data: { number: string }) => ({ id: "t1", ...data })),
+  }),
+  createDeliveryZoneService: () => ({
+    listAll: vi.fn(async () => []),
+  }),
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: vi.fn(),
+}))
+
+vi.mock("../routes/admin/_shared.js", () => ({
+  medusaAdmin: vi.fn(async () => ({})),
+  medusaStore: vi.fn(async () => ({})),
 }))
 
 // ── Admin auth guard tests ────────────────────────────────────────────────────

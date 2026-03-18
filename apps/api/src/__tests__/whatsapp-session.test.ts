@@ -15,7 +15,7 @@ const mockRedis = vi.hoisted(() => ({
   del: vi.fn(),
 }));
 
-const mockPrismaCustomerUpsert = vi.hoisted(() => vi.fn());
+const mockUpsertFromWhatsApp = vi.hoisted(() => vi.fn());
 
 vi.mock("uuid", () => ({ v4: mockUuidv4 }));
 
@@ -25,11 +25,9 @@ vi.mock("@ibatexas/tools", () => ({
 }));
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: {
-    customer: {
-      upsert: mockPrismaCustomerUpsert,
-    },
-  },
+  createCustomerService: () => ({
+    upsertFromWhatsApp: mockUpsertFromWhatsApp,
+  }),
 }));
 
 vi.mock("@ibatexas/types", () => ({
@@ -135,7 +133,7 @@ describe("resolveWhatsAppSession", () => {
       customerId: "cust-cached",
       isNew: false,
     });
-    expect(mockPrismaCustomerUpsert).not.toHaveBeenCalled();
+    expect(mockUpsertFromWhatsApp).not.toHaveBeenCalled();
   });
 
   it("uses phone from Redis cache if available", async () => {
@@ -161,7 +159,7 @@ describe("resolveWhatsAppSession", () => {
 
   it("creates new session on cache miss (isNew: true)", async () => {
     mockRedis.hGetAll.mockResolvedValue({});
-    mockPrismaCustomerUpsert.mockResolvedValue({ id: "cust-new" });
+    mockUpsertFromWhatsApp.mockResolvedValue({ id: "cust-new" });
     mockUuidv4.mockReturnValue("new-session-uuid");
     mockRedis.hSet.mockResolvedValue(undefined);
     mockRedis.expire.mockResolvedValue(undefined);
@@ -172,16 +170,8 @@ describe("resolveWhatsAppSession", () => {
     expect(session.sessionId).toBe("new-session-uuid");
     expect(session.customerId).toBe("cust-new");
 
-    // Verify Prisma upsert was called
-    expect(mockPrismaCustomerUpsert).toHaveBeenCalledWith({
-      where: { phone },
-      create: expect.objectContaining({
-        phone,
-        source: "whatsapp",
-      }),
-      update: {},
-      select: { id: true },
-    });
+    // Verify customer service was called
+    expect(mockUpsertFromWhatsApp).toHaveBeenCalledWith(phone);
 
     // Verify Redis storage
     expect(mockRedis.hSet).toHaveBeenCalledWith(
@@ -202,7 +192,7 @@ describe("resolveWhatsAppSession", () => {
 
   it("creates new session when cache has sessionId but no customerId", async () => {
     mockRedis.hGetAll.mockResolvedValue({ sessionId: "old-sess" });
-    mockPrismaCustomerUpsert.mockResolvedValue({ id: "cust-new" });
+    mockUpsertFromWhatsApp.mockResolvedValue({ id: "cust-new" });
     mockUuidv4.mockReturnValue("fresh-uuid");
     mockRedis.hSet.mockResolvedValue(undefined);
     mockRedis.expire.mockResolvedValue(undefined);

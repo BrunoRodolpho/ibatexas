@@ -20,20 +20,11 @@ vi.mock("stripe", () => ({
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
+  medusaAdmin: mockMedusaAdmin,
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
-}));
-
-vi.mock("./admin/_shared.js", () => ({
-  medusaAdmin: mockMedusaAdmin,
-}));
-
-// The route imports medusaAdmin from "./admin/_shared.js" but the test resolves
-// relative to routes/. We need to mock the exact import path from the route file's perspective.
-vi.mock("../routes/admin/_shared.js", () => ({
-  medusaAdmin: mockMedusaAdmin,
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────

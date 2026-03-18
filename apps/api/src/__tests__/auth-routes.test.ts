@@ -10,12 +10,8 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 const _mockTwilioClient = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
-const mockPrisma = vi.hoisted(() => ({
-  customer: {
-    upsert: vi.fn(),
-    findUniqueOrThrow: vi.fn(),
-  },
-}));
+const mockUpsertFromPhone = vi.hoisted(() => vi.fn());
+const mockGetById = vi.hoisted(() => vi.fn());
 
 // Mock Twilio verify API
 const mockVerificationCreate = vi.hoisted(() => vi.fn());
@@ -40,7 +36,10 @@ vi.mock("@ibatexas/tools", () => ({
 }));
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: mockPrisma,
+  createCustomerService: () => ({
+    upsertFromPhone: mockUpsertFromPhone,
+    getById: mockGetById,
+  }),
 }));
 
 vi.mock("../middleware/auth.js", () => ({
@@ -180,7 +179,7 @@ describe("checkBruteForce", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
-    mockPrisma.customer.upsert.mockResolvedValue({
+    mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
       phone: "+5511999999999",
       name: "Test",
@@ -255,7 +254,7 @@ describe("recordVerifyFailure & clearVerifyFailures", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
-    mockPrisma.customer.upsert.mockResolvedValue({
+    mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
       phone: "+5511999999999",
       name: "Test",
@@ -364,7 +363,7 @@ describe("POST /api/auth/verify-otp", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
-    mockPrisma.customer.upsert.mockResolvedValue({
+    mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
       phone: "+5511999999999",
       name: "Maria",
@@ -398,7 +397,7 @@ describe("POST /api/auth/verify-otp", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
-    mockPrisma.customer.upsert.mockResolvedValue({
+    mockUpsertFromPhone.mockResolvedValue({
       id: "cus_02",
       phone: "+5511888888888",
       name: "Joao",
@@ -412,12 +411,7 @@ describe("POST /api/auth/verify-otp", () => {
       payload: { phone: "+5511888888888", code: "654321", name: "Joao" },
     });
 
-    expect(mockPrisma.customer.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { phone: "+5511888888888" },
-        create: { phone: "+5511888888888", name: "Joao" },
-      }),
-    );
+    expect(mockUpsertFromPhone).toHaveBeenCalledWith("+5511888888888", "Joao");
   });
 
   it("returns 400 for wrong code", async () => {
@@ -552,7 +546,7 @@ describe("GET /api/auth/me", () => {
 
   it("returns customer data when authenticated", async () => {
     setupEnv();
-    mockPrisma.customer.findUniqueOrThrow.mockResolvedValue({
+    mockGetById.mockResolvedValue({
       id: "cus_01",
       phone: "+5511999999999",
       name: "Maria",
