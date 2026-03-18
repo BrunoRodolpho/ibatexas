@@ -1,14 +1,16 @@
 // get_order_history tool — list orders for authenticated customer
 
-import type { AgentContext } from "@ibatexas/types";
+import { GetOrderHistoryInputSchema, NonRetryableError, type GetOrderHistoryInput, type AgentContext } from "@ibatexas/types";
 import { medusaAdminFetch } from "./_shared.js";
 
 export async function getOrderHistory(
-  _input: Record<string, never>,
+  input: GetOrderHistoryInput,
   ctx: AgentContext,
 ): Promise<unknown> {
+  GetOrderHistoryInputSchema.parse(input);
+
   if (!ctx.customerId) {
-    throw new Error("Autenticação necessária para ver histórico de pedidos.");
+    throw new NonRetryableError("Autenticação necessária para ver histórico de pedidos.");
   }
   try {
     // Medusa Admin API — filter by customer's medusa_id

@@ -5,26 +5,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-const mockFindMany = vi.fn()
-const mockUpdate = vi.fn()
-const mockTimeSlotUpdate = vi.fn()
-const mockDeleteMany = vi.fn()
-const mockTransaction = vi.fn()
+const mockFindConfirmedForDate = vi.fn()
+const mockTransition = vi.fn()
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: {
-    reservation: {
-      findMany: (...args: unknown[]) => mockFindMany(...args),
-      update: (...args: unknown[]) => mockUpdate(...args),
-    },
-    timeSlot: {
-      update: (...args: unknown[]) => mockTimeSlotUpdate(...args),
-    },
-    reservationTable: {
-      deleteMany: (...args: unknown[]) => mockDeleteMany(...args),
-    },
-    $transaction: (...args: unknown[]) => mockTransaction(...args),
-  },
+  createReservationService: () => ({
+    findConfirmedForDate: (...args: unknown[]) => mockFindConfirmedForDate(...args),
+    transition: (...args: unknown[]) => mockTransition(...args),
+  }),
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -46,14 +34,14 @@ describe("no-show checker", () => {
   })
 
   it("starts and stops without errors", () => {
-    mockFindMany.mockResolvedValue([])
+    mockFindConfirmedForDate.mockResolvedValue([])
 
     expect(() => startNoShowChecker()).not.toThrow()
     expect(() => stopNoShowChecker()).not.toThrow()
   })
 
   it("does not start twice", () => {
-    mockFindMany.mockResolvedValue([])
+    mockFindConfirmedForDate.mockResolvedValue([])
 
     expect(() => startNoShowChecker()).not.toThrow()
     expect(() => startNoShowChecker()).not.toThrow() // second call should be a no-op
@@ -83,11 +71,8 @@ describe("no-show checker", () => {
       },
     }
 
-    mockFindMany.mockResolvedValue([reservation])
-    mockUpdate.mockResolvedValue({})
-    mockTimeSlotUpdate.mockResolvedValue({})
-    mockDeleteMany.mockResolvedValue({ count: 0 })
-    mockTransaction.mockResolvedValue([])
+    mockFindConfirmedForDate.mockResolvedValue([reservation])
+    mockTransition.mockResolvedValue(undefined)
 
     // Set "now" well past 11:30 + even worst-case TZ offset + 15 min grace
     // The slotToLocalDate function creates `new Date("2026-03-15T11:30:00")` (no Z)
@@ -99,7 +84,7 @@ describe("no-show checker", () => {
     // Wait for initial async check to complete
     await vi.advanceTimersByTimeAsync(200)
 
-    expect(mockTransaction).toHaveBeenCalledOnce()
+    expect(mockTransition).toHaveBeenCalledWith("res_01", "no_show")
     expect(publishNatsEvent).toHaveBeenCalledWith(
       "reservation.no_show",
       expect.objectContaining({
@@ -131,7 +116,7 @@ describe("no-show checker", () => {
       },
     }
 
-    mockFindMany.mockResolvedValue([reservation])
+    mockFindConfirmedForDate.mockResolvedValue([reservation])
 
     // Set "now" to 2026-03-15 19:00 UTC (before 20:00 slot)
     vi.setSystemTime(new Date("2026-03-15T19:00:00Z"))
@@ -140,13 +125,13 @@ describe("no-show checker", () => {
     await vi.advanceTimersByTimeAsync(200)
 
     // Should NOT mark as no_show
-    expect(mockTransaction).not.toHaveBeenCalled()
+    expect(mockTransition).not.toHaveBeenCalled()
 
     delete process.env.RESTAURANT_TIMEZONE
   })
 
   it("handles errors gracefully", async () => {
-    mockFindMany.mockRejectedValue(new Error("DB connection lost"))
+    mockFindConfirmedForDate.mockRejectedValue(new Error("DB connection lost"))
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 

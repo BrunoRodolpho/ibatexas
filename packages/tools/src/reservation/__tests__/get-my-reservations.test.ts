@@ -21,6 +21,28 @@ vi.mock("@ibatexas/domain", () => ({
       count: mockReservationCount,
     },
   },
+  createReservationService: () => ({
+    listByCustomer: async (
+      customerId: string,
+      options?: { status?: string; limit?: number },
+    ) => {
+      const where: Record<string, unknown> = { customerId }
+      if (options?.status) where.status = options.status
+      const [reservations, total] = await Promise.all([
+        mockReservationFindMany({
+          where,
+          include: { timeSlot: true, tables: { include: { table: true } } },
+          orderBy: [{ timeSlot: { date: "desc" } }, { timeSlot: { startTime: "desc" } }],
+          take: options?.limit ?? 10,
+        }),
+        mockReservationCount({ where }),
+      ])
+      return {
+        reservations: (reservations as Array<Record<string, unknown>>).map((r: Record<string, unknown>) => ({ ...r, _mapped: true })),
+        total,
+      }
+    },
+  }),
 }))
 
 // reservationToDTO is tested via integration; mock it for unit isolation

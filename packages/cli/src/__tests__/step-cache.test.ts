@@ -101,7 +101,7 @@ describe("isStepCached", () => {
     // Even if cache file exists, the hash will be based on "missing"
     const { createHash } = await import("node:crypto")
     const missingHash = createHash("sha256").update("missing").digest("hex").slice(0, 16)
-    const inputHash = createHash("sha256").update(missingHash).digest("hex").slice(0, 16)
+    const _inputHash = createHash("sha256").update(missingHash).digest("hex").slice(0, 16)
 
     const cacheEntry = {
       stepName: "seed-products",

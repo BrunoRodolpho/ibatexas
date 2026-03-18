@@ -4,7 +4,7 @@
 //
 // In production, individual reviews sync incrementally via submit-review.ts.
 
-import { prisma } from "@ibatexas/domain"
+import { createReviewService } from "@ibatexas/domain"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
 
 interface SyncResult {
@@ -18,12 +18,8 @@ interface SyncResult {
  */
 export async function syncReviewStats(): Promise<SyncResult> {
   // 1. Aggregate reviews grouped by productId
-  const stats = await prisma.review.groupBy({
-    by: ["productId"],
-    _avg: { rating: true },
-    _count: { rating: true },
-    where: { productId: { not: null } },
-  })
+  const reviewSvc = createReviewService()
+  const stats = await reviewSvc.aggregateAll()
 
   if (stats.length === 0) {
     return { synced: 0, skipped: 0 }

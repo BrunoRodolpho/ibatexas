@@ -2,47 +2,27 @@
 // "Você costuma pedir junto" — personalized affinity from this customer's order history.
 // Queries Prisma CustomerOrderItem: which products appear in the same orders as productId?
 
-import type { AgentContext } from "@ibatexas/types";
-import { prisma } from "@ibatexas/domain";
+import { GetOrderedTogetherInputSchema, type GetOrderedTogetherInput, type AgentContext } from "@ibatexas/types";
+import { createCustomerService } from "@ibatexas/domain";
 import { queryProductsByIds } from "./query-products-by-ids.js";
 
 export async function getOrderedTogether(
-  input: { productId: string },
+  input: GetOrderedTogetherInput,
   ctx: AgentContext,
 ): Promise<{
   products: Array<{ id: string; title: string; price: number; imageUrl?: string; orderCount: number }>;
   label: string;
 }> {
+  const parsed = GetOrderedTogetherInputSchema.parse(input);
+
   if (!ctx.customerId) {
     // Guest: no personal history
     return { products: [], label: "Você costuma pedir junto" };
   }
 
-  // Find orders that contain this product
-  const ordersWithProduct = await prisma.customerOrderItem.findMany({
-    where: { customerId: ctx.customerId, productId: input.productId },
-    select: { medusaOrderId: true },
-    distinct: ["medusaOrderId"],
-  });
-
-  if (ordersWithProduct.length === 0) {
-    return { products: [], label: "Você costuma pedir junto" };
-  }
-
-  const orderIds = ordersWithProduct.map((o) => o.medusaOrderId);
-
-  // Find other products in those same orders, ranked by frequency
-  const coItems = await prisma.customerOrderItem.groupBy({
-    by: ["productId"],
-    where: {
-      customerId: ctx.customerId,
-      medusaOrderId: { in: orderIds },
-      productId: { not: input.productId },
-    },
-    _count: { productId: true },
-    orderBy: { _count: { productId: "desc" } },
-    take: 5,
-  });
+  // Find co-purchased products via domain service
+  const customerSvc = createCustomerService();
+  const coItems = await customerSvc.getOrderedTogether(ctx.customerId, parsed.productId, 5);
 
   if (coItems.length === 0) {
     return { products: [], label: "Você costuma pedir junto" };

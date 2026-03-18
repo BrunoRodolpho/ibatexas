@@ -10,6 +10,7 @@
 
 import { createHash } from "node:crypto"
 import { getRedisClient } from "../redis/client.js"
+import { rk } from "../redis/key.js"
 import { Channel, type QueryCacheEntry, type QueryLogEntry, type ProductDTO } from "@ibatexas/types"
 
 // ── Shared filter context ─────────────────────────────────────────────────────
@@ -61,7 +62,7 @@ export function exactCacheKey(query: string, ctx: CacheFilterContext): string {
     .update(`${normalized}:${ctx.availabilityMode}:${ctx.allergenHash}:${productTypeStr}:${categoryStr}:${tagsStr}`)
     .digest("hex")
     .slice(0, 16)
-  return `search_exact:${ctx.channel}:${hash}`
+  return rk(`search_exact:${ctx.channel}:${hash}`)
 }
 
 /**
@@ -70,7 +71,7 @@ export function exactCacheKey(query: string, ctx: CacheFilterContext): string {
  */
 function semanticCacheKey(bucket: string, ctx: CacheFilterContext): string {
   const tagsStr = ctx.tags && ctx.tags.length > 0 ? [...ctx.tags].sort((a, b) => a.localeCompare(b)).join(",") : "none"
-  return [
+  return rk([
     "search_cache",
     ctx.channel,
     bucket,
@@ -79,7 +80,7 @@ function semanticCacheKey(bucket: string, ctx: CacheFilterContext): string {
     ctx.productType || "all",
     ctx.categoryHandle || "all",
     tagsStr,
-  ].join(":")
+  ].join(":"))
 }
 
 // ── L0: Exact cache ───────────────────────────────────────────────────────────
@@ -94,11 +95,14 @@ export async function getExactQueryCache(
     const cached = await redisClient.get(key)
     if (cached) {
       const parsed = JSON.parse(cached) as { results: ProductDTO[]; cachedAt: string }
+      incrStat("cache:stats:l0:hit")
       return { hit: true, results: parsed.results, cachedAt: parsed.cachedAt }
     }
+    incrStat("cache:stats:l0:miss")
     return { hit: false }
   } catch (error) {
     console.warn("[Cache] L0 exact cache read failed:", error)
+    incrStat("cache:stats:l0:miss")
     return { hit: false }
   }
 }
@@ -136,12 +140,15 @@ export async function getQueryCache(
     const cached = await redisClient.get(key)
     if (cached) {
       const entry: QueryCacheEntry = JSON.parse(cached)
+      incrStat("cache:stats:l1:hit")
       return { hit: true, results: entry.results, cachedAt: entry.cachedAt }
     }
 
+    incrStat("cache:stats:l1:miss")
     return { hit: false }
   } catch (error) {
     console.warn("[Cache] L1 semantic cache read failed:", error)
+    incrStat("cache:stats:l1:miss")
     return { hit: false }
   }
 }
@@ -220,10 +227,10 @@ export async function invalidateAllQueryCache(): Promise<number> {
     const redisClient = await getRedisClient()
     const keys: string[] = []
 
-    for await (const key of redisClient.scanIterator({ MATCH: "search_cache:*", COUNT: 100 })) {
+    for await (const key of redisClient.scanIterator({ MATCH: rk("search_cache:*"), COUNT: 100 })) {
       keys.push(key)
     }
-    for await (const key of redisClient.scanIterator({ MATCH: "search_exact:*", COUNT: 100 })) {
+    for await (const key of redisClient.scanIterator({ MATCH: rk("search_exact:*"), COUNT: 100 })) {
       keys.push(key)
     }
 
@@ -270,9 +277,48 @@ export async function logQuery(
       userType,
     }
 
-    await redisClient.setEx(`query_log:${timestamp}:${sessionId}:${keyHash}`, ttl, JSON.stringify(entry))
+    await redisClient.setEx(rk(`query_log:${timestamp}:${sessionId}:${keyHash}`), ttl, JSON.stringify(entry))
   } catch (error) {
     console.warn("[Cache] Query logging failed:", error)
+  }
+}
+
+// ── Cache stats ──────────────────────────────────────────────────────────────
+
+/** Fire-and-forget INCR — never blocks the caller. */
+function incrStat(key: string): void {
+  void getRedisClient()
+    .then((r) => r.incr(rk(key)))
+    .catch(() => {}) // non-critical
+}
+
+/**
+ * Read aggregated cache hit/miss stats.
+ * Exported for CLI (`ibx intel cache-stats`) and admin dashboard.
+ */
+export async function getCacheStats(): Promise<{
+  l0: { hit: number; miss: number; rate: string }
+  l1: { hit: number; miss: number; rate: string }
+  embedding: { hit: number; miss: number; rate: string }
+}> {
+  const redis = await getRedisClient()
+  const keys = [
+    rk("cache:stats:l0:hit"), rk("cache:stats:l0:miss"),
+    rk("cache:stats:l1:hit"), rk("cache:stats:l1:miss"),
+    rk("cache:stats:embed:hit"), rk("cache:stats:embed:miss"),
+  ]
+  const vals = await redis.mGet(keys)
+  const nums = vals.map((v) => Number.parseInt(v ?? "0", 10))
+
+  function rate(hit: number, miss: number): string {
+    const total = hit + miss
+    return total === 0 ? "0%" : `${((hit / total) * 100).toFixed(1)}%`
+  }
+
+  return {
+    l0: { hit: nums[0], miss: nums[1], rate: rate(nums[0], nums[1]) },
+    l1: { hit: nums[2], miss: nums[3], rate: rate(nums[2], nums[3]) },
+    embedding: { hit: nums[4], miss: nums[5], rate: rate(nums[4], nums[5]) },
   }
 }
 

@@ -2,8 +2,10 @@
 // Called from Medusa subscribers on product create/update/delete
 
 import { getTypesenseClient, COLLECTION } from "./client.js"
-import { medusaToTypesenseDoc } from "../mappers/product-mapper.js"
+import { medusaToTypesenseDoc, type MedusaProductInput, type TypesenseProductDoc } from "../mappers/product-mapper.js"
 import { generateEmbedding } from "../embeddings/client.js"
+import { rk } from "../redis/key.js"
+import { isTypesenseError, type TypesenseImportResult } from "./types.js"
 
 /**
  * Index (upsert) a single product into Typesense.
@@ -14,11 +16,11 @@ import { generateEmbedding } from "../embeddings/client.js"
  * @param deps — Injectable dependencies (for testing without module mocking)
  */
 export async function indexProduct(
-  product: any,
+  product: MedusaProductInput,
   deps: { generateEmbedding?: typeof generateEmbedding } = {}
 ): Promise<void> {
   const typesenseClient = getTypesenseClient()
-  const doc = medusaToTypesenseDoc(product) as any
+  const doc: TypesenseProductDoc & { embedding?: number[] } = medusaToTypesenseDoc(product)
   const embedFn = deps.generateEmbedding ?? generateEmbedding
 
   // Generate embedding for vector search
@@ -27,7 +29,7 @@ export async function indexProduct(
     const embeddingText = [product.title, product.description || ""].join(". ")
     doc.embedding = await embedFn(
       embeddingText,
-      `product_embedding:${product.id}`,
+      rk(`product_embedding:${product.id}`),
       Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
     )
   } catch (error) {
@@ -47,13 +49,13 @@ export async function deleteProductFromIndex(productId: string): Promise<void> {
     const typesenseClient = getTypesenseClient()
     await typesenseClient.collections(COLLECTION).documents(productId).delete()
     console.log(`[Typesense] Deleted from index: ${productId}`)
-  } catch (error: any) {
-    if (error.httpStatus === 404) {
+  } catch (err: unknown) {
+    if (isTypesenseError(err) && err.httpStatus === 404) {
       console.log(`[Typesense] Product not in index (already removed): ${productId}`)
       return
     }
-    console.error(`[Typesense] Failed to delete product ${productId}:`, error)
-    throw error
+    console.error(`[Typesense] Failed to delete product ${productId}:`, err)
+    throw err
   }
 }
 
@@ -63,7 +65,7 @@ export async function deleteProductFromIndex(productId: string): Promise<void> {
  * Generates embeddings in parallel; failures are logged but don't abort the batch.
  */
 export async function indexProductsBatch(
-  products: any[],
+  products: MedusaProductInput[],
   deps: { generateEmbedding?: typeof generateEmbedding } = {}
 ): Promise<void> {
   const embedFn = deps.generateEmbedding ?? generateEmbedding
@@ -71,10 +73,10 @@ export async function indexProductsBatch(
 
   const docs = await Promise.all(
     products.map(async (product) => {
-      const doc = medusaToTypesenseDoc(product) as any
+      const doc: TypesenseProductDoc & { embedding?: number[] } = medusaToTypesenseDoc(product)
       try {
         const embeddingText = [product.title, product.description || ""].join(". ")
-        doc.embedding = await embedFn(embeddingText, `product_embedding:${product.id}`, ttl)
+        doc.embedding = await embedFn(embeddingText, rk(`product_embedding:${product.id}`), ttl)
       } catch (error) {
         console.warn(`[Typesense] Embedding skipped for ${product.id}:`, error)
       }
@@ -86,7 +88,7 @@ export async function indexProductsBatch(
   const results = await typesenseClient
     .collections(COLLECTION)
     .documents()
-    .import(docs, { action: "upsert" }) as any[]
+    .import(docs, { action: "upsert" }) as TypesenseImportResult[]
 
   const failures = results.filter((r) => !r.success)
   if (failures.length > 0) {

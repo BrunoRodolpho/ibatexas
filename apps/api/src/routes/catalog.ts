@@ -13,7 +13,7 @@ import { Channel, type ProductVariant } from "@ibatexas/types";
 import { searchProducts, getProductDetails, buildPersonalizedQuery } from "@ibatexas/tools";
 import { medusaAdmin, medusaStore } from "./admin/_shared.js";
 import { optionalAuth } from "../middleware/auth.js";
-import { prisma } from "@ibatexas/domain";
+import { createReviewService } from "@ibatexas/domain";
 
 const ProductsQuery = z.object({
   query: z.string().min(1).max(200).optional(),
@@ -317,24 +317,8 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
       const { id: productId } = request.params;
       const { limit, offset } = request.query;
 
-      const [reviews, total] = await Promise.all([
-        prisma.review.findMany({
-          where: { productId },
-          orderBy: { createdAt: "desc" },
-          take: limit,
-          skip: offset,
-          select: {
-            id: true,
-            rating: true,
-            comment: true,
-            createdAt: true,
-            customer: {
-              select: { name: true },
-            },
-          },
-        }),
-        prisma.review.count({ where: { productId } }),
-      ]);
+      const reviewSvc = createReviewService();
+      const { reviews, total } = await reviewSvc.findForProduct(productId, { limit, offset });
 
       const avg = reviews.length > 0
         ? reviews.reduce((s, r) => s + r.rating, 0) / reviews.length

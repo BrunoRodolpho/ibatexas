@@ -1,34 +1,27 @@
 // check_order_status tool — fetch Medusa order with status + fulfillment
 
-import type { AgentContext } from "@ibatexas/types";
-import { medusaAdminFetch } from "./_shared.js";
+import { CheckOrderStatusInputSchema, NonRetryableError, type CheckOrderStatusInput, type AgentContext } from "@ibatexas/types";
+import { createOrderService } from "@ibatexas/domain";
+import { medusaAdmin } from "../medusa/client.js";
 
 export async function checkOrderStatus(
-  input: { orderId: string },
+  input: CheckOrderStatusInput,
   ctx: AgentContext,
 ): Promise<unknown> {
+  const parsed = CheckOrderStatusInputSchema.parse(input);
+
   if (!ctx.customerId) {
-    throw new Error("Autenticação necessária para verificar status de pedido.");
+    throw new NonRetryableError("Autenticação necessária para verificar status de pedido.");
   }
 
-  let data: { order: { customer_id?: string; metadata?: Record<string, string> } };
-  try {
-    data = await medusaAdminFetch(`/admin/orders/${input.orderId}`) as typeof data;
-  } catch {
-    return { success: false, message: "Erro ao buscar pedido. Tente novamente." };
-  }
+  const svc = createOrderService(medusaAdmin);
+  const { order, ownershipValid } = await svc.getOrder(parsed.orderId, ctx.customerId);
 
-  const order = data.order;
-
-  // Verify the order belongs to the authenticated customer (LGPD compliance)
-  const orderCustomerId =
-    order.customer_id ?? order.metadata?.["customerId"];
-
-  if (orderCustomerId && orderCustomerId !== ctx.customerId) {
+  if (!ownershipValid) {
     return { success: false, message: "Pedido não encontrado." };
   }
 
-  return data;
+  return { order };
 }
 
 export const CheckOrderStatusTool = {

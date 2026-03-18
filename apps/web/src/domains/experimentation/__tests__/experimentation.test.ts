@@ -93,7 +93,7 @@ describe('Experimentation Domain', () => {
   describe('flag()', () => {
     it('returns false (default) when PostHog is unavailable', () => {
       mockGetPostHogClient.mockReturnValue(null)
-      expect(flag('new_checkout')).toBe(false)
+      expect(flag('recommendation_engine')).toBe(false)
     })
 
     it('returns true when PostHog indicates the flag is enabled', () => {
@@ -107,7 +107,7 @@ describe('Experimentation Domain', () => {
       mockGetPostHogClient.mockReturnValue({
         isFeatureEnabled: () => undefined,
       })
-      expect(flag('loyalty_program')).toBe(false)
+      expect(flag('recommendation_engine')).toBe(false)
     })
   })
 
@@ -116,7 +116,7 @@ describe('Experimentation Domain', () => {
   describe('flagPayload()', () => {
     it('returns null when PostHog is unavailable', () => {
       mockGetPostHogClient.mockReturnValue(null)
-      expect(flagPayload('new_checkout')).toBeNull()
+      expect(flagPayload('recommendation_engine')).toBeNull()
     })
 
     it('returns the payload from PostHog', () => {
@@ -124,7 +124,7 @@ describe('Experimentation Domain', () => {
       mockGetPostHogClient.mockReturnValue({
         getFeatureFlagResult: () => ({ payload: testPayload }),
       })
-      expect(flagPayload('promotions_banner')).toEqual(testPayload)
+      expect(flagPayload('recommendation_engine')).toEqual(testPayload)
     })
   })
 })

@@ -252,7 +252,6 @@ describe("transitionTo", () => {
       "browsing",
       "cart_review",
       "checkout",
-      "reservation_flow",
     ];
 
     for (const state of states) {
@@ -288,7 +287,7 @@ describe("state machine invariants", () => {
   // Invariant 2: No payment processing without being in checkout state
   it("no payment without checkout state (cart required)", async () => {
     const paymentIds = ["pay_pix", "pay_card", "pay_cash"];
-    const nonCheckoutStates: ConversationState[] = ["idle", "browsing", "cart_review", "reservation_flow"];
+    const nonCheckoutStates: ConversationState[] = ["idle", "browsing", "cart_review"];
 
     for (const state of nonCheckoutStates) {
       mockGetSessionState.mockResolvedValue(state);
@@ -325,7 +324,7 @@ describe("state machine invariants", () => {
 
   // Random event sequence: 20 random events should never throw
   it("random event sequence never throws unhandled error", async () => {
-    const states: ConversationState[] = ["idle", "browsing", "cart_review", "checkout", "reservation_flow"];
+    const states: ConversationState[] = ["idle", "browsing", "cart_review", "checkout"];
     const interactiveIds = [
       undefined, "product_x1", "more_products", "checkout",
       "continue_shopping", "pay_pix", "pay_card", "pay_cash",

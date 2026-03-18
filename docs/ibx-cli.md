@@ -374,6 +374,16 @@ Starts an ngrok tunnel and prints:
 
 Use this for testing WhatsApp webhooks locally. Requires `ngrok` (`brew install ngrok`).
 
+### Auth — `ibx auth`
+
+```bash
+ibx auth flush [phoneHash]   # clear OTP rate-limit and brute-force keys for a phone
+ibx auth status [phoneHash]  # show OTP send count and failure count for a phone
+```
+
+Useful for debugging OTP issues during development. The `phoneHash` is the first 12
+characters of the SHA-256 hash of the E.164 phone number.
+
 ### VCS — `ibx git`
 
 ```bash

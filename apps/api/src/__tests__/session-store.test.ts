@@ -18,6 +18,7 @@ const mockRedis = {
 
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: vi.fn(async () => mockRedis),
+  rk: (key: string) => `ibatexas:${key}`,
 }))
 
 import { loadSession, appendMessages } from "../session/store.js"
@@ -33,7 +34,7 @@ describe("loadSession", () => {
     mockRedis.lRange.mockResolvedValue([])
     const result = await loadSession("sess_01")
     expect(result).toEqual([])
-    expect(mockRedis.lRange).toHaveBeenCalledWith("session:sess_01", 0, -1)
+    expect(mockRedis.lRange).toHaveBeenCalledWith("ibatexas:session:sess_01", 0, -1)
   })
 
   it("returns empty array when lRange returns null", async () => {
@@ -76,15 +77,15 @@ describe("appendMessages", () => {
     expect(mockRedis.multi).toHaveBeenCalledTimes(1)
     expect(mockMulti.rPush).toHaveBeenCalledTimes(2)
     expect(mockMulti.rPush).toHaveBeenCalledWith(
-      "session:sess_05",
+      "ibatexas:session:sess_05",
       JSON.stringify(messages[0]),
     )
     expect(mockMulti.rPush).toHaveBeenCalledWith(
-      "session:sess_05",
+      "ibatexas:session:sess_05",
       JSON.stringify(messages[1]),
     )
-    expect(mockMulti.lTrim).toHaveBeenCalledWith("session:sess_05", -50, -1)
-    expect(mockMulti.expire).toHaveBeenCalledWith("session:sess_05", 48 * 60 * 60)
+    expect(mockMulti.lTrim).toHaveBeenCalledWith("ibatexas:session:sess_05", -50, -1)
+    expect(mockMulti.expire).toHaveBeenCalledWith("ibatexas:session:sess_05", 48 * 60 * 60)
     expect(mockMulti.exec).toHaveBeenCalledTimes(1)
   })
 

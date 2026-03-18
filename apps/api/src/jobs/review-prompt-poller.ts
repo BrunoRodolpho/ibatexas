@@ -1,6 +1,6 @@
 // Review prompt poller
 // Runs every 5 minutes. Reads due review prompts from Redis sorted set and
-// publishes ibatexas.review.prompt NATS events. Idempotent across multiple instances.
+// publishes review.prompt NATS events. Idempotent across multiple instances.
 //
 // Uses same registration pattern as no-show-checker.ts.
 
@@ -41,7 +41,7 @@ async function pollReviewPrompts(): Promise<void> {
     }
 
     try {
-      await publishNatsEvent("ibatexas.review.prompt", {
+      await publishNatsEvent("review.prompt", {
         eventType: "review.prompt",
         customerId,
         orderId,

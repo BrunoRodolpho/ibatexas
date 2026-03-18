@@ -28,8 +28,8 @@ const mockTypesenseDocToDTO = vi.hoisted(() =>
 // From catalog/__tests__/ that's ../../typesense/client.js
 vi.mock("../../typesense/client.js", () => ({
   getTypesenseClient: () => ({
-    collections: (name: string) => ({
-      documents: (id: string) => ({
+    collections: (_name: string) => ({
+      documents: (_id: string) => ({
         retrieve: mockRetrieve,
       }),
     }),

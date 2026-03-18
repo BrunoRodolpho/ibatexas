@@ -3,18 +3,15 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
+import type { FastifyRequest, FastifyReply } from "fastify";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockTwilioClient = vi.hoisted(() => vi.fn());
+const _mockTwilioClient = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
-const mockPrisma = vi.hoisted(() => ({
-  customer: {
-    upsert: vi.fn(),
-    findUniqueOrThrow: vi.fn(),
-  },
-}));
+const mockUpsertFromPhone = vi.hoisted(() => vi.fn());
+const mockGetById = vi.hoisted(() => vi.fn());
 
 // Mock Twilio verify API
 const mockVerificationCreate = vi.hoisted(() => vi.fn());
@@ -39,11 +36,14 @@ vi.mock("@ibatexas/tools", () => ({
 }));
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: mockPrisma,
+  createCustomerService: () => ({
+    upsertFromPhone: mockUpsertFromPhone,
+    getById: mockGetById,
+  }),
 }));
 
 vi.mock("../middleware/auth.js", () => ({
-  requireAuth: (request: any, reply: any, done: any) => {
+  requireAuth: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
     const customerId = request.headers["x-customer-id"] as string | undefined;
     if (!customerId) {
       void reply
@@ -54,7 +54,7 @@ vi.mock("../middleware/auth.js", () => ({
     }
     done();
   },
-  optionalAuth: (_request: any, _reply: any, done: any) => {
+  optionalAuth: (_request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void) => {
     done();
   },
 }));
@@ -179,7 +179,7 @@ describe("checkBruteForce", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
-    mockPrisma.customer.upsert.mockResolvedValue({
+    mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
       phone: "+5511999999999",
       name: "Test",
@@ -254,7 +254,7 @@ describe("recordVerifyFailure & clearVerifyFailures", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
-    mockPrisma.customer.upsert.mockResolvedValue({
+    mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
       phone: "+5511999999999",
       name: "Test",
@@ -363,7 +363,7 @@ describe("POST /api/auth/verify-otp", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
-    mockPrisma.customer.upsert.mockResolvedValue({
+    mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
       phone: "+5511999999999",
       name: "Maria",
@@ -397,7 +397,7 @@ describe("POST /api/auth/verify-otp", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
-    mockPrisma.customer.upsert.mockResolvedValue({
+    mockUpsertFromPhone.mockResolvedValue({
       id: "cus_02",
       phone: "+5511888888888",
       name: "Joao",
@@ -411,12 +411,7 @@ describe("POST /api/auth/verify-otp", () => {
       payload: { phone: "+5511888888888", code: "654321", name: "Joao" },
     });
 
-    expect(mockPrisma.customer.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { phone: "+5511888888888" },
-        create: { phone: "+5511888888888", name: "Joao" },
-      }),
-    );
+    expect(mockUpsertFromPhone).toHaveBeenCalledWith("+5511888888888", "Joao");
   });
 
   it("returns 400 for wrong code", async () => {
@@ -551,7 +546,7 @@ describe("GET /api/auth/me", () => {
 
   it("returns customer data when authenticated", async () => {
     setupEnv();
-    mockPrisma.customer.findUniqueOrThrow.mockResolvedValue({
+    mockGetById.mockResolvedValue({
       id: "cus_01",
       phone: "+5511999999999",
       name: "Maria",
@@ -585,5 +580,87 @@ describe("GET /api/auth/me", () => {
     expect(res.statusCode).toBe(401);
     const body = res.json();
     expect(body.message).toContain("Autenticação");
+  });
+});
+
+describe("checkIpRateLimit", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("returns 429 when IP rate limit exceeded (count > 10)", async () => {
+    setupEnv();
+    const mockIncr = vi.fn().mockResolvedValue(11);
+    const mockRedis = createMockRedis({ incr: mockIncr });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/send-otp",
+      payload: { phone: "+5511999999999" },
+    });
+
+    expect(res.statusCode).toBe(429);
+    const body = res.json();
+    expect(body.message).toContain("Muitas tentativas deste endereço");
+    expect(body.message).toContain("1 hora");
+    // Should not reach the phone-hash rate limit or Twilio
+    expect(mockVerificationCreate).not.toHaveBeenCalled();
+    // incr called only once (for IP check — blocked before phone check)
+    expect(mockIncr).toHaveBeenCalledTimes(1);
+  });
+
+  it("sets expire on first IP request (count === 1)", async () => {
+    setupEnv();
+    const mockExpire = vi.fn().mockResolvedValue(true);
+    const mockIncr = vi.fn()
+      .mockResolvedValueOnce(1)   // IP rate limit — first request
+      .mockResolvedValueOnce(1);  // phone-hash rate limit
+    const mockRedis = createMockRedis({ incr: mockIncr, expire: mockExpire });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockVerificationCreate.mockResolvedValue({ sid: "VE_123" });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/send-otp",
+      payload: { phone: "+5511999999999" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // expire called with 3600 for IP key
+    expect(mockExpire).toHaveBeenCalledWith(
+      expect.stringContaining("otp:ip:"),
+      3600,
+    );
+  });
+
+  it("IP check runs BEFORE phone-hash check", async () => {
+    setupEnv();
+    const callOrder: string[] = [];
+    const mockIncr = vi.fn().mockImplementation(async (key: string) => {
+      if (key.includes("otp:ip:")) {
+        callOrder.push("ip");
+        return 11; // exceed IP limit
+      }
+      callOrder.push("phone");
+      return 1;
+    });
+    const mockRedis = createMockRedis({ incr: mockIncr });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/send-otp",
+      payload: { phone: "+5511999999999" },
+    });
+
+    expect(res.statusCode).toBe(429);
+    // IP check happened first and blocked — phone check never reached
+    expect(callOrder).toEqual(["ip"]);
   });
 });

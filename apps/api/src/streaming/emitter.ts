@@ -2,6 +2,7 @@
 //
 // Phase 1: single-process — EventEmitter per sessionId is sufficient.
 // Phase 2+: replace pushChunk/subscribe with Redis Pub/Sub for multi-instance support.
+// See docs/audit/08-deferred-items-plan.md (Item 11) for the full migration plan.
 //
 // Race condition mitigation:
 // - POST creates the entry before starting the agent.

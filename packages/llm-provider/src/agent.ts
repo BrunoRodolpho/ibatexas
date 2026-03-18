@@ -11,7 +11,7 @@
 
 import Anthropic from "@anthropic-ai/sdk"
 import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropic-ai/sdk/resources/messages.js"
-import { Channel, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
+import { Channel, NonRetryableError, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
 import { SYSTEM_PROMPT } from "./system-prompt.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 
@@ -49,6 +49,10 @@ async function executeWithRetry(
       return await executeTool(name, input, ctx)
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err))
+      // Non-retryable errors (auth, business rules) should not be retried
+      if (lastError instanceof NonRetryableError) {
+        return { error: lastError.message, toolName: name }
+      }
       if (attempt < MAX_TOOL_RETRIES - 1) {
         await new Promise((r) => setTimeout(r, 200 * 2 ** attempt))
       }

@@ -20,20 +20,11 @@ vi.mock("stripe", () => ({
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
+  medusaAdmin: mockMedusaAdmin,
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
-}));
-
-vi.mock("./admin/_shared.js", () => ({
-  medusaAdmin: mockMedusaAdmin,
-}));
-
-// The route imports medusaAdmin from "./admin/_shared.js" but the test resolves
-// relative to routes/. We need to mock the exact import path from the route file's perspective.
-vi.mock("../routes/admin/_shared.js", () => ({
-  medusaAdmin: mockMedusaAdmin,
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
@@ -278,7 +269,7 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
 
     // Publish order.placed event
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.order.placed",
+      "order.placed",
       expect.objectContaining({
         eventType: "order.placed",
         orderId: "order_01",
@@ -415,7 +406,7 @@ describe("POST /api/webhooks/stripe — payment_intent.payment_failed", () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.order.payment_failed",
+      "order.payment_failed",
       expect.objectContaining({
         eventType: "order.payment_failed",
         orderId: "order_01",
@@ -461,7 +452,7 @@ describe("POST /api/webhooks/stripe — unknown event type", () => {
   it("returns 200 and ignores unknown event types", async () => {
     const event = {
       id: "evt_unknown",
-      type: "charge.refunded",
+      type: "invoice.payment_succeeded",
       data: { object: {} },
     };
     mockConstructEvent.mockReturnValue(event);
@@ -483,6 +474,266 @@ describe("POST /api/webhooks/stripe — unknown event type", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
     expect(mockMedusaAdmin).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/webhooks/stripe — charge.refunded", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("publishes order.refunded event with correct payload", async () => {
+    const event = {
+      id: "evt_refund_01",
+      type: "charge.refunded",
+      data: {
+        object: {
+          id: "ch_test_123",
+          amount_refunded: 5000,
+          metadata: { medusaOrderId: "order_01" },
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "order.refunded",
+      expect.objectContaining({
+        eventType: "order.refunded",
+        orderId: "order_01",
+        chargeId: "ch_test_123",
+        amountRefunded: 5000,
+      }),
+    );
+  });
+
+  it("handles missing medusaOrderId gracefully (warn, no crash)", async () => {
+    const event = {
+      id: "evt_refund_02",
+      type: "charge.refunded",
+      data: {
+        object: {
+          id: "ch_test_456",
+          amount_refunded: 3000,
+          metadata: {},
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/webhooks/stripe — charge.dispute.created", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("publishes order.disputed event with correct payload", async () => {
+    const event = {
+      id: "evt_dispute_01",
+      type: "charge.dispute.created",
+      data: {
+        object: {
+          id: "dp_test_123",
+          amount: 8900,
+          reason: "fraudulent",
+          metadata: { medusaOrderId: "order_02" },
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "order.disputed",
+      expect.objectContaining({
+        eventType: "order.disputed",
+        orderId: "order_02",
+        disputeId: "dp_test_123",
+        amount: 8900,
+        reason: "fraudulent",
+      }),
+    );
+  });
+
+  it("handles missing medusaOrderId in dispute metadata (publishes with null orderId)", async () => {
+    const event = {
+      id: "evt_dispute_02",
+      type: "charge.dispute.created",
+      data: {
+        object: {
+          id: "dp_test_456",
+          amount: 5000,
+          reason: "product_not_received",
+          metadata: {},
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Disputes always publish — even without orderId (they're serious events)
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "order.disputed",
+      expect.objectContaining({
+        eventType: "order.disputed",
+        orderId: null,
+        disputeId: "dp_test_456",
+        amount: 5000,
+        reason: "product_not_received",
+      }),
+    );
+  });
+});
+
+describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("publishes order.canceled event with correct payload", async () => {
+    const event = {
+      id: "evt_cancel_01",
+      type: "payment_intent.canceled",
+      data: {
+        object: {
+          id: "pi_cancel_123",
+          cancellation_reason: "abandoned",
+          metadata: { medusaOrderId: "order_03" },
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "order.canceled",
+      expect.objectContaining({
+        eventType: "order.canceled",
+        orderId: "order_03",
+        stripePaymentIntentId: "pi_cancel_123",
+        cancellationReason: "abandoned",
+      }),
+    );
+  });
+
+  it("handles missing medusaOrderId gracefully (warn, no crash)", async () => {
+    const event = {
+      id: "evt_cancel_02",
+      type: "payment_intent.canceled",
+      data: {
+        object: {
+          id: "pi_cancel_456",
+          cancellation_reason: "requested_by_customer",
+          metadata: {},
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
   });
 });

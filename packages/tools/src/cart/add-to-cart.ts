@@ -1,35 +1,31 @@
 // add_to_cart tool — add a product variant to the Medusa cart
 
-import type { AgentContext } from "@ibatexas/types";
+import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
-
-export interface AddToCartInput {
-  cartId: string;
-  variantId: string;
-  quantity: number;
-}
 
 export async function addToCart(
   input: AddToCartInput,
   ctx: AgentContext,
 ): Promise<unknown> {
+  const parsed = AddToCartInputSchema.parse(input);
+
   let data: unknown;
   try {
-    data = await medusaStoreFetch(`/store/carts/${input.cartId}/line-items`, {
+    data = await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items`, {
       method: "POST",
-      body: JSON.stringify({ variant_id: input.variantId, quantity: input.quantity }),
+      body: JSON.stringify({ variant_id: parsed.variantId, quantity: parsed.quantity }),
     });
   } catch (err) {
     console.error("[add_to_cart] Medusa error:", err);
     return { success: false, message: "Erro ao adicionar item ao carrinho. Verifique o produto e tente novamente." };
   }
 
-  await publishNatsEvent("ibatexas.cart.item_added", {
+  void publishNatsEvent("cart.item_added", {
     eventType: "cart.item_added",
-    cartId: input.cartId,
-    variantId: input.variantId,
-    quantity: input.quantity,
+    cartId: parsed.cartId,
+    variantId: parsed.variantId,
+    quantity: parsed.quantity,
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
   }).catch((err) => console.error("[add_to_cart] NATS publish error:", err));

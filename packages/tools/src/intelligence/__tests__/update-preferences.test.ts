@@ -35,6 +35,26 @@ vi.mock("@ibatexas/domain", () => ({
       upsert: mockPrefsUpsert,
     },
   },
+  createCustomerService: () => ({
+    updatePreferences: async (
+      customerId: string,
+      input: { dietaryRestrictions?: string[]; allergenExclusions?: string[]; favoriteCategories?: string[] },
+    ) => {
+      const allergenExclusions = Array.isArray(input.allergenExclusions) ? input.allergenExclusions : []
+      const dietaryRestrictions = Array.isArray(input.dietaryRestrictions) ? input.dietaryRestrictions : []
+      const favoriteCategories = Array.isArray(input.favoriteCategories) ? input.favoriteCategories : []
+      await mockPrefsUpsert({
+        where: { customerId },
+        create: { customerId, allergenExclusions, dietaryRestrictions, favoriteCategories },
+        update: {
+          ...(input.allergenExclusions === undefined ? {} : { allergenExclusions }),
+          ...(input.dietaryRestrictions === undefined ? {} : { dietaryRestrictions }),
+          ...(input.favoriteCategories === undefined ? {} : { favoriteCategories }),
+        },
+      })
+      return { allergenExclusions, dietaryRestrictions, favoriteCategories }
+    },
+  }),
 }))
 
 vi.mock("../../redis/client.js", () => ({
@@ -48,6 +68,7 @@ vi.mock("../../redis/key.js", () => ({
 // -- Imports ──────────────────────────────────────────────────────────────────
 
 import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
 import { updatePreferences } from "../update-preferences.js"
 import { PROFILE_TTL_SECONDS } from "../types.js"
 
@@ -80,7 +101,7 @@ describe("updatePreferences", () => {
   // ── Auth ────────────────────────────────────────────────────────────────
 
   it("throws when customerId is missing", async () => {
-    await expect(updatePreferences({}, CTX_GUEST as any)).rejects.toThrow(
+    await expect(updatePreferences({}, CTX_GUEST as AgentContext)).rejects.toThrow(
       "Autenticação necessária",
     )
   })

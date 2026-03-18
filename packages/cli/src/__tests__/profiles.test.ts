@@ -8,8 +8,6 @@ import {
   PROFILE_NAMES,
   SCALE_PRESETS,
   SCALE_NAMES,
-  type BehaviorProfile,
-  type ScalePreset,
 } from "../lib/profiles.js"
 
 // ── Profile structure tests ──────────────────────────────────────────────────

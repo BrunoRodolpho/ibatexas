@@ -26,6 +26,22 @@ Example: `development:cart:session:abc123`
 | `wa:webhook:{MessageSid}` | String | 24 h | WhatsApp webhook idempotency (prevents Twilio retry reprocessing) |
 | `wa:debounce:{phoneHash}` | String | 2 s | WhatsApp message debounce (batches rapid-fire messages) |
 | `wa:agent:{sessionId}` | String | 30 s | WhatsApp distributed agent lock (heartbeat extends TTL every 10s) |
+| `otp:ip:{ip}` | String | 1 h | OTP send rate limit per IP (max 10/hour) |
+| `otp:rate:{phoneHash}` | String | 10 min | OTP send rate limit (max 3 per phone per 10 min) |
+| `otp:fail:{phoneHash}` | String | 1 h | OTP brute-force counter (locks after 5 failures per hour) |
+| `review:prompt:{customerId}:{orderId}` | String | 24 h | Idempotency marker for review prompt scheduling |
+| `review:prompt:scheduled` | Sorted Set | — | Due review prompts (score = fire timestamp), polled every 5 min |
+| `nats:processed:{eventKey}` | String | 7 d | NATS event idempotency guard (prevents duplicate subscriber processing) |
+| `webhook:processed:{event.id}` | String | 7 d | Stripe webhook idempotency guard (prevents replay reprocessing) |
+| `analytics:rate:{ip}` | String | 60 s | Analytics endpoint rate limit (max 100 events/min per IP) |
+| `session:{sessionId}` | Hash | 24-48 h | Chat conversation history (guest 48h, authenticated 24h) |
+| `product_embedding:{productId}` | String | 30 d | Cached product embedding vector for semantic search |
+| `cache:stats:l0:hit` | Counter | — | L0 exact cache hit count (INCR on each hit) |
+| `cache:stats:l0:miss` | Counter | — | L0 exact cache miss count |
+| `cache:stats:l1:hit` | Counter | — | L1 semantic cache hit count |
+| `cache:stats:l1:miss` | Counter | — | L1 semantic cache miss count |
+| `cache:stats:embed:hit` | Counter | — | Embedding cache hit count |
+| `cache:stats:embed:miss` | Counter | — | Embedding cache miss count |
 
 ---
 
@@ -34,7 +50,7 @@ Example: `development:cart:session:abc123`
 The `abandoned-cart-checker` job runs every 15 minutes and:
 1. Uses `SSCAN` to iterate `active:carts` (never `KEYS *`)
 2. For each cart ID, checks if `cart:session:{cartId}` has expired (TTL = 0)
-3. If expired (idle > 24 h), publishes `ibatexas.cart.abandoned` NATS event
+3. If expired (idle > 24 h), publishes `cart.abandoned` NATS event
 4. Removes the cart ID from `active:carts`
 
 The cart session TTL is refreshed on every cart mutation (add/remove/update).

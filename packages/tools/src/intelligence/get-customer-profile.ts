@@ -1,16 +1,16 @@
 // get_customer_profile tool
 // Redis hot-path: read profile hash from rk('customer:profile:{customerId}')
-// Prisma fallback: on cache miss, hydrate from DB and populate Redis.
+// Prisma fallback (via CustomerService): on cache miss, hydrate from DB and populate Redis.
 // Every read resets the 30-day sliding TTL.
 
-import type { AgentContext } from "@ibatexas/types";
-import { prisma } from "@ibatexas/domain";
+import { GetCustomerProfileInputSchema, NonRetryableError, type GetCustomerProfileInput, type AgentContext } from "@ibatexas/types";
+import { createCustomerService } from "@ibatexas/domain";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import type { CustomerProfileCache } from "./types.js";
 import { PROFILE_TTL_SECONDS } from "./types.js";
 
-const PROFILE_FIELDS = [
+const _PROFILE_FIELDS = [
   "recentlyViewed",
   "cartItems",
   "orderCount",
@@ -25,11 +25,13 @@ export type GetCustomerProfileOutput = CustomerProfileCache & {
 };
 
 export async function getCustomerProfile(
-  _input: Record<string, never>,
+  input: GetCustomerProfileInput,
   ctx: AgentContext,
 ): Promise<GetCustomerProfileOutput> {
+  GetCustomerProfileInputSchema.parse(input);
+
   if (!ctx.customerId) {
-    throw new Error("Autenticação necessária para acessar perfil.");
+    throw new NonRetryableError("Autenticação necessária para acessar perfil.");
   }
 
   const redis = await getRedisClient();
@@ -44,17 +46,11 @@ export async function getCustomerProfile(
     return parseRedisProfile(ctx.customerId, rawHash);
   }
 
-  // Cache miss — hydrate from Prisma
-  const [customerPrefs, orderItems] = await Promise.all([
-    prisma.customerPreferences.findUnique({ where: { customerId: ctx.customerId } }),
-    prisma.customerOrderItem.findMany({
-      where: { customerId: ctx.customerId },
-      orderBy: { orderedAt: "desc" },
-      take: 200, // enough to compute decay scores
-    }),
-  ]);
+  // Cache miss — hydrate from Prisma via CustomerService
+  const svc = createCustomerService();
+  const { customerPrefs, orderItems } = await svc.getProfileData(ctx.customerId);
 
-  // Build orderedProductScore with decay formula: Σ(1 / max(1, daysSinceOrder))
+  // Build orderedProductScore with decay formula: Σ(quantity / max(1, daysSinceOrder))
   const now = Date.now();
   const scoreMap: Record<string, number> = {};
   for (const item of orderItems) {
@@ -92,7 +88,6 @@ export async function getCustomerProfile(
   pipeline.hSet(profileKey, "lastOrderedProductIds", JSON.stringify(profile.lastOrderedProductIds));
   pipeline.hSet(profileKey, "preferences", JSON.stringify(profile.preferences));
 
-  // Write scored products as hash fields score:{productId}
   for (const [productId, score] of Object.entries(scoreMap)) {
     pipeline.hSet(profileKey, `score:${productId}`, String(score));
   }
@@ -111,7 +106,6 @@ function parseRedisProfile(
   customerId: string,
   hash: Record<string, string>,
 ): GetCustomerProfileOutput {
-  // Extract score:* fields into orderedProductScore map
   const orderedProductScore: Record<string, number> = {};
   for (const [key, value] of Object.entries(hash)) {
     if (key.startsWith("score:")) {

@@ -40,6 +40,7 @@ vi.mock("../query-products-by-ids.js", () => ({
 // -- Imports ──────────────────────────────────────────────────────────────────
 
 import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
 import {
   getRecommendations,
   buildPersonalizedQuery,
@@ -263,7 +264,7 @@ describe("getRecommendations", () => {
     ])
     mockQueryProductsByIds.mockResolvedValue([PRODUCT_SUMMARY_A, PRODUCT_SUMMARY_B])
 
-    const result = await getRecommendations({}, CTX_GUEST as any)
+    const result = await getRecommendations({}, CTX_GUEST as AgentContext)
 
     expect(result.products).toHaveLength(2)
     expect(result.products[0].reason).toBe("Mais pedidos")
@@ -277,7 +278,7 @@ describe("getRecommendations", () => {
     ])
     mockQueryProductsByIds.mockResolvedValue([PRODUCT_SUMMARY_A])
 
-    await getRecommendations({ limit: 3 }, CTX_GUEST as any)
+    await getRecommendations({ limit: 3 }, CTX_GUEST as AgentContext)
 
     expect(mockQueryProductsByIds).toHaveBeenCalledWith(["prod_01"], 3)
   })
@@ -288,7 +289,7 @@ describe("getRecommendations", () => {
     mockZRangeWithScores.mockResolvedValue([])
     mockSearch.mockResolvedValue({ hits: [HIT_A] })
 
-    const result = await getRecommendations({}, CTX_GUEST as any)
+    const result = await getRecommendations({}, CTX_GUEST as AgentContext)
 
     expect(result.products[0].reason).toBe("Bem avaliado por outros clientes")
     expect(result.message).toContain("mais bem avaliados")
@@ -307,7 +308,7 @@ describe("getRecommendations", () => {
     mockQueryProductsByIds.mockResolvedValue([]) // No products found
     mockSearch.mockResolvedValue({ hits: [HIT_A] })
 
-    const result = await getRecommendations({}, CTX_GUEST as any)
+    const result = await getRecommendations({}, CTX_GUEST as AgentContext)
 
     expect(result.products[0].reason).toBe("Bem avaliado por outros clientes")
   })
@@ -316,7 +317,7 @@ describe("getRecommendations", () => {
     mockZRangeWithScores.mockResolvedValue([])
     mockSearch.mockResolvedValue({ hits: [] })
 
-    const result = await getRecommendations({}, CTX_GUEST as any)
+    const result = await getRecommendations({}, CTX_GUEST as AgentContext)
 
     expect(result.products).toHaveLength(0)
     expect(result.message).toContain("cardápio completo")

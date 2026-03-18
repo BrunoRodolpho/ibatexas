@@ -22,7 +22,7 @@ export interface GetRecommendationsOutput {
 
 export async function buildPersonalizedQuery(
   customerId: string,
-  limit = 10,
+  _limit = 10,
 ): Promise<{ filterBy: string; sortBy: string }> {
   const redis = await getRedisClient();
   const profileKey = rk(`customer:profile:${customerId}`);

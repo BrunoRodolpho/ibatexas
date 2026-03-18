@@ -71,7 +71,7 @@ describe("addToCart", () => {
     await addToCart(INPUT, CTX)
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.cart.item_added",
+      "cart.item_added",
       expect.objectContaining({
         eventType: "cart.item_added",
         cartId: INPUT.cartId,
@@ -132,7 +132,7 @@ describe("addToCart", () => {
     await addToCart(INPUT, ctxWithDifferentCustomer)
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.cart.item_added",
+      "cart.item_added",
       expect.objectContaining({ customerId: "cus_99" }),
     )
   })

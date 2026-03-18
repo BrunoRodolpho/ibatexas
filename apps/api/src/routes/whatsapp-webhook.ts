@@ -142,8 +142,8 @@ async function handleShortcut(
     case "cart":
       return null; // Fall through to agent
     case "reservation":
-      await transitionTo(hash, "reservation_flow");
-      return null; // Fall through to agent
+      // Don't set state — just provide agent hint via prepended context
+      return null; // Fall through to agent with reservation intent
     default:
       return null;
   }
@@ -293,7 +293,7 @@ async function handleMessageAsync(
   await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true);
 
   // Publish received event
-  void publishNatsEvent("ibatexas.whatsapp.message.received", {
+  void publishNatsEvent("whatsapp.message.received", {
     eventType: "whatsapp.message.received",
     phone_hash: hash,
     sessionId: session.sessionId,
@@ -393,7 +393,7 @@ async function handleMessageAsync(
     }
 
     // Publish sent event
-    void publishNatsEvent("ibatexas.whatsapp.message.sent", {
+    void publishNatsEvent("whatsapp.message.sent", {
       eventType: "whatsapp.message.sent",
       phone_hash: hash,
       sessionId: session.sessionId,

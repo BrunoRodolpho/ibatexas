@@ -23,6 +23,16 @@ vi.mock("@ibatexas/domain", () => ({
       groupBy: mockReviewGroupBy,
     },
   },
+  createReviewService: () => ({
+    aggregateAll: async () => {
+      return mockReviewGroupBy({
+        by: ["productId"],
+        _avg: { rating: true },
+        _count: { rating: true },
+        where: { productId: { not: null } },
+      })
+    },
+  }),
 }))
 
 vi.mock("../../typesense/client.js", () => ({
@@ -41,7 +51,7 @@ describe("syncReviewStats", () => {
     vi.clearAllMocks()
     mockGetTypesenseClient.mockReturnValue({
       collections: () => ({
-        documents: (id: string) => ({
+        documents: (_id: string) => ({
           update: mockTypesenseUpdate,
         }),
       }),

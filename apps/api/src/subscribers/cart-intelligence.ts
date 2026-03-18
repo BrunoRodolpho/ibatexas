@@ -1,13 +1,17 @@
 // NATS subscriber: cart + intelligence events
 //
 // Listens for:
-//   ibatexas.cart.abandoned   → sends push/WhatsApp nudge (via NATS relay), updates Redis profile
-//   ibatexas.order.placed     → bulk-insert CustomerOrderItem, update copurchase scores, global score
-//   ibatexas.product.viewed   → update recentlyViewed in Redis customer profile
+//   ibatexas.cart.abandoned          → sends push/WhatsApp nudge (via NATS relay), updates Redis profile
+//   ibatexas.order.placed            → bulk-insert CustomerOrderItem, update copurchase scores, global score
+//   ibatexas.product.viewed          → update recentlyViewed in Redis customer profile
+//   ibatexas.review.prompt.schedule  → schedule a review prompt 30min after delivery
+//   ibatexas.order.payment_failed    → logs payment failure for observability
+//   ibatexas.notification.send       → stub: logs notification intent (delivery TBD)
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
-import { getRedisClient, rk, PROFILE_TTL_SECONDS } from "@ibatexas/tools";
-import { prisma } from "@ibatexas/domain";
+import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender } from "@ibatexas/tools";
+import { createCustomerService } from "@ibatexas/domain";
+import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
 import type { FastifyBaseLogger } from "fastify";
 
 const RECENTLY_VIEWED_MAX = 20;
@@ -52,6 +56,22 @@ async function updateGlobalScores(
   await pipeline.exec();
 }
 
+function buildNotificationMessage(type: string, _cartId?: string): string {
+  switch (type) {
+    case "cart_abandoned":
+      return [
+        `🛒 *IbateXas — Esqueceu algo no carrinho?*`,
+        ``,
+        `Seus itens ainda estão esperando por você!`,
+        `Finalize seu pedido antes que acabe.`,
+        ``,
+        `Responda "meu carrinho" para continuar.`,
+      ].join("\n");
+    default:
+      return `IbateXas: você tem uma nova notificação. Responda para saber mais.`;
+  }
+}
+
 async function resetProfileTtl(customerId: string): Promise<void> {
   const redis = await getRedisClient();
   await redis.expire(rk(`customer:profile:${customerId}`), PROFILE_TTL_SECONDS);
@@ -64,15 +84,16 @@ export async function startCartIntelligenceSubscribers(
 ): Promise<void> {
   // ── cart.abandoned ─────────────────────────────────────────────────────────
   await subscribeNatsEvent("cart.abandoned", async (payload) => {
-    const { cartId, sessionId } = payload as { cartId: string; sessionId: string };
-    log?.info({ cart_id: cartId }, "[cart-intelligence] cart.abandoned received");
+    const { cartId, sessionId, customerId } = payload as { cartId: string; sessionId: string; customerId?: string };
+    log?.info({ cart_id: cartId, customer_id: customerId }, "[cart-intelligence] cart.abandoned received");
 
     // Relay nudge to WhatsApp/push microservice via NATS (fire-and-forget)
-    // The actual delivery is handled by a separate service subscribed to ibatexas.notification.send
+    // The actual delivery is handled by the notification.send subscriber below
     const { publishNatsEvent } = await import("@ibatexas/nats-client");
     await publishNatsEvent("notification.send", {
       type: "cart_abandoned",
       sessionId,
+      customerId,
       cartId,
       channel: "whatsapp",
     });
@@ -91,6 +112,7 @@ export async function startCartIntelligenceSubscribers(
     };
 
     if (!customerId) return;
+    const itemsWithPrice = items.map((i) => ({ ...i, priceInCentavos: i.priceInCentavos ?? 0 }));
 
     // Idempotency: skip if this order.placed event was already processed
     if (!(await isNewEvent(`order:${orderId}`))) {
@@ -104,21 +126,9 @@ export async function startCartIntelligenceSubscribers(
     );
 
     try {
-      const now = new Date();
-
-      // 1. Bulk-insert CustomerOrderItem rows
-      await prisma.customerOrderItem.createMany({
-        data: items.map(({ productId, variantId, quantity, priceInCentavos }) => ({
-          customerId,
-          productId,
-          variantId,
-          quantity,
-          priceInCentavos: priceInCentavos ?? 0,
-          orderedAt: now,
-          medusaOrderId: orderId,
-        })),
-        skipDuplicates: false,
-      });
+      // 1. Bulk-insert CustomerOrderItem rows via CustomerService
+      const customerSvc = createCustomerService();
+      await customerSvc.recordOrderItems(customerId, orderId, itemsWithPrice);
 
       // 2. Update copurchase sorted sets
       await updateCopurchaseScores(items.map((i) => i.productId));
@@ -130,14 +140,40 @@ export async function startCartIntelligenceSubscribers(
       const redis = await getRedisClient();
       const profileKey = rk(`customer:profile:${customerId}`);
       await redis.hIncrBy(profileKey, "orderCount", 1);
-      await redis.hSet(profileKey, "lastOrderAt", now.toISOString());
+      await redis.hSet(profileKey, "lastOrderAt", new Date().toISOString());
       await redis.hDel(profileKey, "cartItems"); // clear cart snapshot
+
+      // 5. Update lastOrderedProductIds and refresh stale score:* fields
+      const orderedProductIds = items.map((i) => i.productId);
+      await redis.hSet(profileKey, "lastOrderedProductIds", JSON.stringify(orderedProductIds));
+
+      // Delete existing score:* fields — they'll be recomputed on next profile read (cache-miss path)
+      const allFields = await redis.hKeys(profileKey);
+      const staleScoreFields = allFields.filter((f) => f.startsWith("score:"));
+      if (staleScoreFields.length > 0) {
+        await redis.hDel(profileKey, staleScoreFields);
+      }
+
       await resetProfileTtl(customerId);
 
       log?.info({ customer_id: customerId }, "[cart-intelligence] order.placed handled");
     } catch (err) {
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] order.placed handler error");
     }
+  });
+
+  // ── order.payment_failed ─────────────────────────────────────────────────
+  await subscribeNatsEvent("order.payment_failed", async (payload) => {
+    const { orderId, stripePaymentIntentId, lastPaymentError } = payload as {
+      orderId: string;
+      stripePaymentIntentId?: string;
+      lastPaymentError?: string;
+    };
+
+    log?.warn(
+      { order_id: orderId, stripe_pi: stripePaymentIntentId, error: lastPaymentError },
+      "[cart-intelligence] order.payment_failed — payment failure recorded",
+    );
   });
 
   // ── product.viewed ─────────────────────────────────────────────────────────
@@ -167,6 +203,170 @@ export async function startCartIntelligenceSubscribers(
       await resetProfileTtl(customerId);
     } catch (err) {
       log?.error({ product_id: productId, customer_id: customerId, error: String(err) }, "[cart-intelligence] product.viewed handler error");
+    }
+  });
+
+  // ── review.prompt.schedule ────────────────────────────────────────────────
+  await subscribeNatsEvent("review.prompt.schedule", async (payload) => {
+    const { customerId, orderId } = payload as { customerId: string; orderId: string };
+    if (!customerId || !orderId) return;
+
+    log?.info(
+      { customer_id: customerId, order_id: orderId },
+      "[cart-intelligence] review.prompt.schedule — scheduling review prompt",
+    );
+
+    try {
+      await scheduleReviewPrompt(customerId, orderId);
+    } catch (err) {
+      log?.error(
+        { customer_id: customerId, order_id: orderId, error: String(err) },
+        "[cart-intelligence] review.prompt.schedule handler error",
+      );
+    }
+  });
+
+  // ── notification.send ────────────────────────────────────────────────────
+  await subscribeNatsEvent("notification.send", async (payload) => {
+    const { type, sessionId, customerId, cartId, channel, message: msgBody } = payload as {
+      type: string;
+      sessionId?: string;
+      customerId?: string;
+      cartId?: string;
+      channel?: string;
+      message?: string;
+    };
+    log?.info(
+      { notification_type: type, session_id: sessionId, cart_id: cartId, channel },
+      "[cart-intelligence] notification.send — processing notification",
+    );
+
+    // Only deliver WhatsApp notifications for now
+    if (channel !== "whatsapp" || !customerId) {
+      log?.info({ channel, customerId }, "[cart-intelligence] notification.send — skipping (non-whatsapp or no customerId)");
+      return;
+    }
+
+    try {
+      const customerSvc = createCustomerService();
+      const customer = await customerSvc.getById(customerId).catch(() => null);
+      if (!customer?.phone) {
+        log?.info({ customerId }, "[cart-intelligence] notification.send — customer has no phone");
+        return;
+      }
+
+      const text = msgBody || buildNotificationMessage(type, cartId);
+
+      const sender = getWhatsAppSender();
+      if (sender) {
+        await sender.sendText(`whatsapp:${customer.phone}`, text);
+        log?.info({ customerId, type }, "[cart-intelligence] notification.send delivered via WhatsApp");
+      } else {
+        log?.info({ customerId, type, text }, "[cart-intelligence] notification.send — WhatsApp sender not configured (stub)");
+      }
+    } catch (err) {
+      log?.error({ customerId, type, error: String(err) }, "[cart-intelligence] notification.send delivery error");
+    }
+  });
+
+  // ── reservation.created ─────────────────────────────────────────────────
+  await subscribeNatsEvent("reservation.created", async (payload) => {
+    const { customerId } = payload as { customerId?: string };
+    if (!customerId) return;
+
+    try {
+      const redis = await getRedisClient();
+      const profileKey = rk(`customer:profile:${customerId}`);
+      await redis.hIncrBy(profileKey, "reservationCount", 1);
+      await redis.hSet(profileKey, "lastReservationAt", new Date().toISOString());
+      await resetProfileTtl(customerId);
+      log?.info({ customer_id: customerId }, "[cart-intelligence] reservation.created — profile updated");
+    } catch (err) {
+      log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.created handler error");
+    }
+  });
+
+  // ── reservation.modified ─────────────────────────────────────────────
+  await subscribeNatsEvent("reservation.modified", async (payload) => {
+    const { customerId } = payload as { customerId?: string };
+    if (!customerId) return;
+
+    try {
+      const redis = await getRedisClient();
+      const profileKey = rk(`customer:profile:${customerId}`);
+      await redis.hSet(profileKey, "lastReservationModifiedAt", new Date().toISOString());
+      log?.info({ customer_id: customerId }, "[cart-intelligence] reservation.modified — profile updated");
+    } catch (err) {
+      log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.modified handler error");
+    }
+  });
+
+  // ── reservation.cancelled ───────────────────────────────────────────────
+  await subscribeNatsEvent("reservation.cancelled", async (payload) => {
+    const { customerId } = payload as { customerId?: string };
+    if (!customerId) return;
+
+    try {
+      const redis = await getRedisClient();
+      const profileKey = rk(`customer:profile:${customerId}`);
+      await redis.hIncrBy(profileKey, "cancellationCount", 1);
+      log?.info({ customer_id: customerId }, "[cart-intelligence] reservation.cancelled — profile updated");
+    } catch (err) {
+      log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.cancelled handler error");
+    }
+  });
+
+  // ── reservation.no_show ─────────────────────────────────────────────────
+  await subscribeNatsEvent("reservation.no_show", async (payload) => {
+    const { customerId } = payload as { customerId?: string };
+    if (!customerId) return;
+
+    try {
+      const redis = await getRedisClient();
+      const profileKey = rk(`customer:profile:${customerId}`);
+      await redis.hIncrBy(profileKey, "noShowCount", 1);
+      log?.info({ customer_id: customerId }, "[cart-intelligence] reservation.no_show — profile updated");
+    } catch (err) {
+      log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.no_show handler error");
+    }
+  });
+
+  // ── review.prompt (delivery — sends WhatsApp review request) ────────────
+  await subscribeNatsEvent("review.prompt", async (payload) => {
+    const { customerId, orderId } = payload as { customerId: string; orderId: string };
+    if (!customerId || !orderId) return;
+
+    log?.info(
+      { customer_id: customerId, order_id: orderId },
+      "[cart-intelligence] review.prompt — sending review request",
+    );
+
+    try {
+      const customerSvc = createCustomerService();
+      const customer = await customerSvc.getById(customerId).catch(() => null);
+      if (!customer?.phone) return;
+
+      const APP_BASE_URL = process.env.APP_BASE_URL || "https://ibatexas.com.br";
+      const message = [
+        `⭐ *IbateXas — Como foi sua experiência?*`,
+        ``,
+        `Seu pedido foi entregue! Gostaríamos muito de saber o que achou.`,
+        ``,
+        `Responda com uma nota de 1 a 5, ou acesse:`,
+        `${APP_BASE_URL}/conta/pedidos`,
+        ``,
+        `Sua avaliação nos ajuda a melhorar! 🙏`,
+      ].join("\n");
+
+      const sender = getWhatsAppSender();
+      if (sender) {
+        await sender.sendText(`whatsapp:${customer.phone}`, message);
+        log?.info({ customer_id: customerId }, "[cart-intelligence] review.prompt delivered via WhatsApp");
+      } else {
+        log?.info({ customer_id: customerId, message }, "[cart-intelligence] review.prompt — WhatsApp sender not configured (stub)");
+      }
+    } catch (err) {
+      log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] review.prompt delivery error");
     }
   });
 }

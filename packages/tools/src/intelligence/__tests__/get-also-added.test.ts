@@ -31,6 +31,7 @@ vi.mock("../query-products-by-ids.js", () => ({
 
 // -- Imports ──────────────────────────────────────────────────────────────────
 
+import type { AgentContext } from "@ibatexas/types"
 import { getAlsoAdded } from "../get-also-added.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
@@ -72,7 +73,7 @@ describe("getAlsoAdded", () => {
     ])
     mockQueryProductsByIds.mockResolvedValue([PRODUCT_SUMMARY_A, PRODUCT_SUMMARY_B])
 
-    const result = await getAlsoAdded({ productId: "prod_01" }, CTX as any)
+    const result = await getAlsoAdded({ productId: "prod_01" }, CTX as AgentContext)
 
     expect(result.label).toBe("Clientes também adicionam")
     expect(result.products).toHaveLength(2)
@@ -83,7 +84,7 @@ describe("getAlsoAdded", () => {
   it("uses rk() to build the copurchase key", async () => {
     mockZRangeWithScores.mockResolvedValue([])
 
-    await getAlsoAdded({ productId: "prod_01" }, CTX as any)
+    await getAlsoAdded({ productId: "prod_01" }, CTX as AgentContext)
 
     expect(mockRk).toHaveBeenCalledWith("copurchase:prod_01")
   })
@@ -91,7 +92,7 @@ describe("getAlsoAdded", () => {
   it("returns empty products when sorted set is empty", async () => {
     mockZRangeWithScores.mockResolvedValue([])
 
-    const result = await getAlsoAdded({ productId: "prod_01" }, CTX as any)
+    const result = await getAlsoAdded({ productId: "prod_01" }, CTX as AgentContext)
 
     expect(result.products).toEqual([])
     expect(result.label).toBe("Clientes também adicionam")
@@ -101,7 +102,7 @@ describe("getAlsoAdded", () => {
   it("defaults limit to 6", async () => {
     mockZRangeWithScores.mockResolvedValue([])
 
-    await getAlsoAdded({ productId: "prod_01" }, CTX as any)
+    await getAlsoAdded({ productId: "prod_01" }, CTX as AgentContext)
 
     expect(mockZRangeWithScores).toHaveBeenCalledWith(
       "copurchase:prod_01",
@@ -117,7 +118,7 @@ describe("getAlsoAdded", () => {
     ])
     mockQueryProductsByIds.mockResolvedValue([PRODUCT_SUMMARY_A])
 
-    await getAlsoAdded({ productId: "prod_01", limit: 3 }, CTX as any)
+    await getAlsoAdded({ productId: "prod_01", limit: 3 }, CTX as AgentContext)
 
     expect(mockZRangeWithScores).toHaveBeenCalledWith(
       "copurchase:prod_01",
@@ -136,7 +137,7 @@ describe("getAlsoAdded", () => {
     ])
     mockQueryProductsByIds.mockResolvedValue([])
 
-    await getAlsoAdded({ productId: "prod_01" }, CTX as any)
+    await getAlsoAdded({ productId: "prod_01" }, CTX as AgentContext)
 
     expect(mockQueryProductsByIds).toHaveBeenCalledWith(
       ["prod_02", "prod_03", "prod_04"],
@@ -147,7 +148,7 @@ describe("getAlsoAdded", () => {
   it("works without auth context (no customerId required)", async () => {
     mockZRangeWithScores.mockResolvedValue([])
 
-    const result = await getAlsoAdded({ productId: "prod_01" }, CTX as any)
+    const result = await getAlsoAdded({ productId: "prod_01" }, CTX as AgentContext)
 
     expect(result.products).toEqual([])
   })

@@ -10,7 +10,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import twilio from "twilio";
 import { createHash } from "node:crypto";
-import { prisma } from "@ibatexas/domain";
+import { createCustomerService } from "@ibatexas/domain";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { requireAuth } from "../middleware/auth.js";
 
@@ -54,6 +54,16 @@ const PhoneSchema = z
 interface RateLimitResult {
   exceeded: boolean;
   count: number;
+}
+
+async function checkIpRateLimit(ip: string): Promise<RateLimitResult> {
+  const redis = await getRedisClient();
+  const key = rk(`otp:ip:${ip}`);
+  const count = await redis.incr(key);
+  if (count === 1) {
+    await redis.expire(key, 3600); // 1 hour
+  }
+  return { exceeded: count > 10, count };
 }
 
 async function checkSendRateLimit(hash: string): Promise<RateLimitResult> {
@@ -169,6 +179,17 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
 
       server.log.info({ phone_hash: hash, ip, action: "send_otp" }, "OTP send requested");
 
+      // IP-level rate limit — cheaper check first
+      const ipLimit = await checkIpRateLimit(ip);
+      if (ipLimit.exceeded) {
+        server.log.warn({ ip, action: "send_otp_ip_rate_limited", count: ipLimit.count }, "OTP IP rate limited");
+        return reply.code(429).send({
+          statusCode: 429,
+          error: "Too Many Requests",
+          message: "Muitas tentativas deste endereço. Aguarde 1 hora.",
+        });
+      }
+
       const rateLimit = await checkSendRateLimit(hash);
       if (rateLimit.exceeded) {
         server.log.warn({ phone_hash: hash, ip, action: "send_otp_rate_limited" }, "OTP send rate limited");
@@ -267,12 +288,9 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       // Clear failure counter on success
       await clearVerifyFailures(hash);
 
-      // Upsert customer
-      const customer = await prisma.customer.upsert({
-        where: { phone },
-        create: { phone, name: name ?? null },
-        update: { ...(name ? { name } : {}) },
-      });
+      // Upsert customer via domain service
+      const customerSvc = createCustomerService();
+      const customer = await customerSvc.upsertFromPhone(phone, name ?? undefined);
 
       server.log.info(
         { phone_hash: hash, ip, action: "verify_otp", success: true, customer_id: customer.id },
@@ -331,9 +349,8 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       preHandler: requireAuth,
     },
     async (request, reply) => {
-      const customer = await prisma.customer.findUniqueOrThrow({
-        where: { id: request.customerId },
-      });
+      const customerSvc = createCustomerService();
+      const customer = await customerSvc.getById(request.customerId!);
       return reply.send({
         id: customer.id,
         phone: customer.phone,

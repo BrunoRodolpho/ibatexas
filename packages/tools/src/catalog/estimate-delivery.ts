@@ -2,7 +2,7 @@
 // Validates a CEP, confirms it exists via ViaCEP, and matches against DeliveryZone.cepPrefixes.
 // Returns fee, estimated minutes and zone name, or an out-of-area message.
 
-import { prisma } from "@ibatexas/domain";
+import { createDeliveryZoneService } from "@ibatexas/domain";
 
 export interface EstimateDeliveryInput {
   cep: string;
@@ -48,11 +48,8 @@ export async function estimateDelivery(input: EstimateDeliveryInput): Promise<Es
 
   // Match first 5 digits against active delivery zones
   const prefix5 = cep.slice(0, 5);
-  const zones = await prisma.deliveryZone.findMany({ where: { active: true } });
-
-  const match = zones.find((zone) =>
-    zone.cepPrefixes.some((p) => p === prefix5 || cep.startsWith(p)),
-  );
+  const deliveryZoneSvc = createDeliveryZoneService();
+  const match = await deliveryZoneSvc.findActiveByPrefix(prefix5, cep);
 
   if (!match) {
     return {

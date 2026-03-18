@@ -1,17 +1,35 @@
 // Unit tests for catalog routes
 // GET /api/products, GET /api/products/:id, GET /api/categories
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Channel, AvailabilityWindow, ProductType, type ProductDTO } from "@ibatexas/types";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockSearchProducts = vi.hoisted(() => vi.fn());
 const mockGetProductDetails = vi.hoisted(() => vi.fn());
+const mockMedusaAdmin = vi.hoisted(() => vi.fn());
+const mockMedusaStore = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/tools", () => ({
   searchProducts: mockSearchProducts,
   getProductDetails: mockGetProductDetails,
+  buildPersonalizedQuery: vi.fn(),
+}));
+
+vi.mock("../routes/admin/_shared.js", () => ({
+  medusaAdmin: mockMedusaAdmin,
+  medusaStore: mockMedusaStore,
+}));
+
+vi.mock("@ibatexas/domain", () => ({
+  createReviewService: () => ({
+    findForProduct: vi.fn().mockResolvedValue({ reviews: [], total: 0 }),
+  }),
+}));
+
+vi.mock("../middleware/auth.js", () => ({
+  optionalAuth: (_req: unknown, _reply: unknown, done: () => void) => done(),
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
@@ -140,7 +158,6 @@ describe("GET /api/products/:id", () => {
 
 describe("GET /api/categories", () => {
   beforeEach(() => vi.clearAllMocks());
-  afterEach(() => vi.unstubAllGlobals());
 
   it("returns categories from Medusa", async () => {
     const mockCategories = [
@@ -148,13 +165,7 @@ describe("GET /api/categories", () => {
       { id: "cat_02", name: "Pratos Principais", handle: "pratos-principais", parent_category_id: null },
     ];
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ product_categories: mockCategories }),
-      }),
-    );
+    mockMedusaStore.mockResolvedValue({ product_categories: mockCategories });
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -169,10 +180,7 @@ describe("GET /api/categories", () => {
   });
 
   it("returns empty array when Medusa is unavailable", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
-    );
+    mockMedusaStore.mockRejectedValue(new Error("ECONNREFUSED"));
 
     const app = await buildTestServer();
     const res = await app.inject({

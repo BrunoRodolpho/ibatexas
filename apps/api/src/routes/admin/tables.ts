@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { prisma } from "@ibatexas/domain";
+import { createTableService } from "@ibatexas/domain";
 
 export async function tableRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
@@ -14,7 +14,8 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
     },
     async (_request, reply) => {
       try {
-        const tables = await prisma.table.findMany({ orderBy: { number: "asc" } })
+        const tableSvc = createTableService()
+        const tables = await tableSvc.listAll()
         return reply.send({ tables })
       } catch (err) {
         server.log.error(err, "Failed to fetch tables");
@@ -48,16 +49,8 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
           accessible: boolean
           active: boolean
         }
-        const table = await prisma.table.upsert({
-          where: { number: body.number },
-          update: {
-            capacity: body.capacity,
-            location: body.location,
-            accessible: body.accessible,
-            active: body.active,
-          },
-          create: body,
-        })
+        const tableSvc = createTableService()
+        const table = await tableSvc.upsert(body)
         return reply.status(201).send({ table })
       } catch (err) {
         server.log.error(err, "Failed to upsert table");
@@ -92,27 +85,8 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
           durationMinutes: number
         }
 
-        const from = new Date(`${body.fromDate}T00:00:00.000Z`)
-        const to = new Date(`${body.toDate}T00:00:00.000Z`)
-        const rows: { date: Date; startTime: string; maxCovers: number; durationMinutes: number }[] = []
-        const current = new Date(from)
-
-        while (current <= to) {
-          for (const startTime of body.startTimes) {
-            rows.push({
-              date: new Date(current),
-              startTime,
-              maxCovers: body.maxCovers,
-              durationMinutes: body.durationMinutes,
-            })
-          }
-          current.setUTCDate(current.getUTCDate() + 1)
-        }
-
-        const result = await prisma.timeSlot.createMany({
-          data: rows,
-          skipDuplicates: true,
-        })
+        const tableSvc = createTableService()
+        const result = await tableSvc.generateTimeSlots(body)
 
         return reply.send({ created: result.count })
       } catch (err) {

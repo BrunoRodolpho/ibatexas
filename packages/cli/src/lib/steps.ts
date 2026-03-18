@@ -4,6 +4,7 @@
 
 import chalk from "chalk"
 import { execa } from "execa"
+import type { MedusaProductInput } from "@ibatexas/tools"
 import { ROOT } from "../utils/root.js"
 import { getAdminToken, getMedusaUrl } from "./medusa.js"
 import { rk } from "./redis.js"
@@ -75,7 +76,7 @@ async function runReindex(): Promise<void> {
   }
 
   if (allProducts.length === 0) throw new Error("No products found in Medusa")
-  await indexProductsBatch(allProducts)
+  await indexProductsBatch(allProducts as MedusaProductInput[])
   await invalidateAllQueryCache()
   await closeRedisClient()
 }

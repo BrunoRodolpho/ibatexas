@@ -2,6 +2,7 @@
 // Uses OpenAI with Redis cache and deterministic fallback
 
 import { getRedisClient } from "../redis/client.js"
+import { rk } from "../redis/key.js"
 import { EMBED_DIM } from "../config.js"
 
 // Use OpenAI embeddings (most reliable)
@@ -122,7 +123,7 @@ export async function generateEmbeddingsBatch(
 
   for (const { key, text } of texts) {
     try {
-      const embedding = await generateEmbedding(text, `embedding:${key}`, ttlSeconds)
+      const embedding = await generateEmbedding(text, rk(`embedding:${key}`), ttlSeconds)
       embeddings.set(key, embedding)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)

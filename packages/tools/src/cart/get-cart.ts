@@ -1,13 +1,14 @@
 // get_cart tool — fetch the current Medusa cart from session
 
-import type { AgentContext } from "@ibatexas/types";
+import { GetCartInputSchema, type GetCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 
 export async function getCart(
-  input: { cartId: string },
+  input: GetCartInput,
   _ctx: AgentContext,
 ): Promise<unknown> {
-  return medusaStoreFetch(`/store/carts/${input.cartId}`);
+  const parsed = GetCartInputSchema.parse(input);
+  return medusaStoreFetch(`/store/carts/${parsed.cartId}`);
 }
 
 export const GetCartTool = {

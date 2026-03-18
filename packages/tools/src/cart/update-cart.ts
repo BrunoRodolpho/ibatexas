@@ -1,16 +1,17 @@
 // update_cart tool — update a line item quantity in the Medusa cart
 
-import type { AgentContext } from "@ibatexas/types";
+import { UpdateCartInputSchema, type UpdateCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 
 export async function updateCart(
-  input: { cartId: string; itemId: string; quantity: number },
+  input: UpdateCartInput,
   _ctx: AgentContext,
 ): Promise<unknown> {
+  const parsed = UpdateCartInputSchema.parse(input);
   try {
-    return await medusaStoreFetch(`/store/carts/${input.cartId}/line-items/${input.itemId}`, {
+    return await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items/${parsed.itemId}`, {
       method: "POST",
-      body: JSON.stringify({ quantity: input.quantity }),
+      body: JSON.stringify({ quantity: parsed.quantity }),
     });
   } catch (err) {
     console.error("[update_cart] Medusa error:", err);

@@ -2,71 +2,25 @@
 // Adds a customer to the waitlist when a time slot is fully booked.
 // Auth: customer
 
-import { prisma } from "@ibatexas/domain"
+import { createReservationService } from "@ibatexas/domain"
 import { JoinWaitlistInputSchema, type JoinWaitlistInput, type JoinWaitlistOutput } from "@ibatexas/types"
 
 export async function joinWaitlist(input: JoinWaitlistInput): Promise<JoinWaitlistOutput> {
   const parsed = JoinWaitlistInputSchema.parse(input)
 
-  // 1. Verify slot exists
-  const slot = await prisma.timeSlot.findUnique({ where: { id: parsed.timeSlotId } })
-
-  if (!slot) {
-    throw new Error("Horário não encontrado.")
-  }
-
-  // 2. Check if customer is already on the waitlist for this slot
-  const alreadyWaiting = await prisma.waitlist.findFirst({
-    where: {
-      customerId: parsed.customerId,
-      timeSlotId: parsed.timeSlotId,
-      notifiedAt: null, // not yet notified (still pending)
-    },
-  })
-
-  if (alreadyWaiting) {
-    // Calculate position
-    const position = await prisma.waitlist.count({
-      where: {
-        timeSlotId: parsed.timeSlotId,
-        createdAt: { lte: alreadyWaiting.createdAt },
-        notifiedAt: null,
-      },
-    })
-
-    return {
-      waitlistId: alreadyWaiting.id,
-      position,
-      message: `Você já está na lista de espera nesta posição: ${position}. Avisaremos pelo WhatsApp quando uma vaga abrir.`,
-    }
-  }
-
-  // 3. Create waitlist entry (expires in 24h by default — extended on notification)
-  const waitlistExpiryHours = Number.parseInt(process.env.WAITLIST_EXPIRY_HOURS || "24", 10)
-  const expiresAt = new Date(Date.now() + waitlistExpiryHours * 60 * 60 * 1000)
-
-  const entry = await prisma.waitlist.create({
-    data: {
-      customerId: parsed.customerId,
-      timeSlotId: parsed.timeSlotId,
-      partySize: parsed.partySize,
-      expiresAt,
-    },
-  })
-
-  // 4. Calculate position = count of entries created before this one (including this one)
-  const position = await prisma.waitlist.count({
-    where: {
-      timeSlotId: parsed.timeSlotId,
-      createdAt: { lte: entry.createdAt },
-      notifiedAt: null,
-    },
+  const svc = createReservationService()
+  const { waitlistId, position } = await svc.joinWaitlist({
+    customerId: parsed.customerId,
+    timeSlotId: parsed.timeSlotId,
+    partySize: parsed.partySize,
   })
 
   return {
-    waitlistId: entry.id,
+    waitlistId,
     position,
-    message: `Você está na posição ${position} da lista de espera para este horário. Você será avisado pelo WhatsApp assim que uma vaga abrir.`,
+    message: position === 1 && waitlistId
+      ? `Você já está na lista de espera nesta posição: ${position}. Avisaremos pelo WhatsApp quando uma vaga abrir.`
+      : `Você está na posição ${position} da lista de espera para este horário. Você será avisado pelo WhatsApp assim que uma vaga abrir.`,
   }
 }
 

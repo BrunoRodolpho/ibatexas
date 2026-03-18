@@ -156,13 +156,13 @@ describe("medusaAdminFetch", () => {
   it("throws on non-ok response with status code and body", async () => {
     mockFetch.mockResolvedValue(makeErrorResponse(403, "Forbidden"))
 
-    await expect(medusaAdminFetch("/admin/orders/order_01")).rejects.toThrow("Medusa admin 403")
+    await expect(medusaAdminFetch("/admin/orders/order_01")).rejects.toThrow("Medusa 403")
   })
 
   it("throws on 500 error", async () => {
     mockFetch.mockResolvedValue(makeErrorResponse(500, "Server Error"))
 
-    await expect(medusaAdminFetch("/admin/orders/order_01")).rejects.toThrow("Medusa admin 500")
+    await expect(medusaAdminFetch("/admin/orders/order_01")).rejects.toThrow("Medusa 500")
   })
 
   it("passes custom method and body", async () => {

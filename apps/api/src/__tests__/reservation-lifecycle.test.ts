@@ -11,7 +11,7 @@ import {
   validatorCompiler,
 } from "fastify-type-provider-zod"
 import sensible from "@fastify/sensible"
-import type { FastifyInstance } from "fastify"
+import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify"
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 
@@ -32,7 +32,7 @@ vi.mock("@ibatexas/tools", () => ({
 }))
 
 vi.mock("../middleware/auth.js", () => ({
-  requireAuth: async (request: any, reply: any) => {
+  requireAuth: async (request: FastifyRequest, reply: FastifyReply) => {
     const customerId = request.headers["x-customer-id"] as string | undefined
     if (!customerId) {
       return reply

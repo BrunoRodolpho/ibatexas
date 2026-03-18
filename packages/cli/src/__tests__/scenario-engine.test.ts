@@ -137,7 +137,7 @@ vi.mock("@ibatexas/domain", () => ({
 
 // ── Import source after mocks ────────────────────────────────────────────────
 
-import { discoverScenarios, runScenario, type ScenarioOptions } from "../lib/scenario-engine.js"
+import { discoverScenarios, runScenario } from "../lib/scenario-engine.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

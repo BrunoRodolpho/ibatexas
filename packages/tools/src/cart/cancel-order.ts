@@ -1,40 +1,21 @@
 // cancel_order tool — cancel a Medusa order if eligible
 
-import type { AgentContext } from "@ibatexas/types";
-import { medusaAdminFetch } from "./_shared.js";
+import { CancelOrderInputSchema, NonRetryableError, type CancelOrderInput, type AgentContext } from "@ibatexas/types";
+import { createOrderService } from "@ibatexas/domain";
+import { medusaAdmin } from "../medusa/client.js";
 
 export async function cancelOrder(
-  input: { orderId: string },
+  input: CancelOrderInput,
   ctx: AgentContext,
 ): Promise<{ success: boolean; message: string }> {
+  const parsed = CancelOrderInputSchema.parse(input);
+
   if (!ctx.customerId) {
-    throw new Error("Autenticação necessária para cancelar pedido.");
+    throw new NonRetryableError("Autenticação necessária para cancelar pedido.");
   }
 
-  // Fetch order and validate it belongs to this customer + is cancellable
-  const data = await medusaAdminFetch(`/admin/orders/${input.orderId}`) as {
-    order: { status: string; customer_id?: string; metadata?: Record<string, string> };
-  };
-  const order = data.order;
-
-  const orderCustomerId =
-    order.customer_id ?? order.metadata?.["customerId"];
-
-  if (orderCustomerId && orderCustomerId !== ctx.customerId) {
-    return { success: false, message: "Pedido não encontrado." };
-  }
-
-  const cancellableStatuses = ["pending", "requires_action"];
-  if (!cancellableStatuses.includes(order.status)) {
-    return {
-      success: false,
-      message: `Pedido no status "${order.status}" não pode ser cancelado. Fale com nosso atendimento.`,
-    };
-  }
-
-  await medusaAdminFetch(`/admin/orders/${input.orderId}/cancel`, { method: "POST" });
-
-  return { success: true, message: "Pedido cancelado com sucesso." };
+  const svc = createOrderService(medusaAdmin);
+  return svc.cancelOrder(parsed.orderId, ctx.customerId);
 }
 
 export const CancelOrderTool = {

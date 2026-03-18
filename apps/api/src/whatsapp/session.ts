@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { getRedisClient, rk } from "@ibatexas/tools";
-import { prisma } from "@ibatexas/domain";
+import { createCustomerService } from "@ibatexas/domain";
 import { Channel, type AgentContext } from "@ibatexas/types";
 
 const SESSION_TTL_SECONDS = 24 * 60 * 60; // 24h
@@ -66,16 +66,8 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
   }
 
   // Upsert customer — WhatsApp phone is pre-verified by Meta
-  const customer = await prisma.customer.upsert({
-    where: { phone },
-    create: {
-      phone,
-      source: "whatsapp",
-      firstContactAt: new Date(),
-    },
-    update: {},
-    select: { id: true },
-  });
+  const customerSvc = createCustomerService();
+  const customer = await customerSvc.upsertFromWhatsApp(phone);
 
   const sessionId = uuidv4();
   const now = new Date().toISOString();

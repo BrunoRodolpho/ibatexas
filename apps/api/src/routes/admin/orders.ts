@@ -47,7 +47,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
       if (fulfillment_status) qs.set("fulfillment_status[]", fulfillment_status);
 
       try {
-        const data = await medusaAdmin(`/admin/orders?${qs}`);
+        const data = await medusaAdmin(`/admin/orders?${qs}`) as Record<string, unknown>;
         return reply.send({ orders: data.orders ?? [], count: data.count ?? 0 });
       } catch (err) {
         server.log.error(err, "Failed to fetch orders from Medusa");
@@ -75,7 +75,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
         const data = await medusaAdmin(`/admin/orders/${id}`, {
           method: "POST",
           body: JSON.stringify(body),
-        });
+        }) as Record<string, unknown>;
         return reply.send({ order: data.order });
       } catch (err) {
         server.log.error(err, "Failed to update order");

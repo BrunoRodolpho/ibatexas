@@ -2,100 +2,71 @@
 // Cancels a reservation and notifies the next waitlist entry if applicable.
 // Auth: customer
 
-import { prisma } from "@ibatexas/domain"
+import { createReservationService } from "@ibatexas/domain"
 import { CancelReservationInputSchema, type CancelReservationInput, type CancelReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
-import { notifyWaitlistSpotAvailable } from "./notifications.js"
+import { notifyWaitlistSpotAvailable, sendReservationCancelled } from "./notifications.js"
 
 export async function cancelReservation(
   input: CancelReservationInput,
 ): Promise<CancelReservationOutput> {
   const parsed = CancelReservationInputSchema.parse(input)
 
-  // 1. Load and verify ownership
-  const reservation = await prisma.reservation.findUnique({
-    where: { id: parsed.reservationId },
-    include: { timeSlot: true },
-  })
+  const svc = createReservationService()
 
-  if (!reservation) {
-    return { success: false, message: "Reserva não encontrada." }
-  }
+  try {
+    // Fetch reservation details before cancelling (for notification)
+    const reservationDetails = await svc.getById(parsed.reservationId, parsed.customerId)
 
-  if (reservation.customerId !== parsed.customerId) {
-    return { success: false, message: "Você não tem permissão para cancelar esta reserva." }
-  }
+    const { timeSlotId } = await svc.cancel(parsed.reservationId, parsed.customerId)
 
-  if (["cancelled", "no_show", "completed"].includes(reservation.status)) {
+    // Notify customer of cancellation (fire-and-forget)
+    void sendReservationCancelled(
+      parsed.reservationId,
+      reservationDetails.timeSlot.date,
+      reservationDetails.timeSlot.startTime,
+    ).catch((err) => console.error("[cancel_reservation] Notification error:", err))
+
+    // Promote next waitlist entry and notify
+    const { promoted } = await svc.promoteWaitlist(timeSlotId)
+    if (promoted) {
+      await notifyWaitlistSpotAvailable(
+        {
+          id: promoted.id,
+          customerId: promoted.customerId,
+          timeSlotId,
+          partySize: promoted.partySize,
+          position: 1,
+          notifiedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+          createdAt: new Date().toISOString(),
+        },
+        promoted.date,
+        promoted.startTime,
+      )
+    }
+
+    void publishNatsEvent("reservation.cancelled", {
+      eventType: "reservation.cancelled",
+      customerId: parsed.customerId,
+      sessionId: parsed.customerId,
+      channel: "web",
+      timestamp: new Date().toISOString(),
+      metadata: {
+        reservationId: parsed.reservationId,
+        reason: parsed.reason ?? null,
+      },
+    }).catch((err) => console.error("[cancel_reservation] NATS publish error:", err))
+
+    return {
+      success: true,
+      message: "Reserva cancelada com sucesso. Você receberá uma confirmação em breve.",
+    }
+  } catch (err) {
     return {
       success: false,
-      message: `Esta reserva já está com status "${reservation.status}" e não pode ser cancelada.`,
+      message: (err as Error).message,
     }
-  }
-
-  // 2. Mark as cancelled + release resources (in a single transaction)
-  await prisma.$transaction([
-    prisma.reservation.update({
-      where: { id: parsed.reservationId },
-      data: { status: "cancelled", cancelledAt: new Date() },
-    }),
-    prisma.reservationTable.deleteMany({ where: { reservationId: parsed.reservationId } }),
-    prisma.timeSlot.update({
-      where: { id: reservation.timeSlotId },
-      data: { reservedCovers: { decrement: reservation.partySize } },
-    }),
-  ])
-
-  // 3. Check waitlist for this slot — notify next in line
-  const nextInLine = await prisma.waitlist.findFirst({
-    where: { timeSlotId: reservation.timeSlotId, notifiedAt: null },
-    orderBy: { createdAt: "asc" },
-  })
-
-  if (nextInLine) {
-    const waitlistOfferMinutes = Number.parseInt(process.env.WAITLIST_OFFER_MINUTES || "30", 10)
-    const expiresAt = new Date(Date.now() + waitlistOfferMinutes * 60 * 1000)
-
-    await prisma.waitlist.update({
-      where: { id: nextInLine.id },
-      data: { notifiedAt: new Date(), expiresAt },
-    })
-
-    // Derive position = 1 (they're now being offered the spot)
-    const waitlistDTO = {
-      id: nextInLine.id,
-      customerId: nextInLine.customerId,
-      timeSlotId: nextInLine.timeSlotId,
-      partySize: nextInLine.partySize,
-      position: 1,
-      notifiedAt: new Date().toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      createdAt: nextInLine.createdAt.toISOString(),
-    }
-
-    await notifyWaitlistSpotAvailable(
-      waitlistDTO,
-      reservation.timeSlot.date.toISOString().split("T")[0] ?? "",
-      reservation.timeSlot.startTime,
-    )
-  }
-
-  // 4. Publish NATS event
-  await publishNatsEvent("reservation.cancelled", {
-    eventType: "reservation.cancelled",
-    customerId: parsed.customerId,
-    sessionId: parsed.customerId,
-    channel: "web",
-    timestamp: new Date().toISOString(),
-    metadata: {
-      reservationId: parsed.reservationId,
-      reason: parsed.reason ?? null,
-    },
-  })
-
-  return {
-    success: true,
-    message: "Reserva cancelada com sucesso. Você receberá uma confirmação em breve.",
   }
 }
 

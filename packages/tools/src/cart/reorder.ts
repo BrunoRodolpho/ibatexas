@@ -1,18 +1,20 @@
 // reorder tool — create a new cart from a previous order's items
 
-import type { AgentContext } from "@ibatexas/types";
+import { ReorderInputSchema, NonRetryableError, type ReorderInput, type AgentContext } from "@ibatexas/types";
 import { medusaAdminFetch, medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 
 export async function reorder(
-  input: { orderId: string },
+  input: ReorderInput,
   ctx: AgentContext,
 ): Promise<{ cartId?: string; message: string }> {
+  const parsed = ReorderInputSchema.parse(input);
+
   if (!ctx.customerId) {
-    throw new Error("Autenticação necessária para refazer pedido.");
+    throw new NonRetryableError("Autenticação necessária para refazer pedido.");
   }
 
-  const data = await medusaAdminFetch(`/admin/orders/${input.orderId}`) as {
+  const data = await medusaAdminFetch(`/admin/orders/${parsed.orderId}`) as {
     order: {
       items: Array<{ variant_id: string; quantity: number; title: string }>;
     };
@@ -48,13 +50,13 @@ export async function reorder(
     }
   }
 
-  await publishNatsEvent("ibatexas.cart.item_added", {
+  void publishNatsEvent("cart.item_added", {
     eventType: "cart.item_added",
     cartId,
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
-    reorderFromOrderId: input.orderId,
-  });
+    reorderFromOrderId: parsed.orderId,
+  }).catch((err) => console.error("[reorder] NATS publish error:", err));
 
   const errorNote = errors.length > 0 ? ` (item(ns) indisponível(is): ${errors.join(", ")})` : "";
   return {

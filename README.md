@@ -2,7 +2,7 @@
 
 AI-powered platform for a Brazilian Smoked House restaurant — food ordering, reservations, and a branded shop.
 
-Monorepo: Next.js storefront, Fastify API, WhatsApp channel (planned), Claude AI agent with 25 tools, Medusa v2 commerce, owner admin panel.
+Monorepo: Next.js storefront, Fastify API, WhatsApp channel, Claude AI agent with 25 implemented tools (2 planned), Medusa v2 commerce, owner admin panel.
 
 ---
 
@@ -11,6 +11,7 @@ Monorepo: Next.js storefront, Fastify API, WhatsApp channel (planned), Claude AI
 ```bash
 pnpm install
 cp .env.example .env  # fill in required keys (see .env.example for comments)
+pnpm --filter @ibatexas/cli build && npm link packages/cli  # build + link CLI
 ibx dev               # starts everything
 ```
 
@@ -51,7 +52,7 @@ Medusa     Prisma      Redis     Typesense
  shop,      reviews,   profiles,   search)
  orders)    customers)  co-purchase)
   │
-  └──── NATS JetStream ──▶ PostHog (analytics)
+  └──── NATS Core ──▶ PostHog (analytics)
 
   ┌──────────────────────────────────────────────────┐
   │           Next.js Storefront (apps/web)           │
@@ -67,9 +68,9 @@ Medusa     Prisma      Redis     Typesense
 | App | Path | What |
 |-----|------|------|
 | Web | `apps/web` | Next.js 14 storefront — PDP, search, cart, checkout, OTP login, order tracking, analytics |
-| API | `apps/api` | Fastify REST API — 44 routes, SSE chat stream, Swagger docs |
+| API | `apps/api` | Fastify REST API — 50 routes, SSE chat stream, Swagger docs |
 | Commerce | `apps/commerce` | Medusa v2 — catalog, cart, orders, payments, admin UI |
-| Agent | `apps/agent` | Claude agent orchestrator (library, runs inside API) |
+| Admin | `apps/admin` | Next.js 14 owner admin panel (port 3002) — dashboard, menu, reservations, zones |
 
 For a full list of services and their URLs, see the [Local URLs](docs/setup/local-dev.md#local-urls) section in the setup guide.
 
@@ -85,7 +86,7 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | Database | PostgreSQL 15 (Medusa + Prisma `ibx_domain` schema) |
 | Cache | Redis — sessions, CustomerProfile (30d TTL), co-purchase matrix |
 | Search | Typesense — full-text + vector product search |
-| Events | NATS JetStream — domain events, analytics pipeline |
+| Events | NATS Core — domain events, analytics pipeline |
 | Analytics | PostHog (client-side) + sendBeacon → NATS (server-side) |
 | Payments | Stripe (card + PIX) |
 | Cloud | AWS sa-east-1 (ECS Fargate, RDS, CloudFront) |

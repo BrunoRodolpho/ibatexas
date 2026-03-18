@@ -222,7 +222,7 @@ describe("runSimulation", () => {
 
     // With enough data, different seeds should produce different order/review counts
     // (this is probabilistic but very likely with sufficient volume)
-    const totalCalls1 = mockOrderItemCreate.mock.calls.length
+    const _totalCalls1 = mockOrderItemCreate.mock.calls.length
     expect(result1.customersCreated).toBe(result2.customersCreated) // same count requested
   })
 

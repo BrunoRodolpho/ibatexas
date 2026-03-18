@@ -3,6 +3,7 @@
 
 import { Client } from "typesense"
 import { EMBED_DIM } from "../config.js"
+import { isTypesenseError } from "./types.js"
 
 /** Collection name — allows test isolation and multi-tenant deployments */
 export const COLLECTION = process.env.TYPESENSE_COLLECTION_NAME || "products"
@@ -79,13 +80,14 @@ export async function ensureCollectionExists(): Promise<void> {
   try {
     await typesenseClient.collections(COLLECTION).retrieve()
     // Collection exists
-  } catch (error: any) {
-    if (error.httpStatus === 404) {
+  } catch (err: unknown) {
+    if (isTypesenseError(err) && err.httpStatus === 404) {
       // Collection doesn't exist; create it
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await typesenseClient.collections().create(PRODUCTS_COLLECTION_SCHEMA as any)
       console.log(`[Typesense] Created ${COLLECTION} collection`)
     } else {
-      throw error
+      throw err
     }
   }
 }
@@ -98,9 +100,9 @@ export async function recreateCollection(): Promise<void> {
 
   try {
     await typesenseClient.collections(COLLECTION).delete()
-  } catch (error: any) {
-    if (error.httpStatus !== 404) {
-      throw error
+  } catch (err: unknown) {
+    if (!isTypesenseError(err) || err.httpStatus !== 404) {
+      throw err
     }
     // Already deleted
   }

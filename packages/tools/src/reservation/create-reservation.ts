@@ -2,10 +2,10 @@
 // Books a table for an authenticated customer.
 // Auth: customer
 
-import { prisma } from "@ibatexas/domain"
-import { CreateReservationInputSchema, TableLocation, ReservationStatus, type CreateReservationInput, type CreateReservationOutput } from "@ibatexas/types"
+import { createReservationService } from "@ibatexas/domain"
+import { CreateReservationInputSchema, ReservationStatus, type CreateReservationInput, type CreateReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
-import { assignTables, buildDateTime, formatDateBR, locationLabel } from "./utils.js"
+import { buildDateTime, formatDateBR, locationLabel } from "./utils.js"
 import { sendReservationConfirmation } from "./notifications.js"
 
 export async function createReservation(
@@ -13,71 +13,26 @@ export async function createReservation(
 ): Promise<CreateReservationOutput> {
   const parsed = CreateReservationInputSchema.parse(input)
 
-  // 1. Load time slot + verify capacity
-  const slot = await prisma.timeSlot.findUnique({ where: { id: parsed.timeSlotId } })
-
-  if (!slot) {
-    throw new Error("Horário não encontrado. Verifique o ID do horário.")
-  }
-
-  const availableCovers = slot.maxCovers - slot.reservedCovers
-
-  if (availableCovers < parsed.partySize) {
-    throw new Error(
-      `Este horário está esgotado para ${parsed.partySize} pessoa(s). Tente outro horário ou entre na lista de espera.`,
-    )
-  }
-
-  // 2. Assign tables
-  const tableIds = await assignTables(parsed.timeSlotId, parsed.partySize)
-
-  // 3. Fetch assigned table details for location
-  const tables = await prisma.table.findMany({
-    where: { id: { in: tableIds } },
-    select: { id: true, location: true },
+  const svc = createReservationService()
+  const { reservation, tableLocation } = await svc.create({
+    customerId: parsed.customerId,
+    timeSlotId: parsed.timeSlotId,
+    partySize: parsed.partySize,
+    specialRequests: parsed.specialRequests,
   })
 
-  const firstTable = tables[0]
-  const tableLocation: TableLocation | null = firstTable ? (firstTable.location as TableLocation) : null
-
-  // 4. Create reservation + tables + increment covers (transaction)
-  const reservation = await prisma.$transaction(async (tx) => {
-    const r = await tx.reservation.create({
-      data: {
-        customerId: parsed.customerId,
-        partySize: parsed.partySize,
-        status: "confirmed",
-        specialRequests: parsed.specialRequests ?? [],
-        confirmedAt: new Date(),
-        timeSlotId: parsed.timeSlotId,
-        tables: {
-          create: tableIds.map((tableId) => ({ tableId })),
-        },
-      },
-      include: { timeSlot: true, tables: { include: { table: true } } },
-    })
-
-    await tx.timeSlot.update({
-      where: { id: parsed.timeSlotId },
-      data: { reservedCovers: { increment: parsed.partySize } },
-    })
-
-    return r
-  })
-
-  const dateTime = buildDateTime(slot.date, slot.startTime)
-  const dateBR = formatDateBR(slot.date)
+  const dateTime = buildDateTime(new Date(reservation.timeSlot.date), reservation.timeSlot.startTime)
+  const dateBR = formatDateBR(new Date(reservation.timeSlot.date))
   const loc = locationLabel(tableLocation)
 
   const confirmationMessage = [
     `✅ Reserva confirmada!`,
-    `📅 ${dateBR} às ${slot.startTime}`,
+    `📅 ${dateBR} às ${reservation.timeSlot.startTime}`,
     `👥 ${parsed.partySize} pessoa(s) — ${loc}`,
     `ID da reserva: ${reservation.id}`,
   ].join("\n")
 
-  // 5. Publish NATS event (fire-and-forget)
-  await publishNatsEvent("reservation.created", {
+  void publishNatsEvent("reservation.created", {
     eventType: "reservation.created",
     customerId: parsed.customerId,
     sessionId: parsed.customerId,
@@ -86,34 +41,16 @@ export async function createReservation(
     metadata: {
       reservationId: reservation.id,
       partySize: parsed.partySize,
-      date: slot.date.toISOString().split("T")[0],
-      startTime: slot.startTime,
+      date: reservation.timeSlot.date,
+      startTime: reservation.timeSlot.startTime,
       tableLocation,
     },
-  })
+  }).catch((err) => console.error("[create_reservation] NATS publish error:", err))
 
-  // 6. WhatsApp confirmation (stub — Step 12 wires in Twilio)
-  const reservationDTO = {
-    id: reservation.id,
-    customerId: parsed.customerId,
-    partySize: parsed.partySize,
+  await sendReservationConfirmation({
+    ...reservation,
     status: ReservationStatus.CONFIRMED,
-    specialRequests: parsed.specialRequests ?? [],
-    timeSlot: {
-      id: slot.id,
-      date: slot.date.toISOString().split("T")[0] ?? "",
-      startTime: slot.startTime,
-      durationMinutes: slot.durationMinutes,
-    },
-    tableLocation,
-    confirmedAt: reservation.confirmedAt?.toISOString() ?? null,
-    checkedInAt: null,
-    cancelledAt: null,
-    createdAt: reservation.createdAt.toISOString(),
-    updatedAt: reservation.updatedAt.toISOString(),
-  }
-
-  await sendReservationConfirmation(reservationDTO)
+  })
 
   return {
     reservationId: reservation.id,

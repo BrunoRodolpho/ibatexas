@@ -25,6 +25,29 @@ vi.mock("@ibatexas/domain", () => ({
       count: mockWaitlistCount,
     },
   },
+  createReservationService: () => ({
+    joinWaitlist: async (input: { customerId: string; timeSlotId: string; partySize: number }) => {
+      const slot = await mockTimeSlotFindUnique({ where: { id: input.timeSlotId } })
+      if (!slot) throw new Error("Horário não encontrado.")
+      const alreadyWaiting = await mockWaitlistFindFirst({
+        where: { customerId: input.customerId, timeSlotId: input.timeSlotId, notifiedAt: null },
+      })
+      if (alreadyWaiting) {
+        const position = await mockWaitlistCount({
+          where: { timeSlotId: input.timeSlotId, createdAt: { lte: alreadyWaiting.createdAt }, notifiedAt: null },
+        })
+        return { waitlistId: alreadyWaiting.id, position }
+      }
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+      const entry = await mockWaitlistCreate({
+        data: { customerId: input.customerId, timeSlotId: input.timeSlotId, partySize: input.partySize, expiresAt },
+      })
+      const position = await mockWaitlistCount({
+        where: { timeSlotId: input.timeSlotId, createdAt: { lte: entry.createdAt }, notifiedAt: null },
+      })
+      return { waitlistId: entry.id, position }
+    },
+  }),
 }))
 
 // ── Imports ────────────────────────────────────────────────────────────────────
@@ -78,7 +101,7 @@ describe("joinWaitlist", () => {
 
     expect(result.waitlistId).toBe("wl_01")
     expect(result.position).toBe(2)
-    expect(result.message).toContain("já está")
+    expect(result.message).toContain("posição 2")
     expect(mockWaitlistCreate).not.toHaveBeenCalled()
   })
 
@@ -101,7 +124,7 @@ describe("joinWaitlist", () => {
 
     expect(result.waitlistId).toBe("wl_02")
     expect(result.position).toBe(1)
-    expect(result.message).toContain("posição 1")
+    expect(result.message).toContain("posição: 1")
   })
 
   it("reflects correct position when others are already waiting", async () => {

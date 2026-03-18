@@ -257,10 +257,10 @@ function parseVariantsJson(json?: string): ProductVariant[] {
   try {
     const parsed = JSON.parse(json)
     if (!Array.isArray(parsed)) return []
-    return parsed.map((v: any) => ({
-      id: v.id || "",
-      title: v.title ?? null,
-      sku: v.sku ?? null,
+    return parsed.map((v: Record<string, unknown>) => ({
+      id: (v.id as string) || "",
+      title: (v.title as string) ?? null,
+      sku: (v.sku as string) ?? null,
       price: typeof v.price === "number" ? v.price : 0,
     }))
   } catch {

@@ -43,6 +43,7 @@ export { cosineSimilarity } from "./utils/vectors.js"
 
 // ── Mappers ────────────────────────────────────────────────────────────────────
 export { medusaToTypesenseDoc, typesenseDocToDTO } from "./mappers/product-mapper.js"
+export type { MedusaProductInput } from "./mappers/product-mapper.js"
 
 // ── Query cache ────────────────────────────────────────────────────────────────
 export {
@@ -55,6 +56,7 @@ export {
   embeddingToBucket,
   allergenFilterHash,
   invalidateAllQueryCache,
+  getCacheStats,
   type CacheFilterContext,
 } from "./cache/query-cache.js"
 
@@ -71,6 +73,9 @@ export {
 export { getTypesenseClient, ensureCollectionExists, recreateCollection, PRODUCTS_COLLECTION_SCHEMA, COLLECTION } from "./typesense/client.js"
 export { indexProduct, deleteProductFromIndex, indexProductsBatch } from "./typesense/index-product.js"
 
+// ── Medusa HTTP client ────────────────────────────────────────────────────────
+export { medusaAdmin, medusaStore, MedusaRequestError } from "./medusa/client.js"
+
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"
 
@@ -81,6 +86,13 @@ export { modifyReservation, ModifyReservationTool } from "./reservation/modify-r
 export { cancelReservation, CancelReservationTool } from "./reservation/cancel-reservation.js"
 export { getMyReservations, GetMyReservationsTool } from "./reservation/get-my-reservations.js"
 export { joinWaitlist, JoinWaitlistTool } from "./reservation/join-waitlist.js"
+export {
+  sendReservationConfirmation,
+  sendReservationModified,
+  sendReservationCancelled,
+  sendReservationReminder,
+  notifyWaitlistSpotAvailable,
+} from "./reservation/notifications.js"
 
 // ── WhatsApp sender (dependency injection) ───────────────────────────────────
 export { setWhatsAppSender, getWhatsAppSender } from "./whatsapp/sender.js"

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
-import { prisma } from "@ibatexas/domain";
+import { createReservationService } from "@ibatexas/domain";
 import { medusaAdmin } from "./_shared.js";
 
 export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
@@ -28,9 +28,9 @@ export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
         let revenueToday = 0;
 
         try {
-          const data = await medusaAdmin(`/admin/orders?${qs}`);
+          const data = await medusaAdmin(`/admin/orders?${qs}`) as Record<string, unknown>;
           const orders: { id: string; total: number; status: string }[] =
-            data.orders ?? [];
+            (data.orders ?? []) as { id: string; total: number; status: string }[];
           ordersToday = orders.length;
           revenueToday = orders.reduce(
             (sum: number, o) => sum + (o.total ?? 0),
@@ -42,12 +42,8 @@ export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
 
         let activeReservations = 0
         try {
-          activeReservations = await prisma.reservation.count({
-            where: {
-              status: { in: ["pending", "confirmed", "seated"] },
-              timeSlot: { date: { gte: new Date() } },
-            },
-          })
+          const reservationSvc = createReservationService()
+          activeReservations = await reservationSvc.countActive()
         } catch {
           // domain DB not yet migrated — return 0
         }

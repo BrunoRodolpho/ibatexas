@@ -23,7 +23,7 @@ vi.setSystemTime(new Date("2025-06-01T12:00:00.000Z"))
 
 // ── Import source after mocks ────────────────────────────────────────────────
 
-import { runPipeline, type PipelineTask, type PipelineResult } from "../lib/pipeline.js"
+import { runPipeline, type PipelineTask } from "../lib/pipeline.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

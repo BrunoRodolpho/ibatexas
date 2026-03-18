@@ -49,11 +49,21 @@ vi.mock("@ibatexas/domain", () => ({
       findMany: mockOrderItemFindMany,
     },
   },
+  createCustomerService: () => ({
+    getProfileData: async (customerId: string) => {
+      const [customerPrefs, orderItems] = await Promise.all([
+        mockPrefsFindUnique({ where: { customerId } }),
+        mockOrderItemFindMany({ where: { customerId }, orderBy: { orderedAt: "desc" }, take: 200 }),
+      ])
+      return { customerPrefs, orderItems }
+    },
+  }),
 }))
 
 // -- Imports ──────────────────────────────────────────────────────────────────
 
 import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
 import { getCustomerProfile } from "../get-customer-profile.js"
 import { PROFILE_TTL_SECONDS } from "../types.js"
 
@@ -109,7 +119,7 @@ describe("getCustomerProfile", () => {
   })
 
   it("throws when customerId is missing", async () => {
-    await expect(getCustomerProfile({}, CTX_GUEST as any)).rejects.toThrow(
+    await expect(getCustomerProfile({}, CTX_GUEST as AgentContext)).rejects.toThrow(
       "Autenticação necessária",
     )
   })

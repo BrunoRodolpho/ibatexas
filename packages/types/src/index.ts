@@ -3,6 +3,7 @@
 
 // Agent types
 export type { AgentContext, AgentMessage, StreamChunk } from "./agent.types.js"
+export { NonRetryableError } from "./agent.types.js"
 
 // Admin types
 export type {
@@ -46,6 +47,44 @@ export {
   SHIPPING_RATE_DEFAULT,
   type ShippingRate,
 } from "./constants.js"
+
+// Cart types
+export {
+  AddToCartInputSchema,
+  CancelOrderInputSchema,
+  CheckOrderStatusInputSchema,
+  CreateCheckoutInputSchema,
+  GetCartInputSchema,
+  UpdateCartInputSchema,
+  RemoveFromCartInputSchema,
+  ReorderInputSchema,
+  ApplyCouponInputSchema,
+  GetOrderHistoryInputSchema,
+  type AddToCartInput,
+  type CancelOrderInput,
+  type CheckOrderStatusInput,
+  type CreateCheckoutInput,
+  type GetCartInput,
+  type UpdateCartInput,
+  type RemoveFromCartInput,
+  type ReorderInput,
+  type ApplyCouponInput,
+  type GetOrderHistoryInput,
+} from "./cart.types.js"
+
+// Intelligence types
+export {
+  GetCustomerProfileInputSchema,
+  GetOrderedTogetherInputSchema,
+  SubmitReviewInputSchema,
+  UpdatePreferencesInputSchema,
+  GetAlsoAddedInputSchema,
+  type GetCustomerProfileInput,
+  type GetOrderedTogetherInput,
+  type SubmitReviewInput,
+  type UpdatePreferencesInput,
+  type GetAlsoAddedInput,
+} from "./intelligence.types.js"
 
 // Reservation types
 export {

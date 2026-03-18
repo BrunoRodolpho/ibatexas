@@ -11,6 +11,10 @@
 - Only run tests when explicitly requested
 - Do not start dev servers to verify changes
 
+## Agent Teams
+
+- When spawning teammates, use in-process mode: `claude --teammate-mode in-process` — avoids tmux issues
+
 ## The One Rule
 
 Use `ibx` for all dev operations. Run `ibx --help` or `ibx <command> --help` before writing code.
@@ -28,8 +32,8 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 4. **User-facing text:** pt-BR only — product names, agent responses, error messages
 5. **Auth:** Twilio Verify WhatsApp OTP — for both customers and staff. No Clerk, no passwords.
 6. **`.env`:** never committed — update `.env.example` when adding new vars
-7. **Redis keys:** always use `rk()` from `@ibatexas/tools` — never build raw key strings inline
-8. **Analytics events:** add to `AnalyticsEvent` union in `apps/web/src/lib/analytics.ts` AND document in `docs/analytics-dashboards.md`
+7. **Redis keys:** always use `rk()` from `@ibatexas/tools` — never build raw key strings inline. This includes cache modules, session stores, and job schedulers.
+8. **Analytics events:** add to `AnalyticsEvent` union in `apps/web/src/domains/analytics/events.ts` AND document in `docs/analytics-dashboards.md`
 
 ---
 
@@ -39,7 +43,8 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 - **Constants:** UPPER_SNAKE_CASE (`CATEGORIES`, `SEED_PRODUCTS`, `DEFAULT_SERVICES`)
 - **Enums:** PascalCase (`ReservationStatus`, `ProductType`)
 - **NATS events:** `domain.action` (`cart.abandoned`, `order.placed`)
-- **NATS subjects:** `ibatexas.{domain}.{action}`
+- **NATS subjects:** `ibatexas.{domain}.{action}` — pass short form to `publishNatsEvent()`, the client adds `ibatexas.` prefix automatically. Never pass the full prefixed form.
+- **NATS test assertions:** assert the short-form subject (`"cart.abandoned"`) since tests mock `publishNatsEvent` at the caller boundary, before the client adds the prefix.
 - **Product/category handles:** kebab-case, ASCII only (`costela-bovina-defumada`)
 - **CLI commands:** lowercase (`dev`, `svc`, `api`, `db`, `intel`)
 
@@ -55,6 +60,8 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 | Setup guide | [docs/setup/local-dev.md](docs/setup/local-dev.md) |
 | Analytics & dashboards | [docs/analytics-dashboards.md](docs/analytics-dashboards.md) |
 | Redis key patterns | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
+| Admin panel | `apps/admin` (port 3002) — standalone Next.js app |
+| Audit reports | [docs/audit/](docs/audit/) |
 
 ---
 

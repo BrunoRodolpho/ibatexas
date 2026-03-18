@@ -148,7 +148,7 @@ describe("review-prompt-poller", () => {
 
     // Should publish the review.prompt event
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.review.prompt",
+      "review.prompt",
       {
         eventType: "review.prompt",
         customerId: "cust_01",
@@ -370,7 +370,7 @@ describe("review-prompt-poller", () => {
     // Only the valid one should be published
     expect(mockPublishNatsEvent).toHaveBeenCalledOnce();
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.review.prompt",
+      "review.prompt",
       expect.objectContaining({ customerId: "cust_ok", orderId: "order_ok" }),
     );
 
