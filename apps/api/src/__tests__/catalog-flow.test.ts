@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { AvailabilityWindow, ProductType } from "@ibatexas/types"
+import { AvailabilityWindow, ProductType, type SearchProductsInput } from "@ibatexas/types"
 
 vi.mock("@ibatexas/tools", () => ({
   searchProducts: vi.fn(),
@@ -18,7 +18,7 @@ describe("Catalog Flow", () => {
       totalFound: 1,
     })
 
-    const result = await searchProducts({ query: "costela" } as any)
+    const result = await searchProducts({ query: "costela" } as SearchProductsInput)
     expect(result.hitCache).toBe(false)
     expect(result.products).toHaveLength(1)
     expect(result.products[0].title).toBe("Costela Defumada")
@@ -36,7 +36,7 @@ describe("Catalog Flow", () => {
       cachedAt: new Date().toISOString(),
     })
 
-    const result = await searchProducts({ query: "costela" } as any)
+    const result = await searchProducts({ query: "costela" } as SearchProductsInput)
     expect(result.hitCache).toBe(true)
     expect(result.cachedAt).toBeDefined()
   })

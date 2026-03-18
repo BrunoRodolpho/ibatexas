@@ -7,6 +7,7 @@
 // POST /api/reservations/:id/waitlist
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import type { FastifyRequest, FastifyReply } from "fastify"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ vi.mock("@ibatexas/tools", () => ({
 }))
 
 vi.mock("../middleware/auth.js", () => ({
-  requireAuth: async (request: any, reply: any) => {
+  requireAuth: async (request: FastifyRequest, reply: FastifyReply) => {
     const customerId = request.headers["x-customer-id"] as string | undefined
     if (!customerId) {
       return reply

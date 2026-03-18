@@ -110,7 +110,7 @@ function setupEnv() {
   vi.stubEnv("TWILIO_WEBHOOK_URL", "https://example.com/api/webhooks/whatsapp");
 }
 
-function validBody() {
+function _validBody() {
   return {
     MessageSid: "SM12345",
     From: "whatsapp:+5511999999999",

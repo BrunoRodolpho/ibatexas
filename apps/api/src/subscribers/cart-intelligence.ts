@@ -56,7 +56,7 @@ async function updateGlobalScores(
   await pipeline.exec();
 }
 
-function buildNotificationMessage(type: string, cartId?: string): string {
+function buildNotificationMessage(type: string, _cartId?: string): string {
   switch (type) {
     case "cart_abandoned":
       return [

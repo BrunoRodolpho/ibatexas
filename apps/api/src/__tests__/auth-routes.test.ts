@@ -3,10 +3,11 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
+import type { FastifyRequest, FastifyReply } from "fastify";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockTwilioClient = vi.hoisted(() => vi.fn());
+const _mockTwilioClient = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const mockPrisma = vi.hoisted(() => ({
@@ -43,7 +44,7 @@ vi.mock("@ibatexas/domain", () => ({
 }));
 
 vi.mock("../middleware/auth.js", () => ({
-  requireAuth: (request: any, reply: any, done: any) => {
+  requireAuth: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
     const customerId = request.headers["x-customer-id"] as string | undefined;
     if (!customerId) {
       void reply
@@ -54,7 +55,7 @@ vi.mock("../middleware/auth.js", () => ({
     }
     done();
   },
-  optionalAuth: (_request: any, _reply: any, done: any) => {
+  optionalAuth: (_request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void) => {
     done();
   },
 }));

@@ -25,7 +25,7 @@ function getStripe(): Stripe {
 async function handlePaymentSucceeded(
   event: Stripe.Event,
   startMs: number,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+  logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void },
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const processingMs = Date.now() - startMs;
@@ -66,7 +66,7 @@ async function handlePaymentSucceeded(
 async function handleChargeRefunded(
   event: Stripe.Event,
   startMs: number,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+  logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void },
 ): Promise<void> {
   const charge = event.data.object as Stripe.Charge;
   const orderId = charge.metadata?.["medusaOrderId"];
@@ -98,7 +98,7 @@ async function handleChargeRefunded(
 async function handleChargeDisputeCreated(
   event: Stripe.Event,
   startMs: number,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+  logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void },
 ): Promise<void> {
   const dispute = event.data.object as Stripe.Dispute;
   const orderId = dispute.metadata?.["medusaOrderId"];
@@ -126,7 +126,7 @@ async function handleChargeDisputeCreated(
 async function handlePaymentIntentCanceled(
   event: Stripe.Event,
   startMs: number,
-  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+  logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void },
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const orderId = paymentIntent.metadata?.["medusaOrderId"];

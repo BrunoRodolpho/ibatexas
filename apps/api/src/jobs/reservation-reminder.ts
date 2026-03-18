@@ -6,6 +6,7 @@
 
 import { createReservationService, createCustomerService } from "@ibatexas/domain"
 import { getRedisClient, rk, sendReservationReminder } from "@ibatexas/tools"
+import { ReservationStatus, type ReservationDTO } from "@ibatexas/types"
 
 const REMINDER_CHECK_HOUR = Number.parseInt(process.env.REMINDER_CHECK_HOUR || "9", 10)
 const REMINDER_TTL_SECONDS = 24 * 60 * 60 // 24h — prevents re-sending on restart
@@ -42,22 +43,23 @@ async function sendReminders(): Promise<void> {
           id: reservation.id,
           customerId: reservation.customerId,
           partySize: reservation.partySize,
-          status: reservation.status as "confirmed",
+          status: ReservationStatus.CONFIRMED,
           timeSlot: {
             id: reservation.timeSlot.id,
             date: todayStr,
             startTime: reservation.timeSlot.startTime,
             durationMinutes: reservation.timeSlot.durationMinutes,
-            maxCovers: reservation.timeSlot.maxCovers,
-            reservedCovers: reservation.timeSlot.reservedCovers,
           },
           tableLocation: null,
           specialRequests: [],
           confirmedAt: null,
+          checkedInAt: null,
+          cancelledAt: null,
           createdAt: reservation.createdAt.toISOString(),
-        }
+          updatedAt: reservation.createdAt.toISOString(),
+        } satisfies ReservationDTO
 
-        await sendReservationReminder(dto as any, customer.phone)
+        await sendReservationReminder(dto, customer.phone)
         sent++
       }
     } catch (err) {

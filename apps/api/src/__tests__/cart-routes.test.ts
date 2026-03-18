@@ -4,6 +4,7 @@
 // POST /api/cart/:id/promotions, POST /api/cart/:id/payment-sessions
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { FastifyRequest, FastifyReply } from "fastify";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -21,7 +22,7 @@ vi.mock("../routes/admin/_shared.js", () => ({
 }));
 
 vi.mock("../middleware/auth.js", () => ({
-  requireAuth: (request: any, reply: any, done: any) => {
+  requireAuth: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
     const customerId = request.headers["x-customer-id"] as string | undefined;
     if (!customerId) {
       void reply
@@ -32,7 +33,7 @@ vi.mock("../middleware/auth.js", () => ({
     }
     done();
   },
-  optionalAuth: (request: any, _reply: any, done: any) => {
+  optionalAuth: (request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void) => {
     const customerId = request.headers["x-customer-id"] as string | undefined;
     if (customerId) {
       request.customerId = customerId;
