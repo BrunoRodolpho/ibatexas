@@ -10,8 +10,6 @@
 // - Happy path → {success: true, reservation: dto}, NATS published
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import type { Mock } from "vitest"
-
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockReservationFindUnique = vi.hoisted(() => vi.fn())

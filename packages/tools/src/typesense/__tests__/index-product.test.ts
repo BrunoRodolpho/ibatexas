@@ -142,7 +142,7 @@ describe("indexProduct", () => {
         ...mockMedusaProduct,
         metadata: { ...mockMedusaProduct.metadata },
       }
-      delete (productWithoutInStock.metadata as any).inStock
+      delete (productWithoutInStock.metadata as Record<string, unknown>).inStock
 
       await indexProduct(productWithoutInStock, { generateEmbedding: mockGenerateEmbedding })
 

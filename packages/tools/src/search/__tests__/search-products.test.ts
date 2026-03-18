@@ -63,7 +63,7 @@ vi.mock("@ibatexas/nats-client", () => ({
 // Must come after vi.mock() calls so the mocked versions are used.
 
 import { searchProducts, SearchProductsTool } from "../search-products.js"
-import { SearchProductsInputSchema, AvailabilityWindow, ProductType, Channel } from "@ibatexas/types"
+import { SearchProductsInputSchema, Channel } from "@ibatexas/types"
 import type { ProductDTO } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 
@@ -786,7 +786,7 @@ describe("searchProducts", () => {
 
       expect(viewedCalls).toHaveLength(3)
 
-      const productIds = viewedCalls.map((c) => (c[1] as any).metadata.productId)
+      const productIds = viewedCalls.map((c) => (c[1] as { metadata: { productId: string } }).metadata.productId)
       expect(productIds).toContain("prod_a")
       expect(productIds).toContain("prod_b")
       expect(productIds).toContain("prod_c")
@@ -801,7 +801,7 @@ describe("searchProducts", () => {
       const viewedCall = vi.mocked(publishNatsEvent).mock.calls
         .find((c) => c[0] === "product.viewed")!
 
-      const payload = viewedCall[1] as any
+      const payload = viewedCall[1] as Record<string, unknown> & { metadata: Record<string, unknown> }
       expect(payload.eventType).toBe("product.viewed")
       expect(payload.sessionId).toBe("sess_123")
       expect(payload.channel).toBe(Channel.Web)
@@ -835,7 +835,7 @@ describe("searchProducts", () => {
         .filter((c) => c[0] === "product.viewed")
 
       // shared_1 is in both queries but merged output has it only once → 1 event
-      const productIds = viewedCalls.map((c) => (c[1] as any).metadata.productId)
+      const productIds = viewedCalls.map((c) => (c[1] as { metadata: { productId: string } }).metadata.productId)
       expect(productIds.filter((id: string) => id === "shared_1")).toHaveLength(1)
       expect(productIds).toContain("unique_1")
       expect(viewedCalls).toHaveLength(2)
@@ -856,7 +856,7 @@ describe("searchProducts", () => {
     })
 
     it("has no required array (both query and queries are optional — Zod refine enforces one)", () => {
-      expect((SearchProductsTool.inputSchema as any).required).toBeUndefined()
+      expect((SearchProductsTool.inputSchema as Record<string, unknown>).required).toBeUndefined()
     })
 
     it("has all expected optional parameters in schema", () => {

@@ -68,6 +68,7 @@ vi.mock("../../redis/key.js", () => ({
 // -- Imports ──────────────────────────────────────────────────────────────────
 
 import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
 import { updatePreferences } from "../update-preferences.js"
 import { PROFILE_TTL_SECONDS } from "../types.js"
 
@@ -100,7 +101,7 @@ describe("updatePreferences", () => {
   // ── Auth ────────────────────────────────────────────────────────────────
 
   it("throws when customerId is missing", async () => {
-    await expect(updatePreferences({}, CTX_GUEST as any)).rejects.toThrow(
+    await expect(updatePreferences({}, CTX_GUEST as AgentContext)).rejects.toThrow(
       "Autenticação necessária",
     )
   })

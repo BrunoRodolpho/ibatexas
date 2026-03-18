@@ -62,6 +62,7 @@ vi.mock("@ibatexas/nats-client", () => ({
 // -- Imports ──────────────────────────────────────────────────────────────────
 
 import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
 import { submitReview } from "../submit-review.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
@@ -98,7 +99,7 @@ describe("submitReview", () => {
     })
     mockGetTypesenseClient.mockReturnValue({
       collections: () => ({
-        documents: (id: string) => ({
+        documents: (_id: string) => ({
           update: mockTypesenseUpdate,
         }),
       }),
@@ -110,7 +111,7 @@ describe("submitReview", () => {
   // ── Auth ────────────────────────────────────────────────────────────────
 
   it("throws when customerId is missing", async () => {
-    await expect(submitReview(VALID_INPUT, CTX_GUEST as any)).rejects.toThrow(
+    await expect(submitReview(VALID_INPUT, CTX_GUEST as AgentContext)).rejects.toThrow(
       "Autenticação necessária",
     )
   })

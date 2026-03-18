@@ -51,7 +51,7 @@ describe("syncReviewStats", () => {
     vi.clearAllMocks()
     mockGetTypesenseClient.mockReturnValue({
       collections: () => ({
-        documents: (id: string) => ({
+        documents: (_id: string) => ({
           update: mockTypesenseUpdate,
         }),
       }),

@@ -10,7 +10,7 @@ import { rk } from "../redis/key.js";
 import type { CustomerProfileCache } from "./types.js";
 import { PROFILE_TTL_SECONDS } from "./types.js";
 
-const PROFILE_FIELDS = [
+const _PROFILE_FIELDS = [
   "recentlyViewed",
   "cartItems",
   "orderCount",

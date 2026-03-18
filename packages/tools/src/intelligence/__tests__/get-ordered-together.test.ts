@@ -50,6 +50,7 @@ vi.mock("../query-products-by-ids.js", () => ({
 // -- Imports ──────────────────────────────────────────────────────────────────
 
 import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
 import { getOrderedTogether } from "../get-ordered-together.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ describe("getOrderedTogether", () => {
   it("returns empty for guest (no customerId)", async () => {
     const result = await getOrderedTogether(
       { productId: "prod_01" },
-      CTX_GUEST as any,
+      CTX_GUEST as AgentContext,
     )
 
     expect(result.products).toEqual([])
