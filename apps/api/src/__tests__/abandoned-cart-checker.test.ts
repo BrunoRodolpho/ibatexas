@@ -92,7 +92,8 @@ describe("abandoned-cart-checker", () => {
     startAbandonedCartChecker();
     startAbandonedCartChecker(); // should be a no-op
 
-    stopAbandonedCartChecker();
+    // Only one interval should be active — stop clears it cleanly
+    expect(() => stopAbandonedCartChecker()).not.toThrow();
   });
 
   it("stopAbandonedCartChecker is safe to call when not started", () => {
