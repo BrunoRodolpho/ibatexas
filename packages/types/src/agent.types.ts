@@ -1,6 +1,17 @@
-// Agent types — AgentContext, AgentMessage, StreamChunk
+// Agent types — AgentContext, AgentMessage, StreamChunk, NonRetryableError
 
 import type { Channel, UserType } from "./product.types.js"
+
+/**
+ * Throw this from a tool handler to skip retry and return the error to Claude immediately.
+ * Use for auth failures and business-rule violations that will not resolve on retry.
+ */
+export class NonRetryableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "NonRetryableError"
+  }
+}
 
 export interface AgentContext {
   channel: Channel

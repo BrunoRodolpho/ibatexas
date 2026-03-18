@@ -2,6 +2,7 @@
 // Core agent loop and streaming utilities.
 
 export { runAgent } from "./agent.js"
+export { NonRetryableError } from "@ibatexas/types"
 export { SYSTEM_PROMPT } from "./system-prompt.js"
 export { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 

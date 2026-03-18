@@ -1,6 +1,6 @@
 // Abandoned cart checker
 // Runs every 15 minutes. Uses SSCAN (never KEYS *) to iterate rk('active:carts').
-// Publishes ibatexas.cart.abandoned for sessions idle > 2h with a non-empty cart.
+// Publishes cart.abandoned for sessions idle > 2h with a non-empty cart.
 
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { loadSession } from "../session/store.js";
@@ -29,7 +29,7 @@ async function checkAbandonedCarts(): Promise<void> {
       try {
         // Derive sessionId from cartId (cartId is stored as the member)
         // Find session that contains this cartId
-        const sessionKey = `session:${cartId}`;
+        const sessionKey = rk(`session:${cartId}`);
         const sessionExists = await redis.exists(sessionKey);
 
         if (!sessionExists) {
@@ -58,7 +58,7 @@ async function checkAbandonedCarts(): Promise<void> {
         }
 
         // Publish abandoned event
-        await publishNatsEvent("ibatexas.cart.abandoned", {
+        await publishNatsEvent("cart.abandoned", {
           eventType: "cart.abandoned",
           cartId,
           sessionId: cartId,

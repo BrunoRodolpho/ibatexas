@@ -7,15 +7,20 @@
 // PATCH  /api/cart/:id/line-items/:itemId   — update line item quantity
 // POST   /api/cart/:id/promotions           — apply promotion code
 // POST   /api/cart/:id/payment-sessions     — initialize payment sessions
+// POST   /api/cart/checkout                 — complete checkout (PIX/card/cash)
+// GET    /api/cart/delivery-estimate        — delivery fee by CEP
+// GET    /api/cart/orders/:orderId          — order details
+// POST   /api/coupons/validate             — validate coupon code
 //
 // All session cart IDs are tracked in Redis active:carts set for abandoned-cart detection.
 
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk } from "@ibatexas/tools";
-import { medusaStore } from "./admin/_shared.js";
-import { optionalAuth } from "../middleware/auth.js";
+import { getRedisClient, rk, estimateDelivery, createCheckout } from "@ibatexas/tools";
+import { Channel } from "@ibatexas/types";
+import { medusaStore, medusaAdmin } from "./admin/_shared.js";
+import { optionalAuth, requireAuth } from "../middleware/auth.js";
 
 const CartIdParams = z.object({ id: z.string().min(1) });
 const CartItemParams = z.object({ id: z.string().min(1), itemId: z.string().min(1) });
@@ -142,6 +147,48 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /api/cart/:id/sync — bulk-sync Zustand items to Medusa cart
+  app.post(
+    "/api/cart/:id/sync",
+    {
+      schema: {
+        tags: ["cart"],
+        summary: "Sincronizar itens do cliente com o carrinho Medusa",
+        params: CartIdParams,
+        body: z.object({
+          items: z.array(z.object({
+            variantId: z.string(),
+            quantity: z.number().int().min(1),
+          })),
+        }),
+      },
+      preHandler: optionalAuth,
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const { items } = request.body;
+
+      await trackCartId(id);
+
+      // Add each item sequentially (Medusa store API doesn't support batch add)
+      for (const item of items) {
+        try {
+          await medusaStore(`/store/carts/${id}/line-items`, {
+            method: "POST",
+            body: JSON.stringify({ variant_id: item.variantId, quantity: item.quantity }),
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch {
+          // Skip failed items — partial sync is better than no sync
+        }
+      }
+
+      // Return the synced cart
+      const data = await medusaStore(`/store/carts/${id}`);
+      return reply.send(data);
+    },
+  );
+
   // POST /api/cart/:id/promotions — apply coupon
   app.post(
     "/api/cart/:id/promotions",
@@ -181,6 +228,147 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         headers: { "Content-Type": "application/json" },
       });
       return reply.send(data);
+    },
+  );
+
+  // POST /api/cart/checkout — complete checkout (PIX/card/cash)
+  app.post(
+    "/api/cart/checkout",
+    {
+      schema: {
+        tags: ["cart"],
+        summary: "Finalizar checkout",
+        body: z.object({
+          cartId: z.string().min(1),
+          paymentMethod: z.enum(["pix", "card", "cash"]),
+          tipInCentavos: z.number().int().min(0).optional(),
+          deliveryCep: z.string().optional(),
+        }),
+      },
+      preHandler: optionalAuth,
+    },
+    async (request, reply) => {
+      const result = await createCheckout(request.body, {
+        channel: Channel.Web,
+        sessionId: request.body.cartId,
+        customerId: request.customerId,
+        userType: request.userType ?? "guest",
+      });
+
+      if (!result.success) {
+        return reply.status(400).send(result);
+      }
+
+      // Untrack cart from abandoned-cart detection on successful checkout
+      if (result.orderId) {
+        await untrackCartId(request.body.cartId);
+      }
+
+      return reply.send(result);
+    },
+  );
+
+  // GET /api/cart/delivery-estimate — delivery fee by CEP
+  app.get(
+    "/api/cart/delivery-estimate",
+    {
+      schema: {
+        tags: ["cart"],
+        summary: "Estimar taxa de entrega por CEP",
+        querystring: z.object({ cep: z.string().min(8).max(9) }),
+      },
+    },
+    async (request, reply) => {
+      const result = await estimateDelivery({ cep: request.query.cep });
+      if (!result.success) {
+        return reply.status(400).send(result);
+      }
+      return reply.send(result);
+    },
+  );
+
+  // GET /api/cart/orders/:orderId — order details (with ownership verification)
+  app.get(
+    "/api/cart/orders/:orderId",
+    {
+      schema: {
+        tags: ["cart"],
+        summary: "Buscar detalhes do pedido",
+        params: z.object({ orderId: z.string().min(1) }),
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const data = await medusaAdmin(`/admin/orders/${request.params.orderId}`) as {
+        order?: {
+          id: string;
+          status: string;
+          display_id: number;
+          total: number;
+          subtotal: number;
+          shipping_total: number;
+          customer_id?: string;
+          metadata?: Record<string, string>;
+          items: Array<{
+            id: string;
+            title: string;
+            quantity: number;
+            unit_price: number;
+            thumbnail?: string;
+          }>;
+          created_at: string;
+        };
+      };
+
+      if (!data.order) {
+        return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
+      }
+
+      // Verify ownership — prevent IDOR
+      const orderCustomerId = data.order.customer_id ?? data.order.metadata?.["customerId"];
+      if (orderCustomerId && orderCustomerId !== request.customerId) {
+        return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
+      }
+
+      return reply.send({ order: data.order });
+    },
+  );
+
+  // POST /api/coupons/validate — validate coupon code
+  app.post(
+    "/api/coupons/validate",
+    {
+      schema: {
+        tags: ["cart"],
+        summary: "Validar código de cupom",
+        body: z.object({ code: z.string().min(1) }),
+      },
+    },
+    async (request, reply) => {
+      // Query Medusa for promotions matching the code
+      try {
+        const data = await medusaAdmin(`/admin/promotions?code=${encodeURIComponent(request.body.code)}&limit=1`) as {
+          promotions?: Array<{
+            id: string;
+            code: string;
+            is_disabled: boolean;
+            application_method?: {
+              value?: number;
+              type?: string;
+            };
+          }>;
+        };
+
+        const promo = data.promotions?.[0];
+        if (!promo || promo.is_disabled) {
+          return reply.send({ valid: false });
+        }
+
+        const discount = promo.application_method?.value ?? 0;
+        return reply.send({ valid: true, discount });
+      } catch {
+        return reply.send({ valid: false });
+      }
     },
   );
 }

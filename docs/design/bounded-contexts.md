@@ -230,7 +230,7 @@ Same Commerce entities (Cart, Order, Payment) shared with the restaurant. Produc
 
 ## 8. Admin
 
-**Owner:** Custom — `/admin` routes in `apps/web` + dedicated API endpoints in `apps/api`
+**Owner:** Custom — standalone `apps/admin` (port 3002) + dedicated API endpoints in `apps/api`
 **Access:** All `/api/admin/*` routes require `x-admin-key` header — no customer can access this area
 
 The Admin panel is the owner's control center. It replaces the raw Medusa admin as the primary management interface and adds reservation management, delivery zone config, and analytics in one place.

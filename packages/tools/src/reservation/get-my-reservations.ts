@@ -2,34 +2,19 @@
 // Lists the authenticated customer's reservations.
 // Auth: customer
 
-import { prisma } from "@ibatexas/domain"
+import { createReservationService } from "@ibatexas/domain"
 import { GetMyReservationsInputSchema, type GetMyReservationsInput, type GetMyReservationsOutput } from "@ibatexas/types"
-import { reservationToDTO, type ReservationWithRelations } from "./utils.js"
 
 export async function getMyReservations(
   input: GetMyReservationsInput,
 ): Promise<GetMyReservationsOutput> {
   const parsed = GetMyReservationsInputSchema.parse(input)
 
-  const where = {
-    customerId: parsed.customerId,
-    ...(parsed.status ? { status: parsed.status } : {}),
-  }
-
-  const [reservations, total] = await Promise.all([
-    prisma.reservation.findMany({
-      where,
-      include: { timeSlot: true, tables: { include: { table: true } } },
-      orderBy: [{ timeSlot: { date: "desc" } }, { timeSlot: { startTime: "desc" } }],
-      take: parsed.limit,
-    }),
-    prisma.reservation.count({ where }),
-  ])
-
-  return {
-    reservations: (reservations as unknown as ReservationWithRelations[]).map(reservationToDTO),
-    total,
-  }
+  const svc = createReservationService()
+  return svc.listByCustomer(parsed.customerId, {
+    status: parsed.status,
+    limit: parsed.limit,
+  })
 }
 
 // ── Tool definition ───────────────────────────────────────────────────────────

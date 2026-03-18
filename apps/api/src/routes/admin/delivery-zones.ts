@@ -8,7 +8,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { prisma } from "@ibatexas/domain";
+import { createDeliveryZoneService } from "@ibatexas/domain";
 
 const DeliveryZoneIdParams = z.object({ id: z.string().min(1) });
 
@@ -30,7 +30,8 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       schema: { tags: ["admin"], summary: "Listar zonas de entrega (admin)" },
     },
     async (_request, reply) => {
-      const zones = await prisma.deliveryZone.findMany({ orderBy: { name: "asc" } });
+      const deliveryZoneSvc = createDeliveryZoneService();
+      const zones = await deliveryZoneSvc.listAll();
       return reply.send({ zones });
     },
   );
@@ -46,7 +47,8 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       },
     },
     async (request, reply) => {
-      const zone = await prisma.deliveryZone.create({ data: request.body });
+      const deliveryZoneSvc = createDeliveryZoneService();
+      const zone = await deliveryZoneSvc.create(request.body);
       return reply.code(201).send({ zone });
     },
   );
@@ -63,10 +65,8 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       },
     },
     async (request, reply) => {
-      const zone = await prisma.deliveryZone.update({
-        where: { id: request.params.id },
-        data: request.body,
-      });
+      const deliveryZoneSvc = createDeliveryZoneService();
+      const zone = await deliveryZoneSvc.update(request.params.id, request.body);
       return reply.send({ zone });
     },
   );
@@ -82,7 +82,8 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
       },
     },
     async (request, reply) => {
-      await prisma.deliveryZone.delete({ where: { id: request.params.id } });
+      const deliveryZoneSvc = createDeliveryZoneService();
+      await deliveryZoneSvc.remove(request.params.id);
       return reply.send({ ok: true });
     },
   );

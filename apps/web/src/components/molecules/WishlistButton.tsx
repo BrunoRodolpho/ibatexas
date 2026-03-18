@@ -1,3 +1,4 @@
+// TODO: Wire into ProductCard and PDP when wishlist feature ships
 'use client'
 
 import { Heart } from 'lucide-react'

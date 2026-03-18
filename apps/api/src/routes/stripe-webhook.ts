@@ -12,9 +12,9 @@
 
 import type { FastifyInstance } from "fastify";
 import Stripe from "stripe";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient, rk, medusaAdmin } from "@ibatexas/tools";
+import { createOrderService } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
-import { medusaAdmin } from "./admin/_shared.js";
 
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -41,56 +41,117 @@ async function handlePaymentSucceeded(
     return;
   }
 
-  let order: {
-    status: string;
-    customer_id?: string;
-    metadata?: Record<string, string>;
-    items?: Array<{ variant_id: string; quantity: number; unit_price: number; title: string; product_id?: string }>;
-  };
-  try {
-    const data = await medusaAdmin(`/admin/orders/${orderId}?expand=items`) as { order: typeof order };
-    order = data.order;
-  } catch (err) {
-    logger.error({ event_id: event.id, order_id: orderId, error: String(err) }, "Failed to fetch Medusa order");
-    throw err;
-  }
+  const svc = createOrderService(medusaAdmin);
+  const result = await svc.capturePayment(orderId, paymentIntent.id);
 
-  if (order.status !== "pending") {
-    logger.info({ event_id: event.id, order_id: orderId, status: order.status }, "Order already processed — no-op");
+  if (!result) {
+    logger.info({ event_id: event.id, order_id: orderId }, "Order already processed — no-op");
     return;
   }
 
-  if (order.metadata?.["stripePaymentIntentId"]) {
-    logger.info({ event_id: event.id, order_id: orderId }, "stripePaymentIntentId already set — no-op");
-    return;
-  }
-
-  await medusaAdmin(`/admin/orders/${orderId}/capture-payment`, { method: "POST" });
-
-  await medusaAdmin(`/admin/orders/${orderId}`, {
-    method: "POST",
-    body: JSON.stringify({ metadata: { stripePaymentIntentId: paymentIntent.id } }),
-  });
-
-  const orderItems = (order.items ?? []).map((item) => ({
-    productId: item.product_id ?? item.variant_id,
-    variantId: item.variant_id,
-    quantity: item.quantity,
-    priceInCentavos: item.unit_price ?? 0,
-  }));
-  const customerId = order.customer_id ?? order.metadata?.["customerId"];
-
-  await publishNatsEvent("ibatexas.order.placed", {
+  await publishNatsEvent("order.placed", {
     eventType: "order.placed",
     orderId,
-    customerId,
-    items: orderItems,
+    customerId: result.customerId,
+    items: result.items,
     stripePaymentIntentId: paymentIntent.id,
   });
 
   logger.info(
     { event_id: event.id, order_id: orderId, processing_ms: Date.now() - startMs },
     "payment_intent.succeeded processed",
+  );
+}
+
+async function handleChargeRefunded(
+  event: Stripe.Event,
+  startMs: number,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+): Promise<void> {
+  const charge = event.data.object as Stripe.Charge;
+  const orderId = charge.metadata?.["medusaOrderId"];
+  const processingMs = Date.now() - startMs;
+
+  logger.info(
+    { event_id: event.id, type: event.type, order_id: orderId, processing_ms: processingMs },
+    "Stripe charge.refunded received",
+  );
+
+  if (!orderId) {
+    logger.warn({ event_id: event.id }, "charge.refunded missing medusaOrderId metadata");
+    return;
+  }
+
+  await publishNatsEvent("order.refunded", {
+    eventType: "order.refunded",
+    orderId,
+    chargeId: charge.id,
+    amountRefunded: charge.amount_refunded,
+  });
+
+  logger.info(
+    { event_id: event.id, order_id: orderId, processing_ms: Date.now() - startMs },
+    "charge.refunded processed",
+  );
+}
+
+async function handleChargeDisputeCreated(
+  event: Stripe.Event,
+  startMs: number,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+): Promise<void> {
+  const dispute = event.data.object as Stripe.Dispute;
+  const orderId = dispute.metadata?.["medusaOrderId"];
+  const processingMs = Date.now() - startMs;
+
+  logger.warn(
+    { event_id: event.id, type: event.type, dispute_id: dispute.id, order_id: orderId, processing_ms: processingMs },
+    "Stripe charge.dispute.created received — dispute opened",
+  );
+
+  await publishNatsEvent("order.disputed", {
+    eventType: "order.disputed",
+    orderId: orderId ?? null,
+    disputeId: dispute.id,
+    amount: dispute.amount,
+    reason: dispute.reason,
+  });
+
+  logger.warn(
+    { event_id: event.id, dispute_id: dispute.id, processing_ms: Date.now() - startMs },
+    "charge.dispute.created processed",
+  );
+}
+
+async function handlePaymentIntentCanceled(
+  event: Stripe.Event,
+  startMs: number,
+  logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void; error: (...args: any[]) => void },
+): Promise<void> {
+  const paymentIntent = event.data.object as Stripe.PaymentIntent;
+  const orderId = paymentIntent.metadata?.["medusaOrderId"];
+  const processingMs = Date.now() - startMs;
+
+  logger.info(
+    { event_id: event.id, type: event.type, order_id: orderId, processing_ms: processingMs },
+    "Stripe payment_intent.canceled received",
+  );
+
+  if (!orderId) {
+    logger.warn({ event_id: event.id }, "payment_intent.canceled missing medusaOrderId metadata");
+    return;
+  }
+
+  await publishNatsEvent("order.canceled", {
+    eventType: "order.canceled",
+    orderId,
+    stripePaymentIntentId: paymentIntent.id,
+    cancellationReason: paymentIntent.cancellation_reason,
+  });
+
+  logger.info(
+    { event_id: event.id, order_id: orderId, processing_ms: Date.now() - startMs },
+    "payment_intent.canceled processed",
   );
 }
 
@@ -175,13 +236,28 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
             );
 
             if (orderId) {
-              await publishNatsEvent("ibatexas.order.payment_failed", {
+              await publishNatsEvent("order.payment_failed", {
                 eventType: "order.payment_failed",
                 orderId,
                 stripePaymentIntentId: paymentIntent.id,
                 lastPaymentError: paymentIntent.last_payment_error?.message,
               });
             }
+            break;
+          }
+
+          case "charge.refunded": {
+            await handleChargeRefunded(event, startMs, server.log);
+            break;
+          }
+
+          case "charge.dispute.created": {
+            await handleChargeDisputeCreated(event, startMs, server.log);
+            break;
+          }
+
+          case "payment_intent.canceled": {
+            await handlePaymentIntentCanceled(event, startMs, server.log);
             break;
           }
 

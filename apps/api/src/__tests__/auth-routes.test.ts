@@ -587,3 +587,85 @@ describe("GET /api/auth/me", () => {
     expect(body.message).toContain("Autenticação");
   });
 });
+
+describe("checkIpRateLimit", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("returns 429 when IP rate limit exceeded (count > 10)", async () => {
+    setupEnv();
+    const mockIncr = vi.fn().mockResolvedValue(11);
+    const mockRedis = createMockRedis({ incr: mockIncr });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/send-otp",
+      payload: { phone: "+5511999999999" },
+    });
+
+    expect(res.statusCode).toBe(429);
+    const body = res.json();
+    expect(body.message).toContain("Muitas tentativas deste endereço");
+    expect(body.message).toContain("1 hora");
+    // Should not reach the phone-hash rate limit or Twilio
+    expect(mockVerificationCreate).not.toHaveBeenCalled();
+    // incr called only once (for IP check — blocked before phone check)
+    expect(mockIncr).toHaveBeenCalledTimes(1);
+  });
+
+  it("sets expire on first IP request (count === 1)", async () => {
+    setupEnv();
+    const mockExpire = vi.fn().mockResolvedValue(true);
+    const mockIncr = vi.fn()
+      .mockResolvedValueOnce(1)   // IP rate limit — first request
+      .mockResolvedValueOnce(1);  // phone-hash rate limit
+    const mockRedis = createMockRedis({ incr: mockIncr, expire: mockExpire });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockVerificationCreate.mockResolvedValue({ sid: "VE_123" });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/send-otp",
+      payload: { phone: "+5511999999999" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // expire called with 3600 for IP key
+    expect(mockExpire).toHaveBeenCalledWith(
+      expect.stringContaining("otp:ip:"),
+      3600,
+    );
+  });
+
+  it("IP check runs BEFORE phone-hash check", async () => {
+    setupEnv();
+    const callOrder: string[] = [];
+    const mockIncr = vi.fn().mockImplementation(async (key: string) => {
+      if (key.includes("otp:ip:")) {
+        callOrder.push("ip");
+        return 11; // exceed IP limit
+      }
+      callOrder.push("phone");
+      return 1;
+    });
+    const mockRedis = createMockRedis({ incr: mockIncr });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/send-otp",
+      payload: { phone: "+5511999999999" },
+    });
+
+    expect(res.statusCode).toBe(429);
+    // IP check happened first and blocked — phone check never reached
+    expect(callOrder).toEqual(["ip"]);
+  });
+});

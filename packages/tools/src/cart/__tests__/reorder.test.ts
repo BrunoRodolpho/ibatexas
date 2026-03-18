@@ -160,7 +160,7 @@ describe("reorder", () => {
     await reorder(INPUT, CTX)
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.cart.item_added",
+      "cart.item_added",
       expect.objectContaining({
         eventType: "cart.item_added",
         cartId: "cart_new_01",

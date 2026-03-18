@@ -14,7 +14,6 @@
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@ibatexas/ui": "workspace:*",
-    "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.575.0",
@@ -35,7 +34,7 @@
     "eslint-config-next": "14.2.0",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
-    "@vitest/coverage-v8": "^1.6.0",
+    "@vitest/coverage-v8": "^2.0.0",
     "typescript": "^5.3.0"
   }
 }

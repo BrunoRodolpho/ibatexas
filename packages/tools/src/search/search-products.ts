@@ -25,6 +25,7 @@ import {
   type ProductViewedEvent,
 } from "@ibatexas/types"
 import { generateEmbedding } from "../embeddings/client.js"
+import { rk } from "../redis/key.js"
 import {
   getExactQueryCache,
   setExactQueryCache,
@@ -36,9 +37,10 @@ import {
   embeddingToBucket,
   type CacheFilterContext,
 } from "../cache/query-cache.js"
-import { typesenseDocToDTO } from "../mappers/product-mapper.js"
+import { typesenseDocToDTO, type TypesenseProductDoc } from "../mappers/product-mapper.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
+import type { TypesenseHit, TypesenseFacetCount } from "../typesense/types.js"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -135,7 +137,7 @@ function applyFilters(products: ProductDTO[], filters: FilterOptions): ProductDT
 // ── Typesense search ──────────────────────────────────────────────────────────
 
 interface TypesenseResult {
-  hits: any[]
+  hits: TypesenseProductDoc[]
   totalFound: number
   scores: Record<string, number> // productId → relevance score
   facetCounts?: Record<string, Array<{ value: string; count: number }>>
@@ -171,9 +173,9 @@ const SORT_BY_MAP: Record<string, string> = {
 }
 
 /** Extract hit scores from Typesense response */
-function extractHitsAndScores(hits: any[]): { docs: any[]; scores: Record<string, number> } {
+function extractHitsAndScores(hits: TypesenseHit[]): { docs: TypesenseProductDoc[]; scores: Record<string, number> } {
   const scores: Record<string, number> = {}
-  const docs: any[] = []
+  const docs: TypesenseProductDoc[] = []
 
   for (const hit of hits) {
     const doc = hit.document
@@ -198,7 +200,7 @@ async function executeTypesenseSearch(opts: TypesenseSearchOptions): Promise<Typ
   const { query, embedding, limit, sort, offset } = opts
   const typesenseClient = getTypesenseClient()
 
-  const searchParams: Record<string, any> = {
+  const searchParams: Record<string, string | number | boolean> = {
     q: query,
     query_by: "title,description,tags",
     filter_by: buildFilterBy(opts),
@@ -223,7 +225,9 @@ async function executeTypesenseSearch(opts: TypesenseSearchOptions): Promise<Typ
     { collection: COLLECTION }
   )
 
-  const response = (multiResult.results ?? [])[0] as any
+  const response = (multiResult.results ?? [])[0] as
+    | { hits?: TypesenseHit[]; found?: number; facet_counts?: TypesenseFacetCount[] }
+    | undefined
   if (!response) {
     return { hits: [], totalFound: 0, scores: {} }
   }
@@ -239,7 +243,7 @@ async function executeTypesenseSearch(opts: TypesenseSearchOptions): Promise<Typ
 }
 
 function parseFacetCounts(
-  raw: any[]
+  raw: TypesenseFacetCount[] | undefined
 ): Record<string, Array<{ value: string; count: number }>> | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined
   const result: Record<string, Array<{ value: string; count: number }>> = {}
@@ -356,7 +360,7 @@ async function generateQueryEmbedding(query: string, isWildcard: boolean): Promi
   try {
     return await generateEmbedding(
       query,
-      `embedding:query:${Buffer.from(query).toString("base64")}`
+      rk(`embedding:query:${Buffer.from(query).toString("base64")}`)
     )
   } catch (error) {
     console.warn("[Search] Query embedding failed; falling back to keyword search:", error)

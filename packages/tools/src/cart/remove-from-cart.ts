@@ -1,14 +1,15 @@
 // remove_from_cart tool — delete a line item from the Medusa cart
 
-import type { AgentContext } from "@ibatexas/types";
+import { RemoveFromCartInputSchema, type RemoveFromCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 
 export async function removeFromCart(
-  input: { cartId: string; itemId: string },
+  input: RemoveFromCartInput,
   _ctx: AgentContext,
 ): Promise<unknown> {
+  const parsed = RemoveFromCartInputSchema.parse(input);
   try {
-    return await medusaStoreFetch(`/store/carts/${input.cartId}/line-items/${input.itemId}`, {
+    return await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items/${parsed.itemId}`, {
       method: "DELETE",
     });
   } catch (err) {

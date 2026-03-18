@@ -181,7 +181,7 @@ describe("submitReview", () => {
     await submitReview(VALID_INPUT, CTX_AUTH)
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.review.submitted",
+      "review.submitted",
       expect.objectContaining({
         eventType: "review.submitted",
         productId: "prod_01",
@@ -240,7 +240,7 @@ describe("submitReview", () => {
     await submitReview(VALID_INPUT, CTX_AUTH)
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.review.submitted",
+      "review.submitted",
       expect.objectContaining({
         newAvgRating: 5, // falls back to the input rating
       }),

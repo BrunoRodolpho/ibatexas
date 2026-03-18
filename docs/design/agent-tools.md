@@ -76,7 +76,7 @@ Add a product variant to the cart. Validates stock before adding.
 | **Auth** | guest |
 | **Input** | `sessionId: string`, `variantId: string`, `quantity: number`, `specialInstructions?: string` |
 | **Output** | `{ success: boolean, cartId, item, updatedCart }` |
-| **Notes** | Calls `check_inventory` internally. Publishes `product.added_to_cart` NATS event |
+| **Notes** | Calls `check_inventory` internally. Publishes `cart.item_added` NATS event |
 
 ### `update_cart`
 Update quantity or special instructions for an existing cart item.

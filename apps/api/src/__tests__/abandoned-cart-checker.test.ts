@@ -170,7 +170,7 @@ describe("abandoned-cart-checker", () => {
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.cart.abandoned",
+      "cart.abandoned",
       expect.objectContaining({
         eventType: "cart.abandoned",
         cartId: "cart_04",
@@ -274,7 +274,7 @@ describe("abandoned-cart-checker", () => {
 
     // Second cart still published successfully
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "ibatexas.cart.abandoned",
+      "cart.abandoned",
       expect.objectContaining({ cartId: "cart_ok" }),
     );
   });

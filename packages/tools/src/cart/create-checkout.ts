@@ -7,7 +7,7 @@
 // IMPORTANT: PIX and card orders are only confirmed via Stripe webhook —
 // never by client polling alone to avoid stuck-pending orders.
 
-import type { AgentContext } from "@ibatexas/types";
+import { CreateCheckoutInputSchema, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import Stripe from "stripe";
@@ -16,13 +16,6 @@ function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY not set");
   return new Stripe(key);
-}
-
-export interface CreateCheckoutInput {
-  cartId: string;
-  paymentMethod: "pix" | "card" | "cash";
-  tipInCentavos?: number;
-  deliveryCep?: string;
 }
 
 export interface CreateCheckoutOutput {
@@ -83,7 +76,8 @@ export async function createCheckout(
   input: CreateCheckoutInput,
   ctx: AgentContext,
 ): Promise<CreateCheckoutOutput> {
-  const { cartId, paymentMethod, tipInCentavos, deliveryCep } = input;
+  const parsed = CreateCheckoutInputSchema.parse(input);
+  const { cartId, paymentMethod, tipInCentavos, deliveryCep } = parsed;
 
   // 1. Update cart metadata with tip and delivery CEP
   const metadata: Record<string, string> = {};
@@ -111,12 +105,12 @@ export async function createCheckout(
 
     const orderId = completedData.order?.id;
     if (orderId) {
-      await publishNatsEvent("ibatexas.order.placed", {
+      void publishNatsEvent("order.placed", {
         eventType: "order.placed",
         orderId,
         paymentMethod: "cash",
         customerId: ctx.customerId,
-      });
+      }).catch((err) => console.error("[create_checkout] NATS publish error:", err));
     }
 
     return {

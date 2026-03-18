@@ -2,22 +2,23 @@
 // "Clientes também adicionam" — global co-purchase affinity from Redis sorted set.
 // Reads ZREVRANGEBYSCORE rk('copurchase:{productId}'), fetches details from Typesense.
 
-import type { AgentContext } from "@ibatexas/types";
+import { GetAlsoAddedInputSchema, type GetAlsoAddedInput, type AgentContext } from "@ibatexas/types";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { queryProductsByIds } from "./query-products-by-ids.js";
 
 export async function getAlsoAdded(
-  input: { productId: string; limit?: number },
+  input: GetAlsoAddedInput,
   _ctx: AgentContext,
 ): Promise<{
   products: Array<{ id: string; title: string; price: number; imageUrl?: string }>;
   label: string;
 }> {
-  const limit = input.limit ?? 6;
+  const parsed = GetAlsoAddedInputSchema.parse(input);
+  const limit = parsed.limit ?? 6;
 
   const redis = await getRedisClient();
-  const key = rk(`copurchase:${input.productId}`);
+  const key = rk(`copurchase:${parsed.productId}`);
 
   const topIds = await redis.zRangeWithScores(key, 0, limit - 1, { REV: true });
 

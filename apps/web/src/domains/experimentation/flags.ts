@@ -4,8 +4,8 @@
  * Typed wrapper around PostHog feature flags for safe rollouts.
  *
  * @example
- *   if (flag('new_checkout')) {
- *     return <NewCheckout />
+ *   if (flag('recommendation_engine')) {
+ *     return <Recommendations />
  *   }
  *
  * Without PostHog, all flags default to `false` (off).
@@ -18,23 +18,13 @@ import { getPostHogClient } from '@/lib/posthog'
  * Value is the default when PostHog is unavailable.
  */
 export interface FlagMap {
-  new_checkout: boolean
-  promotions_banner: boolean
-  region_pricing: boolean
   recommendation_engine: boolean
-  reservation_v2: boolean
-  loyalty_program: boolean
 }
 
 export type FlagName = keyof FlagMap
 
 const DEFAULTS: FlagMap = {
-  new_checkout: false,
-  promotions_banner: false,
-  region_pricing: false,
   recommendation_engine: false,
-  reservation_v2: false,
-  loyalty_program: false,
 }
 
 /**

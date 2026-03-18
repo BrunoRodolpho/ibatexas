@@ -3,7 +3,7 @@
 // Hybrid model: state machine handles known flows (faster, cheaper);
 // unrecognized input falls through to the LLM agent.
 //
-// States: idle | browsing | cart_review | checkout | reservation_flow
+// States: idle | browsing | cart_review | checkout
 // Stored in Redis session hash: rk('wa:phone:{phoneHash}') → 'state' field
 //
 // Transitions:
@@ -11,7 +11,7 @@
 //   browsing → tap product → add to cart → cart_review
 //   cart_review → "Finalizar Pedido" → checkout (ask payment method)
 //   checkout → "PIX"/"Cartão"/"Dinheiro" → create_checkout → idle
-//   idle → "reserva" → reservation_flow (ask date/time/party size)
+//   idle → "reserva" → falls through to LLM agent (reservation tools handle the flow)
 //   any state → free-text that doesn't match → LLM agent (fallback)
 
 import { getSessionState, setSessionState } from "./session.js";
@@ -20,8 +20,7 @@ export type ConversationState =
   | "idle"
   | "browsing"
   | "cart_review"
-  | "checkout"
-  | "reservation_flow";
+  | "checkout";
 
 export interface StateAction {
   /** The action to execute deterministically */
@@ -52,10 +51,6 @@ export async function handleStateMachine(
 
     case "checkout":
       return handleCheckout(input, interactiveId);
-
-    case "reservation_flow":
-      // Reservation flow is complex enough to delegate to agent
-      return null;
 
     case "idle":
     default:

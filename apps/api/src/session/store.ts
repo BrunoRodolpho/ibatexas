@@ -4,7 +4,7 @@
 //
 // Uses Redis list (RPUSH + LTRIM) for atomic append, avoiding read-modify-write races.
 
-import { getRedisClient } from "@ibatexas/tools";
+import { getRedisClient, rk } from "@ibatexas/tools";
 import type { AgentMessage } from "@ibatexas/types";
 
 const GUEST_SESSION_TTL_SECONDS = 48 * 60 * 60; // 48h
@@ -12,7 +12,7 @@ const CUSTOMER_SESSION_TTL_SECONDS = 24 * 60 * 60; // 24h
 const MAX_HISTORY = 50;
 
 function sessionKey(sessionId: string): string {
-  return `session:${sessionId}`;
+  return rk(`session:${sessionId}`);
 }
 
 /**

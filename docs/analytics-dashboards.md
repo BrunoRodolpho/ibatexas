@@ -83,6 +83,7 @@
 | `add_to_cart` | Item added to cart | `productId`, `variantId`, `quantity`, `source` (pdp\|listing\|cross_sell) |
 | `sticky_cta_used` | Mobile sticky CTA tap | `productId`, `quantity` |
 | `cart_drawer_opened` | Cart drawer opens | — |
+| `cart_abandonment_nudge` | Abandonment nudge shown to returning user with stale cart | `cartId`, `itemCount` |
 | `cross_sell_viewed` | Cross-sell section enters viewport | `productId`, `suggestedIds[]` |
 | `cross_sell_added` | Cross-sell item added to cart | `productId`, `suggestedId` |
 | `also_added_viewed` | "Also added" section enters viewport (PDP) | `productId`, `suggestedIds[]` |
@@ -107,6 +108,12 @@
 | Event | Trigger | Properties |
 |-------|---------|------------|
 | `reorder_completed` | User re-orders from last order card | `orderId`, `itemCount` |
+
+### Wishlist Events
+
+| Event | Trigger | Properties |
+|-------|---------|------------|
+| `wishlist_toggled` | User adds/removes product from wishlist | `productId`, `action` (add\|remove) |
 
 ### Search Events
 

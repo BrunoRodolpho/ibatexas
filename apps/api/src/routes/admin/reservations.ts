@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { prisma } from "@ibatexas/domain";
+import { createReservationService } from "@ibatexas/domain";
 
 export async function reservationRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  const svc = createReservationService();
 
   // GET /api/admin/reservations
   app.get(
@@ -22,71 +23,49 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
       },
     },
     async (request, reply) => {
-      try {
-        const { date, status, limit, offset } = request.query as {
-          date?: string
-          status?: string
-          limit: number
-          offset: number
-        }
-
-        const where: Record<string, unknown> = {}
-        if (status) where.status = status
-        if (date) where.timeSlot = { date: new Date(`${date}T00:00:00.000Z`) }
-
-        const [reservations, total] = await Promise.all([
-          prisma.reservation.findMany({
-            where,
-            include: { timeSlot: true, tables: { include: { table: true } } },
-            orderBy: [{ timeSlot: { date: "asc" } }, { timeSlot: { startTime: "asc" } }],
-            take: limit,
-            skip: offset,
-          }),
-          prisma.reservation.count({ where }),
-        ])
-
-        return reply.send({ reservations, total })
-      } catch (err) {
-        server.log.error(err, "Failed to fetch reservations");
-        reply.code(500).send({ error: "Failed to fetch reservations" })
+      const { date, status, limit, offset } = request.query as {
+        date?: string
+        status?: string
+        limit: number
+        offset: number
       }
+
+      const result = await svc.listAll({ date, status }, { limit, offset })
+      return reply.send(result)
     },
   )
 
-  // ── Shared handler for reservation status transitions ─────────────────────
-  function registerStatusTransition(
-    path: string,
-    summary: string,
-    buildData: () => Record<string, unknown>,
-    errorMsg: string,
-  ) {
-    app.post(
-      path,
-      { schema: { tags: ["admin"], summary, params: z.object({ id: z.string() }) } },
-      async (request, reply) => {
-        try {
-          const { id } = request.params as { id: string }
-          const updated = await prisma.reservation.update({ where: { id }, data: buildData() })
-          return reply.send({ reservation: updated })
-        } catch (err) {
-          server.log.error(err, errorMsg)
-          reply.code(500).send({ error: errorMsg })
-        }
-      },
-    )
-  }
-
-  registerStatusTransition(
+  // POST /api/admin/reservations/:id/checkin
+  app.post(
     "/api/admin/reservations/:id/checkin",
-    "Check-in do hóspede (admin)",
-    () => ({ status: "seated", checkedInAt: new Date() }),
-    "Failed to check in reservation",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "Check-in do hóspede (admin)",
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      await svc.transition(id, "seated")
+      return reply.send({ success: true })
+    },
   )
 
-  registerStatusTransition(
+  // POST /api/admin/reservations/:id/complete
+  app.post(
     "/api/admin/reservations/:id/complete",
-    "Marcar reserva como concluída (admin)",
-    () => ({ status: "completed" }),
-    "Failed to complete reservation",
+    {
+      schema: {
+        tags: ["admin"],
+        summary: "Marcar reserva como concluída (admin)",
+        params: z.object({ id: z.string() }),
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string }
+      await svc.transition(id, "completed")
+      return reply.send({ success: true })
+    },
   )
 }

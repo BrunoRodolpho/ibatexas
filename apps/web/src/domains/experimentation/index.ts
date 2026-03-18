@@ -7,7 +7,7 @@
  * @example
  *   import { experiment, flag } from '@/domains/experimentation'
  *
- *   if (flag('new_checkout')) { ... }
+ *   if (flag('recommendation_engine')) { ... }
  *   const variant = experiment('hero_layout')
  */
 

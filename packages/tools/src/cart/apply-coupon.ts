@@ -1,16 +1,17 @@
 // apply_coupon tool — apply a promotion code to the Medusa cart
 
-import type { AgentContext } from "@ibatexas/types";
+import { ApplyCouponInputSchema, type ApplyCouponInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 
 export async function applyCoupon(
-  input: { cartId: string; code: string },
+  input: ApplyCouponInput,
   _ctx: AgentContext,
 ): Promise<unknown> {
+  const parsed = ApplyCouponInputSchema.parse(input);
   try {
-    return await medusaStoreFetch(`/store/carts/${input.cartId}/promotions`, {
+    return await medusaStoreFetch(`/store/carts/${parsed.cartId}/promotions`, {
       method: "POST",
-      body: JSON.stringify({ promo_codes: [input.code] }),
+      body: JSON.stringify({ promo_codes: [parsed.code] }),
     });
   } catch (err) {
     console.error("[apply_coupon] Medusa error:", err);

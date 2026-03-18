@@ -4,7 +4,7 @@
 //
 // Start this job in apps/api/src/server.ts after all routes are registered.
 
-import { prisma } from "@ibatexas/domain"
+import { createReservationService } from "@ibatexas/domain"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 
 const GRACE_PERIOD_MINUTES = Number.parseInt(process.env.NO_SHOW_GRACE_MINUTES || "15", 10)
@@ -37,13 +37,8 @@ async function checkNoShows(): Promise<void> {
   // Only load confirmed reservations for today (not all historical ones)
   const todayStr = now.toISOString().split("T")[0]
   const todayDate = new Date(todayStr)
-  const candidates = await prisma.reservation.findMany({
-    where: {
-      status: "confirmed",
-      timeSlot: { date: todayDate },
-    },
-    include: { timeSlot: true },
-  })
+  const svc = createReservationService()
+  const candidates = await svc.findConfirmedForDate(todayDate)
 
   const noShows = candidates.filter((r) => {
     try {
@@ -58,20 +53,7 @@ async function checkNoShows(): Promise<void> {
 
   for (const reservation of noShows) {
     try {
-      // Wrap all mutations in a transaction to avoid partial updates
-      await prisma.$transaction([
-        prisma.reservation.update({
-          where: { id: reservation.id },
-          data: { status: "no_show" },
-        }),
-        prisma.timeSlot.update({
-          where: { id: reservation.timeSlotId },
-          data: { reservedCovers: { decrement: reservation.partySize } },
-        }),
-        prisma.reservationTable.deleteMany({
-          where: { reservationId: reservation.id },
-        }),
-      ])
+      await svc.transition(reservation.id, "no_show")
 
       // Publish NATS event (fire-and-forget, outside transaction)
       await publishNatsEvent("reservation.no_show", {

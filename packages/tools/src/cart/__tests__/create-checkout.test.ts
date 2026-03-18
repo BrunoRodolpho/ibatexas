@@ -154,7 +154,7 @@ describe("createCheckout", () => {
       await createCheckout(BASE_INPUT, CTX)
 
       expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-        "ibatexas.order.placed",
+        "order.placed",
         expect.objectContaining({
           eventType: "order.placed",
           orderId: "order_01",

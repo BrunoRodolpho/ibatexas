@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/node";
 import { buildServer } from "./server.js";
 import { startNoShowChecker, stopNoShowChecker } from "./jobs/no-show-checker.js";
 import { startReviewPromptPoller, stopReviewPromptPoller } from "./jobs/review-prompt-poller.js";
@@ -5,6 +6,25 @@ import { startAbandonedCartChecker, stopAbandonedCartChecker } from "./jobs/aban
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { closeNatsConnection } from "@ibatexas/nats-client";
 import { initWhatsAppSender } from "./whatsapp/init.js";
+
+// Initialize Sentry before anything else
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.APP_ENV ?? "development",
+  });
+}
+
+process.on("unhandledRejection", (reason) => {
+  if (process.env.SENTRY_DSN) Sentry.captureException(reason);
+  console.error("[unhandledRejection]", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  if (process.env.SENTRY_DSN) Sentry.captureException(err);
+  console.error("[uncaughtException]", err);
+  process.exit(1);
+});
 
 const PORT = Number(process.env.PORT ?? 3001);
 

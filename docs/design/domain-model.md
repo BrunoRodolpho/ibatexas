@@ -186,7 +186,7 @@ interface BusinessEvent<T = Record<string, unknown>> {
 | Event type | Published by | Metadata |
 |---|---|---|
 | `product.viewed` | agent `get_product_details` | `{ productId, source: 'search' \| 'browse' \| 'recommendation' }` |
-| `product.added_to_cart` | agent `add_to_cart` | `{ productId, variantId, quantity }` |
+| `product.added_to_cart` | _(deprecated — see `cart.item_added` below)_ | `{ productId, variantId, quantity }` |
 | `cart.abandoned` | Redis TTL expiry job | `{ cartId, items[], totalValue, lastActivityAt }` |
 | `order.placed` | Commerce on order create | `{ orderId, items[], totalValue, paymentMethod, deliveryType }` |
 | `order.confirmed` | Commerce on status change | `{ orderId }` |
@@ -201,6 +201,22 @@ interface BusinessEvent<T = Record<string, unknown>> {
 | `agent.question_unanswered` | agent on tool failure | `{ query, tool, error }` |
 | `customer.first_order` | Commerce on order create | `{ orderId, customerId }` |
 | `customer.returned` | Commerce on order create (2nd+) | `{ orderId, daysSinceLastOrder }` |
+| `order.payment_failed` | Stripe webhook (`stripe-webhook.ts`) | `{ orderId, paymentIntentId, error }` |
+| `order.refunded` | Stripe webhook (`stripe-webhook.ts`) | `{ orderId, chargeId, amountRefunded }` |
+| `order.disputed` | Stripe webhook (`stripe-webhook.ts`) | `{ orderId, disputeId, amount, reason }` |
+| `order.canceled` | Stripe webhook (`stripe-webhook.ts`) | `{ orderId, stripePaymentIntentId, cancellationReason }` |
+| `cart.item_added` | agent `add_to_cart`, `reorder` | `{ cartId, productId, variantId, quantity, customerId }` |
+| `notification.send` | `cart-intelligence.ts` subscriber | `{ type: 'cart_abandoned', sessionId, customerId, cartSummary }` |
+| `review.prompt.schedule` | Medusa `order-delivered` subscriber | `{ orderId, deliveredAt }` — `customerId` resolved by consumer |
+| `review.prompt` | `review-prompt-poller.ts` job | `{ customerId, orderId }` |
+| `whatsapp.message.received` | WhatsApp webhook (telemetry) | `{ phoneHash, sessionId, hasMedia }` |
+| `whatsapp.message.sent` | WhatsApp webhook (telemetry) | `{ phoneHash, sessionId, toolsUsed, durationMs }` |
+| `web.{eventType}` | Analytics endpoint (`analytics.ts`) | Dynamic — mirrors client PostHog event payload |
+
+**Notes:**
+- `notification.send` subscriber is stubbed — actual delivery not yet implemented
+- `whatsapp.message.*` and `web.{eventType}` are telemetry-only (no subscribers in Phase 1; future JetStream consumers in Phase 3)
+- `order.payment_failed`, `order.refunded`, `order.disputed`, `order.canceled` have no subscribers yet — future consumers will handle notifications and status updates
 
 ---
 

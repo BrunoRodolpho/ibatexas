@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
-import { prisma } from "@ibatexas/domain";
+import { createReservationService } from "@ibatexas/domain";
 import { medusaAdmin } from "./_shared.js";
 
 export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
@@ -42,12 +42,8 @@ export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
 
         let activeReservations = 0
         try {
-          activeReservations = await prisma.reservation.count({
-            where: {
-              status: { in: ["pending", "confirmed", "seated"] },
-              timeSlot: { date: { gte: new Date() } },
-            },
-          })
+          const reservationSvc = createReservationService()
+          activeReservations = await reservationSvc.countActive()
         } catch {
           // domain DB not yet migrated — return 0
         }
