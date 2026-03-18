@@ -7,7 +7,6 @@ import {
   SERVICES,
   DEFAULT_SERVICES,
   resolveServices,
-  type ServiceDef,
 } from "../services.js"
 
 // ── Service registry structure ───────────────────────────────────────────────

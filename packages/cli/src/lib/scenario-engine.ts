@@ -625,7 +625,7 @@ async function executeScenarioSteps(scenario: ScenarioFile, opts: ScenarioOption
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function stepsToTasks(steps: StepName[], opts: ScenarioOptions): PipelineTask[] {
+function stepsToTasks(steps: StepName[], _opts: ScenarioOptions): PipelineTask[] {
   return steps.map((name) => ({
     name,
     label: StepRegistry[name].label,

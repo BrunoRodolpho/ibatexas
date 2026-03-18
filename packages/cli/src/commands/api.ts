@@ -438,7 +438,9 @@ export function registerApiCommands(api: Command) {
           throw new Error(`Typesense error ${response.status}`)
         }
 
-        const data = (await response.json()) as any
+        const data = (await response.json()) as {
+          hits?: Array<{ document: { id: string; title: string; price: number; tags?: string[] } }>
+        }
         spinner.stop()
 
         const results = data.hits || []
