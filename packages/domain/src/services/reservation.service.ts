@@ -5,6 +5,7 @@
 
 import { prisma } from "../client.js"
 import { assertOwnership, assertMutable } from "./shared.js"
+import { ReservationStatus as PrismaReservationStatus, TableLocation as PrismaTableLocation } from "../generated/prisma-client/index.js"
 import type {
   ReservationDTO,
   AvailableSlot,
@@ -169,7 +170,7 @@ export function createReservationService() {
     ): Promise<{ reservations: ReservationDTO[]; total: number }> {
       const where = {
         customerId,
-        ...(options?.status ? { status: options.status } : {}),
+        ...(options?.status ? { status: options.status as PrismaReservationStatus } : {}),
       }
 
       const [reservations, total] = await Promise.all([

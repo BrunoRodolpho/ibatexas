@@ -13,30 +13,39 @@ export async function modifyReservation(
   const parsed = ModifyReservationInputSchema.parse(input)
 
   const svc = createReservationService()
-  const dto = await svc.modify(parsed.reservationId, parsed.customerId, {
-    newTimeSlotId: parsed.newTimeSlotId,
-    newPartySize: parsed.newPartySize,
-    specialRequests: parsed.specialRequests,
-  })
 
-  // Notify customer of modification (fire-and-forget)
-  void sendReservationModified(dto).catch((err) =>
-    console.error("[modify_reservation] Notification error:", err),
-  )
+  try {
+    const dto = await svc.modify(parsed.reservationId, parsed.customerId, {
+      newTimeSlotId: parsed.newTimeSlotId,
+      newPartySize: parsed.newPartySize,
+      specialRequests: parsed.specialRequests,
+    })
 
-  void publishNatsEvent("reservation.modified", {
-    eventType: "reservation.modified",
-    customerId: parsed.customerId,
-    sessionId: parsed.customerId,
-    channel: "web",
-    timestamp: new Date().toISOString(),
-    metadata: { reservationId: parsed.reservationId },
-  }).catch((err) => console.error("[modify_reservation] NATS publish error:", err))
+    // Notify customer of modification (fire-and-forget)
+    void sendReservationModified(dto).catch((err) =>
+      console.error("[modify_reservation] Notification error:", err),
+    )
 
-  return {
-    success: true,
-    reservation: dto,
-    message: `Reserva modificada: ${dto.timeSlot.startTime} em ${dto.timeSlot.date}, ${dto.partySize} pessoa(s).`,
+    void publishNatsEvent("reservation.modified", {
+      eventType: "reservation.modified",
+      customerId: parsed.customerId,
+      sessionId: parsed.customerId,
+      channel: "web",
+      timestamp: new Date().toISOString(),
+      metadata: { reservationId: parsed.reservationId },
+    }).catch((err) => console.error("[modify_reservation] NATS publish error:", err))
+
+    return {
+      success: true,
+      reservation: dto,
+      message: `Reserva modificada: ${dto.timeSlot.startTime} em ${dto.timeSlot.date}, ${dto.partySize} pessoa(s).`,
+    }
+  } catch (err) {
+    return {
+      success: false,
+      reservation: null,
+      message: (err as Error).message,
+    }
   }
 }
 

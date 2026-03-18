@@ -44,7 +44,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
       if (category_id) qs.set("category_id[]", category_id);
 
       try {
-        const data = await medusaAdmin(`/admin/products?${qs}`);
+        const data = await medusaAdmin(`/admin/products?${qs}`) as Record<string, unknown>;
         const products = (data.products ?? []) as {
           id: string;
           title: string;
@@ -113,7 +113,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
         const data = await medusaAdmin(`/admin/products/${id}`, {
           method: "POST",
           body: JSON.stringify(body),
-        });
+        }) as Record<string, unknown>;
         return reply.send({ product: data.product });
       } catch (err) {
         server.log.error(err, "Failed to update product");
@@ -137,7 +137,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
       try {
         const data = await medusaAdmin(
           `/admin/products/${id}?expand=variants,variants.prices,categories,tags`,
-        );
+        ) as Record<string, unknown>;
         const p = data.product as {
           id: string;
           title: string;

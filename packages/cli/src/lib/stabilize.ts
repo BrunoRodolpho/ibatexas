@@ -12,6 +12,7 @@
 // The Medusa subscriber still handles non-CLI mutations (admin UI, API calls).
 
 import chalk from "chalk"
+import type { MedusaProductInput } from "@ibatexas/tools"
 import { medusaFetch, getAdminToken } from "./medusa.js"
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -85,7 +86,7 @@ export async function stabilizeProducts(productIds: string[]): Promise<void> {
   }
 
   // 3. Upsert to Typesense (idempotent — safe for double-indexing)
-  await indexProductsBatch(products)
+  await indexProductsBatch(products as MedusaProductInput[])
 
   // 4. Flush query cache so stale search results aren't served
   await invalidateAllQueryCache()

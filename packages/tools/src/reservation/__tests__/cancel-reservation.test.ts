@@ -41,6 +41,45 @@ vi.mock("@ibatexas/domain", () => ({
     },
     $transaction: mockTransaction,
   },
+  createReservationService: () => ({
+    getById: async (id: string, customerId?: string) => {
+      const reservation = await mockReservationFindUnique({ where: { id }, include: { timeSlot: true, tables: { include: { table: true } } } })
+      if (!reservation) throw new Error("Reserva não encontrada.")
+      if (customerId && reservation.customerId !== customerId) throw new Error("Você não tem permissão para acessar esta reserva.")
+      const ts = reservation.timeSlot
+      return {
+        id: reservation.id, customerId: reservation.customerId, partySize: reservation.partySize,
+        status: reservation.status, specialRequests: reservation.specialRequests ?? [],
+        timeSlot: { id: ts.id, date: ts.date.toISOString().split("T")[0] ?? "", startTime: ts.startTime, durationMinutes: ts.durationMinutes },
+        tableLocation: null, confirmedAt: null, checkedInAt: null, cancelledAt: null,
+        createdAt: reservation.createdAt.toISOString(), updatedAt: reservation.updatedAt.toISOString(),
+      }
+    },
+    cancel: async (id: string, customerId: string) => {
+      const reservation = await mockReservationFindUnique({ where: { id }, include: { timeSlot: true } })
+      if (!reservation) throw new Error("Reserva não encontrada.")
+      if (reservation.customerId !== customerId) throw new Error("Você não tem permissão para cancelar esta reserva.")
+      if (["cancelled", "no_show", "completed"].includes(reservation.status)) throw new Error(`Não é possível cancelar reserva com status "${reservation.status}".`)
+      await mockTransaction([
+        mockReservationUpdate({ where: { id }, data: { status: "cancelled", cancelledAt: new Date() } }),
+        mockReservationTableDeleteMany({ where: { reservationId: id } }),
+        mockTimeSlotUpdate({ where: { id: reservation.timeSlotId }, data: { reservedCovers: { decrement: reservation.partySize } } }),
+      ])
+      return { timeSlotId: reservation.timeSlotId, partySize: reservation.partySize }
+    },
+    promoteWaitlist: async (timeSlotId: string) => {
+      const next = await mockWaitlistFindFirst({ where: { timeSlotId, notifiedAt: null }, orderBy: { createdAt: "asc" } })
+      if (!next) return { promoted: null }
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000)
+      await mockWaitlistUpdate({ where: { id: next.id }, data: { notifiedAt: new Date(), expiresAt } })
+      return {
+        promoted: {
+          id: next.id, customerId: next.customerId, partySize: next.partySize,
+          date: "", startTime: "",
+        },
+      }
+    },
+  }),
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -56,6 +95,7 @@ vi.mock("../utils.js", () => ({
 vi.mock("../notifications.js", () => ({
   notifyWaitlistSpotAvailable: mockNotifyWaitlistSpotAvailable,
   sendReservationConfirmation: vi.fn(),
+  sendReservationCancelled: vi.fn().mockResolvedValue(undefined),
 }))
 
 // ── Imports ────────────────────────────────────────────────────────────────────
@@ -123,7 +163,7 @@ describe("cancelReservation", () => {
     const result = await cancelReservation({ customerId: "cus_01", reservationId: "res_01" })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain("cancelada")
+    expect(result.message).toContain("cancelled")
   })
 
   it("returns success:false if completed", async () => {

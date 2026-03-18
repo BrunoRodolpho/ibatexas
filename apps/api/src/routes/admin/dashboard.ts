@@ -28,9 +28,9 @@ export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
         let revenueToday = 0;
 
         try {
-          const data = await medusaAdmin(`/admin/orders?${qs}`);
+          const data = await medusaAdmin(`/admin/orders?${qs}`) as Record<string, unknown>;
           const orders: { id: string; total: number; status: string }[] =
-            data.orders ?? [];
+            (data.orders ?? []) as { id: string; total: number; status: string }[];
           ordersToday = orders.length;
           revenueToday = orders.reduce(
             (sum: number, o) => sum + (o.total ?? 0),

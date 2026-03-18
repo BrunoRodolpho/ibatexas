@@ -26,6 +26,28 @@ vi.mock("@ibatexas/domain", () => ({
       aggregate: mockReviewAggregate,
     },
   },
+  createCustomerService: () => ({
+    submitReview: async (input: {
+      customerId: string; productId: string; orderId: string;
+      rating: number; comment?: string; channel: string;
+    }) => {
+      const { customerId, productId, orderId, rating, comment, channel } = input
+      await mockReviewUpsert({
+        where: { orderId_customerId: { orderId, customerId } },
+        create: { orderId, productId, productIds: [productId], customerId, rating, comment: comment ?? null, channel },
+        update: { rating, comment: comment ?? null },
+      })
+      const stats = await mockReviewAggregate({
+        where: { productId },
+        _avg: { rating: true },
+        _count: { rating: true },
+      })
+      return {
+        avgRating: stats._avg.rating ?? rating,
+        reviewCount: stats._count.rating,
+      }
+    },
+  }),
 }))
 
 vi.mock("../../typesense/client.js", () => ({
@@ -96,34 +118,24 @@ describe("submitReview", () => {
   // ── Rating validation ──────────────────────────────────────────────────
 
   it("rejects rating below 1", async () => {
-    const result = await submitReview(
-      { ...VALID_INPUT, rating: 0 },
-      CTX_AUTH,
-    )
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain("1 e 5 estrelas")
+    await expect(
+      submitReview({ ...VALID_INPUT, rating: 0 }, CTX_AUTH),
+    ).rejects.toThrow()
     expect(mockReviewUpsert).not.toHaveBeenCalled()
   })
 
   it("rejects rating above 5", async () => {
-    const result = await submitReview(
-      { ...VALID_INPUT, rating: 6 },
-      CTX_AUTH,
-    )
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain("1 e 5 estrelas")
+    await expect(
+      submitReview({ ...VALID_INPUT, rating: 6 }, CTX_AUTH),
+    ).rejects.toThrow()
+    expect(mockReviewUpsert).not.toHaveBeenCalled()
   })
 
   it("rejects non-integer rating", async () => {
-    const result = await submitReview(
-      { ...VALID_INPUT, rating: 3.5 },
-      CTX_AUTH,
-    )
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain("1 e 5 estrelas")
+    await expect(
+      submitReview({ ...VALID_INPUT, rating: 3.5 }, CTX_AUTH),
+    ).rejects.toThrow()
+    expect(mockReviewUpsert).not.toHaveBeenCalled()
   })
 
   // ── Happy path ─────────────────────────────────────────────────────────

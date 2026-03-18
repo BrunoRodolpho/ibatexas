@@ -1,4 +1,5 @@
 import type { Command } from "commander"
+import type { MedusaProductInput } from "@ibatexas/tools"
 import { confirm } from "@inquirer/prompts"
 import chalk from "chalk"
 import ora from "ora"
@@ -364,7 +365,7 @@ async function runReindex(fresh = false) {
   step(`Indexing ${allProducts.length} product(s) into Typesense…`)
   const spinner = ora("Generating embeddings & indexing…").start()
   try {
-    await indexProductsBatch(allProducts)
+    await indexProductsBatch(allProducts as MedusaProductInput[])
     spinner.succeed(chalk.green(`Indexed ${allProducts.length} product(s) into Typesense`))
   } catch (err) {
     spinner.fail(chalk.red("Indexing failed"))

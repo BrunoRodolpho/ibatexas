@@ -4,6 +4,7 @@
 // Used exclusively by admin routes.
 
 import { prisma } from "../client.js"
+import { TableLocation as PrismaTableLocation } from "../generated/prisma-client/index.js"
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -26,11 +27,11 @@ export function createTableService() {
         where: { number: data.number },
         update: {
           capacity: data.capacity,
-          location: data.location,
+          location: data.location as PrismaTableLocation,
           accessible: data.accessible,
           active: data.active,
         },
-        create: data,
+        create: { ...data, location: data.location as PrismaTableLocation },
       })
     },
 

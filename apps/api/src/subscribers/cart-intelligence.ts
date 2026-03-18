@@ -112,6 +112,7 @@ export async function startCartIntelligenceSubscribers(
     };
 
     if (!customerId) return;
+    const itemsWithPrice = items.map((i) => ({ ...i, priceInCentavos: i.priceInCentavos ?? 0 }));
 
     // Idempotency: skip if this order.placed event was already processed
     if (!(await isNewEvent(`order:${orderId}`))) {
@@ -127,7 +128,7 @@ export async function startCartIntelligenceSubscribers(
     try {
       // 1. Bulk-insert CustomerOrderItem rows via CustomerService
       const customerSvc = createCustomerService();
-      await customerSvc.recordOrderItems(customerId, orderId, items);
+      await customerSvc.recordOrderItems(customerId, orderId, itemsWithPrice);
 
       // 2. Update copurchase sorted sets
       await updateCopurchaseScores(items.map((i) => i.productId));

@@ -59,7 +59,7 @@ const mockMedusaProduct = {
     inStock: true,
   },
   // Medusa v2 stores in reais (89 reais = R$89.00 → 8900 centavos after conversion)
-  variants: [{ id: "var_1", prices: [{ amount: 89 }] }],
+  variants: [{ id: "var_1", title: "Padrão", prices: [{ amount: 89, currency_code: "BRL" }] }],
   created_at: "2025-01-01T00:00:00.000Z",
   updated_at: "2025-01-15T12:00:00.000Z",
 }

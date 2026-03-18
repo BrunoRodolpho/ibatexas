@@ -35,6 +35,26 @@ vi.mock("@ibatexas/domain", () => ({
       upsert: mockPrefsUpsert,
     },
   },
+  createCustomerService: () => ({
+    updatePreferences: async (
+      customerId: string,
+      input: { dietaryRestrictions?: string[]; allergenExclusions?: string[]; favoriteCategories?: string[] },
+    ) => {
+      const allergenExclusions = Array.isArray(input.allergenExclusions) ? input.allergenExclusions : []
+      const dietaryRestrictions = Array.isArray(input.dietaryRestrictions) ? input.dietaryRestrictions : []
+      const favoriteCategories = Array.isArray(input.favoriteCategories) ? input.favoriteCategories : []
+      await mockPrefsUpsert({
+        where: { customerId },
+        create: { customerId, allergenExclusions, dietaryRestrictions, favoriteCategories },
+        update: {
+          ...(input.allergenExclusions === undefined ? {} : { allergenExclusions }),
+          ...(input.dietaryRestrictions === undefined ? {} : { dietaryRestrictions }),
+          ...(input.favoriteCategories === undefined ? {} : { favoriteCategories }),
+        },
+      })
+      return { allergenExclusions, dietaryRestrictions, favoriteCategories }
+    },
+  }),
 }))
 
 vi.mock("../../redis/client.js", () => ({

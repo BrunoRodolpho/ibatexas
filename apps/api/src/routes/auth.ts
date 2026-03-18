@@ -350,7 +350,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const customerSvc = createCustomerService();
-      const customer = await customerSvc.getById(request.customerId);
+      const customer = await customerSvc.getById(request.customerId!);
       return reply.send({
         id: customer.id,
         phone: customer.phone,

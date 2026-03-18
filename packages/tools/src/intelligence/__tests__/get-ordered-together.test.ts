@@ -23,6 +23,24 @@ vi.mock("@ibatexas/domain", () => ({
       groupBy: mockOrderItemGroupBy,
     },
   },
+  createCustomerService: () => ({
+    getOrderedTogether: async (customerId: string, productId: string, limit = 5) => {
+      const ordersWithProduct = await mockOrderItemFindMany({
+        where: { customerId, productId },
+        select: { medusaOrderId: true },
+        distinct: ["medusaOrderId"],
+      })
+      if (ordersWithProduct.length === 0) return []
+      const orderIds = ordersWithProduct.map((o: { medusaOrderId: string }) => o.medusaOrderId)
+      return mockOrderItemGroupBy({
+        by: ["productId"],
+        where: { customerId, medusaOrderId: { in: orderIds }, productId: { not: productId } },
+        _count: { productId: true },
+        orderBy: { _count: { productId: "desc" } },
+        take: limit,
+      })
+    },
+  }),
 }))
 
 vi.mock("../query-products-by-ids.js", () => ({

@@ -228,8 +228,8 @@ describe("Query Cache", () => {
 
       const calls = mockRedis.scanIterator.mock.calls
       expect(calls).toHaveLength(2)
-      expect(calls[0][0]).toMatchObject({ MATCH: "search_cache:*" })
-      expect(calls[1][0]).toMatchObject({ MATCH: "search_exact:*" })
+      expect(calls[0][0]).toMatchObject({ MATCH: "development:search_cache:*" })
+      expect(calls[1][0]).toMatchObject({ MATCH: "development:search_exact:*" })
     })
 
     it("returns 0 and does not call del when cache is empty", async () => {

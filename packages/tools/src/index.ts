@@ -43,6 +43,7 @@ export { cosineSimilarity } from "./utils/vectors.js"
 
 // ── Mappers ────────────────────────────────────────────────────────────────────
 export { medusaToTypesenseDoc, typesenseDocToDTO } from "./mappers/product-mapper.js"
+export type { MedusaProductInput } from "./mappers/product-mapper.js"
 
 // ── Query cache ────────────────────────────────────────────────────────────────
 export {

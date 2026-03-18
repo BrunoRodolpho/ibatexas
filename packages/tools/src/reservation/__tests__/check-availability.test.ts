@@ -21,6 +21,37 @@ vi.mock("@ibatexas/domain", () => ({
     reservationTable: { findMany: mockReservationTableFindMany },
     table: { findMany: mockTableFindMany },
   },
+  createReservationService: () => ({
+    checkAvailability: async (date: string, partySize: number, preferredTime?: string) => {
+      const dateObj = new Date(`${date}T00:00:00.000Z`)
+      const slots = await mockTimeSlotFindMany({ where: { date: dateObj }, orderBy: { startTime: "asc" } })
+      const result: Array<{
+        timeSlotId: string; date: string; startTime: string;
+        durationMinutes: number; availableCovers: number; tableLocations: string[];
+      }> = []
+      for (const slot of slots) {
+        const availableCovers = slot.maxCovers - slot.reservedCovers
+        if (availableCovers < partySize) continue
+        if (preferredTime && slot.startTime !== preferredTime) continue
+        const reservedTableRows = await mockReservationTableFindMany({
+          where: { reservation: { timeSlotId: slot.id, status: { notIn: ["cancelled", "no_show"] } } },
+          select: { tableId: true },
+        })
+        const reservedIds = reservedTableRows.map((rt: { tableId: string }) => rt.tableId)
+        const freeTables = await mockTableFindMany({
+          where: { active: true, id: { notIn: reservedIds } },
+          select: { location: true },
+        })
+        const uniqueLocations = [...new Set(freeTables.map((t: { location: string }) => t.location))]
+        result.push({
+          timeSlotId: slot.id, date, startTime: slot.startTime,
+          durationMinutes: slot.durationMinutes, availableCovers,
+          tableLocations: uniqueLocations as string[],
+        })
+      }
+      return result
+    },
+  }),
 }))
 
 // ── Imports ────────────────────────────────────────────────────────────────────

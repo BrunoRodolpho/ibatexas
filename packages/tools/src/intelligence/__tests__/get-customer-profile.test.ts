@@ -49,6 +49,15 @@ vi.mock("@ibatexas/domain", () => ({
       findMany: mockOrderItemFindMany,
     },
   },
+  createCustomerService: () => ({
+    getProfileData: async (customerId: string) => {
+      const [customerPrefs, orderItems] = await Promise.all([
+        mockPrefsFindUnique({ where: { customerId } }),
+        mockOrderItemFindMany({ where: { customerId }, orderBy: { orderedAt: "desc" }, take: 200 }),
+      ])
+      return { customerPrefs, orderItems }
+    },
+  }),
 }))
 
 // -- Imports ──────────────────────────────────────────────────────────────────

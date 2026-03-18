@@ -1,7 +1,7 @@
 // Typesense client wrapper
 // Manages connection, schema, and collections
 
-import { Client, type CollectionCreateSchema } from "typesense"
+import { Client } from "typesense"
 import { EMBED_DIM } from "../config.js"
 import { isTypesenseError } from "./types.js"
 
@@ -83,7 +83,8 @@ export async function ensureCollectionExists(): Promise<void> {
   } catch (err: unknown) {
     if (isTypesenseError(err) && err.httpStatus === 404) {
       // Collection doesn't exist; create it
-      await typesenseClient.collections().create(PRODUCTS_COLLECTION_SCHEMA as CollectionCreateSchema)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await typesenseClient.collections().create(PRODUCTS_COLLECTION_SCHEMA as any)
       console.log(`[Typesense] Created ${COLLECTION} collection`)
     } else {
       throw err

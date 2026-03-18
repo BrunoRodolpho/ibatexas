@@ -28,6 +28,40 @@ vi.mock("@ibatexas/domain", () => ({
     timeSlot: { findUnique: mockTimeSlotFindUnique },
     $transaction: mockTransaction,
   },
+  createReservationService: () => ({
+    modify: async (
+      id: string,
+      customerId: string,
+      changes: { newTimeSlotId?: string; newPartySize?: number; specialRequests?: unknown[] },
+    ) => {
+      const existing = await mockReservationFindUnique({ where: { id }, include: { timeSlot: true, tables: { include: { table: true } } } })
+      if (!existing) throw new Error("Reserva não encontrada.")
+      if (existing.customerId !== customerId) throw new Error("Você não tem permissão para modificar esta reserva.")
+      if (["cancelled", "no_show", "completed"].includes(existing.status)) {
+        throw new Error(`Não é possível modificar reserva com status "${existing.status}".`)
+      }
+      const newTimeSlotId = changes.newTimeSlotId ?? existing.timeSlotId
+      const newPartySize = changes.newPartySize ?? existing.partySize
+      const isChangingSlot = newTimeSlotId !== existing.timeSlotId
+      if (isChangingSlot) {
+        const newSlot = await mockTimeSlotFindUnique({ where: { id: newTimeSlotId } })
+        if (!newSlot) throw new Error("Novo horário não encontrado.")
+        const available = newSlot.maxCovers - newSlot.reservedCovers
+        if (available < newPartySize) throw new Error(`O horário solicitado não tem vagas para ${newPartySize} pessoa(s).`)
+      }
+      const updated = await mockTransaction(async (tx: Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>) => {
+        await tx.timeSlot.update({ where: { id: existing.timeSlotId }, data: { reservedCovers: { decrement: existing.partySize } } })
+        await tx.reservationTable.deleteMany({ where: { reservationId: existing.id } })
+        await tx.timeSlot.update({ where: { id: newTimeSlotId }, data: { reservedCovers: { increment: newPartySize } } })
+        return tx.reservation.update({
+          where: { id: existing.id },
+          data: { timeSlotId: newTimeSlotId, partySize: newPartySize, specialRequests: changes.specialRequests ?? existing.specialRequests ?? [] },
+          include: { timeSlot: true, tables: { include: { table: true } } },
+        })
+      })
+      return mockReservationToDTO(updated)
+    },
+  }),
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -38,6 +72,13 @@ vi.mock("../utils.js", () => ({
   assignTables: mockAssignTables,
   releaseReservation: mockReleaseReservation,
   reservationToDTO: mockReservationToDTO,
+}))
+
+vi.mock("../notifications.js", () => ({
+  sendReservationModified: vi.fn().mockResolvedValue(undefined),
+  sendReservationConfirmation: vi.fn(),
+  sendReservationCancelled: vi.fn(),
+  notifyWaitlistSpotAvailable: vi.fn(),
 }))
 
 // ── Imports ────────────────────────────────────────────────────────────────────

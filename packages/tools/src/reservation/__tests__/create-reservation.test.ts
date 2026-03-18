@@ -25,6 +25,70 @@ vi.mock("@ibatexas/domain", () => ({
     reservationTable: { findMany: mockReservationTableFindMany },
     $transaction: mockTransaction,
   },
+  createReservationService: () => ({
+    create: async (input: { customerId: string; timeSlotId: string; partySize: number; specialRequests?: unknown[] }) => {
+      const slot = await mockTimeSlotFindUnique({ where: { id: input.timeSlotId } })
+      if (!slot) throw new Error("Horário não encontrado. Verifique o ID do horário.")
+      const availableCovers = slot.maxCovers - slot.reservedCovers
+      if (availableCovers < input.partySize) {
+        throw new Error(`Este horário está esgotado para ${input.partySize} pessoa(s). Tente outro horário ou entre na lista de espera.`)
+      }
+      const reserved = await mockReservationTableFindMany({
+        where: { reservation: { timeSlotId: input.timeSlotId, status: { notIn: ["cancelled", "no_show"] } } },
+        select: { tableId: true },
+      })
+      const reservedIds = new Set(reserved.map((rt: { tableId: string }) => rt.tableId))
+      const available = await mockTableFindMany({
+        where: { active: true, id: { notIn: Array.from(reservedIds) } },
+        orderBy: { capacity: "desc" },
+      })
+      const tableIds: string[] = []
+      let covered = 0
+      for (const table of available) {
+        if (covered >= input.partySize) break
+        tableIds.push(table.id)
+        covered += table.capacity
+      }
+      const tableLocation = available[0]?.location ?? null
+      const reservation = await mockTransaction(async (tx: Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>) => {
+        const r = await tx.reservation.create({
+          data: {
+            customerId: input.customerId,
+            partySize: input.partySize,
+            status: "confirmed",
+            specialRequests: input.specialRequests ?? [],
+            confirmedAt: new Date(),
+            timeSlotId: input.timeSlotId,
+            tables: { create: tableIds.map((tableId: string) => ({ tableId })) },
+          },
+          include: { timeSlot: true, tables: { include: { table: true } } },
+        })
+        await tx.timeSlot.update({
+          where: { id: input.timeSlotId },
+          data: { reservedCovers: { increment: input.partySize } },
+        })
+        return r
+      })
+      const toDTO = (r: Record<string, unknown>) => {
+        const ts = r.timeSlot as Record<string, unknown>
+        const tables = r.tables as Array<{ table: { location: string } }>
+        return {
+          id: r.id, customerId: r.customerId, partySize: r.partySize,
+          status: r.status, specialRequests: r.specialRequests ?? [],
+          timeSlot: {
+            id: ts.id, date: (ts.date as Date).toISOString().split("T")[0] ?? "",
+            startTime: ts.startTime, durationMinutes: ts.durationMinutes,
+          },
+          tableLocation: tables?.[0]?.table?.location ?? null,
+          confirmedAt: r.confirmedAt ? (r.confirmedAt as Date).toISOString() : null,
+          checkedInAt: null, cancelledAt: null,
+          createdAt: (r.createdAt as Date).toISOString(),
+          updatedAt: (r.updatedAt as Date).toISOString(),
+        }
+      }
+      return { reservation: toDTO(reservation as Record<string, unknown>), tableLocation }
+    },
+  }),
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({

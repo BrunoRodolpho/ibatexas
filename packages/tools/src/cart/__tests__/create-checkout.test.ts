@@ -359,17 +359,11 @@ describe("createCheckout", () => {
   })
 
   describe("unsupported payment method", () => {
-    it("returns success:false for unknown payment method without Stripe session", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ cart: { payment_sessions: [] } })
-
-      // Force an unknown type by casting
+    it("throws ZodError for unknown payment method (rejected at schema level)", async () => {
+      // Force an unknown type by casting — Zod v3.25 rejects invalid enum values at parse
       const input = { ...BASE_INPUT, paymentMethod: "bitcoin" as "pix" }
 
-      const result = await createCheckout(input, CTX)
-
-      expect(result.success).toBe(false)
+      await expect(createCheckout(input, CTX)).rejects.toThrow("Invalid enum value")
     })
   })
 
