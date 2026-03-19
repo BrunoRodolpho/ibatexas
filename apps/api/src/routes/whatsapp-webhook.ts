@@ -19,7 +19,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { parse as parseQuerystring } from "node:querystring";
 import twilio from "twilio";
 import { getRedisClient, rk } from "@ibatexas/tools";
-import { publishNatsEvent } from "@ibatexas/nats-client";
+// AUDIT-FIX: EVT-F04 — Removed unused publishNatsEvent import (dead whatsapp events removed)
 import { runAgent } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
@@ -42,6 +42,50 @@ const DEBOUNCE_MS = 2000;
 const MAX_HISTORY_MESSAGES = 20;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type LogFn = { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
+
+/**
+ * Post-lock re-check: if new user messages arrived while the agent was running,
+ * re-acquire lock and re-run agent once (max retry = 1 to prevent loops).
+ */
+async function retryForMissedMessages(
+  session: Parameters<typeof buildWhatsAppContext>[0],
+  hash: string,
+  phone: string,
+  log: LogFn,
+): Promise<void> {
+  const postHistory = await loadSession(session.sessionId);
+  const lastMsg = postHistory.at(-1);
+  if (lastMsg?.role !== "user") return;
+
+  const retryLock = await acquireAgentLock(hash);
+  if (!retryLock) return;
+
+  try {
+    const retryHistory = await loadSession(session.sessionId);
+    const retryTrimmed = retryHistory.slice(-MAX_HISTORY_MESSAGES);
+    const retryLastUser = [...retryTrimmed].reverse().find((m) => m.role === "user");
+    const retryInput = retryLastUser?.content || "";
+    const retryContext = buildWhatsAppContext(session);
+
+    log.info({ phone_hash: hash }, "[whatsapp.agent.retry] Re-running agent for missed messages");
+    const retryResponse = await collectAgentResponse(
+      runAgent(retryInput, retryTrimmed, retryContext),
+    );
+
+    if (retryResponse.text) {
+      await sendText(`whatsapp:${phone}`, retryResponse.text);
+      await appendMessages(session.sessionId, [
+        { role: "assistant", content: retryResponse.text },
+      ]);
+    }
+  } catch (retryErr) {
+    log.error(retryErr, "[whatsapp.agent.retry.error] Retry agent processing failed");
+  } finally {
+    await releaseAgentLock(hash);
+  }
+}
 
 interface TwilioWebhookBody {
   MessageSid?: string;
@@ -118,12 +162,11 @@ async function checkIdempotency(redis: Awaited<ReturnType<typeof getRedisClient>
   return !wasSet;
 }
 
+// AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR to prevent immortal keys after crash
 async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisClient>>, hash: string): Promise<boolean> {
   const rateKey = rk(`wa:rate:${hash}`);
   const rateCount = await redis.incr(rateKey);
-  if (rateCount === 1) {
-    await redis.expire(rateKey, 60);
-  }
+  await redis.expire(rateKey, 60); // idempotent TTL reset
   return rateCount > MAX_RATE_PER_MINUTE;
 }
 
@@ -161,30 +204,24 @@ function buildUserMessage(body: TwilioWebhookBody, messageBody: string): string 
 }
 
 export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<void> {
-  // Register custom content type parser for form-urlencoded (Twilio sends this)
-  server.addContentTypeParser(
-    "application/x-www-form-urlencoded",
-    { parseAs: "buffer", bodyLimit: 1_048_576 },
-    (req, body, done) => {
-      if (req.url === "/api/webhooks/whatsapp") {
+  // AUDIT-FIX: WA-M06 — Scope form-urlencoded content type parser to the webhook route
+  // only via Fastify's encapsulated plugin registration. This prevents replacing Fastify's
+  // default form parser on all other routes.
+  await server.register(async function whatsappWebhookPlugin(scoped) {
+    scoped.addContentTypeParser(
+      "application/x-www-form-urlencoded",
+      { parseAs: "buffer", bodyLimit: 1_048_576 },
+      (_req, body, done) => {
         try {
           const parsed = parseQuerystring((body as Buffer).toString("utf-8"));
           done(null, parsed);
         } catch (err) {
           done(err as Error, undefined);
         }
-      } else {
-        // Let other routes handle normally
-        try {
-          done(null, parseQuerystring((body as Buffer).toString("utf-8")));
-        } catch (err) {
-          done(err as Error, undefined);
-        }
-      }
-    },
-  );
+      },
+    );
 
-  server.post(
+    scoped.post(
     "/api/webhooks/whatsapp",
     {
       schema: {
@@ -255,6 +292,43 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       return reply;
     },
   );
+  }); // end whatsappWebhookPlugin register
+}
+
+/** Try shortcut or state machine before resorting to LLM agent. Returns response text if handled. */
+async function tryShortcutOrStateMachine(
+  body: TwilioWebhookBody,
+  messageBody: string,
+  hash: string,
+  phone: string,
+  session: { sessionId: string },
+  log: LogFn,
+): Promise<boolean> {
+  const shortcut = matchShortcut(messageBody);
+  if (shortcut) {
+    log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
+    const response = await handleShortcut(shortcut.type, hash);
+    if (response) {
+      await sendText(`whatsapp:${phone}`, response);
+      await appendMessages(session.sessionId, [{ role: "assistant", content: response }]);
+      return true;
+    }
+  }
+
+  const interactiveId = body.ListId || body.ButtonPayload || undefined;
+  const stateAction = await handleStateMachine(hash, messageBody, interactiveId);
+  if (stateAction) {
+    log.info(
+      { phone_hash: hash, action: stateAction.action, next_state: stateAction.nextState },
+      "[whatsapp.state_machine]",
+    );
+    await transitionTo(hash, stateAction.nextState);
+    const paramsSuffix = stateAction.params ? `, params=${JSON.stringify(stateAction.params)}` : "";
+    const stateMessage = `[state_action: ${stateAction.action}${paramsSuffix}]`;
+    await appendMessages(session.sessionId, [{ role: "user", content: stateMessage }], true);
+  }
+
+  return false;
 }
 
 async function handleMessageAsync(
@@ -263,8 +337,12 @@ async function handleMessageAsync(
   hash: string,
   messageBody: string,
   numMedia: number,
-  log: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
+  log: LogFn,
 ): Promise<void> {
+  // AUDIT-FIX: WA-M03 — Outer try/catch wraps entire function body so that early-stage
+  // crashes (Redis/Prisma down during session resolution, debounce, etc.) still send
+  // a fallback error message to the user instead of failing silently.
+  try {
   const startMs = Date.now();
 
   // ── Media handling ──────────────────────────────────────────────────────────
@@ -292,16 +370,19 @@ async function handleMessageAsync(
   // Append user message to session
   await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true);
 
-  // Publish received event
-  void publishNatsEvent("whatsapp.message.received", {
-    eventType: "whatsapp.message.received",
-    phone_hash: hash,
-    sessionId: session.sessionId,
-    customerId: session.customerId,
-    hasMedia: numMedia > 0,
-  }).catch(() => {}); // fire-and-forget
+  // AUDIT-FIX: EVT-F04 — Removed dead whatsapp.message.received NATS event (no subscriber existed)
 
   // ── Debounce (batch rapid-fire messages) ────────────────────────────────────
+  // AUDIT-FIX: WA-L09 — Debounce boundary edge case documentation:
+  // The 2s debounce window works as follows: the first message sets an NX key (2s TTL)
+  // and becomes the "runner." Subsequent messages within 2s return early (their content
+  // is already in session history). The runner then sleeps 2s to let burst messages
+  // accumulate before loading history. Edge case: a message arriving exactly at the 2s
+  // boundary (after the NX key expires but before the runner loads history) starts a
+  // NEW debounce window and a new runner. Both runners then compete for the agent lock
+  // (keyed by phoneHash). The loser's messages go unprocessed until the post-lock
+  // re-check (AUDIT-FIX WA-H02) picks them up. This is acceptable behavior — the
+  // re-check mechanism ensures no messages are permanently lost.
   const shouldRun = await tryDebounce(hash);
   if (!shouldRun) {
     // Another invocation will handle this — message is already in session history
@@ -312,42 +393,17 @@ async function handleMessageAsync(
   await sleep(DEBOUNCE_MS);
 
   // ── Agent lock ──────────────────────────────────────────────────────────────
-  const lockAcquired = await acquireAgentLock(session.sessionId);
+  // AUDIT-FIX: REDIS-H03/WA-H01 — lock keyed by phoneHash (not sessionId)
+  const lockAcquired = await acquireAgentLock(hash);
   if (!lockAcquired) {
     // Another agent run is in progress — our message is in the session history
     return;
   }
 
   try {
-    // ── Shortcut check (bypass LLM entirely) ────────────────────────────────
-    const interactiveId = body.ListId || body.ButtonPayload || undefined;
-    const shortcut = matchShortcut(messageBody);
-
-    if (shortcut) {
-      log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
-
-      const response = await handleShortcut(shortcut.type, hash);
-      if (response) {
-        await sendText(`whatsapp:${phone}`, response);
-        await appendMessages(session.sessionId, [{ role: "assistant", content: response }]);
-        return;
-      }
-    }
-
-    // ── State machine check (deterministic flows) ───────────────────────────
-    const stateAction = await handleStateMachine(hash, messageBody, interactiveId);
-    if (stateAction) {
-      log.info(
-        { phone_hash: hash, action: stateAction.action, next_state: stateAction.nextState },
-        "[whatsapp.state_machine]",
-      );
-      await transitionTo(hash, stateAction.nextState);
-      // State machine returns an action to execute — delegate to agent with explicit instruction
-      const paramsSuffix = stateAction.params ? `, params=${JSON.stringify(stateAction.params)}` : "";
-      const stateMessage = `[state_action: ${stateAction.action}${paramsSuffix}]`;
-      // Append the state action as context for the agent
-      await appendMessages(session.sessionId, [{ role: "user", content: stateMessage }], true);
-    }
+    // ── Shortcut / state machine (bypass LLM if possible) ─────────────────
+    const handled = await tryShortcutOrStateMachine(body, messageBody, hash, phone, session, log);
+    if (handled) return;
 
     // ── Agent call ──────────────────────────────────────────────────────────
     // Load session history AFTER debounce to include all queued messages
@@ -392,15 +448,7 @@ async function handleMessageAsync(
       ]);
     }
 
-    // Publish sent event
-    void publishNatsEvent("whatsapp.message.sent", {
-      eventType: "whatsapp.message.sent",
-      phone_hash: hash,
-      sessionId: session.sessionId,
-      customerId: session.customerId,
-      tools_used: agentResponse.toolsUsed,
-      duration_ms: durationMs,
-    }).catch(() => {}); // fire-and-forget
+    // AUDIT-FIX: EVT-F04 — Removed dead whatsapp.message.sent NATS event (no subscriber existed)
   } catch (err) {
     log.error(err, "[whatsapp.agent.error] Agent processing failed");
 
@@ -414,6 +462,26 @@ async function handleMessageAsync(
       // Best-effort — can't do more
     }
   } finally {
-    await releaseAgentLock(session.sessionId);
+    // AUDIT-FIX: REDIS-H03/WA-H01 — release lock by phoneHash (not sessionId)
+    await releaseAgentLock(hash);
+
+    // AUDIT-FIX: WA-H02 — re-check for unprocessed messages after lock release.
+    try {
+      await retryForMissedMessages(session, hash, phone, log);
+    } catch {
+      // Best-effort re-check — don't let this crash the outer handler
+    }
+  }
+  // AUDIT-FIX: WA-M03 — Outer catch for early-stage failures (before agent lock try/catch)
+  } catch (outerErr) {
+    log.error(outerErr, "[whatsapp.handler.error] Early-stage failure in async handler");
+    try {
+      await sendText(
+        `whatsapp:${phone}`,
+        "Desculpe, ocorreu um erro. Tente novamente em alguns instantes.",
+      );
+    } catch {
+      // Best-effort — sendText itself may fail if Twilio is down
+    }
   }
 }

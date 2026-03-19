@@ -17,6 +17,10 @@ function isProtectedPath(pathname: string): boolean {
  * Lightweight JWT decode + expiry check for Edge Runtime.
  * Does NOT verify signature (leave that to the API server).
  * Only decodes the payload to check if `exp` claim has passed.
+ *
+ * AUDIT-REVIEWED: FE-M1 — Intentional. Edge Runtime cannot verify JWT signatures.
+ * Full verification happens at the API layer (apps/api/src/middleware/auth.ts).
+ * This middleware is a UX optimization (redirect to login), not a security gate.
  */
 function isTokenExpired(token: string): boolean {
   try {
@@ -32,6 +36,11 @@ function isTokenExpired(token: string): boolean {
 
 export default function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl
+
+  // Guard: skip intl rewriting for internal Next.js paths and static files
+  if (pathname.startsWith("/_next") || pathname.startsWith("/api") || pathname.includes(".")) {
+    return NextResponse.next()
+  }
 
   if (isProtectedPath(pathname)) {
     // Check for session token cookie (set by /api/auth/verify-otp)
@@ -52,5 +61,5 @@ export const config = {
   // - API routes
   // - Next.js internals (_next)
   // - Static files (favicon, images, etc.)
-  matcher: [String.raw`/((?!api|_next|.*\..*).*)` ],
+  matcher: [String.raw`/((?!api|_next|_vercel|.*\..*).*)` ],
 }

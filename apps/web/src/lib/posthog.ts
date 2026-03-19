@@ -32,7 +32,10 @@ export function getPostHogClient(): PostHog | null {
     api_host: host,
     autocapture: false,
     capture_pageview: false,
-    persistence: 'localStorage',
+    // AUDIT-FIX: FE-H1 — Use cookie persistence instead of localStorage to prevent XSS data exposure
+    persistence: 'cookie',
+    secure_cookie: true,
+    cross_subdomain_cookie: false,
     person_profiles: 'identified_only',
   })
 

@@ -5,7 +5,19 @@
 // All sends log phone hash, never raw phone numbers.
 
 import twilio from "twilio";
-import { createHash } from "node:crypto";
+// AUDIT-FIX: WA-L08 — Import hashPhone from session.ts instead of duplicating definition
+import { hashPhone } from "./session.js";
+
+/** Compute retry delay: uses Retry-After header for 429, exponential backoff otherwise. */
+function getRetryDelay(err: unknown, attempt: number): number {
+  const status = (err as { status?: number }).status;
+  if (status === 429) {
+    const retryAfter = (err as { headers?: Record<string, string> }).headers?.["retry-after"];
+    const retryMs = retryAfter ? Number(retryAfter) * 1000 : 5000;
+    return Number.isFinite(retryMs) && retryMs > 0 ? retryMs : 5000;
+  }
+  return 200 * 2 ** attempt;
+}
 
 // ── Twilio client (singleton) ─────────────────────────────────────────────────
 
@@ -16,7 +28,8 @@ function getTwilioClient(): ReturnType<typeof twilio> {
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const auth = process.env.TWILIO_AUTH_TOKEN;
     if (!sid || !auth) throw new Error("TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN not set");
-    _client = twilio(sid, auth);
+    // AUDIT-FIX: INFRA-09 — Add 10s timeout to prevent indefinite hangs during Twilio API outages
+    _client = twilio(sid, auth, { timeout: 10_000 });
   }
   return _client;
 }
@@ -27,10 +40,8 @@ export function getWhatsAppNumber(): string {
   return num;
 }
 
-/** One-way hash of a phone number — safe to log. */
-export function phoneHash(phone: string): string {
-  return createHash("sha256").update(phone).digest("hex").slice(0, 12);
-}
+// AUDIT-FIX: WA-L08 — Re-export hashPhone as phoneHash for backward compatibility
+export { hashPhone as phoneHash } from "./session.js";
 
 // ── Message splitting ──────────────────────────────────────────────────────────
 
@@ -97,7 +108,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 export async function sendText(to: string, body: string): Promise<void> {
   const parts = splitForWhatsApp(body);
-  const hash = phoneHash(to.replace("whatsapp:", ""));
+  const hash = hashPhone(to.replace("whatsapp:", ""));
 
   for (let i = 0; i < parts.length; i++) {
     // Typing simulation: 600ms delay before first part
@@ -127,7 +138,9 @@ async function sendSingleMessage(to: string, body: string, hash: string): Promis
         { phone_hash: hash, error: String(err) },
       );
       if (isLast) throw err;
-      await sleep(200 * 2 ** attempt);
+
+      // AUDIT-FIX: WA-L10 — Respect Twilio 429 Retry-After header
+      await sleep(getRetryDelay(err, attempt));
     }
   }
 }

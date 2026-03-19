@@ -1,5 +1,8 @@
 // Tests for abandoned-cart-checker job
 // Mocks Redis, session store, and NATS to test cart abandonment detection without network
+//
+// AUDIT-FIX: REDIS-M04 — Tests updated for Hash-based active:carts structure.
+// Each hash field stores JSON {cartId, sessionType, lastActivity} instead of bare cartId in a Set.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -34,28 +37,23 @@ import {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-const GUEST_TTL = 48 * 60 * 60; // 48h in seconds (matches source)
 const IDLE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2h
 const CHECK_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
-/** Build a mock redis client with configurable scan results */
-function createMockRedis(overrides: Record<string, unknown> = {}) {
-  return {
-    sScan: vi.fn(),
-    exists: vi.fn(),
-    ttl: vi.fn(),
-    sRem: vi.fn(),
-    ...overrides,
-  };
+/** Build a JSON entry for the active:carts hash */
+function cartEntry(cartId: string, sessionType: "guest" | "customer", idleMs: number): string {
+  return JSON.stringify({ cartId, sessionType, lastActivity: Date.now() - idleMs });
 }
 
-/**
- * Helper: compute the TTL that would indicate lastActivity was `idleMs` ago.
- * lastActivityAgoMs = GUEST_TTL*1000 - ttl*1000
- * ttl = GUEST_TTL - idleMs/1000
- */
-function ttlForIdleMs(idleMs: number): number {
-  return GUEST_TTL - idleMs / 1000;
+/** Build a mock redis client with configurable hScan results */
+function createMockRedis(overrides: Record<string, unknown> = {}) {
+  return {
+    hScan: vi.fn(),
+    hDel: vi.fn(),
+    exists: vi.fn(),
+    ttl: vi.fn(),
+    ...overrides,
+  };
 }
 
 describe("abandoned-cart-checker", () => {
@@ -80,17 +78,20 @@ describe("abandoned-cart-checker", () => {
   // ── start / stop lifecycle ──────────────────────────────────────────────
 
   it("starts and stops without errors", () => {
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: [] });
+    mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
 
     expect(() => startAbandonedCartChecker()).not.toThrow();
     expect(() => stopAbandonedCartChecker()).not.toThrow();
   });
 
   it("does not start a second interval if already running", () => {
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: [] });
+    mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
 
     startAbandonedCartChecker();
-    startAbandonedCartChecker(); // should be a no-op
+    startAbandonedCartChecker(); // should be a no-op — only one interval created
+
+    // Verify setInterval was called only once (first call), not twice
+    expect(vi.getTimerCount()).toBe(1);
 
     stopAbandonedCartChecker();
   });
@@ -99,59 +100,48 @@ describe("abandoned-cart-checker", () => {
     expect(() => stopAbandonedCartChecker()).not.toThrow();
   });
 
-  // ── Empty cart set ────────────────────────────────────────────────────────
+  // ── Empty cart hash ────────────────────────────────────────────────────────
 
-  it("handles empty active:carts set (no members)", async () => {
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: [] });
-
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
-
-    expect(mockRedis.sScan).toHaveBeenCalledWith("test:active:carts", 0, { COUNT: 100 });
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
-  });
-
-  // ── Session expired — remove from set ─────────────────────────────────────
-
-  it("removes cart from active set when session no longer exists", async () => {
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: ["cart_01"] });
-    mockRedis.exists.mockResolvedValue(0); // session does not exist
+  it("handles empty active:carts hash (no tuples)", async () => {
+    mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
 
     startAbandonedCartChecker();
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
 
-    expect(mockRedis.sRem).toHaveBeenCalledWith("test:active:carts", "cart_01");
+    expect(mockRedis.hScan).toHaveBeenCalledWith("test:active:carts", 0, { COUNT: 100 });
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
   });
 
-  // ── Session exists but not idle enough ────────────────────────────────────
+  // ── Cart not idle enough ─────────────────────────────────────────────
 
   it("skips carts that have not been idle long enough", async () => {
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: ["cart_02"] });
-    mockRedis.exists.mockResolvedValue(1);
-    // TTL indicating only 30 minutes idle (well under 2h threshold)
-    mockRedis.ttl.mockResolvedValue(ttlForIdleMs(30 * 60 * 1000));
+    const idleMs = 30 * 60 * 1000; // 30 minutes
+    mockRedis.hScan.mockResolvedValue({
+      cursor: 0,
+      tuples: [{ field: "cart_02", value: cartEntry("cart_02", "guest", idleMs) }],
+    });
 
     startAbandonedCartChecker();
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
 
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
-    expect(mockRedis.sRem).not.toHaveBeenCalled();
+    expect(mockRedis.hDel).not.toHaveBeenCalled();
   });
 
   // ── Session idle but empty history — remove silently ──────────────────────
 
-  it("removes cart from active set when session has empty history", async () => {
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: ["cart_03"] });
-    mockRedis.exists.mockResolvedValue(1);
-    // TTL indicating 3 hours idle (past 2h threshold)
-    mockRedis.ttl.mockResolvedValue(ttlForIdleMs(3 * 60 * 60 * 1000));
+  it("removes cart from active hash when session has empty history", async () => {
+    const idleMs = 3 * 60 * 60 * 1000; // 3 hours
+    mockRedis.hScan.mockResolvedValue({
+      cursor: 0,
+      tuples: [{ field: "cart_03", value: cartEntry("cart_03", "guest", idleMs) }],
+    });
     mockLoadSession.mockResolvedValue([]); // empty history
 
     startAbandonedCartChecker();
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
 
-    expect(mockRedis.sRem).toHaveBeenCalledWith("test:active:carts", "cart_03");
+    expect(mockRedis.hDel).toHaveBeenCalledWith("test:active:carts", "cart_03");
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
   });
 
@@ -160,9 +150,10 @@ describe("abandoned-cart-checker", () => {
   it("publishes cart.abandoned event for idle cart with non-empty history", async () => {
     const idleMs = 3 * 60 * 60 * 1000; // 3 hours
 
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: ["cart_04"] });
-    mockRedis.exists.mockResolvedValue(1);
-    mockRedis.ttl.mockResolvedValue(ttlForIdleMs(idleMs));
+    mockRedis.hScan.mockResolvedValue({
+      cursor: 0,
+      tuples: [{ field: "cart_04", value: cartEntry("cart_04", "guest", idleMs) }],
+    });
     mockLoadSession.mockResolvedValue([{ role: "user", content: "Quero costela" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
@@ -175,48 +166,52 @@ describe("abandoned-cart-checker", () => {
         eventType: "cart.abandoned",
         cartId: "cart_04",
         sessionId: "cart_04",
-        idleMs,
+        sessionType: "guest",
       }),
     );
 
-    // Should remove from active set after publishing
-    expect(mockRedis.sRem).toHaveBeenCalledWith("test:active:carts", "cart_04");
+    // Should remove from active hash after publishing
+    expect(mockRedis.hDel).toHaveBeenCalledWith("test:active:carts", "cart_04");
   });
 
   // ── Multiple carts in a single scan batch ─────────────────────────────────
 
   it("processes multiple carts in one scan batch", async () => {
     const idleMs = 4 * 60 * 60 * 1000; // 4 hours
-    const ttl = ttlForIdleMs(idleMs);
 
-    mockRedis.sScan.mockResolvedValue({
+    mockRedis.hScan.mockResolvedValue({
       cursor: 0,
-      members: ["cart_a", "cart_b", "cart_c"],
+      tuples: [
+        { field: "cart_a", value: cartEntry("cart_a", "guest", idleMs) },
+        { field: "cart_b", value: cartEntry("cart_b", "customer", idleMs) },
+        { field: "cart_c", value: cartEntry("cart_c", "guest", idleMs) },
+      ],
     });
-    mockRedis.exists.mockResolvedValue(1);
-    mockRedis.ttl.mockResolvedValue(ttl);
-    mockLoadSession.mockResolvedValue([{ role: "assistant", content: "Olá!" }]);
+    mockLoadSession.mockResolvedValue([{ role: "assistant", content: "Ola!" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
     startAbandonedCartChecker();
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
 
     expect(mockPublishNatsEvent).toHaveBeenCalledTimes(3);
-    expect(mockRedis.sRem).toHaveBeenCalledTimes(3);
+    expect(mockRedis.hDel).toHaveBeenCalledTimes(3);
   });
 
-  // ── Pagination (multi-page SSCAN) ─────────────────────────────────────────
+  // ── Pagination (multi-page HSCAN) ─────────────────────────────────────────
 
-  it("paginates through SSCAN when cursor is non-zero", async () => {
+  it("paginates through HSCAN when cursor is non-zero", async () => {
     const idleMs = 2.5 * 60 * 60 * 1000;
-    const ttl = ttlForIdleMs(idleMs);
 
     // First call returns cursor=42, second returns cursor=0
-    mockRedis.sScan
-      .mockResolvedValueOnce({ cursor: 42, members: ["cart_page1"] })
-      .mockResolvedValueOnce({ cursor: 0, members: ["cart_page2"] });
-    mockRedis.exists.mockResolvedValue(1);
-    mockRedis.ttl.mockResolvedValue(ttl);
+    mockRedis.hScan
+      .mockResolvedValueOnce({
+        cursor: 42,
+        tuples: [{ field: "cart_page1", value: cartEntry("cart_page1", "guest", idleMs) }],
+      })
+      .mockResolvedValueOnce({
+        cursor: 0,
+        tuples: [{ field: "cart_page2", value: cartEntry("cart_page2", "guest", idleMs) }],
+      });
     mockLoadSession.mockResolvedValue([{ role: "user", content: "Oi" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
@@ -224,9 +219,9 @@ describe("abandoned-cart-checker", () => {
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
 
     // Should have scanned twice (cursor 0 -> 42 -> 0)
-    expect(mockRedis.sScan).toHaveBeenCalledTimes(2);
-    expect(mockRedis.sScan).toHaveBeenCalledWith("test:active:carts", 0, { COUNT: 100 });
-    expect(mockRedis.sScan).toHaveBeenCalledWith("test:active:carts", 42, { COUNT: 100 });
+    expect(mockRedis.hScan).toHaveBeenCalledTimes(2);
+    expect(mockRedis.hScan).toHaveBeenCalledWith("test:active:carts", 0, { COUNT: 100 });
+    expect(mockRedis.hScan).toHaveBeenCalledWith("test:active:carts", 42, { COUNT: 100 });
 
     // Both carts should be published
     expect(mockPublishNatsEvent).toHaveBeenCalledTimes(2);
@@ -236,14 +231,14 @@ describe("abandoned-cart-checker", () => {
 
   it("continues processing remaining carts when one throws", async () => {
     const idleMs = 3 * 60 * 60 * 1000;
-    const ttl = ttlForIdleMs(idleMs);
 
-    mockRedis.sScan.mockResolvedValue({
+    mockRedis.hScan.mockResolvedValue({
       cursor: 0,
-      members: ["cart_fail", "cart_ok"],
+      tuples: [
+        { field: "cart_fail", value: cartEntry("cart_fail", "guest", idleMs) },
+        { field: "cart_ok", value: cartEntry("cart_ok", "guest", idleMs) },
+      ],
     });
-    mockRedis.exists.mockResolvedValue(1);
-    mockRedis.ttl.mockResolvedValue(ttl);
 
     // First loadSession throws, second succeeds
     mockLoadSession
@@ -279,26 +274,20 @@ describe("abandoned-cart-checker", () => {
     );
   });
 
-  // ── Exactly at idle threshold — not abandoned ─────────────────────────────
+  // ── Exactly at idle threshold — is abandoned ─────────────────────────
 
-  it("does not flag cart at exactly the idle threshold", async () => {
-    // At exactly 2h idle, lastActivityAgoMs == IDLE_THRESHOLD_MS
-    // Source check: `lastActivityAgoMs < IDLE_THRESHOLD_MS` → continues → NOT abandoned
-    // Wait, at exactly equal: !(2h < 2h) → false → does NOT continue → falls through
-    // Actually re-reading: if (lastActivityAgoMs < IDLE_THRESHOLD_MS) { continue; }
-    // So at exactly 2h: 2h < 2h is false → it does NOT skip → it IS treated as abandoned
-    const ttl = ttlForIdleMs(IDLE_THRESHOLD_MS);
-
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: ["cart_exact"] });
-    mockRedis.exists.mockResolvedValue(1);
-    mockRedis.ttl.mockResolvedValue(ttl);
+  it("flags cart at exactly the idle threshold as abandoned", async () => {
+    mockRedis.hScan.mockResolvedValue({
+      cursor: 0,
+      tuples: [{ field: "cart_exact", value: cartEntry("cart_exact", "guest", IDLE_THRESHOLD_MS) }],
+    });
     mockLoadSession.mockResolvedValue([{ role: "user", content: "Oi" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
     startAbandonedCartChecker();
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
 
-    // At exactly 2h: condition is `<` so exactly 2h passes through → is abandoned
+    // At exactly 2h: condition is `<` so exactly 2h passes through -> is abandoned
     expect(mockPublishNatsEvent).toHaveBeenCalledTimes(1);
   });
 
@@ -307,9 +296,10 @@ describe("abandoned-cart-checker", () => {
   it("logs completion summary with abandoned count", async () => {
     const idleMs = 5 * 60 * 60 * 1000;
 
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: ["cart_log"] });
-    mockRedis.exists.mockResolvedValue(1);
-    mockRedis.ttl.mockResolvedValue(ttlForIdleMs(idleMs));
+    mockRedis.hScan.mockResolvedValue({
+      cursor: 0,
+      tuples: [{ field: "cart_log", value: cartEntry("cart_log", "guest", idleMs) }],
+    });
     mockLoadSession.mockResolvedValue([{ role: "user", content: "Menu" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
@@ -337,15 +327,15 @@ describe("abandoned-cart-checker", () => {
   // ── Interval fires repeatedly ─────────────────────────────────────────────
 
   it("runs check on every interval tick", async () => {
-    mockRedis.sScan.mockResolvedValue({ cursor: 0, members: [] });
+    mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
 
     startAbandonedCartChecker();
 
     // Advance through 3 intervals
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS * 3 + 100);
 
-    // sScan should be called on each tick (3 times)
-    expect(mockRedis.sScan).toHaveBeenCalledTimes(3);
+    // hScan should be called on each tick (3 times)
+    expect(mockRedis.hScan).toHaveBeenCalledTimes(3);
   });
 
   // ── Unexpected top-level error is caught ──────────────────────────────────
@@ -369,5 +359,46 @@ describe("abandoned-cart-checker", () => {
     await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
 
     expect(mockLogger.error).toHaveBeenCalled();
+  });
+
+  // ── Legacy entry fallback ─────────────────────────────────────────────────
+
+  it("handles legacy entries (bare cartId) by falling back to session TTL", async () => {
+    const GUEST_TTL = 48 * 60 * 60;
+    const idleMs = 3 * 60 * 60 * 1000; // 3 hours
+    const ttlSeconds = GUEST_TTL - idleMs / 1000;
+
+    mockRedis.hScan.mockResolvedValue({
+      cursor: 0,
+      tuples: [{ field: "cart_legacy", value: "cart_legacy" }], // bare string, not JSON
+    });
+    mockRedis.exists.mockResolvedValue(1);
+    mockRedis.ttl.mockResolvedValue(ttlSeconds);
+    mockLoadSession.mockResolvedValue([{ role: "user", content: "Oi" }]);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    startAbandonedCartChecker();
+    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "cart.abandoned",
+      expect.objectContaining({
+        cartId: "cart_legacy",
+      }),
+    );
+  });
+
+  it("removes legacy entry when session no longer exists", async () => {
+    mockRedis.hScan.mockResolvedValue({
+      cursor: 0,
+      tuples: [{ field: "cart_old", value: "cart_old" }], // bare string, not JSON
+    });
+    mockRedis.exists.mockResolvedValue(0); // session expired
+
+    startAbandonedCartChecker();
+    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+
+    expect(mockRedis.hDel).toHaveBeenCalledWith("test:active:carts", "cart_old");
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
   });
 });

@@ -65,10 +65,12 @@ export async function apiFetch<T = unknown>(
   }
 }
 
-export const apiStream = async (endpoint: string, onChunk: (chunk: unknown) => void) => {
+// AUDIT-FIX: FE-M2 — Accept optional AbortSignal to allow cancellation on unmount
+export const apiStream = async (endpoint: string, onChunk: (chunk: unknown) => void, signal?: AbortSignal) => {
   const url = `${API_BASE}${endpoint}`
   const response = await fetch(url, {
     credentials: 'include',
+    signal,
   })
 
   if (!response.ok) {

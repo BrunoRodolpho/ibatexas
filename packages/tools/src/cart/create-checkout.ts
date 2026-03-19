@@ -7,7 +7,7 @@
 // IMPORTANT: PIX and card orders are only confirmed via Stripe webhook —
 // never by client polling alone to avoid stuck-pending orders.
 
-import { CreateCheckoutInputSchema, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
+import { CreateCheckoutInputSchema, NonRetryableError, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import Stripe from "stripe";
@@ -79,6 +79,17 @@ export async function createCheckout(
   const parsed = CreateCheckoutInputSchema.parse(input);
   const { cartId, paymentMethod, tipInCentavos, deliveryCep } = parsed;
 
+  // AUDIT-FIX: TOOL-H02 — Verify cart total > 0 before proceeding with checkout
+  const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
+    cart?: { total?: number; items?: unknown[] };
+  };
+  const cartTotal = cartData.cart?.total ?? 0;
+  if (cartTotal <= 0) {
+    throw new NonRetryableError(
+      "Carrinho vazio ou com valor zero. Adicione itens antes de finalizar o pedido.",
+    );
+  }
+
   // 1. Update cart metadata with tip and delivery CEP
   const metadata: Record<string, string> = {};
   if (tipInCentavos) metadata["tipInCentavos"] = String(tipInCentavos);
@@ -97,6 +108,30 @@ export async function createCheckout(
   });
 
   if (paymentMethod === "cash") {
+    // AUDIT-FIX: EVT-F08 — Fetch cart items BEFORE completing so we can include them
+    // in the order.placed event (matching the Stripe webhook schema)
+    let cartItems: Array<{ productId: string; variantId: string; quantity: number; priceInCentavos: number }> = [];
+    try {
+      const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
+        cart?: {
+          items?: Array<{
+            variant_id: string;
+            quantity: number;
+            unit_price: number;
+            variant?: { product_id?: string };
+          }>;
+        };
+      };
+      cartItems = (cartData.cart?.items ?? []).map((item) => ({
+        productId: item.variant?.product_id ?? "",
+        variantId: item.variant_id,
+        quantity: item.quantity,
+        priceInCentavos: item.unit_price,
+      }));
+    } catch (err) {
+      console.error("[create_checkout] Failed to fetch cart items for order.placed event:", err);
+    }
+
     // Complete cart directly for cash payment
     const completedData = await medusaStoreFetch(`/store/carts/${cartId}/complete`, {
       method: "POST",
@@ -105,11 +140,13 @@ export async function createCheckout(
 
     const orderId = completedData.order?.id;
     if (orderId) {
+      // AUDIT-FIX: EVT-F08 — Include items array to match Stripe webhook order.placed schema
       void publishNatsEvent("order.placed", {
         eventType: "order.placed",
         orderId,
         paymentMethod: "cash",
         customerId: ctx.customerId,
+        items: cartItems,
       }).catch((err) => console.error("[create_checkout] NATS publish error:", err));
     }
 

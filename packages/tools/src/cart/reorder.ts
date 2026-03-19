@@ -16,9 +16,15 @@ export async function reorder(
 
   const data = await medusaAdminFetch(`/admin/orders/${parsed.orderId}`) as {
     order: {
+      customer_id?: string;
       items: Array<{ variant_id: string; quantity: number; title: string }>;
     };
   };
+
+  // AUDIT-FIX: TOOL-H01 — verify order belongs to the authenticated customer
+  if (data.order.customer_id !== ctx.customerId) {
+    throw new NonRetryableError("Acesso negado: este pedido pertence a outro cliente.");
+  }
 
   const items = data.order.items;
   if (!items || items.length === 0) {
@@ -50,6 +56,8 @@ export async function reorder(
     }
   }
 
+  // AUDIT-FIX: EVT-F04 — cart.item_added has no subscriber yet. Keeping for future cart analytics.
+  // TODO: [AUDIT-REVIEW] Add subscriber for cart.item_added when cart analytics pipeline is built
   void publishNatsEvent("cart.item_added", {
     eventType: "cart.item_added",
     cartId,

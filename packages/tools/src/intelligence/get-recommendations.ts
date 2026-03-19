@@ -31,7 +31,8 @@ export async function buildPersonalizedQuery(
     ? (JSON.parse(prefsRaw) as { allergenExclusions?: string[]; favoriteCategories?: string[] })
     : null;
 
-  const filters: string[] = ["inStock:=true", "published:=true"];
+  // AUDIT-FIX: TOOL-L03 — use "status:=published" (not "published:=true") to match Typesense schema
+  const filters: string[] = ["inStock:=true", "status:=published"];
 
   if (prefs?.allergenExclusions && prefs.allergenExclusions.length > 0) {
     filters.push(`allergens:!=[${prefs.allergenExclusions.join(",")}]`);
@@ -115,7 +116,8 @@ export async function getRecommendations(
     .search({
       q: "*",
       query_by: "title",
-      filter_by: "inStock:=true && published:=true && reviewCount:>=5",
+      // AUDIT-FIX: TOOL-L03 — use "status:=published" to match Typesense schema field
+      filter_by: "inStock:=true && status:=published && reviewCount:>=5",
       sort_by: "rating:desc",
       per_page: limit,
     });

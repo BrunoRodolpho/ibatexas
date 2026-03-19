@@ -5,7 +5,7 @@
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { deleteProductFromIndex, invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
-import { publishNatsEvent } from "@ibatexas/nats-client"
+import { withTypesenseRetry } from "./_product-indexing"
 
 export default async function productDeletedHandler({
   event: { data },
@@ -16,8 +16,13 @@ export default async function productDeletedHandler({
   try {
     logger.info(`[Product Indexing] product.deleted: ${data.id}`)
 
+    // AUDIT-FIX: EVT-F11 — Retry Typesense deletion on transient failures
     // Remove from search index (idempotent — ignores 404)
-    await deleteProductFromIndex(data.id)
+    await withTypesenseRetry(
+      () => deleteProductFromIndex(data.id),
+      `deleteProductFromIndex(${data.id})`,
+      logger,
+    )
 
     // Invalidate all query caches — deleted product must not appear in results
     const flushed = await invalidateAllQueryCache()
@@ -26,11 +31,7 @@ export default async function productDeletedHandler({
     // Delete cached embedding
     await deleteEmbeddingCache(data.id)
 
-    await publishNatsEvent("product.indexed", {
-      productId: data.id,
-      action: "deleted",
-      timestamp: new Date().toISOString(),
-    })
+    // AUDIT-FIX: EVT-F04 — Removed dead product.indexed NATS event (no subscriber existed)
 
     logger.info(`[Product Indexing] Deleted from index: ${data.id}`)
   } catch (error) {
