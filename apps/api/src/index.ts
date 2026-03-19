@@ -21,6 +21,10 @@ if (process.env.SENTRY_DSN) {
     environment: process.env.APP_ENV ?? "development",
   });
 }
+// AUDIT-FIX: INFRA-11 — Warn if Sentry is not configured in production (errors will be silently dropped)
+if (process.env.NODE_ENV === "production" && !process.env.SENTRY_DSN) {
+  console.warn("[startup] SENTRY_DSN not set — errors will not be reported to Sentry");
+}
 
 process.on("unhandledRejection", (reason) => {
   if (process.env.SENTRY_DSN) Sentry.captureException(reason);

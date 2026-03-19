@@ -11,6 +11,13 @@ For Medusa's own entities (Product, Cart, Order, etc.) refer to the [Medusa v2 d
 ```
 Customer (Twilio Verify + Medusa)
   │
+  ├── phone: string (unique, primary identity)
+  ├── name: string | null
+  ├── email: string | null
+  ├── medusaId: string | null
+  ├── source: string | null              ← origin channel: 'web' | 'whatsapp'
+  ├── firstContactAt: Date | null        ← timestamp of first interaction
+  │
   ├── GuestSession (Redis, TTL 48h)
   │     ├── sessionId: string
   │     ├── cartId: string          ← Medusa cart
@@ -33,7 +40,7 @@ Customer (Twilio Verify + Medusa)
   │
   ├── Reservation[] (Postgres)
   │     ├── id: string
-  │     ├── customerId: string
+  │     ├── customerId: string       ← FK to Customer.id
   │     ├── partySize: number
   │     ├── status: ReservationStatus
   │     ├── specialRequests: SpecialRequest[]
@@ -44,9 +51,10 @@ Customer (Twilio Verify + Medusa)
   │     ├── TimeSlot
   │     │     ├── id: string
   │     │     ├── date: Date
-  │     │     ├── startTime: string            ← '19:30'
+  │     │     ├── startTime: string            ← 'HH:MM' format, e.g. '19:30'
   │     │     ├── durationMinutes: number      ← default 90
-  │     │     └── maxCovers: number
+  │     │     ├── maxCovers: number
+  │     │     └── reservedCovers: number       ← atomic counter, updated on create/cancel
   │     │
   │     └── Table[]
   │           ├── id: string
@@ -58,7 +66,8 @@ Customer (Twilio Verify + Medusa)
   └── Review[] (Postgres)
         ├── id: string
         ├── orderId: string                    ← Medusa order id
-        ├── productIds: string[]               ← products reviewed
+        ├── productIds: string[]               ← DEPRECATED, use productId
+        ├── productId: string | null           ← primary product this review is for
         ├── customerId: string
         ├── rating: 1 | 2 | 3 | 4 | 5
         ├── comment: string | null
@@ -130,7 +139,7 @@ interface DeliveryZone {
   id: string
   name: string                // e.g. "Centro", "Zona Sul"
   cepPrefixes: string[]       // e.g. ["14800", "14801"] — first 5 digits of CEP
-  deliveryFee: number         // centavos BRL
+  feeInCentavos: number       // centavos BRL (schema field: fee_in_centavos)
   estimatedMinutes: number    // transit time (added to preparation time)
   active: boolean
 }
@@ -242,10 +251,10 @@ model Table {
 model TimeSlot {
   id              String   @id @default(cuid())
   date            DateTime @db.Date
-  startTime       String   // '19:30'
+  startTime       String   @db.VarChar(5)  // 'HH:MM' format, e.g. '19:30'
   durationMinutes Int      @default(90)
   maxCovers       Int
-  reservedCovers  Int      @default(0)
+  reservedCovers  Int      @default(0)  // atomic counter, updated on create/cancel
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -260,14 +269,15 @@ model Reservation {
   customerId      String
   partySize       Int
   status          ReservationStatus @default(pending)
-  specialRequests Json              @default("[]")
+  specialRequests Json              @default("[]")  // SpecialRequest[] — see SpecialRequest type above
   confirmedAt     DateTime?
   checkedInAt     DateTime?
   cancelledAt     DateTime?
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 
-  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id])
+  customer   Customer @relation(fields: [customerId], references: [id])
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Restrict)
   timeSlotId String
 
   tables ReservationTable[]
@@ -292,7 +302,7 @@ model Waitlist {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id])
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Restrict)
   timeSlotId String
 
   @@unique([customerId, timeSlotId])
@@ -301,7 +311,7 @@ model Waitlist {
 model Review {
   id          String   @id @default(cuid())
   orderId     String
-  productIds  String[]  // legacy: multiple product ids
+  productIds  String[]  // DEPRECATED — use productId
   productId   String?   // primary product this review is for
   customerId  String
   rating      Int       // 1–5
@@ -310,24 +320,27 @@ model Review {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  customer Customer? @relation(fields: [customerId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@unique([orderId, customerId])
 }
 
 model Customer {
-  id        String   @id @default(cuid())
-  phone     String   @unique
-  name      String?
-  email     String?
-  medusaId  String?  @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String    @id @default(cuid())
+  phone          String    @unique
+  name           String?
+  email          String?
+  medusaId       String?   @unique
+  source         String?                            // origin channel: 'web' | 'whatsapp'
+  firstContactAt DateTime?                          // timestamp of first interaction
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  addresses   Address[]
-  preferences CustomerPreferences?
-  reviews     Review[]
-  orderItems  CustomerOrderItem[]
+  addresses    Address[]
+  preferences  CustomerPreferences?
+  reviews      Review[]
+  orderItems   CustomerOrderItem[]
+  reservations Reservation[]
 }
 
 model Address {
@@ -358,7 +371,7 @@ model CustomerPreferences {
 
 model CustomerOrderItem {
   id               String   @id @default(cuid())
-  customerId       String
+  customerId       String?                        // nullable for LGPD compliance (SetNull on customer delete)
   medusaOrderId    String
   productId        String
   variantId        String
@@ -366,7 +379,7 @@ model CustomerOrderItem {
   priceInCentavos  Int
   orderedAt        DateTime
 
-  customer Customer @relation(fields: [customerId], references: [id])
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@index([customerId, productId])
   @@index([medusaOrderId])

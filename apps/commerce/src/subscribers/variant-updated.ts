@@ -8,6 +8,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { indexProduct, invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
+import { withTypesenseRetry } from "./_product-indexing"
 
 export default async function variantUpdatedHandler({
   event: { data },
@@ -55,8 +56,13 @@ export default async function variantUpdatedHandler({
       return
     }
 
+    // AUDIT-FIX: EVT-F11 — Retry Typesense indexing on transient failures
     // Re-index to Typesense (upsert is idempotent)
-    await indexProduct(product)
+    await withTypesenseRetry(
+      () => indexProduct(product),
+      `indexProduct(${product.id}, variant-update)`,
+      logger,
+    )
 
     // Invalidate all query caches — price data changed
     const flushed = await invalidateAllQueryCache()

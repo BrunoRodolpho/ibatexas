@@ -24,12 +24,15 @@ services:
   redis:
     image: redis:7-alpine
     container_name: ibatexas-redis
+    # AUDIT-FIX: INFRA-12 — Require password for Redis (prevents unauthenticated access)
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-localdev}"]
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # AUDIT-FIX: INFRA-12 — Pass password for authenticated health check
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-localdev}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -265,7 +265,14 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
         }
       } catch (err) {
         server.log.error({ event_id: event.id, error: String(err) }, "Stripe webhook processing error");
-        // Remove idempotency key so next retry can reprocess
+        // AUDIT-FIX: SEC-F12 — Idempotency key deletion edge case documentation:
+        // Deleting the key on error allows Stripe's retry to reprocess the event.
+        // Edge case: if the original processing partially succeeded (e.g., NATS event
+        // published but capture failed), the retry may cause duplicate NATS events.
+        // Current mitigation: individual NATS subscribers use their own idempotency
+        // (e.g., cart-intelligence checks for duplicate orderId processing). For
+        // production hardening, consider making each operation within the handler
+        // independently idempotent rather than relying on envelope-level dedup.
         await redis.del(idempotencyKey);
         return reply.code(500).send({ error: "Internal processing error" });
       }

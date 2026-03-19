@@ -15,6 +15,7 @@ import { registerRoutes } from "./routes/index.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   // AUDIT-FIX: INFRA-14 — Add request/connection/keepAlive timeouts to prevent slowloris attacks
+  // AUDIT-FIX: SEC-F13 — Enable trustProxy when behind a reverse proxy (ALB, nginx, Cloudflare)
   const server = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
@@ -23,6 +24,7 @@ export async function buildServer(): Promise<FastifyInstance> {
           ? undefined
           : { target: "pino-pretty", options: { colorize: true } },
     },
+    trustProxy: process.env.TRUST_PROXY === "true",
     connectionTimeout: 30_000,
     requestTimeout: 60_000,
     keepAliveTimeout: 72_000,

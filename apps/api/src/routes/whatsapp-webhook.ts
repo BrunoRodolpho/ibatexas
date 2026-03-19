@@ -293,6 +293,16 @@ async function handleMessageAsync(
   // AUDIT-FIX: EVT-F04 — Removed dead whatsapp.message.received NATS event (no subscriber existed)
 
   // ── Debounce (batch rapid-fire messages) ────────────────────────────────────
+  // AUDIT-FIX: WA-L09 — Debounce boundary edge case documentation:
+  // The 2s debounce window works as follows: the first message sets an NX key (2s TTL)
+  // and becomes the "runner." Subsequent messages within 2s return early (their content
+  // is already in session history). The runner then sleeps 2s to let burst messages
+  // accumulate before loading history. Edge case: a message arriving exactly at the 2s
+  // boundary (after the NX key expires but before the runner loads history) starts a
+  // NEW debounce window and a new runner. Both runners then compete for the agent lock
+  // (keyed by phoneHash). The loser's messages go unprocessed until the post-lock
+  // re-check (AUDIT-FIX WA-H02) picks them up. This is acceptable behavior — the
+  // re-check mechanism ensures no messages are permanently lost.
   const shouldRun = await tryDebounce(hash);
   if (!shouldRun) {
     // Another invocation will handle this — message is already in session history

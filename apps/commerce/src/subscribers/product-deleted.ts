@@ -5,6 +5,7 @@
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { deleteProductFromIndex, invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
+import { withTypesenseRetry } from "./_product-indexing"
 
 export default async function productDeletedHandler({
   event: { data },
@@ -15,8 +16,13 @@ export default async function productDeletedHandler({
   try {
     logger.info(`[Product Indexing] product.deleted: ${data.id}`)
 
+    // AUDIT-FIX: EVT-F11 — Retry Typesense deletion on transient failures
     // Remove from search index (idempotent — ignores 404)
-    await deleteProductFromIndex(data.id)
+    await withTypesenseRetry(
+      () => deleteProductFromIndex(data.id),
+      `deleteProductFromIndex(${data.id})`,
+      logger,
+    )
 
     // Invalidate all query caches — deleted product must not appear in results
     const flushed = await invalidateAllQueryCache()

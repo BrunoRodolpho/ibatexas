@@ -63,7 +63,9 @@ model Table {
 model TimeSlot {
   id              String   @id @default(cuid())
   date            DateTime @db.Date
-  startTime       String   // '19:30'
+  // AUDIT-FIX: DL-F07 — Constrained to VarChar(5) to enforce 'HH:MM' format at DB level.
+  // Application layer validates format before write; this annotation prevents oversized strings.
+  startTime       String   @db.VarChar(5) // 'HH:MM' format, e.g. '19:30'
   durationMinutes Int      @default(90) @map("duration_minutes")
   maxCovers       Int      @map("max_covers")
   reservedCovers  Int      @default(0) @map("reserved_covers")
@@ -86,6 +88,11 @@ model Reservation {
   customerId      String            @map("customer_id")
   partySize       Int               @map("party_size")
   status          ReservationStatus @default(pending)
+  // AUDIT-FIX: DL-F12 — Expected JSON shape is SpecialRequest[]:
+  //   { type: 'birthday'|'anniversary'|'allergy_warning'|'highchair'|'window_seat'|'accessible'|'other',
+  //     notes?: string }
+  // Validated via Zod SpecialRequestSchema at application layer. Legacy seed data may contain
+  // plain string[] — consumers must handle both shapes gracefully.
   specialRequests Json              @default("[]") @map("special_requests")
   // ISO 8601 strings for confirmationMessage building
   confirmedAt     DateTime?         @map("confirmed_at")

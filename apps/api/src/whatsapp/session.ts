@@ -28,7 +28,16 @@ export function normalizePhone(from: string): string {
   return phone;
 }
 
-/** One-way hash of a phone number — safe to log. */
+/**
+ * One-way hash of a phone number — safe to log.
+ *
+ * AUDIT-FIX: WA-L07 — Truncation to 12 hex chars provides 48-bit collision space.
+ * Birthday paradox gives ~50% collision probability at ~16.8M unique phones.
+ * At current scale (<10k phones) this is acceptable. A collision would cause two
+ * different phone numbers to share rate limit counters and debounce windows (keyed
+ * by hash), but NOT session data (session resolution uses the actual phone for
+ * Prisma lookup). If scaling to millions of phones, increase to 16+ hex chars.
+ */
 export function hashPhone(phone: string): string {
   return createHash("sha256").update(phone).digest("hex").slice(0, 12);
 }
