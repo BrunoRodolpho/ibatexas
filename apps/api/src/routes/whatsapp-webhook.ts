@@ -50,7 +50,7 @@ type LogFn = { info: (...args: unknown[]) => void; error: (...args: unknown[]) =
  * re-acquire lock and re-run agent once (max retry = 1 to prevent loops).
  */
 async function retryForMissedMessages(
-  session: { sessionId: string },
+  session: Parameters<typeof buildWhatsAppContext>[0],
   hash: string,
   phone: string,
   log: LogFn,
