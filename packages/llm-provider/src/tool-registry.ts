@@ -56,6 +56,31 @@ import {
   GetOrderedTogetherTool,
 } from "@ibatexas/tools"
 import type { AgentContext } from "@ibatexas/types"
+import {
+  SearchProductsInputSchema,
+  CheckAvailabilityInputSchema,
+  CreateReservationInputSchema,
+  ModifyReservationInputSchema,
+  CancelReservationInputSchema,
+  GetMyReservationsInputSchema,
+  JoinWaitlistInputSchema,
+  GetCartInputSchema,
+  AddToCartInputSchema,
+  UpdateCartInputSchema,
+  RemoveFromCartInputSchema,
+  ApplyCouponInputSchema,
+  CreateCheckoutInputSchema,
+  GetOrderHistoryInputSchema,
+  CheckOrderStatusInputSchema,
+  CancelOrderInputSchema,
+  ReorderInputSchema,
+  GetCustomerProfileInputSchema,
+  UpdatePreferencesInputSchema,
+  SubmitReviewInputSchema,
+  GetAlsoAddedInputSchema,
+  GetOrderedTogetherInputSchema,
+} from "@ibatexas/types"
+import { z } from "zod"
 import type { Tool } from "@anthropic-ai/sdk/resources/index.js"
 
 // ── Tool definitions (passed to Claude API) ───────────────────────────────────
@@ -106,21 +131,20 @@ export const TOOL_DEFINITIONS: Tool[] = [
 type ToolHandler = (input: unknown, ctx: AgentContext) => Promise<unknown>
 
 /**
- * Higher-order function: injects customerId from AgentContext when absent in input.
- * Throws early when authentication is required but customerId is missing.
+ * Higher-order function: ALWAYS injects customerId from AgentContext, ignoring any
+ * LLM-supplied value. Throws early when authentication is required but customerId
+ * is missing from the session context.
  */
+// AUDIT-FIX: AI-F01/TOOL-C01 — always override customerId from ctx; never trust LLM input
 function withCustomerId<T extends { customerId?: string }>(
   fn: (input: T) => Promise<unknown>,
 ): ToolHandler {
   return (input, ctx) => {
     const i = input as T
-    if (!i.customerId && ctx.customerId) {
-      return fn({ ...i, customerId: ctx.customerId })
-    }
-    if (!i.customerId && !ctx.customerId) {
+    if (!ctx.customerId) {
       throw new Error("Autenticação necessária. O cliente precisa se identificar para usar esta funcionalidade.")
     }
-    return fn(i)
+    return fn({ ...i, customerId: ctx.customerId })
   }
 }
 
@@ -178,8 +202,42 @@ const handlers = new Map<string, ToolHandler>([
   ["get_ordered_together", (input, ctx) => getOrderedTogether(input as Parameters<typeof getOrderedTogether>[0], ctx)],
 ])
 
+// AUDIT-FIX: AI-F02/TOOL-H03 — centralized Zod validation before tool dispatch
+// Maps tool names to their Zod input schemas. Tools without a dedicated schema
+// in @ibatexas/types use a permissive z.object({}).passthrough() (validated internally).
+// Tools wrapped by withCustomerId use .partial({ customerId: true }) because customerId
+// is injected from AgentContext AFTER Zod validation, not supplied by the LLM.
+const toolInputSchemas = new Map<string, z.ZodTypeAny>([
+  ["search_products", SearchProductsInputSchema],
+  ["get_product_details", z.object({ productId: z.string() }).strict()],
+  ["estimate_delivery", z.object({ cep: z.string() }).strict()],
+  ["check_table_availability", CheckAvailabilityInputSchema],
+  ["create_reservation", CreateReservationInputSchema.partial({ customerId: true })],
+  ["modify_reservation", ModifyReservationInputSchema.partial({ customerId: true })],
+  ["cancel_reservation", CancelReservationInputSchema.partial({ customerId: true })],
+  ["get_my_reservations", GetMyReservationsInputSchema.partial({ customerId: true })],
+  ["join_waitlist", JoinWaitlistInputSchema.partial({ customerId: true })],
+  ["get_cart", GetCartInputSchema],
+  ["add_to_cart", AddToCartInputSchema],
+  ["update_cart", UpdateCartInputSchema],
+  ["remove_from_cart", RemoveFromCartInputSchema],
+  ["apply_coupon", ApplyCouponInputSchema],
+  ["create_checkout", CreateCheckoutInputSchema],
+  ["get_order_history", GetOrderHistoryInputSchema],
+  ["check_order_status", CheckOrderStatusInputSchema],
+  ["cancel_order", CancelOrderInputSchema],
+  ["reorder", ReorderInputSchema],
+  ["get_customer_profile", GetCustomerProfileInputSchema],
+  ["get_recommendations", z.object({}).passthrough()],
+  ["update_preferences", UpdatePreferencesInputSchema],
+  ["submit_review", SubmitReviewInputSchema],
+  ["get_also_added", GetAlsoAddedInputSchema],
+  ["get_ordered_together", GetOrderedTogetherInputSchema],
+])
+
 /**
  * Execute a tool by name.
+ * Validates input against the Zod schema before dispatch.
  * Throws if the tool name is not registered.
  */
 export async function executeTool(
@@ -191,5 +249,12 @@ export async function executeTool(
   if (!handler) {
     throw new Error(`Ferramenta desconhecida: ${name}`)
   }
+
+  // AUDIT-FIX: AI-F02/TOOL-H03 — validate input with Zod before calling handler
+  const schema = toolInputSchemas.get(name)
+  if (schema) {
+    schema.parse(input)
+  }
+
   return handler(input, ctx)
 }

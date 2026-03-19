@@ -16,9 +16,15 @@ export async function reorder(
 
   const data = await medusaAdminFetch(`/admin/orders/${parsed.orderId}`) as {
     order: {
+      customer_id?: string;
       items: Array<{ variant_id: string; quantity: number; title: string }>;
     };
   };
+
+  // AUDIT-FIX: TOOL-H01 — verify order belongs to the authenticated customer
+  if (data.order.customer_id !== ctx.customerId) {
+    throw new NonRetryableError("Acesso negado: este pedido pertence a outro cliente.");
+  }
 
   const items = data.order.items;
   if (!items || items.length === 0) {

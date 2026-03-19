@@ -41,11 +41,13 @@ export function requireAuth(
   reply: FastifyReply,
   done: DoneCallback,
 ): void {
+  // AUDIT-FIX: SEC-F03 — return before done() on 401 to prevent route handler from executing
   extractAuth(request).then(() => {
     if (!request.customerId) {
       void reply
         .code(401)
         .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." });
+      return;
     }
     done();
   }, done);

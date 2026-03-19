@@ -2,12 +2,15 @@
 
 import { RemoveFromCartInputSchema, type RemoveFromCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
+import { assertCartOwnership } from "./assert-cart-ownership.js"; // AUDIT-FIX: TOOL-C02
 
 export async function removeFromCart(
   input: RemoveFromCartInput,
-  _ctx: AgentContext,
+  ctx: AgentContext,
 ): Promise<unknown> {
   const parsed = RemoveFromCartInputSchema.parse(input);
+  // AUDIT-FIX: TOOL-C02 — verify cart ownership before modifying
+  await assertCartOwnership(parsed.cartId, ctx.customerId);
   try {
     return await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items/${parsed.itemId}`, {
       method: "DELETE",

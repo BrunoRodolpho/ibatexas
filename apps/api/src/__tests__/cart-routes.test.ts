@@ -21,6 +21,7 @@ vi.mock("../routes/admin/_shared.js", () => ({
   medusaStore: mockMedusaStore,
 }));
 
+// AUDIT-FIX: TST-C03 — mock uses `return` before done() on 401 path, matching production fix (SEC-F03)
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
     const customerId = request.headers["x-customer-id"] as string | undefined;
@@ -28,9 +29,9 @@ vi.mock("../middleware/auth.js", () => ({
       void reply
         .code(401)
         .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." });
-    } else {
-      request.customerId = customerId;
+      return;
     }
+    request.customerId = customerId;
     done();
   },
   optionalAuth: (request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void) => {

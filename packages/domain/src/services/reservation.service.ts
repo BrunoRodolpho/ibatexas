@@ -5,7 +5,8 @@
 
 import { prisma } from "../client.js"
 import { assertOwnership, assertMutable } from "./shared.js"
-import { ReservationStatus as PrismaReservationStatus } from "../generated/prisma-client/index.js"
+import { Prisma, ReservationStatus as PrismaReservationStatus } from "../generated/prisma-client/index.js"
+import type { PrismaClient } from "../generated/prisma-client/index.js"
 import type {
   ReservationDTO,
   AvailableSlot,
@@ -13,6 +14,9 @@ import type {
   ReservationStatus,
   TableLocation,
 } from "@ibatexas/types"
+
+// AUDIT-FIX: DL-F01 — Transaction client type for interactive transactions
+type TxClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
@@ -66,9 +70,10 @@ function toDTO(r: ReservationWithRelations): ReservationDTO {
 /**
  * Assign tables to cover partySize for a slot.
  * Greedy largest-first strategy: fewest tables that cover the party.
+ * AUDIT-FIX: DL-F01/DL-F11 — accepts optional tx client so it can run inside a transaction
  */
-async function assignTables(timeSlotId: string, partySize: number): Promise<string[]> {
-  const alreadyReserved = await prisma.reservationTable.findMany({
+async function assignTables(timeSlotId: string, partySize: number, db: TxClient | typeof prisma = prisma): Promise<string[]> {
+  const alreadyReserved = await db.reservationTable.findMany({
     where: {
       reservation: { timeSlotId, status: { notIn: ["cancelled", "no_show"] } },
     },
@@ -77,7 +82,7 @@ async function assignTables(timeSlotId: string, partySize: number): Promise<stri
 
   const reservedTableIds = new Set(alreadyReserved.map((rt) => rt.tableId))
 
-  const available = await prisma.table.findMany({
+  const available = await db.table.findMany({
     where: { active: true, id: { notIn: Array.from(reservedTableIds) } },
     orderBy: { capacity: "desc" },
   })
@@ -104,6 +109,8 @@ export function createReservationService() {
   return {
     // ── Queries ─────────────────────────────────────────────────────────
 
+    // AUDIT-FIX: DL-F05 — Replaced N+1 per-slot queries with two bulk queries.
+    // Previously: 1 + (slots * 2) queries. Now: 3 queries total (slots + reservationTables + allTables).
     async checkAvailability(
       date: string,
       partySize: number,
@@ -116,6 +123,32 @@ export function createReservationService() {
         orderBy: { startTime: "asc" },
       })
 
+      if (slots.length === 0) return []
+
+      const slotIds = slots.map((s) => s.id)
+
+      // Bulk-fetch all reserved table assignments for the date's slots
+      const allReservedTables = await prisma.reservationTable.findMany({
+        where: {
+          reservation: { timeSlotId: { in: slotIds }, status: { notIn: ["cancelled", "no_show"] } },
+        },
+        select: { tableId: true, reservation: { select: { timeSlotId: true } } },
+      })
+
+      // Build a map: slotId → Set of reserved tableIds
+      const reservedBySlot = new Map<string, Set<string>>()
+      for (const rt of allReservedTables) {
+        const slotId = rt.reservation.timeSlotId
+        if (!reservedBySlot.has(slotId)) reservedBySlot.set(slotId, new Set())
+        reservedBySlot.get(slotId)!.add(rt.tableId)
+      }
+
+      // Bulk-fetch all active tables once
+      const allActiveTables = await prisma.table.findMany({
+        where: { active: true },
+        select: { id: true, location: true },
+      })
+
       const result: AvailableSlot[] = []
 
       for (const slot of slots) {
@@ -123,20 +156,8 @@ export function createReservationService() {
         if (availableCovers < partySize) continue
         if (preferredTime && slot.startTime !== preferredTime) continue
 
-        const reservedTableIds = await prisma.reservationTable.findMany({
-          where: {
-            reservation: { timeSlotId: slot.id, status: { notIn: ["cancelled", "no_show"] } },
-          },
-          select: { tableId: true },
-        })
-
-        const reservedIds = reservedTableIds.map((rt) => rt.tableId)
-
-        const freeTables = await prisma.table.findMany({
-          where: { active: true, id: { notIn: reservedIds } },
-          select: { location: true },
-        })
-
+        const reservedIds = reservedBySlot.get(slot.id) ?? new Set<string>()
+        const freeTables = allActiveTables.filter((t) => !reservedIds.has(t.id))
         const uniqueLocations = [...new Set(freeTables.map((t) => t.location as TableLocation))]
 
         result.push({
@@ -216,31 +237,36 @@ export function createReservationService() {
 
     // ── Commands ────────────────────────────────────────────────────────
 
+    // AUDIT-FIX: DL-F01 — Restructured create() so availability check, assignTables,
+    // reservation creation, and reservedCovers increment ALL happen inside a single
+    // Prisma interactive transaction with SELECT ... FOR UPDATE row-level lock.
+    // AUDIT-FIX: DL-F11 — assignTables() now runs inside the transaction.
     async create(input: {
       customerId: string
       timeSlotId: string
       partySize: number
       specialRequests?: SpecialRequest[]
     }): Promise<{ reservation: ReservationDTO; tableLocation: TableLocation | null }> {
-      const slot = await prisma.timeSlot.findUnique({ where: { id: input.timeSlotId } })
-      if (!slot) throw new Error("Horário não encontrado. Verifique o ID do horário.")
-
-      const availableCovers = slot.maxCovers - slot.reservedCovers
-      if (availableCovers < input.partySize) {
-        throw new Error(
-          `Este horário está esgotado para ${input.partySize} pessoa(s). Tente outro horário ou entre na lista de espera.`,
+      const result = await prisma.$transaction(async (tx) => {
+        // 1. Lock the time slot row to prevent concurrent reads
+        const locked = await tx.$queryRaw<TimeSlotRow[]>(
+          Prisma.sql`SELECT * FROM ibx_domain.time_slots WHERE id = ${input.timeSlotId} FOR UPDATE`
         )
-      }
+        const slot = locked[0]
+        if (!slot) throw new Error("Horário não encontrado. Verifique o ID do horário.")
 
-      const tableIds = await assignTables(input.timeSlotId, input.partySize)
+        // 2. Check availability under the lock
+        const availableCovers = slot.maxCovers - slot.reservedCovers
+        if (availableCovers < input.partySize) {
+          throw new Error(
+            `Este horário está esgotado para ${input.partySize} pessoa(s). Tente outro horário ou entre na lista de espera.`,
+          )
+        }
 
-      const tables = await prisma.table.findMany({
-        where: { id: { in: tableIds } },
-        select: { id: true, location: true },
-      })
-      const tableLocation = (tables[0]?.location as TableLocation) ?? null
+        // 3. Assign tables inside the transaction
+        const tableIds = await assignTables(input.timeSlotId, input.partySize, tx)
 
-      const reservation = await prisma.$transaction(async (tx) => {
+        // 4. Create the reservation with assigned tables
         const r = await tx.reservation.create({
           data: {
             customerId: input.customerId,
@@ -254,17 +280,19 @@ export function createReservationService() {
           include: { timeSlot: true, tables: { include: { table: true } } },
         })
 
+        // 5. Increment reservedCovers
         await tx.timeSlot.update({
           where: { id: input.timeSlotId },
           data: { reservedCovers: { increment: input.partySize } },
         })
 
-        return r
+        const tableLocation = (r.tables[0]?.table?.location as TableLocation) ?? null
+        return { reservation: r, tableLocation }
       })
 
       return {
-        reservation: toDTO(reservation as unknown as ReservationWithRelations),
-        tableLocation,
+        reservation: toDTO(result.reservation as unknown as ReservationWithRelations),
+        tableLocation: result.tableLocation,
       }
     },
 

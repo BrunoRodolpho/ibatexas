@@ -10,6 +10,7 @@ export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-
 export { estimateDelivery, EstimateDeliveryTool } from "./catalog/estimate-delivery.js"
 
 // ── Cart tools ─────────────────────────────────────────────────────────────────
+export { assertCartOwnership } from "./cart/assert-cart-ownership.js"
 export { getCart, GetCartTool } from "./cart/get-cart.js"
 export { addToCart, AddToCartTool } from "./cart/add-to-cart.js"
 export { updateCart, UpdateCartTool } from "./cart/update-cart.js"

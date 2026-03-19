@@ -147,14 +147,15 @@ describe("withCustomerId injection", () => {
     )
   })
 
-  it("preserves explicit customerId in input", async () => {
+  // AUDIT-FIX: TST-C02 — LLM-supplied customerId must ALWAYS be overridden by ctx.customerId
+  it("overrides LLM-supplied customerId with session context", async () => {
     await executeTool(
       "create_reservation",
       { customerId: "other_cust", timeSlotId: "slot_01", partySize: 4 },
       ctx,
     )
     expect(createReservation).toHaveBeenCalledWith(
-      expect.objectContaining({ customerId: "other_cust" }),
+      expect.objectContaining({ customerId: "cust_01" }),
     )
   })
 

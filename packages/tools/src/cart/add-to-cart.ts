@@ -3,12 +3,16 @@
 import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { assertCartOwnership } from "./assert-cart-ownership.js"; // AUDIT-FIX: TOOL-C02
 
 export async function addToCart(
   input: AddToCartInput,
   ctx: AgentContext,
 ): Promise<unknown> {
   const parsed = AddToCartInputSchema.parse(input);
+
+  // AUDIT-FIX: TOOL-C02 — verify cart ownership before modifying
+  await assertCartOwnership(parsed.cartId, ctx.customerId);
 
   let data: unknown;
   try {
