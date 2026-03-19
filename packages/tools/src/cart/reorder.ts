@@ -64,7 +64,7 @@ export async function reorder(
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
     reorderFromOrderId: parsed.orderId,
-  }).catch((err) => console.error("[reorder] NATS publish error:", err));
+  }).catch((err) => console.error("[reorder] NATS publish error:", (err as Error).message));
 
   const errorNote = errors.length > 0 ? ` (item(ns) indisponível(is): ${errors.join(", ")})` : "";
   return {

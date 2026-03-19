@@ -60,7 +60,7 @@ async function retrievePixCheckout(paymentIntentId: string): Promise<CreateCheck
         : "PIX iniciado. Finalize o pagamento no app do seu banco.",
     };
   } catch (err) {
-    console.error("[create_checkout] PIX QR retrieval error:", err);
+    console.error("[create_checkout] PIX QR retrieval error:", (err as Error).message);
     return {
       success: false,
       paymentMethod: "pix",
@@ -129,7 +129,7 @@ export async function createCheckout(
         priceInCentavos: item.unit_price,
       }));
     } catch (err) {
-      console.error("[create_checkout] Failed to fetch cart items for order.placed event:", err);
+      console.error("[create_checkout] Failed to fetch cart items for order.placed event:", (err as Error).message);
     }
 
     // Complete cart directly for cash payment
@@ -147,7 +147,7 @@ export async function createCheckout(
         paymentMethod: "cash",
         customerId: ctx.customerId,
         items: cartItems,
-      }).catch((err) => console.error("[create_checkout] NATS publish error:", err));
+      }).catch((err) => console.error("[create_checkout] NATS publish error:", (err as Error).message));
     }
 
     return {

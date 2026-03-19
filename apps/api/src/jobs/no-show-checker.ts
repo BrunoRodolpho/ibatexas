@@ -73,7 +73,7 @@ async function checkNoShows(): Promise<void> {
 
         console.info(`[no-show] Reservation ${reservation.id} marked as no_show`)
       } catch (err) {
-        console.error(`[no-show] Failed to process reservation ${reservation.id}:`, err)
+        console.error(`[no-show] Failed to process reservation ${reservation.id}:`, (err as Error).message)
       }
     }
   } finally {
@@ -89,10 +89,10 @@ export function startNoShowChecker(): void {
   if (intervalHandle) return // already running
 
   // Run immediately on startup to catch any missed transitions
-  void checkNoShows().catch((err) => console.error("[no-show] Initial check failed:", err))
+  void checkNoShows().catch((err) => console.error("[no-show] Initial check failed:", (err as Error).message))
 
   intervalHandle = setInterval(() => {
-    void checkNoShows().catch((err) => console.error("[no-show] Check failed:", err))
+    void checkNoShows().catch((err) => console.error("[no-show] Check failed:", (err as Error).message))
   }, CHECK_INTERVAL_MS)
 
   console.info("[no-show] Checker started (every 5 minutes)")

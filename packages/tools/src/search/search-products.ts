@@ -362,7 +362,7 @@ async function generateQueryEmbedding(query: string, isWildcard: boolean): Promi
       rk(`embedding:query:${Buffer.from(query).toString("base64")}`)
     )
   } catch (error) {
-    console.warn("[Search] Query embedding failed; falling back to keyword search:", error)
+    console.warn("[Search] Query embedding failed; falling back to keyword search:", (error as Error).message)
     return []
   }
 }
@@ -381,7 +381,7 @@ async function checkL1Cache(
     await incrementQueryCacheHits(queryEmbedding, cacheCtx)
     await setExactQueryCache(query, cacheCtx, l1.results)
   } catch (error) {
-    console.warn("[Search] Cache backfill failed (non-critical):", error)
+    console.warn("[Search] Cache backfill failed (non-critical):", (error as Error).message)
   }
   return {
     query,
@@ -411,7 +411,7 @@ async function searchTypesense(
     }
   } catch (error) {
     // AUDIT-FIX: TOOL-M02 — surface Typesense error instead of silently returning empty results
-    console.error("[Search] Typesense search failed:", error)
+    console.error("[Search] Typesense search failed:", (error as Error).message)
     searchError = true
   }
 
@@ -436,14 +436,14 @@ async function cacheAndLogResults(
     }
     await setExactQueryCache(query, cacheCtx, products)
   } catch (error) {
-    console.warn("[Search] Cache write failed (non-critical):", error)
+    console.warn("[Search] Cache write failed (non-critical):", (error as Error).message)
   }
 
   try {
     const bucket = queryEmbedding.length > 0 ? embeddingToBucket(queryEmbedding) : "no-embedding"
     await logQuery(sessionId, query, bucket, products.length, cacheCtx.channel, userType)
   } catch (error) {
-    console.warn("[Search] Query log failed (non-critical):", error)
+    console.warn("[Search] Query log failed (non-critical):", (error as Error).message)
   }
 }
 
@@ -484,7 +484,7 @@ async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<Single
     try {
       noResultsReason = await diagnoseNoResults(query, queryEmbedding, limit, rawDTOs, filters)
     } catch (error) {
-      console.warn("[Search] Diagnostic query failed (non-critical):", error)
+      console.warn("[Search] Diagnostic query failed (non-critical):", (error as Error).message)
     }
   }
 
@@ -681,7 +681,7 @@ export async function searchProducts(
       await publishViewedEvents(products, context, queryStr)
     }
   } catch (error) {
-    console.warn("[Search] Event publish failed (non-critical):", error)
+    console.warn("[Search] Event publish failed (non-critical):", (error as Error).message)
   }
 
   // ── Build output ─────────────────────────────────────────────────────────

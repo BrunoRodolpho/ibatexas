@@ -101,7 +101,7 @@ export async function getExactQueryCache(
     incrStat("cache:stats:l0:miss")
     return { hit: false }
   } catch (error) {
-    console.warn("[Cache] L0 exact cache read failed:", error)
+    console.warn("[Cache] L0 exact cache read failed:", (error as Error).message)
     incrStat("cache:stats:l0:miss")
     return { hit: false }
   }
@@ -119,7 +119,7 @@ export async function setExactQueryCache(
     const payload = { results, cachedAt: new Date().toISOString() }
     await redisClient.setEx(key, ttl, JSON.stringify(payload))
   } catch (error) {
-    console.warn("[Cache] L0 exact cache write failed:", error)
+    console.warn("[Cache] L0 exact cache write failed:", (error as Error).message)
   }
 }
 
@@ -147,7 +147,7 @@ export async function getQueryCache(
     incrStat("cache:stats:l1:miss")
     return { hit: false }
   } catch (error) {
-    console.warn("[Cache] L1 semantic cache read failed:", error)
+    console.warn("[Cache] L1 semantic cache read failed:", (error as Error).message)
     incrStat("cache:stats:l1:miss")
     return { hit: false }
   }
@@ -180,7 +180,7 @@ export async function setQueryCache(
 
     await redisClient.setEx(key, ttlSeconds, JSON.stringify(entry))
   } catch (error) {
-    console.warn("[Cache] L1 semantic cache write failed:", error)
+    console.warn("[Cache] L1 semantic cache write failed:", (error as Error).message)
   }
 }
 
@@ -208,7 +208,7 @@ export async function incrementQueryCacheHits(
 
     await redisClient.setEx(key, ttl, JSON.stringify(entry))
   } catch (error) {
-    console.warn("[Cache] Hit increment failed:", error)
+    console.warn("[Cache] Hit increment failed:", (error as Error).message)
   }
 }
 
@@ -241,7 +241,7 @@ export async function invalidateAllQueryCache(): Promise<number> {
 
     return keys.length
   } catch (error) {
-    console.warn("[Cache] Query cache invalidation failed:", error)
+    console.warn("[Cache] Query cache invalidation failed:", (error as Error).message)
     return 0
   }
 }
@@ -279,7 +279,7 @@ export async function logQuery(
 
     await redisClient.setEx(rk(`query_log:${timestamp}:${sessionId}:${keyHash}`), ttl, JSON.stringify(entry))
   } catch (error) {
-    console.warn("[Cache] Query logging failed:", error)
+    console.warn("[Cache] Query logging failed:", (error as Error).message)
   }
 }
 

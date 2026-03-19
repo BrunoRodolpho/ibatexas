@@ -21,7 +21,7 @@ export async function addToCart(
       body: JSON.stringify({ variant_id: parsed.variantId, quantity: parsed.quantity }),
     });
   } catch (err) {
-    console.error("[add_to_cart] Medusa error:", err);
+    console.error("[add_to_cart] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao adicionar item ao carrinho. Verifique o produto e tente novamente." };
   }
 
@@ -34,7 +34,7 @@ export async function addToCart(
     quantity: parsed.quantity,
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
-  }).catch((err) => console.error("[add_to_cart] NATS publish error:", err));
+  }).catch((err) => console.error("[add_to_cart] NATS publish error:", (err as Error).message));
 
   return data;
 }

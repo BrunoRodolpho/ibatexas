@@ -120,7 +120,7 @@ export async function publishNatsEvent(event: string, payload: Record<string, un
     try {
       await _outboxWriter.lPush(outboxKey(envPrefix, event), data)
     } catch (outboxErr) {
-      console.error(`[nats] Outbox write failed for ${event}:`, outboxErr)
+      console.error(`[nats] Outbox write failed for ${event}:`, (outboxErr as Error).message)
       // Continue with NATS publish even if outbox write fails
     }
   }
@@ -136,12 +136,12 @@ export async function publishNatsEvent(event: string, payload: Record<string, un
       try {
         await _outboxWriter.lRem(outboxKey(envPrefix, event), 1, data)
       } catch (removeErr) {
-        console.error(`[nats] Outbox remove failed for ${event}:`, removeErr)
+        console.error(`[nats] Outbox remove failed for ${event}:`, (removeErr as Error).message)
         // Non-fatal: outbox-retry job will re-publish (idempotent on subscriber side)
       }
     }
   } catch (error) {
-    console.error(`Failed to publish event ${event}:`, error)
+    console.error(`Failed to publish event ${event}:`, (error as Error).message)
     // Non-critical; don't throw (event publishing is async)
     // AUDIT-FIX: EVT-F01 — If NATS publish fails, event stays in outbox for retry
   }
@@ -168,7 +168,7 @@ export async function subscribeNatsEvent(
         const payload = JSON.parse(new TextDecoder().decode(msg.data))
         await handler(payload)
       } catch (error) {
-        console.error(`Event handler failed for ${event}:`, error)
+        console.error(`Event handler failed for ${event}:`, (error as Error).message)
       }
     }
   })()

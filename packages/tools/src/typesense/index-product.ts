@@ -33,7 +33,7 @@ export async function indexProduct(
       Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
     )
   } catch (error) {
-    console.warn(`[Typesense] Embedding generation failed for ${product.id} — indexing without embedding:`, error)
+    console.warn(`[Typesense] Embedding generation failed for ${product.id} — indexing without embedding:`, (error as Error).message)
   }
 
   await typesenseClient.collections(COLLECTION).documents().upsert(doc)
@@ -54,7 +54,7 @@ export async function deleteProductFromIndex(productId: string): Promise<void> {
       console.log(`[Typesense] Product not in index (already removed): ${productId}`)
       return
     }
-    console.error(`[Typesense] Failed to delete product ${productId}:`, err)
+    console.error(`[Typesense] Failed to delete product ${productId}:`, (err as Error).message)
     throw err
   }
 }
@@ -78,7 +78,7 @@ export async function indexProductsBatch(
         const embeddingText = [product.title, product.description || ""].join(". ")
         doc.embedding = await embedFn(embeddingText, rk(`product_embedding:${product.id}`), ttl)
       } catch (error) {
-        console.warn(`[Typesense] Embedding skipped for ${product.id}:`, error)
+        console.warn(`[Typesense] Embedding skipped for ${product.id}:`, (error as Error).message)
       }
       return doc
     })

@@ -92,7 +92,7 @@ export async function generateEmbedding(
   try {
     embedding = await generateEmbeddingViaOpenAI(text)
   } catch (error) {
-    console.error("[embeddings] Failed to generate embedding:", error)
+    console.error("[embeddings] Failed to generate embedding:", (error as Error).message)
     embedding = generateDeterministicEmbedding(text)
   }
 
@@ -103,7 +103,7 @@ export async function generateEmbedding(
   try {
     await redisClient.setEx(cacheKey, ttlSeconds, JSON.stringify(embedding))
   } catch (error) {
-    console.warn("Failed to cache embedding:", error)
+    console.warn("Failed to cache embedding:", (error as Error).message)
   }
 
   return embedding

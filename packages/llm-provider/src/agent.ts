@@ -218,7 +218,7 @@ export async function* runAgent(
         max_tokens: AGENT_MAX_TOKENS,
       })
     } catch (err) {
-      console.error("[agent] Failed to start stream:", err)
+      console.error("[agent] Failed to start stream:", (err as Error).message)
       yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
       return
     }
@@ -227,7 +227,7 @@ export async function* runAgent(
     try {
       yield* streamTextDeltas(stream)
     } catch (err) {
-      console.error("[agent] Stream error:", err)
+      console.error("[agent] Stream error:", (err as Error).message)
       yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
       return
     }

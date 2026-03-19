@@ -17,7 +17,7 @@ export async function updateCart(
       body: JSON.stringify({ quantity: parsed.quantity }),
     });
   } catch (err) {
-    console.error("[update_cart] Medusa error:", err);
+    console.error("[update_cart] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao atualizar item no carrinho. Tente novamente." };
   }
 }

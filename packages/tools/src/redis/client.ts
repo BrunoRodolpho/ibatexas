@@ -22,7 +22,7 @@ export async function getRedisClient(): Promise<RedisClientType> {
     const client = createClient({ url: redisUrl })
     // AUDIT-FIX: REDIS-H02 — only log on transient errors; do NOT nullify singleton (fights auto-reconnect)
     client.on("error", (err) => {
-      console.error("[Redis] Client error:", err)
+      console.error("[Redis] Client error:", (err as Error).message)
     })
     // Only nullify on permanent disconnect ('end' event) so next call reconnects
     client.on("end", () => {

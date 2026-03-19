@@ -17,7 +17,7 @@ export async function applyCoupon(
       body: JSON.stringify({ promo_codes: [parsed.code] }),
     });
   } catch (err) {
-    console.error("[apply_coupon] Medusa error:", err);
+    console.error("[apply_coupon] Medusa error:", (err as Error).message);
     return { success: false, message: "Cupom inválido ou erro ao aplicar desconto. Verifique o código e tente novamente." };
   }
 }

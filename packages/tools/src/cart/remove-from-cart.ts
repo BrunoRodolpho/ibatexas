@@ -16,7 +16,7 @@ export async function removeFromCart(
       method: "DELETE",
     });
   } catch (err) {
-    console.error("[remove_from_cart] Medusa error:", err);
+    console.error("[remove_from_cart] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao remover item do carrinho. Tente novamente." };
   }
 }

@@ -50,7 +50,7 @@ export async function submitReview(
     rating,
     reviewCount,
     newAvgRating: avgRating,
-  }).catch((err) => console.error("[submit_review] NATS publish error:", err));
+  }).catch((err) => console.error("[submit_review] NATS publish error:", (err as Error).message));
 
   const stars = "⭐".repeat(rating);
   return {
