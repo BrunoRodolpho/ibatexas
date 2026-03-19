@@ -14,10 +14,10 @@ export async function getEmbeddingCache(productId: string): Promise<number[] | n
     const key = rk(`product_embedding:${productId}`)
     const cached = await redisClient.get(key)
     if (cached) {
-      void redisClient.incr(rk("cache:stats:embed:hit")).catch(() => {})
+      redisClient.incr(rk("cache:stats:embed:hit")).catch(() => {})
       return JSON.parse(cached) as number[]
     }
-    void redisClient.incr(rk("cache:stats:embed:miss")).catch(() => {})
+    redisClient.incr(rk("cache:stats:embed:miss")).catch(() => {})
     return null
   } catch (error) {
     console.warn(`Embedding cache read failed for ${productId}:`, error)

@@ -57,19 +57,17 @@ async function updateGlobalScores(
 }
 
 function buildNotificationMessage(type: string, _cartId?: string): string {
-  switch (type) {
-    case "cart_abandoned":
-      return [
-        `🛒 *IbateXas — Esqueceu algo no carrinho?*`,
-        ``,
-        `Seus itens ainda estão esperando por você!`,
-        `Finalize seu pedido antes que acabe.`,
-        ``,
-        `Responda "meu carrinho" para continuar.`,
-      ].join("\n");
-    default:
-      return `IbateXas: você tem uma nova notificação. Responda para saber mais.`;
+  if (type === "cart_abandoned") {
+    return [
+      `🛒 *IbateXas — Esqueceu algo no carrinho?*`,
+      ``,
+      `Seus itens ainda estão esperando por você!`,
+      `Finalize seu pedido antes que acabe.`,
+      ``,
+      `Responda "meu carrinho" para continuar.`,
+    ].join("\n");
   }
+  return `IbateXas: você tem uma nova notificação. Responda para saber mais.`;
 }
 
 async function resetProfileTtl(customerId: string): Promise<void> {
