@@ -192,7 +192,7 @@ describe("Query Cache", () => {
 
     it("key format is search_exact:{channel}:{16-char hex}", () => {
       const key = exactCacheKey("brisket", defaultCtx())
-      expect(key).toMatch(/^search_exact:web:[a-f0-9]{16}$/)
+      expect(key).toMatch(/^development:search_exact:web:[a-f0-9]{16}$/)
     })
   })
 
@@ -284,7 +284,7 @@ describe("Query Cache", () => {
 
       expect(mockRedis.setEx).toHaveBeenCalledOnce()
       const [key, ttl, payload] = mockRedis.setEx.mock.calls[0]
-      expect(key).toMatch(/^search_exact:web:/)
+      expect(key).toMatch(/^development:search_exact:web:/)
       expect(ttl).toBe(300) // default
       const parsed = JSON.parse(payload)
       expect(parsed.results).toEqual(products)
@@ -621,7 +621,7 @@ describe("Query Cache", () => {
       const [key, ttl, payload] = mockRedis.setEx.mock.calls[0]
 
       // Key format: query_log:{timestamp}:{sessionId}:{8-char uuid prefix}
-      expect(key).toMatch(/^query_log:.+:session-123:a1b2c3d4$/)
+      expect(key).toMatch(/^development:query_log:.+:session-123:a1b2c3d4$/)
       expect(ttl).toBe(604800) // default 7 days
       const parsed = JSON.parse(payload)
       expect(parsed.sessionId).toBe("session-123")
