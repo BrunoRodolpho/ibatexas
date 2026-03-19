@@ -310,7 +310,7 @@ export async function getCacheStats(): Promise<{
   const vals = await redis.mGet(keys)
   const nums = vals.map((v) => Number.parseInt(v ?? "0", 10))
 
-  function rate(hit: number, miss: number): string {
+  const rate = (hit: number, miss: number): string => {
     const total = hit + miss
     return total === 0 ? "0%" : `${((hit / total) * 100).toFixed(1)}%`
   }
