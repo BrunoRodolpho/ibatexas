@@ -6,7 +6,7 @@
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
-import { fetchAndIndexProduct, withTypesenseRetry } from "./_product-indexing"
+import { fetchAndIndexProduct } from "./_product-indexing"
 
 export default async function productUpdatedHandler({
   event: { data },

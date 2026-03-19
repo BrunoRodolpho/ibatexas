@@ -88,7 +88,10 @@ describe("abandoned-cart-checker", () => {
     mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
 
     startAbandonedCartChecker();
-    startAbandonedCartChecker(); // should be a no-op
+    startAbandonedCartChecker(); // should be a no-op — only one interval created
+
+    // Verify setInterval was called only once (first call), not twice
+    expect(vi.getTimerCount()).toBe(1);
 
     stopAbandonedCartChecker();
   });

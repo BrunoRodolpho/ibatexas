@@ -26,6 +26,62 @@ let logger: FastifyBaseLogger | null = null;
 // AUDIT-FIX: EVT-F02 — Overlap guard prevents concurrent job runs
 let isRunning = false;
 
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+/** Parse a hash entry or fall back to session TTL proxy for legacy entries. */
+async function parseCartEntry(
+  cartId: string,
+  raw: string,
+  redis: RedisClient,
+  activeCartsKey: string,
+): Promise<ActiveCartEntry | null> {
+  try {
+    return JSON.parse(raw) as ActiveCartEntry;
+  } catch {
+    // Legacy entry (bare cartId from before REDIS-M04) — fall back to session TTL proxy
+    const sessionKey = rk(`session:${cartId}`);
+    if (!(await redis.exists(sessionKey))) {
+      await redis.hDel(activeCartsKey, cartId);
+      return null;
+    }
+    const ttl = await redis.ttl(sessionKey);
+    const GUEST_TTL = 48 * 60 * 60;
+    const lastActivityAgoMs = GUEST_TTL * 1000 - ttl * 1000;
+    return { cartId, sessionType: "guest", lastActivity: Date.now() - lastActivityAgoMs };
+  }
+}
+
+/** Process a single cart entry: check idle time, emit event if abandoned. Returns true if abandoned. */
+async function processCartEntry(
+  cartId: string,
+  raw: string,
+  redis: RedisClient,
+  activeCartsKey: string,
+): Promise<boolean> {
+  const entry = await parseCartEntry(cartId, raw, redis, activeCartsKey);
+  if (!entry) return false;
+
+  const idleMs = Date.now() - entry.lastActivity;
+  if (idleMs < IDLE_THRESHOLD_MS) return false;
+
+  const history = await loadSession(entry.cartId);
+  if (history.length === 0) {
+    await redis.hDel(activeCartsKey, cartId);
+    return false;
+  }
+
+  await publishNatsEvent("cart.abandoned", {
+    eventType: "cart.abandoned",
+    cartId: entry.cartId,
+    sessionId: entry.cartId,
+    sessionType: entry.sessionType,
+    idleMs,
+  });
+
+  await redis.hDel(activeCartsKey, cartId);
+  return true;
+}
+
 async function checkAbandonedCarts(): Promise<void> {
   // AUDIT-FIX: EVT-F02 — Skip if previous run still in progress
   if (isRunning) return;
@@ -43,52 +99,9 @@ async function checkAbandonedCarts(): Promise<void> {
 
       for (const { field: cartId, value: raw } of scanResult.tuples) {
         try {
-          let entry: ActiveCartEntry;
-          try {
-            entry = JSON.parse(raw) as ActiveCartEntry;
-          } catch {
-            // Legacy entry (bare cartId from before the fix) — fall back to session TTL proxy
-            const sessionKey = rk(`session:${cartId}`);
-            const sessionExists = await redis.exists(sessionKey);
-            if (!sessionExists) {
-              await redis.hDel(activeCartsKey, cartId);
-              continue;
-            }
-            const ttl = await redis.ttl(sessionKey);
-            const GUEST_TTL = 48 * 60 * 60;
-            const remainingMs = ttl * 1000;
-            const lastActivityAgoMs = GUEST_TTL * 1000 - remainingMs;
-            entry = { cartId, sessionType: "guest", lastActivity: Date.now() - lastActivityAgoMs };
+          if (await processCartEntry(cartId, raw, redis, activeCartsKey)) {
+            abandonedCount++;
           }
-
-          const idleMs = Date.now() - entry.lastActivity;
-
-          if (idleMs < IDLE_THRESHOLD_MS) {
-            // Not idle enough yet
-            continue;
-          }
-
-          // Load session to check if there's actual agent chat (proxy for non-empty cart)
-          const history = await loadSession(entry.cartId);
-          if (history.length === 0) {
-            // Empty session — remove from tracking, no event
-            await redis.hDel(activeCartsKey, cartId);
-            continue;
-          }
-
-          // Publish abandoned event
-          await publishNatsEvent("cart.abandoned", {
-            eventType: "cart.abandoned",
-            cartId: entry.cartId,
-            sessionId: entry.cartId,
-            sessionType: entry.sessionType,
-            idleMs,
-          });
-
-          abandonedCount++;
-
-          // Remove member to avoid duplicate events
-          await redis.hDel(activeCartsKey, cartId);
         } catch (err) {
           logger?.error({ cartId, error: String(err) }, "[abandoned-cart] Error processing cart");
         }

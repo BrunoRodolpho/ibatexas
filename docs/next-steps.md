@@ -3,6 +3,14 @@
 Steps 1–12 are complete. Steps 13–15 are below in order.
 Remove a step from this file once it is done (git history is the record).
 
+What's Left (8 [AUDIT-REVIEW] items)
+Full JetStream migration for NATS (requires infra decisions)
+E2E test suite (Playwright/Cypress)
+Full CD pipeline
+Terraform infrastructure
+Cross-schema FK for Reservation.customerId (if Medusa-referenced)
+S3 backend for Terraform state
+
 > **Note:** Admin UI lives at `apps/admin` (port 3002) as a standalone Next.js app.
 > The deprecated admin routes in `apps/web/src/app/[locale]/admin/` should be
 > deleted once the team confirms the migration. After deleting, remove

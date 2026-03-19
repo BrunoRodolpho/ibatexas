@@ -8,6 +8,17 @@ import twilio from "twilio";
 // AUDIT-FIX: WA-L08 — Import hashPhone from session.ts instead of duplicating definition
 import { hashPhone } from "./session.js";
 
+/** Compute retry delay: uses Retry-After header for 429, exponential backoff otherwise. */
+function getRetryDelay(err: unknown, attempt: number): number {
+  const status = (err as { status?: number }).status;
+  if (status === 429) {
+    const retryAfter = (err as { headers?: Record<string, string> }).headers?.["retry-after"];
+    const retryMs = retryAfter ? Number(retryAfter) * 1000 : 5000;
+    return Number.isFinite(retryMs) && retryMs > 0 ? retryMs : 5000;
+  }
+  return 200 * 2 ** attempt;
+}
+
 // ── Twilio client (singleton) ─────────────────────────────────────────────────
 
 let _client: ReturnType<typeof twilio> | null = null;
@@ -128,16 +139,8 @@ async function sendSingleMessage(to: string, body: string, hash: string): Promis
       );
       if (isLast) throw err;
 
-      // AUDIT-FIX: WA-L10 — Respect Twilio 429 Retry-After header instead of using
-      // aggressive short backoff that would immediately hit the rate limit again.
-      const status = (err as { status?: number }).status;
-      if (status === 429) {
-        const retryAfter = (err as { headers?: Record<string, string> }).headers?.["retry-after"];
-        const retryMs = retryAfter ? Number(retryAfter) * 1000 : 5000;
-        await sleep(Number.isFinite(retryMs) && retryMs > 0 ? retryMs : 5000);
-      } else {
-        await sleep(200 * 2 ** attempt);
-      }
+      // AUDIT-FIX: WA-L10 — Respect Twilio 429 Retry-After header
+      await sleep(getRetryDelay(err, attempt));
     }
   }
 }

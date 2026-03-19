@@ -43,6 +43,50 @@ const MAX_HISTORY_MESSAGES = 20;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+type LogFn = { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
+
+/**
+ * Post-lock re-check: if new user messages arrived while the agent was running,
+ * re-acquire lock and re-run agent once (max retry = 1 to prevent loops).
+ */
+async function retryForMissedMessages(
+  session: { sessionId: string },
+  hash: string,
+  phone: string,
+  log: LogFn,
+): Promise<void> {
+  const postHistory = await loadSession(session.sessionId);
+  const lastMsg = postHistory.at(-1);
+  if (!lastMsg || lastMsg.role !== "user") return;
+
+  const retryLock = await acquireAgentLock(hash);
+  if (!retryLock) return;
+
+  try {
+    const retryHistory = await loadSession(session.sessionId);
+    const retryTrimmed = retryHistory.slice(-MAX_HISTORY_MESSAGES);
+    const retryLastUser = [...retryTrimmed].reverse().find((m) => m.role === "user");
+    const retryInput = retryLastUser?.content || "";
+    const retryContext = buildWhatsAppContext(session);
+
+    log.info({ phone_hash: hash }, "[whatsapp.agent.retry] Re-running agent for missed messages");
+    const retryResponse = await collectAgentResponse(
+      runAgent(retryInput, retryTrimmed, retryContext),
+    );
+
+    if (retryResponse.text) {
+      await sendText(`whatsapp:${phone}`, retryResponse.text);
+      await appendMessages(session.sessionId, [
+        { role: "assistant", content: retryResponse.text },
+      ]);
+    }
+  } catch (retryErr) {
+    log.error(retryErr, "[whatsapp.agent.retry.error] Retry agent processing failed");
+  } finally {
+    await releaseAgentLock(hash);
+  }
+}
+
 interface TwilioWebhookBody {
   MessageSid?: string;
   From?: string;
@@ -257,7 +301,7 @@ async function handleMessageAsync(
   hash: string,
   messageBody: string,
   numMedia: number,
-  log: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
+  log: LogFn,
 ): Promise<void> {
   // AUDIT-FIX: WA-M03 — Outer try/catch wraps entire function body so that early-stage
   // crashes (Redis/Prisma down during session resolution, debounce, etc.) still send
@@ -412,41 +456,8 @@ async function handleMessageAsync(
     await releaseAgentLock(hash);
 
     // AUDIT-FIX: WA-H02 — re-check for unprocessed messages after lock release.
-    // If new user messages arrived while the agent was running, they were appended
-    // to session history but the running agent never saw them. Re-acquire lock and
-    // re-run agent once (max retry = 1 to prevent loops).
     try {
-      const postHistory = await loadSession(session.sessionId);
-      const lastMsg = postHistory.length > 0 ? postHistory[postHistory.length - 1] : null;
-      if (lastMsg && lastMsg.role === "user") {
-        // A user message arrived after the agent's last response — re-process
-        const retryLock = await acquireAgentLock(hash);
-        if (retryLock) {
-          try {
-            const retryHistory = await loadSession(session.sessionId);
-            const retryTrimmed = retryHistory.slice(-MAX_HISTORY_MESSAGES);
-            const retryLastUser = [...retryTrimmed].reverse().find((m) => m.role === "user");
-            const retryInput = retryLastUser?.content || "";
-            const retryContext = buildWhatsAppContext(session);
-
-            log.info({ phone_hash: hash }, "[whatsapp.agent.retry] Re-running agent for missed messages");
-            const retryResponse = await collectAgentResponse(
-              runAgent(retryInput, retryTrimmed, retryContext),
-            );
-
-            if (retryResponse.text) {
-              await sendText(`whatsapp:${phone}`, retryResponse.text);
-              await appendMessages(session.sessionId, [
-                { role: "assistant", content: retryResponse.text },
-              ]);
-            }
-          } catch (retryErr) {
-            log.error(retryErr, "[whatsapp.agent.retry.error] Retry agent processing failed");
-          } finally {
-            await releaseAgentLock(hash);
-          }
-        }
-      }
+      await retryForMissedMessages(session, hash, phone, log);
     } catch {
       // Best-effort re-check — don't let this crash the outer handler
     }
