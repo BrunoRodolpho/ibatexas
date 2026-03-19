@@ -14,6 +14,8 @@ const SESSION_TTL_SECONDS = 24 * 60 * 60; // 24h
 const AGENT_LOCK_TTL_SECONDS = 30;
 const AGENT_LOCK_HEARTBEAT_MS = 10_000;
 const DEBOUNCE_TTL_SECONDS = 2;
+// AUDIT-FIX: WA-M04 — Global rate limit on customer auto-creation to prevent DB write amplification
+const MAX_CUSTOMER_CREATES_PER_MINUTE = 100;
 
 // ── Phone utilities ────────────────────────────────────────────────────────────
 
@@ -63,6 +65,16 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
       customerId: cached.customerId,
       isNew: false,
     };
+  }
+
+  // AUDIT-FIX: WA-M04 — Rate limit customer creation to prevent DB write amplification
+  // under broadcast reply storms (many unique phones). Uses INCR + unconditional EXPIRE
+  // pattern (from REDIS-M03 fix) to avoid immortal keys.
+  const rateLimitKey = rk("ratelimit:customer:create");
+  const createCount = await redis.incr(rateLimitKey);
+  await redis.expire(rateLimitKey, 60); // AUDIT-FIX: REDIS-M03 pattern — unconditional EXPIRE
+  if (createCount > MAX_CUSTOMER_CREATES_PER_MINUTE) {
+    throw new Error("Customer creation rate limit exceeded");
   }
 
   // Upsert customer — WhatsApp phone is pre-verified by Meta

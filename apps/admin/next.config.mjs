@@ -28,7 +28,8 @@ const nextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+              // AUDIT-FIX: FE-C2 — Remove unsafe-eval; only needed in dev for Next.js hot-reload
+              `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""}`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com",
               `connect-src 'self' ${apiUrl}${isDev ? ' http://*:3001' : ''}`,

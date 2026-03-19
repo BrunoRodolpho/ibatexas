@@ -106,7 +106,8 @@ describe("buildPersonalizedQuery", () => {
 
     const result = await buildPersonalizedQuery("cus_01")
 
-    expect(result.filterBy).toBe("inStock:=true && published:=true")
+    // AUDIT-FIX: TOOL-L03 — field renamed from "published:=true" to "status:=published"
+    expect(result.filterBy).toBe("inStock:=true && status:=published")
     expect(result.sortBy).toBe("_vector_distance:asc")
   })
 
@@ -295,7 +296,8 @@ describe("getRecommendations", () => {
     expect(result.message).toContain("mais bem avaliados")
     expect(mockSearch).toHaveBeenCalledWith(
       expect.objectContaining({
-        filter_by: "inStock:=true && published:=true && reviewCount:>=5",
+        // AUDIT-FIX: TOOL-L03 — field renamed to match Typesense schema
+        filter_by: "inStock:=true && status:=published && reviewCount:>=5",
         sort_by: "rating:desc",
       }),
     )

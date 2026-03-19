@@ -5,7 +5,8 @@
 // All sends log phone hash, never raw phone numbers.
 
 import twilio from "twilio";
-import { createHash } from "node:crypto";
+// AUDIT-FIX: WA-L08 — Import hashPhone from session.ts instead of duplicating definition
+import { hashPhone } from "./session.js";
 
 // ── Twilio client (singleton) ─────────────────────────────────────────────────
 
@@ -28,10 +29,8 @@ export function getWhatsAppNumber(): string {
   return num;
 }
 
-/** One-way hash of a phone number — safe to log. */
-export function phoneHash(phone: string): string {
-  return createHash("sha256").update(phone).digest("hex").slice(0, 12);
-}
+// AUDIT-FIX: WA-L08 — Re-export hashPhone as phoneHash for backward compatibility
+export { hashPhone as phoneHash } from "./session.js";
 
 // ── Message splitting ──────────────────────────────────────────────────────────
 
@@ -98,7 +97,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 export async function sendText(to: string, body: string): Promise<void> {
   const parts = splitForWhatsApp(body);
-  const hash = phoneHash(to.replace("whatsapp:", ""));
+  const hash = hashPhone(to.replace("whatsapp:", ""));
 
   for (let i = 0; i < parts.length; i++) {
     // Typing simulation: 600ms delay before first part
@@ -128,7 +127,17 @@ async function sendSingleMessage(to: string, body: string, hash: string): Promis
         { phone_hash: hash, error: String(err) },
       );
       if (isLast) throw err;
-      await sleep(200 * 2 ** attempt);
+
+      // AUDIT-FIX: WA-L10 — Respect Twilio 429 Retry-After header instead of using
+      // aggressive short backoff that would immediately hit the rate limit again.
+      const status = (err as { status?: number }).status;
+      if (status === 429) {
+        const retryAfter = (err as { headers?: Record<string, string> }).headers?.["retry-after"];
+        const retryMs = retryAfter ? Number(retryAfter) * 1000 : 5000;
+        await sleep(Number.isFinite(retryMs) && retryMs > 0 ? retryMs : 5000);
+      } else {
+        await sleep(200 * 2 ** attempt);
+      }
     }
   }
 }

@@ -162,26 +162,19 @@ async function handlePaymentIntentCanceled(
 }
 
 export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
-  // Register with raw body content type so we get the Buffer
-  server.addContentTypeParser(
-    "application/json",
-    { parseAs: "buffer", bodyLimit: 1_048_576 },
-    (req, body, done) => {
-      // Only intercept webhook path — allow normal JSON parsing everywhere else
-      if (req.url === "/api/webhooks/stripe") {
-        done(null, body);
-      } else {
-        // Let other routes parse JSON normally
-        try {
-          done(null, JSON.parse((body as Buffer).toString("utf-8")));
-        } catch (err) {
-          done(err as Error, undefined);
-        }
-      }
-    },
-  );
+  // AUDIT-FIX: WA-M05 — Scope raw body content type parser to the webhook route only
+  // via Fastify's encapsulated plugin registration. This prevents replacing Fastify's
+  // built-in optimized JSON parser on all other routes.
+  await server.register(async function stripeWebhookPlugin(scoped) {
+    scoped.addContentTypeParser(
+      "application/json",
+      { parseAs: "buffer", bodyLimit: 1_048_576 },
+      (_req, body, done) => {
+        done(null, body); // pass raw Buffer for Stripe signature verification
+      },
+    );
 
-  server.post(
+    scoped.post(
     "/api/webhooks/stripe",
     {
       config: { rawBody: true },
@@ -280,4 +273,5 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
       return reply.code(200).send({ ok: true });
     },
   );
+  }); // end stripeWebhookPlugin register
 }

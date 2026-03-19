@@ -401,20 +401,23 @@ async function searchTypesense(
   filters: FilterOptions,
   limit: number,
   facetCountsRef?: { value?: Record<string, Array<{ value: string; count: number }>> },
-): Promise<{ products: ProductDTO[]; rawDTOs: ProductDTO[]; tsResult: TypesenseResult }> {
+): Promise<{ products: ProductDTO[]; rawDTOs: ProductDTO[]; tsResult: TypesenseResult; searchError?: boolean }> {
   let tsResult: TypesenseResult = { hits: [], totalFound: 0, scores: {} }
+  let searchError = false
   try {
     tsResult = await executeTypesenseSearch({ query, embedding: queryEmbedding, limit, filterInStock: true, productType: filters.productType, categoryHandle: filters.categoryHandle, tags: filters.tags, sort: filters.sort, offset: filters.offset })
     if (facetCountsRef && tsResult.facetCounts) {
       facetCountsRef.value = tsResult.facetCounts
     }
   } catch (error) {
+    // AUDIT-FIX: TOOL-M02 — surface Typesense error instead of silently returning empty results
     console.error("[Search] Typesense search failed:", error)
+    searchError = true
   }
 
   const rawDTOs = tsResult.hits.map((doc) => typesenseDocToDTO(doc))
   const products = applyFilters(rawDTOs, filters)
-  return { products, rawDTOs, tsResult }
+  return { products, rawDTOs, tsResult, searchError }
 }
 
 /** Cache search results and log the query. Non-critical — errors are swallowed. */
@@ -462,7 +465,21 @@ async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<Single
   const l1Result = await checkL1Cache(query, queryEmbedding, cacheCtx)
   if (l1Result) return l1Result
 
-  const { products, rawDTOs, tsResult } = await searchTypesense(query, queryEmbedding, filters, limit, facetCountsRef)
+  const { products, rawDTOs, tsResult, searchError } = await searchTypesense(query, queryEmbedding, filters, limit, facetCountsRef)
+
+  // AUDIT-FIX: TOOL-M02 — return structured error when Typesense is down instead of empty results
+  if (searchError) {
+    return {
+      error: true,
+      message: "Busca indisponível no momento.",
+      query,
+      products: [],
+      totalFound: 0,
+      scores: {},
+      hitCache: false,
+      searchModel: "hybrid",
+    } as unknown as SearchProductsOutput
+  }
 
   let noResultsReason: NoResultsReason | undefined
   if (products.length === 0) {

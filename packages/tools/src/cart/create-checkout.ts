@@ -7,7 +7,7 @@
 // IMPORTANT: PIX and card orders are only confirmed via Stripe webhook —
 // never by client polling alone to avoid stuck-pending orders.
 
-import { CreateCheckoutInputSchema, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
+import { CreateCheckoutInputSchema, NonRetryableError, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import Stripe from "stripe";
@@ -78,6 +78,17 @@ export async function createCheckout(
 ): Promise<CreateCheckoutOutput> {
   const parsed = CreateCheckoutInputSchema.parse(input);
   const { cartId, paymentMethod, tipInCentavos, deliveryCep } = parsed;
+
+  // AUDIT-FIX: TOOL-H02 — Verify cart total > 0 before proceeding with checkout
+  const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
+    cart?: { total?: number; items?: unknown[] };
+  };
+  const cartTotal = cartData.cart?.total ?? 0;
+  if (cartTotal <= 0) {
+    throw new NonRetryableError(
+      "Carrinho vazio ou com valor zero. Adicione itens antes de finalizar o pedido.",
+    );
+  }
 
   // 1. Update cart metadata with tip and delivery CEP
   const metadata: Record<string, string> = {};

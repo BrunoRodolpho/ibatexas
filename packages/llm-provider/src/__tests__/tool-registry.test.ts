@@ -172,4 +172,57 @@ describe("withCustomerId injection", () => {
       expect.objectContaining({ customerId: "cust_01" }),
     )
   })
+
+  // AUDIT-FIX: Phase 3 — withCustomerId ALWAYS uses ctx.customerId, even when LLM supplies a different one
+  it("always uses ctx.customerId regardless of LLM-supplied customerId for all reservation tools", async () => {
+    const reservationTools = [
+      { name: "create_reservation", input: { customerId: "attacker_id", timeSlotId: "slot_01", partySize: 2 }, mock: createReservation },
+      { name: "cancel_reservation", input: { customerId: "attacker_id", reservationId: "res_99" }, mock: cancelReservation },
+      { name: "get_my_reservations", input: { customerId: "attacker_id" }, mock: getMyReservations },
+    ]
+
+    for (const { name, input, mock } of reservationTools) {
+      vi.clearAllMocks()
+      await executeTool(name, input, ctx)
+      expect(mock).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId: "cust_01" }),
+      )
+      expect(mock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ customerId: "attacker_id" }),
+      )
+    }
+  })
+
+  // AUDIT-FIX: Phase 3 — withCustomerId throws when ctx.customerId is missing (guest)
+  it("throws when ctx.customerId is missing for auth-required tools", async () => {
+    const guestCtx: AgentContext = { ...ctx, customerId: undefined }
+    await expect(
+      executeTool("create_reservation", { timeSlotId: "slot_01", partySize: 2 }, guestCtx),
+    ).rejects.toThrow("Autenticação necessária")
+  })
+})
+
+// ── Zod validation ──────────────────────────────────────────────────────────
+
+describe("Zod input validation", () => {
+  // AUDIT-FIX: Phase 3 — Zod validation rejects malformed tool input (missing required fields)
+  it("rejects get_product_details with missing productId", async () => {
+    await expect(executeTool("get_product_details", {}, ctx)).rejects.toThrow()
+  })
+
+  it("rejects estimate_delivery with missing cep", async () => {
+    await expect(executeTool("estimate_delivery", {}, ctx)).rejects.toThrow()
+  })
+
+  it("rejects create_reservation with missing required fields", async () => {
+    await expect(executeTool("create_reservation", {}, ctx)).rejects.toThrow()
+  })
+
+  it("accepts valid get_product_details input", async () => {
+    await expect(executeTool("get_product_details", { productId: "prod_01" }, ctx)).resolves.not.toThrow()
+  })
+
+  it("accepts valid estimate_delivery input", async () => {
+    await expect(executeTool("estimate_delivery", { cep: "01001000" }, ctx)).resolves.not.toThrow()
+  })
 })

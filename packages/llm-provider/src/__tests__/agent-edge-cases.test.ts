@@ -78,8 +78,11 @@ describe("runAgent edge cases", () => {
 
     const chunks = await collectChunks("conte uma história longa")
 
+    // AUDIT-FIX: AI-F07 — max_tokens now emits an extra text_delta with truncation indicator
     const textChunks = chunks.filter((c) => c.type === "text_delta")
-    expect(textChunks).toHaveLength(1)
+    expect(textChunks).toHaveLength(2)
+    // Second text_delta is the truncation indicator
+    expect(textChunks[1].delta).toContain("truncada")
 
     const doneChunk = chunks.find((c) => c.type === "done")
     expect(doneChunk).toBeDefined()

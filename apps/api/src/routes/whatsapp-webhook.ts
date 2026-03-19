@@ -160,30 +160,24 @@ function buildUserMessage(body: TwilioWebhookBody, messageBody: string): string 
 }
 
 export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<void> {
-  // Register custom content type parser for form-urlencoded (Twilio sends this)
-  server.addContentTypeParser(
-    "application/x-www-form-urlencoded",
-    { parseAs: "buffer", bodyLimit: 1_048_576 },
-    (req, body, done) => {
-      if (req.url === "/api/webhooks/whatsapp") {
+  // AUDIT-FIX: WA-M06 — Scope form-urlencoded content type parser to the webhook route
+  // only via Fastify's encapsulated plugin registration. This prevents replacing Fastify's
+  // default form parser on all other routes.
+  await server.register(async function whatsappWebhookPlugin(scoped) {
+    scoped.addContentTypeParser(
+      "application/x-www-form-urlencoded",
+      { parseAs: "buffer", bodyLimit: 1_048_576 },
+      (_req, body, done) => {
         try {
           const parsed = parseQuerystring((body as Buffer).toString("utf-8"));
           done(null, parsed);
         } catch (err) {
           done(err as Error, undefined);
         }
-      } else {
-        // Let other routes handle normally
-        try {
-          done(null, parseQuerystring((body as Buffer).toString("utf-8")));
-        } catch (err) {
-          done(err as Error, undefined);
-        }
-      }
-    },
-  );
+      },
+    );
 
-  server.post(
+    scoped.post(
     "/api/webhooks/whatsapp",
     {
       schema: {
@@ -254,6 +248,7 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       return reply;
     },
   );
+  }); // end whatsappWebhookPlugin register
 }
 
 async function handleMessageAsync(
@@ -264,6 +259,10 @@ async function handleMessageAsync(
   numMedia: number,
   log: { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void; warn: (...args: unknown[]) => void },
 ): Promise<void> {
+  // AUDIT-FIX: WA-M03 — Outer try/catch wraps entire function body so that early-stage
+  // crashes (Redis/Prisma down during session resolution, debounce, etc.) still send
+  // a fallback error message to the user instead of failing silently.
+  try {
   const startMs = Date.now();
 
   // ── Media handling ──────────────────────────────────────────────────────────
@@ -440,6 +439,18 @@ async function handleMessageAsync(
       }
     } catch {
       // Best-effort re-check — don't let this crash the outer handler
+    }
+  }
+  // AUDIT-FIX: WA-M03 — Outer catch for early-stage failures (before agent lock try/catch)
+  } catch (outerErr) {
+    log.error(outerErr, "[whatsapp.handler.error] Early-stage failure in async handler");
+    try {
+      await sendText(
+        `whatsapp:${phone}`,
+        "Desculpe, ocorreu um erro. Tente novamente em alguns instantes.",
+      );
+    } catch {
+      // Best-effort — sendText itself may fail if Twilio is down
     }
   }
 }
