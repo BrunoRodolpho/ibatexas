@@ -57,7 +57,7 @@ async function retryForMissedMessages(
 ): Promise<void> {
   const postHistory = await loadSession(session.sessionId);
   const lastMsg = postHistory.at(-1);
-  if (!lastMsg || lastMsg.role !== "user") return;
+  if (lastMsg?.role !== "user") return;
 
   const retryLock = await acquireAgentLock(hash);
   if (!retryLock) return;
@@ -295,6 +295,42 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
   }); // end whatsappWebhookPlugin register
 }
 
+/** Try shortcut or state machine before resorting to LLM agent. Returns response text if handled. */
+async function tryShortcutOrStateMachine(
+  body: TwilioWebhookBody,
+  messageBody: string,
+  hash: string,
+  phone: string,
+  session: { sessionId: string },
+  log: LogFn,
+): Promise<boolean> {
+  const shortcut = matchShortcut(messageBody);
+  if (shortcut) {
+    log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
+    const response = await handleShortcut(shortcut.type, hash);
+    if (response) {
+      await sendText(`whatsapp:${phone}`, response);
+      await appendMessages(session.sessionId, [{ role: "assistant", content: response }]);
+      return true;
+    }
+  }
+
+  const interactiveId = body.ListId || body.ButtonPayload || undefined;
+  const stateAction = await handleStateMachine(hash, messageBody, interactiveId);
+  if (stateAction) {
+    log.info(
+      { phone_hash: hash, action: stateAction.action, next_state: stateAction.nextState },
+      "[whatsapp.state_machine]",
+    );
+    await transitionTo(hash, stateAction.nextState);
+    const paramsSuffix = stateAction.params ? `, params=${JSON.stringify(stateAction.params)}` : "";
+    const stateMessage = `[state_action: ${stateAction.action}${paramsSuffix}]`;
+    await appendMessages(session.sessionId, [{ role: "user", content: stateMessage }], true);
+  }
+
+  return false;
+}
+
 async function handleMessageAsync(
   body: TwilioWebhookBody,
   phone: string,
@@ -365,35 +401,9 @@ async function handleMessageAsync(
   }
 
   try {
-    // ── Shortcut check (bypass LLM entirely) ────────────────────────────────
-    const interactiveId = body.ListId || body.ButtonPayload || undefined;
-    const shortcut = matchShortcut(messageBody);
-
-    if (shortcut) {
-      log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
-
-      const response = await handleShortcut(shortcut.type, hash);
-      if (response) {
-        await sendText(`whatsapp:${phone}`, response);
-        await appendMessages(session.sessionId, [{ role: "assistant", content: response }]);
-        return;
-      }
-    }
-
-    // ── State machine check (deterministic flows) ───────────────────────────
-    const stateAction = await handleStateMachine(hash, messageBody, interactiveId);
-    if (stateAction) {
-      log.info(
-        { phone_hash: hash, action: stateAction.action, next_state: stateAction.nextState },
-        "[whatsapp.state_machine]",
-      );
-      await transitionTo(hash, stateAction.nextState);
-      // State machine returns an action to execute — delegate to agent with explicit instruction
-      const paramsSuffix = stateAction.params ? `, params=${JSON.stringify(stateAction.params)}` : "";
-      const stateMessage = `[state_action: ${stateAction.action}${paramsSuffix}]`;
-      // Append the state action as context for the agent
-      await appendMessages(session.sessionId, [{ role: "user", content: stateMessage }], true);
-    }
+    // ── Shortcut / state machine (bypass LLM if possible) ─────────────────
+    const handled = await tryShortcutOrStateMachine(body, messageBody, hash, phone, session, log);
+    if (handled) return;
 
     // ── Agent call ──────────────────────────────────────────────────────────
     // Load session history AFTER debounce to include all queued messages
