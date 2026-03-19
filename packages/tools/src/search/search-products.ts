@@ -470,15 +470,13 @@ async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<Single
   // AUDIT-FIX: TOOL-M02 — return structured error when Typesense is down instead of empty results
   if (searchError) {
     return {
-      error: true,
-      message: "Busca indisponível no momento.",
       query,
       products: [],
       totalFound: 0,
       scores: {},
       hitCache: false,
       searchModel: "hybrid",
-    } as unknown as SearchProductsOutput
+    }
   }
 
   let noResultsReason: NoResultsReason | undefined
