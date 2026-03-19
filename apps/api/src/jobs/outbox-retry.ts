@@ -4,7 +4,7 @@
 //
 // Idempotency is guaranteed by the subscriber-side dedup guard (isNewEvent).
 
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient } from "@ibatexas/tools";
 import { publishNatsEvent, outboxKey } from "@ibatexas/nats-client";
 import type { FastifyBaseLogger } from "fastify";
 

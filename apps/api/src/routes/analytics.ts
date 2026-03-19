@@ -54,7 +54,7 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
       bodyLimit: 4096,
     },
     async (request, reply) => {
-      const { event, properties } = request.body;
+      const { event, properties: _properties } = request.body;
 
       // Validate event against whitelist
       if (!ALLOWED_EVENTS.has(event)) {
