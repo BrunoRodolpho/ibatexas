@@ -29,7 +29,7 @@ interface MedusaContainer {
 async function withTypesenseRetry<T>(
   fn: () => Promise<T>,
   label: string,
-  logger: { warn: (...args: unknown[]) => void },
+  logger: { warn: (...args: any[]) => void },
 ): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt <= TYPESENSE_MAX_RETRIES; attempt++) {
