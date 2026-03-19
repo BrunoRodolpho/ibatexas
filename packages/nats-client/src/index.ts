@@ -82,7 +82,7 @@ const OUTBOX_EVENTS = new Set(["order.placed", "reservation.created"])
 let _outboxWriter: OutboxWriter | null = null
 
 export interface OutboxWriter {
-  lpush(key: string, value: string): Promise<unknown>
+  lPush(key: string, value: string): Promise<unknown>
   lRem(key: string, count: number, value: string): Promise<unknown>
 }
 
@@ -118,7 +118,7 @@ export async function publishNatsEvent(event: string, payload: Record<string, un
   // AUDIT-FIX: EVT-F01 — Write to outbox BEFORE NATS publish for critical events
   if (isCritical && _outboxWriter) {
     try {
-      await _outboxWriter.lpush(outboxKey(envPrefix, event), data)
+      await _outboxWriter.lPush(outboxKey(envPrefix, event), data)
     } catch (outboxErr) {
       console.error(`[nats] Outbox write failed for ${event}:`, outboxErr)
       // Continue with NATS publish even if outbox write fails
