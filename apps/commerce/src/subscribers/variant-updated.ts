@@ -56,8 +56,7 @@ export default async function variantUpdatedHandler({
       return
     }
 
-    // AUDIT-FIX: EVT-F11 — Retry Typesense indexing on transient failures
-    // Re-index to Typesense (upsert is idempotent)
+    // Re-index to Typesense with retry (upsert is idempotent)
     await withTypesenseRetry(
       () => indexProduct(product),
       `indexProduct(${product.id}, variant-update)`,
@@ -70,8 +69,6 @@ export default async function variantUpdatedHandler({
 
     // Force re-embedding on next query (clear stale cached embedding)
     await deleteEmbeddingCache(product.id)
-
-    // AUDIT-FIX: EVT-F04 — Removed dead product.indexed NATS event (no subscriber existed)
 
     logger.info(`[Product Indexing] Re-indexed after variant update: ${product.id} (${product.title})`)
   } catch (error) {

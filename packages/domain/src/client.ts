@@ -1,8 +1,7 @@
 // @ibatexas/domain — Prisma client singleton
 // Exported as a singleton to avoid exhausting connection pool in dev (hot reload).
 //
-// AUDIT-FIX: INFRA-13 — Connection pool configuration
-// Prisma's connection pool is configured via DATABASE_URL query parameters:
+// Connection pool configuration via DATABASE_URL query parameters:
 //   ?connection_limit=10  — max connections in the pool (default: num_cpus * 2 + 1)
 //   &pool_timeout=30      — seconds to wait for a connection before erroring (default: 10)
 // For production, set these in DATABASE_URL to match your Postgres instance limits.

@@ -2,14 +2,13 @@
 
 import { GetCartInputSchema, type GetCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
-import { assertCartOwnership } from "./assert-cart-ownership.js"; // AUDIT-FIX: TOOL-C02
+import { assertCartOwnership } from "./assert-cart-ownership.js";
 
 export async function getCart(
   input: GetCartInput,
   ctx: AgentContext,
 ): Promise<unknown> {
   const parsed = GetCartInputSchema.parse(input);
-  // AUDIT-FIX: TOOL-C02 — verify cart ownership before returning data
   await assertCartOwnership(parsed.cartId, ctx.customerId);
   return medusaStoreFetch(`/store/carts/${parsed.cartId}`);
 }

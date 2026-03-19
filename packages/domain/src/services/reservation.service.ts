@@ -15,7 +15,7 @@ import type {
   TableLocation,
 } from "@ibatexas/types"
 
-// AUDIT-FIX: DL-F01 — Transaction client type for interactive transactions
+// Transaction client type for interactive transactions
 type TxClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ function toDTO(r: ReservationWithRelations): ReservationDTO {
 /**
  * Assign tables to cover partySize for a slot.
  * Greedy largest-first strategy: fewest tables that cover the party.
- * AUDIT-FIX: DL-F01/DL-F11 — accepts optional tx client so it can run inside a transaction
+ * Accepts optional tx client so it can run inside a transaction.
  */
 async function assignTables(timeSlotId: string, partySize: number, db: TxClient | typeof prisma = prisma): Promise<string[]> {
   const alreadyReserved = await db.reservationTable.findMany({
@@ -109,8 +109,7 @@ export function createReservationService() {
   return {
     // ── Queries ─────────────────────────────────────────────────────────
 
-    // AUDIT-FIX: DL-F05 — Replaced N+1 per-slot queries with two bulk queries.
-    // Previously: 1 + (slots * 2) queries. Now: 3 queries total (slots + reservationTables + allTables).
+    // Bulk queries instead of N+1 per-slot: 3 queries total (slots + reservationTables + allTables)
     async checkAvailability(
       date: string,
       partySize: number,
@@ -237,10 +236,9 @@ export function createReservationService() {
 
     // ── Commands ────────────────────────────────────────────────────────
 
-    // AUDIT-FIX: DL-F01 — Restructured create() so availability check, assignTables,
-    // reservation creation, and reservedCovers increment ALL happen inside a single
-    // Prisma interactive transaction with SELECT ... FOR UPDATE row-level lock.
-    // AUDIT-FIX: DL-F11 — assignTables() now runs inside the transaction.
+    // Availability check, assignTables, reservation creation, and reservedCovers
+    // increment ALL happen inside a single Prisma interactive transaction with
+    // SELECT ... FOR UPDATE row-level lock.
     async create(input: {
       customerId: string
       timeSlotId: string

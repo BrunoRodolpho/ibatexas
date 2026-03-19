@@ -1,4 +1,4 @@
-// AUDIT-FIX: Phase 3 / TOOL-M03 — Tests for estimate_delivery tool
+// Tests for estimate_delivery tool
 //
 // Validates:
 //   1. Valid CEP returns delivery estimate

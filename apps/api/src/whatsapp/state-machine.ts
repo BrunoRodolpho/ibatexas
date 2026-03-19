@@ -14,15 +14,9 @@
 //   idle → "reserva" → falls through to LLM agent (reservation tools handle the flow)
 //   any state → free-text that doesn't match → LLM agent (fallback)
 //
-// AUDIT-FIX: WA-L11 — Timeout/reset behavior documentation:
-// There is no explicit timeout to reset stale state. The state is stored in the
-// Redis session hash which inherits the session's 24h TTL. If a user enters
-// 'checkout' state and abandons the conversation, their state remains 'checkout'
-// until the session expires. When they return and type unrecognized input (e.g. "oi"),
-// the state machine handler for 'checkout' returns null (no match), causing fallthrough
-// to the LLM agent. The LLM agent handles stale/unrecognized state gracefully by
-// treating the user's message as a new conversation intent. This is acceptable
-// behavior — no explicit reset mechanism is needed at current scale.
+// Timeout/reset: no explicit reset. State inherits the session's 24h TTL.
+// Stale state (e.g. "checkout" after abandonment) returns null on unrecognized
+// input, falling through to the LLM agent which handles it gracefully.
 
 import { getSessionState, setSessionState } from "./session.js";
 

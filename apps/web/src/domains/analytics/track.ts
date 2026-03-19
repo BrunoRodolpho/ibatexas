@@ -13,11 +13,9 @@ import type { AnalyticsEvent } from './events'
 
 const isDev = process.env.NODE_ENV === 'development'
 
-// AUDIT-FIX: FE-L3 — Design rationale for dual session IDs:
-// 1. Analytics sessionId (sessionStorage, per-tab): ephemeral, used for RPS metric denominator.
-//    Dies on tab close so bounced visitors don't inflate session counts across tabs.
-// 2. Zustand sessionId (localStorage, persistent): survives tab close, used for API calls
-//    and cart association. These serve different lifecycle needs intentionally.
+// Dual session IDs by design:
+// 1. Analytics sessionId (sessionStorage, per-tab): ephemeral, for RPS metric denominator.
+// 2. Zustand sessionId (localStorage, persistent): for API calls and cart association.
 let sessionId: string | null = null
 
 // ── Meaningful events that trigger session_started ────────────────────────

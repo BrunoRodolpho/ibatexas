@@ -79,7 +79,7 @@ export async function createCheckout(
   const parsed = CreateCheckoutInputSchema.parse(input);
   const { cartId, paymentMethod, tipInCentavos, deliveryCep } = parsed;
 
-  // AUDIT-FIX: TOOL-H02 — Verify cart total > 0 before proceeding with checkout
+  // Verify cart total > 0 before proceeding with checkout
   const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
     cart?: { total?: number; items?: unknown[] };
   };
@@ -108,8 +108,7 @@ export async function createCheckout(
   });
 
   if (paymentMethod === "cash") {
-    // AUDIT-FIX: EVT-F08 — Fetch cart items BEFORE completing so we can include them
-    // in the order.placed event (matching the Stripe webhook schema)
+    // Fetch cart items BEFORE completing so we can include them in order.placed event
     let cartItems: Array<{ productId: string; variantId: string; quantity: number; priceInCentavos: number }> = [];
     try {
       const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
@@ -140,7 +139,7 @@ export async function createCheckout(
 
     const orderId = completedData.order?.id;
     if (orderId) {
-      // AUDIT-FIX: EVT-F08 — Include items array to match Stripe webhook order.placed schema
+      // Include items array to match Stripe webhook order.placed schema
       void publishNatsEvent("order.placed", {
         eventType: "order.placed",
         orderId,

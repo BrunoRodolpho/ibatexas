@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 
-// AUDIT-FIX: FE-L2 — Cap individual message content to prevent unbounded memory growth
-// from long SSE streams. 10,000 chars is ~5x a typical agent response.
+// Cap individual message content to prevent unbounded memory growth from long SSE streams
 const MAX_MESSAGE_LENGTH = 10_000
 
 export interface ChatMessage {
@@ -37,7 +36,7 @@ export const useChatStore = create<ChatState>((set) => ({
       messages: [...state.messages, message].slice(-50),
     })),
 
-  // AUDIT-FIX: FE-L2 — Truncate if message exceeds MAX_MESSAGE_LENGTH
+  // Truncate if message exceeds MAX_MESSAGE_LENGTH
   updateLastMessage: (delta) =>
     set((state) => {
       const last = state.messages.at(-1)

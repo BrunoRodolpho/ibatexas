@@ -2,9 +2,8 @@
 // Runs every 15 minutes. Uses HSCAN (never KEYS *) to iterate rk('active:carts') hash.
 // Publishes cart.abandoned for sessions idle > 2h with a non-empty cart.
 //
-// AUDIT-FIX: REDIS-M04 — active:carts is now a Hash (not Set). Each field stores
-// {cartId, sessionType, lastActivity} so idle threshold uses correct session TTL
-// instead of guessing from session TTL (which differed for guest vs authenticated).
+// active:carts is a Hash: each field stores {cartId, sessionType, lastActivity}
+// so the idle threshold uses the correct session TTL per session type.
 
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { loadSession } from "../session/store.js";
@@ -23,7 +22,7 @@ interface ActiveCartEntry {
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let logger: FastifyBaseLogger | null = null;
-// AUDIT-FIX: EVT-F02 — Overlap guard prevents concurrent job runs
+// Overlap guard prevents concurrent job runs
 let isRunning = false;
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
@@ -83,7 +82,6 @@ async function processCartEntry(
 }
 
 async function checkAbandonedCarts(): Promise<void> {
-  // AUDIT-FIX: EVT-F02 — Skip if previous run still in progress
   if (isRunning) return;
   isRunning = true;
   try {
@@ -91,7 +89,6 @@ async function checkAbandonedCarts(): Promise<void> {
     const activeCartsKey = rk("active:carts");
     let abandonedCount = 0;
 
-    // AUDIT-FIX: REDIS-M04 — iterate hash fields via HSCAN instead of SSCAN
     let cursor = 0;
     do {
       const scanResult = await redis.hScan(activeCartsKey, cursor, { COUNT: SCAN_COUNT });

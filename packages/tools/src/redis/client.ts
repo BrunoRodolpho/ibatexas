@@ -5,7 +5,7 @@ import { createClient } from "redis"
 
 type RedisClientType = ReturnType<typeof createClient>
 
-// AUDIT-FIX: REDIS-H01 — promise-based mutex prevents TOCTOU race on concurrent getRedisClient() calls
+// Promise-based mutex prevents TOCTOU race on concurrent getRedisClient() calls
 let redis: RedisClientType | null = null
 let connectingPromise: Promise<RedisClientType> | null = null
 
@@ -20,7 +20,7 @@ export async function getRedisClient(): Promise<RedisClientType> {
       throw new Error("REDIS_URL env var required")
     }
     const client = createClient({ url: redisUrl })
-    // AUDIT-FIX: REDIS-H02 — only log on transient errors; do NOT nullify singleton (fights auto-reconnect)
+    // Only log on transient errors; do NOT nullify singleton (fights auto-reconnect)
     client.on("error", (err) => {
       console.error("[Redis] Client error:", (err as Error).message)
     })

@@ -3,8 +3,7 @@
 import { useEffect } from "react"
 import { useTranslations } from "next-intl"
 
-// AUDIT-FIX: FE-H2 — Never expose raw error.message to users; log for Sentry capture instead
-// AUDIT-FIX: FE-L1 — Use useTranslations instead of hardcoded strings
+// Never expose raw error.message to users; log for Sentry capture instead
 export default function LojaError({
   error,
   reset,

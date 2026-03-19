@@ -12,16 +12,15 @@ export interface AgentWhatsAppResponse {
   outputTokens?: number;
 }
 
-// AUDIT-FIX: WA-L12 — Timeout constant for agent response collection
+// Timeout for agent response collection
 const COLLECT_TIMEOUT_MS = 60_000;
 
 /**
  * Consume the full agent async generator and collect the response.
  * This is the non-streaming equivalent of the SSE flow in chat.ts.
  *
- * AUDIT-FIX: WA-L12 — Enforces a 60-second timeout so a hung LLM provider
- * cannot block processing indefinitely (the agent lock heartbeat would keep the
- * lock alive, preventing any other processing for the user).
+ * Enforces a 60-second timeout so a hung LLM provider cannot block processing
+ * indefinitely (the agent lock heartbeat would keep the lock alive).
  */
 export async function collectAgentResponse(
   generator: AsyncGenerator<StreamChunk>,
@@ -32,8 +31,7 @@ export async function collectAgentResponse(
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
 
-  // AUDIT-FIX: WA-L12 — AbortSignal-based timeout guard for the for-await loop.
-  // If the LLM provider hangs (never yields done or error), we break out after 60s.
+  // AbortSignal-based timeout guard: break out after 60s if the LLM provider hangs
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
 

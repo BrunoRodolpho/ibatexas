@@ -1,4 +1,4 @@
-// AUDIT-FIX: Phase 3 — Direct unit tests for requireAuth / optionalAuth middleware
+// Unit tests for requireAuth / optionalAuth middleware
 //
 // Validates:
 //   1. requireAuth returns 401 AND handler side-effects do NOT execute

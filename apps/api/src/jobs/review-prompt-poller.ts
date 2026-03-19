@@ -13,11 +13,10 @@ const BATCH_CAP = 100; // max entries per tick (at 5000 orders/day ≈ 17 per 5-
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let logger: FastifyBaseLogger | null = null;
-// AUDIT-FIX: EVT-F02 — Overlap guard prevents concurrent job runs
 let isRunning = false;
 
 async function pollReviewPrompts(): Promise<void> {
-  // AUDIT-FIX: EVT-F02 — Skip if previous run still in progress
+  // Skip if previous run still in progress
   if (isRunning) return;
   isRunning = true;
   try {

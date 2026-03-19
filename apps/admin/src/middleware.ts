@@ -1,7 +1,6 @@
-// AUDIT-FIX: FE-C1 — server-side auth middleware for admin panel
+// Server-side auth middleware for admin panel.
 // Protects all /admin/* routes. Validates presence of admin session cookie
 // or x-admin-key header. Redirects unauthenticated requests to login page.
-// Edge Runtime compatible (Next.js middleware).
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";

@@ -19,7 +19,6 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { parse as parseQuerystring } from "node:querystring";
 import twilio from "twilio";
 import { getRedisClient, rk } from "@ibatexas/tools";
-// AUDIT-FIX: EVT-F04 — Removed unused publishNatsEvent import (dead whatsapp events removed)
 import { runAgent } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
@@ -162,7 +161,7 @@ async function checkIdempotency(redis: Awaited<ReturnType<typeof getRedisClient>
   return !wasSet;
 }
 
-// AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR to prevent immortal keys after crash
+// EXPIRE unconditionally on every INCR to prevent immortal keys after crash
 async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisClient>>, hash: string): Promise<boolean> {
   const rateKey = rk(`wa:rate:${hash}`);
   const rateCount = await redis.incr(rateKey);
@@ -204,9 +203,7 @@ function buildUserMessage(body: TwilioWebhookBody, messageBody: string): string 
 }
 
 export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<void> {
-  // AUDIT-FIX: WA-M06 — Scope form-urlencoded content type parser to the webhook route
-  // only via Fastify's encapsulated plugin registration. This prevents replacing Fastify's
-  // default form parser on all other routes.
+  // Scope form-urlencoded parser to this route only (Fastify encapsulated plugin)
   await server.register(async function whatsappWebhookPlugin(scoped) {
     scoped.addContentTypeParser(
       "application/x-www-form-urlencoded",
@@ -339,9 +336,7 @@ async function handleMessageAsync(
   numMedia: number,
   log: LogFn,
 ): Promise<void> {
-  // AUDIT-FIX: WA-M03 — Outer try/catch wraps entire function body so that early-stage
-  // crashes (Redis/Prisma down during session resolution, debounce, etc.) still send
-  // a fallback error message to the user instead of failing silently.
+  // Outer try/catch: early-stage crashes still send a fallback error message to the user
   try {
   const startMs = Date.now();
 
@@ -370,19 +365,12 @@ async function handleMessageAsync(
   // Append user message to session
   await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true);
 
-  // AUDIT-FIX: EVT-F04 — Removed dead whatsapp.message.received NATS event (no subscriber existed)
-
   // ── Debounce (batch rapid-fire messages) ────────────────────────────────────
-  // AUDIT-FIX: WA-L09 — Debounce boundary edge case documentation:
-  // The 2s debounce window works as follows: the first message sets an NX key (2s TTL)
-  // and becomes the "runner." Subsequent messages within 2s return early (their content
-  // is already in session history). The runner then sleeps 2s to let burst messages
-  // accumulate before loading history. Edge case: a message arriving exactly at the 2s
-  // boundary (after the NX key expires but before the runner loads history) starts a
-  // NEW debounce window and a new runner. Both runners then compete for the agent lock
-  // (keyed by phoneHash). The loser's messages go unprocessed until the post-lock
-  // re-check (AUDIT-FIX WA-H02) picks them up. This is acceptable behavior — the
-  // re-check mechanism ensures no messages are permanently lost.
+  // The 2s debounce window: first message sets an NX key (2s TTL) and becomes the
+  // "runner." Subsequent messages within 2s return early (already in session history).
+  // Edge case: a message at the 2s boundary starts a new runner; both compete for the
+  // agent lock (keyed by phoneHash). The loser's messages are picked up by the
+  // post-lock re-check mechanism, so no messages are permanently lost.
   const shouldRun = await tryDebounce(hash);
   if (!shouldRun) {
     // Another invocation will handle this — message is already in session history
@@ -392,8 +380,7 @@ async function handleMessageAsync(
   // Wait for burst messages to accumulate
   await sleep(DEBOUNCE_MS);
 
-  // ── Agent lock ──────────────────────────────────────────────────────────────
-  // AUDIT-FIX: REDIS-H03/WA-H01 — lock keyed by phoneHash (not sessionId)
+  // ── Agent lock (keyed by phoneHash to handle session rotation) ─────────────
   const lockAcquired = await acquireAgentLock(hash);
   if (!lockAcquired) {
     // Another agent run is in progress — our message is in the session history
@@ -448,7 +435,6 @@ async function handleMessageAsync(
       ]);
     }
 
-    // AUDIT-FIX: EVT-F04 — Removed dead whatsapp.message.sent NATS event (no subscriber existed)
   } catch (err) {
     log.error(err, "[whatsapp.agent.error] Agent processing failed");
 
@@ -462,17 +448,15 @@ async function handleMessageAsync(
       // Best-effort — can't do more
     }
   } finally {
-    // AUDIT-FIX: REDIS-H03/WA-H01 — release lock by phoneHash (not sessionId)
     await releaseAgentLock(hash);
 
-    // AUDIT-FIX: WA-H02 — re-check for unprocessed messages after lock release.
+    // Re-check for unprocessed messages after lock release
     try {
       await retryForMissedMessages(session, hash, phone, log);
     } catch {
       // Best-effort re-check — don't let this crash the outer handler
     }
   }
-  // AUDIT-FIX: WA-M03 — Outer catch for early-stage failures (before agent lock try/catch)
   } catch (outerErr) {
     log.error(outerErr, "[whatsapp.handler.error] Early-stage failure in async handler");
     try {

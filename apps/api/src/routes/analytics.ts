@@ -67,7 +67,7 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         const ip = request.ip;
         const rateLimitKey = rk(`analytics:rate:${ip}`);
         const count = await redis.incr(rateLimitKey);
-        // AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR to prevent immortal keys after crash
+        // EXPIRE unconditionally on every INCR to prevent immortal keys after crash
         await redis.expire(rateLimitKey, 60); // 1 minute window — idempotent TTL reset
         if (count > 100) {
           return reply.status(429).send({ error: "Rate limit exceeded" });
@@ -76,9 +76,8 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         // If Redis fails, allow the event through (analytics should never block)
       }
 
-      // AUDIT-FIX: EVT-F04 — Removed dead web.* NATS publishes (33 event types had no subscriber).
-      // Analytics events are validated and rate-limited above. When a subscriber is added
-      // (e.g., PostHog ingestion), re-enable NATS publishing here.
+      // NATS publishing disabled (no subscriber). Re-enable when a subscriber is added
+      // (e.g., PostHog ingestion pipeline).
 
       return reply.status(204).send();
     },

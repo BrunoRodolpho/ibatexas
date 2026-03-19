@@ -21,7 +21,7 @@ export async function reorder(
     };
   };
 
-  // AUDIT-FIX: TOOL-H01 — verify order belongs to the authenticated customer
+  // Verify order belongs to the authenticated customer
   if (data.order.customer_id !== ctx.customerId) {
     throw new NonRetryableError("Acesso negado: este pedido pertence a outro cliente.");
   }
@@ -56,8 +56,7 @@ export async function reorder(
     }
   }
 
-  // AUDIT-FIX: EVT-F04 — cart.item_added has no subscriber yet. Keeping for future cart analytics.
-  // TODO: [AUDIT-REVIEW] Add subscriber for cart.item_added when cart analytics pipeline is built
+  // TODO: Add subscriber for cart.item_added when cart analytics pipeline is built
   void publishNatsEvent("cart.item_added", {
     eventType: "cart.item_added",
     cartId,

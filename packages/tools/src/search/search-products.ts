@@ -410,7 +410,7 @@ async function searchTypesense(
       facetCountsRef.value = tsResult.facetCounts
     }
   } catch (error) {
-    // AUDIT-FIX: TOOL-M02 — surface Typesense error instead of silently returning empty results
+    // Surface Typesense error instead of silently returning empty results
     console.error("[Search] Typesense search failed:", (error as Error).message)
     searchError = true
   }
@@ -467,7 +467,7 @@ async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<Single
 
   const { products, rawDTOs, tsResult, searchError } = await searchTypesense(query, queryEmbedding, filters, limit, facetCountsRef)
 
-  // AUDIT-FIX: TOOL-M02 — return structured error when Typesense is down instead of empty results
+  // Return structured error when Typesense is down instead of empty results
   if (searchError) {
     return {
       query,
@@ -511,8 +511,7 @@ interface SearchContext {
 }
 
 /**
- * AUDIT-FIX: EVT-F10 — Replaced O(n) individual product.viewed events with a single
- * batch search.results_viewed event containing all product IDs.
+ * Publish a single batch search.results_viewed event (instead of O(n) individual events).
  * Non-blocking — caller swallows errors.
  */
 async function publishViewedEvents(
@@ -525,7 +524,7 @@ async function publishViewedEvents(
   const channel = context?.channel ?? Channel.Web
   const timestamp = new Date().toISOString()
 
-  // AUDIT-FIX: EVT-F10 — Single batch event instead of N individual events
+  // Single batch event instead of N individual events
   await publishNatsEvent("search.results_viewed", {
     eventType: "search.results_viewed",
     productIds: products.map((p) => p.id),
@@ -674,7 +673,7 @@ export async function searchProducts(
   const noResultsReason = resolveNoResultsReason(products, queryResults, isMultiQuery)
 
   // ── Publish search.results_viewed batch event ──────────────────────────
-  // AUDIT-FIX: EVT-F10 — single batch event instead of O(n) individual events
+  // Single batch event instead of O(n) individual events
   try {
     if (products.length > 0) {
       const queryStr = queryList.join(", ")

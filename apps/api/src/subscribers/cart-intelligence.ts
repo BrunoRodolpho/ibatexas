@@ -35,7 +35,7 @@ async function updateCopurchaseScores(productIds: string[]): Promise<void> {
   if (productIds.length < 2) return;
   const redis = await getRedisClient();
 
-  // AUDIT-FIX: REDIS-C01 — add 30-day TTL to copurchase sorted sets (unbounded growth)
+  // 30-day TTL on copurchase sorted sets to prevent unbounded growth
   const COPURCHASE_TTL = 30 * 86400; // 30 days
   const pipeline = redis.multi();
   for (let i = 0; i < productIds.length; i++) {
@@ -52,7 +52,7 @@ async function updateGlobalScores(
   items: Array<{ productId: string; quantity: number }>,
 ): Promise<void> {
   const redis = await getRedisClient();
-  // AUDIT-FIX: REDIS-C01 — add 30-day TTL to product:global:score (unbounded growth)
+  // 30-day TTL on global score to prevent unbounded growth
   const GLOBAL_SCORE_TTL = 30 * 86400; // 30 days
   const pipeline = redis.multi();
   for (const { productId, quantity } of items) {
@@ -202,7 +202,7 @@ export async function startCartIntelligenceSubscribers(
       const pipeline = redis.multi();
       pipeline.lPush(rk(`customer:recentlyViewed:${customerId}`), productId);
       pipeline.lTrim(rk(`customer:recentlyViewed:${customerId}`), 0, RECENTLY_VIEWED_MAX - 1);
-      // AUDIT-FIX: REDIS-C02 — add 7-day TTL to customer:recentlyViewed (was missing, unbounded growth)
+      // 7-day TTL on recentlyViewed to prevent unbounded growth
       pipeline.expire(rk(`customer:recentlyViewed:${customerId}`), 7 * 86400);
       pipeline.hSet(recentKey, "lastSeenAt", new Date().toISOString());
       await pipeline.exec();
@@ -213,7 +213,7 @@ export async function startCartIntelligenceSubscribers(
   });
 
   // ── search.results_viewed (batch) ──────────────────────────────────────────
-  // AUDIT-FIX: EVT-F10 — Handles batch event from search_products (replaces O(n) product.viewed)
+  // Batch event from search_products (single event instead of O(n) product.viewed)
   await subscribeNatsEvent("search.results_viewed", async (payload) => {
     const { productIds, customerId } = payload as {
       productIds: string[];

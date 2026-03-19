@@ -13,7 +13,7 @@ const mockRedis = vi.hoisted(() => ({
   expire: vi.fn(),
   set: vi.fn(),
   del: vi.fn(),
-  incr: vi.fn(), // AUDIT-FIX: WA-M04 — needed for customer creation rate limit
+  incr: vi.fn(),
 }));
 
 const mockUpsertFromWhatsApp = vi.hoisted(() => vi.fn());
@@ -51,7 +51,6 @@ import {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
-  // AUDIT-FIX: WA-M04 — Default incr return value (under rate limit threshold)
   mockRedis.incr.mockResolvedValue(1);
   mockRedis.expire.mockResolvedValue(true);
 });
@@ -205,7 +204,6 @@ describe("resolveWhatsAppSession", () => {
     expect(session.isNew).toBe(true);
   });
 
-  // AUDIT-FIX: WA-M04 — Test customer creation rate limit
   it("throws when customer creation rate limit is exceeded", async () => {
     mockRedis.hGetAll.mockResolvedValue({});
     mockRedis.incr.mockResolvedValue(101); // over 100/min limit

@@ -58,7 +58,7 @@ const PAYMENT_SESSION_RESPONSE = {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-// AUDIT-FIX: TOOL-H02 — Cart total check response (first call in all createCheckout paths)
+// Cart total check response (first call in all createCheckout paths)
 const CART_WITH_TOTAL = { cart: { total: 8900, items: [{ id: "item_01" }] } }
 
 describe("createCheckout", () => {
@@ -74,10 +74,10 @@ describe("createCheckout", () => {
   describe("metadata update", () => {
     it("updates cart with customerId in metadata", async () => {
       mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // AUDIT-FIX: TOOL-H02 — cart total check
+        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
         .mockResolvedValueOnce({}) // cart metadata update
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items (AUDIT-FIX: EVT-F08)
+        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
 
       await createCheckout(BASE_INPUT, CTX)
@@ -95,10 +95,10 @@ describe("createCheckout", () => {
 
     it("includes tipInCentavos in metadata when provided", async () => {
       mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // AUDIT-FIX: TOOL-H02 — cart total check
+        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
         .mockResolvedValueOnce({}) // cart metadata update
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items (AUDIT-FIX: EVT-F08)
+        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
 
       await createCheckout({ ...BASE_INPUT, tipInCentavos: 1000 }, CTX)
@@ -111,10 +111,10 @@ describe("createCheckout", () => {
 
     it("includes deliveryCep in metadata when provided", async () => {
       mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // AUDIT-FIX: TOOL-H02 — cart total check
+        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
         .mockResolvedValueOnce({}) // cart metadata update
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items (AUDIT-FIX: EVT-F08)
+        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
 
       await createCheckout({ ...BASE_INPUT, deliveryCep: "12345-678" }, CTX)
@@ -127,7 +127,7 @@ describe("createCheckout", () => {
   })
 
   describe("cash payment", () => {
-    // AUDIT-FIX: EVT-F08 — Cash checkout now fetches cart items before completing
+    // Cash checkout fetches cart items before completing
     // Mock order: (0) cart total check, (1) cart metadata, (2) payment sessions, (3) fetch cart items, (4) complete
     const CART_ITEMS_RESPONSE = {
       cart: {
@@ -412,7 +412,6 @@ describe("createCheckout", () => {
     })
   })
 
-  // AUDIT-FIX: TOOL-H02 — Test minimum-total guard
   describe("minimum total guard", () => {
     it("throws NonRetryableError when cart total is zero", async () => {
       mockMedusaStoreFetch.mockResolvedValueOnce({ cart: { total: 0, items: [] } })
@@ -437,7 +436,7 @@ describe("createCheckout", () => {
         .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
         .mockResolvedValueOnce({}) // cart metadata
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items (AUDIT-FIX: EVT-F08)
+        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete (for cash)
 
       await createCheckout(BASE_INPUT, CTX)

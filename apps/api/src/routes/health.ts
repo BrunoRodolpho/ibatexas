@@ -1,4 +1,4 @@
-// AUDIT-FIX: INFRA-01 — Deep health check that pings Redis, Postgres, NATS, and Typesense.
+// Deep health check that pings Redis, Postgres, NATS, and Typesense.
 // Returns JSON with individual check results and overall status.
 // HTTP 503 if any critical dependency (redis, postgres) fails; 200 otherwise.
 
@@ -77,7 +77,7 @@ async function checkTypesense(): Promise<CheckResult> {
 }
 
 export async function healthRoutes(server: FastifyInstance): Promise<void> {
-  server.get("/health", { schema: { tags: ["health"], summary: "Deep health check" } }, async (_request, reply) => {
+  server.get("/health", { config: { rateLimit: false }, schema: { tags: ["health"], summary: "Deep health check" } }, async (_request, reply) => {
     const [redis, postgres, nats, typesense] = await Promise.all([
       checkRedis(),
       checkPostgres(),
@@ -108,7 +108,7 @@ export async function healthRoutes(server: FastifyInstance): Promise<void> {
       checks,
     };
 
-    // AUDIT-FIX: INFRA-01 — Return 503 if critical dependency fails
+    // Return 503 if critical dependency fails
     const statusCode = criticalFail ? 503 : 200;
     return reply.status(statusCode).send(body);
   });

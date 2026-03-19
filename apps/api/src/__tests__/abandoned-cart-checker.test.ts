@@ -1,8 +1,6 @@
 // Tests for abandoned-cart-checker job
 // Mocks Redis, session store, and NATS to test cart abandonment detection without network
 //
-// AUDIT-FIX: REDIS-M04 — Tests updated for Hash-based active:carts structure.
-// Each hash field stores JSON {cartId, sessionType, lastActivity} instead of bare cartId in a Set.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 

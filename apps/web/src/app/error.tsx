@@ -2,7 +2,7 @@
 
 import { useEffect } from "react"
 
-// AUDIT-FIX: FE-H2 — Never expose raw error.message to users; log for Sentry capture instead
+// Never expose raw error.message to users; log for Sentry capture instead
 export default function RootError({
   error,
   reset,

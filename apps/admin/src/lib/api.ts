@@ -7,7 +7,7 @@ import { getApiBase } from '@ibatexas/tools/api'
 
 const API_BASE = getApiBase()
 
-// AUDIT-FIX: SEC-F01/FE-H3 — include x-admin-key header in all admin API calls
+// Include x-admin-key header in all admin API calls
 export const apiFetch = async (endpoint: string, options?: RequestInit) => {
   const url = `${API_BASE}${endpoint}`
   const response = await fetch(url, {

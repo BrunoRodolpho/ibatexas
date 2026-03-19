@@ -3,7 +3,7 @@
 import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
-import { assertCartOwnership } from "./assert-cart-ownership.js"; // AUDIT-FIX: TOOL-C02
+import { assertCartOwnership } from "./assert-cart-ownership.js";
 
 export async function addToCart(
   input: AddToCartInput,
@@ -11,7 +11,6 @@ export async function addToCart(
 ): Promise<unknown> {
   const parsed = AddToCartInputSchema.parse(input);
 
-  // AUDIT-FIX: TOOL-C02 — verify cart ownership before modifying
   await assertCartOwnership(parsed.cartId, ctx.customerId);
 
   let data: unknown;
@@ -25,8 +24,7 @@ export async function addToCart(
     return { success: false, message: "Erro ao adicionar item ao carrinho. Verifique o produto e tente novamente." };
   }
 
-  // AUDIT-FIX: EVT-F04 — cart.item_added has no subscriber yet. Keeping for future cart analytics.
-  // TODO: [AUDIT-REVIEW] Add subscriber for cart.item_added when cart analytics pipeline is built
+  // TODO: Add subscriber for cart.item_added when cart analytics pipeline is built
   void publishNatsEvent("cart.item_added", {
     eventType: "cart.item_added",
     cartId: parsed.cartId,

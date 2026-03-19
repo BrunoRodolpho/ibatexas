@@ -20,7 +20,7 @@ export async function scheduleReviewPrompt(
   const member = `${customerId}:${orderId}`;
   const fireAt = Date.now() + REVIEW_DELAY_MS;
 
-  // AUDIT-FIX: REDIS-C01 — add 1-day TTL to review:prompt:scheduled sorted set (unbounded growth if poller fails)
+  // 1-day TTL on sorted set to prevent unbounded growth if poller fails
   const REVIEW_SCHEDULED_TTL = 86400; // 1 day
   const pipeline = redis.multi();
   // Mark as scheduled — 24h TTL (guard against re-scheduling the same order)

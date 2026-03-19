@@ -55,7 +55,7 @@ function createMockRedis(overrides: Record<string, unknown> = {}) {
     lPush: vi.fn().mockReturnThis(),
     lTrim: vi.fn().mockReturnThis(),
     hSet: vi.fn().mockReturnThis(),
-    expire: vi.fn().mockReturnThis(), // AUDIT-FIX: REDIS-C01/C02 — pipeline now uses expire()
+    expire: vi.fn().mockReturnThis(),
     exec: vi.fn().mockResolvedValue([]),
   };
 

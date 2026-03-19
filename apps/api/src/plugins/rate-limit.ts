@@ -5,7 +5,7 @@ export async function registerRateLimit(server: FastifyInstance): Promise<void> 
   await server.register(rateLimit, {
     max: 30,
     timeWindow: "1 minute",
-    // AUDIT-FIX: SEC-F04 — use IP alone as rate limit key to prevent bypass via sessionId rotation
+    // Use IP alone as rate limit key to prevent bypass via sessionId rotation
     keyGenerator(request: FastifyRequest): string {
       return request.ip;
     },

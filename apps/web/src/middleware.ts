@@ -18,9 +18,9 @@ function isProtectedPath(pathname: string): boolean {
  * Does NOT verify signature (leave that to the API server).
  * Only decodes the payload to check if `exp` claim has passed.
  *
- * AUDIT-REVIEWED: FE-M1 — Intentional. Edge Runtime cannot verify JWT signatures.
- * Full verification happens at the API layer (apps/api/src/middleware/auth.ts).
- * This middleware is a UX optimization (redirect to login), not a security gate.
+ * Intentional: Edge Runtime cannot verify JWT signatures. Full verification happens
+ * at the API layer (apps/api/src/middleware/auth.ts). This is a UX optimization
+ * (redirect to login), not a security gate.
  */
 function isTokenExpired(token: string): boolean {
   try {

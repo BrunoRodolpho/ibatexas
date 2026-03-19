@@ -25,7 +25,6 @@ vi.mock("../routes/admin/_shared.js", () => ({
   medusaAdmin: mockMedusaAdmin,
 }));
 
-// AUDIT-FIX: TST-C03 — mock uses `return` before done() on 401 path, matching production fix (SEC-F03)
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
     const customerId = request.headers["x-customer-id"] as string | undefined;
@@ -69,7 +68,6 @@ async function buildTestServer() {
 
 // ── Mock Redis client ─────────────────────────────────────────────────────────
 
-// AUDIT-FIX: REDIS-M04 — active:carts changed from Set to Hash; mock uses hSet/hDel instead of sAdd/sRem
 function createMockRedis(overrides: Record<string, unknown> = {}) {
   return {
     hSet: vi.fn().mockResolvedValue(1),
@@ -431,7 +429,6 @@ describe("POST /api/cart/:id/payment-sessions — initialize payment", () => {
   });
 });
 
-// AUDIT-FIX: Phase 3 — IDOR tests for order ownership verification
 describe("GET /api/cart/orders/:orderId — IDOR check", () => {
   beforeEach(() => {
     vi.clearAllMocks();

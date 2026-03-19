@@ -25,13 +25,13 @@ import { optionalAuth, requireAuth } from "../middleware/auth.js";
 const CartIdParams = z.object({ id: z.string().min(1) });
 const CartItemParams = z.object({ id: z.string().min(1), itemId: z.string().min(1) });
 
-// AUDIT-FIX: REDIS-C01 — add TTL to active:carts hash (48h = guest session max, prevents unbounded growth)
+// TTL on active:carts hash (48h = guest session max, prevents unbounded growth)
 const ACTIVE_CARTS_TTL = 48 * 60 * 60; // 48h — matches max session TTL (guest)
 
 /**
  * Register cartId in active:carts tracking hash for abandoned-cart detection.
- * AUDIT-FIX: REDIS-M04 — store {sessionType, lastActivity} instead of bare cartId
- * so abandoned-cart-checker can use correct idle threshold per session type.
+ * Store {sessionType, lastActivity} so abandoned-cart-checker uses correct idle
+ * threshold per session type.
  */
 async function trackCartId(cartId: string, sessionType: "guest" | "customer" = "guest"): Promise<void> {
   const redis = await getRedisClient();

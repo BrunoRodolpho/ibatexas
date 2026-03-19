@@ -2,8 +2,7 @@
 // NATS Core pub/sub wrapper for domain events.
 // NOTE: Uses Core NATS (fire-and-forget), not JetStream.
 // JetStream (with persistence/durability) is deferred to Step 14 (Observability).
-// AUDIT-FIX: EVT-F01 — Redis-backed outbox for critical events (order.placed, reservation.created)
-// TODO: [AUDIT-REVIEW] Full JetStream migration needed for production reliability
+// TODO: Full JetStream migration needed for production reliability
 
 import { connect, type NatsConnection } from "nats"
 
@@ -69,16 +68,15 @@ export async function getNatsConnection(): Promise<NatsConnection> {
     pendingConnection = null
     throw error
   }
-  // AUDIT-FIX: INFRA-07 — Removed finally block that reset pendingConnection on success,
-  // which created a race condition for concurrent callers during cold start.
-  // The catch block already handles the error case. On success, pendingConnection
-  // is harmless (natsConn check succeeds first).
+  // No finally block: resetting pendingConnection on success would race with concurrent
+  // callers during cold start. The catch block handles the error case; on success
+  // pendingConnection is harmless (natsConn check succeeds first).
 }
 
-// AUDIT-FIX: EVT-F01 — Critical events that require outbox durability
+// Critical events that require outbox durability
 const OUTBOX_EVENTS = new Set(["order.placed", "reservation.created"])
 
-// AUDIT-FIX: EVT-F01 — Optional Redis outbox writer (injected by apps/api at startup)
+// Optional Redis outbox writer (injected by apps/api at startup)
 let _outboxWriter: OutboxWriter | null = null
 
 export interface OutboxWriter {
@@ -107,15 +105,15 @@ export function outboxKey(envPrefix: string, eventName: string): string {
  * Subject format: ibatexas.{domain}.{action}
  * E.g., ibatexas.product.indexed
  *
- * AUDIT-FIX: EVT-F01 — For critical events (order.placed, reservation.created),
- * writes to Redis outbox before NATS publish and removes after success.
+ * For critical events (order.placed, reservation.created), writes to Redis outbox
+ * before NATS publish and removes after success.
  */
 export async function publishNatsEvent(event: string, payload: Record<string, unknown>): Promise<void> {
   const data = JSON.stringify(payload)
   const isCritical = OUTBOX_EVENTS.has(event)
   const envPrefix = process.env.APP_ENV ?? "development"
 
-  // AUDIT-FIX: EVT-F01 — Write to outbox BEFORE NATS publish for critical events
+  // Write to outbox BEFORE NATS publish for critical events
   if (isCritical && _outboxWriter) {
     try {
       await _outboxWriter.lPush(outboxKey(envPrefix, event), data)
@@ -131,7 +129,7 @@ export async function publishNatsEvent(event: string, payload: Record<string, un
 
     nats.publish(subject, new TextEncoder().encode(data))
 
-    // AUDIT-FIX: EVT-F01 — Remove from outbox after successful NATS publish
+    // Remove from outbox after successful NATS publish
     if (isCritical && _outboxWriter) {
       try {
         await _outboxWriter.lRem(outboxKey(envPrefix, event), 1, data)
@@ -143,7 +141,7 @@ export async function publishNatsEvent(event: string, payload: Record<string, un
   } catch (error) {
     console.error(`Failed to publish event ${event}:`, (error as Error).message)
     // Non-critical; don't throw (event publishing is async)
-    // AUDIT-FIX: EVT-F01 — If NATS publish fails, event stays in outbox for retry
+    // If NATS publish fails, event stays in outbox for retry
   }
 }
 
@@ -184,7 +182,7 @@ export async function subscribeNatsEvent(
 /**
  * Graceful shutdown: drain pending messages and close connection.
  */
-// AUDIT-FIX: INFRA-06 — Use drain() instead of close() to flush pending publishes before closing
+// Use drain() instead of close() to flush pending publishes before closing
 export async function closeNatsConnection(): Promise<void> {
   if (natsConn) {
     await natsConn.drain()

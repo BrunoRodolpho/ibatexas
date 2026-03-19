@@ -1,5 +1,5 @@
 /**
- * [AUDIT FIX TST-M01] Shared auth mock factory for route tests.
+ * Shared auth mock factory for route tests.
  *
  * Centralizes the requireAuth / optionalAuth mock implementations so every
  * test file uses the SAME correct pattern.

@@ -13,7 +13,7 @@ export async function getEmbeddingCache(productId: string): Promise<number[] | n
     const redisClient = await getRedisClient()
     const key = rk(`product_embedding:${productId}`)
     const cached = await redisClient.get(key)
-    // AUDIT-FIX: REDIS-C01 — add 30-day TTL to cache:stats counters (unbounded growth)
+    // 30-day TTL on cache:stats counters to prevent unbounded growth
     const CACHE_STATS_TTL = 30 * 86400 // 30 days
     if (cached) {
       redisClient.incr(rk("cache:stats:embed:hit")).then(() => redisClient.expire(rk("cache:stats:embed:hit"), CACHE_STATS_TTL)).catch(() => {})

@@ -285,7 +285,7 @@ export async function logQuery(
 
 // ── Cache stats ──────────────────────────────────────────────────────────────
 
-// AUDIT-FIX: REDIS-C01 — add 30-day TTL to cache:stats counters (unbounded growth)
+// 30-day TTL on cache:stats counters to prevent unbounded growth
 const CACHE_STATS_TTL = 30 * 86400 // 30 days
 
 /** Fire-and-forget INCR — never blocks the caller. */

@@ -1,4 +1,4 @@
-// AUDIT-FIX: Phase 3 — Reservation service concurrency tests
+// Reservation service concurrency tests
 //
 // Validates:
 //   1. Concurrent reservation requests for the last slot — only one succeeds (TOCTOU fix)

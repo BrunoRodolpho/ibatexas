@@ -757,7 +757,6 @@ describe("searchProducts", () => {
 
   // ── NATS events ───────────────────────────────────────────────────────────────
 
-  // AUDIT-FIX: EVT-F10 — search now publishes a single batch search.results_viewed event
   describe("NATS search.results_viewed events", () => {
     it("publishes search.results_viewed (not product.viewed or product.searched)", async () => {
       await searchProducts({ query: "costela" })

@@ -23,8 +23,7 @@ import { tableRoutes } from "./tables.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
-  // AUDIT-FIX: SEC-F10 — Support comma-separated list of valid API keys for rotation.
-  // During key rotation, set ADMIN_API_KEY=newKey,oldKey so both work, then remove the old key.
+  // Support comma-separated list of valid API keys for rotation
   const ADMIN_API_KEYS = (process.env.ADMIN_API_KEY ?? "")
     .split(",")
     .map((k) => k.trim())
@@ -39,7 +38,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     if (typeof key !== "string" || key.length === 0) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
-    // AUDIT-FIX: SEC-F10 — Check incoming key against all valid keys with timing-safe comparison
+    // Timing-safe comparison against all valid keys
     const keyBuf = Buffer.from(key);
     const isValid = ADMIN_API_KEYS.some((validKey) => {
       const expectedBuf = Buffer.from(validKey);

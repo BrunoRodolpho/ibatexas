@@ -40,8 +40,7 @@ export async function submitReview(
     // Non-fatal: product may not be in Typesense yet
   }
 
-  // AUDIT-FIX: EVT-F04 — review.submitted has no subscriber yet. Keeping for future review analytics.
-  // TODO: [AUDIT-REVIEW] Add subscriber for review.submitted when review analytics pipeline is built
+  // TODO: Add subscriber for review.submitted when review analytics pipeline is built
   void publishNatsEvent("review.submitted", {
     eventType: "review.submitted",
     productId,

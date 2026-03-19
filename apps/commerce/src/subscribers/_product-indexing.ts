@@ -15,7 +15,7 @@ const PRODUCT_FIELDS = [
   "images.*",
 ] as const
 
-// AUDIT-FIX: EVT-F11 — Max retry attempts for Typesense indexing failures
+// Max retry attempts for Typesense indexing failures
 const TYPESENSE_MAX_RETRIES = 2
 
 interface MedusaContainer {
@@ -23,7 +23,7 @@ interface MedusaContainer {
 }
 
 /**
- * AUDIT-FIX: EVT-F11 — Retry wrapper with exponential backoff for Typesense operations.
+ * Retry wrapper with exponential backoff for Typesense operations.
  * Max 2 retries (3 total attempts) with 500ms base delay.
  */
 async function withTypesenseRetry<T>(
@@ -64,14 +64,11 @@ export async function fetchAndIndexProduct(
   const product = products[0]
   if (!product) return null
 
-  // AUDIT-FIX: EVT-F11 — Retry Typesense indexing on transient failures
   await withTypesenseRetry(
     () => indexProduct(product),
     `indexProduct(${productId}, ${action})`,
     logger,
   )
-
-  // AUDIT-FIX: EVT-F04 — Removed dead product.indexed NATS event (no subscriber existed)
 
   return product
 }

@@ -21,7 +21,6 @@ vi.mock("nats", () => {
     publish: vi.fn(),
     subscribe: vi.fn(() => mockSubscription),
     close: vi.fn(),
-    // AUDIT-FIX: INFRA-06 — closeNatsConnection now uses drain() instead of close()
     drain: vi.fn(),
   }
 

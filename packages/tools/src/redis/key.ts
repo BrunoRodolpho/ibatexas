@@ -6,7 +6,7 @@
 // APP_ENV must be set to 'development' | 'staging' | 'production'.
 // Falls back to 'development' so local runs always work without extra config.
 
-// AUDIT-FIX: REDIS-M01 — fail-fast if APP_ENV is missing in production to prevent cross-environment data bleed
+// Fail-fast if APP_ENV is missing in production to prevent cross-environment data bleed
 if (process.env.NODE_ENV === "production" && !process.env.APP_ENV) {
   throw new Error("APP_ENV is required in production to prevent cross-environment data bleed");
 }

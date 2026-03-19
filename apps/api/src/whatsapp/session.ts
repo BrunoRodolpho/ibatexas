@@ -14,7 +14,7 @@ const SESSION_TTL_SECONDS = 24 * 60 * 60; // 24h
 const AGENT_LOCK_TTL_SECONDS = 30;
 const AGENT_LOCK_HEARTBEAT_MS = 10_000;
 const DEBOUNCE_TTL_SECONDS = 2;
-// AUDIT-FIX: WA-M04 — Global rate limit on customer auto-creation to prevent DB write amplification
+// Global rate limit on customer auto-creation to prevent DB write amplification
 const MAX_CUSTOMER_CREATES_PER_MINUTE = 100;
 
 // ── Phone utilities ────────────────────────────────────────────────────────────
@@ -31,12 +31,10 @@ export function normalizePhone(from: string): string {
 /**
  * One-way hash of a phone number — safe to log.
  *
- * AUDIT-FIX: WA-L07 — Truncation to 12 hex chars provides 48-bit collision space.
- * Birthday paradox gives ~50% collision probability at ~16.8M unique phones.
- * At current scale (<10k phones) this is acceptable. A collision would cause two
- * different phone numbers to share rate limit counters and debounce windows (keyed
- * by hash), but NOT session data (session resolution uses the actual phone for
- * Prisma lookup). If scaling to millions of phones, increase to 16+ hex chars.
+ * Truncation to 12 hex chars provides 48-bit collision space (~50% collision at
+ * ~16.8M phones). A collision would share rate limit/debounce windows (keyed by
+ * hash), but NOT session data (uses actual phone for Prisma lookup).
+ * If scaling to millions of phones, increase to 16+ hex chars.
  */
 export function hashPhone(phone: string): string {
   return createHash("sha256").update(phone).digest("hex").slice(0, 12);
@@ -76,12 +74,11 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
     };
   }
 
-  // AUDIT-FIX: WA-M04 — Rate limit customer creation to prevent DB write amplification
-  // under broadcast reply storms (many unique phones). Uses INCR + unconditional EXPIRE
-  // pattern (from REDIS-M03 fix) to avoid immortal keys.
+  // Rate limit customer creation to prevent DB write amplification under broadcast
+  // reply storms. Uses INCR + unconditional EXPIRE pattern to avoid immortal keys.
   const rateLimitKey = rk("ratelimit:customer:create");
   const createCount = await redis.incr(rateLimitKey);
-  await redis.expire(rateLimitKey, 60); // AUDIT-FIX: REDIS-M03 pattern — unconditional EXPIRE
+  await redis.expire(rateLimitKey, 60); // unconditional EXPIRE
   if (createCount > MAX_CUSTOMER_CREATES_PER_MINUTE) {
     throw new Error("Customer creation rate limit exceeded");
   }
@@ -137,8 +134,8 @@ const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
  * Uses Redis SET NX with 30s TTL + heartbeat extension every 10s.
  * Returns true if lock was acquired.
  *
- * AUDIT-FIX: REDIS-H03/WA-H01 — lock keyed by phoneHash (not sessionId) to prevent
- * concurrent agent runs when session rotates mid-conversation.
+ * Lock keyed by phoneHash (not sessionId) to prevent concurrent agent runs
+ * when session rotates mid-conversation.
  */
 export async function acquireAgentLock(phoneHash: string): Promise<boolean> {
   const redis = await getRedisClient();
@@ -163,7 +160,7 @@ export async function acquireAgentLock(phoneHash: string): Promise<boolean> {
 /**
  * Release the agent lock. Clears heartbeat and deletes Redis key.
  *
- * AUDIT-FIX: REDIS-H03/WA-H01 — lock keyed by phoneHash (not sessionId).
+ * Lock keyed by phoneHash (not sessionId).
  */
 export async function releaseAgentLock(phoneHash: string): Promise<void> {
   const interval = heartbeats.get(phoneHash);

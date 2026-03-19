@@ -5,7 +5,6 @@
 // All sends log phone hash, never raw phone numbers.
 
 import twilio from "twilio";
-// AUDIT-FIX: WA-L08 — Import hashPhone from session.ts instead of duplicating definition
 import { hashPhone } from "./session.js";
 
 /** Compute retry delay: uses Retry-After header for 429, exponential backoff otherwise. */
@@ -28,7 +27,7 @@ function getTwilioClient(): ReturnType<typeof twilio> {
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const auth = process.env.TWILIO_AUTH_TOKEN;
     if (!sid || !auth) throw new Error("TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN not set");
-    // AUDIT-FIX: INFRA-09 — Add 10s timeout to prevent indefinite hangs during Twilio API outages
+    // 10s timeout prevents indefinite hangs during Twilio API outages
     _client = twilio(sid, auth, { timeout: 10_000 });
   }
   return _client;
@@ -40,7 +39,7 @@ export function getWhatsAppNumber(): string {
   return num;
 }
 
-// AUDIT-FIX: WA-L08 — Re-export hashPhone as phoneHash for backward compatibility
+// Re-export hashPhone as phoneHash for backward compatibility
 export { hashPhone as phoneHash } from "./session.js";
 
 // ── Message splitting ──────────────────────────────────────────────────────────
@@ -139,7 +138,7 @@ async function sendSingleMessage(to: string, body: string, hash: string): Promis
       );
       if (isLast) throw err;
 
-      // AUDIT-FIX: WA-L10 — Respect Twilio 429 Retry-After header
+      // Respect Twilio 429 Retry-After header
       await sleep(getRetryDelay(err, attempt));
     }
   }

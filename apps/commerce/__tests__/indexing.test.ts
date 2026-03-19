@@ -134,7 +134,6 @@ describe("Product Indexing Subscribers", () => {
       expect(deleteEmbeddingCache).not.toHaveBeenCalled()
     })
 
-    // AUDIT-FIX: EVT-F04 — product.indexed NATS event removed (was dead — no subscriber)
     it("does not publish product.indexed NATS event (removed as dead event)", async () => {
       const container = makeContainer()
 
@@ -198,7 +197,6 @@ describe("Product Indexing Subscribers", () => {
       expect(deleteEmbeddingCache).toHaveBeenCalledWith(mockProduct.id)
     })
 
-    // AUDIT-FIX: EVT-F04 — product.indexed NATS event removed (was dead — no subscriber)
     it("does not publish product.indexed NATS event (removed as dead event)", async () => {
       const container = makeContainer()
 
@@ -272,7 +270,6 @@ describe("Product Indexing Subscribers", () => {
       expect(indexProduct).not.toHaveBeenCalled()
     })
 
-    // AUDIT-FIX: EVT-F04 — product.indexed NATS event removed (was dead — no subscriber)
     it("does not publish product.indexed NATS event (removed as dead event)", async () => {
       const container = makeContainer()
 

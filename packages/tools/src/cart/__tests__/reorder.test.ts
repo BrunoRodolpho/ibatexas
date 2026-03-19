@@ -37,7 +37,6 @@ import { makeCtx, makeGuestCtx } from "./fixtures/medusa.js"
 const INPUT = { orderId: "order_01" }
 const CTX = makeCtx()
 
-// AUDIT-FIX: TOOL-H01 — order fixture includes customer_id matching CTX for ownership check
 const ORDER_WITH_ITEMS = {
   order: {
     customer_id: "cus_01",

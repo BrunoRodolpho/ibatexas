@@ -147,7 +147,6 @@ describe("withCustomerId injection", () => {
     )
   })
 
-  // AUDIT-FIX: TST-C02 — LLM-supplied customerId must ALWAYS be overridden by ctx.customerId
   it("overrides LLM-supplied customerId with session context", async () => {
     await executeTool(
       "create_reservation",
@@ -173,7 +172,6 @@ describe("withCustomerId injection", () => {
     )
   })
 
-  // AUDIT-FIX: Phase 3 — withCustomerId ALWAYS uses ctx.customerId, even when LLM supplies a different one
   it("always uses ctx.customerId regardless of LLM-supplied customerId for all reservation tools", async () => {
     const reservationTools = [
       { name: "create_reservation", input: { customerId: "attacker_id", timeSlotId: "slot_01", partySize: 2 }, mock: createReservation },
@@ -193,7 +191,6 @@ describe("withCustomerId injection", () => {
     }
   })
 
-  // AUDIT-FIX: Phase 3 — withCustomerId throws when ctx.customerId is missing (guest)
   it("throws when ctx.customerId is missing for auth-required tools", async () => {
     const guestCtx: AgentContext = { ...ctx, customerId: undefined }
     await expect(
@@ -205,7 +202,6 @@ describe("withCustomerId injection", () => {
 // ── Zod validation ──────────────────────────────────────────────────────────
 
 describe("Zod input validation", () => {
-  // AUDIT-FIX: Phase 3 — Zod validation rejects malformed tool input (missing required fields)
   it("rejects get_product_details with missing productId", async () => {
     await expect(executeTool("get_product_details", {}, ctx)).rejects.toThrow()
   })

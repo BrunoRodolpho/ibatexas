@@ -113,7 +113,7 @@ export const useSessionStore = create<SessionState>()(
       version: 2,
       partialize: (state) => ({
         sessionId: state.sessionId,
-        // AUDIT-FIX: FE-M3 — customerId removed from persistence to avoid localStorage exposure.
+        // customerId excluded from persistence to avoid localStorage exposure.
         // Auth state is rehydrated from httpOnly cookie via hydrate() on every load.
         channel: state.channel,
         userType: state.userType,

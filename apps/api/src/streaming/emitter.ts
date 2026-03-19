@@ -2,7 +2,6 @@
 //
 // Phase 1: single-process — EventEmitter per sessionId is sufficient.
 // Phase 2+: replace pushChunk/subscribe with Redis Pub/Sub for multi-instance support.
-// See docs/audit/08-deferred-items-plan.md (Item 11) for the full migration plan.
 //
 // Race condition mitigation:
 // - POST creates the entry before starting the agent.
@@ -20,7 +19,7 @@ interface StreamEntry {
 
 const streams = new Map<string, StreamEntry>();
 
-// AUDIT-FIX: AI-F04 — Cap concurrent streams to prevent memory exhaustion
+// Cap concurrent streams to prevent memory exhaustion
 const MAX_STREAMS = 1_000;
 
 /** True if an agent is currently running for this session. */
@@ -30,7 +29,7 @@ export function isStreamActive(sessionId: string): boolean {
 
 /** Called by POST handler before starting the agent. */
 export function createStream(sessionId: string): void {
-  // AUDIT-FIX: AI-F04 — Reject new streams when at capacity to prevent memory exhaustion
+  // Reject new streams when at capacity
   if (streams.size >= MAX_STREAMS) {
     throw new Error("Servidor sobrecarregado. Tente novamente em instantes.");
   }

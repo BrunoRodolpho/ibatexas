@@ -1,4 +1,4 @@
-// AUDIT-FIX: TOOL-C02 — shared cart ownership verification helper
+// Shared cart ownership verification helper.
 // Ensures the cart belongs to the current customer or is an unowned (guest) cart.
 
 import { NonRetryableError } from "@ibatexas/types";

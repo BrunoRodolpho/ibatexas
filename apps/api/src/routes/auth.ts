@@ -56,7 +56,6 @@ interface RateLimitResult {
   count: number;
 }
 
-// AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR to prevent immortal keys after crash
 async function checkIpRateLimit(ip: string): Promise<RateLimitResult> {
   const redis = await getRedisClient();
   const key = rk(`otp:ip:${ip}`);
@@ -65,7 +64,6 @@ async function checkIpRateLimit(ip: string): Promise<RateLimitResult> {
   return { exceeded: count > 10, count };
 }
 
-// AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR
 async function checkSendRateLimit(hash: string): Promise<RateLimitResult> {
   const redis = await getRedisClient();
   const rateLimitKey = rk(`otp:rate:${hash}`);
@@ -128,7 +126,6 @@ function issueJwtToken(
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
-  // AUDIT-FIX: SEC-F06 — Reduced from 24h to 4h to limit token exposure window
   // TODO: Implement refresh token flow for better UX
   return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
     sub: customerId,
@@ -231,7 +228,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       const hash = phoneHash(phone);
       const ip = request.ip;
 
-      // AUDIT-FIX: SEC-F05 — IP rate limit on verify-otp to prevent phone-spray attacks
+      // IP rate limit on verify-otp to prevent phone-spray attacks
       const ipLimit = await checkIpRateLimit(ip);
       if (ipLimit.exceeded) {
         server.log.warn({ ip, action: "verify_otp_ip_rate_limited", count: ipLimit.count }, "OTP verify IP rate limited");
@@ -313,11 +310,10 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       return reply
         .setCookie("token", token, {
           httpOnly: true,
-          // AUDIT-FIX: SEC-F07 — secure always; staging must use HTTPS
           secure: true,
           sameSite: "lax",
           path: "/",
-          maxAge: 4 * 60 * 60, // AUDIT-FIX: SEC-F06 — 4h to match JWT expiry
+          maxAge: 4 * 60 * 60, // 4h — matches JWT expiry
         })
         .code(200)
         .send({

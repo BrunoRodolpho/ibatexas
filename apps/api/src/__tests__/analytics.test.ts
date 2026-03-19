@@ -1,6 +1,5 @@
 // Unit tests for analytics route
 // POST /api/analytics/track → validate → rate limit → 204
-// AUDIT-FIX: EVT-F04 — NATS publish removed (web.* events had no subscriber)
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -35,7 +34,6 @@ async function buildTestServer() {
 describe("POST /api/analytics/track", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  // AUDIT-FIX: EVT-F04 — NATS publish removed; route now just validates and returns 204
   it("returns 204 for valid event (NATS publish removed)", async () => {
     const app = await buildTestServer();
     const res = await app.inject({
@@ -48,7 +46,6 @@ describe("POST /api/analytics/track", () => {
     });
 
     expect(res.statusCode).toBe(204);
-    // AUDIT-FIX: EVT-F04 — No NATS publish happens anymore
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
 
     await app.close();

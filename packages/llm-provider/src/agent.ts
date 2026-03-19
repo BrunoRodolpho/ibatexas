@@ -14,16 +14,15 @@ import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropi
 import { Channel, NonRetryableError, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
 import { SYSTEM_PROMPT } from "./system-prompt.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
-// AUDIT-FIX: AI-F03 — Per-session token budget enforcement via Redis
 import { getRedisClient, rk } from "@ibatexas/tools"
 
 const MAX_TURNS = Number.parseInt(process.env.AGENT_MAX_TURNS || "10", 10)
 const MAX_TOOL_RETRIES = Number.parseInt(process.env.AGENT_MAX_TOOL_RETRIES || "3", 10)
 const AGENT_MAX_TOKENS = Number.parseInt(process.env.AGENT_MAX_TOKENS || "2048", 10)
-// AUDIT-FIX: AI-F05 — Per-conversation retry budget to prevent runaway cost
+// Per-conversation retry budget to prevent runaway cost
 const MAX_CONVERSATION_RETRIES = Number.parseInt(process.env.AGENT_MAX_CONVERSATION_RETRIES || "10", 10)
 
-// AUDIT-FIX: AI-F03 — Daily token budget per session (default 100K tokens)
+// Daily token budget per session (default 100K tokens)
 const SESSION_TOKEN_BUDGET = Number.parseInt(process.env.AGENT_SESSION_TOKEN_BUDGET || "100000", 10)
 const TOKEN_BUDGET_TTL = 86400 // 24 hours in seconds
 
@@ -32,7 +31,7 @@ const TOKEN_BUDGET_TTL = 86400 // 24 hours in seconds
 let _client: Anthropic | null = null
 
 function getClient(): Anthropic {
-  // AUDIT-FIX: INFRA-02 — Add 60s timeout to prevent indefinite hangs during Anthropic API outages
+  // 60s timeout prevents indefinite hangs during API outages
   _client ??= new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
     timeout: 60_000,
@@ -47,8 +46,8 @@ function getClient(): Anthropic {
  * On all retries exhausted: returns an error object (never throws).
  * Claude receives the error as a tool result and can respond gracefully.
  *
- * AUDIT-FIX: AI-F05 — Accepts a shared conversationRetries counter to enforce
- * a per-conversation retry budget across all tool calls.
+ * Accepts a shared conversationRetries counter to enforce a per-conversation
+ * retry budget across all tool calls.
  */
 async function executeWithRetry(
   name: string,
@@ -67,7 +66,7 @@ async function executeWithRetry(
       if (lastError instanceof NonRetryableError) {
         return { error: lastError.message, toolName: name }
       }
-      // AUDIT-FIX: AI-F05 — Track retries against conversation budget
+      // Track retries against conversation budget
       conversationRetries.count++
       if (conversationRetries.count >= MAX_CONVERSATION_RETRIES) {
         return { error: "Limite de tentativas atingido. Tente novamente mais tarde.", toolName: name }
@@ -135,7 +134,7 @@ function buildSystemPrompt(channel: Channel): string {
   return SYSTEM_PROMPT + channelHint
 }
 
-// ── AUDIT-FIX: AI-F03 — Per-session token budget helpers ────────────────────
+// ── Per-session token budget helpers ─────────────────────────────────────────
 
 /**
  * Check if the session has exceeded its daily token budget.
@@ -147,7 +146,7 @@ async function getSessionTokenCount(sessionId: string): Promise<number> {
     const count = await redis.get(rk(`llm:tokens:${sessionId}`))
     return count ? Number.parseInt(count, 10) : 0
   } catch {
-    // AUDIT-FIX: AI-F03 — Fail-open: if Redis is down, allow the request
+    // Fail-open: if Redis is down, allow the request
     return 0
   }
 }
@@ -184,7 +183,7 @@ export async function* runAgent(
   history: AgentMessage[],
   context: AgentContext,
 ): AsyncGenerator<StreamChunk> {
-  // AUDIT-FIX: AI-F03 — Check per-session token budget before processing
+  // Check per-session token budget before processing
   const currentTokens = await getSessionTokenCount(context.sessionId)
   if (currentTokens >= SESSION_TOKEN_BUDGET) {
     yield { type: "text_delta", delta: "Limite de uso atingido. Tente novamente amanhã." }
@@ -203,7 +202,7 @@ export async function* runAgent(
 
   const systemPrompt = buildSystemPrompt(context.channel)
 
-  // AUDIT-FIX: AI-F05 — Per-conversation retry budget shared across all tool calls
+  // Per-conversation retry budget shared across all tool calls
   const conversationRetries = { count: 0 }
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -235,7 +234,7 @@ export async function* runAgent(
     const finalMessage = await stream.finalMessage()
     const { stop_reason, usage } = finalMessage
 
-    // AUDIT-FIX: AI-F03 — Track token usage after each turn
+    // Track token usage after each turn
     const turnTokens = usage.input_tokens + usage.output_tokens
     void trackSessionTokens(context.sessionId, turnTokens)
 
@@ -249,7 +248,7 @@ export async function* runAgent(
       return
     }
 
-    // AUDIT-FIX: AI-F07 — When response is truncated by max_tokens, signal to the client
+    // When response is truncated by max_tokens, signal to the client
     if (stop_reason === "max_tokens") {
       yield { type: "text_delta", delta: "\n\n[Resposta truncada — limite de tamanho atingido.]" }
       yield {

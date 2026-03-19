@@ -13,7 +13,6 @@ export { QuantitySelector } from './QuantitySelector'
 export { SizeSelector } from './SizeSelector'
 export { ShippingEstimate } from './ShippingEstimate'
 export { SizeGuide } from './SizeGuide'
-// AUDIT-FIX: FE-M4 — AdminSidebar removed; admin UI lives exclusively in apps/admin
 export { CarouselCard } from './CarouselCard'
 export { MobileBottomNav } from './MobileBottomNav'
 export { StickyBottomBar } from './StickyBottomBar'

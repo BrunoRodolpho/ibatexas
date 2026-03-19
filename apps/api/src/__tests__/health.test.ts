@@ -1,6 +1,5 @@
 // Integration tests for health route
 // GET /health — returns status, version, timestamp
-// AUDIT-FIX: INFRA-01 — Updated tests for deep health check with dependency mocking
 
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
 import Fastify from "fastify"

@@ -12,7 +12,6 @@ const CHECK_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes
 const RESTAURANT_TZ = process.env.RESTAURANT_TIMEZONE || "America/Chicago"
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null
-// AUDIT-FIX: EVT-F02 — Overlap guard prevents concurrent job runs
 let isRunning = false
 
 /**
@@ -34,7 +33,7 @@ function slotToLocalDate(date: Date, startTime: string): Date {
 }
 
 async function checkNoShows(): Promise<void> {
-  // AUDIT-FIX: EVT-F02 — Skip if previous run still in progress
+  // Skip if previous run still in progress
   if (isRunning) return
   isRunning = true
   try {

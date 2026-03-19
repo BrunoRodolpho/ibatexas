@@ -135,7 +135,7 @@ type ToolHandler = (input: unknown, ctx: AgentContext) => Promise<unknown>
  * LLM-supplied value. Throws early when authentication is required but customerId
  * is missing from the session context.
  */
-// AUDIT-FIX: AI-F01/TOOL-C01 — always override customerId from ctx; never trust LLM input
+// Always override customerId from ctx; never trust LLM input
 function withCustomerId<T extends { customerId?: string }>(
   fn: (input: T) => Promise<unknown>,
 ): ToolHandler {
@@ -202,7 +202,7 @@ const handlers = new Map<string, ToolHandler>([
   ["get_ordered_together", (input, ctx) => getOrderedTogether(input as Parameters<typeof getOrderedTogether>[0], ctx)],
 ])
 
-// AUDIT-FIX: AI-F02/TOOL-H03 — centralized Zod validation before tool dispatch
+// Centralized Zod validation before tool dispatch.
 // Maps tool names to their Zod input schemas. Tools without a dedicated schema
 // in @ibatexas/types use a permissive z.object({}).passthrough() (validated internally).
 // Tools wrapped by withCustomerId use .partial({ customerId: true }) because customerId
@@ -250,7 +250,7 @@ export async function executeTool(
     throw new Error(`Ferramenta desconhecida: ${name}`)
   }
 
-  // AUDIT-FIX: AI-F02/TOOL-H03 — validate input with Zod before calling handler
+  // Validate input with Zod before calling handler
   const schema = toolInputSchemas.get(name)
   if (schema) {
     schema.parse(input)

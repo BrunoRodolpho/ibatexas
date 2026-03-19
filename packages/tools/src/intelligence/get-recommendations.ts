@@ -31,7 +31,7 @@ export async function buildPersonalizedQuery(
     ? (JSON.parse(prefsRaw) as { allergenExclusions?: string[]; favoriteCategories?: string[] })
     : null;
 
-  // AUDIT-FIX: TOOL-L03 — use "status:=published" (not "published:=true") to match Typesense schema
+  // "status:=published" matches the Typesense schema field (not "published:=true")
   const filters: string[] = ["inStock:=true", "status:=published"];
 
   if (prefs?.allergenExclusions && prefs.allergenExclusions.length > 0) {
@@ -116,7 +116,6 @@ export async function getRecommendations(
     .search({
       q: "*",
       query_by: "title",
-      // AUDIT-FIX: TOOL-L03 — use "status:=published" to match Typesense schema field
       filter_by: "inStock:=true && status:=published && reviewCount:>=5",
       sort_by: "rating:desc",
       per_page: limit,

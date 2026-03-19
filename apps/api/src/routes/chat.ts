@@ -10,7 +10,6 @@ import { v4 as uuidv4 } from "uuid";
 import { Channel, type AgentContext } from "@ibatexas/types";
 import { runAgent } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
-// AUDIT-FIX: SEC-F14 — Redis client for session ownership tracking
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { optionalAuth } from "../middleware/auth.js";
 import {
@@ -85,7 +84,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       createStream(sessionId);
 
-      // AUDIT-FIX: SEC-F14 — Track session ownership in Redis so SSE endpoint can verify
+      // Track session ownership in Redis so SSE endpoint can verify
       if (request.customerId) {
         void (async () => {
           try {
@@ -144,7 +143,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { sessionId } = request.params;
 
-      // AUDIT-FIX: SEC-F14 — Verify session ownership before allowing SSE connection
+      // Verify session ownership before allowing SSE connection
       try {
         const redis = await getRedisClient();
         const owner = await redis.get(rk(`session:owner:${sessionId}`));

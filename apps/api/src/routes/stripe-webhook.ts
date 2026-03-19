@@ -82,8 +82,7 @@ async function handleChargeRefunded(
     return;
   }
 
-  // AUDIT-FIX: EVT-F04 — order.refunded has no subscriber yet. Keeping for future refund intelligence.
-  // TODO: [AUDIT-REVIEW] Add subscriber for order.refunded to update customer profile and analytics
+  // TODO: Add subscriber for order.refunded to update customer profile and analytics
   await publishNatsEvent("order.refunded", {
     eventType: "order.refunded",
     orderId,
@@ -111,8 +110,7 @@ async function handleChargeDisputeCreated(
     "Stripe charge.dispute.created received — dispute opened",
   );
 
-  // AUDIT-FIX: EVT-F04 — order.disputed has no subscriber yet. Keeping for future dispute alerting.
-  // TODO: [AUDIT-REVIEW] Add subscriber for order.disputed to trigger alerts and update profile
+  // TODO: Add subscriber for order.disputed to trigger alerts and update profile
   await publishNatsEvent("order.disputed", {
     eventType: "order.disputed",
     orderId: orderId ?? null,
@@ -146,8 +144,7 @@ async function handlePaymentIntentCanceled(
     return;
   }
 
-  // AUDIT-FIX: EVT-F04 — order.canceled has no subscriber yet. Keeping for future cancellation analytics.
-  // TODO: [AUDIT-REVIEW] Add subscriber for order.canceled to update customer profile
+  // TODO: Add subscriber for order.canceled to update customer profile
   await publishNatsEvent("order.canceled", {
     eventType: "order.canceled",
     orderId,
@@ -162,9 +159,7 @@ async function handlePaymentIntentCanceled(
 }
 
 export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
-  // AUDIT-FIX: WA-M05 — Scope raw body content type parser to the webhook route only
-  // via Fastify's encapsulated plugin registration. This prevents replacing Fastify's
-  // built-in optimized JSON parser on all other routes.
+  // Scope raw body parser to this route only (Fastify encapsulated plugin)
   await server.register(async function stripeWebhookPlugin(scoped) {
     scoped.addContentTypeParser(
       "application/json",
@@ -265,14 +260,9 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
         }
       } catch (err) {
         server.log.error({ event_id: event.id, error: String(err) }, "Stripe webhook processing error");
-        // AUDIT-FIX: SEC-F12 — Idempotency key deletion edge case documentation:
         // Deleting the key on error allows Stripe's retry to reprocess the event.
-        // Edge case: if the original processing partially succeeded (e.g., NATS event
-        // published but capture failed), the retry may cause duplicate NATS events.
-        // Current mitigation: individual NATS subscribers use their own idempotency
-        // (e.g., cart-intelligence checks for duplicate orderId processing). For
-        // production hardening, consider making each operation within the handler
-        // independently idempotent rather than relying on envelope-level dedup.
+        // Edge case: partial success (NATS published, capture failed) may cause duplicate
+        // NATS events on retry. Mitigated by subscriber-side idempotency guards.
         await redis.del(idempotencyKey);
         return reply.code(500).send({ error: "Internal processing error" });
       }

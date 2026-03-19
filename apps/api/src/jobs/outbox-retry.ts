@@ -1,5 +1,4 @@
-// AUDIT-FIX: EVT-F01 — Outbox retry job
-// Polls Redis outbox lists every 60s and re-publishes undelivered critical events.
+// Outbox retry job — polls Redis outbox lists every 60s and re-publishes undelivered critical events.
 // Critical events: order.placed, reservation.created
 //
 // Idempotency is guaranteed by the subscriber-side dedup guard (isNewEvent).
@@ -15,7 +14,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
 
 async function processOutbox(log?: FastifyBaseLogger): Promise<void> {
-  // AUDIT-FIX: EVT-F01 — Overlap guard (prevents concurrent runs)
+  // Overlap guard (prevents concurrent runs)
   if (isRunning) return;
   isRunning = true;
 

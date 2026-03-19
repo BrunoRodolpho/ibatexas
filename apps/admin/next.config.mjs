@@ -3,7 +3,7 @@ const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone', // AUDIT-FIX: INFRA-04 — Required for Docker multi-stage build
+  output: 'standalone', // Required for Docker multi-stage build
   transpilePackages: ['@ibatexas/types', '@ibatexas/ui'],
   images: {
     remotePatterns: [
@@ -29,7 +29,7 @@ const nextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              // AUDIT-FIX: FE-C2 — Remove unsafe-eval; only needed in dev for Next.js hot-reload
+              // unsafe-eval only needed in dev for Next.js hot-reload
               `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""}`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com",
