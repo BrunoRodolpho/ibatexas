@@ -22,7 +22,6 @@ import {
   type ProductDTO,
   AvailabilityWindow,
   Channel,
-  type ProductViewedEvent,
 } from "@ibatexas/types"
 import { generateEmbedding } from "../embeddings/client.js"
 import { rk } from "../redis/key.js"
@@ -497,32 +496,30 @@ interface SearchContext {
 }
 
 /**
- * Publish one product.viewed NATS event per product in results.
+ * AUDIT-FIX: EVT-F10 — Replaced O(n) individual product.viewed events with a single
+ * batch search.results_viewed event containing all product IDs.
  * Non-blocking — caller swallows errors.
  */
 async function publishViewedEvents(
   products: ProductDTO[],
-  context?: SearchContext
+  context?: SearchContext,
+  query?: string,
 ): Promise<void> {
+  if (products.length === 0) return
+
   const channel = context?.channel ?? Channel.Web
   const timestamp = new Date().toISOString()
 
-  await Promise.all(
-    products.map((product) => {
-      const event: ProductViewedEvent = {
-        eventType: "product.viewed",
-        sessionId: context?.sessionId,
-        customerId: context?.userId ?? null,
-        channel,
-        timestamp,
-        metadata: {
-          productId: product.id,
-          source: "search",
-        },
-      }
-      return publishNatsEvent("product.viewed", { ...event })
-    })
-  )
+  // AUDIT-FIX: EVT-F10 — Single batch event instead of N individual events
+  await publishNatsEvent("search.results_viewed", {
+    eventType: "search.results_viewed",
+    productIds: products.map((p) => p.id),
+    customerId: context?.userId ?? null,
+    sessionId: context?.sessionId,
+    channel,
+    query: query ?? null,
+    timestamp,
+  })
 }
 
 // ── Result merging ───────────────────────────────────────────────────────────
@@ -661,10 +658,12 @@ export async function searchProducts(
   // ── noResultsReason (top-level, for single-query or fully-empty multi-query)
   const noResultsReason = resolveNoResultsReason(products, queryResults, isMultiQuery)
 
-  // ── Publish product.viewed events ────────────────────────────────────────
+  // ── Publish search.results_viewed batch event ──────────────────────────
+  // AUDIT-FIX: EVT-F10 — single batch event instead of O(n) individual events
   try {
     if (products.length > 0) {
-      await publishViewedEvents(products, context)
+      const queryStr = queryList.join(", ")
+      await publishViewedEvents(products, context, queryStr)
     }
   } catch (error) {
     console.warn("[Search] Event publish failed (non-critical):", error)

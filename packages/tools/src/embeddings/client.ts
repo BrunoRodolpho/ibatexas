@@ -15,6 +15,7 @@ async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
   const model = process.env.EMBEDDING_MODEL || process.env.CLAUDE_EMBEDDING_MODEL || "text-embedding-3-small"
   const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
 
+  // AUDIT-FIX: INFRA-03 — Add 10s timeout to prevent indefinite hangs during OpenAI API outages
   const response = await fetch(`${baseUrl}/embeddings`, {
     method: "POST",
     headers: {
@@ -22,6 +23,7 @@ async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ model, input: text }),
+    signal: AbortSignal.timeout(10_000),
   })
 
   if (!response.ok) {

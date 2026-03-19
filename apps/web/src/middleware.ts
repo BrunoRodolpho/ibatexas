@@ -33,6 +33,11 @@ function isTokenExpired(token: string): boolean {
 export default function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl
 
+  // Guard: skip intl rewriting for internal Next.js paths and static files
+  if (pathname.startsWith("/_next") || pathname.startsWith("/api") || pathname.includes(".")) {
+    return NextResponse.next()
+  }
+
   if (isProtectedPath(pathname)) {
     // Check for session token cookie (set by /api/auth/verify-otp)
     const token = request.cookies.get("token")?.value
@@ -52,5 +57,5 @@ export const config = {
   // - API routes
   // - Next.js internals (_next)
   // - Static files (favicon, images, etc.)
-  matcher: [String.raw`/((?!api|_next|.*\..*).*)` ],
+  matcher: ["/((?!api|_next|_vercel|.*\\..*).*)"],
 }

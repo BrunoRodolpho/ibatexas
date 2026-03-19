@@ -10,7 +10,6 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { indexProduct, invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
-import { publishNatsEvent } from "@ibatexas/nats-client"
 
 export default async function priceUpdatedHandler({
   event: { data, name: eventName },
@@ -94,14 +93,7 @@ export default async function priceUpdatedHandler({
     // Force re-embedding on next query (clear stale cached embedding)
     await deleteEmbeddingCache(product.id)
 
-    await publishNatsEvent("product.indexed", {
-      productId: product.id,
-      action: "price-updated",
-      priceId,
-      variantId: link.variant_id,
-      title: product.title,
-      timestamp: new Date().toISOString(),
-    })
+    // AUDIT-FIX: EVT-F04 — Removed dead product.indexed NATS event (no subscriber existed)
 
     logger.info(`[Product Indexing] Re-indexed after price change: ${product.id} (${product.title})`)
   } catch (error) {

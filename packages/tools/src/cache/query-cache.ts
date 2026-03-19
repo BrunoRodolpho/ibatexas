@@ -285,10 +285,16 @@ export async function logQuery(
 
 // ── Cache stats ──────────────────────────────────────────────────────────────
 
+// AUDIT-FIX: REDIS-C01 — add 30-day TTL to cache:stats counters (unbounded growth)
+const CACHE_STATS_TTL = 30 * 86400 // 30 days
+
 /** Fire-and-forget INCR — never blocks the caller. */
 function incrStat(key: string): void {
   void getRedisClient()
-    .then((r) => r.incr(rk(key)))
+    .then(async (r) => {
+      await r.incr(rk(key))
+      await r.expire(rk(key), CACHE_STATS_TTL) // unconditional — idempotent TTL reset
+    })
     .catch(() => {}) // non-critical
 }
 

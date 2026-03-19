@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { publishNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient, rk } from "@ibatexas/tools";
 
 // Whitelist of known analytics events — rejects unknown event names
@@ -68,9 +67,8 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         const ip = request.ip;
         const rateLimitKey = rk(`analytics:rate:${ip}`);
         const count = await redis.incr(rateLimitKey);
-        if (count === 1) {
-          await redis.expire(rateLimitKey, 60); // 1 minute window
-        }
+        // AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR to prevent immortal keys after crash
+        await redis.expire(rateLimitKey, 60); // 1 minute window — idempotent TTL reset
         if (count > 100) {
           return reply.status(429).send({ error: "Rate limit exceeded" });
         }
@@ -78,23 +76,9 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         // If Redis fails, allow the event through (analytics should never block)
       }
 
-      // Fire-and-forget: publish to NATS, never block the client
-      try {
-        await publishNatsEvent(`web.${event}`, {
-          ...properties,
-          receivedAt: new Date().toISOString(),
-        });
-      } catch (err) {
-        // Non-blocking: analytics must never block UX
-        server.log.error(
-          {
-            eventType: event,
-            sessionId: properties?.sessionId,
-            error: String(err),
-          },
-          "[analytics] NATS publish failed",
-        );
-      }
+      // AUDIT-FIX: EVT-F04 — Removed dead web.* NATS publishes (33 event types had no subscriber).
+      // Analytics events are validated and rate-limited above. When a subscriber is added
+      // (e.g., PostHog ingestion), re-enable NATS publishing here.
 
       return reply.status(204).send();
     },

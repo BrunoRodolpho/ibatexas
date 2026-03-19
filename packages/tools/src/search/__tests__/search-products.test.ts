@@ -757,17 +757,19 @@ describe("searchProducts", () => {
 
   // ── NATS events ───────────────────────────────────────────────────────────────
 
-  describe("NATS product.viewed events", () => {
-    it("publishes product.viewed (not product.searched)", async () => {
+  // AUDIT-FIX: EVT-F10 — search now publishes a single batch search.results_viewed event
+  describe("NATS search.results_viewed events", () => {
+    it("publishes search.results_viewed (not product.viewed or product.searched)", async () => {
       await searchProducts({ query: "costela" })
 
       const calls = vi.mocked(publishNatsEvent).mock.calls
       const eventNames = calls.map((c) => c[0])
-      expect(eventNames).toContain("product.viewed")
+      expect(eventNames).toContain("search.results_viewed")
+      expect(eventNames).not.toContain("product.viewed")
       expect(eventNames).not.toContain("product.searched")
     })
 
-    it("emits one product.viewed event per product in results", async () => {
+    it("emits a single batch event with all product IDs", async () => {
       mockTypesenseSearch.mockResolvedValueOnce({
         results: [{
           hits: [
@@ -781,33 +783,34 @@ describe("searchProducts", () => {
 
       await searchProducts({ query: "costela" })
 
-      const viewedCalls = vi.mocked(publishNatsEvent).mock.calls
-        .filter((c) => c[0] === "product.viewed")
+      const batchCalls = vi.mocked(publishNatsEvent).mock.calls
+        .filter((c) => c[0] === "search.results_viewed")
 
-      expect(viewedCalls).toHaveLength(3)
+      expect(batchCalls).toHaveLength(1)
 
-      const productIds = viewedCalls.map((c) => (c[1] as { metadata: { productId: string } }).metadata.productId)
-      expect(productIds).toContain("prod_a")
-      expect(productIds).toContain("prod_b")
-      expect(productIds).toContain("prod_c")
+      const payload = batchCalls[0][1] as { productIds: string[] }
+      expect(payload.productIds).toContain("prod_a")
+      expect(payload.productIds).toContain("prod_b")
+      expect(payload.productIds).toContain("prod_c")
+      expect(payload.productIds).toHaveLength(3)
     })
 
-    it("event payload has correct structure per ProductViewedEvent spec", async () => {
+    it("event payload has correct structure", async () => {
       await searchProducts(
         { query: "costela" },
         { sessionId: "sess_123", channel: Channel.Web }
       )
 
-      const viewedCall = vi.mocked(publishNatsEvent).mock.calls
-        .find((c) => c[0] === "product.viewed")!
+      const batchCall = vi.mocked(publishNatsEvent).mock.calls
+        .find((c) => c[0] === "search.results_viewed")!
 
-      const payload = viewedCall[1] as Record<string, unknown> & { metadata: Record<string, unknown> }
-      expect(payload.eventType).toBe("product.viewed")
+      const payload = batchCall[1] as Record<string, unknown>
+      expect(payload.eventType).toBe("search.results_viewed")
       expect(payload.sessionId).toBe("sess_123")
       expect(payload.channel).toBe(Channel.Web)
-      expect(payload.metadata.source).toBe("search")
-      expect(payload.metadata.productId).toBeDefined()
+      expect(payload.productIds).toBeDefined()
       expect(payload.timestamp).toBeDefined()
+      expect(payload.query).toBeDefined()
     })
 
     it("does not publish events when products array is empty", async () => {
@@ -816,13 +819,13 @@ describe("searchProducts", () => {
 
       await searchProducts({ query: "algo" })
 
-      const viewedCalls = vi.mocked(publishNatsEvent).mock.calls
-        .filter((c) => c[0] === "product.viewed")
+      const batchCalls = vi.mocked(publishNatsEvent).mock.calls
+        .filter((c) => c[0] === "search.results_viewed")
 
-      expect(viewedCalls).toHaveLength(0)
+      expect(batchCalls).toHaveLength(0)
     })
 
-    it("emits events only for UNIQUE products when queries[] used (deduped)", async () => {
+    it("emits single event with only UNIQUE products when queries[] used (deduped)", async () => {
       const sharedDoc = makeTypesenseDoc({ id: "shared_1" })
       const uniqueDoc = makeTypesenseDoc({ id: "unique_1" })
 
@@ -831,14 +834,16 @@ describe("searchProducts", () => {
 
       await searchProducts({ queries: ["porco", "boi"] })
 
-      const viewedCalls = vi.mocked(publishNatsEvent).mock.calls
-        .filter((c) => c[0] === "product.viewed")
+      const batchCalls = vi.mocked(publishNatsEvent).mock.calls
+        .filter((c) => c[0] === "search.results_viewed")
 
-      // shared_1 is in both queries but merged output has it only once → 1 event
-      const productIds = viewedCalls.map((c) => (c[1] as { metadata: { productId: string } }).metadata.productId)
-      expect(productIds.filter((id: string) => id === "shared_1")).toHaveLength(1)
-      expect(productIds).toContain("unique_1")
-      expect(viewedCalls).toHaveLength(2)
+      expect(batchCalls).toHaveLength(1)
+
+      const payload = batchCalls[0][1] as { productIds: string[] }
+      // shared_1 is in both queries but merged output has it only once
+      expect(payload.productIds.filter((id: string) => id === "shared_1")).toHaveLength(1)
+      expect(payload.productIds).toContain("unique_1")
+      expect(payload.productIds).toHaveLength(2)
     })
   })
 

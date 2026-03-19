@@ -13,49 +13,58 @@ const BATCH_CAP = 100; // max entries per tick (at 5000 orders/day ≈ 17 per 5-
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let logger: FastifyBaseLogger | null = null;
+// AUDIT-FIX: EVT-F02 — Overlap guard prevents concurrent job runs
+let isRunning = false;
 
 async function pollReviewPrompts(): Promise<void> {
-  const redis = await getRedisClient();
-  const scheduledKey = rk("review:prompt:scheduled");
-  const now = Date.now();
+  // AUDIT-FIX: EVT-F02 — Skip if previous run still in progress
+  if (isRunning) return;
+  isRunning = true;
+  try {
+    const redis = await getRedisClient();
+    const scheduledKey = rk("review:prompt:scheduled");
+    const now = Date.now();
 
-  // Fetch up to BATCH_CAP entries whose fire time has passed
-  const due = await redis.zRangeByScore(scheduledKey, 0, now, { LIMIT: { offset: 0, count: BATCH_CAP } });
+    // Fetch up to BATCH_CAP entries whose fire time has passed
+    const due = await redis.zRangeByScore(scheduledKey, 0, now, { LIMIT: { offset: 0, count: BATCH_CAP } });
 
-  logger?.info({ batch_size: due.length, tick_at: new Date().toISOString() }, "review-prompt poller tick");
+    logger?.info({ batch_size: due.length, tick_at: new Date().toISOString() }, "review-prompt poller tick");
 
-  if (due.length === BATCH_CAP) {
-    logger?.warn({ action: "review_prompt_batch_cap_reached", cap: BATCH_CAP }, "Poller hit batch cap — consider increasing frequency");
-  }
-
-  for (const member of due) {
-    const [customerId, orderId] = member.split(":");
-    if (!customerId || !orderId) continue;
-
-    // Check if this specific key is still set (idempotency guard for duplicate cron runs)
-    const marker = await redis.get(rk(`review:prompt:${customerId}:${orderId}`));
-    if (!marker) {
-      // Already processed or expired — clean up sorted set entry silently
-      await redis.zRem(scheduledKey, member);
-      continue;
+    if (due.length === BATCH_CAP) {
+      logger?.warn({ action: "review_prompt_batch_cap_reached", cap: BATCH_CAP }, "Poller hit batch cap — consider increasing frequency");
     }
 
-    try {
-      await publishNatsEvent("review.prompt", {
-        eventType: "review.prompt",
-        customerId,
-        orderId,
-      });
-    } catch (err) {
-      logger?.error({ customerId, orderId, error: String(err) }, "Failed to publish review.prompt event");
-      continue; // Leave in sorted set — will retry next tick
-    }
+    for (const member of due) {
+      const [customerId, orderId] = member.split(":");
+      if (!customerId || !orderId) continue;
 
-    // Remove from sorted set + delete marker key
-    const pipeline = redis.multi();
-    pipeline.zRem(scheduledKey, member);
-    pipeline.del(rk(`review:prompt:${customerId}:${orderId}`));
-    await pipeline.exec();
+      // Check if this specific key is still set (idempotency guard for duplicate cron runs)
+      const marker = await redis.get(rk(`review:prompt:${customerId}:${orderId}`));
+      if (!marker) {
+        // Already processed or expired — clean up sorted set entry silently
+        await redis.zRem(scheduledKey, member);
+        continue;
+      }
+
+      try {
+        await publishNatsEvent("review.prompt", {
+          eventType: "review.prompt",
+          customerId,
+          orderId,
+        });
+      } catch (err) {
+        logger?.error({ customerId, orderId, error: String(err) }, "Failed to publish review.prompt event");
+        continue; // Leave in sorted set — will retry next tick
+      }
+
+      // Remove from sorted set + delete marker key
+      const pipeline = redis.multi();
+      pipeline.zRem(scheduledKey, member);
+      pipeline.del(rk(`review:prompt:${customerId}:${orderId}`));
+      await pipeline.exec();
+    }
+  } finally {
+    isRunning = false;
   }
 }
 

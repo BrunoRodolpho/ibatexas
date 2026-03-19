@@ -65,10 +65,12 @@ async function buildTestServer() {
 
 // ── Mock Redis client ─────────────────────────────────────────────────────────
 
+// AUDIT-FIX: REDIS-M04 — active:carts changed from Set to Hash; mock uses hSet/hDel instead of sAdd/sRem
 function createMockRedis(overrides: Record<string, unknown> = {}) {
   return {
-    sAdd: vi.fn().mockResolvedValue(1),
-    sRem: vi.fn().mockResolvedValue(1),
+    hSet: vi.fn().mockResolvedValue(1),
+    hDel: vi.fn().mockResolvedValue(1),
+    expire: vi.fn().mockResolvedValue(true),
     set: vi.fn().mockResolvedValue("OK"),
     get: vi.fn().mockResolvedValue(null),
     ...overrides,
@@ -98,10 +100,11 @@ describe("POST /api/cart — create cart", () => {
     const body = res.json();
     expect(body.cart.id).toBe("cart_01");
 
-    // Cart ID tracked in Redis active:carts set
-    expect(mockRedis.sAdd).toHaveBeenCalledWith(
+    // Cart ID tracked in Redis active:carts hash
+    expect(mockRedis.hSet).toHaveBeenCalledWith(
       expect.stringContaining("active:carts"),
       "cart_01",
+      expect.stringContaining("cart_01"),
     );
   });
 
@@ -213,10 +216,11 @@ describe("POST /api/cart/:id/line-items — add item", () => {
 
     expect(res.statusCode).toBe(201);
 
-    // Cart tracked in active:carts
-    expect(mockRedis.sAdd).toHaveBeenCalledWith(
+    // Cart tracked in active:carts hash
+    expect(mockRedis.hSet).toHaveBeenCalledWith(
       expect.stringContaining("active:carts"),
       "cart_01",
+      expect.stringContaining("cart_01"),
     );
 
     // Medusa called with correct payload

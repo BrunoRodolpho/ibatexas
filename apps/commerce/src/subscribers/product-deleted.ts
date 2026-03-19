@@ -5,7 +5,6 @@
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { deleteProductFromIndex, invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
-import { publishNatsEvent } from "@ibatexas/nats-client"
 
 export default async function productDeletedHandler({
   event: { data },
@@ -26,11 +25,7 @@ export default async function productDeletedHandler({
     // Delete cached embedding
     await deleteEmbeddingCache(data.id)
 
-    await publishNatsEvent("product.indexed", {
-      productId: data.id,
-      action: "deleted",
-      timestamp: new Date().toISOString(),
-    })
+    // AUDIT-FIX: EVT-F04 — Removed dead product.indexed NATS event (no subscriber existed)
 
     logger.info(`[Product Indexing] Deleted from index: ${data.id}`)
   } catch (error) {

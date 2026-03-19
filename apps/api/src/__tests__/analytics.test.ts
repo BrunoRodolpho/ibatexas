@@ -1,5 +1,6 @@
 // Unit tests for analytics route
-// POST /api/analytics/track → validate → NATS publish → 204
+// POST /api/analytics/track → validate → rate limit → 204
+// AUDIT-FIX: EVT-F04 — NATS publish removed (web.* events had no subscriber)
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -34,9 +35,8 @@ async function buildTestServer() {
 describe("POST /api/analytics/track", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("returns 204 and publishes to NATS with correct subject", async () => {
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
+  // AUDIT-FIX: EVT-F04 — NATS publish removed; route now just validates and returns 204
+  it("returns 204 for valid event (NATS publish removed)", async () => {
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -48,20 +48,13 @@ describe("POST /api/analytics/track", () => {
     });
 
     expect(res.statusCode).toBe(204);
-    expect(mockPublishNatsEvent).toHaveBeenCalledTimes(1);
-
-    const [subject, payload] = mockPublishNatsEvent.mock.calls[0];
-    expect(subject).toBe("web.pdp_viewed");
-    expect(payload.productId).toBe("prod_01");
-    expect(payload.sessionId).toBe("sess_123");
-    expect(payload.receivedAt).toBeDefined();
+    // AUDIT-FIX: EVT-F04 — No NATS publish happens anymore
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
 
     await app.close();
   });
 
   it("returns 204 with minimal payload (event only, no properties)", async () => {
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -70,11 +63,7 @@ describe("POST /api/analytics/track", () => {
     });
 
     expect(res.statusCode).toBe(204);
-    expect(mockPublishNatsEvent).toHaveBeenCalledTimes(1);
-
-    const [subject, payload] = mockPublishNatsEvent.mock.calls[0];
-    expect(subject).toBe("web.session_started");
-    expect(payload.receivedAt).toBeDefined();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
 
     await app.close();
   });
@@ -107,9 +96,7 @@ describe("POST /api/analytics/track", () => {
     await app.close();
   });
 
-  it("returns 204 even when NATS publish fails (non-blocking)", async () => {
-    mockPublishNatsEvent.mockRejectedValue(new Error("NATS connection failed"));
-
+  it("returns 204 for valid event even without NATS (non-blocking)", async () => {
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -122,7 +109,6 @@ describe("POST /api/analytics/track", () => {
 
     // Must return 204 — analytics never blocks UX
     expect(res.statusCode).toBe(204);
-    expect(mockPublishNatsEvent).toHaveBeenCalledTimes(1);
 
     await app.close();
   });
@@ -145,25 +131,15 @@ describe("POST /api/analytics/track", () => {
     await app.close();
   });
 
-  it("publishes NATS subject with ibatexas prefix via publishNatsEvent", async () => {
-    // publishNatsEvent internally prefixes with "ibatexas."
-    // so web.pdp_viewed becomes ibatexas.web.pdp_viewed
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
+  it("returns 400 for unknown event type", async () => {
     const app = await buildTestServer();
-    await app.inject({
+    const res = await app.inject({
       method: "POST",
       url: "/api/analytics/track",
-      payload: { event: "add_to_cart", properties: { productId: "prod_02" } },
+      payload: { event: "unknown_event_type" },
     });
 
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "web.add_to_cart",
-      expect.objectContaining({
-        productId: "prod_02",
-        receivedAt: expect.any(String),
-      }),
-    );
+    expect(res.statusCode).toBe(400);
 
     await app.close();
   });

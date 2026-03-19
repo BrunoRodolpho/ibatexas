@@ -56,23 +56,21 @@ interface RateLimitResult {
   count: number;
 }
 
+// AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR to prevent immortal keys after crash
 async function checkIpRateLimit(ip: string): Promise<RateLimitResult> {
   const redis = await getRedisClient();
   const key = rk(`otp:ip:${ip}`);
   const count = await redis.incr(key);
-  if (count === 1) {
-    await redis.expire(key, 3600); // 1 hour
-  }
+  await redis.expire(key, 3600); // 1 hour — idempotent TTL reset
   return { exceeded: count > 10, count };
 }
 
+// AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR
 async function checkSendRateLimit(hash: string): Promise<RateLimitResult> {
   const redis = await getRedisClient();
   const rateLimitKey = rk(`otp:rate:${hash}`);
   const count = await redis.incr(rateLimitKey);
-  if (count === 1) {
-    await redis.expire(rateLimitKey, 600); // 10 min
-  }
+  await redis.expire(rateLimitKey, 600); // 10 min — idempotent TTL reset
   return { exceeded: count > 3, count };
 }
 

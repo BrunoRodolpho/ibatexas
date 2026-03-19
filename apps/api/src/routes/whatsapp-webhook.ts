@@ -19,7 +19,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { parse as parseQuerystring } from "node:querystring";
 import twilio from "twilio";
 import { getRedisClient, rk } from "@ibatexas/tools";
-import { publishNatsEvent } from "@ibatexas/nats-client";
+// AUDIT-FIX: EVT-F04 — Removed unused publishNatsEvent import (dead whatsapp events removed)
 import { runAgent } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
@@ -118,12 +118,11 @@ async function checkIdempotency(redis: Awaited<ReturnType<typeof getRedisClient>
   return !wasSet;
 }
 
+// AUDIT-FIX: REDIS-M03 — EXPIRE unconditionally on every INCR to prevent immortal keys after crash
 async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisClient>>, hash: string): Promise<boolean> {
   const rateKey = rk(`wa:rate:${hash}`);
   const rateCount = await redis.incr(rateKey);
-  if (rateCount === 1) {
-    await redis.expire(rateKey, 60);
-  }
+  await redis.expire(rateKey, 60); // idempotent TTL reset
   return rateCount > MAX_RATE_PER_MINUTE;
 }
 
@@ -292,14 +291,7 @@ async function handleMessageAsync(
   // Append user message to session
   await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true);
 
-  // Publish received event
-  void publishNatsEvent("whatsapp.message.received", {
-    eventType: "whatsapp.message.received",
-    phone_hash: hash,
-    sessionId: session.sessionId,
-    customerId: session.customerId,
-    hasMedia: numMedia > 0,
-  }).catch(() => {}); // fire-and-forget
+  // AUDIT-FIX: EVT-F04 — Removed dead whatsapp.message.received NATS event (no subscriber existed)
 
   // ── Debounce (batch rapid-fire messages) ────────────────────────────────────
   const shouldRun = await tryDebounce(hash);
@@ -312,7 +304,8 @@ async function handleMessageAsync(
   await sleep(DEBOUNCE_MS);
 
   // ── Agent lock ──────────────────────────────────────────────────────────────
-  const lockAcquired = await acquireAgentLock(session.sessionId);
+  // AUDIT-FIX: REDIS-H03/WA-H01 — lock keyed by phoneHash (not sessionId)
+  const lockAcquired = await acquireAgentLock(hash);
   if (!lockAcquired) {
     // Another agent run is in progress — our message is in the session history
     return;
@@ -392,15 +385,7 @@ async function handleMessageAsync(
       ]);
     }
 
-    // Publish sent event
-    void publishNatsEvent("whatsapp.message.sent", {
-      eventType: "whatsapp.message.sent",
-      phone_hash: hash,
-      sessionId: session.sessionId,
-      customerId: session.customerId,
-      tools_used: agentResponse.toolsUsed,
-      duration_ms: durationMs,
-    }).catch(() => {}); // fire-and-forget
+    // AUDIT-FIX: EVT-F04 — Removed dead whatsapp.message.sent NATS event (no subscriber existed)
   } catch (err) {
     log.error(err, "[whatsapp.agent.error] Agent processing failed");
 
@@ -414,6 +399,47 @@ async function handleMessageAsync(
       // Best-effort — can't do more
     }
   } finally {
-    await releaseAgentLock(session.sessionId);
+    // AUDIT-FIX: REDIS-H03/WA-H01 — release lock by phoneHash (not sessionId)
+    await releaseAgentLock(hash);
+
+    // AUDIT-FIX: WA-H02 — re-check for unprocessed messages after lock release.
+    // If new user messages arrived while the agent was running, they were appended
+    // to session history but the running agent never saw them. Re-acquire lock and
+    // re-run agent once (max retry = 1 to prevent loops).
+    try {
+      const postHistory = await loadSession(session.sessionId);
+      const lastMsg = postHistory.length > 0 ? postHistory[postHistory.length - 1] : null;
+      if (lastMsg && lastMsg.role === "user") {
+        // A user message arrived after the agent's last response — re-process
+        const retryLock = await acquireAgentLock(hash);
+        if (retryLock) {
+          try {
+            const retryHistory = await loadSession(session.sessionId);
+            const retryTrimmed = retryHistory.slice(-MAX_HISTORY_MESSAGES);
+            const retryLastUser = [...retryTrimmed].reverse().find((m) => m.role === "user");
+            const retryInput = retryLastUser?.content || "";
+            const retryContext = buildWhatsAppContext(session);
+
+            log.info({ phone_hash: hash }, "[whatsapp.agent.retry] Re-running agent for missed messages");
+            const retryResponse = await collectAgentResponse(
+              runAgent(retryInput, retryTrimmed, retryContext),
+            );
+
+            if (retryResponse.text) {
+              await sendText(`whatsapp:${phone}`, retryResponse.text);
+              await appendMessages(session.sessionId, [
+                { role: "assistant", content: retryResponse.text },
+              ]);
+            }
+          } catch (retryErr) {
+            log.error(retryErr, "[whatsapp.agent.retry.error] Retry agent processing failed");
+          } finally {
+            await releaseAgentLock(hash);
+          }
+        }
+      }
+    } catch {
+      // Best-effort re-check — don't let this crash the outer handler
+    }
   }
 }

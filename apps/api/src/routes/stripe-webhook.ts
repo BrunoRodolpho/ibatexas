@@ -82,6 +82,8 @@ async function handleChargeRefunded(
     return;
   }
 
+  // AUDIT-FIX: EVT-F04 — order.refunded has no subscriber yet. Keeping for future refund intelligence.
+  // TODO: [AUDIT-REVIEW] Add subscriber for order.refunded to update customer profile and analytics
   await publishNatsEvent("order.refunded", {
     eventType: "order.refunded",
     orderId,
@@ -109,6 +111,8 @@ async function handleChargeDisputeCreated(
     "Stripe charge.dispute.created received — dispute opened",
   );
 
+  // AUDIT-FIX: EVT-F04 — order.disputed has no subscriber yet. Keeping for future dispute alerting.
+  // TODO: [AUDIT-REVIEW] Add subscriber for order.disputed to trigger alerts and update profile
   await publishNatsEvent("order.disputed", {
     eventType: "order.disputed",
     orderId: orderId ?? null,
@@ -142,6 +146,8 @@ async function handlePaymentIntentCanceled(
     return;
   }
 
+  // AUDIT-FIX: EVT-F04 — order.canceled has no subscriber yet. Keeping for future cancellation analytics.
+  // TODO: [AUDIT-REVIEW] Add subscriber for order.canceled to update customer profile
   await publishNatsEvent("order.canceled", {
     eventType: "order.canceled",
     orderId,

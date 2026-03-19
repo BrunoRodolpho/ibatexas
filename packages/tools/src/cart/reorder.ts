@@ -56,6 +56,8 @@ export async function reorder(
     }
   }
 
+  // AUDIT-FIX: EVT-F04 — cart.item_added has no subscriber yet. Keeping for future cart analytics.
+  // TODO: [AUDIT-REVIEW] Add subscriber for cart.item_added when cart analytics pipeline is built
   void publishNatsEvent("cart.item_added", {
     eventType: "cart.item_added",
     cartId,

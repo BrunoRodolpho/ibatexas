@@ -27,6 +27,7 @@ function createMockPipeline() {
   return {
     set: vi.fn().mockReturnThis(),
     zAdd: vi.fn().mockReturnThis(),
+    expire: vi.fn().mockReturnThis(), // AUDIT-FIX: REDIS-C01 — pipeline now uses expire()
     exec: vi.fn().mockResolvedValue([]),
   };
 }

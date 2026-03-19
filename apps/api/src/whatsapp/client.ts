@@ -16,7 +16,8 @@ function getTwilioClient(): ReturnType<typeof twilio> {
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const auth = process.env.TWILIO_AUTH_TOKEN;
     if (!sid || !auth) throw new Error("TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN not set");
-    _client = twilio(sid, auth);
+    // AUDIT-FIX: INFRA-09 — Add 10s timeout to prevent indefinite hangs during Twilio API outages
+    _client = twilio(sid, auth, { timeout: 10_000 });
   }
   return _client;
 }

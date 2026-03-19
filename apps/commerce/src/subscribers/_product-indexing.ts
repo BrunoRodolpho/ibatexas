@@ -4,7 +4,6 @@
 
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { indexProduct } from "@ibatexas/tools"
-import { publishNatsEvent } from "@ibatexas/nats-client"
 
 const PRODUCT_FIELDS = [
   "*",
@@ -36,12 +35,7 @@ export async function fetchAndIndexProduct(
 
   await indexProduct(product)
 
-  await publishNatsEvent("product.indexed", {
-    productId: product.id,
-    action,
-    title: product.title,
-    timestamp: new Date().toISOString(),
-  })
+  // AUDIT-FIX: EVT-F04 — Removed dead product.indexed NATS event (no subscriber existed)
 
   return product
 }

@@ -14,18 +14,26 @@ import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropi
 import { Channel, NonRetryableError, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
 import { SYSTEM_PROMPT } from "./system-prompt.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
+// AUDIT-FIX: AI-F03 — Per-session token budget enforcement via Redis
+import { getRedisClient, rk } from "@ibatexas/tools"
 
 const MAX_TURNS = Number.parseInt(process.env.AGENT_MAX_TURNS || "10", 10)
 const MAX_TOOL_RETRIES = Number.parseInt(process.env.AGENT_MAX_TOOL_RETRIES || "3", 10)
 const AGENT_MAX_TOKENS = Number.parseInt(process.env.AGENT_MAX_TOKENS || "2048", 10)
+
+// AUDIT-FIX: AI-F03 — Daily token budget per session (default 100K tokens)
+const SESSION_TOKEN_BUDGET = Number.parseInt(process.env.AGENT_SESSION_TOKEN_BUDGET || "100000", 10)
+const TOKEN_BUDGET_TTL = 86400 // 24 hours in seconds
 
 // ── Anthropic client (singleton) ──────────────────────────────────────────────
 
 let _client: Anthropic | null = null
 
 function getClient(): Anthropic {
+  // AUDIT-FIX: INFRA-02 — Add 60s timeout to prevent indefinite hangs during Anthropic API outages
   _client ??= new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
+    timeout: 60_000,
   })
   return _client
 }
@@ -115,6 +123,41 @@ function buildSystemPrompt(channel: Channel): string {
   return SYSTEM_PROMPT + channelHint
 }
 
+// ── AUDIT-FIX: AI-F03 — Per-session token budget helpers ────────────────────
+
+/**
+ * Check if the session has exceeded its daily token budget.
+ * Returns the current token count or -1 if Redis is unavailable (fail-open).
+ */
+async function getSessionTokenCount(sessionId: string): Promise<number> {
+  try {
+    const redis = await getRedisClient()
+    const count = await redis.get(rk(`llm:tokens:${sessionId}`))
+    return count ? Number.parseInt(count, 10) : 0
+  } catch {
+    // AUDIT-FIX: AI-F03 — Fail-open: if Redis is down, allow the request
+    return 0
+  }
+}
+
+/**
+ * Increment the session's token counter after a response.
+ * Sets 24h TTL on first write.
+ */
+async function trackSessionTokens(sessionId: string, tokensUsed: number): Promise<void> {
+  try {
+    const redis = await getRedisClient()
+    const key = rk(`llm:tokens:${sessionId}`)
+    const newCount = await redis.incrBy(key, tokensUsed)
+    // Set TTL only on first increment (when count equals the tokens just added)
+    if (newCount === tokensUsed) {
+      await redis.expire(key, TOKEN_BUDGET_TTL)
+    }
+  } catch {
+    // Non-critical: tracking failure should not block the agent
+  }
+}
+
 // ── Main agent loop ───────────────────────────────────────────────────────────
 
 /**
@@ -129,6 +172,14 @@ export async function* runAgent(
   history: AgentMessage[],
   context: AgentContext,
 ): AsyncGenerator<StreamChunk> {
+  // AUDIT-FIX: AI-F03 — Check per-session token budget before processing
+  const currentTokens = await getSessionTokenCount(context.sessionId)
+  if (currentTokens >= SESSION_TOKEN_BUDGET) {
+    yield { type: "text_delta", delta: "Limite de uso atingido. Tente novamente amanhã." }
+    yield { type: "done", inputTokens: 0, outputTokens: 0 }
+    return
+  }
+
   const client = getClient()
   const model = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6"
 
@@ -168,6 +219,10 @@ export async function* runAgent(
 
     const finalMessage = await stream.finalMessage()
     const { stop_reason, usage } = finalMessage
+
+    // AUDIT-FIX: AI-F03 — Track token usage after each turn
+    const turnTokens = usage.input_tokens + usage.output_tokens
+    void trackSessionTokens(context.sessionId, turnTokens)
 
     // ── End turn or max tokens — finish gracefully ──────────────────────────
     if (stop_reason === "end_turn" || stop_reason === "max_tokens") {

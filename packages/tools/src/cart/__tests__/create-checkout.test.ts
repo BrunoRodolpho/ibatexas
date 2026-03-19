@@ -73,6 +73,7 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({}) // cart metadata update
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
+        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items (AUDIT-FIX: EVT-F08)
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
 
       await createCheckout(BASE_INPUT, CTX)
@@ -91,6 +92,7 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({}) // cart metadata update
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
+        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items (AUDIT-FIX: EVT-F08)
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
 
       await createCheckout({ ...BASE_INPUT, tipInCentavos: 1000 }, CTX)
@@ -104,6 +106,7 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({}) // cart metadata update
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
+        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items (AUDIT-FIX: EVT-F08)
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
 
       await createCheckout({ ...BASE_INPUT, deliveryCep: "12345-678" }, CTX)
@@ -115,10 +118,21 @@ describe("createCheckout", () => {
   })
 
   describe("cash payment", () => {
+    // AUDIT-FIX: EVT-F08 — Cash checkout now fetches cart items before completing
+    // Mock order: (1) cart metadata, (2) payment sessions, (3) fetch cart items, (4) complete
+    const CART_ITEMS_RESPONSE = {
+      cart: {
+        items: [
+          { variant_id: "var_01", quantity: 2, unit_price: 5000, variant: { product_id: "prod_01" } },
+        ],
+      },
+    }
+
     it("completes cart directly for cash payment", async () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({}) // cart metadata
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
+        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
 
       const result = await createCheckout(BASE_INPUT, CTX)
@@ -132,6 +146,7 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({}) // cart metadata
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
+        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
 
       await createCheckout(BASE_INPUT, CTX)
@@ -145,10 +160,11 @@ describe("createCheckout", () => {
       )
     })
 
-    it("publishes order.placed NATS event on cash success", async () => {
+    it("publishes order.placed NATS event with items on cash success", async () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({})
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
         .mockResolvedValueOnce({ order: { id: "order_01" } })
 
       await createCheckout(BASE_INPUT, CTX)
@@ -160,6 +176,7 @@ describe("createCheckout", () => {
           orderId: "order_01",
           paymentMethod: "cash",
           customerId: CTX.customerId,
+          items: [{ productId: "prod_01", variantId: "var_01", quantity: 2, priceInCentavos: 5000 }],
         }),
       )
     })
@@ -168,6 +185,7 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({})
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
         .mockResolvedValueOnce({ order: { id: "order_42" } })
 
       const result = await createCheckout(BASE_INPUT, CTX)
@@ -180,6 +198,7 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({})
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
         .mockResolvedValueOnce({ order: undefined })
 
       const result = await createCheckout(BASE_INPUT, CTX)
@@ -193,6 +212,7 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({})
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
         .mockResolvedValueOnce({ order: undefined })
 
       await createCheckout(BASE_INPUT, CTX)
@@ -372,6 +392,7 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce({}) // cart metadata
         .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
+        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items (AUDIT-FIX: EVT-F08)
         .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete (for cash)
 
       await createCheckout(BASE_INPUT, CTX)
