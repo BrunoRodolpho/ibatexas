@@ -36,7 +36,7 @@ export function RadioGroup({ ref, name, options, value, onChange, error, errorMe
                 name={name}
                 value={opt.value}
                 checked={value === opt.value}
-                onChange={(e) => onChange?.(opt.value)}
+                onChange={() => onChange?.(opt.value)}
                 disabled={opt.disabled}
                 className={clsx(
                   'w-4 h-4 rounded-full border cursor-pointer transition-colors duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] mt-0.5',

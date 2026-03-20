@@ -1,19 +1,19 @@
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const { FlatCompat } = require("@eslint/eslintrc");
-const js = require("@eslint/js");
-const compat = new FlatCompat({
-  baseDirectory: import.meta.dirname,
-  recommendedConfig: js.configs.recommended,
-  allConfig: js.configs.all,
-});
+import coreWebVitals from "eslint-config-next/core-web-vitals";
+import tseslint from "typescript-eslint";
+
 export default [
-  ...compat.extends("next/core-web-vitals"),
-  ...compat.plugins("@typescript-eslint"),
+  ...coreWebVitals,
+  ...tseslint.configs.recommended,
   {
     rules: {
       "react-hooks/exhaustive-deps": "warn",
+      "react-hooks/set-state-in-effect": "warn",
       "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/no-unused-vars": ["error", {
+        argsIgnorePattern: "^_",
+        varsIgnorePattern: "^_",
+        destructuredArrayIgnorePattern: "^_",
+      }],
       "no-restricted-imports": ["error", {
         paths: [{
           name: "@/domains",

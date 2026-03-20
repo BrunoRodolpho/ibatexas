@@ -28,7 +28,6 @@
   "packageManager": "pnpm@10.32.1",
   "pnpm": {
     "overrides": {
-      "next": ">=14.2.35",
       "minimatch": ">=9.0.7",
       "rollup": ">=4.59.0",
       "multer": ">=2.1.1",

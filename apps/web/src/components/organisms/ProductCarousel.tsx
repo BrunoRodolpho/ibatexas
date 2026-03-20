@@ -57,15 +57,21 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
   }, [])
 
   // --- Auto-scroll loop (same speed always) ---
-  const tick = useCallback((now: number) => {
-    if (!pausedRef.current && lastTimeRef.current) {
-      const dt = now - lastTimeRef.current
-      offsetRef.current = wrapOffset(offsetRef.current - AUTO_SPEED * dt)
-      applyTransform(offsetRef.current)
+  const tickRef = useRef<FrameRequestCallback | null>(null)
+  useEffect(() => {
+    tickRef.current = (now: number) => {
+      if (!pausedRef.current && lastTimeRef.current) {
+        const dt = now - lastTimeRef.current
+        offsetRef.current = wrapOffset(offsetRef.current - AUTO_SPEED * dt)
+        applyTransform(offsetRef.current)
+      }
+      lastTimeRef.current = now
+      rafRef.current = requestAnimationFrame(tickRef.current!)
     }
-    lastTimeRef.current = now
-    rafRef.current = requestAnimationFrame(tick)
   }, [applyTransform, wrapOffset])
+  const tick = useCallback((now: number) => {
+    tickRef.current?.(now)
+  }, [])
 
   useEffect(() => {
     if (!shouldAnimate) return
