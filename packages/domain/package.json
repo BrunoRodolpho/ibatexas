@@ -26,10 +26,11 @@
   },
   "dependencies": {
     "@ibatexas/types": "workspace:*",
-    "@prisma/client": "^5.10.0"
+    "@prisma/adapter-pg": "^7.5.0",
+    "@prisma/client": "^7.5.0"
   },
   "devDependencies": {
-    "prisma": "^5.10.0",
+    "prisma": "^7.5.0",
     "tsx": "^4.7.0",
     "typescript": "^5.9.0"
   }

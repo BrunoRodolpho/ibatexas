@@ -21,7 +21,7 @@ vi.mock("../../client.js", () => ({
 }));
 
 // The module uses Prisma.sql — we need a minimal mock
-vi.mock("../../generated/prisma-client/index.js", () => ({
+vi.mock("../../generated/prisma-client/client.js", () => ({
   Prisma: {
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
   },
