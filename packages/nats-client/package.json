@@ -17,7 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "nats": "^2.18.0",
+    "nats": "^2.29.3",
     "@ibatexas/types": "workspace:*"
   },
   "devDependencies": {

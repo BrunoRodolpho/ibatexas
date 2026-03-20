@@ -13,12 +13,12 @@
     "@ibatexas/types": "workspace:*",
     "@ibatexas/ui": "workspace:*",
     "class-variance-authority": "^0.7.1",
-    "lucide-react": "^0.575.0",
+    "lucide-react": "^0.577.0",
     "next": "^16.2.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "zod": "^4.3.6",
-    "zustand": "^5.0.11"
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.0",

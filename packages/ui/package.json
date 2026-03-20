@@ -22,7 +22,7 @@
     "@ibatexas/types": "workspace:*",
     "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
-    "lucide-react": "^0.575.0"
+    "lucide-react": "^0.577.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.0",

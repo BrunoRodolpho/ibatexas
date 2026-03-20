@@ -79,8 +79,11 @@ const baseContext: AgentContext = {
 }
 
 describe("runAgent", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
+    // Reset the singleton Anthropic client so each test gets a fresh mock instance
+    const { _resetClient } = await import("../agent.js")
+    _resetClient()
   })
 
   it("simple text response — yields text_delta chunks and done", async () => {

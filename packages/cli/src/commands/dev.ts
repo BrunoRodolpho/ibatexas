@@ -1,5 +1,5 @@
 import type { Command } from "commander"
-import type { ExecaChildProcess } from "execa"
+import type { ResultPromise } from "execa"
 import chalk from "chalk"
 import ora from "ora"
 import { execa, execaSync } from "execa"
@@ -199,7 +199,7 @@ async function checkInfrastructure(): Promise<InfraEntry[]> {
 
 // ── Service process management ────────────────────────────────────────────────
 
-function spawnService(svc: ServiceDef): ExecaChildProcess {
+function spawnService(svc: ServiceDef): ResultPromise {
   const proc = execa(
     "pnpm",
     ["--filter", svc.filter, svc.script],

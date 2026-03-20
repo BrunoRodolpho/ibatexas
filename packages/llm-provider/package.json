@@ -18,7 +18,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.28.0",
+    "@anthropic-ai/sdk": "^0.80.0",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "zod": "^4.3.6"

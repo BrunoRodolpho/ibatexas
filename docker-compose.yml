@@ -1,7 +1,7 @@
 services:
 
   postgres:
-    image: postgres:15-alpine
+    image: postgres:17-alpine
     container_name: ibatexas-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -42,7 +42,7 @@ services:
           memory: 256M
 
   typesense:
-    image: typesense/typesense:0.25.2
+    image: typesense/typesense:27.1
     container_name: ibatexas-typesense
     environment:
       TYPESENSE_DATA_DIR: /data
@@ -62,7 +62,7 @@ services:
           memory: 512M
 
   nats:
-    image: nats:2.10-alpine
+    image: nats:2.11-alpine
     container_name: ibatexas-nats
     command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
     ports:
