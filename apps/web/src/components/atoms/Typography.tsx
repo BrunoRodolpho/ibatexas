@@ -1,7 +1,7 @@
 'use client'
 
 import { cva, type VariantProps } from 'class-variance-authority'
-import { forwardRef } from 'react'
+import type { Ref } from 'react'
 
 const textVariants = cva('', {
   variants: {
@@ -49,24 +49,20 @@ export interface TextProps
   extends React.HTMLAttributes<HTMLParagraphElement>,
     VariantProps<typeof textVariants> {}
 
-const Heading = forwardRef<
-  HTMLHeadingElement,
-  HeadingProps & { as?: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' }
->(({ className, variant, textColor, weight, as: Tag = 'h1', ...props }, ref) => (
-  <Tag
-    ref={ref}
-    className={textVariants({ variant: (variant || Tag) as HeadingProps['variant'], textColor, weight, className })}
-    {...props}
-  />
-))
-Heading.displayName = 'Heading'
+function Heading({ ref, className, variant, textColor, weight, as: Tag = 'h1', ...props }: HeadingProps & { as?: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6' } & { ref?: Ref<HTMLHeadingElement> }) {
+  return (
+    <Tag
+      ref={ref}
+      className={textVariants({ variant: (variant || Tag) as HeadingProps['variant'], textColor, weight, className })}
+      {...props}
+    />
+  )
+}
 
-const Text = forwardRef<HTMLParagraphElement, TextProps>(
-  ({ className, variant = 'body', textColor, weight, ...props }, ref) => (
+function Text({ ref, className, variant = 'body', textColor, weight, ...props }: TextProps & { ref?: Ref<HTMLParagraphElement> }) {
+  return (
     <p ref={ref} className={textVariants({ variant, textColor, weight, className })} {...props} />
   )
-)
-Text.displayName = 'Text'
+}
 
 export { Heading, Text, textVariants }
-

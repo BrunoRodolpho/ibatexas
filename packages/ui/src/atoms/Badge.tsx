@@ -1,7 +1,7 @@
 'use client'
 
 import { cva, type VariantProps } from 'class-variance-authority'
-import { forwardRef } from 'react'
+import type { Ref } from 'react'
 
 const badgeVariants = cva('inline-flex items-center px-2 py-0.5 rounded-sm text-[10px] font-medium uppercase tracking-editorial', {
   variants: {
@@ -43,9 +43,8 @@ const badgeVariants = cva('inline-flex items-center px-2 py-0.5 rounded-sm text-
 
 export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement>, VariantProps<typeof badgeVariants> {}
 
-const Badge = forwardRef<HTMLDivElement, BadgeProps>(({ className, variant, ...props }, ref) => (
-  <div ref={ref} className={badgeVariants({ variant, className })} {...props} />
-))
-Badge.displayName = 'Badge'
+function Badge({ ref, className, variant, ...props }: BadgeProps & { ref?: Ref<HTMLDivElement> }) {
+  return <div ref={ref} className={badgeVariants({ variant, className })} {...props} />
+}
 
 export { Badge, badgeVariants }

@@ -24,7 +24,7 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
   const rafRef = useRef<number>(0)
   const lastTimeRef = useRef(0)
   const pausedRef = useRef(false)
-  const resumeTimerRef = useRef<ReturnType<typeof setTimeout>>()
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // Touch state
   const touchStartXRef = useRef(0)
