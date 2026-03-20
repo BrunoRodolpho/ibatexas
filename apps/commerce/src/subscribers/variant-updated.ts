@@ -8,7 +8,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { indexProduct, invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
-import { publishNatsEvent } from "@ibatexas/nats-client"
+import { withTypesenseRetry } from "./_product-indexing"
 
 export default async function variantUpdatedHandler({
   event: { data },
@@ -56,8 +56,12 @@ export default async function variantUpdatedHandler({
       return
     }
 
-    // Re-index to Typesense (upsert is idempotent)
-    await indexProduct(product)
+    // Re-index to Typesense with retry (upsert is idempotent)
+    await withTypesenseRetry(
+      () => indexProduct(product),
+      `indexProduct(${product.id}, variant-update)`,
+      logger,
+    )
 
     // Invalidate all query caches — price data changed
     const flushed = await invalidateAllQueryCache()
@@ -65,14 +69,6 @@ export default async function variantUpdatedHandler({
 
     // Force re-embedding on next query (clear stale cached embedding)
     await deleteEmbeddingCache(product.id)
-
-    await publishNatsEvent("product.indexed", {
-      productId: product.id,
-      action: "variant-updated",
-      variantId,
-      title: product.title,
-      timestamp: new Date().toISOString(),
-    })
 
     logger.info(`[Product Indexing] Re-indexed after variant update: ${product.id} (${product.title})`)
   } catch (error) {

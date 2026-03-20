@@ -13,6 +13,10 @@
 //   checkout → "PIX"/"Cartão"/"Dinheiro" → create_checkout → idle
 //   idle → "reserva" → falls through to LLM agent (reservation tools handle the flow)
 //   any state → free-text that doesn't match → LLM agent (fallback)
+//
+// Timeout/reset: no explicit reset. State inherits the session's 24h TTL.
+// Stale state (e.g. "checkout" after abandonment) returns null on unrecognized
+// input, falling through to the LLM agent which handles it gracefully.
 
 import { getSessionState, setSessionState } from "./session.js";
 

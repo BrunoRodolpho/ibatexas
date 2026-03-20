@@ -2,19 +2,21 @@
 
 import { UpdateCartInputSchema, type UpdateCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
+import { assertCartOwnership } from "./assert-cart-ownership.js";
 
 export async function updateCart(
   input: UpdateCartInput,
-  _ctx: AgentContext,
+  ctx: AgentContext,
 ): Promise<unknown> {
   const parsed = UpdateCartInputSchema.parse(input);
+  await assertCartOwnership(parsed.cartId, ctx.customerId);
   try {
     return await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items/${parsed.itemId}`, {
       method: "POST",
       body: JSON.stringify({ quantity: parsed.quantity }),
     });
   } catch (err) {
-    console.error("[update_cart] Medusa error:", err);
+    console.error("[update_cart] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao atualizar item no carrinho. Tente novamente." };
   }
 }

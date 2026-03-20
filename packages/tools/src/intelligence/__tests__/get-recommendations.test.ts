@@ -106,7 +106,7 @@ describe("buildPersonalizedQuery", () => {
 
     const result = await buildPersonalizedQuery("cus_01")
 
-    expect(result.filterBy).toBe("inStock:=true && published:=true")
+    expect(result.filterBy).toBe("inStock:=true && status:=published")
     expect(result.sortBy).toBe("_vector_distance:asc")
   })
 
@@ -295,7 +295,7 @@ describe("getRecommendations", () => {
     expect(result.message).toContain("mais bem avaliados")
     expect(mockSearch).toHaveBeenCalledWith(
       expect.objectContaining({
-        filter_by: "inStock:=true && published:=true && reviewCount:>=5",
+        filter_by: "inStock:=true && status:=published && reviewCount:>=5",
         sort_by: "rating:desc",
       }),
     )

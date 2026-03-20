@@ -22,6 +22,10 @@ jobs:
       - run: pnpm --filter @ibatexas/domain db:generate
       - run: pnpm lint
       - run: pnpm test -- -- --coverage
+      # [AUDIT FIX TST-F07] Security audit — non-blocking until existing advisories are resolved
+      # TODO: Make blocking once existing advisories are resolved
+      - name: Security audit
+        run: pnpm audit --audit-level=high || true
       - run: pnpm build
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # v7.0.0

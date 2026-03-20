@@ -25,7 +25,7 @@ export async function cancelReservation(
       parsed.reservationId,
       reservationDetails.timeSlot.date,
       reservationDetails.timeSlot.startTime,
-    ).catch((err) => console.error("[cancel_reservation] Notification error:", err))
+    ).catch((err) => console.error("[cancel_reservation] Notification error:", (err as Error).message))
 
     // Promote next waitlist entry and notify
     const { promoted } = await svc.promoteWaitlist(timeSlotId)
@@ -56,7 +56,7 @@ export async function cancelReservation(
         reservationId: parsed.reservationId,
         reason: parsed.reason ?? null,
       },
-    }).catch((err) => console.error("[cancel_reservation] NATS publish error:", err))
+    }).catch((err) => console.error("[cancel_reservation] NATS publish error:", (err as Error).message))
 
     return {
       success: true,

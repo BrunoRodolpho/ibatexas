@@ -1,7 +1,9 @@
 "use client"
 
+import { useEffect } from "react"
 import { useTranslations } from "next-intl"
 
+// Never expose raw error.message to users; log for Sentry capture instead
 export default function ErrorPage({
   error,
   reset,
@@ -11,13 +13,17 @@ export default function ErrorPage({
 }>) {
   const t = useTranslations("common")
 
+  useEffect(() => {
+    console.error("[ErrorPage]", error)
+  }, [error])
+
   return (
     <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-4 text-center">
       <h2 className="text-2xl font-bold text-accent-red">
         {t("error.title", { fallback: "Algo deu errado" })}
       </h2>
       <p className="max-w-md text-sm text-smoke-400">
-        {error.message || t("error.generic", { fallback: "Erro inesperado. Tente novamente." })}
+        {t("error.generic", { fallback: "Ocorreu um erro inesperado. Tente novamente." })}
       </p>
       <button
         onClick={reset}

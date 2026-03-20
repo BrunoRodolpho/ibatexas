@@ -20,10 +20,13 @@ export async function scheduleReviewPrompt(
   const member = `${customerId}:${orderId}`;
   const fireAt = Date.now() + REVIEW_DELAY_MS;
 
+  // 1-day TTL on sorted set to prevent unbounded growth if poller fails
+  const REVIEW_SCHEDULED_TTL = 86400; // 1 day
   const pipeline = redis.multi();
   // Mark as scheduled — 24h TTL (guard against re-scheduling the same order)
   pipeline.set(rk(`review:prompt:${customerId}:${orderId}`), orderId, { EX: 86400 });
   // Add to sorted set with timestamp-as-score for poller
   pipeline.zAdd(rk("review:prompt:scheduled"), { score: fireAt, value: member });
+  pipeline.expire(rk("review:prompt:scheduled"), REVIEW_SCHEDULED_TTL);
   await pipeline.exec();
 }

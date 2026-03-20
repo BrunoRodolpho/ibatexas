@@ -55,6 +55,7 @@ function createMockRedis(overrides: Record<string, unknown> = {}) {
     lPush: vi.fn().mockReturnThis(),
     lTrim: vi.fn().mockReturnThis(),
     hSet: vi.fn().mockReturnThis(),
+    expire: vi.fn().mockReturnThis(),
     exec: vi.fn().mockResolvedValue([]),
   };
 
@@ -138,6 +139,7 @@ describe("updateCopurchaseScores (tested via order.placed handler)", () => {
       lPush: vi.fn().mockReturnThis(),
       lTrim: vi.fn().mockReturnThis(),
       hSet: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
       exec: vi.fn().mockResolvedValue([]),
     };
     const mockRedis = createMockRedis({
@@ -168,6 +170,7 @@ describe("updateCopurchaseScores (tested via order.placed handler)", () => {
       lPush: vi.fn().mockReturnThis(),
       lTrim: vi.fn().mockReturnThis(),
       hSet: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
       exec: vi.fn().mockResolvedValue([]),
     };
     const mockRedis = createMockRedis({
@@ -209,6 +212,7 @@ describe("updateGlobalScores (tested via order.placed handler)", () => {
       lPush: vi.fn().mockReturnThis(),
       lTrim: vi.fn().mockReturnThis(),
       hSet: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
       exec: vi.fn().mockResolvedValue([]),
     };
     const mockRedis = createMockRedis({
@@ -448,6 +452,7 @@ describe("product.viewed handler", () => {
       lPush: vi.fn().mockReturnThis(),
       lTrim: vi.fn().mockReturnThis(),
       hSet: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
       exec: vi.fn().mockResolvedValue([]),
     };
     const mockRedis = createMockRedis({
@@ -487,6 +492,7 @@ describe("product.viewed handler", () => {
       lPush: vi.fn().mockReturnThis(),
       lTrim: vi.fn().mockReturnThis(),
       hSet: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
       exec: vi.fn().mockResolvedValue([]),
     };
     const mockRedis = createMockRedis({
@@ -529,6 +535,7 @@ describe("startCartIntelligenceSubscribers", () => {
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("reservation.cancelled", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("reservation.no_show", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("review.prompt", expect.any(Function));
-    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(11);
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("search.results_viewed", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(12);
   });
 });

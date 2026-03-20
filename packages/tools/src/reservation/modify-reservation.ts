@@ -23,7 +23,7 @@ export async function modifyReservation(
 
     // Notify customer of modification (fire-and-forget)
     void sendReservationModified(dto).catch((err) =>
-      console.error("[modify_reservation] Notification error:", err),
+      console.error("[modify_reservation] Notification error:", (err as Error).message),
     )
 
     void publishNatsEvent("reservation.modified", {
@@ -33,7 +33,7 @@ export async function modifyReservation(
       channel: "web",
       timestamp: new Date().toISOString(),
       metadata: { reservationId: parsed.reservationId },
-    }).catch((err) => console.error("[modify_reservation] NATS publish error:", err))
+    }).catch((err) => console.error("[modify_reservation] NATS publish error:", (err as Error).message))
 
     return {
       success: true,

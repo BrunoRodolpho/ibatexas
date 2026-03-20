@@ -119,7 +119,7 @@ The catalog covers two distinct product types — food and merchandise — both 
 | Entity | Key fields |
 |---|---|
 | Table | id, number, capacity, location: indoor/outdoor/bar/terrace, accessible: bool, active: bool |
-| TimeSlot | id, date, startTime, duration (default 90min), maxCovers, reservedCovers |
+| TimeSlot | id, date, startTime ('HH:MM' format), duration (default 90min), maxCovers, reservedCovers (atomic counter) |
 | Reservation | id, customerId, tableIds[], timeSlotId, partySize, status, specialRequests[], confirmedAt, checkedInAt |
 | ReservationStatus | pending → confirmed → seated → completed / cancelled / no_show |
 | SpecialRequest | type: birthday/anniversary/allergyWarning/highchair/windowSeat/accessible, notes |
@@ -150,10 +150,10 @@ The catalog covers two distinct product types — food and merchandise — both 
 | Entity | Key fields |
 |---|---|
 | GuestSession | sessionId (UUID), cartId, channel: web/whatsapp, createdAt, TTL 48h (Redis) |
-| Customer | phone (primary key, verified via Twilio), medusaCustomerId, name, email (optional), createdAt |
-| CustomerProfile | customerId, dietaryRestrictions[], allergens[], favouriteItems[], lastOrder, orderingPatterns, preferredPayment, preferredTableLocation, type: customer/staff (Redis, TTL 30d) |
+| Customer | phone (primary key, verified via Twilio), medusaCustomerId, name, email (optional), source ('web'\|'whatsapp'), firstContactAt, createdAt |
+| CustomerProfile | customerId, dietaryRestrictions[], allergens[], favouriteItems[], lastOrder, orderingPatterns, preferredPayment, preferredTableLocation (Redis, TTL 30d) |
 | Address | customerId, label, street, number, complement, neighbourhood, city, state, cep, isDefault |
-| Staff | phone, role: manager/kitchen/cashier/delivery, active |
+| Staff | phone, role: manager/kitchen/cashier/delivery, active — **NOT YET IMPLEMENTED** in Prisma schema; planned for Phase 2 |
 
 ### Rules
 
@@ -180,7 +180,7 @@ The catalog covers two distinct product types — food and merchandise — both 
 | Entity | Key fields |
 |---|---|
 | CustomerProfile | (see Identity context — shared entity, Intelligence context reads and writes it) |
-| Review | id, orderId, productIds[], customerId, rating: 1–5, comment, channel, createdAt |
+| Review | id, orderId, productId (primary), productIds[] (DEPRECATED), customerId, rating: 1–5, comment, channel, createdAt |
 | Recommendation | customerId, products[], reason: favourite/trending/pairing/seasonal, generatedAt |
 | BusinessEvent | eventType, customerId?, sessionId, channel, timestamp, metadata (see customer-intelligence.md) |
 

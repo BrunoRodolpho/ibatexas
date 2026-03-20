@@ -13,14 +13,16 @@ export async function getEmbeddingCache(productId: string): Promise<number[] | n
     const redisClient = await getRedisClient()
     const key = rk(`product_embedding:${productId}`)
     const cached = await redisClient.get(key)
+    // 30-day TTL on cache:stats counters to prevent unbounded growth
+    const CACHE_STATS_TTL = 30 * 86400 // 30 days
     if (cached) {
-      redisClient.incr(rk("cache:stats:embed:hit")).catch(() => {})
+      redisClient.incr(rk("cache:stats:embed:hit")).then(() => redisClient.expire(rk("cache:stats:embed:hit"), CACHE_STATS_TTL)).catch(() => {})
       return JSON.parse(cached) as number[]
     }
-    redisClient.incr(rk("cache:stats:embed:miss")).catch(() => {})
+    redisClient.incr(rk("cache:stats:embed:miss")).then(() => redisClient.expire(rk("cache:stats:embed:miss"), CACHE_STATS_TTL)).catch(() => {})
     return null
   } catch (error) {
-    console.warn(`Embedding cache read failed for ${productId}:`, error)
+    console.warn(`Embedding cache read failed for ${productId}:`, (error as Error).message)
     return null
   }
 }
@@ -39,7 +41,7 @@ export async function setEmbeddingCache(
     const key = rk(`product_embedding:${embedding.productId}`)
     await redisClient.setEx(key, ttl, JSON.stringify(embedding.embedding))
   } catch (error) {
-    console.warn(`Embedding cache write failed for ${embedding.productId}:`, error)
+    console.warn(`Embedding cache write failed for ${embedding.productId}:`, (error as Error).message)
   }
 }
 
@@ -52,7 +54,7 @@ export async function deleteEmbeddingCache(productId: string): Promise<void> {
     const key = rk(`product_embedding:${productId}`)
     await redisClient.del(key)
   } catch (error) {
-    console.warn(`Embedding cache delete failed for ${productId}:`, error)
+    console.warn(`Embedding cache delete failed for ${productId}:`, (error as Error).message)
   }
 }
 
@@ -76,7 +78,7 @@ export async function batchSetEmbeddingCache(
     await pipeline.exec()
     success = embeddings.length
   } catch (error) {
-    console.warn("Batch embedding cache write failed:", error)
+    console.warn("Batch embedding cache write failed:", (error as Error).message)
     failed = embeddings.length
   }
 
@@ -102,7 +104,7 @@ export async function clearEmbeddingCache(): Promise<number> {
 
     return keys.length
   } catch (error) {
-    console.warn("Embedding cache clear failed:", error)
+    console.warn("Embedding cache clear failed:", (error as Error).message)
     return 0
   }
 }

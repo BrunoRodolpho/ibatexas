@@ -45,7 +45,7 @@ export async function createReservation(
       startTime: reservation.timeSlot.startTime,
       tableLocation,
     },
-  }).catch((err) => console.error("[create_reservation] NATS publish error:", err))
+  }).catch((err) => console.error("[create_reservation] NATS publish error:", (err as Error).message))
 
   await sendReservationConfirmation({
     ...reservation,

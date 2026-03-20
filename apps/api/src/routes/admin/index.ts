@@ -23,21 +23,29 @@ import { tableRoutes } from "./tables.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
-  const ADMIN_API_KEY = process.env.ADMIN_API_KEY ?? "";
+  // Support comma-separated list of valid API keys for rotation
+  const ADMIN_API_KEYS = (process.env.ADMIN_API_KEY ?? "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
 
   // Auth guard — require x-admin-key header on every admin route
   server.addHook("preHandler", async (request, reply) => {
-    if (!ADMIN_API_KEY) {
+    if (ADMIN_API_KEYS.length === 0) {
       return reply.code(503).send({ error: "Service unavailable" });
     }
     const key = request.headers["x-admin-key"];
     if (typeof key !== "string" || key.length === 0) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
-    // Timing-safe comparison to prevent timing attacks
+    // Timing-safe comparison against all valid keys
     const keyBuf = Buffer.from(key);
-    const expectedBuf = Buffer.from(ADMIN_API_KEY);
-    if (keyBuf.length !== expectedBuf.length || !timingSafeEqual(keyBuf, expectedBuf)) {
+    const isValid = ADMIN_API_KEYS.some((validKey) => {
+      const expectedBuf = Buffer.from(validKey);
+      if (keyBuf.length !== expectedBuf.length) return false;
+      return timingSafeEqual(keyBuf, expectedBuf);
+    });
+    if (!isValid) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
   });

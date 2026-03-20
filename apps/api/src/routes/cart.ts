@@ -25,16 +25,25 @@ import { optionalAuth, requireAuth } from "../middleware/auth.js";
 const CartIdParams = z.object({ id: z.string().min(1) });
 const CartItemParams = z.object({ id: z.string().min(1), itemId: z.string().min(1) });
 
-/** Register cartId in active:carts tracking set for abandoned-cart detection. */
-async function trackCartId(cartId: string): Promise<void> {
+// TTL on active:carts hash (48h = guest session max, prevents unbounded growth)
+const ACTIVE_CARTS_TTL = 48 * 60 * 60; // 48h — matches max session TTL (guest)
+
+/**
+ * Register cartId in active:carts tracking hash for abandoned-cart detection.
+ * Store {sessionType, lastActivity} so abandoned-cart-checker uses correct idle
+ * threshold per session type.
+ */
+async function trackCartId(cartId: string, sessionType: "guest" | "customer" = "guest"): Promise<void> {
   const redis = await getRedisClient();
-  await redis.sAdd(rk("active:carts"), cartId);
+  const data = JSON.stringify({ cartId, sessionType, lastActivity: Date.now() });
+  await redis.hSet(rk("active:carts"), cartId, data);
+  await redis.expire(rk("active:carts"), ACTIVE_CARTS_TTL);
 }
 
 /** Remove cartId from active:carts (called when order is placed). */
 export async function untrackCartId(cartId: string): Promise<void> {
   const redis = await getRedisClient();
-  await redis.sRem(rk("active:carts"), cartId);
+  await redis.hDel(rk("active:carts"), cartId);
 }
 
 export async function cartRoutes(server: FastifyInstance): Promise<void> {
@@ -58,7 +67,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       });
 
       const cartId = (data as { cart?: { id: string } }).cart?.id;
-      if (cartId) await trackCartId(cartId);
+      if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest");
 
       return reply.code(201).send(data);
     },
@@ -91,7 +100,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       // Ensure cart is tracked for abandoned-cart detection
-      await trackCartId(request.params.id);
+      await trackCartId(request.params.id, request.customerId ? "customer" : "guest");
 
       const data = await medusaStore(`/store/carts/${request.params.id}/line-items`, {
         method: "POST",
@@ -168,7 +177,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       const { id } = request.params;
       const { items } = request.body;
 
-      await trackCartId(id);
+      await trackCartId(id, request.customerId ? "customer" : "guest");
 
       // Add each item sequentially (Medusa store API doesn't support batch add)
       for (const item of items) {

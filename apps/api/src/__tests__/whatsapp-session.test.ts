@@ -13,6 +13,7 @@ const mockRedis = vi.hoisted(() => ({
   expire: vi.fn(),
   set: vi.fn(),
   del: vi.fn(),
+  incr: vi.fn(),
 }));
 
 const mockUpsertFromWhatsApp = vi.hoisted(() => vi.fn());
@@ -50,6 +51,8 @@ import {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
+  mockRedis.incr.mockResolvedValue(1);
+  mockRedis.expire.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -199,6 +202,38 @@ describe("resolveWhatsAppSession", () => {
 
     const session = await resolveWhatsAppSession(phone);
     expect(session.isNew).toBe(true);
+  });
+
+  it("throws when customer creation rate limit is exceeded", async () => {
+    mockRedis.hGetAll.mockResolvedValue({});
+    mockRedis.incr.mockResolvedValue(101); // over 100/min limit
+
+    await expect(resolveWhatsAppSession(phone)).rejects.toThrow(
+      "Customer creation rate limit exceeded",
+    );
+    // Customer service should NOT have been called
+    expect(mockUpsertFromWhatsApp).not.toHaveBeenCalled();
+  });
+
+  it("applies unconditional EXPIRE on rate limit key (REDIS-M03 pattern)", async () => {
+    mockRedis.hGetAll.mockResolvedValue({});
+    mockUpsertFromWhatsApp.mockResolvedValue({ id: "cust-new" });
+    mockUuidv4.mockReturnValue("rl-uuid");
+    mockRedis.hSet.mockResolvedValue(undefined);
+    mockRedis.expire.mockResolvedValue(undefined);
+    mockRedis.incr.mockResolvedValue(5); // under limit
+
+    await resolveWhatsAppSession(phone);
+
+    // Rate limit INCR was called
+    expect(mockRedis.incr).toHaveBeenCalledWith(
+      expect.stringContaining("ratelimit:customer:create"),
+    );
+    // EXPIRE was called unconditionally on the rate limit key
+    expect(mockRedis.expire).toHaveBeenCalledWith(
+      expect.stringContaining("ratelimit:customer:create"),
+      60,
+    );
   });
 });
 

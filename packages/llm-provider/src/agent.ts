@@ -14,18 +14,27 @@ import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropi
 import { Channel, NonRetryableError, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
 import { SYSTEM_PROMPT } from "./system-prompt.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
+import { getRedisClient, rk } from "@ibatexas/tools"
 
 const MAX_TURNS = Number.parseInt(process.env.AGENT_MAX_TURNS || "10", 10)
 const MAX_TOOL_RETRIES = Number.parseInt(process.env.AGENT_MAX_TOOL_RETRIES || "3", 10)
 const AGENT_MAX_TOKENS = Number.parseInt(process.env.AGENT_MAX_TOKENS || "2048", 10)
+// Per-conversation retry budget to prevent runaway cost
+const MAX_CONVERSATION_RETRIES = Number.parseInt(process.env.AGENT_MAX_CONVERSATION_RETRIES || "10", 10)
+
+// Daily token budget per session (default 100K tokens)
+const SESSION_TOKEN_BUDGET = Number.parseInt(process.env.AGENT_SESSION_TOKEN_BUDGET || "100000", 10)
+const TOKEN_BUDGET_TTL = 86400 // 24 hours in seconds
 
 // ── Anthropic client (singleton) ──────────────────────────────────────────────
 
 let _client: Anthropic | null = null
 
 function getClient(): Anthropic {
+  // 60s timeout prevents indefinite hangs during API outages
   _client ??= new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
+    timeout: 60_000,
   })
   return _client
 }
@@ -36,11 +45,15 @@ function getClient(): Anthropic {
  * Execute a tool with exponential backoff retry.
  * On all retries exhausted: returns an error object (never throws).
  * Claude receives the error as a tool result and can respond gracefully.
+ *
+ * Accepts a shared conversationRetries counter to enforce a per-conversation
+ * retry budget across all tool calls.
  */
 async function executeWithRetry(
   name: string,
   input: unknown,
   ctx: AgentContext,
+  conversationRetries: { count: number },
 ): Promise<unknown> {
   let lastError: Error | undefined
 
@@ -52,6 +65,11 @@ async function executeWithRetry(
       // Non-retryable errors (auth, business rules) should not be retried
       if (lastError instanceof NonRetryableError) {
         return { error: lastError.message, toolName: name }
+      }
+      // Track retries against conversation budget
+      conversationRetries.count++
+      if (conversationRetries.count >= MAX_CONVERSATION_RETRIES) {
+        return { error: "Limite de tentativas atingido. Tente novamente mais tarde.", toolName: name }
       }
       if (attempt < MAX_TOOL_RETRIES - 1) {
         await new Promise((r) => setTimeout(r, 200 * 2 ** attempt))
@@ -83,6 +101,7 @@ async function processToolCalls(
   content: ContentBlock[],
   context: AgentContext,
   onChunk: (chunk: StreamChunk) => void,
+  conversationRetries: { count: number },
 ): Promise<ToolResultBlockParam[]> {
   const toolResults: ToolResultBlockParam[] = []
 
@@ -91,7 +110,7 @@ async function processToolCalls(
 
     onChunk({ type: "tool_start", toolName: block.name, toolUseId: block.id })
 
-    const result = await executeWithRetry(block.name, block.input, context)
+    const result = await executeWithRetry(block.name, block.input, context, conversationRetries)
     const isError = typeof result === "object" && result !== null && "error" in result
 
     onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: !isError })
@@ -115,6 +134,41 @@ function buildSystemPrompt(channel: Channel): string {
   return SYSTEM_PROMPT + channelHint
 }
 
+// ── Per-session token budget helpers ─────────────────────────────────────────
+
+/**
+ * Check if the session has exceeded its daily token budget.
+ * Returns the current token count or -1 if Redis is unavailable (fail-open).
+ */
+async function getSessionTokenCount(sessionId: string): Promise<number> {
+  try {
+    const redis = await getRedisClient()
+    const count = await redis.get(rk(`llm:tokens:${sessionId}`))
+    return count ? Number.parseInt(count, 10) : 0
+  } catch {
+    // Fail-open: if Redis is down, allow the request
+    return 0
+  }
+}
+
+/**
+ * Increment the session's token counter after a response.
+ * Sets 24h TTL on first write.
+ */
+async function trackSessionTokens(sessionId: string, tokensUsed: number): Promise<void> {
+  try {
+    const redis = await getRedisClient()
+    const key = rk(`llm:tokens:${sessionId}`)
+    const newCount = await redis.incrBy(key, tokensUsed)
+    // Set TTL only on first increment (when count equals the tokens just added)
+    if (newCount === tokensUsed) {
+      await redis.expire(key, TOKEN_BUDGET_TTL)
+    }
+  } catch {
+    // Non-critical: tracking failure should not block the agent
+  }
+}
+
 // ── Main agent loop ───────────────────────────────────────────────────────────
 
 /**
@@ -129,6 +183,14 @@ export async function* runAgent(
   history: AgentMessage[],
   context: AgentContext,
 ): AsyncGenerator<StreamChunk> {
+  // Check per-session token budget before processing
+  const currentTokens = await getSessionTokenCount(context.sessionId)
+  if (currentTokens >= SESSION_TOKEN_BUDGET) {
+    yield { type: "text_delta", delta: "Limite de uso atingido. Tente novamente amanhã." }
+    yield { type: "done", inputTokens: 0, outputTokens: 0 }
+    return
+  }
+
   const client = getClient()
   const model = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6"
 
@@ -139,6 +201,9 @@ export async function* runAgent(
   ]
 
   const systemPrompt = buildSystemPrompt(context.channel)
+
+  // Per-conversation retry budget shared across all tool calls
+  const conversationRetries = { count: 0 }
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // ── Stream one turn ─────────────────────────────────────────────────────
@@ -152,7 +217,7 @@ export async function* runAgent(
         max_tokens: AGENT_MAX_TOKENS,
       })
     } catch (err) {
-      console.error("[agent] Failed to start stream:", err)
+      console.error("[agent] Failed to start stream:", (err as Error).message)
       yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
       return
     }
@@ -161,7 +226,7 @@ export async function* runAgent(
     try {
       yield* streamTextDeltas(stream)
     } catch (err) {
-      console.error("[agent] Stream error:", err)
+      console.error("[agent] Stream error:", (err as Error).message)
       yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
       return
     }
@@ -169,8 +234,23 @@ export async function* runAgent(
     const finalMessage = await stream.finalMessage()
     const { stop_reason, usage } = finalMessage
 
-    // ── End turn or max tokens — finish gracefully ──────────────────────────
-    if (stop_reason === "end_turn" || stop_reason === "max_tokens") {
+    // Track token usage after each turn
+    const turnTokens = usage.input_tokens + usage.output_tokens
+    void trackSessionTokens(context.sessionId, turnTokens)
+
+    // ── End turn — finish gracefully ──────────────────────────────────────
+    if (stop_reason === "end_turn") {
+      yield {
+        type: "done",
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+      }
+      return
+    }
+
+    // When response is truncated by max_tokens, signal to the client
+    if (stop_reason === "max_tokens") {
+      yield { type: "text_delta", delta: "\n\n[Resposta truncada — limite de tamanho atingido.]" }
       yield {
         type: "done",
         inputTokens: usage.input_tokens,
@@ -188,6 +268,7 @@ export async function* runAgent(
         finalMessage.content,
         context,
         (chunk) => pendingChunks.push(chunk),
+        conversationRetries,
       )
       for (const chunk of pendingChunks) {
         yield chunk

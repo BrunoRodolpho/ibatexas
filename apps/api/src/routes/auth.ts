@@ -60,9 +60,7 @@ async function checkIpRateLimit(ip: string): Promise<RateLimitResult> {
   const redis = await getRedisClient();
   const key = rk(`otp:ip:${ip}`);
   const count = await redis.incr(key);
-  if (count === 1) {
-    await redis.expire(key, 3600); // 1 hour
-  }
+  await redis.expire(key, 3600); // 1 hour — idempotent TTL reset
   return { exceeded: count > 10, count };
 }
 
@@ -70,9 +68,7 @@ async function checkSendRateLimit(hash: string): Promise<RateLimitResult> {
   const redis = await getRedisClient();
   const rateLimitKey = rk(`otp:rate:${hash}`);
   const count = await redis.incr(rateLimitKey);
-  if (count === 1) {
-    await redis.expire(rateLimitKey, 600); // 10 min
-  }
+  await redis.expire(rateLimitKey, 600); // 10 min — idempotent TTL reset
   return { exceeded: count > 3, count };
 }
 
@@ -130,10 +126,11 @@ function issueJwtToken(
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
+  // TODO: Implement refresh token flow for better UX
   return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
     sub: customerId,
     userType: "customer",
-  }, { expiresIn: '24h' });
+  }, { expiresIn: '4h' });
 }
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
@@ -231,6 +228,17 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       const hash = phoneHash(phone);
       const ip = request.ip;
 
+      // IP rate limit on verify-otp to prevent phone-spray attacks
+      const ipLimit = await checkIpRateLimit(ip);
+      if (ipLimit.exceeded) {
+        server.log.warn({ ip, action: "verify_otp_ip_rate_limited", count: ipLimit.count }, "OTP verify IP rate limited");
+        return reply.code(429).send({
+          statusCode: 429,
+          error: "Too Many Requests",
+          message: "Muitas tentativas deste endereço. Aguarde 1 hora.",
+        });
+      }
+
       // Block brute-force: reject after 5 failed attempts per phone per hour
       const blocked = await checkBruteForce(hash);
       if (blocked) {
@@ -299,14 +307,13 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
 
       // Issue JWT
       const token = issueJwtToken(server, customer.id);
-      const isProduction = process.env.NODE_ENV === "production";
       return reply
         .setCookie("token", token, {
           httpOnly: true,
-          secure: isProduction,
+          secure: true,
           sameSite: "lax",
           path: "/",
-          maxAge: 24 * 60 * 60, // 24h
+          maxAge: 4 * 60 * 60, // 4h — matches JWT expiry
         })
         .code(200)
         .send({

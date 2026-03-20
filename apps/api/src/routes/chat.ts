@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from "uuid";
 import { Channel, type AgentContext } from "@ibatexas/types";
 import { runAgent } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
+import { getRedisClient, rk } from "@ibatexas/tools";
 import { optionalAuth } from "../middleware/auth.js";
 import {
   isStreamActive,
@@ -83,6 +84,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       createStream(sessionId);
 
+      // Track session ownership in Redis so SSE endpoint can verify
+      if (request.customerId) {
+        void (async () => {
+          try {
+            const redis = await getRedisClient();
+            await redis.set(rk(`session:owner:${sessionId}`), request.customerId!, { EX: 86400 });
+          } catch { /* Non-critical — ownership check will be skipped if Redis fails */ }
+        })();
+      }
+
       const context: AgentContext = {
         channel,
         sessionId,
@@ -131,6 +142,21 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const { sessionId } = request.params;
+
+      // Verify session ownership before allowing SSE connection
+      try {
+        const redis = await getRedisClient();
+        const owner = await redis.get(rk(`session:owner:${sessionId}`));
+        if (owner && request.customerId !== owner) {
+          reply.raw.setHeader("Content-Type", "text/event-stream");
+          reply.raw.flushHeaders();
+          reply.raw.write(
+            `data: ${JSON.stringify({ type: "error", message: "Acesso negado." })}\n\n`,
+          );
+          reply.raw.end();
+          return reply;
+        }
+      } catch { /* Redis failure — fail-open, allow the request */ }
 
       reply.raw.setHeader("Content-Type", "text/event-stream");
       reply.raw.setHeader("Cache-Control", "no-cache");

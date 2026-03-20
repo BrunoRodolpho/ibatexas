@@ -39,6 +39,12 @@ const envSchema = z.object({
   // Restaurant
   RESTAURANT_TIMEZONE: z.string().default("America/Chicago"),
   NO_SHOW_GRACE_MINUTES: z.coerce.number().int().positive().default(15),
+
+  // Critical infrastructure env vars — fail-fast if missing
+  ANTHROPIC_API_KEY: z.string().min(1, "ANTHROPIC_API_KEY is required"),
+  DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  REDIS_URL: z.string().min(1, "REDIS_URL is required"),
+  NATS_URL: z.string().min(1, "NATS_URL is required"),
 });
 
 const result = envSchema.safeParse(process.env);

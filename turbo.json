@@ -1,6 +1,7 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalDependencies": [".env"],
+  // [AUDIT FIX TST-L01] Added schema.prisma so schema changes invalidate the test cache
+  "globalDependencies": [".env", "packages/domain/prisma/schema.prisma"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

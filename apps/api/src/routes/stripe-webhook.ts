@@ -82,6 +82,7 @@ async function handleChargeRefunded(
     return;
   }
 
+  // TODO: Add subscriber for order.refunded to update customer profile and analytics
   await publishNatsEvent("order.refunded", {
     eventType: "order.refunded",
     orderId,
@@ -109,6 +110,7 @@ async function handleChargeDisputeCreated(
     "Stripe charge.dispute.created received — dispute opened",
   );
 
+  // TODO: Add subscriber for order.disputed to trigger alerts and update profile
   await publishNatsEvent("order.disputed", {
     eventType: "order.disputed",
     orderId: orderId ?? null,
@@ -142,6 +144,7 @@ async function handlePaymentIntentCanceled(
     return;
   }
 
+  // TODO: Add subscriber for order.canceled to update customer profile
   await publishNatsEvent("order.canceled", {
     eventType: "order.canceled",
     orderId,
@@ -156,26 +159,17 @@ async function handlePaymentIntentCanceled(
 }
 
 export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
-  // Register with raw body content type so we get the Buffer
-  server.addContentTypeParser(
-    "application/json",
-    { parseAs: "buffer", bodyLimit: 1_048_576 },
-    (req, body, done) => {
-      // Only intercept webhook path — allow normal JSON parsing everywhere else
-      if (req.url === "/api/webhooks/stripe") {
-        done(null, body);
-      } else {
-        // Let other routes parse JSON normally
-        try {
-          done(null, JSON.parse((body as Buffer).toString("utf-8")));
-        } catch (err) {
-          done(err as Error, undefined);
-        }
-      }
-    },
-  );
+  // Scope raw body parser to this route only (Fastify encapsulated plugin)
+  await server.register(async function stripeWebhookPlugin(scoped) {
+    scoped.addContentTypeParser(
+      "application/json",
+      { parseAs: "buffer", bodyLimit: 1_048_576 },
+      (_req, body, done) => {
+        done(null, body); // pass raw Buffer for Stripe signature verification
+      },
+    );
 
-  server.post(
+    scoped.post(
     "/api/webhooks/stripe",
     {
       config: { rawBody: true },
@@ -266,7 +260,9 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
         }
       } catch (err) {
         server.log.error({ event_id: event.id, error: String(err) }, "Stripe webhook processing error");
-        // Remove idempotency key so next retry can reprocess
+        // Deleting the key on error allows Stripe's retry to reprocess the event.
+        // Edge case: partial success (NATS published, capture failed) may cause duplicate
+        // NATS events on retry. Mitigated by subscriber-side idempotency guards.
         await redis.del(idempotencyKey);
         return reply.code(500).send({ error: "Internal processing error" });
       }
@@ -274,4 +270,5 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
       return reply.code(200).send({ ok: true });
     },
   );
+  }); // end stripeWebhookPlugin register
 }

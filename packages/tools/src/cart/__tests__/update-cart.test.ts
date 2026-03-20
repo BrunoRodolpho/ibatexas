@@ -16,6 +16,10 @@ vi.mock("../_shared.js", () => ({
   medusaStoreFetch: mockMedusaStoreFetch,
 }))
 
+vi.mock("../assert-cart-ownership.js", () => ({
+  assertCartOwnership: vi.fn().mockResolvedValue({ id: "cart_01", customer_id: "cus_01" }),
+}))
+
 // ── Imports ──────────────────────────────────────────────────────────────────
 
 import { updateCart } from "../update-cart.js"

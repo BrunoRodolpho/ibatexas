@@ -27,6 +27,7 @@ function createMockPipeline() {
   return {
     set: vi.fn().mockReturnThis(),
     zAdd: vi.fn().mockReturnThis(),
+    expire: vi.fn().mockReturnThis(),
     exec: vi.fn().mockResolvedValue([]),
   };
 }

@@ -2,18 +2,20 @@
 
 import { RemoveFromCartInputSchema, type RemoveFromCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
+import { assertCartOwnership } from "./assert-cart-ownership.js";
 
 export async function removeFromCart(
   input: RemoveFromCartInput,
-  _ctx: AgentContext,
+  ctx: AgentContext,
 ): Promise<unknown> {
   const parsed = RemoveFromCartInputSchema.parse(input);
+  await assertCartOwnership(parsed.cartId, ctx.customerId);
   try {
     return await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items/${parsed.itemId}`, {
       method: "DELETE",
     });
   } catch (err) {
-    console.error("[remove_from_cart] Medusa error:", err);
+    console.error("[remove_from_cart] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao remover item do carrinho. Tente novamente." };
   }
 }

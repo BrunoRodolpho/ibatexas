@@ -46,7 +46,7 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 - **NATS subjects:** `ibatexas.{domain}.{action}` — pass short form to `publishNatsEvent()`, the client adds `ibatexas.` prefix automatically. Never pass the full prefixed form.
 - **NATS test assertions:** assert the short-form subject (`"cart.abandoned"`) since tests mock `publishNatsEvent` at the caller boundary, before the client adds the prefix.
 - **Product/category handles:** kebab-case, ASCII only (`costela-bovina-defumada`)
-- **CLI commands:** lowercase (`dev`, `svc`, `api`, `db`, `intel`)
+- **CLI commands:** lowercase (e.g., `dev`, `svc`, `api`, `db`, `intel`) — see `docs/ibx-cli.md` for the full list of 17 commands
 
 ---
 
@@ -54,23 +54,52 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 
 | What | Where |
 |------|-------|
+| Storefront | `apps/web` (port 3000) — Next.js customer-facing app |
+| API server | `apps/api` (port 3001) — Fastify backend |
+| Commerce engine | `apps/commerce` (port 9000) — Medusa v2 |
+| Admin panel | `apps/admin` (port 3002) — standalone Next.js app |
 | CLI reference | [docs/ibx-cli.md](docs/ibx-cli.md) |
 | Architecture & design | [docs/design/](docs/design/) |
 | Roadmap | [docs/next-steps.md](docs/next-steps.md) — remove items when done |
+| Pre-launch backlog | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) |
 | Setup guide | [docs/setup/local-dev.md](docs/setup/local-dev.md) |
 | Analytics & dashboards | [docs/analytics-dashboards.md](docs/analytics-dashboards.md) |
 | Redis key patterns | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
-| Admin panel | `apps/admin` (port 3002) — standalone Next.js app |
-| Audit reports | [docs/audit/](docs/audit/) |
 
 ---
 
 ## Module System
 
-- `packages/*`: ESM (`"type": "module"`), use `.js` extensions on local imports
-- `apps/commerce`: CJS (Medusa constraint — do not change)
+- `packages/*`: ESM (`"type": "module"`), use `.js` extensions on local imports (exception: `packages/eslint-config` is CJS — standard for ESLint configs)
+- `apps/commerce`: No `"type": "module"` in package.json (Medusa v2 handles its own build pipeline via `medusa develop` / `medusa build`). Source uses ESM syntax.
 - TypeScript strict mode enabled globally — no implicit `any`
-- Tests: no DB or network required — mock everything external
+- Tests: Vitest with v8 coverage. Run via `ibx dev test` or `pnpm test`. No DB or network required — mock everything external
+
+---
+
+## Workspace Packages
+
+| Package | Responsibility |
+|---------|---------------|
+| `packages/cli` | The `ibx` CLI — all dev operations |
+| `packages/domain` | Prisma schema, DB client, domain services |
+| `packages/tools` | AI agent tools, Redis utilities, search, cart logic |
+| `packages/types` | Shared TypeScript types and Zod schemas |
+| `packages/llm-provider` | Anthropic SDK wrapper, agent loop, tool registry |
+| `packages/nats-client` | NATS pub/sub wrapper with outbox support |
+| `packages/ui` | Shared React component library (atoms/molecules/organisms) |
+| `packages/eslint-config` | Shared ESLint config (CJS) |
+
+> `@ibatexas/tools` has the widest blast radius — depended on by `apps/api`, `apps/web`, `apps/admin`, `apps/commerce`, `packages/cli`, `packages/llm-provider`.
+
+---
+
+## Medusa v2 Commerce Engine
+
+- Products are managed via Medusa's admin API and indexed to Typesense for search
+- Medusa subscribers fire on product/price/variant changes
+- `apps/commerce` uses `medusa develop` / `medusa build`, not standard `tsc` / `tsx`
+- Local dev infrastructure (Postgres, Redis, Typesense, NATS) runs via `docker-compose.yml`, managed by `ibx dev` and `ibx svc`
 
 ---
 

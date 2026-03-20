@@ -2,19 +2,21 @@
 
 import { ApplyCouponInputSchema, type ApplyCouponInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
+import { assertCartOwnership } from "./assert-cart-ownership.js";
 
 export async function applyCoupon(
   input: ApplyCouponInput,
-  _ctx: AgentContext,
+  ctx: AgentContext,
 ): Promise<unknown> {
   const parsed = ApplyCouponInputSchema.parse(input);
+  await assertCartOwnership(parsed.cartId, ctx.customerId);
   try {
     return await medusaStoreFetch(`/store/carts/${parsed.cartId}/promotions`, {
       method: "POST",
       body: JSON.stringify({ promo_codes: [parsed.code] }),
     });
   } catch (err) {
-    console.error("[apply_coupon] Medusa error:", err);
+    console.error("[apply_coupon] Medusa error:", (err as Error).message);
     return { success: false, message: "Cupom inválido ou erro ao aplicar desconto. Verifique o código e tente novamente." };
   }
 }

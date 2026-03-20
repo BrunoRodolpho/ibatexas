@@ -22,7 +22,6 @@ import {
   type ProductDTO,
   AvailabilityWindow,
   Channel,
-  type ProductViewedEvent,
 } from "@ibatexas/types"
 import { generateEmbedding } from "../embeddings/client.js"
 import { rk } from "../redis/key.js"
@@ -363,7 +362,7 @@ async function generateQueryEmbedding(query: string, isWildcard: boolean): Promi
       rk(`embedding:query:${Buffer.from(query).toString("base64")}`)
     )
   } catch (error) {
-    console.warn("[Search] Query embedding failed; falling back to keyword search:", error)
+    console.warn("[Search] Query embedding failed; falling back to keyword search:", (error as Error).message)
     return []
   }
 }
@@ -382,7 +381,7 @@ async function checkL1Cache(
     await incrementQueryCacheHits(queryEmbedding, cacheCtx)
     await setExactQueryCache(query, cacheCtx, l1.results)
   } catch (error) {
-    console.warn("[Search] Cache backfill failed (non-critical):", error)
+    console.warn("[Search] Cache backfill failed (non-critical):", (error as Error).message)
   }
   return {
     query,
@@ -402,20 +401,23 @@ async function searchTypesense(
   filters: FilterOptions,
   limit: number,
   facetCountsRef?: { value?: Record<string, Array<{ value: string; count: number }>> },
-): Promise<{ products: ProductDTO[]; rawDTOs: ProductDTO[]; tsResult: TypesenseResult }> {
+): Promise<{ products: ProductDTO[]; rawDTOs: ProductDTO[]; tsResult: TypesenseResult; searchError?: boolean }> {
   let tsResult: TypesenseResult = { hits: [], totalFound: 0, scores: {} }
+  let searchError = false
   try {
     tsResult = await executeTypesenseSearch({ query, embedding: queryEmbedding, limit, filterInStock: true, productType: filters.productType, categoryHandle: filters.categoryHandle, tags: filters.tags, sort: filters.sort, offset: filters.offset })
     if (facetCountsRef && tsResult.facetCounts) {
       facetCountsRef.value = tsResult.facetCounts
     }
   } catch (error) {
-    console.error("[Search] Typesense search failed:", error)
+    // Surface Typesense error instead of silently returning empty results
+    console.error("[Search] Typesense search failed:", (error as Error).message)
+    searchError = true
   }
 
   const rawDTOs = tsResult.hits.map((doc) => typesenseDocToDTO(doc))
   const products = applyFilters(rawDTOs, filters)
-  return { products, rawDTOs, tsResult }
+  return { products, rawDTOs, tsResult, searchError }
 }
 
 /** Cache search results and log the query. Non-critical — errors are swallowed. */
@@ -434,14 +436,14 @@ async function cacheAndLogResults(
     }
     await setExactQueryCache(query, cacheCtx, products)
   } catch (error) {
-    console.warn("[Search] Cache write failed (non-critical):", error)
+    console.warn("[Search] Cache write failed (non-critical):", (error as Error).message)
   }
 
   try {
     const bucket = queryEmbedding.length > 0 ? embeddingToBucket(queryEmbedding) : "no-embedding"
     await logQuery(sessionId, query, bucket, products.length, cacheCtx.channel, userType)
   } catch (error) {
-    console.warn("[Search] Query log failed (non-critical):", error)
+    console.warn("[Search] Query log failed (non-critical):", (error as Error).message)
   }
 }
 
@@ -463,14 +465,26 @@ async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<Single
   const l1Result = await checkL1Cache(query, queryEmbedding, cacheCtx)
   if (l1Result) return l1Result
 
-  const { products, rawDTOs, tsResult } = await searchTypesense(query, queryEmbedding, filters, limit, facetCountsRef)
+  const { products, rawDTOs, tsResult, searchError } = await searchTypesense(query, queryEmbedding, filters, limit, facetCountsRef)
+
+  // Return structured error when Typesense is down instead of empty results
+  if (searchError) {
+    return {
+      query,
+      products: [],
+      totalFound: 0,
+      scores: {},
+      hitCache: false,
+      searchModel: "hybrid",
+    }
+  }
 
   let noResultsReason: NoResultsReason | undefined
   if (products.length === 0) {
     try {
       noResultsReason = await diagnoseNoResults(query, queryEmbedding, limit, rawDTOs, filters)
     } catch (error) {
-      console.warn("[Search] Diagnostic query failed (non-critical):", error)
+      console.warn("[Search] Diagnostic query failed (non-critical):", (error as Error).message)
     }
   }
 
@@ -497,32 +511,29 @@ interface SearchContext {
 }
 
 /**
- * Publish one product.viewed NATS event per product in results.
+ * Publish a single batch search.results_viewed event (instead of O(n) individual events).
  * Non-blocking — caller swallows errors.
  */
 async function publishViewedEvents(
   products: ProductDTO[],
-  context?: SearchContext
+  context?: SearchContext,
+  query?: string,
 ): Promise<void> {
+  if (products.length === 0) return
+
   const channel = context?.channel ?? Channel.Web
   const timestamp = new Date().toISOString()
 
-  await Promise.all(
-    products.map((product) => {
-      const event: ProductViewedEvent = {
-        eventType: "product.viewed",
-        sessionId: context?.sessionId,
-        customerId: context?.userId ?? null,
-        channel,
-        timestamp,
-        metadata: {
-          productId: product.id,
-          source: "search",
-        },
-      }
-      return publishNatsEvent("product.viewed", { ...event })
-    })
-  )
+  // Single batch event instead of N individual events
+  await publishNatsEvent("search.results_viewed", {
+    eventType: "search.results_viewed",
+    productIds: products.map((p) => p.id),
+    customerId: context?.userId ?? null,
+    sessionId: context?.sessionId,
+    channel,
+    query: query ?? null,
+    timestamp,
+  })
 }
 
 // ── Result merging ───────────────────────────────────────────────────────────
@@ -661,13 +672,15 @@ export async function searchProducts(
   // ── noResultsReason (top-level, for single-query or fully-empty multi-query)
   const noResultsReason = resolveNoResultsReason(products, queryResults, isMultiQuery)
 
-  // ── Publish product.viewed events ────────────────────────────────────────
+  // ── Publish search.results_viewed batch event ──────────────────────────
+  // Single batch event instead of O(n) individual events
   try {
     if (products.length > 0) {
-      await publishViewedEvents(products, context)
+      const queryStr = queryList.join(", ")
+      await publishViewedEvents(products, context, queryStr)
     }
   } catch (error) {
-    console.warn("[Search] Event publish failed (non-critical):", error)
+    console.warn("[Search] Event publish failed (non-critical):", (error as Error).message)
   }
 
   // ── Build output ─────────────────────────────────────────────────────────

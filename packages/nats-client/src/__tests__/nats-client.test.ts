@@ -21,6 +21,7 @@ vi.mock("nats", () => {
     publish: vi.fn(),
     subscribe: vi.fn(() => mockSubscription),
     close: vi.fn(),
+    drain: vi.fn(),
   }
 
   return {

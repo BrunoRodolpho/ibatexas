@@ -63,7 +63,7 @@ async function sendReminders(): Promise<void> {
         sent++
       }
     } catch (err) {
-      console.error(`[reservation-reminder] Failed to send reminder for ${reservation.id}:`, err)
+      console.error(`[reservation-reminder] Failed to send reminder for ${reservation.id}:`, (err as Error).message)
     }
   }
 
@@ -89,7 +89,7 @@ export function startReservationReminder(): void {
     const delay = target.getTime() - now.getTime()
 
     timeoutHandle = setTimeout(() => {
-      void sendReminders().catch((err) => console.error("[reservation-reminder] Check failed:", err))
+      void sendReminders().catch((err) => console.error("[reservation-reminder] Check failed:", (err as Error).message))
       scheduleNext() // re-schedule for next day
     }, delay)
 
@@ -97,7 +97,7 @@ export function startReservationReminder(): void {
   }
 
   // Also run immediately on startup to catch any missed reminders for today
-  void sendReminders().catch((err) => console.error("[reservation-reminder] Initial check failed:", err))
+  void sendReminders().catch((err) => console.error("[reservation-reminder] Initial check failed:", (err as Error).message))
 
   scheduleNext()
 }

@@ -7,6 +7,7 @@ const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone", // Required for Docker multi-stage build
   transpilePackages: ["@ibatexas/types", "@ibatexas/ui"],
   images: {
     remotePatterns: [
@@ -39,7 +40,8 @@ const nextConfig = {
             key: "Content-Security-Policy",
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://app.posthog.com",
+              // unsafe-eval only needed in dev for Next.js hot-reload
+              `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""} https://app.posthog.com`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com https://*.cloudinary.com",
               `connect-src 'self' https://app.posthog.com ${apiUrl}${isDev ? ' http://*:3001' : ''}`,

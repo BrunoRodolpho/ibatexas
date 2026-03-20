@@ -3,12 +3,15 @@
 import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { assertCartOwnership } from "./assert-cart-ownership.js";
 
 export async function addToCart(
   input: AddToCartInput,
   ctx: AgentContext,
 ): Promise<unknown> {
   const parsed = AddToCartInputSchema.parse(input);
+
+  await assertCartOwnership(parsed.cartId, ctx.customerId);
 
   let data: unknown;
   try {
@@ -17,10 +20,11 @@ export async function addToCart(
       body: JSON.stringify({ variant_id: parsed.variantId, quantity: parsed.quantity }),
     });
   } catch (err) {
-    console.error("[add_to_cart] Medusa error:", err);
+    console.error("[add_to_cart] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao adicionar item ao carrinho. Verifique o produto e tente novamente." };
   }
 
+  // TODO: Add subscriber for cart.item_added when cart analytics pipeline is built
   void publishNatsEvent("cart.item_added", {
     eventType: "cart.item_added",
     cartId: parsed.cartId,
@@ -28,7 +32,7 @@ export async function addToCart(
     quantity: parsed.quantity,
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
-  }).catch((err) => console.error("[add_to_cart] NATS publish error:", err));
+  }).catch((err) => console.error("[add_to_cart] NATS publish error:", (err as Error).message));
 
   return data;
 }

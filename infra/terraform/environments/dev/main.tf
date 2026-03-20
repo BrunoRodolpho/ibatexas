@@ -9,6 +9,7 @@ terraform {
   }
 
   # Remote state — configure before first apply
+  # [AUDIT-REVIEW] Uncomment when S3 backend is provisioned for state persistence  # AUDIT-FIX: INFRA-17
   # backend "s3" {
   #   bucket         = "ibatexas-terraform-state"
   #   key            = "dev/terraform.tfstate"

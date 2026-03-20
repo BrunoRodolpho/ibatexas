@@ -16,9 +16,15 @@ export async function reorder(
 
   const data = await medusaAdminFetch(`/admin/orders/${parsed.orderId}`) as {
     order: {
+      customer_id?: string;
       items: Array<{ variant_id: string; quantity: number; title: string }>;
     };
   };
+
+  // Verify order belongs to the authenticated customer
+  if (data.order.customer_id !== ctx.customerId) {
+    throw new NonRetryableError("Acesso negado: este pedido pertence a outro cliente.");
+  }
 
   const items = data.order.items;
   if (!items || items.length === 0) {
@@ -50,13 +56,14 @@ export async function reorder(
     }
   }
 
+  // TODO: Add subscriber for cart.item_added when cart analytics pipeline is built
   void publishNatsEvent("cart.item_added", {
     eventType: "cart.item_added",
     cartId,
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
     reorderFromOrderId: parsed.orderId,
-  }).catch((err) => console.error("[reorder] NATS publish error:", err));
+  }).catch((err) => console.error("[reorder] NATS publish error:", (err as Error).message));
 
   const errorNote = errors.length > 0 ? ` (item(ns) indisponível(is): ${errors.join(", ")})` : "";
   return {

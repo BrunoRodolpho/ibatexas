@@ -17,7 +17,7 @@ export async function getOrderHistory(
     // Customers synced during OTP verify; customerId is our domain ID
     return await medusaAdminFetch(`/admin/orders?customer_id=${ctx.customerId}&limit=20`);
   } catch (err) {
-    console.error("[get_order_history] Medusa error:", err);
+    console.error("[get_order_history] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao buscar histórico de pedidos. Tente novamente." };
   }
 }

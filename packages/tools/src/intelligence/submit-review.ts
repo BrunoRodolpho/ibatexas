@@ -40,7 +40,7 @@ export async function submitReview(
     // Non-fatal: product may not be in Typesense yet
   }
 
-  // Publish NATS event (fire-and-forget)
+  // TODO: Add subscriber for review.submitted when review analytics pipeline is built
   void publishNatsEvent("review.submitted", {
     eventType: "review.submitted",
     productId,
@@ -49,7 +49,7 @@ export async function submitReview(
     rating,
     reviewCount,
     newAvgRating: avgRating,
-  }).catch((err) => console.error("[submit_review] NATS publish error:", err));
+  }).catch((err) => console.error("[submit_review] NATS publish error:", (err as Error).message));
 
   const stars = "⭐".repeat(rating);
   return {

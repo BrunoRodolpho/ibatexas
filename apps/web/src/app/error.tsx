@@ -1,5 +1,8 @@
 "use client"
 
+import { useEffect } from "react"
+
+// Never expose raw error.message to users; log for Sentry capture instead
 export default function RootError({
   error,
   reset,
@@ -7,6 +10,10 @@ export default function RootError({
   error: Error & { digest?: string }
   reset: () => void
 }>) {
+  useEffect(() => {
+    console.error("[RootError]", error)
+  }, [error])
+
   return (
     <html lang="pt-BR">
       <body style={{ fontFamily: "system-ui, sans-serif", margin: 0 }}>
@@ -15,7 +22,7 @@ export default function RootError({
             Algo deu errado
           </h2>
           <p style={{ maxWidth: "28rem", fontSize: "0.875rem", color: "#78716c" }}>
-            {error.message || "Erro inesperado. Tente novamente."}
+            Ocorreu um erro inesperado. Tente novamente.
           </p>
           <button
             onClick={reset}

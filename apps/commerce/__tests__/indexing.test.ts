@@ -134,7 +134,7 @@ describe("Product Indexing Subscribers", () => {
       expect(deleteEmbeddingCache).not.toHaveBeenCalled()
     })
 
-    it("publishes product.indexed NATS event with action=created", async () => {
+    it("does not publish product.indexed NATS event (removed as dead event)", async () => {
       const container = makeContainer()
 
       await productCreatedHandler({
@@ -142,14 +142,7 @@ describe("Product Indexing Subscribers", () => {
         container,
       } as any)
 
-      expect(publishNatsEvent).toHaveBeenCalledWith(
-        "product.indexed",
-        expect.objectContaining({
-          productId: mockProduct.id,
-          action: "created",
-          title: mockProduct.title,
-        })
-      )
+      expect(publishNatsEvent).not.toHaveBeenCalled()
     })
 
     it("does not throw when indexProduct fails — indexing must not block Medusa", async () => {
@@ -204,7 +197,7 @@ describe("Product Indexing Subscribers", () => {
       expect(deleteEmbeddingCache).toHaveBeenCalledWith(mockProduct.id)
     })
 
-    it("publishes product.indexed NATS event with action=updated", async () => {
+    it("does not publish product.indexed NATS event (removed as dead event)", async () => {
       const container = makeContainer()
 
       await productUpdatedHandler({
@@ -212,13 +205,7 @@ describe("Product Indexing Subscribers", () => {
         container,
       } as any)
 
-      expect(publishNatsEvent).toHaveBeenCalledWith(
-        "product.indexed",
-        expect.objectContaining({
-          productId: mockProduct.id,
-          action: "updated",
-        })
-      )
+      expect(publishNatsEvent).not.toHaveBeenCalled()
     })
 
     it("does not throw when indexProduct fails", async () => {
@@ -283,7 +270,7 @@ describe("Product Indexing Subscribers", () => {
       expect(indexProduct).not.toHaveBeenCalled()
     })
 
-    it("publishes product.indexed NATS event with action=deleted", async () => {
+    it("does not publish product.indexed NATS event (removed as dead event)", async () => {
       const container = makeContainer()
 
       await productDeletedHandler({
@@ -291,13 +278,7 @@ describe("Product Indexing Subscribers", () => {
         container,
       } as any)
 
-      expect(publishNatsEvent).toHaveBeenCalledWith(
-        "product.indexed",
-        expect.objectContaining({
-          productId: mockProduct.id,
-          action: "deleted",
-        })
-      )
+      expect(publishNatsEvent).not.toHaveBeenCalled()
     })
 
     it("does not throw when deleteProductFromIndex fails (idempotent)", async () => {

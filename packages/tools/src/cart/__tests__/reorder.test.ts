@@ -39,6 +39,7 @@ const CTX = makeCtx()
 
 const ORDER_WITH_ITEMS = {
   order: {
+    customer_id: "cus_01",
     items: [
       { variant_id: "variant_costela_500g", quantity: 2, title: "Costela Bovina Defumada 500g" },
       { variant_id: "variant_linguica_1kg", quantity: 1, title: "Lingui\u00e7a Artesanal 1kg" },
@@ -71,7 +72,7 @@ describe("reorder", () => {
   })
 
   it("returns error message when order has no items", async () => {
-    mockMedusaAdminFetch.mockResolvedValue({ order: { items: [] } })
+    mockMedusaAdminFetch.mockResolvedValue({ order: { customer_id: "cus_01", items: [] } })
 
     const result = await reorder(INPUT, CTX)
 
@@ -80,7 +81,7 @@ describe("reorder", () => {
   })
 
   it("returns error message when items is null/undefined", async () => {
-    mockMedusaAdminFetch.mockResolvedValue({ order: { items: null } })
+    mockMedusaAdminFetch.mockResolvedValue({ order: { customer_id: "cus_01", items: null } })
 
     const result = await reorder(INPUT, CTX)
 
@@ -186,6 +187,7 @@ describe("reorder", () => {
   it("skips items without variant_id", async () => {
     mockMedusaAdminFetch.mockResolvedValue({
       order: {
+        customer_id: "cus_01",
         items: [
           { variant_id: "variant_costela_500g", quantity: 2, title: "Costela" },
           { variant_id: undefined, quantity: 1, title: "Item Sem Variante" },

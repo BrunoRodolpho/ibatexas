@@ -15,6 +15,7 @@ async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
   const model = process.env.EMBEDDING_MODEL || process.env.CLAUDE_EMBEDDING_MODEL || "text-embedding-3-small"
   const baseUrl = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
 
+  // 10s timeout prevents indefinite hangs during OpenAI API outages
   const response = await fetch(`${baseUrl}/embeddings`, {
     method: "POST",
     headers: {
@@ -22,6 +23,7 @@ async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ model, input: text }),
+    signal: AbortSignal.timeout(10_000),
   })
 
   if (!response.ok) {
@@ -90,7 +92,7 @@ export async function generateEmbedding(
   try {
     embedding = await generateEmbeddingViaOpenAI(text)
   } catch (error) {
-    console.error("[embeddings] Failed to generate embedding:", error)
+    console.error("[embeddings] Failed to generate embedding:", (error as Error).message)
     embedding = generateDeterministicEmbedding(text)
   }
 
@@ -101,7 +103,7 @@ export async function generateEmbedding(
   try {
     await redisClient.setEx(cacheKey, ttlSeconds, JSON.stringify(embedding))
   } catch (error) {
-    console.warn("Failed to cache embedding:", error)
+    console.warn("Failed to cache embedding:", (error as Error).message)
   }
 
   return embedding

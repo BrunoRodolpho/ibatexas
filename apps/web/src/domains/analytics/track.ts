@@ -13,6 +13,9 @@ import type { AnalyticsEvent } from './events'
 
 const isDev = process.env.NODE_ENV === 'development'
 
+// Dual session IDs by design:
+// 1. Analytics sessionId (sessionStorage, per-tab): ephemeral, for RPS metric denominator.
+// 2. Zustand sessionId (localStorage, persistent): for API calls and cart association.
 let sessionId: string | null = null
 
 // ── Meaningful events that trigger session_started ────────────────────────

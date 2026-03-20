@@ -1,5 +1,9 @@
 "use client"
 
+import { useEffect } from "react"
+import { useTranslations } from "next-intl"
+
+// Never expose raw error.message to users; log for Sentry capture instead
 export default function LojaError({
   error,
   reset,
@@ -7,17 +11,25 @@ export default function LojaError({
   error: Error & { digest?: string }
   reset: () => void
 }>) {
+  const t = useTranslations("common")
+
+  useEffect(() => {
+    console.error("[LojaError]", error)
+  }, [error])
+
   return (
     <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-4 text-center">
-      <h2 className="text-2xl font-bold text-accent-red">Erro na loja</h2>
+      <h2 className="text-2xl font-bold text-accent-red">
+        {t("error.shop_title", { fallback: "Erro na loja" })}
+      </h2>
       <p className="max-w-md text-sm text-smoke-400">
-        {error.message || "Erro inesperado. Tente novamente."}
+        {t("error.generic", { fallback: "Ocorreu um erro inesperado. Tente novamente." })}
       </p>
       <button
         onClick={reset}
         className="rounded-sm bg-charcoal-900 px-6 py-2 text-sm font-medium text-smoke-50 hover:bg-charcoal-800 transition-all duration-500"
       >
-        Tentar novamente
+        {t("error.retry", { fallback: "Tentar novamente" })}
       </button>
     </div>
   )
