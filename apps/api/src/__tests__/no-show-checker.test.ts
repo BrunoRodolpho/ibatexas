@@ -1,5 +1,6 @@
 // Tests for no-show-checker job
-// Mocks Prisma and NATS to test the checking logic without DB
+// Mocks Prisma and NATS to test the checking logic without DB.
+// Tests call the exported checkNoShows() processor directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
@@ -19,7 +20,18 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: vi.fn(),
 }))
 
-import { startNoShowChecker, stopNoShowChecker } from "../jobs/no-show-checker.js"
+vi.mock("../jobs/queue.js", () => ({
+  createQueue: vi.fn(() => ({
+    upsertJobScheduler: vi.fn(),
+    close: vi.fn(),
+  })),
+  createWorker: vi.fn(() => ({
+    on: vi.fn(),
+    close: vi.fn(),
+  })),
+}))
+
+import { checkNoShows, startNoShowChecker, stopNoShowChecker } from "../jobs/no-show-checker.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 
 describe("no-show checker", () => {
@@ -28,25 +40,19 @@ describe("no-show checker", () => {
     vi.useFakeTimers()
   })
 
-  afterEach(() => {
-    stopNoShowChecker()
+  afterEach(async () => {
+    await stopNoShowChecker()
     vi.useRealTimers()
   })
 
-  it("starts and stops without errors", () => {
-    mockFindConfirmedForDate.mockResolvedValue([])
-
+  it("starts and stops without errors", async () => {
     expect(() => startNoShowChecker()).not.toThrow()
-    expect(() => stopNoShowChecker()).not.toThrow()
+    await expect(stopNoShowChecker()).resolves.toBeUndefined()
   })
 
   it("does not start twice", () => {
-    mockFindConfirmedForDate.mockResolvedValue([])
-
     expect(() => startNoShowChecker()).not.toThrow()
     expect(() => startNoShowChecker()).not.toThrow() // second call should be a no-op
-
-    stopNoShowChecker()
   })
 
   it("marks past confirmed reservations as no_show", async () => {
@@ -75,14 +81,9 @@ describe("no-show checker", () => {
     mockTransition.mockResolvedValue(undefined)
 
     // Set "now" well past 11:30 + even worst-case TZ offset + 15 min grace
-    // The slotToLocalDate function creates `new Date("2026-03-15T11:30:00")` (no Z)
-    // which is parsed as local time. To be safe, use 23:59 UTC.
     vi.setSystemTime(new Date("2026-03-15T23:59:00Z"))
 
-    startNoShowChecker()
-
-    // Wait for initial async check to complete
-    await vi.advanceTimersByTimeAsync(200)
+    await checkNoShows()
 
     expect(mockTransition).toHaveBeenCalledWith("res_01", "no_show")
     expect(publishNatsEvent).toHaveBeenCalledWith(
@@ -121,8 +122,7 @@ describe("no-show checker", () => {
     // Set "now" to 2026-03-15 19:00 UTC (before 20:00 slot)
     vi.setSystemTime(new Date("2026-03-15T19:00:00Z"))
 
-    startNoShowChecker()
-    await vi.advanceTimersByTimeAsync(200)
+    await checkNoShows()
 
     // Should NOT mark as no_show
     expect(mockTransition).not.toHaveBeenCalled()
@@ -133,12 +133,6 @@ describe("no-show checker", () => {
   it("handles errors gracefully", async () => {
     mockFindConfirmedForDate.mockRejectedValue(new Error("DB connection lost"))
 
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-
-    startNoShowChecker()
-    await vi.advanceTimersByTimeAsync(100)
-
-    expect(consoleErrorSpy).toHaveBeenCalled()
-    consoleErrorSpy.mockRestore()
+    await expect(checkNoShows()).rejects.toThrow("DB connection lost")
   })
 })

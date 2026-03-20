@@ -1,5 +1,6 @@
 // Unit tests for cart intelligence subscriber
-// Handlers: cart.abandoned, order.placed, product.viewed
+// Handlers: cart.abandoned, order.placed, order.refunded, order.disputed, order.canceled,
+//           product.viewed, review.submitted, cart.item_added
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -12,6 +13,7 @@ const mockRk = vi.hoisted(() => vi.fn());
 const MOCK_PROFILE_TTL_SECONDS = vi.hoisted(() => 604800); // 7 days
 const mockRecordOrderItems = vi.hoisted(() => vi.fn());
 const mockGetWhatsAppSender = vi.hoisted(() => vi.fn());
+const mockMedusaAdminFetch = vi.hoisted(() => vi.fn());
 
 // Store registered handlers so we can invoke them in tests
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
@@ -30,6 +32,7 @@ vi.mock("@ibatexas/tools", () => ({
   rk: mockRk,
   PROFILE_TTL_SECONDS: MOCK_PROFILE_TTL_SECONDS,
   getWhatsAppSender: mockGetWhatsAppSender,
+  medusaAdmin: mockMedusaAdminFetch,
 }));
 
 vi.mock("@ibatexas/domain", () => ({
@@ -52,6 +55,7 @@ import { startCartIntelligenceSubscribers } from "../subscribers/cart-intelligen
 function createMockRedis(overrides: Record<string, unknown> = {}) {
   const pipeline = {
     zIncrBy: vi.fn().mockReturnThis(),
+    zRemRangeByRank: vi.fn().mockReturnThis(),
     lPush: vi.fn().mockReturnThis(),
     lTrim: vi.fn().mockReturnThis(),
     hSet: vi.fn().mockReturnThis(),
@@ -136,6 +140,7 @@ describe("updateCopurchaseScores (tested via order.placed handler)", () => {
   it("skips copurchase update for single-product orders", async () => {
     const pipeline = {
       zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
       lPush: vi.fn().mockReturnThis(),
       lTrim: vi.fn().mockReturnThis(),
       hSet: vi.fn().mockReturnThis(),
@@ -167,6 +172,7 @@ describe("updateCopurchaseScores (tested via order.placed handler)", () => {
   it("updates copurchase pairs for multi-product orders", async () => {
     const pipeline = {
       zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
       lPush: vi.fn().mockReturnThis(),
       lTrim: vi.fn().mockReturnThis(),
       hSet: vi.fn().mockReturnThis(),
@@ -195,6 +201,42 @@ describe("updateCopurchaseScores (tested via order.placed handler)", () => {
     );
     expect(copurchaseCalls).toHaveLength(2);
   });
+
+  it("prunes copurchase sorted sets to top COPURCHASE_MAX_ENTRIES after update", async () => {
+    const pipeline = {
+      zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
+      lPush: vi.fn().mockReturnThis(),
+      lTrim: vi.fn().mockReturnThis(),
+      hSet: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    };
+    const mockRedis = createMockRedis({
+      set: vi.fn().mockResolvedValue("OK"),
+      multi: vi.fn().mockReturnValue(pipeline),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockRecordOrderItems.mockResolvedValue({ count: 2 });
+
+    await natsHandlers["order.placed"]({
+      customerId: "cus_01",
+      orderId: "order_prune",
+      items: [
+        { productId: "prod_01", variantId: "var_01", quantity: 1, priceInCentavos: 5000 },
+        { productId: "prod_02", variantId: "var_02", quantity: 2, priceInCentavos: 7500 },
+      ],
+    });
+
+    // zRemRangeByRank should be called once per product for copurchase pruning
+    const copurchasePrunes = pipeline.zRemRangeByRank.mock.calls.filter(
+      (call: unknown[]) => String(call[0]).includes("copurchase"),
+    );
+    expect(copurchasePrunes).toHaveLength(2);
+    // Each call removes ranks 0 to -(51) = keeps top 50
+    expect(copurchasePrunes[0][1]).toBe(0);
+    expect(copurchasePrunes[0][2]).toBe(-51);
+  });
 });
 
 // ── Tests: updateGlobalScores ───────────────────────────────────────────────
@@ -209,6 +251,7 @@ describe("updateGlobalScores (tested via order.placed handler)", () => {
   it("increments global score per product by quantity", async () => {
     const pipeline = {
       zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
       lPush: vi.fn().mockReturnThis(),
       lTrim: vi.fn().mockReturnThis(),
       hSet: vi.fn().mockReturnThis(),
@@ -237,6 +280,41 @@ describe("updateGlobalScores (tested via order.placed handler)", () => {
     expect(globalCalls).toHaveLength(1);
     expect(globalCalls[0][1]).toBe(3); // quantity
     expect(globalCalls[0][2]).toBe("prod_01"); // productId
+  });
+
+  it("prunes global score sorted set to top GLOBAL_SCORE_MAX_ENTRIES after update", async () => {
+    const pipeline = {
+      zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
+      lPush: vi.fn().mockReturnThis(),
+      lTrim: vi.fn().mockReturnThis(),
+      hSet: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    };
+    const mockRedis = createMockRedis({
+      set: vi.fn().mockResolvedValue("OK"),
+      multi: vi.fn().mockReturnValue(pipeline),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockRecordOrderItems.mockResolvedValue({ count: 1 });
+
+    await natsHandlers["order.placed"]({
+      customerId: "cus_01",
+      orderId: "order_global_prune",
+      items: [
+        { productId: "prod_01", variantId: "var_01", quantity: 1, priceInCentavos: 5000 },
+      ],
+    });
+
+    // zRemRangeByRank should be called for global score pruning
+    const globalPrunes = pipeline.zRemRangeByRank.mock.calls.filter(
+      (call: unknown[]) => String(call[0]).includes("global:score"),
+    );
+    expect(globalPrunes).toHaveLength(1);
+    // Keeps top 200: removes ranks 0 to -(201)
+    expect(globalPrunes[0][1]).toBe(0);
+    expect(globalPrunes[0][2]).toBe(-201);
   });
 });
 
@@ -536,6 +614,464 @@ describe("startCartIntelligenceSubscribers", () => {
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("reservation.no_show", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("review.prompt", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("search.results_viewed", expect.any(Function));
-    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(12);
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("order.refunded", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("order.disputed", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("order.canceled", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("review.submitted", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("cart.item_added", expect.any(Function));
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(17);
+  });
+});
+
+// ── Tests: order.refunded handler (EVT-002) ─────────────────────────────────
+
+describe("order.refunded handler (EVT-002)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    await registerSubscribers();
+  });
+
+  it("updates refundCount and totalRefundAmount in customer profile", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaAdminFetch.mockResolvedValue({
+      order: { customer_id: "cus_refund" },
+    });
+
+    await natsHandlers["order.refunded"]({
+      orderId: "order_r01",
+      chargeId: "ch_r01",
+      amountRefunded: 5000,
+    });
+
+    expect(mockRedis.hIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_refund"),
+      "refundCount",
+      1,
+    );
+    expect(mockRedis.hIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_refund"),
+      "totalRefundAmount",
+      5000,
+    );
+  });
+
+  it("skips profile update when order has no customerId", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaAdminFetch.mockResolvedValue({
+      order: { customer_id: null },
+    });
+
+    await natsHandlers["order.refunded"]({
+      orderId: "order_guest",
+      chargeId: "ch_g01",
+      amountRefunded: 3000,
+    });
+
+    expect(mockRedis.hIncrBy).not.toHaveBeenCalled();
+  });
+
+  it("skips duplicate refund events (idempotency)", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue(null) });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["order.refunded"]({
+      orderId: "order_r01",
+      chargeId: "ch_r01",
+      amountRefunded: 5000,
+    });
+
+    expect(mockMedusaAdminFetch).not.toHaveBeenCalled();
+  });
+
+  it("reads customerId from metadata fallback", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaAdminFetch.mockResolvedValue({
+      order: { metadata: { customerId: "cus_meta" } },
+    });
+
+    await natsHandlers["order.refunded"]({
+      orderId: "order_meta",
+      chargeId: "ch_meta",
+      amountRefunded: 2000,
+    });
+
+    expect(mockRedis.hIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_meta"),
+      "refundCount",
+      1,
+    );
+  });
+});
+
+// ── Tests: order.disputed handler (EVT-003) ─────────────────────────────────
+
+describe("order.disputed handler (EVT-003)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+    await registerSubscribers();
+  });
+
+  it("publishes notification.send alert for staff", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaAdminFetch.mockResolvedValue({
+      order: { customer_id: "cus_disp" },
+    });
+
+    await natsHandlers["order.disputed"]({
+      orderId: "order_d01",
+      disputeId: "dp_001",
+      amount: 10000,
+      reason: "fraudulent",
+    });
+
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "notification.send",
+      expect.objectContaining({
+        type: "order_disputed",
+        channel: "whatsapp",
+      }),
+    );
+  });
+
+  it("increments disputeCount in customer profile", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaAdminFetch.mockResolvedValue({
+      order: { customer_id: "cus_disp" },
+    });
+
+    await natsHandlers["order.disputed"]({
+      orderId: "order_d01",
+      disputeId: "dp_002",
+      amount: 5000,
+      reason: "product_not_received",
+    });
+
+    expect(mockRedis.hIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_disp"),
+      "disputeCount",
+      1,
+    );
+  });
+
+  it("handles dispute without orderId (no profile update)", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["order.disputed"]({
+      orderId: null,
+      disputeId: "dp_003",
+      amount: 2000,
+      reason: "duplicate",
+    });
+
+    // Should still send notification
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "notification.send",
+      expect.objectContaining({ type: "order_disputed" }),
+    );
+    // But no Medusa fetch or profile update
+    expect(mockMedusaAdminFetch).not.toHaveBeenCalled();
+    expect(mockRedis.hIncrBy).not.toHaveBeenCalled();
+  });
+
+  it("skips duplicate dispute events (idempotency)", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue(null) });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["order.disputed"]({
+      orderId: "order_d01",
+      disputeId: "dp_dup",
+      amount: 5000,
+      reason: "fraudulent",
+    });
+
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ── Tests: order.canceled handler (EVT-004) ─────────────────────────────────
+
+describe("order.canceled handler (EVT-004)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    await registerSubscribers();
+  });
+
+  it("increments orderCancellationCount in customer profile", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaAdminFetch.mockResolvedValue({
+      order: { customer_id: "cus_cancel" },
+    });
+
+    await natsHandlers["order.canceled"]({
+      orderId: "order_c01",
+      stripePaymentIntentId: "pi_c01",
+      cancellationReason: "requested_by_customer",
+    });
+
+    expect(mockRedis.hIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_cancel"),
+      "orderCancellationCount",
+      1,
+    );
+  });
+
+  it("skips profile update when order has no customerId", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaAdminFetch.mockResolvedValue({
+      order: {},
+    });
+
+    await natsHandlers["order.canceled"]({
+      orderId: "order_guest_c",
+      stripePaymentIntentId: "pi_c02",
+    });
+
+    expect(mockRedis.hIncrBy).not.toHaveBeenCalled();
+  });
+
+  it("skips duplicate canceled events (idempotency)", async () => {
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue(null) });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["order.canceled"]({
+      orderId: "order_c_dup",
+      stripePaymentIntentId: "pi_dup",
+    });
+
+    expect(mockMedusaAdminFetch).not.toHaveBeenCalled();
+  });
+});
+
+// ── Tests: review.submitted handler (EVT-005) ──────────────────────────────
+
+describe("review.submitted handler (EVT-005)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    await registerSubscribers();
+  });
+
+  it("updates product review analytics in Redis", async () => {
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["review.submitted"]({
+      productId: "prod_rev",
+      customerId: "cus_rev",
+      rating: 5,
+      reviewCount: 10,
+      newAvgRating: 4.5,
+      orderId: "order_rev",
+    });
+
+    expect(mockRedis.hSet).toHaveBeenCalledWith(
+      expect.stringContaining("product:reviews:prod_rev"),
+      expect.objectContaining({
+        avgRating: "4.5",
+        reviewCount: "10",
+        lastReviewAt: expect.any(String),
+      }),
+    );
+    expect(mockRedis.expire).toHaveBeenCalledWith(
+      expect.stringContaining("product:reviews:prod_rev"),
+      30 * 86400,
+    );
+  });
+
+  it("increments reviewCount in customer profile", async () => {
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["review.submitted"]({
+      productId: "prod_rev2",
+      customerId: "cus_rev2",
+      rating: 4,
+      reviewCount: 5,
+      newAvgRating: 3.8,
+    });
+
+    expect(mockRedis.hIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_rev2"),
+      "reviewCount",
+      1,
+    );
+  });
+
+  it("resets profile TTL after recording review", async () => {
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["review.submitted"]({
+      productId: "prod_ttl",
+      customerId: "cus_ttl_rev",
+      rating: 3,
+      reviewCount: 1,
+      newAvgRating: 3.0,
+    });
+
+    expect(mockRedis.expire).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_ttl_rev"),
+      MOCK_PROFILE_TTL_SECONDS,
+    );
+  });
+});
+
+// ── Tests: cart.item_added handler (EVT-006) ────────────────────────────────
+
+describe("cart.item_added handler (EVT-006)", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    await registerSubscribers();
+  });
+
+  it("increments product cart popularity sorted set", async () => {
+    const pipeline = {
+      zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    };
+    const mockRedis = createMockRedis({
+      multi: vi.fn().mockReturnValue(pipeline),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["cart.item_added"]({
+      cartId: "cart_01",
+      customerId: "cus_cart",
+      productId: "prod_pop",
+      variantId: "var_pop",
+      quantity: 3,
+      sessionId: "sess_01",
+    });
+
+    expect(pipeline.zIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("product:cart:popularity"),
+      3,
+      "prod_pop",
+    );
+  });
+
+  it("updates customer profile cartAddCount for authenticated users", async () => {
+    const pipeline = {
+      zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    };
+    const mockRedis = createMockRedis({
+      multi: vi.fn().mockReturnValue(pipeline),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["cart.item_added"]({
+      cartId: "cart_02",
+      customerId: "cus_cart2",
+      productId: "prod_p2",
+      variantId: "var_p2",
+      quantity: 1,
+    });
+
+    expect(mockRedis.hIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_cart2"),
+      "cartAddCount",
+      1,
+    );
+    expect(mockRedis.hSet).toHaveBeenCalledWith(
+      expect.stringContaining("customer:profile:cus_cart2"),
+      "lastCartActivityAt",
+      expect.any(String),
+    );
+  });
+
+  it("skips profile update for anonymous cart additions", async () => {
+    const pipeline = {
+      zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    };
+    const mockRedis = createMockRedis({
+      multi: vi.fn().mockReturnValue(pipeline),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["cart.item_added"]({
+      cartId: "cart_anon",
+      variantId: "var_anon",
+      productId: "prod_anon",
+    });
+
+    // Popularity should still be tracked
+    expect(pipeline.zIncrBy).toHaveBeenCalled();
+    // But no profile update
+    expect(mockRedis.hIncrBy).not.toHaveBeenCalled();
+  });
+
+  it("defaults quantity to 1 when not provided", async () => {
+    const pipeline = {
+      zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    };
+    const mockRedis = createMockRedis({
+      multi: vi.fn().mockReturnValue(pipeline),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["cart.item_added"]({
+      cartId: "cart_noqty",
+      productId: "prod_noqty",
+      variantId: "var_noqty",
+    });
+
+    expect(pipeline.zIncrBy).toHaveBeenCalledWith(
+      expect.stringContaining("product:cart:popularity"),
+      1, // default
+      "prod_noqty",
+    );
+  });
+
+  it("prunes cart popularity sorted set to top CART_POPULARITY_MAX_ENTRIES after update", async () => {
+    const pipeline = {
+      zIncrBy: vi.fn().mockReturnThis(),
+      zRemRangeByRank: vi.fn().mockReturnThis(),
+      expire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockResolvedValue([]),
+    };
+    const mockRedis = createMockRedis({
+      multi: vi.fn().mockReturnValue(pipeline),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    await natsHandlers["cart.item_added"]({
+      cartId: "cart_prune",
+      productId: "prod_prune",
+      variantId: "var_prune",
+      quantity: 1,
+    });
+
+    // zRemRangeByRank should be called for cart popularity pruning
+    const popularityPrunes = pipeline.zRemRangeByRank.mock.calls.filter(
+      (call: unknown[]) => String(call[0]).includes("cart:popularity"),
+    );
+    expect(popularityPrunes).toHaveLength(1);
+    // Keeps top 200: removes ranks 0 to -(201)
+    expect(popularityPrunes[0][1]).toBe(0);
+    expect(popularityPrunes[0][2]).toBe(-201);
   });
 });

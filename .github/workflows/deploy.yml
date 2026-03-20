@@ -1,0 +1,193 @@
+name: Deploy — Production
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: sa-east-1
+  ECS_CLUSTER: ibatexas-production
+  ENVIRONMENT: production
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Build + push Docker images to ECR
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, web, admin]
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6
+        with:
+          context: .
+          file: apps/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # 2. Run Prisma migrations against production DB (via direct connection)
+  # ---------------------------------------------------------------------------
+  migrate:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ibatexas/domain db:generate
+
+      - name: Run Prisma migrations
+        run: pnpm --filter @ibatexas/domain exec prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.DIRECT_DATABASE_URL }}
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy ECS services
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: [build, migrate]
+    runs-on: ubuntu-latest
+    environment: production
+    strategy:
+      max-parallel: 1
+      matrix:
+        service: [api, web, admin]
+    steps:
+      - uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2
+        id: ecr
+
+      - name: Get current task definition
+        id: current-td
+        run: |
+          TD=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          echo "arn=$TD" >> "$GITHUB_OUTPUT"
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ steps.current-td.outputs.arn }}" \
+            --query 'taskDefinition' \
+            | jq 'del(.taskDefinitionArn,.revision,.status,.registeredAt,.registeredBy,.requiresAttributes,.compatibilities)' \
+            > task-def.json
+
+      - name: Update image in task definition
+        id: update-td
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:${{ github.sha }}"
+          jq --arg img "$IMAGE" \
+            '.containerDefinitions[0].image = $img' \
+            task-def.json > updated-task-def.json
+
+      - name: Register new task definition
+        id: register-td
+        run: |
+          NEW_TD_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://updated-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "arn=$NEW_TD_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}" \
+            --task-definition "${{ steps.register-td.outputs.arn }}" \
+            --force-new-deployment
+
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}"
+        timeout-minutes: 10
+
+  # ---------------------------------------------------------------------------
+  # 4. Post-deploy health checks
+  # ---------------------------------------------------------------------------
+  health-check:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check API health
+        run: |
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://api.ibatexas.com.br/health" || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "API health check passed"
+              exit 0
+            fi
+            echo "Attempt $i: API returned $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "API health check failed after 5 attempts"
+          exit 1
+
+      - name: Check Web health
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://ibatexas.com.br/" || true)
+          if [ "$STATUS" = "200" ]; then
+            echo "Web health check passed"
+          else
+            echo "Web returned $STATUS"
+            exit 1
+          fi
+
+      - name: Check Admin health
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://admin.ibatexas.com.br/" || true)
+          if [ "$STATUS" = "200" ]; then
+            echo "Admin health check passed"
+          else
+            echo "Admin returned $STATUS"
+            exit 1
+          fi

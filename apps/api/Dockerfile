@@ -16,6 +16,9 @@ COPY packages/ packages/
 # Install all dependencies (including devDependencies for build)
 RUN pnpm install --frozen-lockfile
 
+# Copy API source code
+COPY apps/api/src apps/api/src
+
 # Build the API and its workspace dependencies
 RUN pnpm --filter @ibatexas/api... run build
 
@@ -53,6 +56,9 @@ RUN addgroup -g 1001 -S appgroup && \
     adduser -S appuser -u 1001 -G appgroup
 USER appuser
 
-EXPOSE 9000
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1
 
 CMD ["node", "apps/api/dist/index.js"]

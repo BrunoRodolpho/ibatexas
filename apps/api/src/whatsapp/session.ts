@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { createCustomerService } from "@ibatexas/domain";
 import { Channel, type AgentContext } from "@ibatexas/types";
 
@@ -75,10 +75,9 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
   }
 
   // Rate limit customer creation to prevent DB write amplification under broadcast
-  // reply storms. Uses INCR + unconditional EXPIRE pattern to avoid immortal keys.
+  // reply storms. SEC-003: atomic INCR + EXPIRE via Lua to prevent immortal keys.
   const rateLimitKey = rk("ratelimit:customer:create");
-  const createCount = await redis.incr(rateLimitKey);
-  await redis.expire(rateLimitKey, 60); // unconditional EXPIRE
+  const createCount = await atomicIncr(redis, rateLimitKey, 60);
   if (createCount > MAX_CUSTOMER_CREATES_PER_MINUTE) {
     throw new Error("Customer creation rate limit exceeded");
   }

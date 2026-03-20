@@ -187,6 +187,16 @@ exports.Prisma.ReviewScalarFieldEnum = {
   updatedAt: 'updatedAt'
 };
 
+exports.Prisma.StaffScalarFieldEnum = {
+  id: 'id',
+  phone: 'phone',
+  name: 'name',
+  role: 'role',
+  active: 'active',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+};
+
 exports.Prisma.CustomerScalarFieldEnum = {
   id: 'id',
   phone: 'phone',
@@ -283,6 +293,12 @@ exports.ReservationStatus = exports.$Enums.ReservationStatus = {
   no_show: 'no_show'
 };
 
+exports.StaffRole = exports.$Enums.StaffRole = {
+  OWNER: 'OWNER',
+  MANAGER: 'MANAGER',
+  ATTENDANT: 'ATTENDANT'
+};
+
 exports.Prisma.ModelName = {
   Table: 'Table',
   TimeSlot: 'TimeSlot',
@@ -290,6 +306,7 @@ exports.Prisma.ModelName = {
   ReservationTable: 'ReservationTable',
   Waitlist: 'Waitlist',
   Review: 'Review',
+  Staff: 'Staff',
   Customer: 'Customer',
   Address: 'Address',
   CustomerPreferences: 'CustomerPreferences',

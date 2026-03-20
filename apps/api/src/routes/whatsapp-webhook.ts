@@ -18,7 +18,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { parse as parseQuerystring } from "node:querystring";
 import twilio from "twilio";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { runAgent } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
@@ -161,11 +161,10 @@ async function checkIdempotency(redis: Awaited<ReturnType<typeof getRedisClient>
   return !wasSet;
 }
 
-// EXPIRE unconditionally on every INCR to prevent immortal keys after crash
+// SEC-003: atomic INCR + EXPIRE via Lua to prevent immortal keys after crash
 async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisClient>>, hash: string): Promise<boolean> {
   const rateKey = rk(`wa:rate:${hash}`);
-  const rateCount = await redis.incr(rateKey);
-  await redis.expire(rateKey, 60); // idempotent TTL reset
+  const rateCount = await atomicIncr(redis, rateKey, 60);
   return rateCount > MAX_RATE_PER_MINUTE;
 }
 

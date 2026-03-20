@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 
 // Whitelist of known analytics events — rejects unknown event names
 const ALLOWED_EVENTS = new Set([
@@ -33,7 +33,7 @@ const ALLOWED_EVENTS = new Set([
 
 const TrackBody = z.object({
   event: z.string().min(1).max(100),
-  properties: z.record(z.unknown()).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
 });
 
 export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
@@ -66,9 +66,7 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         const redis = await getRedisClient();
         const ip = request.ip;
         const rateLimitKey = rk(`analytics:rate:${ip}`);
-        const count = await redis.incr(rateLimitKey);
-        // EXPIRE unconditionally on every INCR to prevent immortal keys after crash
-        await redis.expire(rateLimitKey, 60); // 1 minute window — idempotent TTL reset
+        const count = await atomicIncr(redis, rateLimitKey, 60); // 1 minute window
         if (count > 100) {
           return reply.status(429).send({ error: "Rate limit exceeded" });
         }

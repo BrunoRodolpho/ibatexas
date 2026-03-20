@@ -1,5 +1,4 @@
 import { getTranslations } from 'next-intl/server'
-import dynamic from 'next/dynamic'
 import { Heading, Text, HeroVideo, ScrollReveal } from '@/components/atoms'
 import { Beef, Flame, Package, Truck } from 'lucide-react'
 import HomeCarousel from './HomeCarousel'
@@ -9,13 +8,7 @@ import { ReorderCard } from '@/components/molecules/ReorderCard'
 import { FirstVisitBanner } from '@/components/molecules/FirstVisitBanner'
 import { StoryBlock } from '@/components/molecules/StoryBlock'
 
-// Phase 2 — personalization islands (client-only, no SSR)
-const HomeRecommendations = dynamic(() => import('./HomeRecommendations').then((m) => m.HomeRecommendations), { ssr: false })
-const HomeReviews = dynamic(() => import('./HomeReviews').then((m) => m.HomeReviews), { ssr: false })
-const RecentlyViewedCarousel = dynamic(
-  () => import('@/components/organisms/RecentlyViewedCarousel').then((m) => m.RecentlyViewedCarousel),
-  { ssr: false }
-)
+import { PersonalizationReviews, PersonalizationRecommendations, PersonalizationRecentlyViewed } from './PersonalizationIslands'
 
 /** Revalidate homepage every hour — balances freshness with traffic-spike resilience */
 export const revalidate = 3600
@@ -92,10 +85,10 @@ export default async function Home() {
       <ReorderCard />
 
       {/* ── Customer reviews — social proof early in the page ───── */}
-      <HomeReviews />
+      <PersonalizationReviews />
 
       {/* ── Phase 2: Personalized recommendations ────────────────── */}
-      <HomeRecommendations />
+      <PersonalizationRecommendations />
 
       {/* ═══════════════════════════════════════════════════════════════
           SECTION 2 — Bold statement + infinite product carousel
@@ -207,7 +200,7 @@ export default async function Home() {
       <HomeFavorites />
 
       {/* ── Phase 2: Recently viewed (returning users) ───────────── */}
-      <RecentlyViewedCarousel />
+      <PersonalizationRecentlyViewed />
 
       {/* ═══════════════════════════════════════════════════════════════
           SECTION 5 — Closing CTA (quiet authority)

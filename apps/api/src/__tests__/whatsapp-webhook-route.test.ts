@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockValidateRequest = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
+const mockAtomicIncr = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockRunAgent = vi.hoisted(() => vi.fn());
 const mockNormalizePhone = vi.hoisted(() => vi.fn());
@@ -34,6 +35,7 @@ vi.mock("twilio", () => ({
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
+  atomicIncr: mockAtomicIncr,
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -128,6 +130,7 @@ describe("verifyTwilioSignature (via POST /api/webhooks/whatsapp)", () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAtomicIncr.mockResolvedValue(1);
   });
 
   it("returns 500 when TWILIO_AUTH_TOKEN is not set", async () => {
@@ -216,6 +219,7 @@ describe("parseIncomingFields (via POST /api/webhooks/whatsapp)", () => {
     setupEnv();
     mockValidateRequest.mockReturnValue(true);
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAtomicIncr.mockResolvedValue(1);
   });
 
   it("returns 200 XML when MessageSid and Body are empty (empty message guard)", async () => {
@@ -288,6 +292,7 @@ describe("checkIdempotency (via POST /api/webhooks/whatsapp)", () => {
     mockNormalizePhone.mockReturnValue("+5511999999999");
     mockHashPhone.mockReturnValue("abc123def456");
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAtomicIncr.mockResolvedValue(1);
   });
 
   it("processes new message (not duplicate)", async () => {
@@ -344,14 +349,15 @@ describe("checkWebhookRateLimit (via POST /api/webhooks/whatsapp)", () => {
     mockNormalizePhone.mockReturnValue("+5511999999999");
     mockHashPhone.mockReturnValue("abc123def456");
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAtomicIncr.mockResolvedValue(1);
   });
 
   it("allows messages under rate limit", async () => {
     const mockRedis = createMockRedis({
       set: vi.fn().mockResolvedValue("OK"),
-      incr: vi.fn().mockResolvedValue(5), // under 20
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(5); // under 20
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -370,9 +376,9 @@ describe("checkWebhookRateLimit (via POST /api/webhooks/whatsapp)", () => {
   it("returns 429 XML when rate limit is exceeded", async () => {
     const mockRedis = createMockRedis({
       set: vi.fn().mockResolvedValue("OK"),
-      incr: vi.fn().mockResolvedValue(21), // over 20
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(21); // over 20
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -399,6 +405,7 @@ describe("buildUserMessage", () => {
     mockNormalizePhone.mockReturnValue("+5511999999999");
     mockHashPhone.mockReturnValue("abc123def456");
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAtomicIncr.mockResolvedValue(1);
   });
 
   // buildUserMessage is tested indirectly through async handler.
@@ -461,6 +468,7 @@ describe("handleShortcut", () => {
     mockNormalizePhone.mockReturnValue("+5511999999999");
     mockHashPhone.mockReturnValue("abc123def456");
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAtomicIncr.mockResolvedValue(1);
   });
 
   it("dispatches help shortcut and returns 200", async () => {
@@ -521,6 +529,7 @@ describe("Full POST /api/webhooks/whatsapp integration", () => {
     mockNormalizePhone.mockReturnValue("+5511999999999");
     mockHashPhone.mockReturnValue("abc123def456");
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockAtomicIncr.mockResolvedValue(1);
   });
 
   it("returns 200 XML immediately for valid message", async () => {
@@ -566,12 +575,12 @@ describe("Full POST /api/webhooks/whatsapp integration", () => {
     expect(res.body).toContain("<Response/>");
   });
 
-  it("sets rate limit expire on first message from a phone", async () => {
+  it("uses atomicIncr for rate limit with 60s TTL (SEC-003)", async () => {
     const mockRedis = createMockRedis({
       set: vi.fn().mockResolvedValue("OK"),
-      incr: vi.fn().mockResolvedValue(1), // first message
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1); // first message
 
     const app = await buildTestServer();
     await app.inject({
@@ -584,8 +593,9 @@ describe("Full POST /api/webhooks/whatsapp integration", () => {
       payload: "MessageSid=SM_FIRST&From=whatsapp%3A%2B5511999999999&Body=oi",
     });
 
-    // When incr returns 1, expire should be called with 60s
-    expect(mockRedis.expire).toHaveBeenCalledWith(
+    // atomicIncr should be called with the rate key and 60s TTL
+    expect(mockAtomicIncr).toHaveBeenCalledWith(
+      mockRedis,
       expect.stringContaining("rate"),
       60,
     );

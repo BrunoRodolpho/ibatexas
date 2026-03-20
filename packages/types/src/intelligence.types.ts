@@ -6,7 +6,7 @@ import { z } from "zod"
 // ─── Tool I/O Schemas ─────────────────────────────────────────────────────────
 
 // get_customer_profile
-export const GetCustomerProfileInputSchema = z.object({}).strict()
+export const GetCustomerProfileInputSchema = z.strictObject({})
 
 export type GetCustomerProfileInput = z.infer<typeof GetCustomerProfileInputSchema>
 

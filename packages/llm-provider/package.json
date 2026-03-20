@@ -21,7 +21,7 @@
     "@anthropic-ai/sdk": "^0.28.0",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
-    "zod": "^3.22.0"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@ibatexas/eslint-config": "workspace:*",

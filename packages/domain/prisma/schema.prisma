@@ -11,9 +11,10 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-  schemas  = ["ibx_domain"]
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+  schemas   = ["ibx_domain"]
 }
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -34,6 +35,14 @@ enum ReservationStatus {
   completed
   cancelled
   no_show
+
+  @@schema("ibx_domain")
+}
+
+enum StaffRole {
+  OWNER
+  MANAGER
+  ATTENDANT
 
   @@schema("ibx_domain")
 }
@@ -178,6 +187,24 @@ model Review {
   @@index([rating])
   @@index([productId])
   @@map("reviews")
+  @@schema("ibx_domain")
+}
+
+// ─── Staff & Auth ────────────────────────────────────────────────────────────
+
+/// Restaurant staff member. Authenticated via Twilio Verify OTP (same as customers).
+/// Role determines access level: OWNER > MANAGER > ATTENDANT.
+model Staff {
+  id        String    @id @default(cuid())
+  phone     String    @unique
+  name      String
+  role      StaffRole @default(ATTENDANT)
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@index([phone])
+  @@map("staff")
   @@schema("ibx_domain")
 }
 

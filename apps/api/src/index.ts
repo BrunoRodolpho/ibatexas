@@ -1,15 +1,11 @@
 import * as Sentry from "@sentry/node";
 import { buildServer } from "./server.js";
-import { startNoShowChecker, stopNoShowChecker } from "./jobs/no-show-checker.js";
-import { startReviewPromptPoller, stopReviewPromptPoller } from "./jobs/review-prompt-poller.js";
-import { startAbandonedCartChecker, stopAbandonedCartChecker } from "./jobs/abandoned-cart-checker.js";
-import { startReservationReminder, stopReservationReminder } from "./jobs/reservation-reminder.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { prisma } from "@ibatexas/domain";
 import { initWhatsAppSender } from "./whatsapp/init.js";
-import { startOutboxRetry, stopOutboxRetry } from "./jobs/outbox-retry.js";
+import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
 
 // Initialize Sentry before anything else
 if (process.env.SENTRY_DSN) {
@@ -38,13 +34,9 @@ const PORT = Number(process.env.PORT ?? 3001);
 const start = async (): Promise<void> => {
   const server = await buildServer();
 
-  // Graceful shutdown: stop jobs, drain NATS, close Fastify, close Redis, disconnect Prisma
+  // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma
   const shutdown = async (): Promise<void> => {
-    stopNoShowChecker();
-    stopReviewPromptPoller();
-    stopAbandonedCartChecker();
-    stopReservationReminder();
-    stopOutboxRetry();
+    await shutdownWorkers();
     await closeNatsConnection();
     await server.close();
     await closeRedisClient();
@@ -72,12 +64,8 @@ const start = async (): Promise<void> => {
       // Register subscribers BEFORE starting jobs to prevent race condition
       await startCartIntelligenceSubscribers(server.log);
 
-      startReservationReminder();
-      startNoShowChecker();
-      startReviewPromptPoller(server.log);
-      startAbandonedCartChecker(server.log);
-
-      startOutboxRetry(server.log);
+      // Start all BullMQ background workers
+      registerWorkers(server.log);
     }
   } catch (err) {
     server.log.error(err);

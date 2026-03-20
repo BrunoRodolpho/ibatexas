@@ -86,6 +86,16 @@ export {
   type GetAlsoAddedInput,
 } from "./intelligence.types.js"
 
+// Staff types
+export {
+  StaffRole,
+  StaffSendOtpBody,
+  StaffVerifyOtpBody,
+  type StaffDTO,
+  type StaffSendOtpInput,
+  type StaffVerifyOtpInput,
+} from "./staff.types.js"
+
 // Reservation types
 export {
   ReservationStatus,

@@ -69,7 +69,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       const { sessionId, message, channel } = request.body;
 
       if (isStreamActive(sessionId)) {
-        void reply.status(409).send({
+        void (reply as unknown as { status(code: number): typeof reply }).status(409).send({
           statusCode: 409,
           error: "Conflict",
           message: "Aguarde a resposta anterior.",

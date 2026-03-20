@@ -1,5 +1,6 @@
 // Abandoned cart checker
-// Runs every 15 minutes. Uses HSCAN (never KEYS *) to iterate rk('active:carts') hash.
+// Runs every 15 minutes via BullMQ repeatable job. Uses HSCAN (never KEYS *)
+// to iterate rk('active:carts') hash.
 // Publishes cart.abandoned for sessions idle > 2h with a non-empty cart.
 //
 // active:carts is a Hash: each field stores {cartId, sessionType, lastActivity}
@@ -8,11 +9,14 @@
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { loadSession } from "../session/store.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import * as Sentry from "@sentry/node";
+import { createQueue, createWorker, type Job } from "./queue.js";
+import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 
-const CHECK_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 const IDLE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
 const SCAN_COUNT = 100; // HSCAN cursor batch size
+const REPEAT_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
 interface ActiveCartEntry {
   cartId: string;
@@ -20,12 +24,11 @@ interface ActiveCartEntry {
   lastActivity: number; // epoch ms
 }
 
-let intervalHandle: ReturnType<typeof setInterval> | null = null;
-let logger: FastifyBaseLogger | null = null;
-// Overlap guard prevents concurrent job runs
-let isRunning = false;
-
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+let queue: Queue | null = null;
+let worker: Worker | null = null;
+let logger: FastifyBaseLogger | null = null;
 
 /** Parse a hash entry or fall back to session TTL proxy for legacy entries. */
 async function parseCartEntry(
@@ -81,49 +84,72 @@ async function processCartEntry(
   return true;
 }
 
-async function checkAbandonedCarts(): Promise<void> {
-  if (isRunning) return;
-  isRunning = true;
-  try {
-    const redis = await getRedisClient();
-    const activeCartsKey = rk("active:carts");
-    let abandonedCount = 0;
+/** Core job logic — exported for direct testing. */
+export async function checkAbandonedCarts(log?: FastifyBaseLogger | null): Promise<void> {
+  const effectiveLogger = log ?? logger;
+  const redis = await getRedisClient();
+  const activeCartsKey = rk("active:carts");
+  let abandonedCount = 0;
 
-    let cursor = 0;
-    do {
-      const scanResult = await redis.hScan(activeCartsKey, cursor, { COUNT: SCAN_COUNT });
-      cursor = scanResult.cursor;
+  let cursor = 0;
+  do {
+    const scanResult = await redis.hScan(activeCartsKey, cursor, { COUNT: SCAN_COUNT });
+    cursor = scanResult.cursor;
 
-      for (const { field: cartId, value: raw } of scanResult.tuples) {
-        try {
-          if (await processCartEntry(cartId, raw, redis, activeCartsKey)) {
-            abandonedCount++;
-          }
-        } catch (err) {
-          logger?.error({ cartId, error: String(err) }, "[abandoned-cart] Error processing cart");
+    for (const { field: cartId, value: raw } of scanResult.tuples) {
+      try {
+        if (await processCartEntry(cartId, raw, redis, activeCartsKey)) {
+          abandonedCount++;
         }
+      } catch (err) {
+        effectiveLogger?.error({ cartId, error: String(err) }, "[abandoned-cart] Error processing cart");
+        Sentry.withScope((scope) => {
+          scope.setTag("job", "abandoned-cart-checker");
+          scope.setTag("source", "background-job");
+          scope.setContext("cart", { cartId });
+          Sentry.captureException(err);
+        });
       }
-    } while (cursor !== 0);
+    }
+  } while (cursor !== 0);
 
-    logger?.info({ abandoned_count: abandonedCount, run_at: new Date().toISOString() }, "Abandoned cart check complete");
-  } finally {
-    isRunning = false;
-  }
+  effectiveLogger?.info({ abandoned_count: abandonedCount, run_at: new Date().toISOString() }, "Abandoned cart check complete");
+}
+
+/** BullMQ processor — wraps the core logic with Sentry reporting. */
+async function processor(_job: Job): Promise<void> {
+  await checkAbandonedCarts();
 }
 
 export function startAbandonedCartChecker(log?: FastifyBaseLogger): void {
-  if (intervalHandle) return;
+  if (worker) return;
   logger = log ?? null;
-  intervalHandle = setInterval(() => {
-    void checkAbandonedCarts().catch((err) => {
-      logger?.error(err, "[abandoned-cart-checker] Unexpected error");
+
+  queue = createQueue("abandoned-cart-checker");
+  worker = createWorker("abandoned-cart-checker", processor);
+
+  worker.on("failed", (_job, err) => {
+    logger?.error(err, "[abandoned-cart-checker] Unexpected error");
+    Sentry.withScope((scope) => {
+      scope.setTag("job", "abandoned-cart-checker");
+      scope.setTag("source", "background-job");
+      Sentry.captureException(err);
     });
-  }, CHECK_INTERVAL_MS);
+  });
+
+  // Add repeatable job (idempotent — BullMQ deduplicates by repeat key)
+  void queue.upsertJobScheduler("abandoned-cart-repeat", {
+    every: REPEAT_INTERVAL_MS,
+  });
 }
 
-export function stopAbandonedCartChecker(): void {
-  if (intervalHandle) {
-    clearInterval(intervalHandle);
-    intervalHandle = null;
+export async function stopAbandonedCartChecker(): Promise<void> {
+  if (worker) {
+    await worker.close();
+    worker = null;
+  }
+  if (queue) {
+    await queue.close();
+    queue = null;
   }
 }

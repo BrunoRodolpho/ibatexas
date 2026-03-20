@@ -1,5 +1,6 @@
 // Unit tests for auth routes
-// POST /api/auth/send-otp, POST /api/auth/verify-otp, POST /api/auth/logout, GET /api/auth/me
+// POST /api/auth/send-otp, POST /api/auth/verify-otp, POST /api/auth/refresh,
+// POST /api/auth/logout, GET /api/auth/me
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHash } from "node:crypto";
@@ -30,9 +31,12 @@ vi.mock("twilio", () => ({
   }),
 }));
 
+const mockAtomicIncr = vi.hoisted(() => vi.fn());
+
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
+  atomicIncr: mockAtomicIncr,
 }));
 
 vi.mock("@ibatexas/domain", () => ({
@@ -54,7 +58,17 @@ vi.mock("../middleware/auth.js", () => ({
     }
     done();
   },
-  optionalAuth: (_request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void) => {
+  optionalAuth: (request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void) => {
+    // Parse cookies to support logout revocation test
+    const cookieHeader = request.headers["cookie"] as string | undefined;
+    if (cookieHeader) {
+      const parsed: Record<string, string> = {};
+      for (const part of cookieHeader.split(";")) {
+        const [k, v] = part.trim().split("=");
+        if (k && v) parsed[k] = v;
+      }
+      (request as unknown as { cookies: Record<string, string> }).cookies = parsed;
+    }
     done();
   },
 }));
@@ -77,11 +91,19 @@ async function buildTestServer() {
   await app.register(sensible);
   await app.register(cookie);
 
-  // Decorate with jwt.sign for issueJwtToken (cast to any for test mock)
+  // Decorate with jwt.sign and jwt.decode for issueJwtToken + logout revocation
+  const signedPayloads: object[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (app as any).jwt = {
-    sign: (payload: object, _options?: object) => `mock-jwt-token-${(payload as { sub: string }).sub}`,
+    sign: (payload: object, _options?: object) => {
+      signedPayloads.push(payload);
+      return `mock-jwt-token-${(payload as { sub: string }).sub}`;
+    },
+    decode: () => null, // overridden per-test where needed
   };
+  // Expose for assertion
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any)._signedPayloads = signedPayloads;
 
   await app.register(authRoutes);
   await app.ready();
@@ -131,8 +153,9 @@ describe("checkSendRateLimit", () => {
 
   it("allows first request (count <= 3)", async () => {
     setupEnv();
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCreate.mockResolvedValue({ sid: "VE_123" });
 
     const app = await buildTestServer();
@@ -148,8 +171,10 @@ describe("checkSendRateLimit", () => {
 
   it("blocks when rate limit exceeded (count > 3)", async () => {
     setupEnv();
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(4) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    // First call = IP rate limit (ok), second call = phone rate limit (exceeded)
+    mockAtomicIncr.mockResolvedValueOnce(1).mockResolvedValueOnce(4);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -174,10 +199,10 @@ describe("checkBruteForce", () => {
   it("allows when no failures recorded", async () => {
     setupEnv();
     const mockRedis = createMockRedis({
-      incr: vi.fn().mockResolvedValue(1),
       get: vi.fn().mockResolvedValue(null),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
     mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
@@ -199,10 +224,10 @@ describe("checkBruteForce", () => {
   it("blocks when >= 5 failures recorded", async () => {
     setupEnv();
     const mockRedis = createMockRedis({
-      incr: vi.fn().mockResolvedValue(1),
       get: vi.fn().mockResolvedValue("5"),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -229,9 +254,9 @@ describe("recordVerifyFailure & clearVerifyFailures", () => {
     setupEnv();
     const mockRedis = createMockRedis({
       get: vi.fn().mockResolvedValue(null),
-      incr: vi.fn().mockResolvedValue(1),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCheckCreate.mockResolvedValue({ status: "pending" });
 
     const app = await buildTestServer();
@@ -242,17 +267,17 @@ describe("recordVerifyFailure & clearVerifyFailures", () => {
     });
 
     expect(res.statusCode).toBe(400);
-    // incr called for both send rate check and fail recording
-    expect(mockRedis.incr).toHaveBeenCalled();
+    // atomicIncr called for IP rate check and fail recording
+    expect(mockAtomicIncr).toHaveBeenCalled();
   });
 
   it("clears failure counter on successful verification", async () => {
     setupEnv();
     const mockRedis = createMockRedis({
       get: vi.fn().mockResolvedValue(null),
-      incr: vi.fn().mockResolvedValue(1),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
     mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
@@ -282,8 +307,9 @@ describe("POST /api/auth/send-otp", () => {
 
   it("returns 200 on success", async () => {
     setupEnv();
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCreate.mockResolvedValue({ sid: "VE_123" });
 
     const app = await buildTestServer();
@@ -302,8 +328,10 @@ describe("POST /api/auth/send-otp", () => {
 
   it("returns 429 when rate limited", async () => {
     setupEnv();
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(5) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    // First call = IP (ok), second call = phone rate limit (exceeded)
+    mockAtomicIncr.mockResolvedValueOnce(1).mockResolvedValueOnce(5);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -318,8 +346,9 @@ describe("POST /api/auth/send-otp", () => {
 
   it("returns 502 on Twilio error", async () => {
     setupEnv();
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCreate.mockRejectedValue(new Error("Twilio down"));
 
     const app = await buildTestServer();
@@ -359,9 +388,9 @@ describe("POST /api/auth/verify-otp", () => {
     setupEnv();
     const mockRedis = createMockRedis({
       get: vi.fn().mockResolvedValue(null),
-      incr: vi.fn().mockResolvedValue(1),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
     mockUpsertFromPhone.mockResolvedValue({
       id: "cus_01",
@@ -393,9 +422,9 @@ describe("POST /api/auth/verify-otp", () => {
     setupEnv();
     const mockRedis = createMockRedis({
       get: vi.fn().mockResolvedValue(null),
-      incr: vi.fn().mockResolvedValue(1),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
     mockUpsertFromPhone.mockResolvedValue({
       id: "cus_02",
@@ -418,9 +447,9 @@ describe("POST /api/auth/verify-otp", () => {
     setupEnv();
     const mockRedis = createMockRedis({
       get: vi.fn().mockResolvedValue(null),
-      incr: vi.fn().mockResolvedValue(1),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCheckCreate.mockResolvedValue({ status: "pending" });
 
     const app = await buildTestServer();
@@ -441,6 +470,7 @@ describe("POST /api/auth/verify-otp", () => {
       get: vi.fn().mockResolvedValue("5"),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -457,9 +487,9 @@ describe("POST /api/auth/verify-otp", () => {
     setupEnv();
     const mockRedis = createMockRedis({
       get: vi.fn().mockResolvedValue(null),
-      incr: vi.fn().mockResolvedValue(1),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCheckCreate.mockRejectedValue(
       Object.assign(new Error("Twilio error"), { code: 60200, status: 500 }),
     );
@@ -480,9 +510,9 @@ describe("POST /api/auth/verify-otp", () => {
     setupEnv();
     const mockRedis = createMockRedis({
       get: vi.fn().mockResolvedValue(null),
-      incr: vi.fn().mockResolvedValue(1),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCheckCreate.mockRejectedValue(
       Object.assign(new Error("Not found"), { code: 20404, status: 404 }),
     );
@@ -513,10 +543,52 @@ describe("POST /api/auth/verify-otp", () => {
   });
 });
 
+describe("SEC-004: JWT jti issuance", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("includes jti (unique token ID) in JWT payload", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis({
+      get: vi.fn().mockResolvedValue(null),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
+    mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
+    mockUpsertFromPhone.mockResolvedValue({
+      id: "cus_jti",
+      phone: "+5511999999999",
+      name: "Test",
+      email: null,
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/verify-otp",
+      payload: { phone: "+5511999999999", code: "123456" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const payloads = (app as any)._signedPayloads as Array<{ sub: string; jti?: string }>;
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0].jti).toBeDefined();
+    // jti should be a UUID format
+    expect(payloads[0].jti).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+  });
+});
+
 describe("POST /api/auth/logout", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("returns 200 and clears the token cookie", async () => {
@@ -534,6 +606,61 @@ describe("POST /api/auth/logout", () => {
     expect(setCookie).toBeDefined();
     // Cookie should be cleared (expires in the past or max-age=0)
     expect(String(setCookie)).toContain("token=");
+  });
+
+  it("revokes JWT by setting revocation key in Redis on logout", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+
+    // The mock jwt.decode returns payload with jti and exp
+    const futureExp = Math.floor(Date.now() / 1000) + 7200; // 2h from now
+    // Override jwt.decode on the server
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (app as any).jwt.decode = (token: string) => {
+      if (token === "mock-token-with-jti") {
+        return { sub: "cus_01", userType: "customer", jti: "test-jti-uuid", exp: futureExp };
+      }
+      return null;
+    };
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: { cookie: "token=mock-token-with-jti" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Revocation key should have been set
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      expect.stringContaining("jwt:revoked:test-jti-uuid"),
+      "1",
+      expect.objectContaining({ EX: expect.any(Number) }),
+    );
+  });
+
+  it("succeeds even when Redis is down (best-effort revocation)", async () => {
+    setupEnv();
+    mockGetRedisClient.mockRejectedValue(new Error("Connection refused"));
+
+    const app = await buildTestServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (app as any).jwt.decode = () => ({
+      sub: "cus_01",
+      jti: "some-jti",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: { cookie: "token=some-token" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
   });
 });
 
@@ -592,9 +719,9 @@ describe("checkIpRateLimit", () => {
 
   it("returns 429 when IP rate limit exceeded (count > 10)", async () => {
     setupEnv();
-    const mockIncr = vi.fn().mockResolvedValue(11);
-    const mockRedis = createMockRedis({ incr: mockIncr });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(11);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -609,18 +736,15 @@ describe("checkIpRateLimit", () => {
     expect(body.message).toContain("1 hora");
     // Should not reach the phone-hash rate limit or Twilio
     expect(mockVerificationCreate).not.toHaveBeenCalled();
-    // incr called only once (for IP check — blocked before phone check)
-    expect(mockIncr).toHaveBeenCalledTimes(1);
+    // atomicIncr called only once (for IP check — blocked before phone check)
+    expect(mockAtomicIncr).toHaveBeenCalledTimes(1);
   });
 
-  it("sets expire on first IP request (count === 1)", async () => {
+  it("uses atomicIncr with correct TTL for IP rate limit", async () => {
     setupEnv();
-    const mockExpire = vi.fn().mockResolvedValue(true);
-    const mockIncr = vi.fn()
-      .mockResolvedValueOnce(1)   // IP rate limit — first request
-      .mockResolvedValueOnce(1);  // phone-hash rate limit
-    const mockRedis = createMockRedis({ incr: mockIncr, expire: mockExpire });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
     mockVerificationCreate.mockResolvedValue({ sid: "VE_123" });
 
     const app = await buildTestServer();
@@ -631,8 +755,9 @@ describe("checkIpRateLimit", () => {
     });
 
     expect(res.statusCode).toBe(200);
-    // expire called with 3600 for IP key
-    expect(mockExpire).toHaveBeenCalledWith(
+    // atomicIncr called with correct TTL for IP key (3600s) and phone key (600s)
+    expect(mockAtomicIncr).toHaveBeenCalledWith(
+      mockRedis,
       expect.stringContaining("otp:ip:"),
       3600,
     );
@@ -640,17 +765,10 @@ describe("checkIpRateLimit", () => {
 
   it("IP check runs BEFORE phone-hash check", async () => {
     setupEnv();
-    const callOrder: string[] = [];
-    const mockIncr = vi.fn().mockImplementation(async (key: string) => {
-      if (key.includes("otp:ip:")) {
-        callOrder.push("ip");
-        return 11; // exceed IP limit
-      }
-      callOrder.push("phone");
-      return 1;
-    });
-    const mockRedis = createMockRedis({ incr: mockIncr });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
+    // First atomicIncr = IP check (exceeded), should block before phone check
+    mockAtomicIncr.mockResolvedValue(11);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -660,7 +778,249 @@ describe("checkIpRateLimit", () => {
     });
 
     expect(res.statusCode).toBe(429);
-    // IP check happened first and blocked — phone check never reached
-    expect(callOrder).toEqual(["ip"]);
+    // atomicIncr called only once (IP check) — phone check never reached
+    expect(mockAtomicIncr).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── AUTH-001: Refresh Token Flow ──────────────────────────────────────────────
+
+describe("AUTH-001: verify-otp issues refresh token cookie", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("sets both token and refresh_token cookies on successful OTP verify", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis({
+      get: vi.fn().mockResolvedValue(null),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
+    mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
+    mockUpsertFromPhone.mockResolvedValue({
+      id: "cus_refresh",
+      phone: "+5511999999999",
+      name: "Test",
+      email: null,
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/verify-otp",
+      payload: { phone: "+5511999999999", code: "123456" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const setCookieHeaders = res.headers["set-cookie"];
+    const cookieStr = Array.isArray(setCookieHeaders) ? setCookieHeaders.join("; ") : String(setCookieHeaders);
+    expect(cookieStr).toContain("token=");
+    expect(cookieStr).toContain("refresh_token=");
+  });
+
+  it("stores refresh token in Redis with 30-day TTL", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis({
+      get: vi.fn().mockResolvedValue(null),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
+    mockVerificationCheckCreate.mockResolvedValue({ status: "approved" });
+    mockUpsertFromPhone.mockResolvedValue({
+      id: "cus_refresh2",
+      phone: "+5511999999999",
+      name: "Test",
+      email: null,
+    });
+
+    const app = await buildTestServer();
+    await app.inject({
+      method: "POST",
+      url: "/api/auth/verify-otp",
+      payload: { phone: "+5511999999999", code: "123456" },
+    });
+
+    // Redis set should be called for the refresh token
+    const refreshSetCalls = mockRedis.set.mock.calls.filter(
+      (call: unknown[]) => String(call[0]).includes("refresh:"),
+    );
+    expect(refreshSetCalls.length).toBeGreaterThanOrEqual(1);
+    const [, value, options] = refreshSetCalls[0];
+    const parsed = JSON.parse(value as string);
+    expect(parsed.customerId).toBe("cus_refresh2");
+    expect(parsed.issuedAt).toEqual(expect.any(Number));
+    expect((options as { EX: number }).EX).toBe(30 * 24 * 60 * 60);
+  });
+});
+
+describe("POST /api/auth/refresh", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("returns 401 when refresh_token cookie is missing", async () => {
+    setupEnv();
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/refresh",
+    });
+
+    expect(res.statusCode).toBe(401);
+    const body = res.json();
+    expect(body.message).toContain("ausente");
+  });
+
+  it("returns 401 and clears cookies when refresh token not found in Redis", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis({
+      get: vi.fn().mockResolvedValue(null), // token not in Redis
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/refresh",
+      cookies: { refresh_token: "expired-or-used-token" },
+    });
+
+    expect(res.statusCode).toBe(401);
+    const body = res.json();
+    expect(body.message).toContain("inválido ou expirado");
+    // Should clear both cookies
+    const setCookieHeaders = res.headers["set-cookie"];
+    const cookieStr = Array.isArray(setCookieHeaders) ? setCookieHeaders.join("; ") : String(setCookieHeaders);
+    expect(cookieStr).toContain("token=");
+    expect(cookieStr).toContain("refresh_token=");
+  });
+
+  it("issues new JWT + rotated refresh token on valid refresh", async () => {
+    setupEnv();
+    const storedPayload = JSON.stringify({ customerId: "cus_r01", issuedAt: Date.now() });
+    const mockRedis = createMockRedis({
+      get: vi.fn().mockResolvedValue(storedPayload),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/refresh",
+      cookies: { refresh_token: "valid-refresh-token" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+
+    // Old token should be deleted (consumed)
+    expect(mockRedis.del).toHaveBeenCalledWith(
+      expect.stringContaining("refresh:valid-refresh-token"),
+    );
+
+    // New refresh token should be stored in Redis
+    const refreshSetCalls = mockRedis.set.mock.calls.filter(
+      (call: unknown[]) => String(call[0]).includes("refresh:"),
+    );
+    expect(refreshSetCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Both cookies should be set
+    const setCookieHeaders = res.headers["set-cookie"];
+    const cookieStr = Array.isArray(setCookieHeaders) ? setCookieHeaders.join("; ") : String(setCookieHeaders);
+    expect(cookieStr).toContain("token=");
+    expect(cookieStr).toContain("refresh_token=");
+
+    // JWT should be signed with the correct customer ID
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const payloads = (app as any)._signedPayloads as Array<{ sub: string }>;
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0].sub).toBe("cus_r01");
+  });
+
+  it("consumes (deletes) the old refresh token before issuing a new one", async () => {
+    setupEnv();
+    const storedPayload = JSON.stringify({ customerId: "cus_r02", issuedAt: Date.now() });
+    const mockRedis = createMockRedis({
+      get: vi.fn().mockResolvedValue(storedPayload),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    await app.inject({
+      method: "POST",
+      url: "/api/auth/refresh",
+      cookies: { refresh_token: "token-to-rotate" },
+    });
+
+    // del should be called with the old token key
+    expect(mockRedis.del).toHaveBeenCalledWith(
+      expect.stringContaining("refresh:token-to-rotate"),
+    );
+  });
+});
+
+describe("AUTH-001: Logout cleans up refresh token", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("deletes refresh token from Redis on logout", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: { cookie: "token=jwt-token; refresh_token=my-refresh-token" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Refresh token should be deleted from Redis
+    expect(mockRedis.del).toHaveBeenCalledWith(
+      expect.stringContaining("refresh:my-refresh-token"),
+    );
+  });
+
+  it("clears both token and refresh_token cookies on logout", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: { cookie: "token=jwt; refresh_token=rf" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const setCookieHeaders = res.headers["set-cookie"];
+    const cookieStr = Array.isArray(setCookieHeaders) ? setCookieHeaders.join("; ") : String(setCookieHeaders);
+    expect(cookieStr).toContain("token=");
+    expect(cookieStr).toContain("refresh_token=");
+  });
+
+  it("succeeds even when Redis is down during refresh token deletion", async () => {
+    setupEnv();
+    mockGetRedisClient.mockRejectedValue(new Error("Connection refused"));
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: { cookie: "token=jwt; refresh_token=rf" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
   });
 });

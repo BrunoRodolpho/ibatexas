@@ -8,11 +8,7 @@ import { Footer } from "@/components/Footer"
 import { MobileBottomNav } from "@/components/molecules/MobileBottomNav"
 import { ToastProvider } from "@/components/ToastProvider"
 import { PostHogProvider } from "@/components/PostHogProvider"
-import dynamic from "next/dynamic"
-
-const CartDrawer = dynamic(() => import("@/components/organisms/CartDrawer").then(m => m.CartDrawer), { ssr: false })
-const ChatWidget = dynamic(() => import("@/components/ChatWidget").then(m => m.ChatWidget), { ssr: false })
-const StickyCartBar = dynamic(() => import("@/components/molecules/StickyCartBar").then(m => m.StickyCartBar), { ssr: false })
+import { ClientOverlays } from './ClientOverlays'
 
 const inter = Inter({
   subsets: ["latin"],
@@ -33,9 +29,9 @@ export default async function LocaleLayout({
   params,
 }: {
   readonly children: React.ReactNode
-  readonly params: { locale: string }
+  readonly params: Promise<{ locale: string }>
 }) {
-  const { locale } = params
+  const { locale } = await params
 
   // Validate locale
   if (!routing.locales.includes(locale as "pt-BR")) {
@@ -60,9 +56,7 @@ export default async function LocaleLayout({
             <main id="main-content" className="flex-1 pb-14 sm:pb-0">{children}</main>
             <Footer />
             <MobileBottomNav />
-            <CartDrawer />
-            <StickyCartBar />
-            <ChatWidget />
+            <ClientOverlays />
             {/* WhatsApp floating button — z-35, above MobileBottomNav but below StickyCartBar */}
             {process.env.NEXT_PUBLIC_WHATSAPP_URL && (
               <a
