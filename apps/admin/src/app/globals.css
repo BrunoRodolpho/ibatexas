@@ -1,3 +1,76 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #FFF4EE;
+  --color-brand-100: #FFE4CC;
+  --color-brand-200: #FFC599;
+  --color-brand-300: #FFA066;
+  --color-brand-400: #FF7A33;
+  --color-brand-500: #E85D04;
+  --color-brand-600: #C94E00;
+  --color-brand-700: #A84000;
+  --color-brand-800: #7A2F00;
+  --color-brand-900: #3D1800;
+
+  --color-smoke-50: #FAFAF9;
+  --color-smoke-100: #F5F3F0;
+  --color-smoke-200: #EDE9E3;
+  --color-smoke-300: #DDD8CF;
+  --color-smoke-400: #C4BDB3;
+  --color-smoke-500: #A8A298;
+  --color-smoke-600: #8C877E;
+  --color-smoke-700: #706C64;
+  --color-smoke-800: #55524B;
+
+  --color-charcoal-600: #3A352F;
+  --color-charcoal-700: #2E2924;
+  --color-charcoal-800: #231F1C;
+  --color-charcoal-900: #1A1614;
+
+  --color-accent-green: #2D6A4F;
+  --color-accent-red: #DC2626;
+  --color-accent-amber: #D97706;
+
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-display: var(--font-playfair), Georgia, serif;
+
+  --shadow-xs: 0 1px 2px 0 rgba(120,80,40,0.04);
+  --shadow-card: 0 1px 3px 0 rgba(120,80,40,0.04), 0 1px 2px -1px rgba(120,80,40,0.02);
+  --shadow-md: 0 4px 12px -2px rgba(120,80,40,0.06), 0 2px 4px -2px rgba(120,80,40,0.03);
+  --shadow-lg: 0 10px 24px -4px rgba(120,80,40,0.08), 0 4px 8px -2px rgba(120,80,40,0.03);
+  --shadow-xl: 0 20px 48px -8px rgba(120,80,40,0.10), 0 8px 16px -4px rgba(120,80,40,0.04);
+
+  --radius-card: 10px;
+
+  --tracking-editorial: 0.04em;
+  --tracking-display: -0.02em;
+
+  --ease-luxury: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-fade-in: fade-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-slide-up: slide-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-slide-in-right: slide-in-right 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-slide-in-left: slide-in-left 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-slide-in-bottom: slide-in-bottom 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+
+  @keyframes fade-in {
+    0% { opacity: 0; }
+    100% { opacity: 1; }
+  }
+  @keyframes slide-up {
+    0% { opacity: 0; transform: translateY(8px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slide-in-right {
+    0% { transform: translateX(100%); }
+    100% { transform: translateX(0); }
+  }
+  @keyframes slide-in-left {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(0); }
+  }
+  @keyframes slide-in-bottom {
+    0% { transform: translateY(100%); }
+    100% { transform: translateY(0); }
+  }
+}
