@@ -3,8 +3,9 @@
 import { ReorderInputSchema, NonRetryableError, type ReorderInput, type AgentContext } from "@ibatexas/types";
 import { medusaAdminFetch, medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { withOrderOwnership } from "../guards/with-ownership.js";
 
-export async function reorder(
+async function reorderImpl(
   input: ReorderInput,
   ctx: AgentContext,
 ): Promise<{ cartId?: string; message: string }> {
@@ -20,11 +21,6 @@ export async function reorder(
       items: Array<{ variant_id: string; quantity: number; title: string }>;
     };
   };
-
-  // Verify order belongs to the authenticated customer
-  if (data.order.customer_id !== ctx.customerId) {
-    throw new NonRetryableError("Acesso negado: este pedido pertence a outro cliente.");
-  }
 
   const items = data.order.items;
   if (!items || items.length === 0) {
@@ -71,6 +67,9 @@ export async function reorder(
     message: `Carrinho criado com os itens do pedido anterior${errorNote}. CartId: ${cartId}`,
   };
 }
+
+// SEC-002: Ownership guard wrapper — rejects before any business logic
+export const reorder = withOrderOwnership(reorderImpl);
 
 export const ReorderTool = {
   name: "reorder",

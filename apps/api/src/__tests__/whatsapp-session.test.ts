@@ -16,6 +16,7 @@ const mockRedis = vi.hoisted(() => ({
   incr: vi.fn(),
 }));
 
+const mockAtomicIncr = vi.hoisted(() => vi.fn().mockResolvedValue(1));
 const mockUpsertFromWhatsApp = vi.hoisted(() => vi.fn());
 
 vi.mock("uuid", () => ({ v4: mockUuidv4 }));
@@ -23,6 +24,7 @@ vi.mock("uuid", () => ({ v4: mockUuidv4 }));
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: vi.fn(async () => mockRedis),
   rk: vi.fn((key: string) => `ibatexas:${key}`),
+  atomicIncr: mockAtomicIncr,
 }));
 
 vi.mock("@ibatexas/domain", () => ({
@@ -206,7 +208,7 @@ describe("resolveWhatsAppSession", () => {
 
   it("throws when customer creation rate limit is exceeded", async () => {
     mockRedis.hGetAll.mockResolvedValue({});
-    mockRedis.incr.mockResolvedValue(101); // over 100/min limit
+    mockAtomicIncr.mockResolvedValue(101); // over 100/min limit
 
     await expect(resolveWhatsAppSession(phone)).rejects.toThrow(
       "Customer creation rate limit exceeded",
@@ -215,22 +217,19 @@ describe("resolveWhatsAppSession", () => {
     expect(mockUpsertFromWhatsApp).not.toHaveBeenCalled();
   });
 
-  it("applies unconditional EXPIRE on rate limit key (REDIS-M03 pattern)", async () => {
+  it("uses atomicIncr for rate limit (SEC-003 pattern)", async () => {
     mockRedis.hGetAll.mockResolvedValue({});
     mockUpsertFromWhatsApp.mockResolvedValue({ id: "cust-new" });
     mockUuidv4.mockReturnValue("rl-uuid");
     mockRedis.hSet.mockResolvedValue(undefined);
     mockRedis.expire.mockResolvedValue(undefined);
-    mockRedis.incr.mockResolvedValue(5); // under limit
+    mockAtomicIncr.mockResolvedValue(5); // under limit
 
     await resolveWhatsAppSession(phone);
 
-    // Rate limit INCR was called
-    expect(mockRedis.incr).toHaveBeenCalledWith(
-      expect.stringContaining("ratelimit:customer:create"),
-    );
-    // EXPIRE was called unconditionally on the rate limit key
-    expect(mockRedis.expire).toHaveBeenCalledWith(
+    // atomicIncr was called with the rate limit key and 60s TTL
+    expect(mockAtomicIncr).toHaveBeenCalledWith(
+      mockRedis,
       expect.stringContaining("ratelimit:customer:create"),
       60,
     );

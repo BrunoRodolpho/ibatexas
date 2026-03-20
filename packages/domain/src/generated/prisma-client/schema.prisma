@@ -11,9 +11,10 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-  schemas  = ["ibx_domain"]
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+  schemas   = ["ibx_domain"]
 }
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -34,6 +35,14 @@ enum ReservationStatus {
   completed
   cancelled
   no_show
+
+  @@schema("ibx_domain")
+}
+
+enum StaffRole {
+  OWNER
+  MANAGER
+  ATTENDANT
 
   @@schema("ibx_domain")
 }
@@ -63,7 +72,9 @@ model Table {
 model TimeSlot {
   id              String   @id @default(cuid())
   date            DateTime @db.Date
-  startTime       String // '19:30'
+  // AUDIT-FIX: DL-F07 — Constrained to VarChar(5) to enforce 'HH:MM' format at DB level.
+  // Application layer validates format before write; this annotation prevents oversized strings.
+  startTime       String   @db.VarChar(5) // 'HH:MM' format, e.g. '19:30'
   durationMinutes Int      @default(90) @map("duration_minutes")
   maxCovers       Int      @map("max_covers")
   reservedCovers  Int      @default(0) @map("reserved_covers")
@@ -80,12 +91,17 @@ model TimeSlot {
 }
 
 /// A table reservation.
-/// customerId references the Medusa customer id (Twilio-verified phone → Medusa customer).
+/// AUDIT-FIX: DL-F08 — Added FK relation from customerId to Customer.
 model Reservation {
   id              String            @id @default(cuid())
   customerId      String            @map("customer_id")
   partySize       Int               @map("party_size")
   status          ReservationStatus @default(pending)
+  // AUDIT-FIX: DL-F12 — Expected JSON shape is SpecialRequest[]:
+  //   { type: 'birthday'|'anniversary'|'allergy_warning'|'highchair'|'window_seat'|'accessible'|'other',
+  //     notes?: string }
+  // Validated via Zod SpecialRequestSchema at application layer. Legacy seed data may contain
+  // plain string[] — consumers must handle both shapes gracefully.
   specialRequests Json              @default("[]") @map("special_requests")
   // ISO 8601 strings for confirmationMessage building
   confirmedAt     DateTime?         @map("confirmed_at")
@@ -94,7 +110,12 @@ model Reservation {
   createdAt       DateTime          @default(now()) @map("created_at")
   updatedAt       DateTime          @updatedAt @map("updated_at")
 
-  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+  // AUDIT-FIX: DL-F08 — FK relation to Customer for referential integrity
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  // AUDIT-FIX: DL-F02 — Changed onDelete from Cascade to Restrict to prevent
+  // silent deletion of reservations when a TimeSlot is removed.
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Restrict)
   timeSlotId String   @map("time_slot_id")
 
   tables ReservationTable[]
@@ -129,7 +150,9 @@ model Waitlist {
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
 
-  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Cascade)
+  // AUDIT-FIX: DL-F02 — Changed onDelete from Cascade to Restrict to prevent
+  // silent deletion of waitlist entries when a TimeSlot is removed.
+  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Restrict)
   timeSlotId String   @map("time_slot_id")
 
   @@unique([customerId, timeSlotId])
@@ -144,7 +167,10 @@ model Waitlist {
 model Review {
   id         String   @id @default(cuid())
   orderId    String   @map("order_id") // Medusa order id
-  productIds String[] @map("product_ids") // legacy: multiple product ids
+  // AUDIT-FIX: DL-F03 — productIds is DEPRECATED. Use productId instead.
+  // Deprecation plan: (1) backfill migration sets product_id = product_ids[1] where null,
+  // (2) stop writing to productIds in application code, (3) drop column in future migration.
+  productIds String[] @map("product_ids") // DEPRECATED — use productId
   productId  String?  @map("product_id") // primary product this review is for
   customerId String   @map("customer_id")
   rating     Int // 1–5
@@ -164,6 +190,24 @@ model Review {
   @@schema("ibx_domain")
 }
 
+// ─── Staff & Auth ────────────────────────────────────────────────────────────
+
+/// Restaurant staff member. Authenticated via Twilio Verify OTP (same as customers).
+/// Role determines access level: OWNER > MANAGER > ATTENDANT.
+model Staff {
+  id        String    @id @default(cuid())
+  phone     String    @unique
+  name      String
+  role      StaffRole @default(ATTENDANT)
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  @@index([phone])
+  @@map("staff")
+  @@schema("ibx_domain")
+}
+
 // ─── Customer & Auth ──────────────────────────────────────────────────────────
 
 /// Twilio-verified customer profile. Phone is the primary identity.
@@ -178,10 +222,11 @@ model Customer {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  addresses   Address[]
-  preferences CustomerPreferences?
-  reviews     Review[]
-  orderItems  CustomerOrderItem[]
+  addresses    Address[]
+  preferences  CustomerPreferences?
+  reviews      Review[]
+  orderItems   CustomerOrderItem[]
+  reservations Reservation[] // AUDIT-FIX: DL-F08 — inverse relation
 
   @@index([phone])
   @@map("customers")
@@ -228,7 +273,8 @@ model CustomerPreferences {
 /// Not deleted on order cancellation (needed for analytics).
 model CustomerOrderItem {
   id              String   @id @default(cuid())
-  customerId      String   @map("customer_id")
+  // AUDIT-FIX: DL-F10 — Made nullable so SetNull preserves analytics data after customer deletion
+  customerId      String?  @map("customer_id")
   medusaOrderId   String   @map("medusa_order_id")
   productId       String   @map("product_id")
   variantId       String   @map("variant_id")
@@ -236,7 +282,9 @@ model CustomerOrderItem {
   priceInCentavos Int      @map("price_in_centavos")
   orderedAt       DateTime @map("ordered_at")
 
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  // AUDIT-FIX: DL-F10 — Changed onDelete from Cascade to SetNull to preserve
+  // analytics data (co-purchase matrix, recommendations) after customer deletion.
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@index([customerId, productId])
   @@index([medusaOrderId])

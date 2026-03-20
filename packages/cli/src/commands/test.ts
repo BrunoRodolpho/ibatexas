@@ -5,11 +5,13 @@ import type { Command } from "commander"
 import { confirm } from "@inquirer/prompts"
 import chalk from "chalk"
 import ora from "ora"
+import { execa } from "execa"
 import { runPipeline, guardDestructive, type PipelineTask } from "../lib/pipeline.js"
 import { getMedusaUrl, getAdminToken } from "../lib/medusa.js"
 import { rk } from "../lib/redis.js"
 import { StepRegistry, type StepName } from "../lib/steps.js"
 import { cleanDomainTables } from "../lib/clean.js"
+import { ROOT } from "../utils/root.js"
 
 // ── Pipeline task builders ──────────────────────────────────────────────────
 
@@ -351,6 +353,39 @@ export function registerTestCommands(group: Command): void {
       const result = await runPipeline(tasks)
 
       if (!result.ok) process.exitCode = 1
+    })
+
+  // ─── test e2e-run ──────────────────────────────────────────────────────
+  group
+    .command("e2e-run")
+    .description("Run Playwright E2E tests (optionally pass a filter or Playwright flags)")
+    .argument("[filter]", "Test file filter or Playwright CLI args")
+    .option("--headed", "Run browsers in headed mode")
+    .option("--ui", "Open Playwright UI mode")
+    .allowUnknownOption(true)
+    .action(async (filter: string | undefined, opts: { headed?: boolean; ui?: boolean }, cmd: Command) => {
+      const args = ["playwright", "test"]
+
+      if (filter) args.push(filter)
+      if (opts.headed) args.push("--headed")
+      if (opts.ui) args.push("--ui")
+
+      // Forward any unknown flags to Playwright
+      const unknownArgs = cmd.args.filter((a: string) => a !== filter)
+      args.push(...unknownArgs)
+
+      console.log(chalk.dim(`  Running: npx ${args.join(" ")}\n`))
+
+      try {
+        await execa("npx", args, {
+          cwd: ROOT,
+          stdio: "inherit",
+          env: { ...process.env, FORCE_COLOR: "1" },
+        })
+      } catch (err) {
+        const exitCode = (err as { exitCode?: number }).exitCode ?? 1
+        process.exitCode = exitCode
+      }
     })
 
   // ─── test status ────────────────────────────────────────────────────────

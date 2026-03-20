@@ -1,19 +1,24 @@
 // Reservation reminder job
-// Runs once daily. Sends WhatsApp reminders to customers with confirmed
-// reservations for today.
+// Runs daily at a configurable hour via BullMQ repeatable job. Sends WhatsApp
+// reminders to customers with confirmed reservations for today.
 //
 // Idempotent: uses Redis key rk("reminder:sent:{reservationId}") to prevent duplicates.
 
 import { createReservationService, createCustomerService } from "@ibatexas/domain"
 import { getRedisClient, rk, sendReservationReminder } from "@ibatexas/tools"
+import * as Sentry from "@sentry/node"
 import { ReservationStatus, type ReservationDTO } from "@ibatexas/types"
+import { createQueue, createWorker, type Job } from "./queue.js"
+import type { Queue, Worker } from "bullmq"
 
-const REMINDER_CHECK_HOUR = Number.parseInt(process.env.REMINDER_CHECK_HOUR || "9", 10)
 const REMINDER_TTL_SECONDS = 24 * 60 * 60 // 24h — prevents re-sending on restart
+const REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
 
-let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+let queue: Queue | null = null
+let worker: Worker | null = null
 
-async function sendReminders(): Promise<void> {
+/** Core job logic — exported for direct testing. */
+export async function sendReminders(): Promise<void> {
   const today = new Date()
   const todayStr = today.toISOString().split("T")[0]
   const todayDate = new Date(todayStr)
@@ -64,6 +69,12 @@ async function sendReminders(): Promise<void> {
       }
     } catch (err) {
       console.error(`[reservation-reminder] Failed to send reminder for ${reservation.id}:`, (err as Error).message)
+      Sentry.withScope((scope) => {
+        scope.setTag("job", "reservation-reminder")
+        scope.setTag("source", "background-job")
+        scope.setContext("reservation", { reservationId: reservation.id })
+        Sentry.captureException(err)
+      })
     }
   }
 
@@ -72,39 +83,47 @@ async function sendReminders(): Promise<void> {
   }
 }
 
-/**
- * Schedule daily reminder check.
- * Calculates ms until REMINDER_CHECK_HOUR today (or tomorrow if already past).
- */
-export function startReservationReminder(): void {
-  function scheduleNext(): void {
-    const now = new Date()
-    const target = new Date(now)
-    target.setHours(REMINDER_CHECK_HOUR, 0, 0, 0)
-
-    if (target <= now) {
-      target.setDate(target.getDate() + 1) // already past today — schedule for tomorrow
-    }
-
-    const delay = target.getTime() - now.getTime()
-
-    timeoutHandle = setTimeout(() => {
-      void sendReminders().catch((err) => console.error("[reservation-reminder] Check failed:", (err as Error).message))
-      scheduleNext() // re-schedule for next day
-    }, delay)
-
-    console.info(`[reservation-reminder] Next check at ${target.toISOString()} (in ${Math.round(delay / 60_000)} min)`)
-  }
-
-  // Also run immediately on startup to catch any missed reminders for today
-  void sendReminders().catch((err) => console.error("[reservation-reminder] Initial check failed:", (err as Error).message))
-
-  scheduleNext()
+/** BullMQ processor. */
+async function processor(_job: Job): Promise<void> {
+  await sendReminders()
 }
 
-export function stopReservationReminder(): void {
-  if (timeoutHandle) {
-    clearTimeout(timeoutHandle)
-    timeoutHandle = null
+/**
+ * Schedule daily reminder check via BullMQ repeatable job.
+ * Runs immediately on startup to catch any missed reminders for today,
+ * then repeats every 24 hours.
+ */
+export function startReservationReminder(): void {
+  if (worker) return
+
+  queue = createQueue("reservation-reminder")
+  worker = createWorker("reservation-reminder", processor)
+
+  worker.on("failed", (_job, err) => {
+    console.error("[reservation-reminder] Check failed:", (err as Error).message)
+    Sentry.withScope((scope) => {
+      scope.setTag("job", "reservation-reminder")
+      scope.setTag("source", "background-job")
+      Sentry.captureException(err)
+    })
+  })
+
+  // Run immediately on startup + repeat every 24h
+  void queue.upsertJobScheduler("reservation-reminder-repeat", {
+    every: REPEAT_INTERVAL_MS,
+    immediately: true,
+  })
+
+  console.info("[reservation-reminder] Job scheduler registered (every 24 hours)")
+}
+
+export async function stopReservationReminder(): Promise<void> {
+  if (worker) {
+    await worker.close()
+    worker = null
+  }
+  if (queue) {
+    await queue.close()
+    queue = null
   }
 }

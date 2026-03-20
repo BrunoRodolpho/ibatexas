@@ -204,13 +204,13 @@ const handlers = new Map<string, ToolHandler>([
 
 // Centralized Zod validation before tool dispatch.
 // Maps tool names to their Zod input schemas. Tools without a dedicated schema
-// in @ibatexas/types use a permissive z.object({}).passthrough() (validated internally).
+// in @ibatexas/types use a permissive z.looseObject({}) (validated internally).
 // Tools wrapped by withCustomerId use .partial({ customerId: true }) because customerId
 // is injected from AgentContext AFTER Zod validation, not supplied by the LLM.
 const toolInputSchemas = new Map<string, z.ZodTypeAny>([
   ["search_products", SearchProductsInputSchema],
-  ["get_product_details", z.object({ productId: z.string() }).strict()],
-  ["estimate_delivery", z.object({ cep: z.string() }).strict()],
+  ["get_product_details", z.strictObject({ productId: z.string() })],
+  ["estimate_delivery", z.strictObject({ cep: z.string() })],
   ["check_table_availability", CheckAvailabilityInputSchema],
   ["create_reservation", CreateReservationInputSchema.partial({ customerId: true })],
   ["modify_reservation", ModifyReservationInputSchema.partial({ customerId: true })],
@@ -228,7 +228,7 @@ const toolInputSchemas = new Map<string, z.ZodTypeAny>([
   ["cancel_order", CancelOrderInputSchema],
   ["reorder", ReorderInputSchema],
   ["get_customer_profile", GetCustomerProfileInputSchema],
-  ["get_recommendations", z.object({}).passthrough()],
+  ["get_recommendations", z.looseObject({})],
   ["update_preferences", UpdatePreferencesInputSchema],
   ["submit_review", SubmitReviewInputSchema],
   ["get_also_added", GetAlsoAddedInputSchema],

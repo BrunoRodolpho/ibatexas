@@ -6,8 +6,12 @@ import { createReservationService } from "@ibatexas/domain"
 import { ModifyReservationInputSchema, type ModifyReservationInput, type ModifyReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { sendReservationModified } from "./notifications.js"
+import { withReservationOwnership } from "../guards/with-ownership.js"
 
-export async function modifyReservation(
+// SEC-002: Ownership guard wrapper — rejects before any business logic
+export const modifyReservation = withReservationOwnership(modifyReservationImpl)
+
+async function modifyReservationImpl(
   input: ModifyReservationInput,
 ): Promise<ModifyReservationOutput> {
   const parsed = ModifyReservationInputSchema.parse(input)

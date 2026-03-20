@@ -1,5 +1,6 @@
 // Tests for review-prompt-poller job
-// Mocks Redis and NATS to test the polling/dispatch logic without network
+// Mocks Redis and NATS to test the polling/dispatch logic without network.
+// Tests call the exported pollReviewPrompts() processor directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -20,16 +21,27 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
 
+vi.mock("../jobs/queue.js", () => ({
+  createQueue: vi.fn(() => ({
+    upsertJobScheduler: vi.fn(),
+    close: vi.fn(),
+  })),
+  createWorker: vi.fn(() => ({
+    on: vi.fn(),
+    close: vi.fn(),
+  })),
+}));
+
 // ── Import source after mocks ───────────────────────────────────────────────
 
 import {
+  pollReviewPrompts,
   startReviewPromptPoller,
   stopReviewPromptPoller,
 } from "../jobs/review-prompt-poller.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes (matches source)
 const BATCH_CAP = 100;
 
 function createMockPipeline() {
@@ -64,47 +76,26 @@ describe("review-prompt-poller", () => {
     mockRk.mockImplementation((key: string) => `test:${key}`);
   });
 
-  afterEach(() => {
-    stopReviewPromptPoller();
+  afterEach(async () => {
+    await stopReviewPromptPoller();
     vi.useRealTimers();
   });
 
   // ── start / stop lifecycle ──────────────────────────────────────────────
 
   it("starts and stops without errors", async () => {
-    mockRedis.zRangeByScore.mockResolvedValue([]);
-
     expect(() => startReviewPromptPoller()).not.toThrow();
-    // Let the immediate poll complete
-    await vi.advanceTimersByTimeAsync(100);
-    expect(() => stopReviewPromptPoller()).not.toThrow();
+    await expect(stopReviewPromptPoller()).resolves.toBeUndefined();
   });
 
-  it("does not start a second interval if already running", async () => {
-    mockRedis.zRangeByScore.mockResolvedValue([]);
-
+  it("does not start a second worker if already running", () => {
     startReviewPromptPoller();
-    startReviewPromptPoller(); // should be a no-op
-    await vi.advanceTimersByTimeAsync(100);
-
-    // Only one interval should be active — stop clears it cleanly
-    expect(() => stopReviewPromptPoller()).not.toThrow();
+    // Second call should be a no-op
+    expect(() => startReviewPromptPoller()).not.toThrow();
   });
 
-  it("stopReviewPromptPoller is safe to call when not started", () => {
-    expect(() => stopReviewPromptPoller()).not.toThrow();
-  });
-
-  // ── Runs immediately on start ─────────────────────────────────────────────
-
-  it("runs an immediate poll on start to drain backlog", async () => {
-    mockRedis.zRangeByScore.mockResolvedValue([]);
-
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
-
-    // Should poll immediately (not wait for first interval)
-    expect(mockRedis.zRangeByScore).toHaveBeenCalledTimes(1);
+  it("stopReviewPromptPoller is safe to call when not started", async () => {
+    await expect(stopReviewPromptPoller()).resolves.toBeUndefined();
   });
 
   // ── Empty queue ───────────────────────────────────────────────────────────
@@ -112,11 +103,9 @@ describe("review-prompt-poller", () => {
   it("handles empty scheduled set (no due prompts)", async () => {
     mockRedis.zRangeByScore.mockResolvedValue([]);
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await pollReviewPrompts();
 
-    // Initial poll + first interval tick
-    expect(mockRedis.zRangeByScore).toHaveBeenCalledTimes(2);
+    expect(mockRedis.zRangeByScore).toHaveBeenCalledTimes(1);
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
   });
 
@@ -126,8 +115,7 @@ describe("review-prompt-poller", () => {
     const now = Date.now();
     mockRedis.zRangeByScore.mockResolvedValue([]);
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts();
 
     expect(mockRedis.zRangeByScore).toHaveBeenCalledWith(
       "test:review:prompt:scheduled",
@@ -144,8 +132,7 @@ describe("review-prompt-poller", () => {
     mockRedis.get.mockResolvedValue("order_01"); // marker exists
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts();
 
     // Should publish the review.prompt event
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
@@ -172,8 +159,7 @@ describe("review-prompt-poller", () => {
     mockRedis.zRangeByScore.mockResolvedValue(["cust_02:order_02"]);
     mockRedis.get.mockResolvedValue(null); // marker expired / already processed
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts();
 
     // Should NOT publish event
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
@@ -193,8 +179,7 @@ describe("review-prompt-poller", () => {
   it("skips members that do not contain a colon separator", async () => {
     mockRedis.zRangeByScore.mockResolvedValue(["malformed-no-colon"]);
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts();
 
     expect(mockRedis.get).not.toHaveBeenCalled();
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
@@ -211,8 +196,7 @@ describe("review-prompt-poller", () => {
     mockRedis.get.mockResolvedValue("some-marker"); // all markers exist
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts();
 
     expect(mockPublishNatsEvent).toHaveBeenCalledTimes(3);
     expect(mockPipeline.exec).toHaveBeenCalledTimes(3);
@@ -237,8 +221,7 @@ describe("review-prompt-poller", () => {
       level: "info",
     };
 
-    startReviewPromptPoller(mockLogger as unknown as import("fastify").FastifyBaseLogger);
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
 
     // Error should be logged
     expect(mockLogger.error).toHaveBeenCalledWith(
@@ -274,8 +257,7 @@ describe("review-prompt-poller", () => {
       level: "info",
     };
 
-    startReviewPromptPoller(mockLogger as unknown as import("fastify").FastifyBaseLogger);
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
 
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ action: "review_prompt_batch_cap_reached", cap: BATCH_CAP }),
@@ -302,8 +284,7 @@ describe("review-prompt-poller", () => {
       level: "info",
     };
 
-    startReviewPromptPoller(mockLogger as unknown as import("fastify").FastifyBaseLogger);
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
 
     expect(mockLogger.warn).not.toHaveBeenCalled();
   });
@@ -327,27 +308,12 @@ describe("review-prompt-poller", () => {
       level: "info",
     };
 
-    startReviewPromptPoller(mockLogger as unknown as import("fastify").FastifyBaseLogger);
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
 
     expect(mockLogger.info).toHaveBeenCalledWith(
       expect.objectContaining({ batch_size: 1 }),
       "review-prompt poller tick",
     );
-  });
-
-  // ── Interval fires repeatedly ─────────────────────────────────────────────
-
-  it("runs poll on every interval tick", async () => {
-    mockRedis.zRangeByScore.mockResolvedValue([]);
-
-    startReviewPromptPoller();
-
-    // Immediate poll + 3 interval ticks
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS * 3 + 100);
-
-    // 1 immediate + 3 interval = 4
-    expect(mockRedis.zRangeByScore).toHaveBeenCalledTimes(4);
   });
 
   // ── Mix of valid, expired, and malformed in one batch ─────────────────────
@@ -365,8 +331,7 @@ describe("review-prompt-poller", () => {
 
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts();
 
     // Only the valid one should be published
     expect(mockPublishNatsEvent).toHaveBeenCalledOnce();
@@ -387,31 +352,10 @@ describe("review-prompt-poller", () => {
 
   // ── Top-level error caught ────────────────────────────────────────────────
 
-  it("catches unexpected top-level errors (e.g. Redis unreachable)", async () => {
+  it("throws unexpected top-level errors for BullMQ to handle", async () => {
     mockGetRedisClient.mockRejectedValue(new Error("Redis unreachable"));
 
-    const mockLogger = {
-      info: vi.fn(),
-      error: vi.fn(),
-      warn: vi.fn(),
-      debug: vi.fn(),
-      fatal: vi.fn(),
-      trace: vi.fn(),
-      child: vi.fn(),
-      silent: vi.fn(),
-      level: "info",
-    };
-
-    // Should not throw — error is caught internally
-    startReviewPromptPoller(mockLogger as unknown as import("fastify").FastifyBaseLogger);
-    await vi.advanceTimersByTimeAsync(100);
-
-    // The immediate poll's error is caught silently, but interval errors go through logger
-    // Advance to the first interval tick
-    mockGetRedisClient.mockRejectedValue(new Error("Still unreachable"));
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
-
-    expect(mockLogger.error).toHaveBeenCalled();
+    await expect(pollReviewPrompts()).rejects.toThrow("Redis unreachable");
   });
 
   // ── Idempotency marker key checked correctly ──────────────────────────────
@@ -421,8 +365,7 @@ describe("review-prompt-poller", () => {
     mockRedis.get.mockResolvedValue("order_xyz");
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts();
 
     expect(mockRk).toHaveBeenCalledWith("review:prompt:cust_abc:order_xyz");
     expect(mockRedis.get).toHaveBeenCalledWith("test:review:prompt:cust_abc:order_xyz");
@@ -435,8 +378,7 @@ describe("review-prompt-poller", () => {
     mockRedis.get.mockResolvedValue("order_del");
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startReviewPromptPoller();
-    await vi.advanceTimersByTimeAsync(100);
+    await pollReviewPrompts();
 
     expect(mockRk).toHaveBeenCalledWith("review:prompt:cust_del:order_del");
     expect(mockPipeline.del).toHaveBeenCalledWith("test:review:prompt:cust_del:order_del");

@@ -15,6 +15,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { optionalAuth } from "../../middleware/auth.js";
 import { dashboardRoutes } from "./dashboard.js";
 import { productRoutes } from "./products.js";
 import { orderRoutes } from "./orders.js";
@@ -29,8 +30,24 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     .map((k) => k.trim())
     .filter((k) => k.length > 0);
 
-  // Auth guard — require x-admin-key header on every admin route
+  // DOM-001: Auth guard — accept EITHER x-admin-key header OR valid staff JWT cookie.
+  // The staff JWT path runs optionalAuth first (populates request.staffId/staffRole),
+  // then checks for staff credentials. Falls back to API key if no staff JWT.
   server.addHook("preHandler", async (request, reply) => {
+    // Try staff JWT first (optionalAuth sets staffId/staffRole if present)
+    await new Promise<void>((resolve) => {
+      optionalAuth(request, reply, (err) => {
+        if (err) resolve(); // JWT verification failed — try API key next
+        else resolve();
+      });
+    });
+
+    // If staff JWT is valid, allow through
+    if (request.staffId && request.staffRole) {
+      return;
+    }
+
+    // Fall back to API key auth
     if (ADMIN_API_KEYS.length === 0) {
       return reply.code(503).send({ error: "Service unavailable" });
     }
@@ -50,7 +67,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
   });
 
-  // Audit logging — log all admin operations
+  // Audit logging — log all admin operations (includes staff identity when available)
   server.addHook("onResponse", async (request, reply) => {
     server.log.info({
       admin: true,
@@ -58,6 +75,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
       url: request.url,
       statusCode: reply.statusCode,
       durationMs: Math.round(reply.elapsedTime),
+      ...(request.staffId ? { staffId: request.staffId, staffRole: request.staffRole } : {}),
     }, "admin request");
   });
 

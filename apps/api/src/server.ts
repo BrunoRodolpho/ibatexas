@@ -10,6 +10,7 @@ import { registerHelmet } from "./plugins/helmet.js";
 import { registerSensible } from "./plugins/sensible.js";
 import { registerSwagger } from "./plugins/swagger.js";
 import { registerRateLimit } from "./plugins/rate-limit.js";
+import { genRequestId, registerRequestId } from "./plugins/request-id.js";
 import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
 
@@ -27,11 +28,16 @@ export async function buildServer(): Promise<FastifyInstance> {
     connectionTimeout: 30_000,
     requestTimeout: 60_000,
     keepAliveTimeout: 72_000,
+    // OBS-001: Use client-provided x-request-id or generate a UUID for distributed tracing
+    genReqId: genRequestId,
   });
 
   // Zod schema validation/serialization (must be set before routes)
   server.setValidatorCompiler(validatorCompiler);
   server.setSerializerCompiler(serializerCompiler);
+
+  // OBS-001: Request ID — Sentry tagging + response header (genReqId set above)
+  registerRequestId(server);
 
   await registerHelmet(server);
   await registerCors(server);

@@ -1,6 +1,6 @@
 // Tests for abandoned-cart-checker job
-// Mocks Redis, session store, and NATS to test cart abandonment detection without network
-//
+// Mocks Redis, session store, and NATS to test cart abandonment detection without network.
+// Tests call the exported checkAbandonedCarts() processor directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -26,9 +26,21 @@ vi.mock("../session/store.js", () => ({
   loadSession: mockLoadSession,
 }));
 
+vi.mock("../jobs/queue.js", () => ({
+  createQueue: vi.fn(() => ({
+    upsertJobScheduler: vi.fn(),
+    close: vi.fn(),
+  })),
+  createWorker: vi.fn(() => ({
+    on: vi.fn(),
+    close: vi.fn(),
+  })),
+}));
+
 // ── Import source after mocks ───────────────────────────────────────────────
 
 import {
+  checkAbandonedCarts,
   startAbandonedCartChecker,
   stopAbandonedCartChecker,
 } from "../jobs/abandoned-cart-checker.js";
@@ -36,7 +48,6 @@ import {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 const IDLE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2h
-const CHECK_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
 /** Build a JSON entry for the active:carts hash */
 function cartEntry(cartId: string, sessionType: "guest" | "customer", idleMs: number): string {
@@ -68,35 +79,26 @@ describe("abandoned-cart-checker", () => {
     mockRk.mockImplementation((key: string) => `test:${key}`);
   });
 
-  afterEach(() => {
-    stopAbandonedCartChecker();
+  afterEach(async () => {
+    await stopAbandonedCartChecker();
     vi.useRealTimers();
   });
 
   // ── start / stop lifecycle ──────────────────────────────────────────────
 
-  it("starts and stops without errors", () => {
-    mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
-
+  it("starts and stops without errors", async () => {
     expect(() => startAbandonedCartChecker()).not.toThrow();
-    expect(() => stopAbandonedCartChecker()).not.toThrow();
+    await expect(stopAbandonedCartChecker()).resolves.toBeUndefined();
   });
 
-  it("does not start a second interval if already running", () => {
-    mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
-
+  it("does not start a second worker if already running", () => {
     startAbandonedCartChecker();
-    startAbandonedCartChecker(); // should be a no-op — only one interval created
-
-    // Verify setInterval was called only once (first call), not twice
-    expect(vi.getTimerCount()).toBe(1);
-
-    // Only one interval should be active — stop clears it cleanly
-    expect(() => stopAbandonedCartChecker()).not.toThrow();
+    // Second call should be a no-op
+    expect(() => startAbandonedCartChecker()).not.toThrow();
   });
 
-  it("stopAbandonedCartChecker is safe to call when not started", () => {
-    expect(() => stopAbandonedCartChecker()).not.toThrow();
+  it("stopAbandonedCartChecker is safe to call when not started", async () => {
+    await expect(stopAbandonedCartChecker()).resolves.toBeUndefined();
   });
 
   // ── Empty cart hash ────────────────────────────────────────────────────────
@@ -104,8 +106,7 @@ describe("abandoned-cart-checker", () => {
   it("handles empty active:carts hash (no tuples)", async () => {
     mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     expect(mockRedis.hScan).toHaveBeenCalledWith("test:active:carts", 0, { COUNT: 100 });
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
@@ -120,8 +121,7 @@ describe("abandoned-cart-checker", () => {
       tuples: [{ field: "cart_02", value: cartEntry("cart_02", "guest", idleMs) }],
     });
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
     expect(mockRedis.hDel).not.toHaveBeenCalled();
@@ -137,8 +137,7 @@ describe("abandoned-cart-checker", () => {
     });
     mockLoadSession.mockResolvedValue([]); // empty history
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     expect(mockRedis.hDel).toHaveBeenCalledWith("test:active:carts", "cart_03");
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
@@ -156,8 +155,7 @@ describe("abandoned-cart-checker", () => {
     mockLoadSession.mockResolvedValue([{ role: "user", content: "Quero costela" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
       "cart.abandoned",
@@ -189,8 +187,7 @@ describe("abandoned-cart-checker", () => {
     mockLoadSession.mockResolvedValue([{ role: "assistant", content: "Ola!" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     expect(mockPublishNatsEvent).toHaveBeenCalledTimes(3);
     expect(mockRedis.hDel).toHaveBeenCalledTimes(3);
@@ -214,8 +211,7 @@ describe("abandoned-cart-checker", () => {
     mockLoadSession.mockResolvedValue([{ role: "user", content: "Oi" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     // Should have scanned twice (cursor 0 -> 42 -> 0)
     expect(mockRedis.hScan).toHaveBeenCalledTimes(2);
@@ -257,8 +253,7 @@ describe("abandoned-cart-checker", () => {
       level: "info",
     };
 
-    startAbandonedCartChecker(mockLogger as unknown as import("fastify").FastifyBaseLogger);
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
 
     // Error logged for first cart
     expect(mockLogger.error).toHaveBeenCalledWith(
@@ -283,8 +278,7 @@ describe("abandoned-cart-checker", () => {
     mockLoadSession.mockResolvedValue([{ role: "user", content: "Oi" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     // At exactly 2h: condition is `<` so exactly 2h passes through -> is abandoned
     expect(mockPublishNatsEvent).toHaveBeenCalledTimes(1);
@@ -314,8 +308,7 @@ describe("abandoned-cart-checker", () => {
       level: "info",
     };
 
-    startAbandonedCartChecker(mockLogger as unknown as import("fastify").FastifyBaseLogger);
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts(mockLogger as unknown as import("fastify").FastifyBaseLogger);
 
     expect(mockLogger.info).toHaveBeenCalledWith(
       expect.objectContaining({ abandoned_count: 1 }),
@@ -323,41 +316,12 @@ describe("abandoned-cart-checker", () => {
     );
   });
 
-  // ── Interval fires repeatedly ─────────────────────────────────────────────
-
-  it("runs check on every interval tick", async () => {
-    mockRedis.hScan.mockResolvedValue({ cursor: 0, tuples: [] });
-
-    startAbandonedCartChecker();
-
-    // Advance through 3 intervals
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS * 3 + 100);
-
-    // hScan should be called on each tick (3 times)
-    expect(mockRedis.hScan).toHaveBeenCalledTimes(3);
-  });
-
   // ── Unexpected top-level error is caught ──────────────────────────────────
 
-  it("catches unexpected errors in checkAbandonedCarts", async () => {
+  it("throws unexpected errors from checkAbandonedCarts for BullMQ to handle", async () => {
     mockGetRedisClient.mockRejectedValue(new Error("Redis connection refused"));
 
-    const mockLogger = {
-      info: vi.fn(),
-      error: vi.fn(),
-      warn: vi.fn(),
-      debug: vi.fn(),
-      fatal: vi.fn(),
-      trace: vi.fn(),
-      child: vi.fn(),
-      silent: vi.fn(),
-      level: "info",
-    };
-
-    startAbandonedCartChecker(mockLogger as unknown as import("fastify").FastifyBaseLogger);
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
-
-    expect(mockLogger.error).toHaveBeenCalled();
+    await expect(checkAbandonedCarts()).rejects.toThrow("Redis connection refused");
   });
 
   // ── Legacy entry fallback ─────────────────────────────────────────────────
@@ -376,8 +340,7 @@ describe("abandoned-cart-checker", () => {
     mockLoadSession.mockResolvedValue([{ role: "user", content: "Oi" }]);
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
       "cart.abandoned",
@@ -394,8 +357,7 @@ describe("abandoned-cart-checker", () => {
     });
     mockRedis.exists.mockResolvedValue(0); // session expired
 
-    startAbandonedCartChecker();
-    await vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + 100);
+    await checkAbandonedCarts();
 
     expect(mockRedis.hDel).toHaveBeenCalledWith("test:active:carts", "cart_old");
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();

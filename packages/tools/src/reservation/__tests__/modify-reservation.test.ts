@@ -156,28 +156,20 @@ describe("modifyReservation", () => {
     mockPublishNatsEvent.mockResolvedValue(undefined)
   })
 
-  it("returns success:false when reservation not found", async () => {
+  it("throws 'não encontrada' when reservation not found (SEC-002 guard)", async () => {
     mockReservationFindUnique.mockResolvedValue(null)
 
-    const result = await modifyReservation({
-      customerId: "cus_01",
-      reservationId: "res_99",
-    })
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain("não encontrada")
+    await expect(
+      modifyReservation({ customerId: "cus_01", reservationId: "res_99" }),
+    ).rejects.toThrow("não encontrada")
   })
 
-  it("returns success:false for wrong owner", async () => {
+  it("throws 'Acesso negado' for wrong owner (SEC-002 guard)", async () => {
     mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION)
 
-    const result = await modifyReservation({
-      customerId: "cus_WRONG",
-      reservationId: "res_01",
-    })
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain("permissão")
+    await expect(
+      modifyReservation({ customerId: "cus_WRONG", reservationId: "res_01" }),
+    ).rejects.toThrow("Acesso negado")
   })
 
   it("returns success:false when status is cancelled", async () => {

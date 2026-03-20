@@ -9,6 +9,10 @@ export { searchProducts, SearchProductsTool } from "./search/search-products.js"
 export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-details.js"
 export { estimateDelivery, EstimateDeliveryTool } from "./catalog/estimate-delivery.js"
 
+// ── Ownership guards ──────────────────────────────────────────────────────────
+export { assertOrderOwnership, assertReservationOwnership } from "./guards/ownership.js"
+export { withOrderOwnership, withReservationOwnership } from "./guards/with-ownership.js"
+
 // ── Cart tools ─────────────────────────────────────────────────────────────────
 export { assertCartOwnership } from "./cart/assert-cart-ownership.js"
 export { getCart, GetCartTool } from "./cart/get-cart.js"
@@ -38,6 +42,16 @@ export { generateEmbedding, generateEmbeddingsBatch } from "./embeddings/client.
 // ── Redis ──────────────────────────────────────────────────────────────────────
 export { getRedisClient, closeRedisClient } from "./redis/client.js"
 export { rk } from "./redis/key.js"
+export { atomicIncr } from "./redis/atomic-rate-limit.js"
+export {
+  RedisCircuitBreaker,
+  CircuitState,
+  CircuitOpenError,
+  getCircuitBreaker,
+  resetCircuitBreaker,
+  type CircuitBreakerOptions,
+} from "./redis/circuit-breaker.js"
+export { safeRedis } from "./redis/safe-redis.js"
 
 // ── Vector utilities ───────────────────────────────────────────────────────────
 export { cosineSimilarity } from "./utils/vectors.js"

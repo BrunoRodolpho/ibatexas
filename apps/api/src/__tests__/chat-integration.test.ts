@@ -34,7 +34,7 @@ vi.mock("../session/store.js", () => ({
 }))
 
 vi.mock("uuid", () => ({
-  v4: () => "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  v4: () => "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee",
 }))
 
 import { chatRoutes } from "../routes/chat.js"
@@ -73,7 +73,7 @@ describe("Chat routes integration", () => {
       method: "POST",
       url: "/api/chat/messages",
       payload: {
-        sessionId: "11111111-2222-3333-4444-555555555555",
+        sessionId: "11111111-2222-4333-a444-555555555555",
         message: "Quero ver o cardápio",
         channel: "web",
       },
@@ -81,7 +81,7 @@ describe("Chat routes integration", () => {
 
     expect(res.statusCode).toBe(200)
     const body = res.json()
-    expect(body.messageId).toBe("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    expect(body.messageId).toBe("aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee")
 
     // Wait for fire-and-forget agent + cleanup delay
     await new Promise((r) => setTimeout(r, 200))
@@ -93,7 +93,7 @@ describe("Chat routes integration", () => {
       method: "POST",
       url: "/api/chat/messages",
       payload: {
-        sessionId: "11111111-2222-3333-4444-555555555555",
+        sessionId: "11111111-2222-4333-a444-555555555555",
         channel: "web",
       },
     })
@@ -120,7 +120,7 @@ describe("Chat routes integration", () => {
       method: "POST",
       url: "/api/chat/messages",
       payload: {
-        sessionId: "11111111-2222-3333-4444-555555555555",
+        sessionId: "11111111-2222-4333-a444-555555555555",
         message: "Olá",
         channel: "telegram", // not a valid channel
       },
@@ -134,7 +134,7 @@ describe("Chat routes integration", () => {
       method: "POST",
       url: "/api/chat/messages",
       payload: {
-        sessionId: "11111111-2222-3333-4444-555555555555",
+        sessionId: "11111111-2222-4333-a444-555555555555",
         message: "x".repeat(2001),
         channel: "web",
       },
@@ -154,7 +154,7 @@ describe("Chat routes integration", () => {
       method: "POST",
       url: "/api/chat/messages",
       payload: {
-        sessionId: "22222222-3333-4444-5555-666666666666",
+        sessionId: "22222222-3333-4444-a555-666666666666",
         message: "E o cardápio?",
         channel: "web",
       },
@@ -165,10 +165,10 @@ describe("Chat routes integration", () => {
     // Wait for fire-and-forget agent loop to complete
     await new Promise((r) => setTimeout(r, 200))
 
-    expect(mockLoadSession).toHaveBeenCalledWith("22222222-3333-4444-5555-666666666666")
+    expect(mockLoadSession).toHaveBeenCalledWith("22222222-3333-4444-a555-666666666666")
     // appendMessages is called twice: once for user message (sync, before agent), once for assistant (fire-and-forget)
     expect(mockAppendMessages).toHaveBeenCalledWith(
-      "22222222-3333-4444-5555-666666666666",
+      "22222222-3333-4444-a555-666666666666",
       [{ role: "user", content: "E o cardápio?" }],
       false,
     )
@@ -177,7 +177,7 @@ describe("Chat routes integration", () => {
   it("GET /api/chat/stream/:sessionId returns 404 for non-existent stream", async () => {
     const res = await server.inject({
       method: "GET",
-      url: "/api/chat/stream/99999999-9999-9999-9999-999999999999",
+      url: "/api/chat/stream/99999999-9999-4999-a999-999999999999",
     })
 
     // SSE endpoint writes error via raw response, not JSON status

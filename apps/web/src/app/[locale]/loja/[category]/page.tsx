@@ -1,30 +1,26 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
+import { useParams } from 'next/navigation'
 import { useProducts } from '@/domains/product'
 import { ProductGrid } from '@/components/organisms'
 import { Heading, Text } from '@/components/atoms'
 import { notFound } from 'next/navigation'
 
-interface CategoryPageProps {
-  readonly params: {
-    readonly category: string
-  }
-}
-
 const validCategories = new Set(['camisetas', 'acessorios', 'kits'])
 
-export default function CategoryPage({ params }: CategoryPageProps) {
+export default function CategoryPage() {
+  const { category } = useParams<{ category: string }>()
   const t = useTranslations()
 
-  if (!validCategories.has(params.category)) {
+  if (!validCategories.has(category)) {
     notFound()
   }
 
   const { data, loading, error } = useProducts({
     limit: 20,
     productType: 'merchandise',
-    categoryHandle: params.category,
+    categoryHandle: category,
   })
 
   const filteredProducts = data?.items ?? []
@@ -39,7 +35,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
     )
   }
 
-  const categoryKey = `shop.categories.${params.category}` as const
+  const categoryKey = `shop.categories.${category}` as const
 
   return (
     <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16 lg:py-20">
@@ -49,7 +45,7 @@ export default function CategoryPage({ params }: CategoryPageProps) {
           {t(categoryKey)}
         </Heading>
         <Text variant="body" className="text-smoke-400">
-          {t(`shop.category_descriptions.${params.category}`)}
+          {t(`shop.category_descriptions.${category}`)}
         </Text>
       </div>
 

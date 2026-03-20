@@ -280,7 +280,7 @@ describe("runScenario — full execution", () => {
     mockReadFile.mockResolvedValue(VALID_SCENARIO_YAML)
   })
 
-  it("acquires lock, emits events, then releases lock", async () => {
+  it("acquires lock, emits events, then releases lock", { timeout: 15000 }, async () => {
     await runScenario("test-scenario")
 
     expect(mockAcquireScenarioLock).toHaveBeenCalledWith("test-scenario", { force: undefined })

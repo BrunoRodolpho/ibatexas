@@ -7,12 +7,16 @@
 //   optionalAuth — attaches fields if JWT present, no-op otherwise
 
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { getRedisClient, rk } from "@ibatexas/tools";
 
 // Extend Fastify's request type with our custom fields
 declare module "fastify" {
   interface FastifyRequest {
     customerId?: string;
     userType?: "guest" | "customer" | "staff";
+    /** DOM-001: Staff-specific fields (set when userType === "staff") */
+    staffId?: string;
+    staffRole?: "OWNER" | "MANAGER" | "ATTENDANT";
   }
 }
 
@@ -22,9 +26,28 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
   try {
     // @fastify/jwt decorates server with jwtVerify — call it here
     await (request as unknown as { jwtVerify: () => Promise<void> }).jwtVerify();
-    const payload = (request as unknown as { user: { sub: string; userType: string } }).user;
-    request.customerId = payload.sub;
+    const payload = (request as unknown as { user: { sub: string; userType: string; jti?: string; role?: string } }).user;
+
+    // SEC-004: Check if the token has been revoked (e.g., after logout)
+    if (payload.jti) {
+      try {
+        const redis = await getRedisClient();
+        const revoked = await redis.get(rk(`jwt:revoked:${payload.jti}`));
+        if (revoked) return; // Treat revoked token as unauthenticated
+      } catch {
+        // If Redis is down, allow through — revocation is best-effort
+      }
+    }
+
     request.userType = payload.userType as "guest" | "customer" | "staff";
+
+    // DOM-001: Staff tokens carry staffId (sub) + role; customer tokens carry customerId (sub)
+    if (payload.userType === "staff") {
+      request.staffId = payload.sub;
+      request.staffRole = payload.role as "OWNER" | "MANAGER" | "ATTENDANT";
+    } else {
+      request.customerId = payload.sub;
+    }
   } catch {
     // Invalid or missing JWT — caller decides whether to throw
   }

@@ -15,7 +15,7 @@ const ProductParams = z.object({ id: z.string().min(1) });
 
 const ProductPatchBody = z.object({
   status: z.enum(["published", "draft"]).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 export async function productRoutes(server: FastifyInstance): Promise<void> {

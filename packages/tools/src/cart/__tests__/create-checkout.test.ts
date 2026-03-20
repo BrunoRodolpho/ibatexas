@@ -405,10 +405,10 @@ describe("createCheckout", () => {
 
   describe("unsupported payment method", () => {
     it("throws ZodError for unknown payment method (rejected at schema level)", async () => {
-      // Force an unknown type by casting — Zod v3.25 rejects invalid enum values at parse
+      // Force an unknown type by casting — Zod rejects invalid enum values at parse
       const input = { ...BASE_INPUT, paymentMethod: "bitcoin" as "pix" }
 
-      await expect(createCheckout(input, CTX)).rejects.toThrow("Invalid enum value")
+      await expect(createCheckout(input, CTX)).rejects.toThrow("Invalid option")
     })
   })
 

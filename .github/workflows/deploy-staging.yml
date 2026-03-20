@@ -1,0 +1,149 @@
+name: Deploy — Staging
+
+on:
+  push:
+    branches: [dev]
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: sa-east-1
+  ECS_CLUSTER: ibatexas-dev
+  ENVIRONMENT: dev
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Build + push Docker images to ECR
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, web, admin]
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6
+        with:
+          context: .
+          file: apps/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:dev-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # 2. Run Prisma migrations against staging DB
+  # ---------------------------------------------------------------------------
+  migrate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ibatexas/domain db:generate
+
+      - name: Run Prisma migrations
+        run: pnpm --filter @ibatexas/domain exec prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DIRECT_DATABASE_URL }}
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy ECS services (auto — no approval gate)
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: [build, migrate]
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        service: [api, web, admin]
+    steps:
+      - uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2
+        id: ecr
+
+      - name: Get current task definition
+        id: current-td
+        run: |
+          TD=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          echo "arn=$TD" >> "$GITHUB_OUTPUT"
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ steps.current-td.outputs.arn }}" \
+            --query 'taskDefinition' \
+            | jq 'del(.taskDefinitionArn,.revision,.status,.registeredAt,.registeredBy,.requiresAttributes,.compatibilities)' \
+            > task-def.json
+
+      - name: Update image in task definition
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:${{ github.sha }}"
+          jq --arg img "$IMAGE" \
+            '.containerDefinitions[0].image = $img' \
+            task-def.json > updated-task-def.json
+
+      - name: Register new task definition
+        id: register-td
+        run: |
+          NEW_TD_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://updated-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "arn=$NEW_TD_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}" \
+            --task-definition "${{ steps.register-td.outputs.arn }}" \
+            --force-new-deployment
+
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}"
+        timeout-minutes: 10

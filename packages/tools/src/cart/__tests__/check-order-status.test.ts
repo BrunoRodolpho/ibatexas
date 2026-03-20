@@ -52,21 +52,20 @@ describe("checkOrderStatus", () => {
     expect(result).toEqual({ order: mockResponse.order })
   })
 
-  it("calls correct admin endpoint", async () => {
+  it("calls admin endpoint for ownership guard and domain service", async () => {
     await checkOrderStatus(INPUT, CTX)
 
+    // SEC-002 guard calls without expand, then domain service calls with expand
+    expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_01")
     expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_01?expand=items")
   })
 
-  it("returns success:false when order belongs to different customer (LGPD)", async () => {
+  it("throws 'Acesso negado' when order belongs to different customer (SEC-002)", async () => {
     mockMedusaAdmin.mockResolvedValue(
       orderResponse({ customer_id: "cus_OTHER" }),
     )
 
-    const result = await checkOrderStatus(INPUT, CTX) as { success: boolean; message: string }
-
-    expect(result.success).toBe(false)
-    expect(result.message).toBe("Pedido não encontrado.")
+    await expect(checkOrderStatus(INPUT, CTX)).rejects.toThrow("Acesso negado")
   })
 
   it("throws when Medusa fetch fails", async () => {
@@ -90,7 +89,7 @@ describe("checkOrderStatus", () => {
     expect(result).toEqual({ order: mockResponse.order })
   })
 
-  it("returns success:false when metadata customerId does not match", async () => {
+  it("throws 'Acesso negado' when metadata customerId does not match (SEC-002)", async () => {
     mockMedusaAdmin.mockResolvedValue({
       order: {
         status: "pending",
@@ -99,10 +98,7 @@ describe("checkOrderStatus", () => {
       },
     })
 
-    const result = await checkOrderStatus(INPUT, CTX) as { success: boolean; message: string }
-
-    expect(result.success).toBe(false)
-    expect(result.message).toBe("Pedido não encontrado.")
+    await expect(checkOrderStatus(INPUT, CTX)).rejects.toThrow("Acesso negado")
   })
 
   it("allows access when neither customer_id nor metadata customerId set (legacy)", async () => {
@@ -122,6 +118,7 @@ describe("checkOrderStatus", () => {
 
     await checkOrderStatus(input, CTX)
 
+    expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_99")
     expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_99?expand=items")
   })
 })

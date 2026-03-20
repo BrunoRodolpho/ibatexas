@@ -501,3 +501,83 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+// ── SEC-001: Cash/PIX checkout auth gate ────────────────────────────────────
+
+describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("guest checkout with card → 200 OK", async () => {
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "card" },
+      // No x-customer-id — guest
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("guest checkout with cash → 401", async () => {
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "cash" },
+      // No x-customer-id — guest
+    });
+
+    expect(res.statusCode).toBe(401);
+    const body = res.json();
+    expect(body.message).toContain("Autenticação necessária");
+    expect(body.message).toContain("dinheiro/PIX");
+  });
+
+  it("guest checkout with PIX → 401", async () => {
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "pix" },
+      // No x-customer-id — guest
+    });
+
+    expect(res.statusCode).toBe(401);
+    const body = res.json();
+    expect(body.message).toContain("Autenticação necessária");
+  });
+
+  it("authenticated checkout with cash → 200 OK", async () => {
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "cash" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("authenticated checkout with PIX → 200 OK", async () => {
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "pix" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+});

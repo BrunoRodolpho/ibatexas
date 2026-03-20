@@ -1,11 +1,13 @@
 // @ibatexas/domain — Prisma client singleton
 // Exported as a singleton to avoid exhausting connection pool in dev (hot reload).
 //
-// Connection pool configuration via DATABASE_URL query parameters:
-//   ?connection_limit=10  — max connections in the pool (default: num_cpus * 2 + 1)
-//   &pool_timeout=30      — seconds to wait for a connection before erroring (default: 10)
-// For production, set these in DATABASE_URL to match your Postgres instance limits.
-// Example: postgresql://user:pass@host:5432/db?connection_limit=10&pool_timeout=30
+// Connection pool is managed by Supabase PgBouncer (port 6543, transaction mode).
+// Prisma connects via DATABASE_URL (pooler) for queries and DIRECT_DATABASE_URL
+// (port 5432) for migrations only. Pool tuning is via DATABASE_URL query params:
+//   ?connection_limit=10  — max connections Prisma opens (default: num_cpus * 2 + 1)
+//   &pool_timeout=30      — seconds to wait for a connection (default: 10)
+//   &pgbouncer=true       — disables prepared statements (required for PgBouncer)
+// See docs/setup/supabase.md for full setup.
 
 import { PrismaClient } from "./generated/prisma-client/index.js"
 

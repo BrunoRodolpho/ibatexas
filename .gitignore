@@ -10,6 +10,11 @@ dist/
 # Test coverage reports
 coverage/
 
+# Playwright
+tests/e2e/.results/
+playwright-report/
+test-results/
+
 # Environment variables — never commit these
 .env
 .env.local

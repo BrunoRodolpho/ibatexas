@@ -3,8 +3,9 @@
 import { CheckOrderStatusInputSchema, NonRetryableError, type CheckOrderStatusInput, type AgentContext } from "@ibatexas/types";
 import { createOrderService } from "@ibatexas/domain";
 import { medusaAdmin } from "../medusa/client.js";
+import { withOrderOwnership } from "../guards/with-ownership.js";
 
-export async function checkOrderStatus(
+async function checkOrderStatusImpl(
   input: CheckOrderStatusInput,
   ctx: AgentContext,
 ): Promise<unknown> {
@@ -15,14 +16,13 @@ export async function checkOrderStatus(
   }
 
   const svc = createOrderService(medusaAdmin);
-  const { order, ownershipValid } = await svc.getOrder(parsed.orderId, ctx.customerId);
-
-  if (!ownershipValid) {
-    return { success: false, message: "Pedido não encontrado." };
-  }
+  const { order } = await svc.getOrder(parsed.orderId, ctx.customerId);
 
   return { order };
 }
+
+// SEC-002: Ownership guard wrapper — rejects before any business logic
+export const checkOrderStatus = withOrderOwnership(checkOrderStatusImpl);
 
 export const CheckOrderStatusTool = {
   name: "check_order_status",

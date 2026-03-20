@@ -6,14 +6,15 @@ import PDPContent from './PDPContent'
 export const revalidate = 60
 
 interface ProductPageProps {
-  readonly params: { id: string; locale: string }
+  readonly params: Promise<{ id: string; locale: string }>
 }
 
 // ── SSR metadata for SEO ────────────────────────────────────────────────
 export async function generateMetadata({ params }: ProductPageProps): Promise<Metadata> {
   try {
+    const { id } = await params
     const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
-    const res = await fetch(`${apiBase}/api/products/${params.id}`, { next: { revalidate: 60 } })
+    const res = await fetch(`${apiBase}/api/products/${id}`, { next: { revalidate: 60 } })
     if (!res.ok) return { title: 'Produto | IbateXas' }
     const product = await res.json()
     const fallbackImages = product.imageUrl ? [product.imageUrl] : []
@@ -54,10 +55,11 @@ function PDPSkeleton() {
 }
 
 // ── Server Component wrapper ─────────────────────────────────────────────
-export default function ProductPage({ params }: ProductPageProps) {
+export default async function ProductPage({ params }: ProductPageProps) {
+  const { id } = await params
   return (
     <Suspense fallback={<PDPSkeleton />}>
-      <PDPContent productId={params.id} />
+      <PDPContent productId={id} />
     </Suspense>
   )
 }

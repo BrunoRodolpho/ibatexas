@@ -91,6 +91,7 @@ function buildHelpText(): string {
         { usage: "test seed --skip=<pat>",   desc: "Skip tasks matching pattern(s), comma-separated" },
         { usage: "test integration",         desc: "Seed for UI ↔ API testing (skips if products exist)" },
         { usage: "test e2e [--force]",       desc: "⚠  Full clean + reseed (destructive)" },
+        { usage: "test e2e-run [filter]",    desc: "Run Playwright E2E tests (--headed, --ui)" },
         { usage: "test status",              desc: "Dashboard — what's seeded and ready for each section" },
       ],
     },

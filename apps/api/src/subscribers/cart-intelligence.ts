@@ -3,8 +3,13 @@
 // Listens for:
 //   ibatexas.cart.abandoned          → sends push/WhatsApp nudge (via NATS relay), updates Redis profile
 //   ibatexas.order.placed            → bulk-insert CustomerOrderItem, update copurchase scores, global score
+//   ibatexas.order.refunded          → update customer profile (refundCount, totalRefundAmount)
+//   ibatexas.order.disputed          → alert staff, increment disputeCount in profile
+//   ibatexas.order.canceled          → increment orderCancellationCount in profile
 //   ibatexas.product.viewed          → update recentlyViewed in Redis customer profile
 //   ibatexas.review.prompt.schedule  → schedule a review prompt 30min after delivery
+//   ibatexas.review.submitted        → update review analytics (avg rating, review count per product)
+//   ibatexas.cart.item_added         → cart analytics (popular products, cart composition tracking)
 //   ibatexas.order.payment_failed    → logs payment failure for observability
 //   ibatexas.notification.send       → stub: logs notification intent (delivery TBD)
 
@@ -16,6 +21,11 @@ import type { FastifyBaseLogger } from "fastify";
 
 const RECENTLY_VIEWED_MAX = 20;
 const NATS_DEDUP_TTL = 604_800; // 7 days — matches Stripe webhook window
+
+// ── Sorted set pruning limits (internal tuning knobs) ───────────────────────
+const COPURCHASE_MAX_ENTRIES = 50;     // per-product copurchase sorted set
+const GLOBAL_SCORE_MAX_ENTRIES = 200;  // product:global:score sorted set
+const CART_POPULARITY_MAX_ENTRIES = 200; // product:cart:popularity sorted set
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -43,6 +53,8 @@ async function updateCopurchaseScores(productIds: string[]): Promise<void> {
       if (i === j) continue;
       pipeline.zIncrBy(rk(`copurchase:${productIds[i]}`), 1, productIds[j]);
     }
+    // Prune to keep only top N entries by score (remove lowest-ranked tail)
+    pipeline.zRemRangeByRank(rk(`copurchase:${productIds[i]}`), 0, -(COPURCHASE_MAX_ENTRIES + 1));
     pipeline.expire(rk(`copurchase:${productIds[i]}`), COPURCHASE_TTL);
   }
   await pipeline.exec();
@@ -58,6 +70,8 @@ async function updateGlobalScores(
   for (const { productId, quantity } of items) {
     pipeline.zIncrBy(rk("product:global:score"), quantity, productId);
   }
+  // Prune to keep only top N entries by score
+  pipeline.zRemRangeByRank(rk("product:global:score"), 0, -(GLOBAL_SCORE_MAX_ENTRIES + 1));
   pipeline.expire(rk("product:global:score"), GLOBAL_SCORE_TTL);
   await pipeline.exec();
 }
@@ -401,6 +415,221 @@ export async function startCartIntelligenceSubscribers(
       }
     } catch (err) {
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] review.prompt delivery error");
+    }
+  });
+
+  // ── order.refunded (EVT-002) ──────────────────────────────────────────────
+  await subscribeNatsEvent("order.refunded", async (payload) => {
+    const { orderId, chargeId, amountRefunded } = payload as {
+      orderId: string;
+      chargeId: string;
+      amountRefunded: number;
+    };
+
+    log?.info(
+      { order_id: orderId, charge_id: chargeId, amount: amountRefunded },
+      "[cart-intelligence] order.refunded received",
+    );
+
+    if (!(await isNewEvent(`refund:${orderId}:${chargeId}`))) {
+      log?.info({ order_id: orderId }, "[cart-intelligence] order.refunded duplicate — skipping");
+      return;
+    }
+
+    try {
+      // Look up customerId from the order via Medusa
+      const { medusaAdmin } = await import("@ibatexas/tools");
+      const data = await medusaAdmin(`/admin/orders/${orderId}`) as {
+        order?: { customer_id?: string; metadata?: Record<string, string> };
+      };
+      const customerId = data.order?.customer_id ?? data.order?.metadata?.["customerId"];
+      if (!customerId) {
+        log?.info({ order_id: orderId }, "[cart-intelligence] order.refunded — no customerId found, skipping profile update");
+        return;
+      }
+
+      const redis = await getRedisClient();
+      const profileKey = rk(`customer:profile:${customerId}`);
+      await redis.hIncrBy(profileKey, "refundCount", 1);
+      await redis.hIncrBy(profileKey, "totalRefundAmount", amountRefunded);
+      await resetProfileTtl(customerId);
+
+      log?.info({ customer_id: customerId, order_id: orderId }, "[cart-intelligence] order.refunded — profile updated");
+    } catch (err) {
+      log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.refunded handler error");
+    }
+  });
+
+  // ── order.disputed (EVT-003) ──────────────────────────────────────────────
+  await subscribeNatsEvent("order.disputed", async (payload) => {
+    const { orderId, disputeId, amount, reason } = payload as {
+      orderId: string | null;
+      disputeId: string;
+      amount: number;
+      reason: string;
+    };
+
+    log?.warn(
+      { order_id: orderId, dispute_id: disputeId, amount, reason },
+      "[cart-intelligence] order.disputed received",
+    );
+
+    if (!(await isNewEvent(`dispute:${disputeId}`))) {
+      log?.info({ dispute_id: disputeId }, "[cart-intelligence] order.disputed duplicate — skipping");
+      return;
+    }
+
+    try {
+      // Alert staff via notification.send
+      const { publishNatsEvent } = await import("@ibatexas/nats-client");
+      await publishNatsEvent("notification.send", {
+        type: "order_disputed",
+        channel: "whatsapp",
+        message: `⚠️ *Disputa aberta* — Pedido: ${orderId ?? "N/A"}, Motivo: ${reason}, Valor: R$${(amount / 100).toFixed(2)}`,
+      });
+
+      // Update customer profile if orderId is available
+      if (orderId) {
+        const { medusaAdmin } = await import("@ibatexas/tools");
+        const data = await medusaAdmin(`/admin/orders/${orderId}`) as {
+          order?: { customer_id?: string; metadata?: Record<string, string> };
+        };
+        const customerId = data.order?.customer_id ?? data.order?.metadata?.["customerId"];
+        if (customerId) {
+          const redis = await getRedisClient();
+          const profileKey = rk(`customer:profile:${customerId}`);
+          await redis.hIncrBy(profileKey, "disputeCount", 1);
+          await resetProfileTtl(customerId);
+          log?.info({ customer_id: customerId, dispute_id: disputeId }, "[cart-intelligence] order.disputed — profile updated");
+        }
+      }
+    } catch (err) {
+      log?.error({ dispute_id: disputeId, error: String(err) }, "[cart-intelligence] order.disputed handler error");
+    }
+  });
+
+  // ── order.canceled (EVT-004) ──────────────────────────────────────────────
+  await subscribeNatsEvent("order.canceled", async (payload) => {
+    const { orderId, stripePaymentIntentId, cancellationReason } = payload as {
+      orderId: string;
+      stripePaymentIntentId: string;
+      cancellationReason?: string;
+    };
+
+    log?.info(
+      { order_id: orderId, stripe_pi: stripePaymentIntentId, reason: cancellationReason },
+      "[cart-intelligence] order.canceled received",
+    );
+
+    if (!(await isNewEvent(`canceled:${orderId}`))) {
+      log?.info({ order_id: orderId }, "[cart-intelligence] order.canceled duplicate — skipping");
+      return;
+    }
+
+    try {
+      const { medusaAdmin } = await import("@ibatexas/tools");
+      const data = await medusaAdmin(`/admin/orders/${orderId}`) as {
+        order?: { customer_id?: string; metadata?: Record<string, string> };
+      };
+      const customerId = data.order?.customer_id ?? data.order?.metadata?.["customerId"];
+      if (!customerId) {
+        log?.info({ order_id: orderId }, "[cart-intelligence] order.canceled — no customerId found, skipping profile update");
+        return;
+      }
+
+      const redis = await getRedisClient();
+      const profileKey = rk(`customer:profile:${customerId}`);
+      await redis.hIncrBy(profileKey, "orderCancellationCount", 1);
+      await resetProfileTtl(customerId);
+
+      log?.info({ customer_id: customerId, order_id: orderId }, "[cart-intelligence] order.canceled — profile updated");
+    } catch (err) {
+      log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.canceled handler error");
+    }
+  });
+
+  // ── review.submitted (EVT-005) ────────────────────────────────────────────
+  await subscribeNatsEvent("review.submitted", async (payload) => {
+    const { productId, customerId, rating, reviewCount, newAvgRating } = payload as {
+      productId: string;
+      customerId: string;
+      rating: number;
+      reviewCount: number;
+      newAvgRating: number;
+      orderId?: string;
+    };
+
+    log?.info(
+      { product_id: productId, customer_id: customerId, rating },
+      "[cart-intelligence] review.submitted received",
+    );
+
+    try {
+      const redis = await getRedisClient();
+
+      // Update product review analytics
+      const reviewKey = rk(`product:reviews:${productId}`);
+      await redis.hSet(reviewKey, {
+        avgRating: String(newAvgRating),
+        reviewCount: String(reviewCount),
+        lastReviewAt: new Date().toISOString(),
+      });
+      await redis.expire(reviewKey, 30 * 86400); // 30 days
+
+      // Update customer profile
+      if (customerId) {
+        const profileKey = rk(`customer:profile:${customerId}`);
+        await redis.hIncrBy(profileKey, "reviewCount", 1);
+        await resetProfileTtl(customerId);
+      }
+
+      log?.info({ product_id: productId, avg_rating: newAvgRating }, "[cart-intelligence] review.submitted — analytics updated");
+    } catch (err) {
+      log?.error({ product_id: productId, error: String(err) }, "[cart-intelligence] review.submitted handler error");
+    }
+  });
+
+  // ── cart.item_added (EVT-006) ─────────────────────────────────────────────
+  await subscribeNatsEvent("cart.item_added", async (payload) => {
+    const { cartId, customerId, productId, variantId, quantity } = payload as {
+      cartId: string;
+      customerId?: string;
+      productId?: string;
+      variantId: string;
+      quantity?: number;
+      sessionId?: string;
+      reorderFromOrderId?: string;
+    };
+
+    log?.info(
+      { cart_id: cartId, customer_id: customerId, variant_id: variantId },
+      "[cart-intelligence] cart.item_added received",
+    );
+
+    try {
+      const redis = await getRedisClient();
+
+      // Track popular products by add-to-cart frequency
+      if (productId) {
+        const pipeline = redis.multi();
+        pipeline.zIncrBy(rk("product:cart:popularity"), quantity ?? 1, productId);
+        // Prune to keep only top N entries by score
+        pipeline.zRemRangeByRank(rk("product:cart:popularity"), 0, -(CART_POPULARITY_MAX_ENTRIES + 1));
+        pipeline.expire(rk("product:cart:popularity"), 30 * 86400); // 30 days
+        await pipeline.exec();
+      }
+
+      // Update customer profile if authenticated
+      if (customerId) {
+        const profileKey = rk(`customer:profile:${customerId}`);
+        await redis.hIncrBy(profileKey, "cartAddCount", 1);
+        await redis.hSet(profileKey, "lastCartActivityAt", new Date().toISOString());
+        await resetProfileTtl(customerId);
+      }
+
+      log?.info({ cart_id: cartId }, "[cart-intelligence] cart.item_added — analytics updated");
+    } catch (err) {
+      log?.error({ cart_id: cartId, error: String(err) }, "[cart-intelligence] cart.item_added handler error");
     }
   });
 }

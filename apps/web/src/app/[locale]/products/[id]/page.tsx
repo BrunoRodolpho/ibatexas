@@ -3,6 +3,7 @@
 import { useState, useMemo, useCallback, useRef } from "react"
 import { Link } from '@/i18n/navigation'
 import { useTranslations } from "next-intl"
+import { useParams } from "next/navigation"
 import { useProductDetail, useProducts } from '@/domains/product'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
@@ -13,7 +14,8 @@ import { Check } from "lucide-react"
 import { track } from '@/domains/analytics'
 import type { ProductVariant } from "@ibatexas/types"
 
-export default function ProductPage({ params }: Readonly<{ params: { id: string } }>) {
+export default function ProductPage() {
+  const { id } = useParams<{ id: string }>()
   const t = useTranslations()
   const [quantity, setQuantity] = useState(1)
   const [specialInstructions, setSpecialInstructions] = useState("")
@@ -21,7 +23,7 @@ export default function ProductPage({ params }: Readonly<{ params: { id: string 
   const [justAdded, setJustAdded] = useState(false)
   const addTimerRef = useRef<NodeJS.Timeout | null>(null)
 
-  const { data: product, loading, error } = useProductDetail(params.id)
+  const { data: product, loading, error } = useProductDetail(id)
   const addItem = useCartStore((s) => s.addItem)
   const { addToast } = useUIStore()
 
@@ -31,8 +33,8 @@ export default function ProductPage({ params }: Readonly<{ params: { id: string 
     limit: 5,
   })
   const relatedProducts = useMemo(
-    () => (relatedData?.items ?? []).filter((p) => p.id !== params.id).slice(0, 4),
-    [relatedData?.items, params.id]
+    () => (relatedData?.items ?? []).filter((p) => p.id !== id).slice(0, 4),
+    [relatedData?.items, id]
   )
 
   const variants = useMemo(() => product?.variants || [], [product?.variants])

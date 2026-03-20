@@ -1,0 +1,48 @@
+# Dependencies (reinstalled in Docker)
+node_modules/
+.pnpm-store/
+
+# Build artifacts (rebuilt in Docker)
+dist/
+.next/
+.turbo/
+
+# Test / coverage
+coverage/
+tests/
+playwright-report/
+test-results/
+
+# Git
+.git/
+.gitignore
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Terraform
+infra/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Docs
+docs/
+*.md
+!pnpm-workspace.yaml
+
+# Claude / dev tooling
+.claude/
+.ibx-dev.pids
+.ibx/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore

@@ -1,18 +1,19 @@
-// Auth routes — Twilio Verify WhatsApp OTP + JWT
+// Auth routes — Twilio Verify WhatsApp OTP + JWT + Refresh Tokens
 //
 // POST /api/auth/send-otp    — trigger OTP via Twilio Verify (WhatsApp)
-// POST /api/auth/verify-otp  — verify code, upsert Customer, issue JWT cookie
-// POST /api/auth/logout      — clear JWT cookie
+// POST /api/auth/verify-otp  — verify code, upsert Customer, issue JWT + refresh cookies
+// POST /api/auth/refresh     — rotate refresh token, issue new JWT
+// POST /api/auth/logout      — revoke JWT, delete refresh token, clear cookies
 // GET  /api/auth/me          — return current customer from JWT
 
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import twilio from "twilio";
-import { createHash } from "node:crypto";
-import { createCustomerService } from "@ibatexas/domain";
-import { getRedisClient, rk } from "@ibatexas/tools";
-import { requireAuth } from "../middleware/auth.js";
+import { createHash, randomUUID } from "node:crypto";
+import { createCustomerService, createStaffService } from "@ibatexas/domain";
+import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
+import { requireAuth, optionalAuth } from "../middleware/auth.js";
 
 // ── Twilio client ─────────────────────────────────────────────────────────────
 
@@ -59,16 +60,14 @@ interface RateLimitResult {
 async function checkIpRateLimit(ip: string): Promise<RateLimitResult> {
   const redis = await getRedisClient();
   const key = rk(`otp:ip:${ip}`);
-  const count = await redis.incr(key);
-  await redis.expire(key, 3600); // 1 hour — idempotent TTL reset
+  const count = await atomicIncr(redis, key, 3600); // 1 hour
   return { exceeded: count > 10, count };
 }
 
 async function checkSendRateLimit(hash: string): Promise<RateLimitResult> {
   const redis = await getRedisClient();
   const rateLimitKey = rk(`otp:rate:${hash}`);
-  const count = await redis.incr(rateLimitKey);
-  await redis.expire(rateLimitKey, 600); // 10 min — idempotent TTL reset
+  const count = await atomicIncr(redis, rateLimitKey, 600); // 10 min
   return { exceeded: count > 3, count };
 }
 
@@ -82,8 +81,7 @@ async function checkBruteForce(hash: string): Promise<boolean> {
 async function recordVerifyFailure(hash: string): Promise<number> {
   const redis = await getRedisClient();
   const failKey = rk(`otp:fail:${hash}`);
-  const failCount = await redis.incr(failKey);
-  await redis.expire(failKey, 3600); // 1h
+  const failCount = await atomicIncr(redis, failKey, 3600); // 1h
   return failCount;
 }
 
@@ -126,11 +124,60 @@ function issueJwtToken(
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
-  // TODO: Implement refresh token flow for better UX
   return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
     sub: customerId,
     userType: "customer",
+    jti: randomUUID(),
   }, { expiresIn: '4h' });
+}
+
+/** DOM-001: Issue a staff JWT with role claim. */
+function issueStaffJwtToken(
+  server: FastifyInstance,
+  staffId: string,
+  role: string,
+): string {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) throw new Error("JWT_SECRET not set");
+
+  return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
+    sub: staffId,
+    userType: "staff",
+    role,
+    jti: randomUUID(),
+  }, { expiresIn: '8h' });
+}
+
+// ── Refresh token helpers ───────────────────────────────────────────────────
+
+const REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
+interface RefreshPayload {
+  customerId: string;
+  issuedAt: number;
+}
+
+async function issueRefreshToken(customerId: string): Promise<string> {
+  const token = randomUUID();
+  const redis = await getRedisClient();
+  const payload: RefreshPayload = { customerId, issuedAt: Date.now() };
+  await redis.set(rk(`refresh:${token}`), JSON.stringify(payload), { EX: REFRESH_TTL_SECONDS });
+  return token;
+}
+
+async function consumeRefreshToken(token: string): Promise<RefreshPayload | null> {
+  const redis = await getRedisClient();
+  const key = rk(`refresh:${token}`);
+  const raw = await redis.get(key);
+  if (!raw) return null;
+  // Delete immediately — single-use token (rotation)
+  await redis.del(key);
+  return JSON.parse(raw) as RefreshPayload;
+}
+
+async function deleteRefreshToken(token: string): Promise<void> {
+  const redis = await getRedisClient();
+  await redis.del(rk(`refresh:${token}`));
 }
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
@@ -305,8 +352,9 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         "OTP verified — customer authenticated",
       );
 
-      // Issue JWT
+      // Issue JWT + refresh token
       const token = issueJwtToken(server, customer.id);
+      const refreshToken = await issueRefreshToken(customer.id);
       return reply
         .setCookie("token", token, {
           httpOnly: true,
@@ -314,6 +362,13 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
           sameSite: "lax",
           path: "/",
           maxAge: 4 * 60 * 60, // 4h — matches JWT expiry
+        })
+        .setCookie("refresh_token", refreshToken, {
+          httpOnly: true,
+          secure: true,
+          sameSite: "lax",
+          path: "/api/auth/refresh",
+          maxAge: REFRESH_TTL_SECONDS,
         })
         .code(200)
         .send({
@@ -332,12 +387,106 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ["auth"],
-        summary: "Logout — limpar cookie de sessão",
+        summary: "Logout — limpar cookie de sessão e revogar JWT",
       },
+      preHandler: optionalAuth,
     },
-    async (_request, reply) => {
+    async (request, reply) => {
+      // SEC-004: Revoke the JWT so it cannot be reused after logout
+      try {
+        const token = request.cookies?.["token"];
+        if (token) {
+          const jwt = server as unknown as { jwt: { decode: (t: string) => { jti?: string; exp?: number } | null } };
+          const payload = jwt.jwt.decode(token);
+          if (payload?.jti && payload.exp) {
+            const nowSec = Math.floor(Date.now() / 1000);
+            const remainingTtl = payload.exp - nowSec;
+            if (remainingTtl > 0) {
+              const redis = await getRedisClient();
+              await redis.set(rk(`jwt:revoked:${payload.jti}`), "1", { EX: remainingTtl });
+            }
+          }
+        }
+      } catch {
+        // Best-effort revocation — logout must always succeed
+      }
+
+      // AUTH-001: Delete refresh token from Redis
+      try {
+        const refreshToken = request.cookies?.["refresh_token"];
+        if (refreshToken) {
+          await deleteRefreshToken(refreshToken);
+        }
+      } catch {
+        // Best-effort — logout must always succeed
+      }
+
       return reply
         .clearCookie("token", { path: "/" })
+        .clearCookie("refresh_token", { path: "/api/auth/refresh" })
+        .code(200)
+        .send({ ok: true });
+    },
+  );
+
+  // ── POST /api/auth/refresh ──────────────────────────────────────────────────
+
+  app.post(
+    "/api/auth/refresh",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Renovar sessão via refresh token (rotação automática)",
+      },
+    },
+    async (request, reply) => {
+      const refreshToken = request.cookies?.["refresh_token"];
+      if (!refreshToken) {
+        return reply.code(401).send({
+          statusCode: 401,
+          error: "Unauthorized",
+          message: "Refresh token ausente.",
+        });
+      }
+
+      const payload = await consumeRefreshToken(refreshToken);
+      if (!payload) {
+        // Token expired, already used (rotation), or never existed
+        return reply
+          .clearCookie("token", { path: "/" })
+          .clearCookie("refresh_token", { path: "/api/auth/refresh" })
+          .code(401)
+          .send({
+            statusCode: 401,
+            error: "Unauthorized",
+            message: "Refresh token inválido ou expirado. Faça login novamente.",
+          });
+      }
+
+      // Issue new JWT + rotated refresh token
+      const newJwt = issueJwtToken(server, payload.customerId);
+      const newRefreshToken = await issueRefreshToken(payload.customerId);
+
+      server.log.info(
+        { customer_id: payload.customerId, action: "token_refresh" },
+        "Token refreshed",
+      );
+
+      return reply
+        .setCookie("token", newJwt, {
+          httpOnly: true,
+          secure: true,
+          sameSite: "lax",
+          path: "/",
+          maxAge: 4 * 60 * 60,
+        })
+        .setCookie("refresh_token", newRefreshToken, {
+          httpOnly: true,
+          secure: true,
+          sameSite: "lax",
+          path: "/api/auth/refresh",
+          maxAge: REFRESH_TTL_SECONDS,
+        })
         .code(200)
         .send({ ok: true });
     },
@@ -365,6 +514,207 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         email: customer.email,
         medusaId: customer.medusaId,
       });
+    },
+  );
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // DOM-001: Staff OTP Authentication
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  // ── POST /api/auth/staff/send-otp ─────────────────────────────────────────
+
+  app.post(
+    "/api/auth/staff/send-otp",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Enviar OTP para funcionário via WhatsApp",
+        body: SendOtpBody,
+      },
+    },
+    async (request, reply) => {
+      const { phone } = request.body;
+      const hash = phoneHash(phone);
+      const ip = request.ip;
+
+      server.log.info({ phone_hash: hash, ip, action: "staff_send_otp" }, "Staff OTP send requested");
+
+      // IP-level rate limit
+      const ipLimit = await checkIpRateLimit(ip);
+      if (ipLimit.exceeded) {
+        server.log.warn({ ip, action: "staff_send_otp_ip_rate_limited", count: ipLimit.count }, "Staff OTP IP rate limited");
+        return reply.code(429).send({
+          statusCode: 429,
+          error: "Too Many Requests",
+          message: "Muitas tentativas deste endereço. Aguarde 1 hora.",
+        });
+      }
+
+      // Phone rate limit
+      const rateLimit = await checkSendRateLimit(hash);
+      if (rateLimit.exceeded) {
+        server.log.warn({ phone_hash: hash, ip, action: "staff_send_otp_rate_limited" }, "Staff OTP send rate limited");
+        return reply.code(429).send({
+          statusCode: 429,
+          error: "Too Many Requests",
+          message: "Muitas tentativas. Aguarde 10 minutos.",
+        });
+      }
+
+      // Verify this phone belongs to an active staff member
+      const staffSvc = createStaffService();
+      const staff = await staffSvc.findByPhone(phone);
+
+      if (!staff) {
+        server.log.warn({ phone_hash: hash, ip, action: "staff_send_otp_unknown" }, "Staff OTP — phone not found");
+        return reply.code(404).send({
+          statusCode: 404,
+          error: "Not Found",
+          message: "Telefone não cadastrado como funcionário.",
+        });
+      }
+
+      if (!staff.active) {
+        server.log.warn({ phone_hash: hash, ip, action: "staff_send_otp_inactive" }, "Staff OTP — inactive staff");
+        return reply.code(403).send({
+          statusCode: 403,
+          error: "Forbidden",
+          message: "Conta de funcionário desativada.",
+        });
+      }
+
+      try {
+        await sendTwilioOtp(phone);
+      } catch (err) {
+        server.log.error({ phone_hash: hash, ip, action: "staff_send_otp_error", err }, "Twilio error");
+        return reply.code(502).send({
+          statusCode: 502,
+          error: "Bad Gateway",
+          message: "Não foi possível enviar o código. Tente novamente.",
+        });
+      }
+
+      return reply.code(200).send({ ok: true });
+    },
+  );
+
+  // ── POST /api/auth/staff/verify-otp ───────────────────────────────────────
+
+  app.post(
+    "/api/auth/staff/verify-otp",
+    {
+      schema: {
+        tags: ["auth"],
+        summary: "Verificar OTP de funcionário e autenticar",
+        body: VerifyOtpBody,
+      },
+    },
+    async (request, reply) => {
+      const { phone, code } = request.body;
+      const hash = phoneHash(phone);
+      const ip = request.ip;
+
+      // IP rate limit
+      const ipLimit = await checkIpRateLimit(ip);
+      if (ipLimit.exceeded) {
+        return reply.code(429).send({
+          statusCode: 429,
+          error: "Too Many Requests",
+          message: "Muitas tentativas deste endereço. Aguarde 1 hora.",
+        });
+      }
+
+      // Brute-force protection
+      const blocked = await checkBruteForce(hash);
+      if (blocked) {
+        server.log.warn(
+          { action: "staff_otp_brute_force_blocked", phone_hash: hash, ip },
+          "Staff OTP verify blocked — too many failures",
+        );
+        return reply.code(429).send({
+          statusCode: 429,
+          error: "Too Many Requests",
+          message: "Muitas tentativas. Aguarde 1 hora.",
+        });
+      }
+
+      // Verify staff exists and is active
+      const staffSvc = createStaffService();
+      const staff = await staffSvc.findByPhone(phone);
+
+      if (!staff) {
+        return reply.code(404).send({
+          statusCode: 404,
+          error: "Not Found",
+          message: "Telefone não cadastrado como funcionário.",
+        });
+      }
+
+      if (!staff.active) {
+        return reply.code(403).send({
+          statusCode: 403,
+          error: "Forbidden",
+          message: "Conta de funcionário desativada.",
+        });
+      }
+
+      const verification = await verifyTwilioOtp(phone, code);
+
+      if (verification.twilioError) {
+        server.log.error({ phone_hash: hash, ip, action: "staff_verify_otp_error", err: verification.twilioError });
+
+        if (verification.twilioError.code === 20404) {
+          return reply.code(400).send({
+            statusCode: 400,
+            error: "Bad Request",
+            message: "Código expirado ou não encontrado. Solicite um novo código.",
+          });
+        }
+
+        return reply.code(502).send({
+          statusCode: 502,
+          error: "Bad Gateway",
+          message: "Erro ao verificar código. Tente novamente.",
+        });
+      }
+
+      if (verification.status !== "approved") {
+        const failCount = await recordVerifyFailure(hash);
+        server.log.info(
+          { phone_hash: hash, ip, action: "staff_verify_otp", success: false, attempt_count: failCount },
+          "Staff OTP verification failed",
+        );
+        return reply.code(400).send({
+          statusCode: 400,
+          error: "Bad Request",
+          message: "Código inválido ou expirado.",
+        });
+      }
+
+      // Clear failure counter on success
+      await clearVerifyFailures(hash);
+
+      server.log.info(
+        { phone_hash: hash, ip, action: "staff_verify_otp", success: true, staff_id: staff.id, role: staff.role },
+        "Staff OTP verified — staff authenticated",
+      );
+
+      // Issue staff JWT (no refresh token for staff — shorter-lived sessions)
+      const token = issueStaffJwtToken(server, staff.id, staff.role);
+      return reply
+        .setCookie("token", token, {
+          httpOnly: true,
+          secure: true,
+          sameSite: "lax",
+          path: "/",
+          maxAge: 8 * 60 * 60, // 8h — matches staff JWT expiry
+        })
+        .code(200)
+        .send({
+          id: staff.id,
+          name: staff.name,
+          role: staff.role,
+        });
     },
   );
 }

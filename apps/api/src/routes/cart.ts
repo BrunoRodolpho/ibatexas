@@ -257,6 +257,16 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
+      // SEC-001: Cash/PIX requires authentication — Stripe validates identity for card payments
+      const { paymentMethod } = request.body;
+      if ((paymentMethod === "cash" || paymentMethod === "pix") && !request.customerId) {
+        return reply.status(401).send({
+          statusCode: 401,
+          error: "Unauthorized",
+          message: "Autenticação necessária para pagamento em dinheiro/PIX.",
+        });
+      }
+
       const result = await createCheckout(request.body, {
         channel: Channel.Web,
         sessionId: request.body.cartId,

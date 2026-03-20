@@ -36,12 +36,20 @@ Example: `production:customer:profile:cust_123`
 | `nats:processed:{eventKey}` | String | 7 d | NATS event idempotency guard (prevents duplicate subscriber processing) | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `webhook:processed:{event.id}` | String | 7 d | Stripe webhook idempotency guard (prevents replay reprocessing) | `apps/api/src/routes/stripe-webhook.ts` |
 | `analytics:rate:{ip}` | String | 60 s | Analytics endpoint rate limit (max 100 events/min per IP) | `apps/api/src/routes/analytics.ts` |
+| `jwt:revoked:{jti}` | String | remaining JWT lifetime | JWT revocation marker (set on logout, checked on every authenticated request) | `apps/api/src/routes/auth.ts`, `apps/api/src/middleware/auth.ts` |
+| `refresh:{token}` | String (JSON) | 30 d | Refresh token payload `{customerId, issuedAt}` — single-use, deleted on consume (rotation) or logout | `apps/api/src/routes/auth.ts` |
+| `product:reviews:{productId}` | Hash | 30 d | Product review analytics: `avgRating`, `reviewCount`, `lastReviewAt` | `apps/api/src/subscribers/cart-intelligence.ts` |
+| `product:cart:popularity` | Sorted Set | 30 d | Add-to-cart frequency per product (score = total quantity added) | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `cache:stats:l0:hit` | Counter | 30 d | L0 exact cache hit count (INCR on each hit) | `packages/tools/src/cache/query-cache.ts` |
 | `cache:stats:l0:miss` | Counter | 30 d | L0 exact cache miss count | `packages/tools/src/cache/query-cache.ts` |
 | `cache:stats:l1:hit` | Counter | 30 d | L1 semantic cache hit count | `packages/tools/src/cache/query-cache.ts` |
 | `cache:stats:l1:miss` | Counter | 30 d | L1 semantic cache miss count | `packages/tools/src/cache/query-cache.ts` |
 | `cache:stats:embed:hit` | Counter | 30 d | Embedding cache hit count | `packages/tools/src/cache/embedding-cache.ts` |
 | `cache:stats:embed:miss` | Counter | 30 d | Embedding cache miss count | `packages/tools/src/cache/embedding-cache.ts` |
+| `session:owner:{sessionId}` | String | 24 h | Maps chat session to owning customerId (ownership guard for SSE streaming) | `apps/api/src/routes/chat.ts` |
+| `llm:tokens:{sessionId}` | String | configurable | LLM token usage counter per session (prevents runaway token spend) | `packages/llm-provider/src/agent.ts` |
+| `ratelimit:customer:create` | String | configurable | Rate limit for customer creation via WhatsApp (prevents abuse) | `apps/api/src/whatsapp/session.ts` |
+| `embedding:query:{base64}` | String | 30 d | Cached query embedding vector for semantic search | `packages/tools/src/search/search-products.ts` |
 
 **Removed patterns** (documented previously but not found in code):
 - `cart:session:{cartId}` — does not exist; carts are tracked via `active:carts` hash + `session:{sessionId}` list

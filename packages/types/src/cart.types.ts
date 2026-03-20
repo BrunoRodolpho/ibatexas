@@ -88,6 +88,6 @@ export const ApplyCouponInputSchema = z.object({
 export type ApplyCouponInput = z.infer<typeof ApplyCouponInputSchema>
 
 // get_order_history
-export const GetOrderHistoryInputSchema = z.object({}).strict()
+export const GetOrderHistoryInputSchema = z.strictObject({})
 
 export type GetOrderHistoryInput = z.infer<typeof GetOrderHistoryInputSchema>
