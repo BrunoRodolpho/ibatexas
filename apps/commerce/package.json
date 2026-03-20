@@ -18,17 +18,17 @@
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
-    "@medusajs/admin-sdk": "2.13.1",
-    "@medusajs/admin-shared": "^2.13.1",
-    "@medusajs/dashboard": "^2.13.1",
-    "@medusajs/draft-order": "^2.13.1",
-    "@medusajs/framework": "^2.13.1",
-    "@medusajs/medusa": "^2.13.1",
-    "@medusajs/utils": "^2.13.1",
-    "@medusajs/workflows-sdk": "^2.13.1"
+    "@medusajs/admin-sdk": "2.13.4",
+    "@medusajs/admin-shared": "^2.13.4",
+    "@medusajs/dashboard": "^2.13.4",
+    "@medusajs/draft-order": "^2.13.4",
+    "@medusajs/framework": "^2.13.4",
+    "@medusajs/medusa": "^2.13.4",
+    "@medusajs/utils": "^2.13.4",
+    "@medusajs/workflows-sdk": "^2.13.4"
   },
   "devDependencies": {
-    "@medusajs/cli": "^2.13.1",
+    "@medusajs/cli": "^2.13.4",
     "ts-node": "^10.9.0",
     "typescript": "^5.9.0"
   }
