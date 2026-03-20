@@ -21,7 +21,7 @@
     "@ibatexas/types": "workspace:*"
   },
   "devDependencies": {
-    "vitest": "^2.0.0",
-    "typescript": "^5.3.0"
+    "vitest": "^3.2.0",
+    "typescript": "^5.9.0"
   }
 }
