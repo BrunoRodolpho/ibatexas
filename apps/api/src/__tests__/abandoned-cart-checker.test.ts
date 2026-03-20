@@ -91,7 +91,8 @@ describe("abandoned-cart-checker", () => {
     // Verify setInterval was called only once (first call), not twice
     expect(vi.getTimerCount()).toBe(1);
 
-    stopAbandonedCartChecker();
+    // Only one interval should be active — stop clears it cleanly
+    expect(() => stopAbandonedCartChecker()).not.toThrow();
   });
 
   it("stopAbandonedCartChecker is safe to call when not started", () => {
