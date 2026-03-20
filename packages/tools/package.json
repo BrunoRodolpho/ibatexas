@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsc --outDir dist",
-    "lint": "tsc --noEmit && eslint src/ --ext .ts",
+    "lint": "tsc --noEmit && eslint \"src/**/*.ts\"",
     "test": "vitest run"
   },
   "dependencies": {
@@ -30,8 +30,9 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.0.0",
     "@ibatexas/eslint-config": "workspace:*",
-    "eslint": "^8.0.0",
+    "eslint": "^9.0.0",
     "typescript": "^5.9.0"
   }
 }

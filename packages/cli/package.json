@@ -11,7 +11,7 @@
     "build": "tsc --outDir dist",
     "dev": "tsc --watch",
     "start": "tsx src/index.ts",
-    "lint": "tsc --noEmit && eslint src/ --ext .ts",
+    "lint": "tsc --noEmit && eslint \"src/**/*.ts\"",
     "test": "vitest run"
   },
   "dependencies": {
@@ -30,11 +30,12 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.0.0",
     "@ibatexas/eslint-config": "workspace:*",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
     "@types/seedrandom": "^3.0.8",
-    "eslint": "^8.0.0",
+    "eslint": "^9.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
