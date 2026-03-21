@@ -274,6 +274,10 @@ flowchart LR
     LINT & TEST & AUDIT --> BUILD[pnpm build]
   end
 
+  subgraph DEPLOY["On Merge to main/dev"]
+    MERGE["Merge to main or dev"] --> D1[Docker build] --> D2[Push to ECR] --> D3[Prisma migrate] --> D4["Deploy ECS"] --> D5[Health check]
+  end
+
   subgraph CRON["Scheduled"]
     W[Weekly Mon] --> U[upgrade-radar]
     W --> CQ[CodeQL scan]
@@ -283,30 +287,7 @@ flowchart LR
   style SONAR fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style CODEQL fill:#3e2723,stroke:#ffab91,color:#ffccbc
   style SECRETS fill:#3e2723,stroke:#ffab91,color:#ffccbc
-```
-
-### Deploy Pipelines
-
-**On Merge to dev (staging):**
-
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#1e3a5f', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#4a90d9', 'lineColor': '#6ba3d6', 'background': '#0d1117', 'mainBkg': '#161b22', 'clusterBkg': '#161b22', 'clusterBorder': '#30363d'}}}%%
-flowchart LR
-  S0[Merge to dev] --> S1[Docker build] --> S2[Push to ECR] --> S3[Prisma migrate] --> S4["Deploy ibatexas-dev"] --> S5[Health check]
-
-  style S4 fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
-  style S5 fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
-```
-
-**On Merge to main (production):**
-
-```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#1e3a5f', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#4a90d9', 'lineColor': '#6ba3d6', 'background': '#0d1117', 'mainBkg': '#161b22', 'clusterBkg': '#161b22', 'clusterBorder': '#30363d'}}}%%
-flowchart LR
-  P0[Merge to main] --> P1[Docker build] --> P2[Push to ECR] --> P3[Prisma migrate] --> P4["Deploy ibatexas-prod"] --> P5[Health check]
-
-  style P4 fill:#3e2723,stroke:#ffab91,color:#ffccbc
-  style P5 fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style D4 fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
 ```
 
 ---
