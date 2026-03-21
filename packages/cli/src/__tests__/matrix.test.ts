@@ -1,6 +1,5 @@
 // Tests for lib/matrix.ts — state matrix engine.
 // Uses pure boundary mocking: all external I/O (lock, Redis, pipeline, steps, ora, chalk) is mocked.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock setup (vi.hoisted + vi.mock BEFORE imports) ─────────────────────────
@@ -74,7 +73,6 @@ vi.mock("@ibatexas/domain", () => ({
 }))
 
 // ── Import source after mocks ────────────────────────────────────────────────
-
 import {
   generateAllStates,
   generateCornerStates,

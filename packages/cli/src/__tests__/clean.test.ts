@@ -1,6 +1,5 @@
 // Tests for lib/clean.ts — FK-safe domain table cleanup.
 // Mocks Prisma instance; never touches real DB.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock Prisma ──────────────────────────────────────────────────────────────

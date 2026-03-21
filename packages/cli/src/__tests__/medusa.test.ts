@@ -1,6 +1,5 @@
 // Tests for lib/medusa.ts — Medusa helpers.
 // Tests pure utility functions (validateTag, getMedusaUrl) and mocks fetch for API helpers.
-
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 
 // ── Mock global fetch ────────────────────────────────────────────────────────

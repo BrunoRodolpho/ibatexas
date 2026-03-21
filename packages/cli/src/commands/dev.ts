@@ -72,7 +72,11 @@ function killTrackedServices(serviceKey?: string): number {
   if (serviceKey) {
     // Remove only the killed entries from the file
     const remaining = entries.filter((e) => e.key !== serviceKey)
-    remaining.length > 0 ? writePidEntries(remaining) : removePidFile()
+    if (remaining.length > 0) {
+      writePidEntries(remaining)
+    } else {
+      removePidFile()
+    }
   } else {
     removePidFile()
   }
@@ -456,7 +460,11 @@ async function forceStop(serviceKey: string | undefined, stopAll: boolean): Prom
     removePidFile()
   } else if (serviceKey) {
     const entries = readPidEntries().filter((e) => e.key !== serviceKey)
-    entries.length > 0 ? writePidEntries(entries) : removePidFile()
+    if (entries.length > 0) {
+      writePidEntries(entries)
+    } else {
+      removePidFile()
+    }
   }
 
   // Docker too when stopping all — use 'stop' to preserve volumes

@@ -1,6 +1,5 @@
 // Tests for lib/step-cache.ts — step input hashing and caching.
 // Mocks filesystem and crypto internals; never touches real disk.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock setup ───────────────────────────────────────────────────────────────
