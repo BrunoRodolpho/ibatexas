@@ -114,7 +114,7 @@ export function resolveServices(key: string | undefined): ServiceDef[] {
   if (!svc.available) {
     throw new Error(
       `Service "${key}" is not implemented yet — it is built in Step ${svc.step}. ` +
-        `See docs/next-steps.md for the build order.`
+        `See docs/backlog/TODO-BACKLOG.md for the build order.`
     )
   }
 

@@ -103,6 +103,7 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | [docs/ibx-cli.md](docs/ibx-cli.md) | Full `ibx` command reference |
 | [docs/setup/local-dev.md](docs/setup/local-dev.md) | Prerequisites, env vars, setup |
 | [docs/setup/pre-requisites.md](docs/setup/pre-requisites.md) | Bootstrap guide: `ibx bootstrap`, migrations, seeds |
+| [docs/setup/supabase.md](docs/setup/supabase.md) | Supabase Postgres setup for production |
 | [docs/design/bounded-contexts.md](docs/design/bounded-contexts.md) | 8 contexts, entity ownership |
 | [docs/design/domain-model.md](docs/design/domain-model.md) | Prisma schema, entities, NATS events |
 | [docs/design/agent-tools.md](docs/design/agent-tools.md) | 25 tools — auth level, inputs, outputs |
@@ -110,4 +111,8 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | [docs/design/customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations, reviews, co-purchase |
 | [docs/analytics-dashboards.md](docs/analytics-dashboards.md) | Event taxonomy, PostHog dashboards, KPIs |
 | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) | Redis key patterns, TTLs, ops commands |
-| [docs/next-steps.md](docs/next-steps.md) | Roadmap — remaining build steps |
+| [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) | What works, what's broken, priorities, test strategy |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System diagrams, module map, CI/CD, "where is X?" |
+| [docs/design/architecture-decisions.md](docs/design/architecture-decisions.md) | ADRs, cross-cutting patterns |
+| [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) | Pre-launch backlog (13 remaining items) |
+| [docs/features/wishlist.md](docs/features/wishlist.md) | Wishlist feature — client-only, localStorage, MVP scope |

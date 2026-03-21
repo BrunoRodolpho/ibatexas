@@ -2,5 +2,4 @@
 
 | File | Purpose |
 |------|---------|
-| `TODO-BACKLOG.md` | Remaining work (11 items across 4 steps) |
-| `ARCHITECTURE-NOTES.md` | Architectural decisions and patterns |
+| `TODO-BACKLOG.md` | Remaining work — pre-launch (13 items) + post-launch (10 items) |

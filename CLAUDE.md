@@ -46,7 +46,7 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 - **NATS subjects:** `ibatexas.{domain}.{action}` — pass short form to `publishNatsEvent()`, the client adds `ibatexas.` prefix automatically. Never pass the full prefixed form.
 - **NATS test assertions:** assert the short-form subject (`"cart.abandoned"`) since tests mock `publishNatsEvent` at the caller boundary, before the client adds the prefix.
 - **Product/category handles:** kebab-case, ASCII only (`costela-bovina-defumada`)
-- **CLI commands:** lowercase (e.g., `dev`, `svc`, `api`, `db`, `intel`) — see `docs/ibx-cli.md` for the full list of 17 commands
+- **CLI commands:** lowercase (e.g., `dev`, `svc`, `api`, `db`, `intel`) — see `docs/ibx-cli.md` for the full list of 19 commands
 
 ---
 
@@ -60,11 +60,14 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 | Admin panel | `apps/admin` (port 3002) — standalone Next.js app |
 | CLI reference | [docs/ibx-cli.md](docs/ibx-cli.md) |
 | Architecture & design | [docs/design/](docs/design/) |
-| Roadmap | [docs/next-steps.md](docs/next-steps.md) — remove items when done |
-| Pre-launch backlog | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) |
+| Project state | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) — what works, what's broken, priorities |
+| Architecture map | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — diagrams, module map, "where is X?" |
+| Pre-launch backlog | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) — remove items when done |
 | Setup guide | [docs/setup/local-dev.md](docs/setup/local-dev.md) |
 | Analytics & dashboards | [docs/analytics-dashboards.md](docs/analytics-dashboards.md) |
 | Redis key patterns | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
+
+> Port assignments source of truth: `packages/cli/src/services.ts`
 
 ---
 
@@ -114,3 +117,4 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 | [customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations or profiles |
 | [analytics-dashboards.md](docs/analytics-dashboards.md) | Any analytics event or PostHog insight |
 | [redis-memory.md](docs/ops/redis-memory.md) | Any Redis key usage |
+| [architecture-decisions.md](docs/design/architecture-decisions.md) | System diagram, ADRs, cross-cutting patterns |
