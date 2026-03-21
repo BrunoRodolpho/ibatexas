@@ -1,28 +1,20 @@
 # CLAUDE.md — AI Agent Guide for IbateXas
 
 > Read this before writing any code.
-> For project status and priorities, see [PROJECT_STATE.md](docs/PROJECT_STATE.md).
-> For system diagrams and "where is X?", see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+| Need | Go to |
+|------|-------|
+| What works, what's broken, priorities | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) |
+| System diagrams, module map, "where is X?" | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Pre-launch backlog (13 items) | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) |
+| Full CLI reference (19 commands) | [docs/ibx-cli.md](docs/ibx-cli.md) |
 
 ---
-
-## Build & Test & Plan Mode
-
-- Skip `npm run build` verification after changes
-- Do not attempt to visually inspect or screenshot UI changes
-- Only run tests when explicitly requested
-- Do not start dev servers to verify changes
-
-## Agent Teams
-
-- When spawning teammates, use in-process mode: `claude --teammate-mode in-process` — avoids tmux issues
 
 ## The One Rule
 
 Use `ibx` for all dev operations. Run `ibx --help` or `ibx <command> --help` before writing code.
 If a command does not exist for what you need, add it to `packages/cli/` first, then use it.
-
-See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 
 ---
 
@@ -41,70 +33,41 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 
 ## Naming Conventions
 
-- **Interfaces/Types:** PascalCase (`Product`, `SeedVariant`, `CustomerProfile`)
-- **Constants:** UPPER_SNAKE_CASE (`CATEGORIES`, `SEED_PRODUCTS`, `DEFAULT_SERVICES`)
-- **Enums:** PascalCase (`ReservationStatus`, `ProductType`)
-- **NATS events:** `domain.action` (`cart.abandoned`, `order.placed`)
-- **NATS subjects:** `ibatexas.{domain}.{action}` — pass short form to `publishNatsEvent()`, the client adds `ibatexas.` prefix automatically. Never pass the full prefixed form.
-- **NATS test assertions:** assert the short-form subject (`"cart.abandoned"`) since tests mock `publishNatsEvent` at the caller boundary, before the client adds the prefix.
-- **Product/category handles:** kebab-case, ASCII only (`costela-bovina-defumada`)
-- **CLI commands:** lowercase (e.g., `dev`, `svc`, `api`, `db`, `intel`) — see `docs/ibx-cli.md` for the full list of 19 commands
+| What | Convention | Example |
+|------|-----------|---------|
+| Interfaces/Types | PascalCase | `Product`, `CustomerProfile` |
+| Constants | UPPER_SNAKE_CASE | `CATEGORIES`, `DEFAULT_SERVICES` |
+| Enums | PascalCase | `ReservationStatus`, `ProductType` |
+| Product/category handles | kebab-case, ASCII only | `costela-bovina-defumada` |
+| CLI commands | lowercase | `dev`, `svc`, `api`, `db`, `intel` |
+| NATS events | `domain.action` | `cart.abandoned`, `order.placed` |
 
----
-
-## Where Things Live
-
-| What | Where |
-|------|-------|
-| Storefront | `apps/web` (port 3000) — Next.js customer-facing app |
-| API server | `apps/api` (port 3001) — Fastify backend |
-| Commerce engine | `apps/commerce` (port 9000) — Medusa v2 |
-| Admin panel | `apps/admin` (port 3002) — standalone Next.js app |
-| CLI reference | [docs/ibx-cli.md](docs/ibx-cli.md) |
-| Architecture & design | [docs/design/](docs/design/) |
-| Project state | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) — what works, what's broken, priorities |
-| Architecture map | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — diagrams, module map, "where is X?" |
-| Pre-launch backlog | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) — remove items when done |
-| Setup guide | [docs/setup/local-dev.md](docs/setup/local-dev.md) |
-| Analytics & dashboards | [docs/analytics-dashboards.md](docs/analytics-dashboards.md) |
-| Redis key patterns | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
-
-> Port assignments source of truth: `packages/cli/src/services.ts`
+**NATS specifics:**
+- Subjects use `ibatexas.{domain}.{action}` — pass short form to `publishNatsEvent()`, the client adds the prefix. Never pass the full prefixed form.
+- Test assertions: assert short-form (`"cart.abandoned"`) since tests mock at the caller boundary.
 
 ---
 
 ## Module System
 
-- `packages/*`: ESM (`"type": "module"`), use `.js` extensions on local imports (exception: `packages/eslint-config` is CJS — standard for ESLint configs)
-- `apps/commerce`: No `"type": "module"` in package.json (Medusa v2 handles its own build pipeline via `medusa develop` / `medusa build`). Source uses ESM syntax.
-- TypeScript strict mode enabled globally — no implicit `any`
-- Tests: Vitest with v8 coverage. Run via `ibx dev test` or `pnpm test`. No DB or network required — mock everything external
+- `packages/*`: ESM (`"type": "module"`), use `.js` extensions on local imports
+- `packages/eslint-config`: CJS (standard for ESLint configs)
+- `apps/commerce`: Medusa v2 handles its own build (`medusa develop` / `medusa build`), not `tsc`
+- TypeScript strict mode globally — no implicit `any`
+- Tests: Vitest + v8 coverage. No DB or network — mock everything external.
+- `@ibatexas/tools` has the widest blast radius — depended on by 6 packages/apps
+
+> Port assignments source of truth: `packages/cli/src/services.ts`
 
 ---
 
-## Workspace Packages
+## Agent Behavior
 
-| Package | Responsibility |
-|---------|---------------|
-| `packages/cli` | The `ibx` CLI — all dev operations |
-| `packages/domain` | Prisma schema, DB client, domain services |
-| `packages/tools` | AI agent tools, Redis utilities, search, cart logic |
-| `packages/types` | Shared TypeScript types and Zod schemas |
-| `packages/llm-provider` | Anthropic SDK wrapper, agent loop, tool registry |
-| `packages/nats-client` | NATS pub/sub wrapper with outbox support |
-| `packages/ui` | Shared React component library (atoms/molecules/organisms) |
-| `packages/eslint-config` | Shared ESLint config (CJS) |
-
-> `@ibatexas/tools` has the widest blast radius — depended on by `apps/api`, `apps/web`, `apps/admin`, `apps/commerce`, `packages/cli`, `packages/llm-provider`.
-
----
-
-## Medusa v2 Commerce Engine
-
-- Products are managed via Medusa's admin API and indexed to Typesense for search
-- Medusa subscribers fire on product/price/variant changes
-- `apps/commerce` uses `medusa develop` / `medusa build`, not standard `tsc` / `tsx`
-- Local dev infrastructure (Postgres, Redis, Typesense, NATS) runs via `docker-compose.yml`, managed by `ibx dev` and `ibx svc`
+- Skip `npm run build` verification after changes
+- Do not visually inspect or screenshot UI changes
+- Only run tests when explicitly requested
+- Do not start dev servers to verify changes
+- When spawning teammates, use in-process mode: `claude --teammate-mode in-process`
 
 ---
 
@@ -113,12 +76,10 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 | Doc | Read before |
 |-----|------------|
 | [PROJECT_STATE.md](docs/PROJECT_STATE.md) | Any new work — check what's done, broken, or P0 |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Finding where code lives — module map, "where is X?" |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Finding where code lives |
 | [bounded-contexts.md](docs/design/bounded-contexts.md) | Any domain logic |
 | [domain-model.md](docs/design/domain-model.md) | Any entity or schema |
 | [agent-tools.md](docs/design/agent-tools.md) | Any AI tool |
-| [use-cases.md](docs/design/use-cases.md) | Any user-facing feature |
-| [customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations or profiles |
-| [analytics-dashboards.md](docs/analytics-dashboards.md) | Any analytics event or PostHog insight |
+| [architecture-decisions.md](docs/design/architecture-decisions.md) | ADRs, cross-cutting patterns |
+| [analytics-dashboards.md](docs/analytics-dashboards.md) | Any analytics event |
 | [redis-memory.md](docs/ops/redis-memory.md) | Any Redis key usage |
-| [architecture-decisions.md](docs/design/architecture-decisions.md) | System diagram, ADRs, cross-cutting patterns |
