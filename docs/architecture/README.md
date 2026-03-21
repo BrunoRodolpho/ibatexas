@@ -275,7 +275,8 @@ flowchart LR
   end
 
   subgraph DEPLOY["On Merge to main/dev"]
-    MERGE["Merge to main or dev"] --> D1[Docker build] --> D2[Push to ECR] --> D3[Prisma migrate] --> D4["Deploy ECS"] --> D5[Health check]
+    direction LR
+    MERGE["Merge"] --> D1[Docker build] --> D2[Push to ECR] --> D3[Prisma migrate] --> D4["Deploy ECS"] --> D5[Health check]
   end
 
   subgraph CRON["Scheduled"]
