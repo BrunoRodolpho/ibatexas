@@ -374,6 +374,26 @@ Starts an ngrok tunnel and prints:
 
 Use this for testing WhatsApp webhooks locally. Requires `ngrok` (`brew install ngrok`).
 
+### Dependencies — `ibx deps`
+
+```bash
+ibx deps audit              # detect unused, non-deterministic, or drifted overrides
+ibx deps drift              # check for undocumented override changes vs main
+ibx deps radar              # check upstream packages for override removal opportunities
+ibx deps check              # full dependency health check (audit + drift + radar)
+```
+
+`ibx deps audit` classifies each pnpm override as UNUSED, NON-DETERMINISTIC, VERSION DRIFT, or ACTIVE.
+Exits with code 1 if any issues found.
+
+`ibx deps drift` compares overrides against `origin/main`. Fails if new overrides are added without
+a corresponding entry in `pnpm.overrideNotes`.
+
+`ibx deps radar` checks latest published versions of prisma, @medusajs/medusa, vite, and posthog-js
+against installed versions. Highlights when upstream upgrades could unblock override removal.
+
+`ibx deps check` runs all three in sequence and reports a combined pass/fail.
+
 ### Auth — `ibx auth`
 
 ```bash
