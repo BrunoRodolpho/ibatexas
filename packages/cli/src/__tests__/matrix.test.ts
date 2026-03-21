@@ -80,7 +80,6 @@ import {
   listStates,
   runMatrix,
 } from "../lib/matrix.js"
-
 import type {
   StateVariable,
   MatrixDefinition,

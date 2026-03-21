@@ -6,7 +6,6 @@
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
-
 import { rk, getRedis, closeRedis, scanCount } from "../lib/redis.js"
 import { fetchAllProductsWithTags } from "../lib/medusa.js"
 import { StepRegistry } from "../lib/steps.js"

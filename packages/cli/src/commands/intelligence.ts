@@ -1,7 +1,6 @@
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
-
 import { rk, getRedis, closeRedis, scanDelete } from "../lib/redis.js"
 
 // ── Commands ──────────────────────────────────────────────────────────────────

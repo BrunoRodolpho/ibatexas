@@ -4,7 +4,6 @@
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
-
 import { rk, getRedis, closeRedis, scanCount } from "../lib/redis.js"
 import { getAdminToken, medusaFetch, fetchAllProductsWithTags, findProductByHandle } from "../lib/medusa.js"
 

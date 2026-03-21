@@ -42,18 +42,15 @@ function printFullSearchResults(
   const cacheLabel = hitCache ? chalk.green("✓ cache hit") : chalk.gray("cache miss")
   const modelLabel = searchModel === "hybrid" ? chalk.cyan("hybrid") : chalk.yellow("keyword-only")
 
-  // eslint-disable-next-line no-console
   console.log(
     chalk.bold(`\n  "${query}" — ${products.length} result${products.length === 1 ? "" : "s"} `) +
     `[${modelLabel}] [${cacheLabel}]\n`
   )
 
   if (products.length) {
-    // eslint-disable-next-line no-console
     console.log(
       `  ${"ID".padEnd(26)} ${"Title".padEnd(38)} ${"R$".padEnd(10)} ${"Tags".padEnd(25)} Allergens`
     )
-    // eslint-disable-next-line no-console
     console.log(`  ${"─".repeat(115)}`)
 
     for (const p of products) {
@@ -61,22 +58,18 @@ function printFullSearchResults(
       const tags = (p.tags ?? []).join(", ") || "—"
       const allergens = (p.allergens ?? []).join(", ") || "nenhum"
       const stock = p.inStock === false ? chalk.red(" [fora de estoque]") : ""
-      // eslint-disable-next-line no-console
       console.log(
         `  ${chalk.gray(p.id.substring(0, 26).padEnd(26))} ${p.title.padEnd(38)} ${priceInReais.padEnd(10)} ${tags.substring(0, 25).padEnd(25)} ${allergens}${stock}`
       )
     }
   } else {
-    // eslint-disable-next-line no-console
     console.log(chalk.yellow("  No products found."))
-    // eslint-disable-next-line no-console
     console.log(chalk.gray("  Tip: ibx db seed — then wait ~2s for indexing"))
   }
 
   const cacheNote = hitCache
     ? chalk.green("  ✓ Served from cache (zero embedding cost)")
     : chalk.gray("  ↗ Fresh from Typesense (results now cached)")
-  // eslint-disable-next-line no-console
   console.log(`\n${cacheNote}\n`)
 }
 

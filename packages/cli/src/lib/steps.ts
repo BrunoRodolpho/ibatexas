@@ -30,7 +30,6 @@ async function runSeedProducts(): Promise<void> {
     if (res.ok) {
       const data = (await res.json()) as { products?: unknown[] }
       if ((data.products ?? []).length > 0) {
-        // eslint-disable-next-line no-console
         console.log(chalk.dim("    Products already exist — skipping seed"))
         return
       }
@@ -112,7 +111,6 @@ async function runSeedOrders(): Promise<void> {
 async function runSyncReviews(): Promise<void> {
   const { syncReviewStats } = await import("@ibatexas/tools")
   const result = await syncReviewStats()
-  // eslint-disable-next-line no-console
   console.log(chalk.dim(`    ${result.synced} synced, ${result.skipped} skipped`))
 }
 

@@ -6,7 +6,6 @@ import { join, resolve } from "node:path"
 import { parse as parseYaml } from "yaml"
 import chalk from "chalk"
 import ora from "ora"
-
 import { ROOT } from "../utils/root.js"
 import { runPipeline, type PipelineTask } from "./pipeline.js"
 import { StepRegistry, type StepName } from "./steps.js"

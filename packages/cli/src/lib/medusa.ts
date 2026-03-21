@@ -249,7 +249,7 @@ export async function fetchAllProductsWithTags(
   let offset = 0
   const limit = 100
 
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const data = await medusaFetch<{ products?: MedusaProduct[] }>(
       `/admin/products?limit=${limit}&offset=${offset}&fields=id,title,handle,*tags`,

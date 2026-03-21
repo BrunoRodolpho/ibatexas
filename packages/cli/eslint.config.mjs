@@ -7,4 +7,19 @@ const compat = new FlatCompat({
   recommendedConfig: js.configs.recommended,
   allConfig: js.configs.all,
 });
-export default [...compat.extends("@ibatexas/eslint-config")];
+export default [
+  ...compat.extends("@ibatexas/eslint-config"),
+  {
+    rules: {
+      // CLI tools legitimately use console.log for all output
+      "no-console": "off",
+    },
+  },
+  {
+    files: ["src/__tests__/**/*.ts"],
+    rules: {
+      // Test files have vi.mock/vi.hoisted blocks between imports — not real import groups
+      "import/order": "off",
+    },
+  },
+];

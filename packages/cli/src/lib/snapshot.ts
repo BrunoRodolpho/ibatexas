@@ -199,28 +199,22 @@ export function printVerifyResults(verification: {
   diffs: SnapshotDiff[]
 }): void {
   if (verification.drifted === 0 && verification.missing === 0) {
-    // eslint-disable-next-line no-console
     console.log(chalk.green(`  ✅  All ${verification.matched} state(s) match snapshots\n`))
     return
   }
 
   if (verification.drifted > 0) {
-    // eslint-disable-next-line no-console
     console.log(chalk.red(`  ❌  ${verification.drifted} state(s) drifted from snapshots:\n`))
     for (const diff of verification.diffs) {
-      // eslint-disable-next-line no-console
       console.log(chalk.bold(`    State ${diff.stateIndex}:`))
       for (const d of diff.diffs) {
-        // eslint-disable-next-line no-console
         console.log(chalk.red(`      ${d.section}: snapshot=${d.snapshotActual}, current=${d.currentActual}`))
       }
     }
-    // eslint-disable-next-line no-console
     console.log()
   }
 
   if (verification.missing > 0) {
-    // eslint-disable-next-line no-console
     console.log(chalk.yellow(`  ⚠️  ${verification.missing} state(s) have no saved snapshot (run --snapshot first)\n`))
   }
 }

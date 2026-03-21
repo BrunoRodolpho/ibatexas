@@ -1,6 +1,6 @@
+import crypto from "node:crypto"
 import type { Command } from "commander"
 import chalk from "chalk"
-import crypto from "node:crypto"
 
 // ── Env var catalogue ─────────────────────────────────────────────────────────
 

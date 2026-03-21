@@ -1,8 +1,8 @@
+import path from "node:path"
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
 import { execa } from "execa"
-import path from "node:path"
 import { ROOT } from "../utils/root.js"
 import { diagnoseDockerFailure } from "../lib/docker.js"
 
