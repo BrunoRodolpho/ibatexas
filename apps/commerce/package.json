@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "//build": "build runs tsc --noEmit for CI type-checking; use build:medusa for actual Medusa deployment builds",
+  "turbo": {
+    "build": { "outputs": [] }
+  },
   "scripts": {
     "dev": "medusa develop",
     "build": "tsc --noEmit",

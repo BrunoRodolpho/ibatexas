@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "turbo": {
+    "build": { "outputs": [] }
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
