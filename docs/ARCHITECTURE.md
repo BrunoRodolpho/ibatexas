@@ -239,6 +239,75 @@ flowchart LR
 
 ---
 
+## 5. Two Ways In — Browser vs AI Agent
+
+The same backend logic can be reached two ways. Understanding which path you're touching prevents bugs.
+
+```
+Browser (Web UI)                    Chat (AI Agent)
+     │                                   │
+     ▼                                   ▼
+ API Routes                        Agent Tool Registry
+ apps/api/src/routes/              packages/llm-provider/src/tool-registry.ts
+     │                                   │
+     └──────────┬────────────────────────┘
+                ▼
+        Shared Functions
+        packages/tools/src/
+```
+
+| Operation | Browser path | Agent path | Shared code? |
+|-----------|-------------|------------|:------------:|
+| Search products | `GET /api/products` | `search_products` tool | Yes |
+| Product details | `GET /api/products/:id` | `get_product_details` tool | Yes |
+| Delivery estimate | `GET /api/cart/delivery-estimate` | `estimate_delivery` tool | Yes |
+| Checkout | `POST /api/cart/checkout` | `create_checkout` tool | Yes |
+| Check availability | `GET /api/reservations/availability` | `check_table_availability` tool | Yes |
+| Create reservation | `POST /api/reservations` | `create_reservation` tool | Yes |
+| Modify reservation | `PATCH /api/reservations/:id` | `modify_reservation` tool | Yes |
+| Cancel reservation | `DELETE /api/reservations/:id` | `cancel_reservation` tool | Yes |
+| **Add to cart** | **Zustand store (client-side)** | `add_to_cart` tool (Medusa direct) | **No** |
+| **Update cart** | **Zustand store (client-side)** | `update_cart` tool (Medusa direct) | **No** |
+| **Remove from cart** | **Zustand store (client-side)** | `remove_from_cart` tool (Medusa direct) | **No** |
+| Order history | Not exposed yet | `get_order_history` tool | Agent only |
+| Customer profile | Not exposed | `get_customer_profile` tool | Agent only |
+| Recommendations | Not exposed | `get_recommendations` tool | Agent only |
+
+**Why cart is different:** The web app uses a client-side Zustand store for instant feedback. The agent calls Medusa backend directly. Both sync to Medusa at checkout via `createCheckout()`.
+
+**Key rule:** The web app **never** calls the agent. Two independent paths:
+- Browser UI → API routes → `packages/tools/` functions
+- Chat sidebar → SSE stream → agent loop → tools → same `packages/tools/` functions
+
+---
+
+## 6. Environments — Dev vs Staging vs Production
+
+| | Local Dev | Staging | Production |
+|---|---|---|---|
+| **Database** | Docker Postgres `:5433` | Supabase (sa-east-1) | Supabase (sa-east-1) |
+| **Redis** | Docker Redis `:6379` | AWS ElastiCache | AWS ElastiCache |
+| **Typesense** | Docker Typesense `:8108` | AWS hosted | AWS hosted |
+| **NATS** | Docker NATS `:4222` | AWS hosted | AWS hosted |
+| **Compute** | Local processes | ECS Fargate (`ibatexas-dev`) | ECS Fargate (`ibatexas-prod`) |
+| **Start with** | `ibx dev` | Push to `dev` branch | Push to `main` branch |
+| **APP_ENV** | `development` | `dev` | `production` |
+| **NODE_ENV** | `development` | `development` | `production` |
+| **Config** | `.env` + `docker-compose.yml` | Terraform + Secrets Manager | Terraform + Secrets Manager |
+| **DB setup** | `ibx bootstrap` | [supabase.md](setup/supabase.md) | [supabase.md](setup/supabase.md) |
+
+**Supabase is staging + production only.** Local dev uses Docker Postgres. Never Supabase locally.
+
+**`APP_ENV` vs `NODE_ENV`:**
+- `NODE_ENV` = Node.js runtime behavior (optimizations, source maps)
+- `APP_ENV` = Redis key namespace prefix — prevents cross-environment data bleed
+- `rk("customer:123")` → `development:customer:123` / `dev:customer:123` / `production:customer:123`
+- Missing `APP_ENV` in production **throws an error** (`packages/tools/src/redis/key.ts`)
+
+**Terraform note:** `infra/terraform/environments/dev/` is the **staging** environment (naming is confusing but intentional — it targets the `ibatexas-dev` ECS cluster).
+
+---
+
 ## Where Is X?
 
 | Concern | Go to | Start reading |

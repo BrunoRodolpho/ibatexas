@@ -1,7 +1,8 @@
 # Supabase Postgres — Setup Guide
 
+> **Staging + production only.** Local dev uses Docker Postgres via `ibx dev`. See [ARCHITECTURE.md](../ARCHITECTURE.md#6-environments--dev-vs-staging-vs-production) for the full environment matrix.
+
 IbateXas uses **Supabase** managed Postgres in staging and production.
-Local development continues to use docker-compose Postgres.
 
 ---
 
