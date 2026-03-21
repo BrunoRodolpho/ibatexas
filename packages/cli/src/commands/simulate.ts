@@ -4,7 +4,6 @@
 
 import type { Command } from "commander"
 import chalk from "chalk"
-
 import { runSimulation, rebuildAfterSimulation } from "../lib/simulator.js"
 import { PROFILE_NAMES, SCALE_NAMES, SCALE_PRESETS } from "../lib/profiles.js"
 import { guardDestructive } from "../lib/pipeline.js"

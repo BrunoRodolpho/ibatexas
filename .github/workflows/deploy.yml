@@ -70,7 +70,7 @@ jobs:
       - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile

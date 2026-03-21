@@ -1,6 +1,5 @@
 // Tests for lib/pipeline.ts — pipeline step execution.
 // Mocks ora/chalk output; tests pure execution logic.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock ora (spinner) ──────────────────────────────────────────────────────

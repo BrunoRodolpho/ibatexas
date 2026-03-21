@@ -4,7 +4,7 @@
 // Used exclusively by admin routes.
 
 import { prisma } from "../client.js"
-import { TableLocation as PrismaTableLocation } from "../generated/prisma-client/index.js"
+import { TableLocation as PrismaTableLocation } from "../generated/prisma-client/client.js"
 
 // ── Service ───────────────────────────────────────────────────────────────────
 

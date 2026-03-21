@@ -1,13 +1,14 @@
-import type { Command } from "commander"
-import type { ExecaChildProcess } from "execa"
-import chalk from "chalk"
-import ora from "ora"
-import { execa, execaSync } from "execa"
 import net from "node:net"
 import fs from "node:fs"
 import path from "node:path"
+import type { Command } from "commander"
+import type { ResultPromise } from "execa"
+import chalk from "chalk"
+import ora from "ora"
+import { execa, execaSync } from "execa"
 import { ROOT } from "../utils/root.js"
 import { resolveServices, type ServiceDef } from "../services.js"
+import { diagnoseDockerFailure } from "../lib/docker.js"
 
 const PID_FILE = path.join(ROOT, ".ibx-dev.pids")
 
@@ -71,7 +72,11 @@ function killTrackedServices(serviceKey?: string): number {
   if (serviceKey) {
     // Remove only the killed entries from the file
     const remaining = entries.filter((e) => e.key !== serviceKey)
-    remaining.length > 0 ? writePidEntries(remaining) : removePidFile()
+    if (remaining.length > 0) {
+      writePidEntries(remaining)
+    } else {
+      removePidFile()
+    }
   } else {
     removePidFile()
   }
@@ -199,7 +204,7 @@ async function checkInfrastructure(): Promise<InfraEntry[]> {
 
 // ── Service process management ────────────────────────────────────────────────
 
-function spawnService(svc: ServiceDef): ExecaChildProcess {
+function spawnService(svc: ServiceDef): ResultPromise {
   const proc = execa(
     "pnpm",
     ["--filter", svc.filter, svc.script],
@@ -343,7 +348,14 @@ async function startServices(
       spinner.succeed(chalk.green("Docker services healthy"))
     } catch (err) {
       spinner.fail(chalk.red("Docker failed to start"))
-      console.error(chalk.gray(String(err)))
+      const diagnostic = await diagnoseDockerFailure()
+      if (diagnostic) {
+        console.error("")
+        console.error(diagnostic)
+        console.error("")
+      } else {
+        console.error(chalk.gray(String(err)))
+      }
       process.exit(1)
     }
   }
@@ -448,7 +460,11 @@ async function forceStop(serviceKey: string | undefined, stopAll: boolean): Prom
     removePidFile()
   } else if (serviceKey) {
     const entries = readPidEntries().filter((e) => e.key !== serviceKey)
-    entries.length > 0 ? writePidEntries(entries) : removePidFile()
+    if (entries.length > 0) {
+      writePidEntries(entries)
+    } else {
+      removePidFile()
+    }
   }
 
   // Docker too when stopping all — use 'stop' to preserve volumes

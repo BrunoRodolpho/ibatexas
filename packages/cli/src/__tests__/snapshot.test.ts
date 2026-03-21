@@ -1,6 +1,5 @@
 // Tests for lib/snapshot.ts — Snapshot save/load/compare.
 // Mocks filesystem; never touches real disk.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock setup ───────────────────────────────────────────────────────────────

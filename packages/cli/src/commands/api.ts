@@ -4,7 +4,6 @@ import chalk from "chalk"
 import ora from "ora"
 import { searchProducts, closeRedisClient, Channel } from "@ibatexas/tools"
 import { v4 as uuidv4 } from 'uuid';
-
 import { getMedusaUrl, medusaFetch } from "../lib/medusa.js"
 
 // ── Types ─────────────────────────────────────────────────────────────────────

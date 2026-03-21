@@ -1,6 +1,5 @@
 // Tests for lib/stabilize.ts — state stabilization barrier.
 // Mocks Medusa fetch and @ibatexas/tools; never hits real APIs.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock setup ───────────────────────────────────────────────────────────────

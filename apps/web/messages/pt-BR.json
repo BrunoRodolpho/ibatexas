@@ -493,7 +493,8 @@
     "skip_to_content": "Pular para o conteúdo",
     "decrease_quantity": "Diminuir quantidade",
     "increase_quantity": "Aumentar quantidade",
-    "quantity_label": "Quantidade"
+    "quantity_label": "Quantidade",
+    "remove": "Remover"
   },
   "footer": {
     "tagline": "Defumados artesanais texanos, direto de Campinas para sua mesa.",

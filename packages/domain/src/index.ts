@@ -31,4 +31,4 @@ export type {
   ReservationStatus,
   StaffRole,
   Prisma,
-} from "./generated/prisma-client/index.js"
+} from "./generated/prisma-client/client.js"

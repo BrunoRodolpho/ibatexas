@@ -1,7 +1,6 @@
 // Tests for lib/simulator.ts — simulation engine.
 // Uses boundary mocking: Medusa, Prisma, ora, chalk are all mocked.
 // Validates the exported functions runSimulation and rebuildAfterSimulation.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock setup (vi.hoisted + vi.mock BEFORE imports) ─────────────────────────

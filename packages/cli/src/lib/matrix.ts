@@ -6,7 +6,6 @@
 
 import chalk from "chalk"
 import ora from "ora"
-
 import { runPipeline, type PipelineTask } from "./pipeline.js"
 import { StepRegistry, type StepName } from "./steps.js"
 import { acquireScenarioLock } from "./lock.js"

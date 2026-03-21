@@ -1,6 +1,5 @@
 // Tests for lib/lock.ts — Redis-based scenario lock.
 // Mocks Redis adapter layer; never spins real Redis.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock setup (vi.hoisted + vi.mock BEFORE imports) ─────────────────────────

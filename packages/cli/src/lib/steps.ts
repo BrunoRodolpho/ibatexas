@@ -61,7 +61,6 @@ async function runReindex(): Promise<void> {
   let offset = 0
   const limit = 100
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const res = await fetch(
       `${base}/admin/products?limit=${limit}&offset=${offset}&fields=*variants,*variants.price_set,*variants.price_set.prices,*tags,*categories,*images`,

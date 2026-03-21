@@ -1,6 +1,5 @@
 // Tests for lib/events.ts — structured event emitter for scenario execution.
 // Uses in-memory listener fixtures; no external deps.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // Freeze time so timestamps are deterministic

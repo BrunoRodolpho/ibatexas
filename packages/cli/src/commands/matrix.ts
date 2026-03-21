@@ -3,7 +3,6 @@
 
 import type { Command } from "commander"
 import chalk from "chalk"
-
 import { runMatrix, generateAllStates, generateCornerStates } from "../lib/matrix.js"
 import { saveSnapshots, verifySnapshots, printVerifyResults } from "../lib/snapshot.js"
 import { MATRIX_DEFINITIONS, MATRIX_NAMES } from "../matrices/index.js"

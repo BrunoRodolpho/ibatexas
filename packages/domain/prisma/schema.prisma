@@ -4,17 +4,13 @@
 // Run `ibx db migrate:domain` to apply migrations.
 
 generator client {
-  provider        = "prisma-client-js"
-  output          = "../src/generated/prisma-client"
-  binaryTargets   = ["native", "debian-openssl-3.0.x"]
-  previewFeatures = ["multiSchema"]
+  provider = "prisma-client"
+  output   = "../src/generated/prisma-client"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_DATABASE_URL")
-  schemas   = ["ibx_domain"]
+  provider = "postgresql"
+  schemas  = ["ibx_domain"]
 }
 
 // ─── Enums ────────────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import React from 'react'
+import type { Ref } from 'react'
 import { cva, type VariantProps } from 'class-variance-authority'
 import clsx from 'clsx'
 
@@ -32,8 +32,8 @@ export interface IconButtonProps
   readonly label: string
 }
 
-export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
-  ({ className, variant, size, icon, label, ...props }, ref) => (
+export function IconButton({ ref, className, variant, size, icon, label, ...props }: IconButtonProps & { ref?: Ref<HTMLButtonElement> }) {
+  return (
     <button
       ref={ref}
       className={clsx(iconButtonVariants({ variant, size }), className)}
@@ -43,6 +43,4 @@ export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
       {icon}
     </button>
   )
-)
-
-IconButton.displayName = 'IconButton'
+}

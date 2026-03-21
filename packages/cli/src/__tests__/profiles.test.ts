@@ -1,8 +1,6 @@
 // Tests for lib/profiles.ts — behavior profiles and scale presets.
 // Pure data validation; no mocks needed.
-
 import { describe, it, expect } from "vitest"
-
 import {
   PROFILES,
   PROFILE_NAMES,

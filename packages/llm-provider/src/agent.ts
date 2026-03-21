@@ -39,6 +39,11 @@ function getClient(): Anthropic {
   return _client
 }
 
+/** @internal Reset singleton for test isolation */
+export function _resetClient(): void {
+  _client = null
+}
+
 // ── Retry helper ──────────────────────────────────────────────────────────────
 
 /**

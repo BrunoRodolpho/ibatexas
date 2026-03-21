@@ -13,7 +13,6 @@
 import seedrandom from "seedrandom"
 import chalk from "chalk"
 import ora from "ora"
-
 import { PROFILES, type BehaviorProfile, SCALE_PRESETS } from "./profiles.js"
 import { StepRegistry } from "./steps.js"
 import { getAdminToken, medusaFetch, type MedusaProduct } from "./medusa.js"
@@ -192,7 +191,7 @@ async function loadCatalog(): Promise<CatalogProduct[]> {
   let offset = 0
   const limit = 100
 
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     const data = await medusaFetch<{ products?: MedusaProduct[] }>(
       `/admin/products?limit=${limit}&offset=${offset}&fields=id,title,handle,status,*variants,*variants.price_set,*variants.price_set.prices,*categories`,

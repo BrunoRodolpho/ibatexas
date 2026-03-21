@@ -15,7 +15,7 @@ interface CartItemProps {
 }
 
 export const CartItem: React.FC<CartItemProps> = ({
-  id,
+  id: _id,
   title,
   price,
   imageUrl,
