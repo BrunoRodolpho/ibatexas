@@ -22,6 +22,7 @@ import { registerSimulateCommands } from "./commands/simulate.js"
 import { registerTunnelCommands } from "./commands/tunnel.js"
 import { registerAuthCommands } from "./commands/auth.js"
 import { registerBootstrapCommands } from "./commands/bootstrap.js"
+import { registerDepsCommands } from "./commands/deps.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
@@ -173,6 +174,15 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Dependencies",
+      commands: [
+        { usage: "deps audit",       desc: "Detect unused, non-deterministic, or drifted overrides" },
+        { usage: "deps drift",       desc: "Check for undocumented override changes vs main" },
+        { usage: "deps radar",       desc: "Check upstream packages for override removal opportunities" },
+        { usage: "deps check",       desc: "Full dependency health check (audit + drift + radar)" },
+      ],
+    },
+    {
       title: "Config",
       commands: [
         { usage: "env check [--step n]", desc: "Validate required environment variables" },
@@ -243,6 +253,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "simulate", register: registerSimulateCommands },
   { name: "doctor",   register: registerDoctorCommands },
   { name: "auth",     register: registerAuthCommands },
+  { name: "deps",     register: registerDepsCommands },
 ]
 
 for (const { name, register, description } of groupedCommands) {

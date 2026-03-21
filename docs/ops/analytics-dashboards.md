@@ -2,42 +2,40 @@
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ CLIENT (apps/web)                                       │
-│                                                         │
-│  analytics.ts                                           │
-│  ├─ track(event, props) ─────┐                          │
-│  │                           │                          │
-│  │  ┌────────────────────────┤                          │
-│  │  │ posthog.capture()      │ (client-side, direct)    │
-│  │  │ (pageviews, sessions,  │                          │
-│  │  │  funnels, retention)   │                          │
-│  │  └────────────────────────┘                          │
-│  │                           │                          │
-│  └───── sendBeacon ──────────┘                          │
-│            │                                            │
-│  PostHogProvider (layout.tsx)                            │
-│  ├─ posthog.init() on mount                             │
-│  └─ $pageview on route change                           │
-└────────────┼────────────────────────────────────────────┘
-             │ HTTP POST
-             ▼
-┌─────────────────────────────────────────────────────────┐
-│ SERVER (apps/api)                                       │
-│                                                         │
-│  POST /api/analytics/track                              │
-│  ├─ Validate payload (Zod)                              │
-│  ├─ publishNatsEvent('web.{eventType}', payload)        │
-│  └─ 204 No Content                                      │
-└────────────┼────────────────────────────────────────────┘
-             │ NATS
-             ▼
-┌─────────────────────────────────────────────────────────┐
-│ NATS (ibatexas.web.*)                                   │
-│ → Future: ClickHouse consumer (Phase 3)                 │
-│ → Future: Real-time alerts                              │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#1e3a5f', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#4a90d9', 'lineColor': '#6ba3d6', 'background': '#0d1117', 'mainBkg': '#161b22', 'clusterBkg': '#161b22', 'clusterBorder': '#30363d'}}}%%
+flowchart TD
+  subgraph CLIENT["apps/web"]
+    TRACK["analytics.ts — track event, props"]
+    PH_CAP["posthog.capture — pageviews, funnels"]
+    BEACON["sendBeacon — POST /api/analytics/track"]
+  end
+
+  subgraph SERVER["apps/api"]
+    ROUTE["POST /api/analytics/track — Zod validate"]
+    NATS_PUB["publishNatsEvent — web.eventType"]
+  end
+
+  POSTHOG["PostHog Cloud — dashboards, retention"]
+  NATS_BUS["NATS ibatexas.web.*"]
+  FUTURE["Future: ClickHouse + alerts"]
+
+  TRACK --> PH_CAP
+  TRACK --> BEACON
+  PH_CAP -->|direct| POSTHOG
+  BEACON -->|HTTP POST| ROUTE
+  ROUTE --> NATS_PUB
+  NATS_PUB --> NATS_BUS
+  NATS_BUS -.-> FUTURE
+
+  style TRACK fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style PH_CAP fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style BEACON fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style ROUTE fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style NATS_PUB fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style POSTHOG fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
+  style NATS_BUS fill:#3e2723,stroke:#ffab91,color:#ffccbc
+  style FUTURE fill:#3e2723,stroke:#ffab91,color:#ffccbc
 ```
 
 **Dual-channel delivery:**

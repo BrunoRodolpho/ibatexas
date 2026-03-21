@@ -2,7 +2,7 @@
 
 AI-powered platform for a Brazilian Smoked House restaurant — food ordering, reservations, and a branded shop.
 
-Monorepo: Next.js storefront, Fastify API, WhatsApp channel, Claude AI agent with 25 implemented tools (2 planned), Medusa v2 commerce, owner admin panel.
+Monorepo: Next.js storefront, Fastify API, WhatsApp channel, Claude AI agent (25 tools), Medusa v2 commerce, owner admin panel. See [PROJECT_STATE.md](docs/PROJECT_STATE.md) for what works today.
 
 ---
 
@@ -24,44 +24,13 @@ ibx --help
 ibx <command> --help
 ```
 
-See [docs/ibx-cli.md](docs/ibx-cli.md) for the full CLI reference.
+See [docs/cli/reference.md](docs/cli/reference.md) for the full CLI reference (19 commands).
 
 ---
 
 ## How It Works
 
-```
-  Customer (Web)    Customer (WhatsApp)    Admin (/admin)
-       │                    │                     │
-       └─────────┬──────────┘                     │
-                 │                                 │
-  ┌──────────────▼──────────────────────────────────▼──┐
-  │              Fastify API (apps/api)                 │
-  │       REST + SSE streaming + OTP auth               │
-  │       Swagger UI → /docs                            │
-  └──────────┬──────────────────────┬──────────────────┘
-             │                      │
-     ┌───────▼────────┐     ┌───────▼────────┐
-     │  Claude Agent  │────▶│  Agent Tools   │
-     │  Orchestrator  │     │  (25 tools)    │
-     └───────┬────────┘     └───────┬────────┘
-             │                      │
-  ┌──────────┼──────────┬───────────┤
-  │          │          │           │
-  ▼          ▼          ▼           ▼
-Medusa     Prisma      Redis     Typesense
-(catalog,  (reservas,  (sessions, (product
- shop,      reviews,   profiles,   search)
- orders)    customers)  co-purchase)
-  │
-  └──── NATS Core ──▶ PostHog (analytics)
-
-  ┌──────────────────────────────────────────────────┐
-  │           Next.js Storefront (apps/web)           │
-  │  PDP · Search · Cart · Checkout · Login · Orders  │
-  │  PostHog analytics · sendBeacon → NATS            │
-  └──────────────────────────────────────────────────┘
-```
+See [docs/architecture/](docs/architecture/) for Mermaid diagrams (system context with dual-access paths, module map, browser + agent flows, CI/CD pipeline).
 
 ---
 
@@ -97,17 +66,39 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 
 ## Docs
 
+**Start here:**
+
 | Doc | Contents |
 |-----|---------|
+| [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) | What works, what's broken, priorities, test strategy |
+| [docs/architecture/](docs/architecture/) | System diagrams, module map, CI/CD, "where is X?" |
+| [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) | Pre-launch backlog — 13 items (Steps 1-3) + post-launch |
 | [CLAUDE.md](CLAUDE.md) | AI agent guide — hard rules, naming conventions |
-| [docs/ibx-cli.md](docs/ibx-cli.md) | Full `ibx` command reference |
+
+**Setup:**
+
+| Doc | Contents |
+|-----|---------|
+| [docs/cli/reference.md](docs/cli/reference.md) | Full `ibx` command reference (19 commands) |
 | [docs/setup/local-dev.md](docs/setup/local-dev.md) | Prerequisites, env vars, setup |
 | [docs/setup/pre-requisites.md](docs/setup/pre-requisites.md) | Bootstrap guide: `ibx bootstrap`, migrations, seeds |
-| [docs/design/bounded-contexts.md](docs/design/bounded-contexts.md) | 8 contexts, entity ownership |
-| [docs/design/domain-model.md](docs/design/domain-model.md) | Prisma schema, entities, NATS events |
-| [docs/design/agent-tools.md](docs/design/agent-tools.md) | 25 tools — auth level, inputs, outputs |
-| [docs/design/use-cases.md](docs/design/use-cases.md) | Web vs WhatsApp vs in-person matrix |
-| [docs/design/customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations, reviews, co-purchase |
-| [docs/analytics-dashboards.md](docs/analytics-dashboards.md) | Event taxonomy, PostHog dashboards, KPIs |
+| [docs/setup/supabase.md](docs/setup/supabase.md) | Supabase Postgres setup for staging + production |
+
+**Architecture & Design:**
+
+| Doc | Contents |
+|-----|---------|
+| [docs/architecture/decisions.md](docs/architecture/decisions.md) | ADRs, cross-cutting patterns |
+| [docs/architecture/design/bounded-contexts.md](docs/architecture/design/bounded-contexts.md) | 8 contexts, entity ownership |
+| [docs/architecture/design/domain-model.md](docs/architecture/design/domain-model.md) | Prisma schema, entities, NATS events |
+| [docs/architecture/design/agent-tools.md](docs/architecture/design/agent-tools.md) | 25 tools — auth level, inputs, outputs |
+| [docs/architecture/design/use-cases.md](docs/architecture/design/use-cases.md) | Web vs WhatsApp vs in-person matrix |
+| [docs/architecture/design/customer-intelligence.md](docs/architecture/design/customer-intelligence.md) | Recommendations, reviews, co-purchase |
+
+**Ops:**
+
+| Doc | Contents |
+|-----|---------|
+| [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) | Event taxonomy, PostHog dashboards, KPIs |
 | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) | Redis key patterns, TTLs, ops commands |
-| [docs/next-steps.md](docs/next-steps.md) | Roadmap — remaining build steps |
+| [docs/features/wishlist.md](docs/features/wishlist.md) | Wishlist feature — client-only, localStorage, MVP scope |

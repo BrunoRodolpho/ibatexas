@@ -4,7 +4,7 @@
  * All analytics events are defined here as a single union type.
  * When adding a new event:
  * 1. Add it to AnalyticsEvent below
- * 2. Document it in docs/analytics-dashboards.md
+ * 2. Document it in docs/ops/analytics-dashboards.md
  */
 
 export type AnalyticsEvent =

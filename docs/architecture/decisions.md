@@ -1,11 +1,10 @@
-# Architecture Notes
+# Architecture Decisions
 
-> Architectural knowledge discovered during the full-system audit (2026-03-18).
-> Updated: 2026-03-20 after validation pass.
+> Load-bearing decisions that must not be reverted without understanding why they exist.
 
 ---
 
-## Architecture Decisions
+## Decisions
 
 ### 1. Redis Roles + Circuit Breaker
 
@@ -68,51 +67,3 @@ Prevents TTL-less keys if process crashes between INCR and EXPIRE.
 Stripe and WhatsApp webhook routes use scoped content type parsers via
 `fastify.register()` with prefix encapsulation. They do NOT replace global parsers.
 
----
-
-## Service Communication
-
-```
-                                 +------------------+
-                                 |   PostHog Cloud  |
-                                 | (client-side JS) |
-                                 +--------+---------+
-                                          ^
-                                          | posthog.capture()
-+-----------+     +-----------+     +-----+------+     +-------------+
-| WhatsApp  |     | Browser   |     |  Next.js   |     |  Admin      |
-| (Twilio)  |     | (Web)     |     |  Web App   |     |  Next.js    |
-+-----+-----+     +-----+-----+     |  :3000     |     |  :3002      |
-      |                 |           +-----+------+     +------+------+
-      | webhook         | API            | SSR/API          | API
-      v                 v                v                  v
-+-----+-------------------------------------------------+---------+
-|                                                                  |
-|  Fastify API  (:3001)                                            |
-|  - Chat/SSE routes                                               |
-|  - Cart/Checkout routes                                          |
-|  - Reservation routes                                            |
-|  - Webhook handlers (Stripe, Twilio)                             |
-|  - Admin API routes (x-admin-key)                                |
-|  - BullMQ background jobs (5 workers)                            |
-|                                                                  |
-+---+------+------+------+------+------+------+------+------------+
-    |      |      |      |      |      |      |      |
-    v      v      v      v      v      v      v      v
-  Redis  Postgres NATS  Medusa Typesense Anthropic OpenAI Twilio
-  :6379  :5433   :4222  :9000  :8108    (cloud)  (cloud) (cloud)
-```
-
----
-
-## Already Documented Elsewhere
-
-- **Bounded contexts** — `docs/design/bounded-contexts.md`
-- **Domain model** — `docs/design/domain-model.md`
-- **Agent tools** — `docs/design/agent-tools.md`
-- **Use cases** — `docs/design/use-cases.md`
-- **Customer intelligence** — `docs/design/customer-intelligence.md`
-- **Redis keys** — `docs/ops/redis-memory.md`
-- **Analytics** — `docs/analytics-dashboards.md`
-- **CLI** — `docs/ibx-cli.md`
-- **Hard rules** — `CLAUDE.md`

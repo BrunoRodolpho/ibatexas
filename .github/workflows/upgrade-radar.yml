@@ -1,0 +1,20 @@
+name: Upgrade Radar
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # weekly on Mondays at 9am UTC
+  workflow_dispatch: {}
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check for upstream upgrades
+        run: pnpm upgrade:radar
