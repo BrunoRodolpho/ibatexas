@@ -6,26 +6,27 @@
     "dev": "next dev -p 3002",
     "build": "next build",
     "start": "next start -p 3002",
-    "lint": "eslint src/ --ext .ts,.tsx"
+    "lint": "eslint \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@ibatexas/ui": "workspace:*",
     "class-variance-authority": "^0.7.1",
-    "lucide-react": "^0.575.0",
-    "next": "14.2.35",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0",
+    "lucide-react": "^0.577.0",
+    "next": "^16.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "zod": "^4.3.6",
-    "zustand": "^5.0.11"
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
-    "@types/react": "^18.3.0",
-    "@types/react-dom": "^18.3.0",
-    "autoprefixer": "^10.4.0",
-    "postcss": "^8.4.0",
-    "tailwindcss": "^3.4.0",
-    "typescript": "^5.3.0"
+    "@tailwindcss/postcss": "^4.2.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^16.2.0",
+    "tailwindcss": "^4.2.0",
+    "typescript": "^5.9.0"
   }
 }

@@ -1,4 +1,4 @@
-import React from 'react'
+import type { Ref } from 'react'
 import clsx from 'clsx'
 
 export interface LabelProps extends React.LabelHTMLAttributes<HTMLLabelElement> {
@@ -7,8 +7,8 @@ export interface LabelProps extends React.LabelHTMLAttributes<HTMLLabelElement> 
   readonly helper?: string
 }
 
-export const Label = React.forwardRef<HTMLLabelElement, LabelProps>(
-  ({ className, required, error, helper, children, ...props }, ref) => (
+export function Label({ ref, className, required, error, helper, children, ...props }: LabelProps & { ref?: Ref<HTMLLabelElement> }) {
+  return (
     <div className="space-y-1">
       <label
         ref={ref}
@@ -29,6 +29,4 @@ export const Label = React.forwardRef<HTMLLabelElement, LabelProps>(
       )}
     </div>
   )
-)
-
-Label.displayName = 'Label'
+}

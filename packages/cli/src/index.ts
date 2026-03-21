@@ -21,6 +21,7 @@ import { registerMatrixCommands } from "./commands/matrix.js"
 import { registerSimulateCommands } from "./commands/simulate.js"
 import { registerTunnelCommands } from "./commands/tunnel.js"
 import { registerAuthCommands } from "./commands/auth.js"
+import { registerBootstrapCommands } from "./commands/bootstrap.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
@@ -41,6 +42,12 @@ interface GroupSection {
 
 function buildHelpText(): string {
   const groups: GroupSection[] = [
+    {
+      title: "Setup",
+      commands: [
+        { usage: "bootstrap",               desc: "One-shot setup — Docker + migrations + seeds + verify (--skip-docker, --skip-seed)" },
+      ],
+    },
     {
       title: "SDLC",
       commands: [
@@ -246,7 +253,7 @@ for (const { name, register, description } of groupedCommands) {
 }
 
 // ── Register root-level commands (no subgroup) ──────────────────────────────
-const rootRegistrations = [registerDbCommands, registerEnvCommands, registerGitCommands, registerIntelligenceCommands, registerTunnelCommands]
+const rootRegistrations = [registerBootstrapCommands, registerDbCommands, registerEnvCommands, registerGitCommands, registerIntelligenceCommands, registerTunnelCommands]
 for (const register of rootRegistrations) {
   register(program)
 }

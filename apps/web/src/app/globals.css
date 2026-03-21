@@ -1,6 +1,201 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@source "../../../../packages/ui/src/**/*.{ts,tsx}";
+
+@theme {
+  /* ── Colors (warm-shifted, no pure white) ──────────────────────── */
+  --color-brand-50: #FFF4EE;
+  --color-brand-100: #FFE4CC;
+  --color-brand-200: #FFC599;
+  --color-brand-300: #FFA066;
+  --color-brand-400: #FF7A33;
+  --color-brand-500: #E85D04;
+  --color-brand-600: #C94E00;
+  --color-brand-700: #A84000;
+  --color-brand-800: #7A2F00;
+  --color-brand-900: #3D1800;
+
+  --color-smoke-50: #FAFAF9;
+  --color-smoke-100: #F5F3F0;
+  --color-smoke-200: #EDE9E3;
+  --color-smoke-300: #DDD8CF;
+  --color-smoke-400: #C4BDB3;
+  --color-smoke-500: #A8A298;
+  --color-smoke-600: #8C877E;
+  --color-smoke-700: #706C64;
+  --color-smoke-800: #55524B;
+
+  --color-charcoal-600: #3A352F;
+  --color-charcoal-700: #2E2924;
+  --color-charcoal-800: #231F1C;
+  --color-charcoal-900: #1A1614;
+
+  --color-accent-green: #2D6A4F;
+  --color-accent-red: #DC2626;
+  --color-accent-amber: #D97706;
+
+  /* ── Typography ────────────────────────────────────────────────── */
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-display: var(--font-playfair), Georgia, serif;
+
+  --text-micro: 0.5625rem;
+  --text-micro--line-height: 0.75rem;
+
+  --text-display-xl: 4.5rem;
+  --text-display-xl--line-height: 1.05;
+  --text-display-xl--letter-spacing: -0.02em;
+
+  --text-display-lg: 3.75rem;
+  --text-display-lg--line-height: 1.08;
+  --text-display-lg--letter-spacing: -0.015em;
+
+  --text-display-md: 3rem;
+  --text-display-md--line-height: 1.1;
+  --text-display-md--letter-spacing: -0.01em;
+
+  --text-display-sm: 2.25rem;
+  --text-display-sm--line-height: 1.15;
+  --text-display-sm--letter-spacing: -0.005em;
+
+  --text-display-xs: 1.75rem;
+  --text-display-xs--line-height: 1.2;
+  --text-display-xs--letter-spacing: -0.005em;
+
+  --text-display-2xs: 1.375rem;
+  --text-display-2xs--line-height: 1.25;
+  --text-display-2xs--letter-spacing: 0;
+
+  --tracking-editorial: 0.04em;
+  --tracking-display: -0.02em;
+
+  /* ── Box Shadows (warm-tinted, minimal) ────────────────────────── */
+  --shadow-xs: 0 1px 2px 0 rgba(120,80,40,0.04);
+  --shadow-card: 0 2px 8px -1px rgba(120,80,40,0.06), 0 1px 3px -1px rgba(120,80,40,0.04);
+  --shadow-card-hover: 0 8px 24px -4px rgba(120,80,40,0.10), 0 4px 8px -2px rgba(120,80,40,0.04);
+  --shadow-md: 0 4px 12px -2px rgba(120,80,40,0.06), 0 2px 4px -2px rgba(120,80,40,0.03);
+  --shadow-lg: 0 10px 24px -4px rgba(120,80,40,0.08), 0 4px 8px -2px rgba(120,80,40,0.03);
+  --shadow-xl: 0 20px 48px -8px rgba(120,80,40,0.10), 0 8px 16px -4px rgba(120,80,40,0.04);
+
+  /* ── Border Radius ─────────────────────────────────────────────── */
+  --radius-card: 10px;
+
+  /* ── Spacing (luxury editorial rhythm) ─────────────────────────── */
+  --spacing-18: 4.5rem;
+  --spacing-22: 5.5rem;
+  --spacing-30: 7.5rem;
+  --spacing-34: 8.5rem;
+  --spacing-38: 9.5rem;
+
+  /* ── Transition (heavy, expensive feel) ────────────────────────── */
+  --ease-luxury: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-800: 800ms;
+  --duration-1000: 1000ms;
+
+  /* ── Animation shorthands ──────────────────────────────────────── */
+  --animate-fade-in: fade-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-slide-up: slide-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-reveal: reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-reveal-slow: reveal-slow 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-shimmer: shimmer 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  --animate-marquee: marquee 40s linear infinite;
+  --animate-bounce-subtle: bounce-subtle 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-bounce-y: bounce-y 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-press: press 0.1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-snap-underline: snap-underline 0.1s linear forwards;
+  --animate-slide-in-right: slide-in-right 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-slide-in-left: slide-in-left 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-slide-in-bottom: slide-in-bottom 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-pulse-once: pulse-once 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-cart-bounce: cart-bounce 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-steam: steam-rise 3s ease-out infinite;
+  --animate-add-success: add-success 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-fade-up: fade-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+
+  /* ── Keyframes ─────────────────────────────────────────────────── */
+  @keyframes fade-in {
+    0% { opacity: 0; }
+    100% { opacity: 1; }
+  }
+  @keyframes slide-up {
+    0% { opacity: 0; transform: translateY(8px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+  @keyframes reveal {
+    0% { opacity: 0; transform: translateY(16px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes reveal-slow {
+    0% { opacity: 0; transform: translateY(24px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes marquee {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
+  }
+  @keyframes bounce-subtle {
+    0% { transform: scale(1); }
+    40% { transform: scale(1.15); }
+    100% { transform: scale(1); }
+  }
+  @keyframes bounce-y {
+    0% { transform: translateY(0); }
+    30% { transform: translateY(-8px); }
+    50% { transform: translateY(0); }
+    70% { transform: translateY(-4px); }
+    100% { transform: translateY(0); }
+  }
+  @keyframes press {
+    0% { transform: scale(1); }
+    100% { transform: scale(0.95); }
+  }
+  @keyframes snap-underline {
+    0% { transform: scaleX(0); }
+    100% { transform: scaleX(1); }
+  }
+  @keyframes slide-in-right {
+    0% { transform: translateX(100%); }
+    100% { transform: translateX(0); }
+  }
+  @keyframes slide-in-left {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(0); }
+  }
+  @keyframes slide-in-bottom {
+    0% { transform: translateY(100%); }
+    100% { transform: translateY(0); }
+  }
+  @keyframes pulse-once {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(232,93,4,0.4); }
+    50% { transform: scale(1.05); box-shadow: 0 0 0 8px rgba(232,93,4,0); }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(232,93,4,0); }
+  }
+  @keyframes cart-bounce {
+    0% { transform: translateY(0); }
+    30% { transform: translateY(-4px); }
+    50% { transform: translateY(0); }
+    70% { transform: translateY(-2px); }
+    100% { transform: translateY(0); }
+  }
+  @keyframes steam-rise {
+    0% { opacity: 0; transform: translateY(0) scaleX(1); }
+    30% { opacity: 0.4; }
+    100% { opacity: 0; transform: translateY(-40px) scaleX(1.5); }
+  }
+  @keyframes add-success {
+    0% { transform: scale(1); }
+    20% { transform: scale(0.95); }
+    40% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+  }
+  @keyframes fade-up {
+    0% { opacity: 0; transform: translateY(16px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+}
 
 @layer base {
   html {

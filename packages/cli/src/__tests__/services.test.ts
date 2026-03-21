@@ -1,8 +1,6 @@
 // Tests for services.ts — service definitions and resolveServices.
 // Pure data + logic; no mocks needed.
-
 import { describe, it, expect } from "vitest"
-
 import {
   SERVICES,
   DEFAULT_SERVICES,

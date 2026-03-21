@@ -1,4 +1,4 @@
-import React from 'react'
+import type { Ref } from 'react'
 import clsx from 'clsx'
 
 export interface RadioOption {
@@ -18,8 +18,8 @@ export interface RadioGroupProps {
   readonly layout?: 'vertical' | 'horizontal'
 }
 
-export const RadioGroup = React.forwardRef<HTMLDivElement, RadioGroupProps>(
-  ({ name, options, value, onChange, error, errorMessage, layout = 'vertical' }, ref) => (
+export function RadioGroup({ ref, name, options, value, onChange, error, errorMessage, layout = 'vertical' }: RadioGroupProps & { ref?: Ref<HTMLDivElement> }) {
+  return (
     <div ref={ref} className="space-y-2">
       <fieldset
         className={clsx(
@@ -36,7 +36,7 @@ export const RadioGroup = React.forwardRef<HTMLDivElement, RadioGroupProps>(
                 name={name}
                 value={opt.value}
                 checked={value === opt.value}
-                onChange={(e) => onChange?.(opt.value)}
+                onChange={() => onChange?.(opt.value)}
                 disabled={opt.disabled}
                 className={clsx(
                   'w-4 h-4 rounded-full border cursor-pointer transition-colors duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] mt-0.5',
@@ -69,6 +69,4 @@ export const RadioGroup = React.forwardRef<HTMLDivElement, RadioGroupProps>(
       )}
     </div>
   )
-)
-
-RadioGroup.displayName = 'RadioGroup'
+}

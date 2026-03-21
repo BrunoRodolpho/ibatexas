@@ -1,6 +1,5 @@
 // Tests for lib/scenario-engine.ts — scenario execution engine.
 // Uses pure boundary mocking: all external I/O (fs, Redis, Medusa, etc.) is mocked.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock setup (vi.hoisted + vi.mock BEFORE imports) ─────────────────────────

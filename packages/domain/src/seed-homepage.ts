@@ -206,6 +206,17 @@ async function seedCustomers() {
 async function seedReviews() {
   console.log("⭐  Seeding reviews…")
 
+  // Check if Medusa is reachable before attempting API calls
+  const base = getMedusaUrl()
+  try {
+    const healthRes = await fetch(`${base}/health`, { signal: AbortSignal.timeout(3000) })
+    if (!healthRes.ok) throw new Error(`status ${healthRes.status}`)
+  } catch {
+    console.log("⚠️   Medusa is not running. Start it first: ibx dev start")
+    console.log("     Then re-run: ibx db seed:homepage")
+    return
+  }
+
   // Fetch all products from Medusa (with handles)
   const products = await fetchProducts()
   if (products.length === 0) {

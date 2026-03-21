@@ -1,7 +1,7 @@
 'use client'
 
 import { cva, type VariantProps } from 'class-variance-authority'
-import { forwardRef } from 'react'
+import type { Ref } from 'react'
 
 const buttonVariants = cva(
   'inline-flex items-center justify-center gap-2 font-medium rounded-sm text-sm transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed select-none',
@@ -67,8 +67,8 @@ export interface ButtonProps
   readonly isLoading?: boolean
 }
 
-const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, isLoading, disabled, children, ...props }, ref) => (
+function Button({ ref, className, variant, size, isLoading, disabled, children, ...props }: ButtonProps & { ref?: Ref<HTMLButtonElement> }) {
+  return (
     <button
       ref={ref}
       className={buttonVariants({ variant, size, className })}
@@ -84,7 +84,6 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       {children}
     </button>
   )
-)
-Button.displayName = 'Button'
+}
 
 export { Button, buttonVariants }

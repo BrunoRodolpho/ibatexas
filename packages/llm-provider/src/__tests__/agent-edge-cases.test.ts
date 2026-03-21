@@ -60,8 +60,11 @@ function buildMockStream(events: object[], finalMessage: object): object {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("runAgent edge cases", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
+    // Reset the singleton Anthropic client so each test gets a fresh mock instance
+    const { _resetClient } = await import("../agent.js")
+    _resetClient()
   })
 
   it("max_tokens stop_reason yields done (not error)", async () => {

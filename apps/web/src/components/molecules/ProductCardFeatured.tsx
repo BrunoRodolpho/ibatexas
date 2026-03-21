@@ -38,7 +38,7 @@ export const ProductCardFeatured = ({
   imageUrl,
   images,
   price,
-  variantCount,
+  variantCount: _variantCount,
   tags,
   href,
   onAddToCart,

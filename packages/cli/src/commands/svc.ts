@@ -1,6 +1,6 @@
+import net from "node:net"
 import type { Command } from "commander"
 import chalk from "chalk"
-import net from "node:net"
 import { SERVICES } from "../services.js"
 import { ROOT } from "../utils/root.js"
 

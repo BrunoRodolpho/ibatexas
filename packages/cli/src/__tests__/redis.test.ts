@@ -1,6 +1,5 @@
 // Tests for lib/redis.ts — scan utilities (scanDelete, scanCount).
 // Mocks the Redis client; never connects to real Redis.
-
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
 // ── Mock setup ───────────────────────────────────────────────────────────────

@@ -5,8 +5,8 @@
 
 import { prisma } from "../client.js"
 import { assertOwnership, assertMutable } from "./shared.js"
-import { Prisma, ReservationStatus as PrismaReservationStatus } from "../generated/prisma-client/index.js"
-import type { PrismaClient } from "../generated/prisma-client/index.js"
+import { Prisma, ReservationStatus as PrismaReservationStatus } from "../generated/prisma-client/client.js"
+import type { PrismaClient } from "../generated/prisma-client/client.js"
 import type {
   ReservationDTO,
   AvailableSlot,
@@ -16,7 +16,8 @@ import type {
 } from "@ibatexas/types"
 
 // Transaction client type for interactive transactions
-type TxClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">
+// Prisma 7 removed $use — omit only the remaining client-level methods
+type TxClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends">
 
 // ── Internal types ────────────────────────────────────────────────────────────
 

@@ -5,7 +5,6 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import chalk from "chalk"
-
 import { ROOT } from "../utils/root.js"
 import type { MatrixStateResult } from "./matrix.js"
 
