@@ -9,47 +9,63 @@
 Where the project ends and the world begins.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#1e3a5f', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#4a90d9', 'lineColor': '#6ba3d6', 'secondaryColor': '#2d4a22', 'tertiaryColor': '#4a3060', 'background': '#0d1117', 'mainBkg': '#161b22', 'nodeBorder': '#4a90d9', 'clusterBkg': '#161b22', 'clusterBorder': '#30363d', 'titleColor': '#e0e0e0', 'edgeLabelBackground': '#161b22'}}}%%
 graph TD
   subgraph Clients
     CLI["ibx CLI"]
     WEB["Next.js Storefront :3000"]
     ADMIN["Admin Panel :3002"]
     WA["WhatsApp via Twilio"]
-    BROWSER["Browser PostHog JS"]
   end
 
-  subgraph "Core — you own this"
+  subgraph Core
     API["Fastify API :3001"]
     AGENT["Claude Agent — 25 tools"]
     MEDUSA["Medusa v2 :9000"]
   end
 
-  subgraph "Data Tier — Docker"
-    PG[("PostgreSQL :5433 — ibx_domain + medusa")]
-    REDIS[("Redis :6379 — sessions, cache, rate limits")]
-    TS[("Typesense :8108 — product search")]
-    NATS["NATS :4222 — domain events"]
+  subgraph Data["Data Tier — Docker"]
+    PG[("PostgreSQL :5433")]
+    REDIS[("Redis :6379")]
+    TS[("Typesense :8108")]
+    NATS["NATS :4222"]
   end
 
-  subgraph "External — SaaS"
-    STRIPE["Stripe — card + PIX"]
-    TWILIO["Twilio — OTP + WhatsApp"]
-    ANTHROPIC["Anthropic — Claude API"]
-    POSTHOG["PostHog — analytics"]
-    SENTRY["Sentry — errors"]
+  subgraph External["External — SaaS"]
+    STRIPE["Stripe"]
+    TWILIO["Twilio"]
+    ANTHROPIC["Anthropic"]
+    POSTHOG["PostHog"]
+    SENTRY["Sentry"]
   end
 
   CLI --> API & MEDUSA & PG & REDIS & TS
   WEB --> API
   ADMIN --> API
   WA -->|webhook| API
-  BROWSER -->|client JS| POSTHOG
   API --> AGENT
   API --> MEDUSA & PG & REDIS & NATS & TS
-  API -->|webhooks| STRIPE & TWILIO
-  API --> ANTHROPIC & SENTRY
+  API --> STRIPE & TWILIO & ANTHROPIC & SENTRY
   AGENT --> MEDUSA & REDIS & TS & PG
   MEDUSA --> PG
+  WEB -.->|client JS| POSTHOG
+
+  style CLI fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style WEB fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style ADMIN fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style WA fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style API fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style AGENT fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style MEDUSA fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style PG fill:#3e2723,stroke:#ffab91,color:#ffccbc
+  style REDIS fill:#3e2723,stroke:#ffab91,color:#ffccbc
+  style TS fill:#3e2723,stroke:#ffab91,color:#ffccbc
+  style NATS fill:#3e2723,stroke:#ffab91,color:#ffccbc
+  style STRIPE fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
+  style TWILIO fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
+  style ANTHROPIC fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
+  style POSTHOG fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
+  style SENTRY fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
 ```
 
 ---
@@ -59,76 +75,42 @@ graph TD
 If you need X, go to Y.
 
 ```mermaid
-mindmap
-  root((IbateXas))
-    apps/
-      web/ :3000
-        domains/
-          analytics
-          cart
-          chat
-          checkout
-          search
-          session
-          shipping
-          wishlist
-        components/
-          atoms
-          molecules
-          organisms
-      api/ :3001
-        routes/
-          auth.ts
-          cart.ts
-          catalog.ts
-          reservations.ts
-          chat.ts
-          stripe-webhook.ts
-          whatsapp-webhook.ts
-          admin/
-        middleware/
-          auth.ts
-        whatsapp/
-          state-machine.ts
-          session.ts
-        jobs/
-        session/
-      commerce/ :9000
-        subscribers/
-      admin/ :3002
-        dashboard + cardapio
-    packages/
-      tools/
-        cart/
-        search/
-        reservation/
-        intelligence/
-        embeddings/
-        redis/
-        typesense/
-        guards/
-      domain/
-        prisma/
-        services/
-      cli/
-        commands/ — 19 commands
-          dev, svc, bootstrap — infra ops
-          db, test, scenario, matrix, simulate — data + testing
-          api, debug, inspect, intelligence — query + inspection
-          tag — product management
-          env, deps, auth, git, doctor — config + maintenance
-          tunnel — ngrok for WhatsApp webhooks
-      llm-provider/
-        agent.ts
-        tool-registry.ts
-        system-prompt.ts
-      nats-client/
-      types/
-      ui/
-    infra/
-      terraform/
-    .github/
-      workflows/
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#1e3a5f', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#4a90d9', 'lineColor': '#6ba3d6', 'background': '#0d1117', 'mainBkg': '#161b22', 'clusterBkg': '#161b22', 'clusterBorder': '#30363d'}}}%%
+graph LR
+  subgraph apps["apps/"]
+    direction TB
+    WEB["web/ :3000<br/>domains: analytics, cart, chat,<br/>checkout, search, session, shipping<br/>components: atoms, molecules, organisms"]
+    API_APP["api/ :3001<br/>routes: auth, cart, catalog, reservations,<br/>chat, stripe-webhook, whatsapp-webhook, admin/<br/>middleware, whatsapp/, jobs/, session/"]
+    COMMERCE["commerce/ :9000<br/>Medusa subscribers"]
+    ADMIN_APP["admin/ :3002<br/>dashboard + cardapio"]
+  end
+
+  subgraph packages["packages/"]
+    direction TB
+    TOOLS["tools/<br/>cart, search, reservation,<br/>redis, typesense, guards,<br/>intelligence, embeddings"]
+    DOMAIN["domain/<br/>prisma schema + migrations<br/>services: reservation, customer, order"]
+    LLM["llm-provider/<br/>agent.ts, tool-registry.ts,<br/>system-prompt.ts"]
+    CLI_PKG["cli/<br/>19 commands"]
+    OTHER["nats-client, types, ui"]
+  end
+
+  subgraph infra["infra + CI"]
+    direction TB
+    TF["terraform/<br/>ECS, ECR, ALB, IAM, DNS"]
+    GH[".github/workflows/<br/>9 pipelines"]
+  end
+
+  style WEB fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style API_APP fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style COMMERCE fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style ADMIN_APP fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style TOOLS fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style DOMAIN fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style LLM fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style CLI_PKG fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style OTHER fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style TF fill:#3e2723,stroke:#ffab91,color:#ffccbc
+  style GH fill:#3e2723,stroke:#ffab91,color:#ffccbc
 ```
 
 ### CLI → Core Engine Interaction
@@ -157,6 +139,7 @@ Every `ibx` command goes through the same infrastructure the apps use. No separa
 Trace a customer purchase from search to order confirmation.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'actorBkg': '#1a3a2a', 'actorBorder': '#4caf50', 'actorTextColor': '#c8e6c9', 'signalColor': '#6ba3d6', 'signalTextColor': '#e0e0e0', 'labelBoxBkgColor': '#161b22', 'labelBoxBorderColor': '#30363d', 'labelTextColor': '#e0e0e0', 'loopTextColor': '#e0e0e0', 'noteBkgColor': '#1e3a5f', 'noteTextColor': '#bbdefb', 'noteBorderColor': '#4a90d9', 'activationBkgColor': '#1e3a5f', 'activationBorderColor': '#4a90d9', 'sequenceNumberColor': '#e0e0e0'}}}%%
 sequenceDiagram
   actor C as Customer
   participant W as Web :3000
@@ -167,20 +150,28 @@ sequenceDiagram
   participant S as Stripe
   participant N as NATS
 
+  rect rgba(26, 58, 42, 0.3)
+  Note over C,T: Search
   C->>W: Search "costela"
   W->>A: GET /api/products?q=costela
   A->>T: search(products, "costela")
   T-->>A: hits[]
   A-->>W: products[]
   W-->>C: Product listing
+  end
 
+  rect rgba(30, 58, 95, 0.3)
+  Note over C,R: Cart
   C->>W: Add to cart
   W->>A: POST /api/cart/:id/line-items
   A->>M: POST /store/carts/:id/line-items
   M-->>A: updated cart
-  A->>R: hSet(active:carts, cartId, metadata)
+  A->>R: hSet(active:carts, cartId)
   A-->>W: cart with totals
+  end
 
+  rect rgba(62, 39, 35, 0.3)
+  Note over C,N: Checkout + Payment
   C->>W: Checkout with card
   W->>A: POST /api/cart/checkout
   A->>M: POST /store/carts/:id/complete
@@ -190,11 +181,11 @@ sequenceDiagram
   A-->>W: clientSecret
   W->>S: confirmCardPayment
   S-->>W: success
-
   S->>A: POST /webhooks/stripe
   A->>A: verify signature + idempotency
   A->>N: publish order.placed
   A-->>S: 200 OK
+  end
 ```
 
 ---
@@ -204,42 +195,46 @@ sequenceDiagram
 What runs when. Helps decide what's priority vs noise.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#1e3a5f', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#4a90d9', 'lineColor': '#6ba3d6', 'background': '#0d1117', 'mainBkg': '#161b22', 'clusterBkg': '#161b22', 'clusterBorder': '#30363d'}}}%%
 flowchart LR
-  subgraph "On Every PR"
+  subgraph PR["On Every PR"]
     PUSH[Push / PR] --> LINT[pnpm lint]
-    PUSH --> TEST["pnpm test — Vitest + v8 coverage"]
+    PUSH --> TEST[pnpm test + coverage]
     PUSH --> AUDIT[pnpm audit]
     PUSH --> CODEQL[CodeQL SAST]
-    PUSH --> SECRETS[Gitleaks scan]
-    PUSH --> BRANCH[Branch naming check]
-    TEST --> SONAR[SonarCloud quality gate]
+    PUSH --> SECRETS[Gitleaks]
+    PUSH --> BRANCH[Branch naming]
+    TEST --> SONAR[SonarCloud gate]
     LINT & TEST & AUDIT --> BUILD[pnpm build]
   end
 
-  subgraph "On Merge to dev"
-    DEV[Merge to dev] --> STAGE_BUILD[Docker build — api + web + admin]
-    STAGE_BUILD --> ECR_S[Push to ECR]
-    ECR_S --> MIGRATE_S[Prisma migrate]
-    MIGRATE_S --> DEPLOY_S["ECS deploy — ibatexas-dev"]
-    DEPLOY_S --> HEALTH_S[Health check]
+  subgraph STAGING["On Merge to dev"]
+    DEV[Merge to dev] --> S1[Docker build]
+    S1 --> S2[Push to ECR]
+    S2 --> S3[Prisma migrate]
+    S3 --> S4["Deploy ibatexas-dev"]
+    S4 --> S5[Health check]
   end
 
-  subgraph "On Merge to main"
-    MAIN[Merge to main] --> PROD_BUILD[Docker build]
-    PROD_BUILD --> ECR_P[Push to ECR]
-    ECR_P --> MIGRATE_P[Prisma migrate]
-    MIGRATE_P --> DEPLOY_P["ECS deploy — ibatexas-prod"]
-    DEPLOY_P --> HEALTH_P[Health check]
+  subgraph PROD["On Merge to main"]
+    MAIN[Merge to main] --> P1[Docker build]
+    P1 --> P2[Push to ECR]
+    P2 --> P3[Prisma migrate]
+    P3 --> P4["Deploy ibatexas-prod"]
+    P4 --> P5[Health check]
   end
 
-  subgraph "Scheduled"
-    WEEKLY[Weekly Mon] --> UPGRADE[upgrade-radar]
-    WEEKLY --> CODEQL2[CodeQL scan]
+  subgraph CRON["Scheduled"]
+    W[Weekly Mon] --> U[upgrade-radar]
+    W --> CQ[CodeQL scan]
   end
 
-  subgraph "On Merge — cleanup"
-    MERGED[PR merged] --> CLEANUP[Delete branch]
-  end
+  style TEST fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style SONAR fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style CODEQL fill:#3e2723,stroke:#ffab91,color:#ffccbc
+  style SECRETS fill:#3e2723,stroke:#ffab91,color:#ffccbc
+  style S4 fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style P4 fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
 ```
 
 ---
