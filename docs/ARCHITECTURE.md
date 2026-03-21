@@ -68,6 +68,46 @@ graph TD
   style SENTRY fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
 ```
 
+### Two Ways In — Browser vs AI Agent
+
+The same backend logic can be reached two ways. Understanding which path you're touching prevents bugs.
+
+```
+Browser (Web UI)                    Chat (AI Agent)
+     │                                   │
+     ▼                                   ▼
+ API Routes                        Agent Tool Registry
+ apps/api/src/routes/              packages/llm-provider/src/tool-registry.ts
+     │                                   │
+     └──────────┬────────────────────────┘
+                ▼
+        Shared Functions
+        packages/tools/src/
+```
+
+| Operation | Browser path | Agent path | Shared code? |
+|-----------|-------------|------------|:------------:|
+| Search products | `GET /api/products` | `search_products` tool | Yes |
+| Product details | `GET /api/products/:id` | `get_product_details` tool | Yes |
+| Delivery estimate | `GET /api/cart/delivery-estimate` | `estimate_delivery` tool | Yes |
+| Checkout | `POST /api/cart/checkout` | `create_checkout` tool | Yes |
+| Check availability | `GET /api/reservations/availability` | `check_table_availability` tool | Yes |
+| Create reservation | `POST /api/reservations` | `create_reservation` tool | Yes |
+| Modify reservation | `PATCH /api/reservations/:id` | `modify_reservation` tool | Yes |
+| Cancel reservation | `DELETE /api/reservations/:id` | `cancel_reservation` tool | Yes |
+| **Add to cart** | **Zustand store (client-side)** | `add_to_cart` tool (Medusa direct) | **No** |
+| **Update cart** | **Zustand store (client-side)** | `update_cart` tool (Medusa direct) | **No** |
+| **Remove from cart** | **Zustand store (client-side)** | `remove_from_cart` tool (Medusa direct) | **No** |
+| Order history | Not exposed yet | `get_order_history` tool | Agent only |
+| Customer profile | Not exposed | `get_customer_profile` tool | Agent only |
+| Recommendations | Not exposed | `get_recommendations` tool | Agent only |
+
+**Why cart is different:** The web app uses a client-side Zustand store for instant feedback. The agent calls Medusa backend directly. Both sync to Medusa at checkout via `createCheckout()`.
+
+**Key rule:** The web app **never** calls the agent. Two independent paths:
+- Browser UI → API routes → `packages/tools/` functions
+- Chat sidebar → SSE stream → agent loop → tools → same `packages/tools/` functions
+
 ---
 
 ## 2. Source of Truth — Module Map
@@ -239,49 +279,7 @@ flowchart LR
 
 ---
 
-## 5. Two Ways In — Browser vs AI Agent
-
-The same backend logic can be reached two ways. Understanding which path you're touching prevents bugs.
-
-```
-Browser (Web UI)                    Chat (AI Agent)
-     │                                   │
-     ▼                                   ▼
- API Routes                        Agent Tool Registry
- apps/api/src/routes/              packages/llm-provider/src/tool-registry.ts
-     │                                   │
-     └──────────┬────────────────────────┘
-                ▼
-        Shared Functions
-        packages/tools/src/
-```
-
-| Operation | Browser path | Agent path | Shared code? |
-|-----------|-------------|------------|:------------:|
-| Search products | `GET /api/products` | `search_products` tool | Yes |
-| Product details | `GET /api/products/:id` | `get_product_details` tool | Yes |
-| Delivery estimate | `GET /api/cart/delivery-estimate` | `estimate_delivery` tool | Yes |
-| Checkout | `POST /api/cart/checkout` | `create_checkout` tool | Yes |
-| Check availability | `GET /api/reservations/availability` | `check_table_availability` tool | Yes |
-| Create reservation | `POST /api/reservations` | `create_reservation` tool | Yes |
-| Modify reservation | `PATCH /api/reservations/:id` | `modify_reservation` tool | Yes |
-| Cancel reservation | `DELETE /api/reservations/:id` | `cancel_reservation` tool | Yes |
-| **Add to cart** | **Zustand store (client-side)** | `add_to_cart` tool (Medusa direct) | **No** |
-| **Update cart** | **Zustand store (client-side)** | `update_cart` tool (Medusa direct) | **No** |
-| **Remove from cart** | **Zustand store (client-side)** | `remove_from_cart` tool (Medusa direct) | **No** |
-| Order history | Not exposed yet | `get_order_history` tool | Agent only |
-| Customer profile | Not exposed | `get_customer_profile` tool | Agent only |
-| Recommendations | Not exposed | `get_recommendations` tool | Agent only |
-
-**Why cart is different:** The web app uses a client-side Zustand store for instant feedback. The agent calls Medusa backend directly. Both sync to Medusa at checkout via `createCheckout()`.
-
-**Key rule:** The web app **never** calls the agent. Two independent paths:
-- Browser UI → API routes → `packages/tools/` functions
-- Chat sidebar → SSE stream → agent loop → tools → same `packages/tools/` functions
-
----
-
-## 6. Environments — Dev vs Staging vs Production
+## 5. Environments — Dev vs Staging vs Production
 
 | | Local Dev | Staging | Production |
 |---|---|---|---|
