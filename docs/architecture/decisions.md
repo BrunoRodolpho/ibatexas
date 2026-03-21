@@ -1,9 +1,6 @@
 # Architecture Decisions
 
-> ADRs and cross-cutting patterns. Load-bearing decisions that must not be reverted without understanding why they exist.
->
-> For system diagrams and module map, see [ARCHITECTURE.md](../ARCHITECTURE.md).
-> For what works vs what's broken, see [PROJECT_STATE.md](../PROJECT_STATE.md).
+> Load-bearing decisions that must not be reverted without understanding why they exist.
 
 ---
 
@@ -70,22 +67,3 @@ Prevents TTL-less keys if process crashes between INCR and EXPIRE.
 Stripe and WhatsApp webhook routes use scoped content type parsers via
 `fastify.register()` with prefix encapsulation. They do NOT replace global parsers.
 
----
-
-## Service Communication
-
-See [ARCHITECTURE.md](../ARCHITECTURE.md) for the full system context diagram with Mermaid.
-
----
-
-## Related Docs
-
-| Doc | What it covers |
-|-----|---------------|
-| [ARCHITECTURE.md](../ARCHITECTURE.md) | System diagrams, module map, CI/CD pipeline, "where is X?" |
-| [PROJECT_STATE.md](../PROJECT_STATE.md) | What works, what's broken, priorities, test strategy |
-| [bounded-contexts.md](bounded-contexts.md) | 8 domain contexts, entity ownership |
-| [domain-model.md](domain-model.md) | Prisma schema, entities, NATS events |
-| [agent-tools.md](agent-tools.md) | 25 tools — auth level, inputs, outputs |
-| [redis-memory.md](../ops/redis-memory.md) | Redis key patterns, TTLs |
-| [CLAUDE.md](../../CLAUDE.md) | Hard rules, naming conventions |

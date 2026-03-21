@@ -24,7 +24,7 @@ Required before any real users:
 Production-grade visibility:
 
 - [ ] Structured pino logs → CloudWatch
-- [ ] PostHog dashboards: create the 3 dashboards defined in `docs/analytics-dashboards.md`
+- [ ] PostHog dashboards: create the 3 dashboards defined in `docs/ops/analytics-dashboards.md`
 - [ ] Sentry error tracking setup (DSN configured, code instrumented — needs project creation)
 - [ ] BetterStack uptime monitoring
 

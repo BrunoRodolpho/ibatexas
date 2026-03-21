@@ -6,23 +6,27 @@
 
 ## 1. Big Picture — System Context
 
-Where the project ends and the world begins.
+Where the project ends and the world begins. Two paths into the same shared logic.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#1e3a5f', 'primaryTextColor': '#e0e0e0', 'primaryBorderColor': '#4a90d9', 'lineColor': '#6ba3d6', 'secondaryColor': '#2d4a22', 'tertiaryColor': '#4a3060', 'background': '#0d1117', 'mainBkg': '#161b22', 'nodeBorder': '#4a90d9', 'clusterBkg': '#161b22', 'clusterBorder': '#30363d', 'titleColor': '#e0e0e0', 'edgeLabelBackground': '#161b22'}}}%%
 graph TD
   subgraph Clients
-    CLI["ibx CLI"]
-    WEB["Next.js Storefront :3000"]
-    ADMIN["Admin Panel :3002"]
+    WEB["Web :3000 + Admin :3002"]
+    CHAT["Chat UI sidebar"]
     WA["WhatsApp via Twilio"]
+    CLI["ibx CLI"]
   end
 
-  subgraph Core
-    API["Fastify API :3001"]
-    AGENT["Claude Agent — 25 tools"]
-    MEDUSA["Medusa v2 :9000"]
+  subgraph "Fastify API :3001"
+    ROUTES["API Routes<br/>cart, catalog, reservations, auth"]
+    CHAT_RT["Chat Route<br/>POST /chat + SSE stream"]
   end
+
+  AGENT["Claude Agent<br/>Anthropic tool-use API"]
+  TOOL_REG["Tool Registry<br/>25 tools — Zod validated"]
+  SHARED["packages/tools/<br/>shared logic"]
+  MEDUSA["Medusa v2 :9000"]
 
   subgraph Data["Data Tier — Docker"]
     PG[("PostgreSQL :5433")]
@@ -36,26 +40,31 @@ graph TD
     TWILIO["Twilio"]
     ANTHROPIC["Anthropic"]
     POSTHOG["PostHog"]
-    SENTRY["Sentry"]
   end
 
-  CLI --> API & MEDUSA & PG & REDIS & TS
-  WEB --> API
-  ADMIN --> API
-  WA -->|webhook| API
-  API --> AGENT
-  API --> MEDUSA & PG & REDIS & NATS & TS
-  API --> STRIPE & TWILIO & ANTHROPIC & SENTRY
-  AGENT --> MEDUSA & REDIS & TS & PG
-  MEDUSA --> PG
+  WEB ==>|"Path A: REST"| ROUTES
+  ROUTES ==> SHARED
+  CHAT -->|"Path B"| CHAT_RT
+  WA -->|"Path B: webhook"| CHAT_RT
+  CHAT_RT ==> AGENT
+  AGENT <==>|tool_use| ANTHROPIC
+  AGENT ==> TOOL_REG
+  TOOL_REG ==> SHARED
+  SHARED ==> MEDUSA & PG & REDIS & TS & NATS
+  SHARED ==> STRIPE & TWILIO
+  MEDUSA ==> PG
+  CLI -.-> SHARED & MEDUSA & PG
   WEB -.->|client JS| POSTHOG
 
-  style CLI fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style WEB fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
-  style ADMIN fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style CHAT fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style WA fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
-  style API fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
-  style AGENT fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style CLI fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
+  style ROUTES fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style CHAT_RT fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style AGENT fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
+  style TOOL_REG fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
+  style SHARED fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style MEDUSA fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style PG fill:#3e2723,stroke:#ffab91,color:#ffccbc
   style REDIS fill:#3e2723,stroke:#ffab91,color:#ffccbc
@@ -65,48 +74,22 @@ graph TD
   style TWILIO fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
   style ANTHROPIC fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
   style POSTHOG fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
-  style SENTRY fill:#2a1a3a,stroke:#ce93d8,color:#e1bee7
 ```
 
-### Two Ways In — Browser vs AI Agent
+### Path A vs Path B — Quick Reference
 
-The same backend logic can be reached two ways. Understanding which path you're touching prevents bugs.
-
-```
-Browser (Web UI)                    Chat (AI Agent)
-     │                                   │
-     ▼                                   ▼
- API Routes                        Agent Tool Registry
- apps/api/src/routes/              packages/llm-provider/src/tool-registry.ts
-     │                                   │
-     └──────────┬────────────────────────┘
-                ▼
-        Shared Functions
-        packages/tools/src/
-```
-
-| Operation | Browser path | Agent path | Shared code? |
-|-----------|-------------|------------|:------------:|
+| Operation | Path A: Browser (REST) | Path B: Agent (tool_use) | Shared? |
+|-----------|----------------------|--------------------------|:-------:|
 | Search products | `GET /api/products` | `search_products` tool | Yes |
 | Product details | `GET /api/products/:id` | `get_product_details` tool | Yes |
 | Delivery estimate | `GET /api/cart/delivery-estimate` | `estimate_delivery` tool | Yes |
 | Checkout | `POST /api/cart/checkout` | `create_checkout` tool | Yes |
-| Check availability | `GET /api/reservations/availability` | `check_table_availability` tool | Yes |
-| Create reservation | `POST /api/reservations` | `create_reservation` tool | Yes |
-| Modify reservation | `PATCH /api/reservations/:id` | `modify_reservation` tool | Yes |
-| Cancel reservation | `DELETE /api/reservations/:id` | `cancel_reservation` tool | Yes |
-| **Add to cart** | **Zustand store (client-side)** | `add_to_cart` tool (Medusa direct) | **No** |
-| **Update cart** | **Zustand store (client-side)** | `update_cart` tool (Medusa direct) | **No** |
-| **Remove from cart** | **Zustand store (client-side)** | `remove_from_cart` tool (Medusa direct) | **No** |
+| Reservations (all) | `GET/POST/PATCH/DELETE /api/reservations` | reservation tools | Yes |
+| **Cart (add/update/remove)** | **Zustand store (client-side)** | **Medusa direct** | **No** |
 | Order history | Not exposed yet | `get_order_history` tool | Agent only |
 | Customer profile | Not exposed | `get_customer_profile` tool | Agent only |
-| Recommendations | Not exposed | `get_recommendations` tool | Agent only |
 
-**Why cart is different:** The web app uses a client-side Zustand store for instant feedback. The agent calls Medusa backend directly. Both sync to Medusa at checkout via `createCheckout()`.
-
-**Key rule:** The web app **never** calls the agent. Two independent paths:
-- Browser UI → API routes → `packages/tools/` functions
-- Chat sidebar → SSE stream → agent loop → tools → same `packages/tools/` functions
+**Why cart diverges:** Web uses client-side Zustand for instant UX. Agent calls Medusa backend directly. Both converge at checkout via `createCheckout()`.
 
 ---
 
@@ -155,28 +138,26 @@ graph LR
 
 ### CLI → Core Engine Interaction
 
-Every `ibx` command goes through the same infrastructure the apps use. No separate paths.
+Every `ibx` command goes through the same infrastructure the apps use.
 
 | Command group | Touches | Why |
 |---------------|---------|-----|
 | `dev`, `svc`, `bootstrap` | Docker, Medusa, Postgres, Redis, Typesense, NATS | Start/stop/setup the full stack |
-| `db` | Postgres (Prisma + Medusa migrations), Typesense (reindex) | Schema + data lifecycle |
-| `test`, `scenario`, `matrix`, `simulate` | All data stores + Medusa | Seed, verify, simulate customer behavior |
+| `db` | Postgres (Prisma + Medusa), Typesense (reindex) | Schema + data lifecycle |
+| `test`, `scenario`, `matrix`, `simulate` | All data stores + Medusa | Seed, verify, simulate |
 | `api` (products, search, chat) | Medusa admin API, Typesense, API :3001 | Query catalog, test agent |
-| `debug` | Redis (raw keys), Typesense (raw docs), Postgres (profiles) | Infrastructure inspection |
-| `inspect` | Typesense, Postgres, Redis, Medusa | Business-level state (what the UI sees) |
-| `intelligence` | Redis (sorted sets), Postgres (order history) | Co-purchase matrix, global scores |
-| `tag` | Medusa admin API → Typesense reindex → Redis cache flush | Product metadata |
-| `deps` | pnpm workspace, Git | Dependency overrides audit + drift detection |
-| `env`, `auth`, `doctor` | dotenv, Redis, all infra (doctor) | Config validation, OTP debugging, health check |
-| `git` | Git | Branch status, recent commits |
-| `tunnel` | ngrok → API :3001 | Expose local API for WhatsApp webhook testing |
+| `debug`, `inspect`, `intelligence` | Redis, Typesense, Postgres, Medusa | Infrastructure + business state |
+| `tag` | Medusa → Typesense reindex → Redis cache flush | Product metadata |
+| `deps`, `env`, `auth`, `git`, `doctor` | pnpm, dotenv, Redis, Git, all infra | Config + maintenance |
+| `tunnel` | ngrok → API :3001 | Expose local API for WhatsApp webhooks |
 
 ---
 
-## 3. Life of a Request — Purchase Flow
+## 3. Life of a Request
 
-Trace a customer purchase from search to order confirmation.
+### 3a. Browser Purchase Flow (Path A)
+
+Customer browses, adds to cart, and checks out via the web UI.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'actorBkg': '#1a3a2a', 'actorBorder': '#4caf50', 'actorTextColor': '#c8e6c9', 'signalColor': '#6ba3d6', 'signalTextColor': '#e0e0e0', 'labelBoxBkgColor': '#161b22', 'labelBoxBorderColor': '#30363d', 'labelTextColor': '#e0e0e0', 'loopTextColor': '#e0e0e0', 'noteBkgColor': '#1e3a5f', 'noteTextColor': '#bbdefb', 'noteBorderColor': '#4a90d9', 'activationBkgColor': '#1e3a5f', 'activationBorderColor': '#4a90d9', 'sequenceNumberColor': '#e0e0e0'}}}%%
@@ -225,6 +206,54 @@ sequenceDiagram
   A->>A: verify signature + idempotency
   A->>N: publish order.placed
   A-->>S: 200 OK
+  end
+```
+
+### 3b. Agent Conversation Flow (Path B — WhatsApp / Chat UI)
+
+Customer orders via conversation. Agent autonomously decides which tools to call.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'actorBkg': '#1a3a2a', 'actorBorder': '#4caf50', 'actorTextColor': '#c8e6c9', 'signalColor': '#6ba3d6', 'signalTextColor': '#e0e0e0', 'labelBoxBkgColor': '#161b22', 'labelBoxBorderColor': '#30363d', 'labelTextColor': '#e0e0e0', 'loopTextColor': '#e0e0e0', 'noteBkgColor': '#1e3a5f', 'noteTextColor': '#bbdefb', 'noteBorderColor': '#4a90d9', 'activationBkgColor': '#1e3a5f', 'activationBorderColor': '#4a90d9', 'sequenceNumberColor': '#e0e0e0'}}}%%
+sequenceDiagram
+  actor C as Customer
+  participant CH as WhatsApp / Chat UI
+  participant A as API :3001
+  participant AG as Claude Agent
+  participant TL as packages/tools/
+  participant M as Medusa :9000
+  participant T as Typesense
+
+  rect rgba(26, 58, 42, 0.3)
+  Note over C,T: Turn 1 — Search
+  C->>CH: "quero comprar costela"
+  CH->>A: POST /chat/messages (or Twilio webhook)
+  A->>A: Store in session history
+  A-->>CH: messageId
+  A->>AG: runAgent(message, history, context)
+  AG->>AG: Decide: search_products
+  AG->>TL: search_products("costela")
+  TL->>T: Typesense search
+  T-->>TL: hits[]
+  TL-->>AG: products[]
+  AG-->>A: Stream text chunks (SSE / Twilio)
+  A-->>CH: "Encontrei costela! R$89. Quer adicionar?"
+  CH-->>C: Response displayed
+  end
+
+  rect rgba(30, 58, 95, 0.3)
+  Note over C,M: Turn 2 — Add to cart
+  C->>CH: "sim, 2 unidades"
+  CH->>A: POST /chat/messages
+  A->>AG: runAgent(message, history, context)
+  AG->>AG: Decide: add_to_cart
+  AG->>TL: add_to_cart(costela, qty: 2)
+  TL->>M: POST /store/carts/:id/line-items
+  M-->>TL: updated cart
+  TL-->>AG: cart summary
+  AG-->>A: Stream response
+  A-->>CH: "Adicionei 2x Costela. Total: R$178. Finalizar?"
+  CH-->>C: Response displayed
   end
 ```
 
@@ -292,7 +321,7 @@ flowchart LR
 | **APP_ENV** | `development` | `dev` | `production` |
 | **NODE_ENV** | `development` | `development` | `production` |
 | **Config** | `.env` + `docker-compose.yml` | Terraform + Secrets Manager | Terraform + Secrets Manager |
-| **DB setup** | `ibx bootstrap` | [supabase.md](setup/supabase.md) | [supabase.md](setup/supabase.md) |
+| **DB setup** | `ibx bootstrap` | [supabase.md](../setup/supabase.md) | [supabase.md](../setup/supabase.md) |
 
 **Supabase is staging + production only.** Local dev uses Docker Postgres. Never Supabase locally.
 
@@ -302,7 +331,7 @@ flowchart LR
 - `rk("customer:123")` → `development:customer:123` / `dev:customer:123` / `production:customer:123`
 - Missing `APP_ENV` in production **throws an error** (`packages/tools/src/redis/key.ts`)
 
-**Terraform note:** `infra/terraform/environments/dev/` is the **staging** environment (naming is confusing but intentional — it targets the `ibatexas-dev` ECS cluster).
+**Terraform note:** `infra/terraform/environments/dev/` is the **staging** environment (targets `ibatexas-dev` ECS cluster).
 
 ---
 

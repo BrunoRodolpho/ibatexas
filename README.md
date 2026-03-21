@@ -24,13 +24,13 @@ ibx --help
 ibx <command> --help
 ```
 
-See [docs/ibx-cli.md](docs/ibx-cli.md) for the full CLI reference (19 commands).
+See [docs/cli/reference.md](docs/cli/reference.md) for the full CLI reference (19 commands).
 
 ---
 
 ## How It Works
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for Mermaid diagrams (system context, module map, purchase flow, CI/CD pipeline).
+See [docs/architecture/](docs/architecture/) for Mermaid diagrams (system context with dual-access paths, module map, browser + agent flows, CI/CD pipeline).
 
 ---
 
@@ -71,7 +71,7 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | Doc | Contents |
 |-----|---------|
 | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) | What works, what's broken, priorities, test strategy |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System diagrams, module map, CI/CD, "where is X?" |
+| [docs/architecture/](docs/architecture/) | System diagrams, module map, CI/CD, "where is X?" |
 | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) | Pre-launch backlog — 13 items (Steps 1-3) + post-launch |
 | [CLAUDE.md](CLAUDE.md) | AI agent guide — hard rules, naming conventions |
 
@@ -79,26 +79,26 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 
 | Doc | Contents |
 |-----|---------|
-| [docs/ibx-cli.md](docs/ibx-cli.md) | Full `ibx` command reference (19 commands) |
+| [docs/cli/reference.md](docs/cli/reference.md) | Full `ibx` command reference (19 commands) |
 | [docs/setup/local-dev.md](docs/setup/local-dev.md) | Prerequisites, env vars, setup |
 | [docs/setup/pre-requisites.md](docs/setup/pre-requisites.md) | Bootstrap guide: `ibx bootstrap`, migrations, seeds |
-| [docs/setup/supabase.md](docs/setup/supabase.md) | Supabase Postgres setup for production |
+| [docs/setup/supabase.md](docs/setup/supabase.md) | Supabase Postgres setup for staging + production |
 
-**Design:**
+**Architecture & Design:**
 
 | Doc | Contents |
 |-----|---------|
-| [docs/design/bounded-contexts.md](docs/design/bounded-contexts.md) | 8 contexts, entity ownership |
-| [docs/design/domain-model.md](docs/design/domain-model.md) | Prisma schema, entities, NATS events |
-| [docs/design/agent-tools.md](docs/design/agent-tools.md) | 25 tools — auth level, inputs, outputs |
-| [docs/design/use-cases.md](docs/design/use-cases.md) | Web vs WhatsApp vs in-person matrix |
-| [docs/design/customer-intelligence.md](docs/design/customer-intelligence.md) | Recommendations, reviews, co-purchase |
-| [docs/design/architecture-decisions.md](docs/design/architecture-decisions.md) | ADRs, cross-cutting patterns |
+| [docs/architecture/decisions.md](docs/architecture/decisions.md) | ADRs, cross-cutting patterns |
+| [docs/architecture/design/bounded-contexts.md](docs/architecture/design/bounded-contexts.md) | 8 contexts, entity ownership |
+| [docs/architecture/design/domain-model.md](docs/architecture/design/domain-model.md) | Prisma schema, entities, NATS events |
+| [docs/architecture/design/agent-tools.md](docs/architecture/design/agent-tools.md) | 25 tools — auth level, inputs, outputs |
+| [docs/architecture/design/use-cases.md](docs/architecture/design/use-cases.md) | Web vs WhatsApp vs in-person matrix |
+| [docs/architecture/design/customer-intelligence.md](docs/architecture/design/customer-intelligence.md) | Recommendations, reviews, co-purchase |
 
 **Ops:**
 
 | Doc | Contents |
 |-----|---------|
-| [docs/analytics-dashboards.md](docs/analytics-dashboards.md) | Event taxonomy, PostHog dashboards, KPIs |
+| [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) | Event taxonomy, PostHog dashboards, KPIs |
 | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) | Redis key patterns, TTLs, ops commands |
 | [docs/features/wishlist.md](docs/features/wishlist.md) | Wishlist feature — client-only, localStorage, MVP scope |

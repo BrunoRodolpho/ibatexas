@@ -64,7 +64,7 @@ From [TODO-BACKLOG.md](backlog/TODO-BACKLOG.md) Steps 1-3 (13 items):
 
 **Observability (4 items)** — Required for production visibility
 - Structured pino logs -> CloudWatch
-- PostHog dashboards: create the 3 dashboards defined in [analytics-dashboards.md](analytics-dashboards.md)
+- PostHog dashboards: create the 3 dashboards defined in [analytics-dashboards.md](ops/analytics-dashboards.md)
 - Sentry error tracking setup
 - BetterStack uptime monitoring
 

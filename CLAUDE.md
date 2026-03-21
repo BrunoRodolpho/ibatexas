@@ -1,13 +1,19 @@
 # CLAUDE.md — AI Agent Guide for IbateXas
 
-> Read this before writing any code.
+> Read these docs before writing any code.
 
 | Need | Go to |
 |------|-------|
 | What works, what's broken, priorities | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) |
-| System diagrams, module map, "where is X?" | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| System diagrams, module map, "where is X?" | [docs/architecture/](docs/architecture/) |
 | Pre-launch backlog (13 items) | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) |
-| Full CLI reference (19 commands) | [docs/ibx-cli.md](docs/ibx-cli.md) |
+| Full CLI reference (19 commands) | [docs/cli/reference.md](docs/cli/reference.md) |
+| Bounded contexts, entity ownership | [docs/architecture/design/bounded-contexts.md](docs/architecture/design/bounded-contexts.md) |
+| Prisma schema, entities, NATS events | [docs/architecture/design/domain-model.md](docs/architecture/design/domain-model.md) |
+| 25 AI tools — auth level, inputs, outputs | [docs/architecture/design/agent-tools.md](docs/architecture/design/agent-tools.md) |
+| ADRs, cross-cutting patterns | [docs/architecture/decisions.md](docs/architecture/decisions.md) |
+| Analytics events, PostHog dashboards | [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) |
+| Redis key patterns, TTLs | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
 
 ---
 
@@ -27,7 +33,7 @@ If a command does not exist for what you need, add it to `packages/cli/` first, 
 5. **Auth:** Twilio Verify WhatsApp OTP — for both customers and staff. No Clerk, no passwords.
 6. **`.env`:** never committed — update `.env.example` when adding new vars
 7. **Redis keys:** always use `rk()` from `@ibatexas/tools` — never build raw key strings inline. This includes cache modules, session stores, and job schedulers.
-8. **Analytics events:** add to `AnalyticsEvent` union in `apps/web/src/domains/analytics/events.ts` AND document in `docs/analytics-dashboards.md`
+8. **Analytics events:** add to `AnalyticsEvent` union in `apps/web/src/domains/analytics/events.ts` AND document in `docs/ops/analytics-dashboards.md`
 
 ---
 
@@ -68,18 +74,3 @@ If a command does not exist for what you need, add it to `packages/cli/` first, 
 - Only run tests when explicitly requested
 - Do not start dev servers to verify changes
 - When spawning teammates, use in-process mode: `claude --teammate-mode in-process`
-
----
-
-## Design Docs — Read Before Building
-
-| Doc | Read before |
-|-----|------------|
-| [PROJECT_STATE.md](docs/PROJECT_STATE.md) | Any new work — check what's done, broken, or P0 |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Finding where code lives |
-| [bounded-contexts.md](docs/design/bounded-contexts.md) | Any domain logic |
-| [domain-model.md](docs/design/domain-model.md) | Any entity or schema |
-| [agent-tools.md](docs/design/agent-tools.md) | Any AI tool |
-| [architecture-decisions.md](docs/design/architecture-decisions.md) | ADRs, cross-cutting patterns |
-| [analytics-dashboards.md](docs/analytics-dashboards.md) | Any analytics event |
-| [redis-memory.md](docs/ops/redis-memory.md) | Any Redis key usage |
