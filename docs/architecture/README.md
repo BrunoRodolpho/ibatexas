@@ -15,7 +15,6 @@ graph TD
     WEB["Web :3000 + Admin :3002"]
     CHAT["Chat UI sidebar"]
     WA["WhatsApp via Twilio"]
-    CLI["ibx CLI"]
   end
 
   subgraph "Fastify API :3001"
@@ -53,13 +52,11 @@ graph TD
   SHARED ==> MEDUSA & PG & REDIS & TS & NATS
   SHARED ==> STRIPE & TWILIO
   MEDUSA ==> PG
-  CLI -.-> SHARED & MEDUSA & PG
   WEB -.->|client JS| POSTHOG
 
   style WEB fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style CHAT fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style WA fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
-  style CLI fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style ROUTES fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style CHAT_RT fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style AGENT fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
