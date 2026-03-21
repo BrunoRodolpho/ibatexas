@@ -8,6 +8,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { ROOT } from "../utils/root.js"
 import { resolveServices, type ServiceDef } from "../services.js"
+import { diagnoseDockerFailure } from "../lib/docker.js"
 
 const PID_FILE = path.join(ROOT, ".ibx-dev.pids")
 
@@ -343,7 +344,14 @@ async function startServices(
       spinner.succeed(chalk.green("Docker services healthy"))
     } catch (err) {
       spinner.fail(chalk.red("Docker failed to start"))
-      console.error(chalk.gray(String(err)))
+      const diagnostic = await diagnoseDockerFailure()
+      if (diagnostic) {
+        console.error("")
+        console.error(diagnostic)
+        console.error("")
+      } else {
+        console.error(chalk.gray(String(err)))
+      }
       process.exit(1)
     }
   }

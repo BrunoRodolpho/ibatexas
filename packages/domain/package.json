@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc --outDir dist && cp -r src/generated dist/generated",
+    "build": "rm -rf dist && tsc --outDir dist",
     "lint": "tsc --noEmit",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",

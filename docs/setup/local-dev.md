@@ -19,6 +19,8 @@ The `ibx` CLI is the primary tool for all dev operations.
 
 ## One-Time Setup
 
+> Starting from a fresh database? Run `ibx bootstrap` — it handles Docker, migrations, admin user, and seeds automatically. See [pre-requisites.md](pre-requisites.md) for details.
+
 ### 1. Install dependencies + build CLI
 
 ```bash
@@ -188,3 +190,5 @@ cd packages/cli && npm link && cd ../..
 | Seed fails | Ensure Medusa is running first: `ibx svc health` |
 | CLI command not found | `cd packages/cli && npm link` |
 | Docker containers unhealthy | `docker compose down -v && ibx dev` |
+| PG version mismatch (`initialized by PostgreSQL 15, not compatible with 17`) | `docker compose down -v && ibx bootstrap` |
+| `relation "X" does not exist` on startup | Run `ibx bootstrap` or manually: `ibx db migrate` then `ibx db migrate:domain` |

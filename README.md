@@ -15,6 +15,8 @@ pnpm --filter @ibatexas/cli build && npm link packages/cli  # build + link CLI
 ibx dev               # starts everything
 ```
 
+> First time or fresh database? Run `ibx bootstrap` — see [pre-requisites](docs/setup/pre-requisites.md) for details.
+
 Explore commands:
 
 ```bash
@@ -83,7 +85,7 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | Agent | Claude Sonnet (Anthropic), tool-use API — 25 tools |
 | Commerce | Medusa.js v2 — catalog, cart, orders, payments |
 | Auth | Twilio Verify — WhatsApp OTP (no passwords, no Clerk) |
-| Database | PostgreSQL 15 (Medusa + Prisma `ibx_domain` schema) |
+| Database | PostgreSQL 17 (Medusa + Prisma `ibx_domain` schema) |
 | Cache | Redis — sessions, CustomerProfile (30d TTL), co-purchase matrix |
 | Search | Typesense — full-text + vector product search |
 | Events | NATS Core — domain events, analytics pipeline |
@@ -100,6 +102,7 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | [CLAUDE.md](CLAUDE.md) | AI agent guide — hard rules, naming conventions |
 | [docs/ibx-cli.md](docs/ibx-cli.md) | Full `ibx` command reference |
 | [docs/setup/local-dev.md](docs/setup/local-dev.md) | Prerequisites, env vars, setup |
+| [docs/setup/pre-requisites.md](docs/setup/pre-requisites.md) | Bootstrap guide: `ibx bootstrap`, migrations, seeds |
 | [docs/design/bounded-contexts.md](docs/design/bounded-contexts.md) | 8 contexts, entity ownership |
 | [docs/design/domain-model.md](docs/design/domain-model.md) | Prisma schema, entities, NATS events |
 | [docs/design/agent-tools.md](docs/design/agent-tools.md) | 25 tools — auth level, inputs, outputs |
