@@ -1,6 +1,8 @@
 # CLAUDE.md — AI Agent Guide for IbateXas
 
 > Read this before writing any code.
+> For project status and priorities, see [PROJECT_STATE.md](docs/PROJECT_STATE.md).
+> For system diagrams and "where is X?", see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -110,6 +112,8 @@ See **[docs/ibx-cli.md](docs/ibx-cli.md)** for the full command reference.
 
 | Doc | Read before |
 |-----|------------|
+| [PROJECT_STATE.md](docs/PROJECT_STATE.md) | Any new work — check what's done, broken, or P0 |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Finding where code lives — module map, "where is X?" |
 | [bounded-contexts.md](docs/design/bounded-contexts.md) | Any domain logic |
 | [domain-model.md](docs/design/domain-model.md) | Any entity or schema |
 | [agent-tools.md](docs/design/agent-tools.md) | Any AI tool |
