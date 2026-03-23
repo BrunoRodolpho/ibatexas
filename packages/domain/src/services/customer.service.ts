@@ -190,4 +190,50 @@ export function createCustomerService() {
   }
 }
 
+/**
+ * LGPD Art. 18 — Anonymize a customer's personal data.
+ * Preserves order items (fiscal obligation) but delinks from profile.
+ */
+export async function anonymizeCustomer(customerId: string) {
+  await prisma.$transaction(async (tx) => {
+    // Anonymize profile
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { name: "Usuário Removido", email: null },
+    })
+
+    // Delete addresses
+    await tx.address.deleteMany({ where: { customerId } })
+
+    // Delete preferences
+    await tx.customerPreferences.deleteMany({ where: { customerId } })
+
+    // Delink order items (preserve for fiscal/analytics)
+    await tx.customerOrderItem.updateMany({
+      where: { customerId },
+      data: { customerId: null },
+    })
+  })
+
+  return { success: true }
+}
+
+/**
+ * LGPD Art. 18 — Export all personal data for a customer (portability).
+ */
+export async function exportCustomerData(customerId: string) {
+  const [customer, addresses, preferences, reviews, orderHistory] = await Promise.all([
+    prisma.customer.findUniqueOrThrow({
+      where: { id: customerId },
+      select: { id: true, phone: true, name: true, email: true, source: true, firstContactAt: true },
+    }),
+    prisma.address.findMany({ where: { customerId } }),
+    prisma.customerPreferences.findUnique({ where: { customerId } }),
+    prisma.review.findMany({ where: { customerId } }),
+    prisma.customerOrderItem.findMany({ where: { customerId } }),
+  ])
+
+  return { customer, addresses, preferences, reviews, orderHistory }
+}
+
 export type CustomerService = ReturnType<typeof createCustomerService>

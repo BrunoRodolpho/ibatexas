@@ -27,6 +27,7 @@ Example: `production:customer:profile:cust_123`
 | `wa:webhook:{MessageSid}` | String | 24 h | WhatsApp webhook idempotency (prevents Twilio retry reprocessing) | `apps/api/src/routes/whatsapp-webhook.ts` |
 | `wa:debounce:{phoneHash}` | String | 2 s | WhatsApp message debounce (batches rapid-fire messages) | `apps/api/src/whatsapp/session.ts` |
 | `wa:agent:{phoneHash}` | String | 30 s | WhatsApp distributed agent lock (heartbeat extends TTL every 10s) | `apps/api/src/whatsapp/session.ts` |
+| `wa:optin:{phoneHash}` | String | none | LGPD opt-in consent marker — set on first WhatsApp contact after disclosure | `apps/api/src/whatsapp/session.ts` |
 | `otp:ip:{ip}` | String | 1 h | OTP send rate limit per IP (max 10/hour) | `apps/api/src/routes/auth.ts` |
 | `otp:rate:{phoneHash}` | String | 10 min | OTP send rate limit (max 3 per phone per 10 min) | `apps/api/src/routes/auth.ts` |
 | `otp:fail:{phoneHash}` | String | 1 h | OTP brute-force counter (locks after 5 failures per hour) | `apps/api/src/routes/auth.ts` |
