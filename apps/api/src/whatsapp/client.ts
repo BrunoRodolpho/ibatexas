@@ -6,6 +6,7 @@
 
 import twilio from "twilio";
 import { hashPhone } from "./session.js";
+import logger from "../lib/logger.js";
 
 /** Compute retry delay: uses Retry-After header for 429, exponential backoff otherwise. */
 function getRetryDelay(err: unknown, attempt: number): number {
@@ -118,7 +119,7 @@ export async function sendText(to: string, body: string): Promise<void> {
     await sendSingleMessage(to, parts[i], hash);
   }
 
-  console.info("[whatsapp.send]", { phone_hash: hash, parts_count: parts.length });
+  logger.info({ phone_hash: hash, parts_count: parts.length }, "[whatsapp.send]");
 }
 
 async function sendSingleMessage(to: string, body: string, hash: string): Promise<void> {
@@ -132,9 +133,9 @@ async function sendSingleMessage(to: string, body: string, hash: string): Promis
       return;
     } catch (err) {
       const isLast = attempt === maxRetries - 1;
-      console.error(
-        `[whatsapp.send.error] attempt=${attempt + 1}/${maxRetries}`,
-        { phone_hash: hash, error: String(err) },
+      logger.error(
+        { phone_hash: hash, attempt: attempt + 1, maxRetries, error: String(err) },
+        "[whatsapp.send.error]",
       );
       if (isLast) throw err;
 

@@ -12,8 +12,8 @@ import { startReservationReminder } from "./reservation-reminder.js";
  * Start all background job workers and their repeatable schedules.
  */
 export function registerWorkers(log: FastifyBaseLogger): void {
-  startReservationReminder();
-  startNoShowChecker();
+  startReservationReminder(log);
+  startNoShowChecker(log);
   startReviewPromptPoller(log);
   startAbandonedCartChecker(log);
   startOutboxRetry(log);
