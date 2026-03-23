@@ -55,6 +55,7 @@ interface DataTableProps<T> {
   readonly isLoading?: boolean
   readonly emptyMessage?: string
   readonly onRowClick?: (row: T) => void
+  readonly rowClassName?: (row: T) => string | undefined
 }
 
 export function DataTable<T>({
@@ -64,6 +65,7 @@ export function DataTable<T>({
   isLoading = false,
   emptyMessage = 'Nenhum item encontrado.',
   onRowClick,
+  rowClassName,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [pagination, setPagination] = useState<PaginationState>({
@@ -146,7 +148,7 @@ export function DataTable<T>({
                   key={row.id}
                   className={`border-b border-smoke-100 last:border-0 hover:bg-smoke-100/50 ${
                     onRowClick ? 'cursor-pointer' : ''
-                  }`}
+                  } ${rowClassName?.(row.original) ?? ''}`}
                   tabIndex={onRowClick ? 0 : undefined}
                   onClick={() => onRowClick?.(row.original)}
                   onKeyDown={onRowClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(row.original) } } : undefined}

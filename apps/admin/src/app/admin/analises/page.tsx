@@ -1,8 +1,15 @@
 'use client'
 
-import { BarChart2 } from 'lucide-react'
-import { AdminComingSoonPage } from '@ibatexas/ui'
+import { AdminAnalisesPage } from '@ibatexas/ui'
+import { useAdminAnalytics } from '@/domains/admin/admin.hooks'
 
 export default function AnalisesPage() {
-  return <AdminComingSoonPage icon={BarChart2} title="Análises" />
+  const { metrics, loading } = useAdminAnalytics()
+
+  return (
+    <AdminAnalisesPage
+      metrics={metrics}
+      loading={loading}
+    />
+  )
 }
