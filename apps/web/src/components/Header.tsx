@@ -5,6 +5,8 @@ import { useTranslations } from "next-intl"
 import { useCartStore } from '@/domains/cart'
 import { useSessionStore } from '@/domains/session'
 import { useUIStore } from '@/domains/ui'
+import { useWishlistStore } from '@/domains/wishlist'
+import { Heart } from 'lucide-react'
 import { useEffect, useRef, useState } from "react"
 import { track } from '@/domains/analytics'
 
@@ -12,6 +14,7 @@ export function Header() {
   const t = useTranslations()
   const pathname = usePathname()
   const cartCount = useCartStore((s) => s.items.reduce((sum, i) => sum + i.quantity, 0))
+  const wishlistCount = useWishlistStore((s) => s.items.length)
   const userType = useSessionStore((s) => s.userType)
   const openCartDrawer = useUIStore((s) => s.openCartDrawer)
 
@@ -98,6 +101,19 @@ export function Header() {
                 <svg className="h-[15px] w-[15px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
+              </Link>
+
+              <Link
+                href="/lista-desejos"
+                className="relative p-2 text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+                aria-label={t("wishlist.title")}
+              >
+                <Heart className="h-[15px] w-[15px]" />
+                {wishlistCount > 0 && (
+                  <span className="absolute right-0 top-0 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-charcoal-900 text-micro font-semibold text-white">
+                    {wishlistCount}
+                  </span>
+                )}
               </Link>
 
               <button

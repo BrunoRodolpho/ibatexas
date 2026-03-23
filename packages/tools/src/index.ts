@@ -38,9 +38,6 @@ export { getOrderedTogether, GetOrderedTogetherTool } from "./intelligence/get-o
 export { syncReviewStats } from "./intelligence/sync-review-stats.js"
 export { PROFILE_TTL_SECONDS, RECENTLY_VIEWED_MAX } from "./intelligence/types.js"
 
-// ── Embeddings ─────────────────────────────────────────────────────────────────
-export { generateEmbedding, generateEmbeddingsBatch } from "./embeddings/client.js"
-
 // ── Redis ──────────────────────────────────────────────────────────────────────
 export { getRedisClient, closeRedisClient } from "./redis/client.js"
 export { rk } from "./redis/key.js"
@@ -54,9 +51,6 @@ export {
   type CircuitBreakerOptions,
 } from "./redis/circuit-breaker.js"
 export { safeRedis } from "./redis/safe-redis.js"
-
-// ── Vector utilities ───────────────────────────────────────────────────────────
-export { cosineSimilarity } from "./utils/vectors.js"
 
 // ── Mappers ────────────────────────────────────────────────────────────────────
 export { medusaToTypesenseDoc, typesenseDocToDTO } from "./mappers/product-mapper.js"
@@ -76,15 +70,6 @@ export {
   getCacheStats,
   type CacheFilterContext,
 } from "./cache/query-cache.js"
-
-// ── Embedding cache ────────────────────────────────────────────────────────────
-export {
-  getEmbeddingCache,
-  setEmbeddingCache,
-  deleteEmbeddingCache,
-  batchSetEmbeddingCache,
-  clearEmbeddingCache,
-} from "./cache/embedding-cache.js"
 
 // ── Typesense ──────────────────────────────────────────────────────────────────
 export { getTypesenseClient, ensureCollectionExists, recreateCollection, PRODUCTS_COLLECTION_SCHEMA, COLLECTION } from "./typesense/client.js"
