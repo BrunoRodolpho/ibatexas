@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mock NATS client ────────────────────────────────────────────────────────
 
-const mockPublishNatsEvent = vi.fn();
+const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,

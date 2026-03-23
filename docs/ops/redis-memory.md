@@ -20,8 +20,8 @@ Example: `production:customer:profile:cust_123`
 | `search_exact:{channel}:{hash}` | String (JSON) | 5 min | L0 exact query result cache (sha256 of normalized query + filters) | `packages/tools/src/cache/query-cache.ts` |
 | `search_cache:{channel}:{bucket}:...` | String (JSON) | 1 h | L1 semantic bucket cache (djb2 of quantized embedding + filters) | `packages/tools/src/cache/query-cache.ts` |
 | `query_log:{timestamp}:{sessionId}:{hash}` | String (JSON) | 7 d | Query log entries for analytics | `packages/tools/src/cache/query-cache.ts` |
-| `product_embedding:{productId}` | String (JSON) | 30 d | Cached product embedding vector for semantic search | `packages/tools/src/cache/embedding-cache.ts` |
-| `embedding:{key}` | String | 30 d | Cached OpenAI embedding vectors (generic) | `packages/tools/src/embeddings/client.ts` |
+| ~~`product_embedding:{productId}`~~ | — | — | REMOVED — dead embeddings code deleted | — |
+| ~~`embedding:{key}`~~ | — | — | REMOVED — dead embeddings code deleted | — |
 | `wa:phone:{phoneHash}` | Hash | 24 h | WhatsApp session — phone, sessionId, customerId, lastMessageAt, state | `apps/api/src/whatsapp/session.ts` |
 | `wa:rate:{phoneHash}` | String | 60 s | WhatsApp rate limit counter (max 20/min) | `apps/api/src/routes/whatsapp-webhook.ts` |
 | `wa:webhook:{MessageSid}` | String | 24 h | WhatsApp webhook idempotency (prevents Twilio retry reprocessing) | `apps/api/src/routes/whatsapp-webhook.ts` |
@@ -45,8 +45,8 @@ Example: `production:customer:profile:cust_123`
 | `cache:stats:l0:miss` | Counter | 30 d | L0 exact cache miss count | `packages/tools/src/cache/query-cache.ts` |
 | `cache:stats:l1:hit` | Counter | 30 d | L1 semantic cache hit count | `packages/tools/src/cache/query-cache.ts` |
 | `cache:stats:l1:miss` | Counter | 30 d | L1 semantic cache miss count | `packages/tools/src/cache/query-cache.ts` |
-| `cache:stats:embed:hit` | Counter | 30 d | Embedding cache hit count | `packages/tools/src/cache/embedding-cache.ts` |
-| `cache:stats:embed:miss` | Counter | 30 d | Embedding cache miss count | `packages/tools/src/cache/embedding-cache.ts` |
+| ~~`cache:stats:embed:hit`~~ | — | — | REMOVED — dead embeddings cache deleted | — |
+| ~~`cache:stats:embed:miss`~~ | — | — | REMOVED — dead embeddings cache deleted | — |
 | `session:owner:{sessionId}` | String | 24 h | Maps chat session to owning customerId (ownership guard for SSE streaming) | `apps/api/src/routes/chat.ts` |
 | `llm:tokens:{sessionId}` | String | configurable | LLM token usage counter per session (prevents runaway token spend) | `packages/llm-provider/src/agent.ts` |
 | `ratelimit:customer:create` | String | configurable | Rate limit for customer creation via WhatsApp (prevents abuse) | `apps/api/src/whatsapp/session.ts` |

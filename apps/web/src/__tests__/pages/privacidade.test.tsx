@@ -28,6 +28,20 @@ vi.mock("@/components/atoms", () => ({
   }),
 }))
 
+// Minimal React mock for createElement/JSX
+vi.mock("react", () => ({
+  default: {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({
+      type,
+      props: { ...((props as Record<string, unknown>) || {}), children },
+    }),
+  },
+  createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({
+    type,
+    props: { ...((props as Record<string, unknown>) || {}), children },
+  }),
+}))
+
 import PrivacidadePage from "../../app/[locale]/privacidade/page"
 
 /** Recursively collect all string content from a JSX tree. */

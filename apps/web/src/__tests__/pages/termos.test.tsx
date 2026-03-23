@@ -1,6 +1,20 @@
 // Unit tests for /termos page — verify all section headings render
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
+
+// Minimal React mock for createElement/JSX
+vi.mock("react", () => ({
+  default: {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({
+      type,
+      props: { ...((props as Record<string, unknown>) || {}), children },
+    }),
+  },
+  createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({
+    type,
+    props: { ...((props as Record<string, unknown>) || {}), children },
+  }),
+}))
 
 import TermosPage from "../../app/[locale]/termos/page"
 
