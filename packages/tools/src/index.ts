@@ -8,6 +8,8 @@ export { searchProducts, SearchProductsTool } from "./search/search-products.js"
 // ── Catalog tools ──────────────────────────────────────────────────────────────
 export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-details.js"
 export { estimateDelivery, EstimateDeliveryTool } from "./catalog/estimate-delivery.js"
+export { checkInventory, CheckInventoryTool } from "./catalog/check-inventory.js"
+export { getNutritionalInfo, GetNutritionalInfoTool } from "./catalog/get-nutritional-info.js"
 
 // ── Ownership guards ──────────────────────────────────────────────────────────
 export { assertOrderOwnership, assertReservationOwnership } from "./guards/ownership.js"
@@ -108,6 +110,9 @@ export {
   sendReservationReminder,
   notifyWaitlistSpotAvailable,
 } from "./reservation/notifications.js"
+
+// ── Support tools ────────────────────────────────────────────────────────────
+export { handoffToHuman, HandoffToHumanTool } from "./support/handoff-to-human.js"
 
 // ── WhatsApp sender (dependency injection) ───────────────────────────────────
 export { setWhatsAppSender, getWhatsAppSender } from "./whatsapp/sender.js"

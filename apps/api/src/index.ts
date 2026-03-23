@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/node";
 import { buildServer } from "./server.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
+import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { prisma } from "@ibatexas/domain";
@@ -64,6 +65,7 @@ const start = async (): Promise<void> => {
 
       // Register subscribers BEFORE starting jobs to prevent race condition
       await startCartIntelligenceSubscribers(server.log);
+      await startHandoffSubscriber(server.log);
 
       // Start all BullMQ background workers
       registerWorkers(server.log);
