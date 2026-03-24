@@ -65,7 +65,7 @@ resource "aws_iam_role_policy" "ecs_execution" {
   policy = data.aws_iam_policy_document.ecs_execution.json
 }
 
-# --- Task Role (application code — minimal permissions for now) ---
+# --- Task Role (application code — EFS access for Typesense) ---
 
 resource "aws_iam_role" "ecs_task" {
   name               = "ibatexas-${var.environment}-ecs-task"
@@ -74,4 +74,21 @@ resource "aws_iam_role" "ecs_task" {
   tags = {
     Environment = var.environment
   }
+}
+
+data "aws_iam_policy_document" "ecs_task" {
+  statement {
+    sid = "EFSAccess"
+    actions = [
+      "elasticfilesystem:ClientMount",
+      "elasticfilesystem:ClientWrite",
+    ]
+    resources = [aws_efs_file_system.typesense.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task" {
+  name   = "ibatexas-${var.environment}-ecs-task"
+  role   = aws_iam_role.ecs_task.id
+  policy = data.aws_iam_policy_document.ecs_task.json
 }

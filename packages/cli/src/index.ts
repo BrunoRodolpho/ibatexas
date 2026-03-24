@@ -23,6 +23,7 @@ import { registerTunnelCommands } from "./commands/tunnel.js"
 import { registerAuthCommands } from "./commands/auth.js"
 import { registerBootstrapCommands } from "./commands/bootstrap.js"
 import { registerDepsCommands } from "./commands/deps.js"
+import { registerInfraCommands } from "./commands/infra.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
@@ -183,6 +184,23 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Infrastructure",
+      commands: [
+        { usage: "infra init",       desc: "Create S3 state bucket + DynamoDB lock table (idempotent)" },
+        { usage: "infra plan",       desc: "Run terraform plan (with state safety check)" },
+        { usage: "infra apply",      desc: "Run terraform apply and display key outputs" },
+        { usage: "infra secrets",    desc: "Populate Secrets Manager entries (interactive, --from-env for CI)" },
+        { usage: "infra github",     desc: "Set GitHub repo secrets for CI/CD (detects repo)" },
+        { usage: "infra status",     desc: "Deployment health dashboard (--json)" },
+        { usage: "infra checklist",  desc: "Full deployment checklist with completion status" },
+        { usage: "infra explain",    desc: "Diagnose why a deploy is failing (follows dependency chain)" },
+        { usage: "infra destroy",    desc: "⚠  Destroy all AWS infrastructure (requires confirmation)" },
+        { usage: "infra logs [svc]", desc: "Tail ECS CloudWatch logs" },
+        { usage: "infra deploy",     desc: "Push to dev/main + health check (--watch, --timeout)" },
+        { usage: "infra doctor",     desc: "Deep infrastructure diagnostics" },
+      ],
+    },
+    {
       title: "Config",
       commands: [
         { usage: "env check [--step n]", desc: "Validate required environment variables" },
@@ -254,6 +272,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "doctor",   register: registerDoctorCommands },
   { name: "auth",     register: registerAuthCommands },
   { name: "deps",     register: registerDepsCommands },
+  { name: "infra",    register: registerInfraCommands, description: "Infrastructure — deployment and AWS" },
 ]
 
 for (const { name, register, description } of groupedCommands) {
