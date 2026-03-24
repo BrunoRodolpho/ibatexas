@@ -34,3 +34,23 @@ output "service_urls" {
     admin = "https://admin.${var.domain_name}"
   }
 }
+
+output "redis_endpoint" {
+  description = "ElastiCache Redis endpoint"
+  value       = aws_elasticache_cluster.this.cache_nodes[0].address
+}
+
+output "nats_endpoint" {
+  description = "NATS Cloud Map DNS endpoint"
+  value       = "nats://nats.ibatexas.local:4222"
+}
+
+output "typesense_endpoint" {
+  description = "Typesense Cloud Map DNS endpoint"
+  value       = "http://typesense.ibatexas.local:8108"
+}
+
+output "github_deploy_role_arn" {
+  description = "IAM role ARN for GitHub Actions OIDC — set as AWS_DEPLOY_ROLE_ARN secret"
+  value       = aws_iam_role.github_deploy.arn
+}
