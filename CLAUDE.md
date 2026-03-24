@@ -7,7 +7,8 @@
 | What works, what's broken, priorities | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) |
 | System diagrams, module map, "where is X?" | [docs/architecture/](docs/architecture/) |
 | Pre-launch backlog (13 items) | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) |
-| Full CLI reference (19 commands) | [docs/cli/reference.md](docs/cli/reference.md) |
+| Full CLI reference (20 commands) | [docs/cli/reference.md](docs/cli/reference.md) |
+| Deployment guide, CI/CD pipeline | [docs/setup/deployment.md](docs/setup/deployment.md) |
 | Bounded contexts, entity ownership | [docs/architecture/design/bounded-contexts.md](docs/architecture/design/bounded-contexts.md) |
 | Prisma schema, entities, NATS events | [docs/architecture/design/domain-model.md](docs/architecture/design/domain-model.md) |
 | 25 AI tools — auth level, inputs, outputs | [docs/architecture/design/agent-tools.md](docs/architecture/design/agent-tools.md) |

@@ -22,7 +22,7 @@ resource "aws_ecs_cluster" "this" {
 # --- CloudWatch Log Groups ---
 
 resource "aws_cloudwatch_log_group" "api" {
-  name              = "/ecs/ibatexas/api"
+  name              = "/ecs/ibatexas/${var.environment}/api"
   retention_in_days = 30
 
   tags = {
@@ -31,7 +31,7 @@ resource "aws_cloudwatch_log_group" "api" {
 }
 
 resource "aws_cloudwatch_log_group" "web" {
-  name              = "/ecs/ibatexas/web"
+  name              = "/ecs/ibatexas/${var.environment}/web"
   retention_in_days = 30
 
   tags = {
@@ -40,7 +40,7 @@ resource "aws_cloudwatch_log_group" "web" {
 }
 
 resource "aws_cloudwatch_log_group" "admin" {
-  name              = "/ecs/ibatexas/admin"
+  name              = "/ecs/ibatexas/${var.environment}/admin"
   retention_in_days = 30
 
   tags = {
@@ -138,10 +138,14 @@ resource "aws_ecs_task_definition" "this" {
           name  = "TRUST_PROXY"
           value = "true"
         }
-      ], each.key == "api" ? [
+        ], each.key == "api" ? [
         {
           name  = "RESTAURANT_TIMEZONE"
           value = "America/Sao_Paulo"
+        },
+        {
+          name  = "TYPESENSE_HOST"
+          value = "http://typesense.ibatexas.local:8108"
         }
       ] : [])
     }

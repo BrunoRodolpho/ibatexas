@@ -32,3 +32,9 @@ variable "admin_image_tag" {
   description = "Docker image tag for the Admin service"
   default     = "latest"
 }
+
+variable "github_repo" {
+  type        = string
+  description = "GitHub repo in org/repo format for OIDC trust"
+  default     = "thaisrodolpho/ibatexas"
+}

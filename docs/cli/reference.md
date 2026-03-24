@@ -397,6 +397,60 @@ against installed versions. Highlights when upstream upgrades could unblock over
 
 `ibx deps check` runs all three in sequence and reports a combined pass/fail.
 
+### Infrastructure — `ibx infra`
+
+```bash
+# Bootstrap (fresh AWS account → ready for terraform)
+ibx infra init                         # create S3 state bucket + DynamoDB lock table (idempotent)
+ibx infra init --region us-east-1      # override default region (sa-east-1)
+
+# Terraform operations
+ibx infra plan                         # terraform plan with state safety check
+ibx infra plan --out plan.tfplan       # save plan to file
+ibx infra apply                        # terraform apply + display key outputs
+ibx infra apply --plan plan.tfplan     # apply a saved plan
+ibx infra apply --env staging          # target a different environment
+
+# Secrets management
+ibx infra secrets                      # interactive prompt for 17 Secrets Manager entries
+ibx infra secrets --force              # re-prompt even for populated secrets
+ibx infra secrets --from-env           # non-interactive: read from environment variables (CI)
+ibx infra secrets --env staging        # target a different environment
+
+# GitHub CI/CD secrets
+ibx infra github                       # set repo secrets (OIDC role ARN, DB URLs, SONAR_TOKEN)
+
+# Status and diagnostics
+ibx infra status                       # deployment health dashboard
+ibx infra status --json                # machine-readable output for CI
+ibx infra checklist                    # numbered 12-step deployment checklist
+ibx infra explain                      # diagnose why a deploy is failing (root cause chain)
+ibx infra doctor                       # deep diagnostics (ECR, CloudWatch, Cloud Map, SGs)
+
+# Operations
+ibx infra logs api                     # tail CloudWatch logs for a service
+ibx infra logs nats --lines 100        # tail with custom line count
+ibx infra deploy                       # push current branch to dev
+ibx infra deploy --target main         # push to main (production)
+ibx infra deploy --watch               # push + poll status + health check
+ibx infra deploy --watch --timeout 20m # custom timeout for first deploy
+ibx infra destroy                      # ⚠  destroy all infrastructure (requires typing env name)
+```
+
+`ibx infra init` creates the S3 bucket for Terraform state and DynamoDB table for state locking.
+Verifies AWS account identity and region before creating resources. Idempotent — safe to re-run.
+
+`ibx infra secrets` validates each secret (URL format, key prefixes, minimum length) and runs
+cross-validation after all inputs (e.g., DATABASE_URL vs DIRECT_DATABASE_URL host mismatch).
+
+`ibx infra status` shows a deployment health confidence summary (HEALTHY / PARTIALLY HEALTHY / NOT READY)
+plus grouped checks for AWS, Terraform, ECS services, image freshness, secret staleness, and GitHub secrets.
+
+`ibx infra explain` follows the deployment dependency chain to find the root cause of failures:
+GitHub Actions → ECR images → ECS services → application startup → secrets. Suggests a fix command.
+
+For the full deployment guide, see [docs/setup/deployment.md](../setup/deployment.md).
+
 ### Auth — `ibx auth`
 
 ```bash

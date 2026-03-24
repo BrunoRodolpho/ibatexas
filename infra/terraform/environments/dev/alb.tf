@@ -22,7 +22,7 @@ resource "aws_lb_target_group" "api" {
   protocol             = "HTTP"
   vpc_id               = data.aws_vpc.default.id
   target_type          = "ip"
-  deregistration_delay = 30
+  deregistration_delay = 120
 
   health_check {
     path                = "/health"
