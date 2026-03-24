@@ -27,7 +27,7 @@ export function useOrderHistory() {
       const stored = localStorage.getItem(STORAGE_KEY)
       if (stored) {
         const parsed: LastOrder = JSON.parse(stored)
-        setLastOrder(parsed)
+        setLastOrder(parsed) // eslint-disable-line react-hooks/set-state-in-effect -- SSR-safe storage read requires effect
       }
     } catch {
       // localStorage not available

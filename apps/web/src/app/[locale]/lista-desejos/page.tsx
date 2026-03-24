@@ -20,12 +20,13 @@ export default function WishlistPage() {
   // Fetch a broad pool so we can match wishlist IDs
   const { data, loading } = useProducts({ limit: 200 })
 
+  const items = data?.items
   const wishlistProducts = useMemo(() => {
-    if (!data?.items || wishlistItems.length === 0) return []
+    if (!items || wishlistItems.length === 0) return []
     return wishlistItems
-      .map((id) => data.items.find((p) => p.id === id))
-      .filter(Boolean) as NonNullable<typeof data.items>[number][]
-  }, [data?.items, wishlistItems])
+      .map((id) => items.find((p) => p.id === id))
+      .filter(Boolean) as NonNullable<typeof items>[number][]
+  }, [items, wishlistItems])
 
   const handleAddToCart = (productId: string) => {
     const product = wishlistProducts.find((p) => p.id === productId)

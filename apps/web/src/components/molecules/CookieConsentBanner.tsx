@@ -1,6 +1,7 @@
 'use client'
 
 import { useConsentStore } from '@/domains/consent'
+import Link from 'next/link'
 
 export function CookieConsentBanner() {
   const { hasConsented, accept, reject } = useConsentStore()
@@ -11,9 +12,9 @@ export function CookieConsentBanner() {
     <div className="fixed bottom-0 inset-x-0 z-30 border-t border-smoke-200 bg-smoke-50 px-4 py-3 shadow-lg sm:flex sm:items-center sm:justify-between sm:px-6">
       <p className="text-sm text-charcoal-900">
         Usamos cookies para melhorar sua experiência.{' '}
-        <a href="/privacidade" className="underline text-brand-600 hover:text-brand-700">
+        <Link href="/privacidade" className="underline text-brand-600 hover:text-brand-700">
           Saiba mais
-        </a>
+        </Link>
       </p>
       <div className="mt-2 flex gap-2 sm:mt-0 sm:ml-4 sm:flex-shrink-0">
         <button

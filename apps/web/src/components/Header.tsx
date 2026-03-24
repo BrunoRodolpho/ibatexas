@@ -32,7 +32,7 @@ export function Header() {
 
   useEffect(() => {
     if (cartCount > prevCountRef.current) {
-      setIsBouncing(true)
+      setIsBouncing(true) // eslint-disable-line react-hooks/set-state-in-effect -- animation trigger on count change
       const timer = setTimeout(() => setIsBouncing(false), 600)
       return () => clearTimeout(timer)
     }

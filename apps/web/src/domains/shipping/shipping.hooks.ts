@@ -11,7 +11,7 @@ export function useShippingEstimate(cep?: string) {
   useEffect(() => {
     // Only fire when CEP is exactly 8 digits
     if (cep?.length !== 8 || !/^\d{8}$/.test(cep)) {
-      setData(null)
+      setData(null) // eslint-disable-line react-hooks/set-state-in-effect -- reset state for invalid CEP
       setLoading(false)
       setError(null)
       return

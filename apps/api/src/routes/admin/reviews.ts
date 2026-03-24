@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { createReviewService } from "@ibatexas/domain";
 import { prisma } from "@ibatexas/domain";
 
 export async function reviewRoutes(server: FastifyInstance): Promise<void> {

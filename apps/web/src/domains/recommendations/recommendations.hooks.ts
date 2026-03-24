@@ -36,7 +36,7 @@ export function useAlsoAdded(productId: string | undefined): HookResult<Recommen
 
   useEffect(() => {
     if (!enabled || !productId) {
-      setData(EMPTY)
+      setData(EMPTY) // eslint-disable-line react-hooks/set-state-in-effect -- reset when disabled
       return
     }
 
@@ -77,7 +77,7 @@ export function useRecommendations(limit = 6): HookResult<RecommendedProduct[]> 
 
   useEffect(() => {
     if (!enabled) {
-      setData(EMPTY)
+      setData(EMPTY) // eslint-disable-line react-hooks/set-state-in-effect -- reset when disabled
       return
     }
 
