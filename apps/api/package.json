@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "turbo": {
-    "build": { "outputs": [] }
+    "build": {
+      "outputs": []
+    }
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -31,6 +33,7 @@
     "bullmq": "^5.71.0",
     "fastify": "^5.8.2",
     "fastify-type-provider-zod": "^6.1.0",
+    "pino": "^10.3.1",
     "redis": "^4.7.1",
     "stripe": "^20.4.1",
     "twilio": "^5.13.0",

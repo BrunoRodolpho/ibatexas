@@ -30,11 +30,14 @@ import {
   acquireAgentLock,
   releaseAgentLock,
   tryDebounce,
+  hasOptedIn,
+  markOptedIn,
 } from "../whatsapp/session.js";
 import { collectAgentResponse } from "../whatsapp/formatter.js";
 import { sendText } from "../whatsapp/client.js";
 import { matchShortcut, buildHelpText } from "../whatsapp/shortcuts.js";
 import { handleStateMachine, transitionTo } from "../whatsapp/state-machine.js";
+import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
 
 const MAX_RATE_PER_MINUTE = 20;
 const DEBOUNCE_MS = 2000;
@@ -357,6 +360,13 @@ async function handleMessageAsync(
 
   // Refresh TTL
   await touchSession(hash);
+
+  // ── LGPD opt-in disclosure (once per phone) ─────────────────────────────────
+  const optedIn = await hasOptedIn(hash);
+  if (!optedIn) {
+    await sendText(`whatsapp:${phone}`, LGPD_OPTIN_MESSAGE);
+    await markOptedIn(hash);
+  }
 
   // ── Build user message (handle interactive selections) ──────────────────────
   const userMessage = buildUserMessage(body, messageBody);

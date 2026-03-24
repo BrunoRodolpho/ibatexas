@@ -5,7 +5,7 @@
  */
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
-import { invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
+import { invalidateAllQueryCache } from "@ibatexas/tools"
 import { fetchAndIndexProduct } from "./_product-indexing"
 
 export default async function productUpdatedHandler({
@@ -26,9 +26,6 @@ export default async function productUpdatedHandler({
     // Invalidate all query caches — product data changed (price, stock, availability)
     const flushed = await invalidateAllQueryCache()
     logger.info(`[Product Indexing] Flushed ${flushed} query cache entries`)
-
-    // Force re-embedding on next index (clear stale cached embedding)
-    await deleteEmbeddingCache(product.id)
 
     logger.info(`[Product Indexing] Re-indexed: ${product.id} (${product.title})`)
   } catch (error) {

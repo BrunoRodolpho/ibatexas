@@ -4,13 +4,14 @@
 
 import { setWhatsAppSender } from "@ibatexas/tools";
 import { sendText } from "./client.js";
+import logger from "../lib/logger.js";
 
 export function initWhatsAppSender(): void {
   if (!process.env.TWILIO_WHATSAPP_NUMBER) {
-    console.info("[whatsapp.init] TWILIO_WHATSAPP_NUMBER not set — notifications will use console stubs");
+    logger.info("[whatsapp.init] TWILIO_WHATSAPP_NUMBER not set — notifications will use console stubs");
     return;
   }
 
   setWhatsAppSender({ sendText });
-  console.info("[whatsapp.init] WhatsApp sender initialized");
+  logger.info("[whatsapp.init] WhatsApp sender initialized");
 }

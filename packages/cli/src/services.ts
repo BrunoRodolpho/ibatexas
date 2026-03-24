@@ -90,6 +90,22 @@ export const SERVICES: Record<string, ServiceDef> = {
     step: 5,
     urls: [{ label: "Storefront", url: "http://localhost:3000" }],
   },
+
+  admin: {
+    key: "admin",
+    name: "Next.js Admin",
+    filter: "@ibatexas/admin",
+    script: "dev",
+    port: 3002,
+    healthUrl: "http://localhost:3002",
+    logColor: chalk.yellow,
+    logPrefix: "admin",
+    available: true,
+    step: 5,
+    urls: [
+      { label: "Admin Panel", url: "http://localhost:3002/admin" },
+    ],
+  },
 }
 
 /** Services started by `ibx dev` with no argument */

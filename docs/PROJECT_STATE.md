@@ -1,6 +1,6 @@
 # Project State
 
-> Last updated: 2026-03-20
+> Last updated: 2026-03-23
 
 ---
 
@@ -15,13 +15,33 @@
 | Cash checkout | WORKS | `packages/tools/src/cart/create-checkout.ts` — completes order, publishes `order.placed` |
 | Order tracking (IDOR-safe) | WORKS | `apps/api/src/routes/cart.ts` — ownership check on order retrieval |
 | Reservations (customer) | WORKS | `apps/api/src/routes/reservations.ts` — availability, create, modify, cancel, waitlist |
-| WhatsApp agent chat | WORKS | `apps/api/src/routes/whatsapp-webhook.ts` — 471 lines, state machine, debounce, rate limit |
+| WhatsApp agent chat | WORKS | `apps/api/src/routes/whatsapp-webhook.ts` — state machine, debounce, rate limit, LGPD opt-in |
 | Staff authentication | WORKS | `apps/api/src/routes/auth.ts` — role-based (OWNER/MANAGER/ATTENDANT) |
 | Admin dashboard | WORKS | `apps/admin/src/app/admin/page.tsx` — loads metrics + recent orders |
 | Admin menu management | WORKS | `apps/admin/src/app/admin/cardapio/page.tsx` — list, search, toggle product status |
+| Admin orders page | WORKS | `apps/admin/src/app/admin/pedidos/page.tsx` — DataTable, status filters, pagination |
+| Admin reservations page | WORKS | `apps/admin/src/app/admin/reservas/page.tsx` — date/status filters, check-in/complete actions |
+| Admin analytics page | WORKS | `apps/admin/src/app/admin/analises/page.tsx` — 4 stat cards (orders, revenue, AOV, active carts) |
+| Admin ratings page | WORKS | `apps/admin/src/app/admin/avaliacoes/page.tsx` — star filter, low-rating highlighting |
 | Abandoned cart detection | WORKS | `apps/api/src/jobs/abandoned-cart-checker.ts` |
-| Analytics event tracking | WORKS | PostHog client-side + NATS server-side |
+| PIX timeout/expiry | WORKS | `apps/api/src/jobs/pix-expiry-checker.ts` — auto-cancel after configurable expiry |
+| Analytics event tracking | WORKS | PostHog client-side (consent-gated) + NATS server-side |
 | Delivery fee estimation | WORKS | `packages/tools/src/catalog/estimate-delivery.ts` + delivery zone lookup by CEP |
+| Cookie consent (LGPD) | WORKS | Zustand store + banner, gates PostHog initialization |
+| Privacy policy page | WORKS | `apps/web/src/app/[locale]/privacidade/page.tsx` — 6 LGPD sections |
+| Terms of use page | WORKS | `apps/web/src/app/[locale]/termos/page.tsx` — 4 sections, checkout terms checkbox |
+| WhatsApp LGPD opt-in | WORKS | First-message disclosure, Redis-backed one-time flag |
+| LGPD data export/delete | WORKS | `GET /api/me/data` + `DELETE /api/me/data` with customer anonymization |
+| Wishlist | WORKS | Store, ProductCard button, PDP button, `/lista-desejos` page, Header badge |
+| Web login UI wiring | WORKS | Header "Entrar" link, MobileBottomNav auth-aware, checkout/account redirects |
+| Structured logging | WORKS | Pino throughout `apps/api`, zero `console.*` calls |
+| Sentry error tracking | WORKS | Instrumented in apps/api, apps/web, apps/admin |
+| Agent: check_inventory | WORKS | `packages/tools/src/catalog/check-inventory.ts` — real-time Medusa stock check |
+| Agent: get_nutritional_info | WORKS | `packages/tools/src/catalog/get-nutritional-info.ts` — ANVISA-format from product metadata |
+| Agent: handoff_to_human | WORKS | `packages/tools/src/support/handoff-to-human.ts` — NATS event + staff WhatsApp notification |
+| Agent: intelligence tools | WORKS | 5 tools activated in system prompt (recommendations, ordered-together, also-added, profile, preferences) |
+| Swagger/OpenAPI docs | WORKS | `@fastify/swagger` + `@fastify/swagger-ui` at `/docs` |
+| Order refund/dispute handling | WORKS | Cart-intelligence subscribers handle `order.refunded` and `order.disputed` events |
 
 ---
 
@@ -29,52 +49,23 @@
 
 | Feature | Status | What's missing |
 |---------|--------|----------------|
-| PIX checkout | CODE EXISTS | Untested in production, no timeout/expiry handling |
-| Order refund handling | WEBHOOK ONLY | Stripe webhook fires but subscriber is TODO (`stripe-webhook.ts:85`) |
-| Order dispute handling | WEBHOOK ONLY | Same — subscriber TODO (`stripe-webhook.ts:113`) |
-| Intelligence tools (5) | REGISTERED BUT UNUSED | `get-recommendations`, `get-ordered-together`, `get-also-added`, `get-customer-profile`, `update-preferences` — registered in tool-registry but no agent prompt invokes them |
-| Embeddings/vector search | DEAD CODE | 180+ lines in `packages/tools/src/embeddings/`, 0 production calls, requires OpenAI key for nothing |
-| Wishlist | HALF-SHIPPED | Store + button exist, not wired into ProductCard/PDP, no "My Wishlist" page |
+| Admin store settings | STUB | Returns `<AdminComingSoonPage />` — lowest priority admin page |
 
 ---
 
 ## What's Broken / Missing
 
-| Feature | Status | Impact |
-|---------|--------|--------|
-| Web login UI | DOES NOT EXIST | Auth routes work but no page calls them |
-| Admin orders page | STUB | Returns `<AdminComingSoonPage />` |
-| Admin reservations page | STUB | Returns `<AdminComingSoonPage />` |
-| Admin analytics page | STUB | Returns `<AdminComingSoonPage />` |
-| Admin ratings page | STUB | Returns `<AdminComingSoonPage />` |
-| Admin store settings | STUB | Returns `<AdminComingSoonPage />` |
+Nothing blocking launch.
 
 ---
 
-## P0 for Launch (nothing else matters)
+## Pre-Launch Checklist
 
-From [TODO-BACKLOG.md](backlog/TODO-BACKLOG.md) Steps 1-3 (13 items):
+All 13 pre-launch items from [TODO-BACKLOG.md](backlog/TODO-BACKLOG.md) Steps 1-3 are **COMPLETE**:
 
-**LGPD Compliance (5 items)** — Required before any real users
-- Cookie consent banner — blocks PostHog until accepted
-- `/privacidade` — data collection, usage, retention
-- `/termos` — purchase terms, returns, delivery policy
-- WhatsApp first-message opt-in disclosure
-- Data retention policy in Medusa customer settings
-
-**Observability (4 items)** — Required for production visibility
-- Structured pino logs -> CloudWatch
-- PostHog dashboards: create the 3 dashboards defined in [analytics-dashboards.md](ops/analytics-dashboards.md)
-- Sentry error tracking setup
-- BetterStack uptime monitoring
-
-**Remaining Agent Tools + API Docs (4 items)**
-- `check_inventory` — real-time stock check
-- `get_nutritional_info` — ANVISA-format breakdown
-- `handoff_to_human` — escalate to staff via WhatsApp
-- Swagger/OpenAPI at `/docs`
-
-**Everything else is NOT P0.**
+- ✅ LGPD Compliance (5/5 items)
+- ✅ Observability (4/4 items)
+- ✅ Agent Tools + API Docs (4/4 items)
 
 ---
 
@@ -82,11 +73,11 @@ From [TODO-BACKLOG.md](backlog/TODO-BACKLOG.md) Steps 1-3 (13 items):
 
 | Workspace | Coverage | Verdict |
 |-----------|----------|---------|
-| apps/api | 72% (36 tests) | STRONG — auth, cart, webhooks, jobs |
-| packages/tools | 83% (43 tests) | STRONG — all tools, cart logic, search |
+| apps/api | 72%+ (45+ tests) | STRONG — auth, cart, webhooks, jobs, LGPD endpoints, opt-in |
+| packages/tools | 83%+ (49+ tests) | STRONG — all tools including new check_inventory, get_nutritional_info, handoff_to_human |
 | packages/llm-provider | 100% (4 tests) | STRONG — agent + tool registry |
 | packages/nats-client | 100% (2 tests) | STRONG |
-| apps/web | 9% (15 tests) | WEAK — only store logic, 0 component tests |
+| apps/web | ~12% (20+ tests) | IMPROVED — consent store, CookieConsentBanner, privacy/terms pages |
 | packages/domain | 3% (1 test) | WEAK — Prisma services untested |
 | apps/commerce | 11% (1 test) | WEAK — only indexing subscriber |
 | apps/admin | 0% | NONE |
@@ -109,17 +100,19 @@ Test what handles **money, auth, and user data** first. Everything else follows.
 - Stripe webhooks (payment success/failure/refund) — tested
 - Reservation TOCTOU (transactional availability) — tested
 - Agent tool ownership guards — tested
+- LGPD data export/delete endpoints — tested
 
 **Tier 2 — Should have (core UX)** — GAPS
-- Web component tests (0 today, should cover: ProductCard, CartDrawer, Checkout form)
+- Web component tests (improving, consent + page tests added)
 - Domain services (`packages/domain` — 1 test for 35 files)
-- Admin API routes (sparse coverage)
+- Admin API routes (analytics endpoint tested)
 - E2E: expand beyond 3 specs to cover auth flow, payment error, reservation
 
 **Tier 3 — Nice to have (polish)**
 - CLI command tests (16 exist, adequate for now)
-- Intelligence tools (mock-only tests exist, keep as-is until tools are actively used)
+- Intelligence tools (mock-only tests exist, tools now active)
 - UI package component tests
+- Admin component tests
 
 ### What NOT to Test Right Now
 
@@ -127,7 +120,6 @@ Test what handles **money, auth, and user data** first. Everything else follows.
 - Prisma generated client (tested by Prisma)
 - Type definitions (`packages/types` — no runtime logic)
 - Seed scripts (manual verification sufficient)
-- Dead code (embeddings, unused intelligence tools — delete instead of testing)
 
 ### Test Types
 
@@ -140,13 +132,35 @@ Test what handles **money, auth, and user data** first. Everything else follows.
 
 ---
 
-## Dead Complexity (820+ lines)
+## Dead Complexity — RESOLVED
 
-| Code | Lines | Status | Action |
-|------|-------|--------|--------|
-| `packages/tools/src/embeddings/` | 180 | 0 production calls | DELETE |
-| `packages/tools/src/cache/embedding-cache.ts` | 100 | Dead | DELETE |
-| 5 intelligence tools | 540 | Registered, never invoked | DEPRECATE |
-| Wishlist (store + button) | 100 | Not wired in | SHIP or DELETE |
+| Code | Lines | Status | Action Taken |
+|------|-------|--------|-------------|
+| `packages/tools/src/embeddings/` | 180 | DELETED | Removed (DEAD-001) |
+| `packages/tools/src/cache/embedding-cache.ts` | 100 | DELETED | Removed (DEAD-001) |
+| `packages/tools/src/utils/vectors.ts` | 40 | DELETED | Removed (DEAD-001) |
+| 5 intelligence tools | 540 | ACTIVATED | Added to agent system prompt (DEAD-003) |
+| Wishlist (store + button) | 100 | SHIPPED | Wired into ProductCard, PDP, Header, /lista-desejos (DEAD-002) |
 
-Tracked in [TODO-BACKLOG.md](backlog/TODO-BACKLOG.md) Step 5: DEAD-001, DEAD-002, DEAD-003.
+---
+
+## New Ops Documentation
+
+| Document | Purpose |
+|----------|---------|
+| `docs/ops/data-retention.md` | LGPD data retention policy + customer rights |
+| `docs/ops/posthog-setup.md` | 3 PostHog dashboard definitions + event verification |
+| `docs/ops/uptime-monitoring.md` | BetterStack monitors, alerts, status page setup |
+| `docs/ops/logging.md` | Pino structured logging conventions |
+
+---
+
+## New Env Vars Required
+
+| Variable | App | Purpose |
+|----------|-----|---------|
+| `SENTRY_DSN` | apps/api | Sentry error tracking (API) |
+| `NEXT_PUBLIC_SENTRY_DSN` | apps/web, apps/admin | Sentry error tracking (frontend) |
+| `PIX_EXPIRY_MINUTES` | apps/api | PIX payment timeout (default: 30) |
+| `STAFF_NOTIFICATION_PHONE` | apps/api | Staff WhatsApp for handoff notifications |
+| `LOG_LEVEL` | apps/api | Pino log level (default: "info") |

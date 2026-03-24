@@ -61,3 +61,6 @@ export type AnalyticsEvent =
   | 'whatsapp_interactive_list_sent'
   | 'whatsapp_interactive_button_sent'
   | 'whatsapp_interactive_selected'
+  // ── Consent ───────────────────────────────────────────────────
+  | 'cookie_consent_given'
+  | 'cookie_consent_rejected'

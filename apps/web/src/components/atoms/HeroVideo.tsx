@@ -65,7 +65,7 @@ export function HeroVideo({ src, poster, className = '' }: HeroVideoProps) {
         registerRetryListeners(video, retryListeners)
       })
     } else {
-      setIsPlaying(true)
+      setIsPlaying(true) // eslint-disable-line react-hooks/set-state-in-effect -- sync with DOM video state
     }
 
     return () => {

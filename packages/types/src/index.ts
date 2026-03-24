@@ -96,6 +96,20 @@ export {
   type StaffVerifyOtpInput,
 } from "./staff.types.js"
 
+// Tool types (catalog + support)
+export {
+  CheckInventoryInputSchema,
+  GetNutritionalInfoInputSchema,
+  HandoffToHumanInputSchema,
+  type CheckInventoryInput,
+  type CheckInventoryOutput,
+  type NutritionalInfo,
+  type GetNutritionalInfoInput,
+  type GetNutritionalInfoOutput,
+  type HandoffToHumanInput,
+  type HandoffToHumanOutput,
+} from "./tools.js"
+
 // Reservation types
 export {
   ReservationStatus,

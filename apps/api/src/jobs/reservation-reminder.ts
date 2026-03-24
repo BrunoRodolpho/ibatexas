@@ -10,15 +10,18 @@ import * as Sentry from "@sentry/node"
 import { ReservationStatus, type ReservationDTO } from "@ibatexas/types"
 import { createQueue, createWorker, type Job } from "./queue.js"
 import type { Queue, Worker } from "bullmq"
+import type { FastifyBaseLogger } from "fastify"
 
 const REMINDER_TTL_SECONDS = 24 * 60 * 60 // 24h — prevents re-sending on restart
 const REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 let queue: Queue | null = null
 let worker: Worker | null = null
+let logger: FastifyBaseLogger | null = null
 
 /** Core job logic — exported for direct testing. */
-export async function sendReminders(): Promise<void> {
+export async function sendReminders(log?: FastifyBaseLogger | null): Promise<void> {
+  const effectiveLogger = log ?? logger
   const today = new Date()
   const todayStr = today.toISOString().split("T")[0]
   const todayDate = new Date(todayStr)
@@ -68,7 +71,7 @@ export async function sendReminders(): Promise<void> {
         sent++
       }
     } catch (err) {
-      console.error(`[reservation-reminder] Failed to send reminder for ${reservation.id}:`, (err as Error).message)
+      effectiveLogger?.error({ reservationId: reservation.id, error: (err as Error).message }, "[reservation-reminder] Failed to send reminder")
       Sentry.withScope((scope) => {
         scope.setTag("job", "reservation-reminder")
         scope.setTag("source", "background-job")
@@ -79,7 +82,7 @@ export async function sendReminders(): Promise<void> {
   }
 
   if (sent > 0) {
-    console.info(`[reservation-reminder] Sent ${sent} reminders for ${todayStr}`)
+    effectiveLogger?.info({ sent, date: todayStr }, "[reservation-reminder] Reminders sent")
   }
 }
 
@@ -93,14 +96,15 @@ async function processor(_job: Job): Promise<void> {
  * Runs immediately on startup to catch any missed reminders for today,
  * then repeats every 24 hours.
  */
-export function startReservationReminder(): void {
+export function startReservationReminder(log?: FastifyBaseLogger): void {
   if (worker) return
+  logger = log ?? null
 
   queue = createQueue("reservation-reminder")
   worker = createWorker("reservation-reminder", processor)
 
   worker.on("failed", (_job, err) => {
-    console.error("[reservation-reminder] Check failed:", (err as Error).message)
+    logger?.error(err, "[reservation-reminder] Unexpected error")
     Sentry.withScope((scope) => {
       scope.setTag("job", "reservation-reminder")
       scope.setTag("source", "background-job")
@@ -114,7 +118,7 @@ export function startReservationReminder(): void {
     immediately: true,
   })
 
-  console.info("[reservation-reminder] Job scheduler registered (every 24 hours)")
+  logger?.info("[reservation-reminder] Job scheduler registered (every 24 hours)")
 }
 
 export async function stopReservationReminder(): Promise<void> {

@@ -21,3 +21,21 @@ export {
   AdminLojaPage,
   type AdminLojaPageProps,
 } from './AdminLojaPage'
+export {
+  AdminPedidosPage,
+  type AdminPedidosPageProps,
+} from './AdminPedidosPage'
+export {
+  AdminAnalisesPage,
+  type AdminAnalisesPageProps,
+} from './AdminAnalisesPage'
+export {
+  AdminReservasPage,
+  type AdminReservasPageProps,
+  type AdminReservation,
+} from './AdminReservasPage'
+export {
+  AdminAvaliacoesPage,
+  type AdminAvaliacoesPageProps,
+  type AdminReview,
+} from './AdminAvaliacoesPage'

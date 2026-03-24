@@ -34,7 +34,7 @@ export function StickyCartBar() {
 
   useEffect(() => {
     if (itemCount > prevCountRef.current) {
-      setIsBouncing(true)
+      setIsBouncing(true) // eslint-disable-line react-hooks/set-state-in-effect -- animation trigger on count change
       setIsDismissed(false) // Auto-show when new item added
       const timer = setTimeout(() => setIsBouncing(false), 600)
       return () => clearTimeout(timer)

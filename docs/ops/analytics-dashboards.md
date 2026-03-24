@@ -257,6 +257,15 @@ flowchart TD
 
 **NATS subjects:** `ibatexas.whatsapp.message.received`, `ibatexas.whatsapp.message.sent`
 
+### Consent Events
+
+| Event | Trigger | Properties |
+|-------|---------|------------|
+| `cookie_consent_given` | User clicks "Aceitar" on cookie consent banner | — |
+| `cookie_consent_rejected` | User clicks "Recusar" on cookie consent banner | — |
+
+**Note:** These events are only fired after consent is given (cookie_consent_given fires once on accept; cookie_consent_rejected is tracked locally but NOT sent to PostHog since the user declined tracking).
+
 ---
 
 ## PostHog Configuration

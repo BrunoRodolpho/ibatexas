@@ -19,6 +19,8 @@ const mockTouchSession = vi.hoisted(() => vi.fn());
 const mockAcquireAgentLock = vi.hoisted(() => vi.fn());
 const mockReleaseAgentLock = vi.hoisted(() => vi.fn());
 const mockTryDebounce = vi.hoisted(() => vi.fn());
+const mockHasOptedIn = vi.hoisted(() => vi.fn());
+const mockMarkOptedIn = vi.hoisted(() => vi.fn());
 const mockCollectAgentResponse = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
 const mockMatchShortcut = vi.hoisted(() => vi.fn());
@@ -60,6 +62,8 @@ vi.mock("../whatsapp/session.js", () => ({
   acquireAgentLock: mockAcquireAgentLock,
   releaseAgentLock: mockReleaseAgentLock,
   tryDebounce: mockTryDebounce,
+  hasOptedIn: mockHasOptedIn,
+  markOptedIn: mockMarkOptedIn,
 }));
 
 vi.mock("../whatsapp/formatter.js", () => ({
@@ -422,6 +426,8 @@ describe("buildUserMessage", () => {
       isNew: false,
     });
     mockTouchSession.mockResolvedValue(undefined);
+    mockHasOptedIn.mockResolvedValue(true);
+    mockMarkOptedIn.mockResolvedValue(undefined);
     mockAppendMessages.mockResolvedValue(undefined);
     mockPublishNatsEvent.mockResolvedValue(undefined);
     mockTryDebounce.mockResolvedValue(true);
@@ -479,6 +485,7 @@ describe("handleShortcut", () => {
     // Stub async handler deps so fire-and-forget doesn't throw
     mockResolveWhatsAppSession.mockResolvedValue({ phone: "+5511999999999", sessionId: "s", customerId: "c", isNew: false });
     mockTouchSession.mockResolvedValue(undefined);
+    mockHasOptedIn.mockResolvedValue(true);
     mockAppendMessages.mockResolvedValue(undefined);
     mockPublishNatsEvent.mockResolvedValue(undefined);
     mockTryDebounce.mockResolvedValue(false); // Skip async processing
@@ -502,6 +509,7 @@ describe("handleShortcut", () => {
     mockMatchShortcut.mockReturnValue({ type: "menu" });
     mockResolveWhatsAppSession.mockResolvedValue({ phone: "+5511999999999", sessionId: "s", customerId: "c", isNew: false });
     mockTouchSession.mockResolvedValue(undefined);
+    mockHasOptedIn.mockResolvedValue(true);
     mockAppendMessages.mockResolvedValue(undefined);
     mockPublishNatsEvent.mockResolvedValue(undefined);
     mockTryDebounce.mockResolvedValue(false); // Skip debounce processing
@@ -538,6 +546,7 @@ describe("Full POST /api/webhooks/whatsapp integration", () => {
     // Stub all async handler deps to avoid unhandled rejections
     mockResolveWhatsAppSession.mockResolvedValue({ phone: "+5511999999999", sessionId: "s", customerId: "c", isNew: false });
     mockTouchSession.mockResolvedValue(undefined);
+    mockHasOptedIn.mockResolvedValue(true);
     mockAppendMessages.mockResolvedValue(undefined);
     mockPublishNatsEvent.mockResolvedValue(undefined);
     mockTryDebounce.mockResolvedValue(false); // Skip debounce to avoid sleep

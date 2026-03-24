@@ -9,6 +9,7 @@
  */
 
 import { getPostHogClient } from '@/lib/posthog'
+import { useConsentStore } from '@/domains/consent'
 import type { AnalyticsEvent } from './events'
 
 const isDev = process.env.NODE_ENV === 'development'
@@ -123,6 +124,9 @@ export function track(
   properties?: Record<string, unknown>,
 ): void {
   if (globalThis.window === undefined) return
+
+  // No-op when consent not accepted
+  if (!useConsentStore.getState().accepted) return
 
   // Ensure session is initialised
   getSessionId()

@@ -11,6 +11,12 @@ vi.mock("@/lib/posthog", () => ({
   getPostHogClient: mockGetPostHogClient,
 }))
 
+vi.mock("@/domains/consent", () => ({
+  useConsentStore: {
+    getState: () => ({ accepted: true }),
+  },
+}))
+
 // ── Browser globals ────────────────────────────────────────────────────────────
 
 const sessionStore = new Map<string, string>()

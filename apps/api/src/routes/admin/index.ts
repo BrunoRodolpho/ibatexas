@@ -9,9 +9,11 @@
 // GET  /api/admin/reservations          — list all reservations
 // POST /api/admin/reservations/:id/checkin    — check in guest
 // POST /api/admin/reservations/:id/complete   — mark completed
+// GET  /api/admin/reviews               — list all reviews
 // GET  /api/admin/tables                — list all tables
 // POST /api/admin/tables                — create/update table
 // POST /api/admin/timeslots             — generate time slots for a date range
+// GET  /api/admin/analytics/summary     — analytics summary (orders, revenue, AOV)
 
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -20,8 +22,10 @@ import { dashboardRoutes } from "./dashboard.js";
 import { productRoutes } from "./products.js";
 import { orderRoutes } from "./orders.js";
 import { reservationRoutes } from "./reservations.js";
+import { reviewRoutes } from "./reviews.js";
 import { tableRoutes } from "./tables.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
+import { analyticsRoutes } from "./analytics.js";
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Support comma-separated list of valid API keys for rotation
@@ -84,6 +88,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(productRoutes);
   await server.register(orderRoutes);
   await server.register(reservationRoutes);
+  await server.register(reviewRoutes);
   await server.register(tableRoutes);
   await server.register(deliveryZoneRoutes);
+  await server.register(analyticsRoutes);
 }

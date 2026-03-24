@@ -8,6 +8,10 @@ import {
   GetProductDetailsTool,
   estimateDelivery,
   EstimateDeliveryTool,
+  checkInventory,
+  CheckInventoryTool,
+  getNutritionalInfo,
+  GetNutritionalInfoTool,
   checkTableAvailability,
   CheckTableAvailabilityTool,
   createReservation,
@@ -54,6 +58,9 @@ import {
   GetAlsoAddedTool,
   getOrderedTogether,
   GetOrderedTogetherTool,
+  // Support tools
+  handoffToHuman,
+  HandoffToHumanTool,
 } from "@ibatexas/tools"
 import type { AgentContext } from "@ibatexas/types"
 import {
@@ -79,6 +86,9 @@ import {
   SubmitReviewInputSchema,
   GetAlsoAddedInputSchema,
   GetOrderedTogetherInputSchema,
+  CheckInventoryInputSchema,
+  GetNutritionalInfoInputSchema,
+  HandoffToHumanInputSchema,
 } from "@ibatexas/types"
 import { z } from "zod"
 import type { Tool } from "@anthropic-ai/sdk/resources/index.js"
@@ -99,6 +109,8 @@ export const TOOL_DEFINITIONS: Tool[] = [
   toAnthropicTool(SearchProductsTool),
   toAnthropicTool(GetProductDetailsTool),
   toAnthropicTool(EstimateDeliveryTool),
+  toAnthropicTool(CheckInventoryTool),
+  toAnthropicTool(GetNutritionalInfoTool),
   // Reservation tools
   toAnthropicTool(CheckTableAvailabilityTool),
   toAnthropicTool(CreateReservationTool),
@@ -124,6 +136,8 @@ export const TOOL_DEFINITIONS: Tool[] = [
   toAnthropicTool(SubmitReviewTool),
   toAnthropicTool(GetAlsoAddedTool),
   toAnthropicTool(GetOrderedTogetherTool),
+  // Support tools
+  toAnthropicTool(HandoffToHumanTool),
 ]
 
 // ── Tool handlers ─────────────────────────────────────────────────────────────
@@ -170,6 +184,14 @@ const handlers = new Map<string, ToolHandler>([
     "estimate_delivery",
     (input) => estimateDelivery(input as Parameters<typeof estimateDelivery>[0]),
   ],
+  [
+    "check_inventory",
+    (input) => checkInventory(input as Parameters<typeof checkInventory>[0]),
+  ],
+  [
+    "get_nutritional_info",
+    (input) => getNutritionalInfo(input as Parameters<typeof getNutritionalInfo>[0]),
+  ],
   // ── Reservation tools ──────────────────────────────────────────────────────
   [
     "check_table_availability",
@@ -200,6 +222,8 @@ const handlers = new Map<string, ToolHandler>([
   ["submit_review", (input, ctx) => submitReview(input as Parameters<typeof submitReview>[0], ctx)],
   ["get_also_added", (input, ctx) => getAlsoAdded(input as Parameters<typeof getAlsoAdded>[0], ctx)],
   ["get_ordered_together", (input, ctx) => getOrderedTogether(input as Parameters<typeof getOrderedTogether>[0], ctx)],
+  // ── Support tools
+  ["handoff_to_human", (input) => handoffToHuman(input as Parameters<typeof handoffToHuman>[0])],
 ])
 
 // Centralized Zod validation before tool dispatch.
@@ -211,6 +235,8 @@ const toolInputSchemas = new Map<string, z.ZodTypeAny>([
   ["search_products", SearchProductsInputSchema],
   ["get_product_details", z.strictObject({ productId: z.string() })],
   ["estimate_delivery", z.strictObject({ cep: z.string() })],
+  ["check_inventory", CheckInventoryInputSchema],
+  ["get_nutritional_info", GetNutritionalInfoInputSchema],
   ["check_table_availability", CheckAvailabilityInputSchema],
   ["create_reservation", CreateReservationInputSchema.partial({ customerId: true })],
   ["modify_reservation", ModifyReservationInputSchema.partial({ customerId: true })],
@@ -233,6 +259,7 @@ const toolInputSchemas = new Map<string, z.ZodTypeAny>([
   ["submit_review", SubmitReviewInputSchema],
   ["get_also_added", GetAlsoAddedInputSchema],
   ["get_ordered_together", GetOrderedTogetherInputSchema],
+  ["handoff_to_human", HandoffToHumanInputSchema],
 ])
 
 /**

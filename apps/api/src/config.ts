@@ -3,6 +3,7 @@
 // or malformed, the server crashes immediately with a clear error.
 
 import { z } from "zod";
+import logger from "./lib/logger.js";
 
 const envSchema = z.object({
   // Server
@@ -53,7 +54,7 @@ if (!result.success) {
   const missing = result.error.issues
     .map((i) => `  ${i.path.join(".")}: ${i.message}`)
     .join("\n");
-  console.error(`\n[config] Missing or invalid environment variables:\n${missing}\n`);
+  logger.error({ missing }, "[config] Missing or invalid environment variables");
   // Don't crash in test environment — tests set env vars dynamically
   if (process.env.NODE_ENV !== "test") {
     process.exit(1);

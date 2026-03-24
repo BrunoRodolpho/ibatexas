@@ -64,6 +64,14 @@ vi.mock("@ibatexas/tools", () => {
     GetAlsoAddedTool: makeTool("get_also_added"),
     getOrderedTogether: vi.fn(async () => ({ products: [] })),
     GetOrderedTogetherTool: makeTool("get_ordered_together"),
+    // Catalog tools
+    checkInventory: vi.fn(async () => ({ available: true, quantity: 10, nextAvailableAt: null })),
+    CheckInventoryTool: makeTool("check_inventory"),
+    getNutritionalInfo: vi.fn(async () => ({ calories: 0, protein: 0, carbs: 0, fat: 0 })),
+    GetNutritionalInfoTool: makeTool("get_nutritional_info"),
+    // Support tools
+    handoffToHuman: vi.fn(async () => ({ success: true, estimatedWaitMinutes: 5, message: "Um atendente foi notificado e entrará em contato em breve." })),
+    HandoffToHumanTool: makeTool("handoff_to_human"),
     PROFILE_TTL_SECONDS: 2_592_000,
     RECENTLY_VIEWED_MAX: 20,
   }
@@ -83,8 +91,8 @@ const ctx: AgentContext = {
 // ── TOOL_DEFINITIONS ──────────────────────────────────────────────────────────
 
 describe("TOOL_DEFINITIONS", () => {
-  it("has 25 registered tools", () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(25)
+  it("has 28 registered tools", () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(28)
   })
 
   it("uses input_schema (snake_case) for Anthropic API", () => {

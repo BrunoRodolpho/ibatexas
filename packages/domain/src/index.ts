@@ -6,7 +6,7 @@ export { prisma } from "./client.js"
 // Domain services
 export { createReservationService, type ReservationService } from "./services/reservation.service.js"
 export { createOrderService, type OrderService, type MedusaFetch } from "./services/order.service.js"
-export { createCustomerService, type CustomerService } from "./services/customer.service.js"
+export { createCustomerService, type CustomerService, anonymizeCustomer, exportCustomerData } from "./services/customer.service.js"
 export { createStaffService, type StaffService } from "./services/staff.service.js"
 export { assertOwnership, assertMutable } from "./services/shared.js"
 export { createReviewService, type ReviewService } from "./services/review.service.js"

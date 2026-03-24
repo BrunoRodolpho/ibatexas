@@ -3,6 +3,7 @@
 import { useEffect, Suspense } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { getPostHogClient } from '@/lib/posthog'
+import { useConsentStore } from '@/domains/consent'
 
 /**
  * Tracks $pageview on Next.js route changes.
@@ -11,8 +12,10 @@ import { getPostHogClient } from '@/lib/posthog'
 function PostHogPageview() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const accepted = useConsentStore((s) => s.accepted)
 
   useEffect(() => {
+    if (!accepted) return
     const posthog = getPostHogClient()
     if (!posthog) return
 
@@ -25,7 +28,7 @@ function PostHogPageview() {
     posthog.capture('$pageview', {
       $current_url: url,
     })
-  }, [pathname, searchParams])
+  }, [pathname, searchParams, accepted])
 
   return null
 }
@@ -43,10 +46,13 @@ export function usePostHog() {
  * Place in layout.tsx outside UI components (PostHog is infrastructure, not UI).
  */
 export function PostHogProvider({ children }: { readonly children: React.ReactNode }) {
-  // Initialize PostHog on mount
+  const accepted = useConsentStore((s) => s.accepted)
+
+  // Initialize PostHog only when consent is accepted
   useEffect(() => {
+    if (!accepted) return
     getPostHogClient()
-  }, [])
+  }, [accepted])
 
   return (
     <>

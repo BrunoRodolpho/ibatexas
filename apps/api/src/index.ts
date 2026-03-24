@@ -1,11 +1,13 @@
 import * as Sentry from "@sentry/node";
 import { buildServer } from "./server.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
+import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { prisma } from "@ibatexas/domain";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
+import logger from "./lib/logger.js";
 
 // Initialize Sentry before anything else
 if (process.env.SENTRY_DSN) {
@@ -15,17 +17,17 @@ if (process.env.SENTRY_DSN) {
   });
 }
 if (process.env.NODE_ENV === "production" && !process.env.SENTRY_DSN) {
-  console.warn("[startup] SENTRY_DSN not set — errors will not be reported to Sentry");
+  logger.warn("[startup] SENTRY_DSN not set — errors will not be reported to Sentry");
 }
 
 process.on("unhandledRejection", (reason) => {
   if (process.env.SENTRY_DSN) Sentry.captureException(reason);
-  console.error("[unhandledRejection]", reason);
+  logger.error({ err: reason }, "[unhandledRejection]");
 });
 
 process.on("uncaughtException", (err) => {
   if (process.env.SENTRY_DSN) Sentry.captureException(err);
-  console.error("[uncaughtException]", err);
+  logger.fatal({ err }, "[uncaughtException]");
   process.exit(1);
 });
 
@@ -63,6 +65,7 @@ const start = async (): Promise<void> => {
 
       // Register subscribers BEFORE starting jobs to prevent race condition
       await startCartIntelligenceSubscribers(server.log);
+      await startHandoffSubscriber(server.log);
 
       // Start all BullMQ background workers
       registerWorkers(server.log);

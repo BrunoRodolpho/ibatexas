@@ -119,6 +119,7 @@ export function useProducts({
       })
 
     return () => controller.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tagsKey/allergensKey serialize the arrays
   }, [query, tagsKey, limit, productType, categoryHandle, sort, minPrice, maxPrice, minRating, offset, allergensKey, availableNow])
 
   return { data, loading, error }
@@ -131,7 +132,7 @@ export function useProductDetail(id: string) {
 
   useEffect(() => {
     const controller = new AbortController()
-    setLoading(true)
+    setLoading(true) // eslint-disable-line react-hooks/set-state-in-effect -- synchronous reset before async fetch
     apiFetch<ProductDTO>(`/api/products/${id}`, { signal: controller.signal })
       .then((res) => {
         if (!controller.signal.aborted) setData(res)
@@ -193,7 +194,7 @@ export function useRecentlyViewed() {
 
   // Load from sessionStorage on mount
   useEffect(() => {
-    setItems(loadRecentlyViewed())
+    setItems(loadRecentlyViewed()) // eslint-disable-line react-hooks/set-state-in-effect -- SSR-safe storage read requires effect
   }, [])
 
   const addProduct = (productId: string) => {
