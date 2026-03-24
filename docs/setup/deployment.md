@@ -40,16 +40,16 @@ graph TD
     end
 
     subgraph Load Balancer
-        ALB[ALB — HTTPS :443<br/>ACM wildcard cert]
+        ALB["ALB - HTTPS :443<br/>ACM wildcard cert"]
     end
 
-    subgraph ECS Cluster — App Services
+    subgraph ECS Cluster - App Services
         API[api :3001<br/>Fargate]
         WEB[web :3000<br/>Fargate]
         ADMIN[admin :3002<br/>Fargate]
     end
 
-    subgraph ECS Cluster — Infrastructure
+    subgraph ECS Cluster - Infrastructure
         NATS[NATS :4222<br/>Fargate + JetStream]
         TS[Typesense :8108<br/>Fargate + EFS]
     end
