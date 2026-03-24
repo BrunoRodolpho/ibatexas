@@ -33,27 +33,60 @@ git push origin dev                # Trigger first staging deploy
 
 ## Architecture Overview
 
-```
-                   ┌─────────────────────────────┐
-                   │         Route53              │
-                   │  ibatexas.com.br (+ subs)    │
-                   └──────────┬──────────────────┘
-                              │
-                   ┌──────────▼──────────────────┐
-                   │     ALB (HTTPS :443)         │
-                   │  *.ibatexas.com.br ACM cert  │
-                   └──┬────────┬────────┬────────┘
-                      │        │        │
-              ┌───────▼──┐ ┌──▼─────┐ ┌▼────────┐
-              │ api:3001  │ │web:3000│ │admin:3002│
-              │  Fargate  │ │Fargate │ │ Fargate  │
-              └──┬──┬──┬──┘ └────────┘ └──────────┘
-                 │  │  │
-     ┌───────────┘  │  └───────────┐
-     ▼              ▼              ▼
- ElastiCache    Cloud Map      Cloud Map
-  Redis 7.1    nats:4222    typesense:8108
-              (ECS Fargate)  (ECS + EFS)
+```mermaid
+graph TD
+    subgraph DNS
+        R53[Route53<br/>ibatexas.com.br]
+    end
+
+    subgraph Load Balancer
+        ALB[ALB — HTTPS :443<br/>ACM wildcard cert]
+    end
+
+    subgraph ECS Cluster — App Services
+        API[api :3001<br/>Fargate]
+        WEB[web :3000<br/>Fargate]
+        ADMIN[admin :3002<br/>Fargate]
+    end
+
+    subgraph ECS Cluster — Infrastructure
+        NATS[NATS :4222<br/>Fargate + JetStream]
+        TS[Typesense :8108<br/>Fargate + EFS]
+    end
+
+    subgraph Managed Services
+        REDIS[ElastiCache<br/>Redis 7.1]
+        EFS[EFS<br/>Persistent Storage]
+    end
+
+    subgraph CI/CD
+        GH[GitHub Actions<br/>OIDC → IAM Role]
+        ECR[ECR<br/>Docker Images]
+    end
+
+    subgraph External
+        SUPA[Supabase<br/>PostgreSQL]
+    end
+
+    R53 --> ALB
+    ALB -->|api.ibatexas.com.br| API
+    ALB -->|ibatexas.com.br| WEB
+    ALB -->|admin.ibatexas.com.br| ADMIN
+
+    API --> REDIS
+    API --> NATS
+    API --> TS
+    API --> SUPA
+
+    TS --> EFS
+
+    GH --> ECR
+    ECR --> API
+    ECR --> WEB
+    ECR --> ADMIN
+
+    NATS -.->|Cloud Map<br/>nats.ibatexas.local| API
+    TS -.->|Cloud Map<br/>typesense.ibatexas.local| API
 ```
 
 - **3 app services**: api, web, admin — all ECS Fargate behind ALB with host-based routing
