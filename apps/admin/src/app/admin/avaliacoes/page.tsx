@@ -1,8 +1,17 @@
 'use client'
 
-import { Star } from 'lucide-react'
-import { AdminComingSoonPage } from '@ibatexas/ui'
+import { AdminAvaliacoesPage } from '@ibatexas/ui'
+import { useAdminReviews } from '@/domains/admin/admin.hooks'
 
 export default function AvaliacoesPage() {
-  return <AdminComingSoonPage icon={Star} title="Avaliações" />
+  const { reviews, loading, ratingFilter, setRatingFilter } = useAdminReviews()
+
+  return (
+    <AdminAvaliacoesPage
+      reviews={reviews}
+      loading={loading}
+      ratingFilter={ratingFilter}
+      onRatingFilter={setRatingFilter}
+    />
+  )
 }

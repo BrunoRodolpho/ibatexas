@@ -35,8 +35,7 @@ Retrieve full product information including gallery, variants, nutritional info,
 | **Output** | `{ id, name, description, images[], variants[], nutritionalInfo, allergens[], tags[], preparationTime, availabilityWindow, relatedProducts[], rating, reviewCount }` |
 | **Notes** | Publishes `product.viewed` NATS event |
 
-### `check_inventory` _(not yet implemented)_
-Check real-time stock for a specific product variant.
+### `check_inventory`Check real-time stock for a specific product variant.
 
 | | |
 |---|---|
@@ -45,8 +44,7 @@ Check real-time stock for a specific product variant.
 | **Output** | `{ available: boolean, quantity: number, nextAvailableAt?: string }` |
 | **Notes** | `add_to_cart` validates stock internally; this tool is for explicit pre-check |
 
-### `get_nutritional_info` _(not yet implemented)_
-Retrieve ANVISA-format nutritional data for a product.
+### `get_nutritional_info`Retrieve ANVISA-format nutritional data for a product.
 
 | | |
 |---|---|
@@ -291,8 +289,7 @@ Return products historically ordered together with the current cart contents.
 
 ## Support Tools
 
-### `handoff_to_human` _(not yet implemented)_
-Escalate the conversation to a human staff member.
+### `handoff_to_human`Escalate the conversation to a human staff member.
 
 | | |
 |---|---|

@@ -82,7 +82,7 @@ async function handleChargeRefunded(
     return;
   }
 
-  // TODO: Add subscriber for order.refunded to update customer profile and analytics
+  // Handled by cart-intelligence subscriber (order.refunded → profile update + refundCount)
   await publishNatsEvent("order.refunded", {
     eventType: "order.refunded",
     orderId,
@@ -110,7 +110,7 @@ async function handleChargeDisputeCreated(
     "Stripe charge.dispute.created received — dispute opened",
   );
 
-  // TODO: Add subscriber for order.disputed to trigger alerts and update profile
+  // Handled by cart-intelligence subscriber (order.disputed → staff alert + disputeCount)
   await publishNatsEvent("order.disputed", {
     eventType: "order.disputed",
     orderId: orderId ?? null,
@@ -144,7 +144,7 @@ async function handlePaymentIntentCanceled(
     return;
   }
 
-  // TODO: Add subscriber for order.canceled to update customer profile
+  // Handled by cart-intelligence subscriber (order.canceled → orderCancellationCount)
   await publishNatsEvent("order.canceled", {
     eventType: "order.canceled",
     orderId,

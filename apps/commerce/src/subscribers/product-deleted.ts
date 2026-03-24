@@ -4,7 +4,7 @@
  */
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
-import { deleteProductFromIndex, invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
+import { deleteProductFromIndex, invalidateAllQueryCache } from "@ibatexas/tools"
 import { withTypesenseRetry } from "./_product-indexing"
 
 export default async function productDeletedHandler({
@@ -26,9 +26,6 @@ export default async function productDeletedHandler({
     // Invalidate all query caches — deleted product must not appear in results
     const flushed = await invalidateAllQueryCache()
     logger.info(`[Product Indexing] Flushed ${flushed} query cache entries`)
-
-    // Delete cached embedding
-    await deleteEmbeddingCache(data.id)
 
     logger.info(`[Product Indexing] Deleted from index: ${data.id}`)
   } catch (error) {

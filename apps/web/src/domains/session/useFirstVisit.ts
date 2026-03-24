@@ -9,7 +9,7 @@ export function useFirstVisit() {
     try {
       const visited = sessionStorage.getItem(STORAGE_KEY)
       if (!visited) {
-        setIsFirstVisit(true)
+        setIsFirstVisit(true) // eslint-disable-line react-hooks/set-state-in-effect -- SSR-safe storage read requires effect
         sessionStorage.setItem(STORAGE_KEY, '1')
       }
     } catch {

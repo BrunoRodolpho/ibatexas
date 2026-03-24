@@ -109,9 +109,14 @@ export function Footer() {
             <span className="text-xs text-smoke-500">
               &copy; {new Date().getFullYear()} IbateXas
             </span>
-            <Link href="/privacy" className="text-xs text-smoke-500 hover:text-smoke-50 transition-colors">
-              {t("footer.privacy")}
-            </Link>
+            <div className="flex gap-4">
+              <Link href="/privacidade" className="text-xs text-smoke-500 hover:text-smoke-50 transition-colors">
+                Política de Privacidade
+              </Link>
+              <Link href="/termos" className="text-xs text-smoke-500 hover:text-smoke-50 transition-colors">
+                Termos de Uso
+              </Link>
+            </div>
           </div>
         </div>
       </div>

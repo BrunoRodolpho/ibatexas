@@ -4,9 +4,8 @@
 //
 // How it works:
 //   1. Fetch full product data from Medusa (variants, prices, tags, categories, images)
-//   2. Delete stale embedding cache (mirrors Medusa subscriber behavior)
-//   3. Batch upsert to Typesense via indexProductsBatch()
-//   4. Flush query cache (invalidateAllQueryCache)
+//   2. Batch upsert to Typesense via indexProductsBatch()
+//   3. Flush query cache (invalidateAllQueryCache)
 //
 // Idempotent: Typesense upsert is safe for double-indexing.
 // The Medusa subscriber still handles non-CLI mutations (admin UI, API calls).
@@ -68,7 +67,6 @@ export async function stabilizeProducts(productIds: string[]): Promise<void> {
   const {
     indexProductsBatch,
     invalidateAllQueryCache,
-    deleteEmbeddingCache,
   } = await import("@ibatexas/tools")
 
   // 1. Fetch full products from Medusa
@@ -76,19 +74,10 @@ export async function stabilizeProducts(productIds: string[]): Promise<void> {
 
   if (products.length === 0) return
 
-  // 2. Delete stale embedding caches (force fresh embedding on next index)
-  for (const id of productIds) {
-    try {
-      await deleteEmbeddingCache(id)
-    } catch {
-      // Best effort — embedding cache may not exist
-    }
-  }
-
-  // 3. Upsert to Typesense (idempotent — safe for double-indexing)
+  // 2. Upsert to Typesense (idempotent — safe for double-indexing)
   await indexProductsBatch(products as MedusaProductInput[])
 
-  // 4. Flush query cache so stale search results aren't served
+  // 3. Flush query cache so stale search results aren't served
   await invalidateAllQueryCache()
 }
 

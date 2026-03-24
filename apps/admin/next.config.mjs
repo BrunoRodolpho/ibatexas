@@ -1,3 +1,5 @@
+import { withSentryConfig } from "@sentry/nextjs"
+
 const isDev = process.env.NODE_ENV !== 'production'
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
 
@@ -45,4 +47,8 @@ const nextConfig = {
   },
 }
 
-export default nextConfig
+export default withSentryConfig(nextConfig, {
+  silent: true,
+  org: "ibatexas",
+  project: "admin",
+})

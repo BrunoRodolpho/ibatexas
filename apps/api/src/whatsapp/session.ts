@@ -206,3 +206,18 @@ export async function setSessionState(hash: string, state: string): Promise<void
   const key = rk(`wa:phone:${hash}`);
   await redis.hSet(key, "state", state);
 }
+
+// ── LGPD opt-in tracking ────────────────────────────────────────────────────
+
+/** Check if a phone (by hash) has already accepted the LGPD opt-in disclosure. */
+export async function hasOptedIn(phoneHash: string): Promise<boolean> {
+  const redis = await getRedisClient();
+  const value = await redis.get(rk(`wa:optin:${phoneHash}`));
+  return !!value;
+}
+
+/** Record that a phone (by hash) has accepted the LGPD opt-in disclosure. No TTL — permanent. */
+export async function markOptedIn(phoneHash: string): Promise<void> {
+  const redis = await getRedisClient();
+  await redis.set(rk(`wa:optin:${phoneHash}`), "1");
+}

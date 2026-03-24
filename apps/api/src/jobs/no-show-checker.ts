@@ -8,6 +8,7 @@ import { publishNatsEvent } from "@ibatexas/nats-client"
 import * as Sentry from "@sentry/node"
 import { createQueue, createWorker, type Job } from "./queue.js"
 import type { Queue, Worker } from "bullmq"
+import type { FastifyBaseLogger } from "fastify"
 
 const GRACE_PERIOD_MINUTES = Number.parseInt(process.env.NO_SHOW_GRACE_MINUTES || "15", 10)
 const REPEAT_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes
@@ -15,6 +16,7 @@ const RESTAURANT_TZ = process.env.RESTAURANT_TIMEZONE || "America/Chicago"
 
 let queue: Queue | null = null
 let worker: Worker | null = null
+let logger: FastifyBaseLogger | null = null
 
 /**
  * Build a Date from a slot's date + startTime in the restaurant's timezone.
@@ -35,7 +37,8 @@ function slotToLocalDate(date: Date, startTime: string): Date {
 }
 
 /** Core job logic — exported for direct testing. */
-export async function checkNoShows(): Promise<void> {
+export async function checkNoShows(log?: FastifyBaseLogger | null): Promise<void> {
+  const effectiveLogger = log ?? logger
   const now = new Date()
 
   // Only load confirmed reservations for today (not all historical ones)
@@ -50,7 +53,7 @@ export async function checkNoShows(): Promise<void> {
       const graceEnd = new Date(slotDate.getTime() + GRACE_PERIOD_MINUTES * 60 * 1000)
       return now > graceEnd
     } catch {
-      console.error(`[no-show] Invalid time data for reservation ${r.id}`)
+      effectiveLogger?.error({ reservationId: r.id }, "[no-show] Invalid time data for reservation")
       return false
     }
   })
@@ -69,9 +72,9 @@ export async function checkNoShows(): Promise<void> {
         metadata: { reservationId: reservation.id },
       })
 
-      console.info(`[no-show] Reservation ${reservation.id} marked as no_show`)
+      effectiveLogger?.info({ reservationId: reservation.id }, "[no-show] Reservation marked as no_show")
     } catch (err) {
-      console.error(`[no-show] Failed to process reservation ${reservation.id}:`, (err as Error).message)
+      effectiveLogger?.error({ reservationId: reservation.id, error: (err as Error).message }, "[no-show] Failed to process reservation")
       Sentry.withScope((scope) => {
         scope.setTag("job", "no-show-checker")
         scope.setTag("source", "background-job")
@@ -91,14 +94,15 @@ async function processor(_job: Job): Promise<void> {
  * Start the no-show checker.
  * Call once from server.ts after the Fastify server is ready.
  */
-export function startNoShowChecker(): void {
+export function startNoShowChecker(log?: FastifyBaseLogger): void {
   if (worker) return // already running
+  logger = log ?? null
 
   queue = createQueue("no-show-checker")
   worker = createWorker("no-show-checker", processor)
 
   worker.on("failed", (_job, err) => {
-    console.error("[no-show] Check failed:", (err as Error).message)
+    logger?.error(err, "[no-show-checker] Unexpected error")
     Sentry.withScope((scope) => {
       scope.setTag("job", "no-show-checker")
       scope.setTag("source", "background-job")
@@ -112,7 +116,7 @@ export function startNoShowChecker(): void {
     immediately: true,
   })
 
-  console.info("[no-show] Checker started (every 5 minutes)")
+  logger?.info("[no-show-checker] Checker started (every 5 minutes)")
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   serializerCompiler,
   validatorCompiler,
 } from "fastify-type-provider-zod";
+import { registerSentry } from "./plugins/sentry.js";
 import { registerCors } from "./plugins/cors.js";
 import { registerHelmet } from "./plugins/helmet.js";
 import { registerSensible } from "./plugins/sensible.js";
@@ -35,6 +36,9 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Zod schema validation/serialization (must be set before routes)
   server.setValidatorCompiler(validatorCompiler);
   server.setSerializerCompiler(serializerCompiler);
+
+  // Sentry error tracking — must be registered before routes/hooks
+  await registerSentry(server);
 
   // OBS-001: Request ID — Sentry tagging + response header (genReqId set above)
   registerRequestId(server);

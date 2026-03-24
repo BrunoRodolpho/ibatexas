@@ -18,7 +18,7 @@ export function HomeGreeting() {
   const [period, setPeriod] = useState<Period | null>(null)
 
   useEffect(() => {
-    setPeriod(getPeriod())
+    setPeriod(getPeriod()) // eslint-disable-line react-hooks/set-state-in-effect -- client-only value, avoids hydration mismatch
   }, [])
 
   if (!period) return null

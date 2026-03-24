@@ -5,6 +5,7 @@ import { Link } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
 import { Plus, Minus, Check, Star, Users, Scale, Flame, Trash2 } from 'lucide-react'
 import { Badge, type BadgeProps } from '../atoms'
+import { WishlistButton } from './WishlistButton'
 import { track } from '@/domains/analytics'
 import { useState, useCallback } from 'react'
 
@@ -510,9 +511,14 @@ export const ProductCard = ({
           {/* Single priority badge — top left */}
           <PriorityBadge isBundle={isBundle} priorityTag={priorityTag} t={t} />
 
+          {/* Wishlist heart — top right */}
+          <div className="absolute top-2 right-2 z-10">
+            <WishlistButton productId={id} size="sm" />
+          </div>
+
           {/* Scarcity indicator */}
           {stockCount != null && stockCount > 0 && stockCount <= 5 && (
-            <div className="absolute top-2 right-2 z-10 bg-accent-red/90 text-white text-[10px] font-semibold px-2 py-0.5 rounded-sm">
+            <div className="absolute top-12 right-2 z-10 bg-accent-red/90 text-white text-[10px] font-semibold px-2 py-0.5 rounded-sm">
               {t('scarcity', { count: stockCount })}
             </div>
           )}

@@ -8,7 +8,7 @@ import { useSessionStore } from '@/domains/session'
 import { Link } from "@/i18n/navigation"
 import { getApiBase } from "@/lib/api"
 import { track, getSessionId } from '@/domains/analytics'
-import { Heading, Text, Button } from "@/components/atoms"
+import { Heading, Text, Button, Checkbox } from "@/components/atoms"
 import Image from "next/image"
 import { CheckCircle, Lock, ShieldCheck } from "lucide-react"
 import { useOrderHistory } from "@/domains/cart/useOrderHistory"
@@ -68,7 +68,7 @@ export default function CheckoutPage() {
   const t = useTranslations('checkout')
   const tCart = useTranslations('cart')
   const router = useRouter()
-  const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate: persistDeliveryEstimate, medusaCartId, clearCart } = useCartStore()
+  const { items, getTotal, cep, setCep, deliveryFee, estimatedDeliveryMinutes, setDeliveryEstimate: persistDeliveryEstimate, medusaCartId, clearCart, termsAccepted, setTermsAccepted } = useCartStore()
   const { customerId, isAuthenticated } = useSessionStore()
   const { saveOrder } = useOrderHistory()
 
@@ -458,12 +458,26 @@ export default function CheckoutPage() {
           </div>
         </div>
 
+        {/* Terms acceptance */}
+        <div className="flex items-start gap-3">
+          <Checkbox
+            checked={termsAccepted}
+            onChange={(e) => setTermsAccepted(e.target.checked)}
+          />
+          <label className="text-sm text-charcoal-700 cursor-pointer select-none">
+            Li e aceito os{" "}
+            <Link href="/termos" className="text-brand-600 hover:underline" target="_blank">
+              termos de uso
+            </Link>
+          </label>
+        </div>
+
         <Button
           variant="brand"
           size="lg"
           className="w-full"
           onClick={handleCheckout}
-          disabled={loading || (deliveryType === "delivery" && !deliveryEstimate)}
+          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate)}
         >
           {loading ? t('processing') : t('confirm_order', { total: formatPrice(total) })}
         </Button>

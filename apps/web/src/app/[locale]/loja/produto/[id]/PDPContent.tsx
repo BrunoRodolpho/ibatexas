@@ -12,6 +12,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { Link } from '@/i18n/navigation'
 import { MediaGallery } from '@/components/molecules/MediaGallery'
+import { WishlistButton } from '@/components/molecules/WishlistButton'
 import { track, trackOnceVisible, trackScrollDepth } from '@/domains/analytics'
 import { formatBRL, splitBRL } from '@/lib/format'
 import { useAlsoAdded } from '@/domains/recommendations'
@@ -343,16 +344,19 @@ export default function PDPContent({ productId }: PDPContentProps) {
                 />
               </div>
 
-              <Button
-                ref={mainCTARef}
-                onClick={handleAddToCart}
-                disabled={!selectedVariant || isAdding}
-                isLoading={isAdding}
-                className="w-full"
-                size="lg"
-              >
-                {isAdding ? t('product.adding') : t('product.add_to_cart')}
-              </Button>
+              <div className="flex items-center gap-3">
+                <Button
+                  ref={mainCTARef}
+                  onClick={handleAddToCart}
+                  disabled={!selectedVariant || isAdding}
+                  isLoading={isAdding}
+                  className="flex-1"
+                  size="lg"
+                >
+                  {isAdding ? t('product.adding') : t('product.add_to_cart')}
+                </Button>
+                <WishlistButton productId={productId} />
+              </div>
 
               {!selectedVariant && hasVariants && (
                 <Text variant="small" className="text-brand-500 text-center">

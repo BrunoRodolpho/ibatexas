@@ -19,7 +19,6 @@ vi.mock("@ibatexas/tools", () => ({
   indexProduct: vi.fn().mockResolvedValue(undefined),
   deleteProductFromIndex: vi.fn().mockResolvedValue(undefined),
   invalidateAllQueryCache: vi.fn().mockResolvedValue(3),
-  deleteEmbeddingCache: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -43,7 +42,6 @@ import {
   indexProduct,
   deleteProductFromIndex,
   invalidateAllQueryCache,
-  deleteEmbeddingCache,
 } from "@ibatexas/tools"
 
 import { publishNatsEvent } from "@ibatexas/nats-client"
@@ -123,17 +121,6 @@ describe("Product Indexing Subscribers", () => {
       expect(invalidateAllQueryCache).not.toHaveBeenCalled()
     })
 
-    it("does NOT call deleteEmbeddingCache (no prior embedding to purge)", async () => {
-      const container = makeContainer()
-
-      await productCreatedHandler({
-        event: { data: { id: mockProduct.id } },
-        container,
-      } as any)
-
-      expect(deleteEmbeddingCache).not.toHaveBeenCalled()
-    })
-
     it("does not publish product.indexed NATS event (removed as dead event)", async () => {
       const container = makeContainer()
 
@@ -186,17 +173,6 @@ describe("Product Indexing Subscribers", () => {
       expect(invalidateAllQueryCache).toHaveBeenCalledOnce()
     })
 
-    it("calls deleteEmbeddingCache to force re-embedding on next index", async () => {
-      const container = makeContainer()
-
-      await productUpdatedHandler({
-        event: { data: { id: mockProduct.id } },
-        container,
-      } as any)
-
-      expect(deleteEmbeddingCache).toHaveBeenCalledWith(mockProduct.id)
-    })
-
     it("does not publish product.indexed NATS event (removed as dead event)", async () => {
       const container = makeContainer()
 
@@ -246,17 +222,6 @@ describe("Product Indexing Subscribers", () => {
       } as any)
 
       expect(invalidateAllQueryCache).toHaveBeenCalledOnce()
-    })
-
-    it("calls deleteEmbeddingCache with the product ID", async () => {
-      const container = makeContainer()
-
-      await productDeletedHandler({
-        event: { data: { id: mockProduct.id } },
-        container,
-      } as any)
-
-      expect(deleteEmbeddingCache).toHaveBeenCalledWith(mockProduct.id)
     })
 
     it("does NOT call indexProduct (delete, not re-index)", async () => {

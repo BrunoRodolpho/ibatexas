@@ -51,6 +51,8 @@ interface CartState {
   medusaCartId?: string
   /** Timestamp (ms) of last cart modification — used for abandonment nudge */
   lastModifiedAt?: number
+  /** Whether the user has accepted the terms of use for this checkout session */
+  termsAccepted: boolean
 
   // Actions
   addItem: (product: ProductDTO, quantity: number, specialInstructions?: string, variant?: ProductVariant) => void
@@ -65,6 +67,7 @@ interface CartState {
   setDeliveryEstimate: (fee: number, minutes: number) => void
   setMedusaCartId: (cartId: string) => void
   clearMedusaCartId: () => void
+  setTermsAccepted: (accepted: boolean) => void
 
   // Computed
   getTotal: () => number
@@ -79,6 +82,7 @@ export const useCartStore = create<CartState>()(
     (set, get) => ({
       items: [],
       deliveryType: null,
+      termsAccepted: false,
 
       addItem: (product, quantity, specialInstructions, variant) => {
         // Eagerly create Medusa cart on first add (non-blocking)
@@ -133,6 +137,7 @@ export const useCartStore = create<CartState>()(
           estimatedDeliveryMinutes: undefined,
           lastModifiedAt: undefined,
           medusaCartId: undefined,
+          termsAccepted: false,
         }),
 
       setDeliveryType: (type) => set({ deliveryType: type }),
@@ -144,6 +149,7 @@ export const useCartStore = create<CartState>()(
         set({ deliveryFee: fee, estimatedDeliveryMinutes: minutes }),
       setMedusaCartId: (cartId) => set({ medusaCartId: cartId }),
       clearMedusaCartId: () => set({ medusaCartId: undefined }),
+      setTermsAccepted: (accepted) => set({ termsAccepted: accepted }),
 
       getTotal: () => {
         return get().items.reduce((total, item) => total + item.price * item.quantity, 0)

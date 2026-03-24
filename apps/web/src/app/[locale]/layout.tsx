@@ -9,6 +9,7 @@ import { MobileBottomNav } from "@/components/molecules/MobileBottomNav"
 import { ToastProvider } from "@/components/ToastProvider"
 import { PostHogProvider } from "@/components/PostHogProvider"
 import { ClientOverlays } from './ClientOverlays'
+import { CookieConsentBanner } from '@/components/molecules/CookieConsentBanner'
 
 const inter = Inter({
   subsets: ["latin"],
@@ -75,6 +76,7 @@ export default async function LocaleLayout({
               </a>
             )}
             <ToastProvider />
+            <CookieConsentBanner />
           </PostHogProvider>
         </NextIntlClientProvider>
       </body>

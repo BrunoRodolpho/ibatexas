@@ -86,7 +86,7 @@ export default function SearchContent() {
     }
 
     setFilters(newFilters)
-    if (urlQuery) setSearchQuery(urlQuery)
+    if (urlQuery) setSearchQuery(urlQuery) // eslint-disable-line react-hooks/set-state-in-effect -- sync URL params to state on mount
   }, [searchParams, setFilters])
 
   // ── Sync store → URL when filters change ──────────────────────────────
@@ -122,7 +122,7 @@ export default function SearchContent() {
     sort: selectedFilters.sort,
   })
 
-  const allProducts = productsData?.items ?? []
+  const allProducts = useMemo(() => productsData?.items ?? [], [productsData])
   const totalFound = productsData?.total ?? 0
 
   const products = allProducts.slice(0, visibleCount)
@@ -130,7 +130,7 @@ export default function SearchContent() {
 
   // Reset visible count when filters/search change
   useEffect(() => {
-    setVisibleCount(PAGE_SIZE)
+    setVisibleCount(PAGE_SIZE) // eslint-disable-line react-hooks/set-state-in-effect -- reset pagination on filter change
   }, [searchQuery, selectedFilters.tags, selectedFilters.category, selectedFilters.sort])
 
   // ── IntersectionObserver for infinite scroll ──────────────────────────
@@ -298,7 +298,6 @@ export default function SearchContent() {
           {isMobileFilterOpen && (
             <>
               {/* Backdrop to close on outside click */}
-              {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
               <div
                 className="fixed inset-0 z-10"
                 onClick={() => setIsMobileFilterOpen(false)}

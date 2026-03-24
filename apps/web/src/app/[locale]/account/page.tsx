@@ -4,6 +4,7 @@ import { Link } from '@/i18n/navigation'
 import { useTranslations } from "next-intl"
 import { useSessionStore } from '@/domains/session'
 import { Button } from "@/components/atoms"
+import { Heart } from 'lucide-react'
 
 export default function AccountPage() {
   const t = useTranslations()
@@ -91,6 +92,22 @@ export default function AccountPage() {
             {t("account.dietary_restrictions")} e {t("account.allergens")}
           </p>
         </div>
+
+        {/* Wishlist */}
+        <Link
+          href="/lista-desejos"
+          className="rounded-sm border border-smoke-200 bg-smoke-50 p-5 hover:bg-smoke-100 transition-all duration-500 block"
+        >
+          <div className="flex items-center gap-2">
+            <Heart className="w-4 h-4 text-smoke-400" />
+            <h2 className="text-[10px] font-semibold uppercase tracking-editorial text-smoke-400">
+              Minha Lista de Desejos
+            </h2>
+          </div>
+          <p className="mt-3 text-sm text-smoke-400">
+            {t("account.wishlist_description")}
+          </p>
+        </Link>
 
         {/* Saved Addresses */}
         <div className="rounded-sm border border-smoke-200 bg-smoke-50 p-5 hover:bg-smoke-100 transition-all duration-500">

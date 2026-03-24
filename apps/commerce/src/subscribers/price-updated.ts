@@ -9,7 +9,7 @@
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
-import { indexProduct, invalidateAllQueryCache, deleteEmbeddingCache } from "@ibatexas/tools"
+import { indexProduct, invalidateAllQueryCache } from "@ibatexas/tools"
 import { withTypesenseRetry } from "./_product-indexing"
 
 export default async function priceUpdatedHandler({
@@ -94,9 +94,6 @@ export default async function priceUpdatedHandler({
     // Invalidate all query caches — price data changed
     const flushed = await invalidateAllQueryCache()
     logger.info(`[Product Indexing] Flushed ${flushed} query cache entries`)
-
-    // Force re-embedding on next query (clear stale cached embedding)
-    await deleteEmbeddingCache(product.id)
 
     logger.info(`[Product Indexing] Re-indexed after price change: ${product.id} (${product.title})`)
   } catch (error) {
