@@ -8,7 +8,6 @@ const mockMedusaFetch = vi.hoisted(() => vi.fn())
 const mockGetAdminToken = vi.hoisted(() => vi.fn().mockResolvedValue("test-token"))
 const mockIndexProductsBatch = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const mockInvalidateAllQueryCache = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
-const mockDeleteEmbeddingCache = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const mockGetTypesenseClient = vi.hoisted(() => vi.fn())
 const mockCOLLECTION = "products"
 
@@ -20,7 +19,6 @@ vi.mock("../lib/medusa.js", () => ({
 vi.mock("@ibatexas/tools", () => ({
   indexProductsBatch: mockIndexProductsBatch,
   invalidateAllQueryCache: mockInvalidateAllQueryCache,
-  deleteEmbeddingCache: mockDeleteEmbeddingCache,
   getTypesenseClient: mockGetTypesenseClient,
   COLLECTION: mockCOLLECTION,
 }))
@@ -42,7 +40,7 @@ describe("stabilizeProducts", () => {
     expect(mockIndexProductsBatch).not.toHaveBeenCalled()
   })
 
-  it("fetches products, deletes embedding cache, indexes, and flushes cache", async () => {
+  it("fetches products, indexes, and flushes cache", async () => {
     mockMedusaFetch.mockResolvedValueOnce({ product: { id: "prod_1", title: "Brisket" } })
 
     await stabilizeProducts(["prod_1"])
@@ -52,9 +50,6 @@ describe("stabilizeProducts", () => {
       expect.stringContaining("/admin/products/prod_1"),
       expect.objectContaining({ token: "test-token" }),
     )
-
-    // Deleted embedding cache
-    expect(mockDeleteEmbeddingCache).toHaveBeenCalledWith("prod_1")
 
     // Indexed into Typesense
     expect(mockIndexProductsBatch).toHaveBeenCalledWith([
@@ -73,7 +68,6 @@ describe("stabilizeProducts", () => {
     await stabilizeProducts(["prod_1", "prod_2"])
 
     expect(mockMedusaFetch).toHaveBeenCalledTimes(2)
-    expect(mockDeleteEmbeddingCache).toHaveBeenCalledTimes(2)
     expect(mockIndexProductsBatch).toHaveBeenCalledWith([
       { id: "prod_1" },
       { id: "prod_2" },
@@ -100,15 +94,6 @@ describe("stabilizeProducts", () => {
     expect(mockInvalidateAllQueryCache).not.toHaveBeenCalled()
   })
 
-  it("continues if deleteEmbeddingCache fails (best effort)", async () => {
-    mockMedusaFetch.mockResolvedValueOnce({ product: { id: "prod_1" } })
-    mockDeleteEmbeddingCache.mockRejectedValueOnce(new Error("Cache miss"))
-
-    await stabilizeProducts(["prod_1"])
-
-    // Should still index despite embedding cache failure
-    expect(mockIndexProductsBatch).toHaveBeenCalled()
-  })
 })
 
 describe("verifyTypesenseDoc", () => {
