@@ -31,7 +31,8 @@ ibx dev                    # start Docker infra + Medusa (default)
 ibx dev commerce           # same as above, explicit
 ibx dev web                # start only the Next.js web app
 ibx dev api                # start only the Fastify API
-ibx dev all                # start all available services
+ibx dev admin              # start only the Next.js admin panel
+ibx dev all                # start all available services (commerce + api + web + admin)
 ibx dev --skip-docker      # skip docker compose (infra already running)
 ibx dev --no-wait          # start without polling health endpoints
 
@@ -41,10 +42,12 @@ ibx dev start web          # explicit alias for ibx dev web
 ibx dev stop               # stop all processes + docker compose down
 ibx dev stop web           # stop only the web process (keeps Docker up)
 ibx dev stop api           # stop only the API process (keeps Docker up)
+ibx dev stop admin         # stop only the admin process (keeps Docker up)
 
 ibx dev restart            # kill + respawn all services (no Docker restart)
 ibx dev restart web        # kill + respawn only the web process
 ibx dev restart api        # kill + respawn only the API process
+ibx dev restart admin      # kill + respawn only the admin process
 
 ibx dev build              # build all packages (turbo build)
 ibx dev build @ibatexas/cli  # build a specific package
@@ -422,6 +425,7 @@ ibx git log                # recent commits + open PR link
 | Web (Next.js)   | http://localhost:3000           |
 | API (Fastify)   | http://localhost:3001           |
 | API Swagger UI  | http://localhost:3001/docs      |
+| Admin (Next.js) | http://localhost:3002/admin     |
 | Typesense       | http://localhost:8108           |
 | NATS Monitor    | http://localhost:8222           |
 | PostHog         | https://app.posthog.com         |
@@ -434,18 +438,20 @@ ibx git log                # recent commits + open PR link
 
 `ibx dev` is service-aware. The registry lives in `packages/cli/src/services.ts`.
 
-| Service key | Available | Default? |
-|-------------|-----------|----------|
-| `commerce`  | ✅        | Yes      |
-| `api`       | ✅        | No       |
-| `web`       | ✅        | No       |
+| Service key | Port | Available | Default? |
+|-------------|------|-----------|----------|
+| `commerce`  | 9000 | ✅        | Yes      |
+| `api`       | 3001 | ✅        | No       |
+| `web`       | 3000 | ✅        | No       |
+| `admin`     | 3002 | ✅        | No       |
 
 > **Note:** The agent orchestrator (`runAgent`) is a library (`packages/llm-provider`) used by `apps/api` — it is not a separate service.
 
-To start the API alongside Medusa:
+To start specific services alongside Medusa:
 ```bash
 ibx dev api      # start Docker + Medusa + Fastify API
-ibx dev all      # start all available services
+ibx dev admin    # start Docker + Medusa + Admin panel
+ibx dev all      # start all available services (commerce + api + web + admin)
 ```
 
 ---
@@ -599,8 +605,9 @@ Always use `DATABASE_URL` from `.env` — never hardcode the port.
 
 ```bash
 # ❌ Use ibx equivalents instead
-pnpm --filter @ibatexas/commerce dev       # use: ibx dev
-docker compose up -d                       # use: ibx dev
-docker compose down                        # use: ibx dev stop
+pnpm --filter @ibatexas/commerce dev         # use: ibx dev
+pnpm --filter @ibatexas/admin dev            # use: ibx dev admin
+docker compose up -d                         # use: ibx dev
+docker compose down                          # use: ibx dev stop
 pnpm --filter @ibatexas/commerce db:migrate  # use: ibx db migrate
 ```

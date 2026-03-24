@@ -52,7 +52,7 @@ function buildHelpText(): string {
     {
       title: "SDLC",
       commands: [
-        { usage: "dev [service]",          desc: "Start dev environment — commerce (default) | api | web | all" },
+        { usage: "dev [service]",          desc: "Start dev environment — commerce (default) | api | web | admin | all" },
         { usage: "dev start [service]",    desc: "Explicit start alias (use --no-docker to skip containers)" },
         { usage: "dev stop [service]",     desc: "Stop service(s) — omit to stop all + docker compose stop (-f to force-kill ports)" },
         { usage: "dev restart [service]",  desc: "Kill + respawn service(s) without touching Docker" },
