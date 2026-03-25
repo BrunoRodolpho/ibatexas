@@ -619,7 +619,7 @@ describe("startCartIntelligenceSubscribers", () => {
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("order.canceled", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("review.submitted", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("cart.item_added", expect.any(Function));
-    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(17);
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(20);
   });
 });
 

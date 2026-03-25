@@ -37,6 +37,11 @@ vi.mock("../jobs/queue.js", () => ({
   })),
 }));
 
+vi.mock("@sentry/node", () => ({
+  withScope: vi.fn((cb: (scope: unknown) => void) => cb({ setTag: vi.fn(), setContext: vi.fn() })),
+  captureException: vi.fn(),
+}));
+
 // ── Import source after mocks ───────────────────────────────────────────────
 
 import {
@@ -59,6 +64,9 @@ function createMockRedis(overrides: Record<string, unknown> = {}) {
   return {
     hScan: vi.fn(),
     hDel: vi.fn(),
+    hSet: vi.fn(),
+    hGet: vi.fn(),
+    get: vi.fn().mockResolvedValue(null),
     exists: vi.fn(),
     ttl: vi.fn(),
     ...overrides,
@@ -167,8 +175,12 @@ describe("abandoned-cart-checker", () => {
       }),
     );
 
-    // Should remove from active hash after publishing
-    expect(mockRedis.hDel).toHaveBeenCalledWith("test:active:carts", "cart_04");
+    // No nudge key exists (first detection) → re-arm cart for next tier scan (hSet, not hDel)
+    expect(mockRedis.hSet).toHaveBeenCalledWith(
+      "test:active:carts",
+      "cart_04",
+      expect.any(String),
+    );
   });
 
   // ── Multiple carts in a single scan batch ─────────────────────────────────
@@ -190,7 +202,8 @@ describe("abandoned-cart-checker", () => {
     await checkAbandonedCarts();
 
     expect(mockPublishNatsEvent).toHaveBeenCalledTimes(3);
-    expect(mockRedis.hDel).toHaveBeenCalledTimes(3);
+    // No nudge keys exist (first detection) → all carts re-armed (hSet, not hDel)
+    expect(mockRedis.hSet).toHaveBeenCalledTimes(3);
   });
 
   // ── Pagination (multi-page HSCAN) ─────────────────────────────────────────

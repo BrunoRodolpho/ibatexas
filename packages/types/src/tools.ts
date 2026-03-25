@@ -41,6 +41,15 @@ export type GetNutritionalInfoInput = z.infer<typeof GetNutritionalInfoInputSche
 
 export type GetNutritionalInfoOutput = NutritionalInfo | null
 
+// ─── schedule_follow_up ──────────────────────────────────────────────────────
+
+export const ScheduleFollowUpInputSchema = z.object({
+  delayHours: z.number().min(1).max(72).describe("Horas até o lembrete (min 1, max 72)"),
+  reason: z.string().describe("Motivo: 'thinking', 'cart_save', 'price_concern'"),
+})
+
+export type ScheduleFollowUpInput = z.infer<typeof ScheduleFollowUpInputSchema>
+
 // ─── handoff_to_human ───────────────────────────────────────────────────────
 
 export const HandoffToHumanInputSchema = z.object({

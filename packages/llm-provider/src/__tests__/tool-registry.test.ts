@@ -72,6 +72,12 @@ vi.mock("@ibatexas/tools", () => {
     // Support tools
     handoffToHuman: vi.fn(async () => ({ success: true, estimatedWaitMinutes: 5, message: "Um atendente foi notificado e entrará em contato em breve." })),
     HandoffToHumanTool: makeTool("handoff_to_human"),
+    // Follow-up tool
+    scheduleFollowUp: vi.fn(async () => ({ success: true, message: "Lembrete agendado." })),
+    ScheduleFollowUpTool: makeTool("schedule_follow_up"),
+    // Loyalty tool
+    getLoyaltyBalance: vi.fn(async () => ({ stamps: 3, stampsNeeded: 7, totalEarned: 3, message: "3 de 10 selos" })),
+    GetLoyaltyBalanceTool: makeTool("get_loyalty_balance"),
     PROFILE_TTL_SECONDS: 2_592_000,
     RECENTLY_VIEWED_MAX: 20,
   }
@@ -91,8 +97,8 @@ const ctx: AgentContext = {
 // ── TOOL_DEFINITIONS ──────────────────────────────────────────────────────────
 
 describe("TOOL_DEFINITIONS", () => {
-  it("has 28 registered tools", () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(28)
+  it("has 30 registered tools", () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(30)
   })
 
   it("uses input_schema (snake_case) for Anthropic API", () => {

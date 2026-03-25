@@ -32,10 +32,13 @@ import {
   tryDebounce,
   hasOptedIn,
   markOptedIn,
+  setWelcomeCredit,
+  storeLastLocation,
+  getLastLocation,
 } from "../whatsapp/session.js";
 import { collectAgentResponse } from "../whatsapp/formatter.js";
 import { sendText } from "../whatsapp/client.js";
-import { matchShortcut, buildHelpText } from "../whatsapp/shortcuts.js";
+import { matchShortcut, buildHelpText, buildWelcomeText } from "../whatsapp/shortcuts.js";
 import { handleStateMachine, transitionTo } from "../whatsapp/state-machine.js";
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
 
@@ -69,7 +72,8 @@ async function retryForMissedMessages(
     const retryTrimmed = retryHistory.slice(-MAX_HISTORY_MESSAGES);
     const retryLastUser = [...retryTrimmed].reverse().find((m) => m.role === "user");
     const retryInput = retryLastUser?.content || "";
-    const retryContext = buildWhatsAppContext(session);
+    const retryLocation = await getLastLocation(hash);
+    const retryContext = buildWhatsAppContext(session, retryLocation);
 
     log.info({ phone_hash: hash }, "[whatsapp.agent.retry] Re-running agent for missed messages");
     const retryResponse = await collectAgentResponse(
@@ -103,6 +107,9 @@ interface TwilioWebhookBody {
   ButtonPayload?: string;
   ListId?: string;
   ListTitle?: string;
+  // Location pin fields (Twilio WhatsApp location messages)
+  Latitude?: string;
+  Longitude?: string;
 }
 
 // ── Webhook validation helpers ───────────────────────────────────────────────
@@ -180,6 +187,8 @@ async function handleShortcut(
   switch (shortcutType) {
     case "help":
       return buildHelpText();
+    case "welcome":
+      return buildWelcomeText();
     case "menu":
       await transitionTo(hash, "browsing");
       return null; // Fall through to agent
@@ -242,8 +251,9 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       // ── 2. Guard empty messages ─────────────────────────────────────────────
       const messageBody = body.Body?.trim() || "";
       const numMedia = Number.parseInt(body.NumMedia || "0", 10);
+      const hasLocation = body.Latitude !== undefined && body.Longitude !== undefined;
 
-      if (!messageBody && numMedia === 0) {
+      if (!messageBody && numMedia === 0 && !hasLocation) {
         return reply.code(200).type("text/xml").send("<Response/>");
       }
 
@@ -353,6 +363,46 @@ async function handleMessageAsync(
 
   // ── Resolve session ─────────────────────────────────────────────────────────
   const session = await resolveWhatsAppSession(phone);
+
+  // ── Track daily conversation count ─────────────────────────────────────────
+  if (session.isNew) {
+    try {
+      const metricsRedis = await getRedisClient();
+      const todayDateStr = new Date().toISOString().slice(0, 10);
+      const convKey = rk(`metrics:conversations:daily:${todayDateStr}`);
+      const convCount = await metricsRedis.incr(convKey);
+      if (convCount === 1) {
+        await metricsRedis.expire(convKey, 48 * 60 * 60);
+      }
+    } catch (metricsErr) {
+      log.warn({ error: String(metricsErr) }, "[whatsapp.metrics] Failed to track conversation count");
+    }
+  }
+
+  // ── Track per-session message count ─────────────────────────────────────────
+  try {
+    const metricsRedis = await getRedisClient();
+    const msgCountKey = rk(`metrics:messages:${session.sessionId}`);
+    const msgCount = await metricsRedis.incr(msgCountKey);
+    if (msgCount === 1) {
+      await metricsRedis.expire(msgCountKey, 48 * 60 * 60);
+    }
+  } catch (metricsErr) {
+    log.warn({ error: String(metricsErr) }, "[whatsapp.metrics] Failed to track message count");
+  }
+
+  // ── Store GPS location if provided ─────────────────────────────────────────
+  const lat = body.Latitude ? Number.parseFloat(body.Latitude) : undefined;
+  const lng = body.Longitude ? Number.parseFloat(body.Longitude) : undefined;
+  if (lat !== undefined && lng !== undefined && !Number.isNaN(lat) && !Number.isNaN(lng)) {
+    await storeLastLocation(hash, lat, lng);
+    log.info({ phone_hash: hash }, "[whatsapp.location] GPS pin stored");
+    // If message body is empty, synthesize a location message for the agent
+    if (!messageBody) {
+      const locationText = `[localização compartilhada: lat=${lat}, lng=${lng}]`;
+      await appendMessages(session.sessionId, [{ role: "user", content: locationText }], true);
+    }
+  }
   log.info(
     { phone_hash: hash, session_id: session.sessionId, is_new: session.isNew },
     "[whatsapp.session.resolved]",
@@ -360,6 +410,15 @@ async function handleMessageAsync(
 
   // Refresh TTL
   await touchSession(hash);
+
+  // ── Welcome credit for new customers triggering first-order flow ─────────────
+  if (session.isNew) {
+    const lowerBody = messageBody.toLowerCase();
+    if (lowerBody.includes("credito") || lowerBody.includes("r$15") || lowerBody.includes("primeira vez")) {
+      await setWelcomeCredit(session.customerId);
+      log.info({ customer_id: session.customerId }, "[whatsapp] Welcome credit set for new customer");
+    }
+  }
 
   // ── LGPD opt-in disclosure (once per phone) ─────────────────────────────────
   const optedIn = await hasOptedIn(hash);
@@ -369,10 +428,11 @@ async function handleMessageAsync(
   }
 
   // ── Build user message (handle interactive selections) ──────────────────────
+  // For location-only messages, the synthesized location text was already appended above.
   const userMessage = buildUserMessage(body, messageBody);
-
-  // Append user message to session
-  await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true);
+  if (userMessage) {
+    await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true);
+  }
 
   // ── Debounce (batch rapid-fire messages) ────────────────────────────────────
   // The 2s debounce window: first message sets an NX key (2s TTL) and becomes the
@@ -410,7 +470,8 @@ async function handleMessageAsync(
     const lastUserMsg = [...trimmedHistory].reverse().find((m) => m.role === "user");
     const agentInput = lastUserMsg?.content || userMessage;
 
-    const context = buildWhatsAppContext(session);
+    const lastLocation = await getLastLocation(hash);
+    const context = buildWhatsAppContext(session, lastLocation);
 
     log.info(
       { phone_hash: hash, session_id: session.sessionId, history_length: trimmedHistory.length },

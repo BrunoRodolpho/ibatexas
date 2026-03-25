@@ -101,6 +101,7 @@ export {
   CheckInventoryInputSchema,
   GetNutritionalInfoInputSchema,
   HandoffToHumanInputSchema,
+  ScheduleFollowUpInputSchema,
   type CheckInventoryInput,
   type CheckInventoryOutput,
   type NutritionalInfo,
@@ -108,6 +109,7 @@ export {
   type GetNutritionalInfoOutput,
   type HandoffToHumanInput,
   type HandoffToHumanOutput,
+  type ScheduleFollowUpInput,
 } from "./tools.js"
 
 // Reservation types

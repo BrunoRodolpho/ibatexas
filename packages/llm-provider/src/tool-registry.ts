@@ -61,6 +61,12 @@ import {
   // Support tools
   handoffToHuman,
   HandoffToHumanTool,
+  // Intelligence: follow-up
+  scheduleFollowUp,
+  ScheduleFollowUpTool,
+  // Loyalty
+  getLoyaltyBalance,
+  GetLoyaltyBalanceTool,
 } from "@ibatexas/tools"
 import type { AgentContext } from "@ibatexas/types"
 import {
@@ -89,6 +95,7 @@ import {
   CheckInventoryInputSchema,
   GetNutritionalInfoInputSchema,
   HandoffToHumanInputSchema,
+  ScheduleFollowUpInputSchema,
 } from "@ibatexas/types"
 import { z } from "zod"
 import type { Tool } from "@anthropic-ai/sdk/resources/index.js"
@@ -138,6 +145,10 @@ export const TOOL_DEFINITIONS: Tool[] = [
   toAnthropicTool(GetOrderedTogetherTool),
   // Support tools
   toAnthropicTool(HandoffToHumanTool),
+  // Intelligence: follow-up
+  toAnthropicTool(ScheduleFollowUpTool),
+  // Loyalty
+  toAnthropicTool(GetLoyaltyBalanceTool),
 ]
 
 // ── Tool handlers ─────────────────────────────────────────────────────────────
@@ -224,6 +235,10 @@ const handlers = new Map<string, ToolHandler>([
   ["get_ordered_together", (input, ctx) => getOrderedTogether(input as Parameters<typeof getOrderedTogether>[0], ctx)],
   // ── Support tools
   ["handoff_to_human", (input) => handoffToHuman(input as Parameters<typeof handoffToHuman>[0])],
+  // ── Intelligence: follow-up
+  ["schedule_follow_up", (input, ctx) => scheduleFollowUp(input as Parameters<typeof scheduleFollowUp>[0], ctx)],
+  // ── Loyalty
+  ["get_loyalty_balance", (input, ctx) => getLoyaltyBalance(input as Parameters<typeof getLoyaltyBalance>[0], ctx)],
 ])
 
 // Centralized Zod validation before tool dispatch.
@@ -234,7 +249,15 @@ const handlers = new Map<string, ToolHandler>([
 const toolInputSchemas = new Map<string, z.ZodTypeAny>([
   ["search_products", SearchProductsInputSchema],
   ["get_product_details", z.strictObject({ productId: z.string() })],
-  ["estimate_delivery", z.strictObject({ cep: z.string() })],
+  [
+    "estimate_delivery",
+    z
+      .object({ cep: z.string().optional(), latitude: z.number().optional(), longitude: z.number().optional() })
+      .strict()
+      .refine((v) => v.cep !== undefined || (v.latitude !== undefined && v.longitude !== undefined), {
+        message: "Informe um CEP ou coordenadas de localização (latitude + longitude).",
+      }),
+  ],
   ["check_inventory", CheckInventoryInputSchema],
   ["get_nutritional_info", GetNutritionalInfoInputSchema],
   ["check_table_availability", CheckAvailabilityInputSchema],
@@ -260,6 +283,8 @@ const toolInputSchemas = new Map<string, z.ZodTypeAny>([
   ["get_also_added", GetAlsoAddedInputSchema],
   ["get_ordered_together", GetOrderedTogetherInputSchema],
   ["handoff_to_human", HandoffToHumanInputSchema],
+  ["schedule_follow_up", ScheduleFollowUpInputSchema],
+  ["get_loyalty_balance", z.looseObject({})],
 ])
 
 /**

@@ -4,12 +4,21 @@ import { useTranslations } from 'next-intl'
 import { X } from 'lucide-react'
 import { LinkButton } from '../atoms'
 import { useFirstVisit } from '@/domains/session/useFirstVisit'
+import { track } from '@/domains/analytics/track'
 
 export function FirstVisitBanner() {
   const t = useTranslations('first_visit')
   const { isFirstVisit, dismiss } = useFirstVisit()
 
   if (!isFirstVisit) return null
+
+  const whatsappNumber = process.env.NEXT_PUBLIC_WHATSAPP_NUMBER ?? '5500000000000'
+  const whatsappMessage = encodeURIComponent('Ola! Quero meu desconto de R$15 no primeiro pedido!')
+  const whatsappHref = `https://wa.me/${whatsappNumber}?text=${whatsappMessage}`
+
+  function handleWhatsAppClick() {
+    track('whatsapp_cta_clicked', { source: 'first_visit_banner' })
+  }
 
   return (
     <div className="relative bg-brand-50 border border-brand-200 rounded-sm p-4 mb-6 animate-reveal">
@@ -31,6 +40,15 @@ export function FirstVisitBanner() {
         <LinkButton href="/search?q=kit" variant="brand" size="sm">
           {t('cta')}
         </LinkButton>
+        <a
+          href={whatsappHref}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={handleWhatsAppClick}
+          className="text-xs font-medium text-brand-600 hover:text-brand-800 underline underline-offset-2 transition-colors"
+        >
+          {t('whatsapp_cta')}
+        </a>
         <button
           onClick={dismiss}
           className="text-xs text-smoke-400 hover:text-charcoal-900 transition-colors"

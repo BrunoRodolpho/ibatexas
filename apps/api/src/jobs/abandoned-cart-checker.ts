@@ -72,15 +72,45 @@ async function processCartEntry(
     return false;
   }
 
+  // Resolve phone from session owner if available (best-effort)
+  let phone: string | undefined;
+  try {
+    const ownerKey = rk(`session:owner:${cartId}`);
+    const ownerId = await redis.get(ownerKey);
+    if (ownerId) {
+      const profileKey = rk(`customer:profile:${ownerId}`);
+      const profilePhone = await redis.hGet(profileKey, "phone");
+      if (profilePhone) phone = profilePhone;
+    }
+  } catch {
+    // phone resolution is best-effort — proceed without it
+  }
+
+  // Check current nudge tier to decide whether to remove from active:carts
+  const nudgeKey = rk(`cart:nudge:${cartId}`);
+  const nudgeRaw = await redis.get(nudgeKey);
+  const isFinalTier = nudgeRaw
+    ? (JSON.parse(nudgeRaw) as { tier: number }).tier === 3
+    : false;
+
   await publishNatsEvent("cart.abandoned", {
     eventType: "cart.abandoned",
     cartId: entry.cartId,
     sessionId: entry.cartId,
     sessionType: entry.sessionType,
     idleMs,
+    ...(phone ? { phone } : {}),
   });
 
-  await redis.hDel(activeCartsKey, cartId);
+  if (isFinalTier) {
+    // Final nudge was already sent before this scan — remove from active tracking
+    await redis.hDel(activeCartsKey, cartId);
+  } else {
+    // Re-arm for next tier: update lastActivity so the cart is re-scanned after cooldown
+    const updatedEntry = { ...entry, lastActivity: Date.now() };
+    await redis.hSet(activeCartsKey, cartId, JSON.stringify(updatedEntry));
+  }
+
   return true;
 }
 

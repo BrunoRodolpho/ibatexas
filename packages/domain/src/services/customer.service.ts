@@ -163,6 +163,26 @@ export function createCustomerService() {
     },
 
     /**
+     * Find customers who have ordered before but not within the last `thresholdDays` days.
+     * Uses a raw query to GROUP BY customer and filter by MAX(ordered_at).
+     * Returns up to `limit` customers ordered by most-recently-dormant first.
+     */
+    async findDormantCustomers(thresholdDays: number, limit = 200) {
+      const cutoff = new Date(Date.now() - thresholdDays * 86400 * 1000)
+      const dormant = await prisma.$queryRaw`
+        SELECT c.id, c.phone, c.name
+        FROM ibx_domain.customers c
+        INNER JOIN ibx_domain.customer_order_items coi ON coi.customer_id = c.id
+        WHERE c.phone IS NOT NULL
+        GROUP BY c.id, c.phone, c.name
+        HAVING MAX(coi.ordered_at) < ${cutoff}
+        ORDER BY MAX(coi.ordered_at) DESC
+        LIMIT ${limit}
+      ` as Array<{ id: string; phone: string; name: string | null }>
+      return dormant
+    },
+
+    /**
      * Co-purchase query: products this customer ordered alongside productId.
      * Returns grouped items ranked by frequency.
      */

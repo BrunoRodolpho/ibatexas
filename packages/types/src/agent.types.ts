@@ -18,6 +18,7 @@ export interface AgentContext {
   sessionId: string
   customerId?: string
   userType: UserType
+  lastLocation?: { lat: number; lng: number }
 }
 
 export type AgentMessage = {

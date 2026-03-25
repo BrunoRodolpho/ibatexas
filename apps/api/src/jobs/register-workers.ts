@@ -8,6 +8,8 @@ import { startOutboxRetry } from "./outbox-retry.js";
 import { startReviewPromptPoller } from "./review-prompt-poller.js";
 import { startReservationReminder } from "./reservation-reminder.js";
 import { startPixExpiryChecker } from "./pix-expiry-checker.js";
+import { startProactiveEngagement } from "./proactive-engagement.js";
+import { startFollowUpPoller } from "./follow-up-poller.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -19,6 +21,8 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   startAbandonedCartChecker(log);
   startOutboxRetry(log);
   startPixExpiryChecker(log);
+  startProactiveEngagement(log);
+  startFollowUpPoller(log);
 }
 
 /**
@@ -31,6 +35,8 @@ export async function shutdownWorkers(): Promise<void> {
   const { stopReviewPromptPoller } = await import("./review-prompt-poller.js");
   const { stopReservationReminder } = await import("./reservation-reminder.js");
   const { stopPixExpiryChecker } = await import("./pix-expiry-checker.js");
+  const { stopProactiveEngagement } = await import("./proactive-engagement.js");
+  const { stopFollowUpPoller } = await import("./follow-up-poller.js");
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -39,5 +45,7 @@ export async function shutdownWorkers(): Promise<void> {
     stopReviewPromptPoller(),
     stopReservationReminder(),
     stopPixExpiryChecker(),
+    stopProactiveEngagement(),
+    stopFollowUpPoller(),
   ]);
 }

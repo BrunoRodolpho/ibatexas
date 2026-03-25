@@ -56,6 +56,21 @@ export function createDeliveryZoneService() {
         ) ?? null
       )
     },
+
+    /**
+     * Find all active zones that have GPS center coordinates set.
+     * Used by estimate_delivery Haversine fallback when CEP is unavailable.
+     */
+    async findActiveWithCoords() {
+      return prisma.deliveryZone.findMany({
+        where: {
+          active: true,
+          centerLat: { not: null },
+          centerLng: { not: null },
+          radiusKm: { not: null },
+        },
+      })
+    },
   }
 }
 

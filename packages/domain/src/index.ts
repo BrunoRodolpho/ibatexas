@@ -12,6 +12,7 @@ export { assertOwnership, assertMutable } from "./services/shared.js"
 export { createReviewService, type ReviewService } from "./services/review.service.js"
 export { createTableService, type TableService } from "./services/table.service.js"
 export { createDeliveryZoneService, type DeliveryZoneService } from "./services/delivery-zone.service.js"
+export { createLoyaltyService, type LoyaltyService } from "./services/loyalty.service.js"
 
 // Re-export Prisma types so consumers don't need to import from @prisma/client directly
 export type {
@@ -27,6 +28,7 @@ export type {
   CustomerOrderItem,
   DeliveryZone,
   Staff,
+  LoyaltyAccount,
   TableLocation,
   ReservationStatus,
   StaffRole,

@@ -67,6 +67,8 @@ export interface TypesenseProductDoc {
   preparationTimeMinutes?: number | null
   rating?: number | null
   reviewCount?: number | null
+  /** Product visibility — "all" | "whatsapp" | "web" | "staff". Default: "all" */
+  visibility?: string
   createdAt?: string
   updatedAt?: string
   createdAtTimestamp?: number
@@ -116,6 +118,7 @@ export function medusaToTypesenseDoc(product: MedusaProductInput): TypesenseProd
     preparationTimeMinutes: (product.metadata?.preparationTimeMinutes as number) || null,
     rating: (product.metadata?.rating as number) || null,
     reviewCount: (product.metadata?.reviewCount as number) || null,
+    visibility: (product.metadata?.visibility as string) ?? "all",
     createdAt,
     updatedAt,
     createdAtTimestamp: createdAt ? new Date(createdAt).getTime() : Date.now(),
@@ -244,6 +247,7 @@ export function typesenseDocToDTO(doc: TypesenseProductDoc): ProductDTO {
     preparationTimeMinutes: doc.preparationTimeMinutes ?? undefined,
     rating: doc.rating ?? undefined,
     reviewCount: doc.reviewCount ?? undefined,
+    visibility: doc.visibility ?? "all",
     createdAt: doc.createdAt ?? "",
     updatedAt: doc.updatedAt ?? "",
   }

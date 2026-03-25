@@ -6,6 +6,32 @@ For Medusa's own entities (Product, Cart, Order, etc.) refer to the [Medusa v2 d
 
 ---
 
+## Product Metadata Conventions
+
+Medusa products use the `metadata` field to store IbateXas-specific attributes. These are not Medusa-native fields — they are set via the admin API or `ibx` CLI.
+
+### metadata.visibility
+
+Controls which channel(s) can see a product.
+
+| Value | Meaning |
+|---|---|
+| `"all"` | Visible on all channels (default) |
+| `"whatsapp"` | Exclusive to WhatsApp — "menu secreto" |
+| `"web"` | Visible on web storefront only |
+| `"staff"` | Internal/staff-facing only (never shown to customers) |
+
+**Default:** products without a `visibility` field are treated as `"all"`.
+
+**Filtering rules (enforced post-Typesense by `searchProducts`):**
+- `channel === "whatsapp"`: keep products where visibility is `"all"` or `"whatsapp"`
+- `channel === "web"`: keep products where visibility is `"all"` or `"web"`
+- no channel: keep only `"all"` products
+
+**Note:** The `visibility` field is indexed in Typesense to enable future native filtering, but the authoritative filter is the post-search step in `packages/tools/src/search/search-products.ts`.
+
+---
+
 ## Entity Map
 
 ```

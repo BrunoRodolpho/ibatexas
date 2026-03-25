@@ -73,6 +73,10 @@ vi.mock("@ibatexas/tools", () => {
     // Support tools
     handoffToHuman: vi.fn(async () => ({ success: true, estimatedWaitMinutes: 5, message: "Um atendente foi notificado e entrará em contato em breve." })),
     HandoffToHumanTool: makeTool("handoff_to_human"),
+    scheduleFollowUp: vi.fn(async () => ({ success: true, message: "Lembrete agendado." })),
+    ScheduleFollowUpTool: makeTool("schedule_follow_up"),
+    getLoyaltyBalance: vi.fn(async () => ({ stamps: 3, stampsNeeded: 7, totalEarned: 3, message: "3 de 10 selos" })),
+    GetLoyaltyBalanceTool: makeTool("get_loyalty_balance"),
     PROFILE_TTL_SECONDS: 2_592_000,
     RECENTLY_VIEWED_MAX: 20,
   }
