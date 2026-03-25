@@ -64,3 +64,19 @@ export type AnalyticsEvent =
   // ── Consent ───────────────────────────────────────────────────
   | 'cookie_consent_given'
   | 'cookie_consent_rejected'
+  // ── Acquisition ─────────────────────────────────────────────
+  | 'first_order_completed'
+  | 'welcome_credit_applied'
+  | 'qr_code_scanned'
+  | 'whatsapp_cta_clicked'
+  | 'utm_source_captured'
+  // ── Proactive Outreach ──────────────────────────────────────
+  | 'proactive_nudge_sent'
+  | 'proactive_nudge_converted'
+  // ── Agent Performance ──────────────────────────────────────
+  | 'wa_conversation_started'
+  | 'wa_conversation_converted'
+  | 'wa_follow_up_scheduled'
+  | 'wa_follow_up_converted'
+  | 'loyalty_stamp_earned'
+  | 'loyalty_reward_redeemed'

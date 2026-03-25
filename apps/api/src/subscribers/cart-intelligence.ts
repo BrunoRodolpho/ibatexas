@@ -15,8 +15,11 @@
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender } from "@ibatexas/tools";
-import { createCustomerService } from "@ibatexas/domain";
+import * as Sentry from "@sentry/node";
+import { createCustomerService, createLoyaltyService } from "@ibatexas/domain";
 import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
+import { buildCartRecoveryMessage } from "../jobs/cart-recovery-messages.js";
+import { loadSession } from "../session/store.js";
 import type { FastifyBaseLogger } from "fastify";
 
 const RECENTLY_VIEWED_MAX = 20;
@@ -26,6 +29,16 @@ const NATS_DEDUP_TTL = 604_800; // 7 days — matches Stripe webhook window
 const COPURCHASE_MAX_ENTRIES = 50;     // per-product copurchase sorted set
 const GLOBAL_SCORE_MAX_ENTRIES = 200;  // product:global:score sorted set
 const CART_POPULARITY_MAX_ENTRIES = 200; // product:cart:popularity sorted set
+
+// ── Cart recovery tier timing ────────────────────────────────────────────────
+const TIER_1_TO_2_MS = 4 * 60 * 60 * 1000;   // 4h cooldown before escalating to tier 2
+const TIER_2_TO_3_MS = 18 * 60 * 60 * 1000;  // 18h cooldown before escalating to tier 3
+const NUDGE_TTL_SECONDS = 48 * 60 * 60;       // 48h — nudge key lifetime
+
+interface CartNudgeState {
+  tier: 1 | 2 | 3;
+  sentAt: number; // epoch ms
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -76,16 +89,15 @@ async function updateGlobalScores(
   await pipeline.exec();
 }
 
-function buildNotificationMessage(type: string, _cartId?: string): string {
+function buildNotificationMessage(
+  type: string,
+  _cartId?: string,
+  tier?: 1 | 2 | 3,
+  itemNames?: string[],
+  customerName?: string,
+): string {
   if (type === "cart_abandoned") {
-    return [
-      `🛒 *IbateXas — Esqueceu algo no carrinho?*`,
-      ``,
-      `Seus itens ainda estão esperando por você!`,
-      `Finalize seu pedido antes que acabe.`,
-      ``,
-      `Responda "meu carrinho" para continuar.`,
-    ].join("\n");
+    return buildCartRecoveryMessage(tier ?? 1, itemNames ?? [], customerName);
   }
   return `IbateXas: você tem uma nova notificação. Responda para saber mais.`;
 }
@@ -102,19 +114,136 @@ export async function startCartIntelligenceSubscribers(
 ): Promise<void> {
   // ── cart.abandoned ─────────────────────────────────────────────────────────
   await subscribeNatsEvent("cart.abandoned", async (payload) => {
-    const { cartId, sessionId, customerId } = payload as { cartId: string; sessionId: string; customerId?: string };
+    const { cartId, sessionId, customerId, phone, itemNames: payloadItemNames, customerName: payloadCustomerName } = payload as {
+      cartId: string;
+      sessionId: string;
+      customerId?: string;
+      phone?: string;
+      itemNames?: string[];
+      customerName?: string;
+    };
     log?.info({ cart_id: cartId, customer_id: customerId }, "[cart-intelligence] cart.abandoned received");
 
-    // Relay nudge to WhatsApp/push microservice via NATS (fire-and-forget)
-    // The actual delivery is handled by the notification.send subscriber below
-    const { publishNatsEvent } = await import("@ibatexas/nats-client");
-    await publishNatsEvent("notification.send", {
-      type: "cart_abandoned",
-      sessionId,
-      customerId,
-      cartId,
-      channel: "whatsapp",
-    });
+    try {
+      const redis = await getRedisClient();
+      const nudgeKey = rk(`cart:nudge:${cartId}`);
+      const nudgeRaw = await redis.get(nudgeKey);
+
+      let tier: 1 | 2 | 3 = 1;
+      const now = Date.now();
+
+      if (nudgeRaw) {
+        const nudgeState = JSON.parse(nudgeRaw) as CartNudgeState;
+        if (nudgeState.tier === 3) {
+          // Final nudge already sent — skip
+          log?.info({ cart_id: cartId }, "[cart-intelligence] cart.abandoned — tier 3 already sent, skipping");
+          return;
+        }
+        if (nudgeState.tier === 1) {
+          if (now - nudgeState.sentAt < TIER_1_TO_2_MS) {
+            // Still within tier 1 cooldown — skip
+            log?.info({ cart_id: cartId }, "[cart-intelligence] cart.abandoned — tier 1 cooldown, skipping");
+            return;
+          }
+          tier = 2;
+        } else if (nudgeState.tier === 2) {
+          if (now - nudgeState.sentAt < TIER_2_TO_3_MS) {
+            // Still within tier 2 cooldown — skip
+            log?.info({ cart_id: cartId }, "[cart-intelligence] cart.abandoned — tier 2 cooldown, skipping");
+            return;
+          }
+          tier = 3;
+        }
+      }
+
+      // Resolve item names: prefer payload, fall back to session history
+      let itemNames: string[] = payloadItemNames ?? [];
+      if (itemNames.length === 0 && sessionId) {
+        try {
+          const history = await loadSession(sessionId);
+          // Extract product names from agent tool_result messages in session history
+          for (const msg of history) {
+            if (msg.role === "assistant" && Array.isArray(msg.content)) {
+              for (const block of msg.content as Array<{ type?: string; name?: string; content?: unknown }>) {
+                if (block.type === "tool_result" && typeof block.content === "string") {
+                  try {
+                    const parsed = JSON.parse(block.content) as { items?: Array<{ name?: string; productName?: string }> };
+                    if (Array.isArray(parsed.items)) {
+                      const names = parsed.items
+                        .map((i) => i.name ?? i.productName)
+                        .filter((n): n is string => typeof n === "string" && n.length > 0);
+                      if (names.length > 0) {
+                        itemNames = names;
+                      }
+                    }
+                  } catch {
+                    // ignore unparseable tool result
+                  }
+                }
+              }
+            }
+          }
+        } catch (err) {
+          log?.warn({ cart_id: cartId, error: String(err) }, "[cart-intelligence] cart.abandoned — failed to load session for item names");
+        }
+      }
+
+      const customerName = payloadCustomerName;
+
+      // Build personalized message
+      const body = buildCartRecoveryMessage(tier, itemNames, customerName);
+
+      // Persist nudge state
+      const newNudgeState: CartNudgeState = { tier, sentAt: now };
+      await redis.set(nudgeKey, JSON.stringify(newNudgeState), { EX: NUDGE_TTL_SECONDS });
+
+      // Relay nudge to notification.send subscriber
+      const { publishNatsEvent } = await import("@ibatexas/nats-client");
+      await publishNatsEvent("notification.send", {
+        type: "cart_abandoned",
+        sessionId,
+        customerId,
+        cartId,
+        phone,
+        channel: "whatsapp",
+        body,
+      });
+
+      // Staff alert: high-value abandoned cart — must NOT block main flow
+      try {
+        const staffPhone = process.env.STAFF_ALERT_PHONE;
+        if (staffPhone) {
+          const { medusaStore } = await import("@ibatexas/tools");
+          const cartData = await medusaStore(`/store/carts/${cartId}`) as { cart?: { total?: number } };
+          const total = cartData?.cart?.total ?? 0;
+          if (total > 20000) {
+            const alertKey = rk("alert:staff:hourly");
+            const alertCount = await redis.incr(alertKey);
+            if (alertCount === 1) {
+              await redis.expire(alertKey, 60 * 60);
+            }
+            if (alertCount <= 10) {
+              const { sendText } = await import("../whatsapp/client.js");
+              const valorFormatado = (total / 100).toFixed(2).replace(".", ",");
+              const alertMsg = `🚨 Carrinho de alto valor abandonado!\nValor: R$${valorFormatado}\nCliente: ${customerName ?? "Anonimo"}\nAcao: Ligue para recuperar.`;
+              await sendText(`whatsapp:${staffPhone}`, alertMsg);
+              log?.info({ cart_id: cartId, total, alert_count: alertCount }, "[cart-intelligence] staff alert sent for high-value cart");
+            } else {
+              log?.info({ cart_id: cartId, alert_count: alertCount }, "[cart-intelligence] Staff alert rate limit reached");
+            }
+          }
+        }
+      } catch (alertErr) {
+        log?.warn({ cart_id: cartId, error: String(alertErr) }, "[cart-intelligence] staff alert failed — cart flow not affected");
+      }
+    } catch (err) {
+      log?.error({ cart_id: cartId, error: String(err) }, "[cart-intelligence] cart.abandoned handler error");
+      Sentry.withScope((scope) => {
+        scope.setTag("subscriber", "cart.abandoned");
+        scope.setContext("cart", { cartId, customerId });
+        Sentry.captureException(err);
+      });
+    }
   });
 
   // ── order.placed ──────────────────────────────────────────────────────────
@@ -173,6 +302,60 @@ export async function startCartIntelligenceSubscribers(
       }
 
       await resetProfileTtl(customerId);
+
+      // 6. Track daily WhatsApp orders metric and messages-to-checkout
+      try {
+        const phone = await redis.hGet(profileKey, "phone");
+        if (phone) {
+          const todayDateStr = new Date().toISOString().slice(0, 10);
+          const waOrderKey = rk(`metrics:wa_orders:daily:${todayDateStr}`);
+          const waOrderCount = await redis.incr(waOrderKey);
+          if (waOrderCount === 1) {
+            await redis.expire(waOrderKey, 48 * 60 * 60);
+          }
+
+          // Update exponential moving average of messages-to-checkout
+          const { hashPhone } = await import("../whatsapp/session.js");
+          const phoneHash = hashPhone(phone);
+          const sessionId = await redis.hGet(rk(`wa:phone:${phoneHash}`), "sessionId");
+          if (sessionId) {
+            const msgCountRaw = await redis.get(rk(`metrics:messages:${sessionId}`));
+            const msgCount = msgCountRaw ? parseInt(msgCountRaw, 10) : 0;
+            if (msgCount > 0) {
+              await redis.hSet(profileKey, "lastOrderMessageCount", String(msgCount));
+              const avgKey = rk("metrics:avg_messages_to_checkout");
+              const oldAvgRaw = await redis.get(avgKey);
+              const oldAvg = oldAvgRaw ? parseFloat(oldAvgRaw) : msgCount;
+              const newAvg = 0.9 * oldAvg + 0.1 * msgCount;
+              await redis.set(avgKey, String(newAvg));
+            }
+          }
+        }
+      } catch (metricsErr) {
+        log?.warn({ customer_id: customerId, error: String(metricsErr) }, "[cart-intelligence] order.placed metrics update failed");
+      }
+
+      // 7. Award loyalty stamp — failure must NOT block order processing
+      try {
+        const loyaltySvc = createLoyaltyService();
+        const { stamps, rewarded } = await loyaltySvc.addStamp(customerId);
+        log?.info({ customer_id: customerId, stamps, rewarded }, "[cart-intelligence] loyalty stamp awarded");
+
+        if (rewarded) {
+          const customer = await customerSvc.getById(customerId);
+          const name = customer.name;
+          const message = `Parabens${name ? `, ${name}` : ""}! 🎉 Voce completou 10 pedidos e ganhou R$20 de desconto! Use o codigo FIEL20 no proximo pedido.`;
+          const { publishNatsEvent } = await import("@ibatexas/nats-client");
+          await publishNatsEvent("notification.send", {
+            type: "loyalty_reward",
+            customerId,
+            channel: "whatsapp",
+            body: message,
+          });
+        }
+      } catch (loyaltyErr) {
+        log?.warn({ customer_id: customerId, error: String(loyaltyErr) }, "[cart-intelligence] loyalty stamp failed — order not affected");
+      }
 
       log?.info({ customer_id: customerId }, "[cart-intelligence] order.placed handled");
     } catch (err) {
@@ -276,13 +459,14 @@ export async function startCartIntelligenceSubscribers(
 
   // ── notification.send ────────────────────────────────────────────────────
   await subscribeNatsEvent("notification.send", async (payload) => {
-    const { type, sessionId, customerId, cartId, channel, message: msgBody } = payload as {
+    const { type, sessionId, customerId, cartId, channel, message: msgBody, body } = payload as {
       type: string;
       sessionId?: string;
       customerId?: string;
       cartId?: string;
       channel?: string;
       message?: string;
+      body?: string;
     };
     log?.info(
       { notification_type: type, session_id: sessionId, cart_id: cartId, channel },
@@ -303,7 +487,8 @@ export async function startCartIntelligenceSubscribers(
         return;
       }
 
-      const text = msgBody || buildNotificationMessage(type, cartId);
+      // body (personalized) takes precedence over legacy message field, then falls back to template
+      const text = (body && body.length > 0) ? body : (msgBody || buildNotificationMessage(type, cartId));
 
       const sender = getWhatsAppSender();
       if (sender) {
@@ -314,6 +499,11 @@ export async function startCartIntelligenceSubscribers(
       }
     } catch (err) {
       log?.error({ customerId, type, error: String(err) }, "[cart-intelligence] notification.send delivery error");
+      Sentry.withScope((scope) => {
+        scope.setTag("subscriber", "notification.send");
+        scope.setContext("notification", { customerId, type });
+        Sentry.captureException(err);
+      });
     }
   });
 
@@ -589,6 +779,74 @@ export async function startCartIntelligenceSubscribers(
     }
   });
 
+  // ── product.intelligence.purge ──────────────────────────────────────────
+  await subscribeNatsEvent("product.intelligence.purge", async (payload) => {
+    const { productId } = payload as { productId: string };
+    log?.info({ product_id: productId }, "[cart-intelligence] product.intelligence.purge — cleaning up");
+
+    try {
+      const redis = await getRedisClient();
+
+      // 1. Delete this product's own copurchase set
+      await redis.del(rk(`copurchase:${productId}`));
+
+      // 2. Remove this product from ALL other copurchase sets (SCAN, never KEYS)
+      let cursor = 0;
+      const pattern = rk("copurchase:*");
+      let cleanedCount = 0;
+      do {
+        const scanResult = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+        cursor = scanResult.cursor;
+        if (scanResult.keys.length > 0) {
+          const pipeline = redis.multi();
+          for (const key of scanResult.keys) {
+            pipeline.zRem(key, productId);
+          }
+          await pipeline.exec();
+          cleanedCount += scanResult.keys.length;
+        }
+      } while (cursor !== 0);
+
+      // 3. Remove from global scores
+      await redis.zRem(rk("product:global:score"), productId);
+      await redis.zRem(rk("product:cart:popularity"), productId);
+
+      log?.info(
+        { product_id: productId, copurchase_sets_cleaned: cleanedCount },
+        "[cart-intelligence] product.intelligence.purge — cleanup complete",
+      );
+    } catch (err) {
+      log?.error({ product_id: productId, error: String(err) }, "[cart-intelligence] product.intelligence.purge handler error");
+      Sentry.captureException(err);
+    }
+  });
+
+  // ── outreach.sent ────────────────────────────────────────────────────────
+  await subscribeNatsEvent("outreach.sent", async (payload) => {
+    const { customerId, messageType } = payload as {
+      customerId: string;
+      messageType: string;
+      sentAt: string;
+    };
+    if (!customerId) return;
+
+    try {
+      const redis = await getRedisClient();
+      const profileKey = rk(`customer:profile:${customerId}`);
+      await redis.hSet(profileKey, "lastOutreachAt", new Date().toISOString());
+      await resetProfileTtl(customerId);
+      log?.info(
+        { customer_id: customerId, message_type: messageType },
+        "[cart-intelligence] outreach.sent — profile updated",
+      );
+    } catch (err) {
+      log?.error(
+        { customer_id: customerId, error: String(err) },
+        "[cart-intelligence] outreach.sent handler error",
+      );
+    }
+  });
+
   // ── cart.item_added (EVT-006) ─────────────────────────────────────────────
   await subscribeNatsEvent("cart.item_added", async (payload) => {
     const { cartId, customerId, productId, variantId, quantity } = payload as {
@@ -630,6 +888,50 @@ export async function startCartIntelligenceSubscribers(
       log?.info({ cart_id: cartId }, "[cart-intelligence] cart.item_added — analytics updated");
     } catch (err) {
       log?.error({ cart_id: cartId, error: String(err) }, "[cart-intelligence] cart.item_added handler error");
+    }
+  });
+
+  // ── follow-up.due ─────────────────────────────────────────────────────────
+  await subscribeNatsEvent("follow-up.due", async (payload) => {
+    const { customerId, reason } = payload as { customerId: string; reason: string };
+    log?.info({ customer_id: customerId, reason }, "[cart-intelligence] follow-up.due received");
+
+    try {
+      const customerSvc = createCustomerService();
+      const customer = await customerSvc.getById(customerId);
+      if (!customer?.phone) return;
+
+      let message: string;
+      switch (reason) {
+        case "cart_save":
+          message = `Oi${customer.name ? `, ${customer.name}` : ""}! Seu carrinho ainda tá salvo. Quer finalizar? Responda "meu carrinho" 🛒`;
+          break;
+        case "thinking":
+          message = `Oi${customer.name ? `, ${customer.name}` : ""}! Pensou sobre o pedido? Posso ajudar com algo? 😊`;
+          break;
+        case "price_concern":
+          message = `Oi${customer.name ? `, ${customer.name}` : ""}! Vi que você tava olhando nosso cardápio. Temos combos com preços especiais, quer dar uma olhada? 🥩`;
+          break;
+        default:
+          message = `Oi${customer.name ? `, ${customer.name}` : ""}! O IbateXas tá aqui se precisar de algo 😊`;
+      }
+
+      const { publishNatsEvent: publish } = await import("@ibatexas/nats-client");
+      await publish("notification.send", {
+        type: "follow_up",
+        customerId,
+        channel: "whatsapp",
+        body: message,
+      });
+
+      log?.info({ customer_id: customerId, reason }, "[cart-intelligence] follow-up.due — notification sent");
+    } catch (err) {
+      log?.error({ customer_id: customerId, reason, error: String(err) }, "[cart-intelligence] follow-up.due handler error");
+      Sentry.withScope((scope) => {
+        scope.setTag("subscriber", "follow-up.due");
+        scope.setContext("follow_up", { customerId, reason });
+        Sentry.captureException(err);
+      });
     }
   });
 }

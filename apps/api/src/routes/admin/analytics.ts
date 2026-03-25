@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { prisma } from "@ibatexas/domain";
+import { getRedisClient, rk } from "@ibatexas/tools";
 import { medusaAdmin } from "./_shared.js";
 
 const AnalyticsSummaryResponse = z.object({
@@ -8,6 +10,10 @@ const AnalyticsSummaryResponse = z.object({
   revenueToday: z.number(),
   aov: z.number(),
   activeCarts: z.number(),
+  newCustomers30d: z.number(),
+  outreachWeekly: z.number(),
+  waConversionRate: z.number(),
+  avgMessagesToCheckout: z.number(),
 });
 
 export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
@@ -69,7 +75,41 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         // Medusa not running — return zero
       }
 
-      return reply.send({ ordersToday, revenueToday, aov, activeCarts });
+      // New customers in last 30 days
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      let newCustomers30d = 0;
+      try {
+        newCustomers30d = await prisma.customer.count({
+          where: { createdAt: { gte: thirtyDaysAgo } },
+        });
+      } catch {
+        // DB not available — return zero
+      }
+
+      // Weekly outreach count + WA conversion metrics from Redis
+      let outreachWeekly = 0;
+      let waConversionRate = 0;
+      let avgMessagesToCheckout = 0;
+      try {
+        const redis = await getRedisClient();
+        const todayDateStr = new Date().toISOString().slice(0, 10);
+        const [outreachVal, convsVal, waOrdersVal, avgMsgsVal] = await Promise.all([
+          redis.get(rk("outreach:weekly:count")),
+          redis.get(rk(`metrics:conversations:daily:${todayDateStr}`)),
+          redis.get(rk(`metrics:wa_orders:daily:${todayDateStr}`)),
+          redis.get(rk("metrics:avg_messages_to_checkout")),
+        ]);
+        outreachWeekly = outreachVal ? parseInt(outreachVal, 10) : 0;
+        const conversations = convsVal ? parseInt(convsVal, 10) : 0;
+        const waOrders = waOrdersVal ? parseInt(waOrdersVal, 10) : 0;
+        waConversionRate = conversations > 0 ? Math.round((waOrders / conversations) * 100) : 0;
+        avgMessagesToCheckout = avgMsgsVal ? Math.round(parseFloat(avgMsgsVal)) : 0;
+      } catch {
+        // Redis not available — return zeros
+      }
+
+      return reply.send({ ordersToday, revenueToday, aov, activeCarts, newCustomers30d, outreachWeekly, waConversionRate, avgMessagesToCheckout });
     },
   );
 }

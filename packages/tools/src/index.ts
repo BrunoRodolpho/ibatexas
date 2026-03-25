@@ -8,6 +8,8 @@ export { searchProducts, SearchProductsTool } from "./search/search-products.js"
 // ── Catalog tools ──────────────────────────────────────────────────────────────
 export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-details.js"
 export { estimateDelivery, EstimateDeliveryTool } from "./catalog/estimate-delivery.js"
+export { reverseGeocode } from "./catalog/reverse-geocode.js"
+export type { ReverseGeocodeResult } from "./catalog/reverse-geocode.js"
 export { checkInventory, CheckInventoryTool } from "./catalog/check-inventory.js"
 export { getNutritionalInfo, GetNutritionalInfoTool } from "./catalog/get-nutritional-info.js"
 
@@ -35,7 +37,10 @@ export { updatePreferences, UpdatePreferencesTool } from "./intelligence/update-
 export { submitReview, SubmitReviewTool } from "./intelligence/submit-review.js"
 export { getAlsoAdded, GetAlsoAddedTool } from "./intelligence/get-also-added.js"
 export { getOrderedTogether, GetOrderedTogetherTool } from "./intelligence/get-ordered-together.js"
+export { scheduleFollowUp, ScheduleFollowUpTool } from "./intelligence/schedule-follow-up.js"
+export { getLoyaltyBalance, GetLoyaltyBalanceTool } from "./intelligence/get-loyalty-balance.js"
 export { syncReviewStats } from "./intelligence/sync-review-stats.js"
+export { getAndConsumeWelcomeCredit } from "./intelligence/welcome-credit.js"
 export { PROFILE_TTL_SECONDS, RECENTLY_VIEWED_MAX } from "./intelligence/types.js"
 
 // ── Redis ──────────────────────────────────────────────────────────────────────

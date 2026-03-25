@@ -120,6 +120,10 @@ export interface AnalyticsSummary {
   revenueToday: number
   aov: number
   activeCarts: number
+  newCustomers30d: number
+  outreachWeekly: number
+  waConversionRate: number
+  avgMessagesToCheckout: number
 }
 
 export function useAdminAnalytics() {

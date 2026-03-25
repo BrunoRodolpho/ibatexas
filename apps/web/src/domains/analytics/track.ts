@@ -131,10 +131,62 @@ export function track(
   // Ensure session is initialised
   getSessionId()
 
+  // Capture UTM params once per session on first track() call
+  captureUtmParams()
+
   // Fire session_started lazily on first meaningful interaction
   ensureSessionStarted(event)
 
+  // Enrich checkout_completed with stored UTM params for attribution
+  if (event === 'checkout_completed') {
+    const utmParams = getStoredUtmParams()
+    trackRaw(event, { ...properties, ...(utmParams ?? {}) })
+    return
+  }
+
   trackRaw(event, properties)
+}
+
+/**
+ * Capture UTM parameters from the current URL and store in sessionStorage.
+ * Fires utm_source_captured event if any UTM params are present.
+ * Called once per session on first meaningful interaction.
+ */
+export function captureUtmParams(): void {
+  if (globalThis.window === undefined) return
+  if (sessionStorage.getItem('ibx_utm_captured')) return
+
+  const params = new URLSearchParams(globalThis.window.location.search)
+  const utmSource = params.get('utm_source')
+  const utmMedium = params.get('utm_medium')
+  const utmCampaign = params.get('utm_campaign')
+
+  if (!utmSource && !utmMedium && !utmCampaign) return
+
+  const utmData: Record<string, string> = {}
+  if (utmSource) utmData.utm_source = utmSource
+  if (utmMedium) utmData.utm_medium = utmMedium
+  if (utmCampaign) utmData.utm_campaign = utmCampaign
+
+  sessionStorage.setItem('ibx_utm', JSON.stringify(utmData))
+  sessionStorage.setItem('ibx_utm_captured', '1')
+
+  trackRaw('utm_source_captured', utmData)
+}
+
+/**
+ * Read stored UTM params from sessionStorage.
+ * Returns null if no UTM params were captured this session.
+ */
+function getStoredUtmParams(): Record<string, string> | null {
+  if (globalThis.window === undefined) return null
+  const raw = sessionStorage.getItem('ibx_utm')
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as Record<string, string>
+  } catch {
+    return null
+  }
 }
 
 /**

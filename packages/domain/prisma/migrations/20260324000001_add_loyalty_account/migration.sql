@@ -1,0 +1,9 @@
+CREATE TABLE ibx_domain.loyalty_accounts (
+  id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  customer_id TEXT NOT NULL UNIQUE REFERENCES ibx_domain.customers(id),
+  stamps INTEGER NOT NULL DEFAULT 0,
+  total_earned INTEGER NOT NULL DEFAULT 0,
+  redeemed INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

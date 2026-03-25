@@ -13,6 +13,7 @@ Example: `production:customer:profile:cust_123`
 |---------|------|-----|-------------|-------------|
 | `session:{sessionId}` | List | 24-48 h | Chat conversation history (guest 48h, authenticated 24h) | `apps/api/src/session/store.ts` |
 | `active:carts` | Hash | 48 h | Hash of active cart IDs with metadata `{cartId, sessionType, lastActivity}` polled by abandoned-cart-checker | `apps/api/src/routes/cart.ts` |
+| `cart:nudge:{cartId}` | String (JSON) | 48 h | Tracks which recovery tier was sent for an abandoned cart `{tier, sentAt}` | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `customer:profile:{customerId}` | Hash | 30 d | Cached customer profile — orderCount, favoriteTags, lastSeenAt, scores | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `customer:recentlyViewed:{customerId}` | List | 7 d | Last 20 product IDs viewed (LPUSH + LTRIM) | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `copurchase:{productId}` | Sorted Set | 30 d | Products bought together with `productId`, score = co-purchase count | `apps/api/src/subscribers/cart-intelligence.ts` |
@@ -51,6 +52,14 @@ Example: `production:customer:profile:cust_123`
 | `llm:tokens:{sessionId}` | String | configurable | LLM token usage counter per session (prevents runaway token spend) | `packages/llm-provider/src/agent.ts` |
 | `ratelimit:customer:create` | String | configurable | Rate limit for customer creation via WhatsApp (prevents abuse) | `apps/api/src/whatsapp/session.ts` |
 | `embedding:query:{base64}` | String | 30 d | Cached query embedding vector for semantic search | `packages/tools/src/search/search-products.ts` |
+| `outreach:last:{customerId}` | String | 3-7 d | Cooldown flag preventing repeated outreach to the same customer | `apps/api/src/jobs/proactive-engagement.ts` |
+| `outreach:weekly:count` | String (counter) | 7 d | Weekly outreach message counter for admin dashboard | `apps/api/src/jobs/proactive-engagement.ts` |
+| `follow-up:scheduled` | Sorted Set | none (entries have individual TTLs via score) | Scheduled follow-up reminders, polled every 15min | `packages/tools/src/intelligence/schedule-follow-up.ts` |
+| `metrics:conversations:daily:{date}` | String (counter) | 48 h | Daily WhatsApp conversation count (new sessions) | `apps/api/src/routes/whatsapp-webhook.ts` |
+| `metrics:wa_orders:daily:{date}` | String (counter) | 48 h | Daily WhatsApp order count | `apps/api/src/subscribers/cart-intelligence.ts` |
+| `metrics:messages:{sessionId}` | String (counter) | 48 h | Message count per WhatsApp session | `apps/api/src/routes/whatsapp-webhook.ts` |
+| `metrics:avg_messages_to_checkout` | String (number) | none | Exponential moving average of messages-to-checkout (0.9 old + 0.1 new) | `apps/api/src/subscribers/cart-intelligence.ts` |
+| `alert:staff:hourly` | String (counter) | 1 h | Staff high-value cart alert rate limiter (max 10/hour) | `apps/api/src/subscribers/cart-intelligence.ts` |
 
 **Removed patterns** (documented previously but not found in code):
 - `cart:session:{cartId}` — does not exist; carts are tracked via `active:carts` hash + `session:{sessionId}` list
@@ -82,6 +91,8 @@ Co-purchase sorted sets are built from `CustomerOrderItem` history:
 - **Members**: other product IDs bought in the same order
 - **Score**: number of times bought together
 - **TTL**: 30 days (refreshed on each order)
+
+Copurchase keys are auto-purged when a product is deleted via the `product.intelligence.purge` NATS event. The subscriber removes the product's own copurchase set and removes the product from all other copurchase sets using SCAN.
 
 To re-build after data import or score corruption:
 ```bash

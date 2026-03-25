@@ -37,7 +37,15 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   prisma: {
     review: { findMany: vi.fn(), count: vi.fn() },
+    customer: { count: vi.fn(async () => 0) },
   },
+}))
+
+vi.mock("@ibatexas/tools", () => ({
+  getRedisClient: vi.fn(async () => ({
+    get: vi.fn(async () => null),
+  })),
+  rk: vi.fn((key: string) => `test:${key}`),
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -99,17 +107,15 @@ describe("GET /api/admin/analytics/summary — returns analytics data", () => {
     })
 
     expect(res.statusCode).toBe(200)
-    const body = res.json() as {
-      ordersToday: number
-      revenueToday: number
-      aov: number
-      activeCarts: number
-    }
+    const body = res.json() as Record<string, number>
     expect(body.ordersToday).toBe(2)
     expect(body.revenueToday).toBe(14400)
-    // aov = round(14400 / 2) = 7200
     expect(body.aov).toBe(7200)
     expect(body.activeCarts).toBe(3)
+    expect(body.newCustomers30d).toBe(0)
+    expect(body.outreachWeekly).toBe(0)
+    expect(body.waConversionRate).toBe(0)
+    expect(body.avgMessagesToCheckout).toBe(0)
   })
 
   it("returns zeros when Medusa is unavailable", async () => {
@@ -122,16 +128,15 @@ describe("GET /api/admin/analytics/summary — returns analytics data", () => {
     })
 
     expect(res.statusCode).toBe(200)
-    const body = res.json() as {
-      ordersToday: number
-      revenueToday: number
-      aov: number
-      activeCarts: number
-    }
+    const body = res.json() as Record<string, number>
     expect(body.ordersToday).toBe(0)
     expect(body.revenueToday).toBe(0)
     expect(body.aov).toBe(0)
     expect(body.activeCarts).toBe(0)
+    expect(body.newCustomers30d).toBe(0)
+    expect(body.outreachWeekly).toBe(0)
+    expect(body.waConversionRate).toBe(0)
+    expect(body.avgMessagesToCheckout).toBe(0)
   })
 
   it("computes aov as 0 when there are no orders", async () => {

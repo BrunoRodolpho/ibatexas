@@ -218,11 +218,12 @@ model Customer {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  addresses    Address[]
-  preferences  CustomerPreferences?
-  reviews      Review[]
-  orderItems   CustomerOrderItem[]
-  reservations Reservation[]           // AUDIT-FIX: DL-F08 — inverse relation
+  addresses      Address[]
+  preferences    CustomerPreferences?
+  reviews        Review[]
+  orderItems     CustomerOrderItem[]
+  reservations   Reservation[]           // AUDIT-FIX: DL-F08 — inverse relation
+  loyaltyAccount LoyaltyAccount?
 
   @@index([phone])
   @@map("customers")
@@ -289,9 +290,30 @@ model CustomerOrderItem {
   @@schema("ibx_domain")
 }
 
+// ─── Loyalty ──────────────────────────────────────────────────────────────────
+
+/// Punch-card loyalty account for a customer.
+/// stamps: current punch count (resets to 0 after reward).
+/// totalEarned: lifetime stamps earned (never decremented).
+/// redeemed: number of rewards redeemed (incremented when stamp 10 is earned).
+model LoyaltyAccount {
+  id          String   @id @default(cuid())
+  customerId  String   @unique @map("customer_id")
+  customer    Customer @relation(fields: [customerId], references: [id])
+  stamps      Int      @default(0)
+  totalEarned Int      @default(0) @map("total_earned")
+  redeemed    Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("loyalty_accounts")
+  @@schema("ibx_domain")
+}
+
 // ─── Delivery ─────────────────────────────────────────────────────────────────
 
 /// Delivery zone defined by CEP prefix matching.
+/// Optional centerLat/centerLng/radiusKm define a circular zone for GPS pin fallback.
 model DeliveryZone {
   id                 String   @id @default(cuid())
   name               String
@@ -299,6 +321,9 @@ model DeliveryZone {
   feeInCentavos      Int      @map("fee_in_centavos")
   estimatedMinutes   Int      @map("estimated_minutes")
   active             Boolean  @default(true)
+  centerLat          Decimal? @map("center_lat") @db.Decimal(9, 6)
+  centerLng          Decimal? @map("center_lng") @db.Decimal(9, 6)
+  radiusKm           Int?     @map("radius_km")
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 

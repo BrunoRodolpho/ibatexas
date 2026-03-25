@@ -1,6 +1,6 @@
 'use client'
 
-import { ShoppingCart, DollarSign, TrendingUp, ShoppingBag } from 'lucide-react'
+import { ShoppingCart, DollarSign, TrendingUp, ShoppingBag, UserPlus, MessageCircle, Percent, MessageSquare } from 'lucide-react'
 import { StatCard } from '../atoms/StatCard'
 
 function formatBRL(centavos: number) {
@@ -12,6 +12,10 @@ export interface AdminAnalyticsMetrics {
   revenueToday: number
   aov: number
   activeCarts: number
+  newCustomers30d: number
+  outreachWeekly: number
+  waConversionRate: number
+  avgMessagesToCheckout: number
 }
 
 export interface AdminAnalisesPageProps {
@@ -30,7 +34,7 @@ export function AdminAnalisesPage({
         <p className="mt-1 text-sm text-smoke-400">Métricas do dia</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-8">
         <StatCard
           label="Pedidos Hoje"
           value={metrics?.ordersToday ?? 0}
@@ -57,6 +61,34 @@ export function AdminAnalisesPage({
           value={metrics?.activeCarts ?? 0}
           icon={ShoppingBag}
           variant="default"
+          isLoading={loading}
+        />
+        <StatCard
+          label="Novos Clientes (30d)"
+          value={metrics?.newCustomers30d ?? 0}
+          icon={UserPlus}
+          variant="success"
+          isLoading={loading}
+        />
+        <StatCard
+          label="Outreach Semanal"
+          value={metrics?.outreachWeekly ?? 0}
+          icon={MessageCircle}
+          variant="info"
+          isLoading={loading}
+        />
+        <StatCard
+          label="Conversao WA"
+          value={`${metrics?.waConversionRate ?? 0}%`}
+          icon={Percent}
+          variant="success"
+          isLoading={loading}
+        />
+        <StatCard
+          label="Msgs/Pedido"
+          value={metrics?.avgMessagesToCheckout ?? 0}
+          icon={MessageSquare}
+          variant="info"
           isLoading={loading}
         />
       </div>

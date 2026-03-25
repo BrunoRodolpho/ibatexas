@@ -266,6 +266,51 @@ flowchart TD
 
 **Note:** These events are only fired after consent is given (cookie_consent_given fires once on accept; cookie_consent_rejected is tracked locally but NOT sent to PostHog since the user declined tracking).
 
+### Acquisition Events
+
+| Event | Trigger | Key Properties |
+|-------|---------|---------------|
+| `first_order_completed` | Customer's first-ever order completes | `customerId`, `orderTotal`, `source` |
+| `welcome_credit_applied` | BEMVINDO15 coupon auto-applied at checkout | `customerId`, `discountAmount` |
+| `qr_code_scanned` | Customer opens wa.me link from QR code | `source` (table/bag/flyer) |
+| `whatsapp_cta_clicked` | FirstVisitBanner WhatsApp button clicked | `page` |
+| `utm_source_captured` | Session has UTM params | `utm_source`, `utm_medium`, `utm_campaign` |
+
+### Proactive Outreach Events
+
+| Event | Trigger | Key Properties |
+|-------|---------|---------------|
+| `proactive_nudge_sent` | Outreach message sent to dormant customer | `customerId`, `messageType`, `daysSinceLast` |
+| `proactive_nudge_converted` | Order placed within 24h of nudge | `customerId`, `messageType`, `orderTotal` |
+
+### Agent Performance Events
+
+| Event | Trigger | Key Properties |
+|-------|---------|---------------|
+| `wa_conversation_started` | New WhatsApp session begins (isNew=true) | `phone_hash`, `sessionId` |
+| `wa_conversation_converted` | Order placed by a WhatsApp customer | `customerId`, `orderId`, `sessionId` |
+| `wa_follow_up_scheduled` | Follow-up reminder queued for a customer | `customerId`, `scheduledAt` |
+| `wa_follow_up_converted` | Order placed within follow-up window | `customerId`, `orderId` |
+| `loyalty_stamp_earned` | Customer earns a loyalty stamp on order | `customerId`, `stamps` |
+| `loyalty_reward_redeemed` | Customer redeems a loyalty reward | `customerId`, `rewardType` |
+
+### PostHog Dashboard Specs — Acquisition & Outreach
+
+**Acquisition Funnel:**
+- Insight type: Funnel
+- Steps: `qr_code_scanned` OR `whatsapp_cta_clicked` → `first_order_completed`
+- Breakdown by: source
+
+**Outreach ROI:**
+- Insight type: Funnel
+- Steps: `proactive_nudge_sent` → `proactive_nudge_converted`
+- Shows: conversion rate of proactive outreach messages
+
+**New Customers/Month:**
+- Insight type: Trends
+- Formula: UNIQUE `first_order_completed` by month (distinct `customerId`)
+- Display: Monthly bar chart
+
 ---
 
 ## PostHog Configuration

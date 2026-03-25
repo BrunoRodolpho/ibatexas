@@ -586,9 +586,10 @@
     "quick_bites_subtitle": "Para quando a fome não pode esperar."
   },
   "first_visit": {
-    "title": "Novo aqui?",
-    "body": "Experimente nosso Kit Degustação — o favorito de quem está começando.",
-    "cta": "Ver Kit Degustação",
+    "title": "Primeira vez? R$15 de desconto!",
+    "body": "Peca direto pelo WhatsApp e ganhe desconto exclusivo no primeiro pedido.",
+    "cta": "Ver Cardapio",
+    "whatsapp_cta": "Pedir pelo WhatsApp",
     "dismiss": "Já conheço"
   },
   "reorder": {

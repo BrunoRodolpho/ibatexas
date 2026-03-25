@@ -5,6 +5,7 @@
 
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { deleteProductFromIndex, invalidateAllQueryCache } from "@ibatexas/tools"
+import { publishNatsEvent } from "@ibatexas/nats-client"
 import { withTypesenseRetry } from "./_product-indexing"
 
 export default async function productDeletedHandler({
@@ -26,6 +27,9 @@ export default async function productDeletedHandler({
     // Invalidate all query caches — deleted product must not appear in results
     const flushed = await invalidateAllQueryCache()
     logger.info(`[Product Indexing] Flushed ${flushed} query cache entries`)
+
+    // Signal intelligence layer to purge recommendation data for this product
+    await publishNatsEvent("product.intelligence.purge", { productId: data.id })
 
     logger.info(`[Product Indexing] Deleted from index: ${data.id}`)
   } catch (error) {

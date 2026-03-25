@@ -107,12 +107,16 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
 }
 
 /** Build AgentContext for WhatsApp channel. */
-export function buildWhatsAppContext(session: WhatsAppSession): AgentContext {
+export function buildWhatsAppContext(
+  session: WhatsAppSession,
+  lastLocation?: { lat: number; lng: number } | null,
+): AgentContext {
   return {
     channel: Channel.WhatsApp,
     sessionId: session.sessionId,
     customerId: session.customerId,
     userType: "customer",
+    ...(lastLocation ? { lastLocation } : {}),
   };
 }
 
@@ -190,6 +194,37 @@ export async function tryDebounce(hash: string): Promise<boolean> {
   return result === "OK";
 }
 
+// ── GPS location ───────────────────────────────────────────────────────────────
+
+/**
+ * Store the last GPS location shared by a customer in their session hash.
+ * Overwrites previous location — only the most recent pin is kept.
+ */
+export async function storeLastLocation(hash: string, lat: number, lng: number): Promise<void> {
+  const redis = await getRedisClient();
+  const key = rk(`wa:phone:${hash}`);
+  await redis.hSet(key, { lastLat: String(lat), lastLng: String(lng) });
+}
+
+/**
+ * Read the last GPS location from a session hash, if any.
+ */
+export async function getLastLocation(
+  hash: string,
+): Promise<{ lat: number; lng: number } | null> {
+  const redis = await getRedisClient();
+  const key = rk(`wa:phone:${hash}`);
+  const [latStr, lngStr] = await Promise.all([
+    redis.hGet(key, "lastLat"),
+    redis.hGet(key, "lastLng"),
+  ]);
+  if (!latStr || !lngStr) return null;
+  const lat = Number.parseFloat(latStr);
+  const lng = Number.parseFloat(lngStr);
+  if (Number.isNaN(lat) || Number.isNaN(lng)) return null;
+  return { lat, lng };
+}
+
 // ── State management ───────────────────────────────────────────────────────────
 
 /** Get the current conversation state from Redis session hash. */
@@ -220,4 +255,31 @@ export async function hasOptedIn(phoneHash: string): Promise<boolean> {
 export async function markOptedIn(phoneHash: string): Promise<void> {
   const redis = await getRedisClient();
   await redis.set(rk(`wa:optin:${phoneHash}`), "1");
+}
+
+// ── Welcome credit ────────────────────────────────────────────────────────────
+
+/**
+ * Store a welcome credit coupon code for a new customer.
+ * TTL: 30 days — coupon expires if not used.
+ *
+ * NOTE: The coupon code "BEMVINDO15" must be created in Medusa admin before use.
+ */
+export async function setWelcomeCredit(customerId: string): Promise<void> {
+  const redis = await getRedisClient();
+  await redis.set(rk(`welcome:credit:${customerId}`), "BEMVINDO15", { EX: 30 * 86400 });
+}
+
+/**
+ * Retrieve and atomically consume the welcome credit for a customer.
+ * Returns the coupon code if available, null if already used or not set.
+ * Deletes the key after reading to prevent double-apply.
+ */
+export async function getAndConsumeWelcomeCredit(customerId: string): Promise<string | null> {
+  const redis = await getRedisClient();
+  const code = await redis.get(rk(`welcome:credit:${customerId}`));
+  if (code) {
+    await redis.del(rk(`welcome:credit:${customerId}`));
+  }
+  return code;
 }

@@ -10,6 +10,7 @@
 import { CreateCheckoutInputSchema, NonRetryableError, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { getAndConsumeWelcomeCredit } from "../intelligence/welcome-credit.js";
 import Stripe from "stripe";
 
 function getStripe(): Stripe {
@@ -88,6 +89,23 @@ export async function createCheckout(
     throw new NonRetryableError(
       "Carrinho vazio ou com valor zero. Adicione itens antes de finalizar o pedido.",
     );
+  }
+
+  // Apply welcome credit if available (first-time customer coupon)
+  if (ctx.customerId) {
+    try {
+      const welcomeCode = await getAndConsumeWelcomeCredit(ctx.customerId);
+      if (welcomeCode) {
+        await medusaStoreFetch(`/store/carts/${cartId}/promotions`, {
+          method: "POST",
+          body: JSON.stringify({ promo_codes: [welcomeCode] }),
+        });
+        console.log(`[checkout] Welcome credit ${welcomeCode} applied for customer ${ctx.customerId}`);
+      }
+    } catch (err) {
+      // Medusa rejected the code (expired, already used, or not configured) — continue without discount
+      console.warn(`[checkout] Welcome credit application failed for customer ${ctx.customerId}: ${(err as Error).message}`);
+    }
   }
 
   // 1. Update cart metadata with tip and delivery CEP

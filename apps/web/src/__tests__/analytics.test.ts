@@ -397,6 +397,59 @@ describe("Analytics Layer", () => {
     })
   })
 
+  // ── New acquisition and outreach events ──────────────────────────────────
+
+  describe("acquisition and outreach events", () => {
+    it("tracks first_order_completed without throwing", () => {
+      sessionStore.set("ibx_session_started", "1")
+      expect(() => {
+        track("first_order_completed", { customerId: "cust_01", orderTotal: 8900, source: "web" })
+      }).not.toThrow()
+    })
+
+    it("tracks welcome_credit_applied without throwing", () => {
+      sessionStore.set("ibx_session_started", "1")
+      expect(() => {
+        track("welcome_credit_applied", { customerId: "cust_01", discountAmount: 1500 })
+      }).not.toThrow()
+    })
+
+    it("tracks qr_code_scanned without throwing", () => {
+      sessionStore.set("ibx_session_started", "1")
+      expect(() => {
+        track("qr_code_scanned", { source: "table" })
+      }).not.toThrow()
+    })
+
+    it("tracks whatsapp_cta_clicked without throwing", () => {
+      sessionStore.set("ibx_session_started", "1")
+      expect(() => {
+        track("whatsapp_cta_clicked", { page: "/" })
+      }).not.toThrow()
+    })
+
+    it("tracks utm_source_captured without throwing", () => {
+      sessionStore.set("ibx_session_started", "1")
+      expect(() => {
+        track("utm_source_captured", { utm_source: "instagram", utm_medium: "social", utm_campaign: "verao" })
+      }).not.toThrow()
+    })
+
+    it("tracks proactive_nudge_sent without throwing", () => {
+      sessionStore.set("ibx_session_started", "1")
+      expect(() => {
+        track("proactive_nudge_sent", { customerId: "cust_01", messageType: "reengagement", daysSinceLast: 14 })
+      }).not.toThrow()
+    })
+
+    it("tracks proactive_nudge_converted without throwing", () => {
+      sessionStore.set("ibx_session_started", "1")
+      expect(() => {
+        track("proactive_nudge_converted", { customerId: "cust_01", messageType: "reengagement", orderTotal: 8900 })
+      }).not.toThrow()
+    })
+  })
+
   // ── checkout_completed guard (ref-based idempotency) ──────────────────────
 
   describe("checkout_completed guard pattern", () => {

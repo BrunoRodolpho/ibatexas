@@ -65,6 +65,8 @@ export interface ProductDTO {
   pitmasterNote?: string // dynamic pitmaster quote per product
   origin?: string // e.g., "Angus selecionado do Texas"
   pairingTip?: string // harmonização suggestion per product
+  /** Channel visibility — "all" | "whatsapp" | "web" | "staff". Default: "all" */
+  visibility?: string
   createdAt: string // ISO 8601
   updatedAt: string // ISO 8601
 }

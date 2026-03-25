@@ -7,7 +7,9 @@ export type ShortcutAction =
   | { type: "menu" }
   | { type: "cart" }
   | { type: "reservation" }
-  | { type: "help" };
+  | { type: "help" }
+  | { type: "welcome" }
+  | { type: "loyalty" };
 
 /**
  * Normalize input for matching: lowercase, trim, remove accents.
@@ -45,6 +47,20 @@ const SHORTCUT_MAP: Record<string, ShortcutAction> = {
   help: { type: "help" },
   opcoes: { type: "help" },
   comandos: { type: "help" },
+
+  // Loyalty
+  fidelidade: { type: "loyalty" },
+  selos: { type: "loyalty" },
+  "meus selos": { type: "loyalty" },
+  pontos: { type: "loyalty" },
+  "meus pontos": { type: "loyalty" },
+
+  // Welcome / first-order credit
+  credito: { type: "welcome" },
+  desconto: { type: "welcome" },
+  "primeira vez": { type: "welcome" },
+  "quero meu credito": { type: "welcome" },
+  "r$15": { type: "welcome" },
 };
 
 /**
@@ -54,6 +70,28 @@ const SHORTCUT_MAP: Record<string, ShortcutAction> = {
 export function matchShortcut(body: string): ShortcutAction | null {
   const normalized = normalize(body);
   return SHORTCUT_MAP[normalized] ?? null;
+}
+
+/**
+ * Build the welcome credit response text for new customers.
+ */
+export function buildWelcomeText(): string {
+  return [
+    "Bem-vindo ao IbateXas! 🥩 Voce tem R$15 de credito no seu primeiro pedido!",
+    "",
+    "Vamos comecar: voce prefere carne *mal-passada*, *ao ponto* ou *bem-passada*?",
+    "",
+    "(Responda com sua preferencia e eu te mostro as melhores opcoes!)",
+  ].join("\n");
+}
+
+/**
+ * Build the loyalty prompt text.
+ * Shortcuts cannot trigger tool calls directly — the agent handles get_loyalty_balance.
+ * This message invites the customer to ask the assistant.
+ */
+export function buildLoyaltyText(): string {
+  return "Para ver seus selos, pergunte ao nosso assistente: 'quantos selos eu tenho?'";
 }
 
 /**

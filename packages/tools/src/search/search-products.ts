@@ -88,6 +88,7 @@ interface FilterOptions {
   minRating?: number // 0-5
   sort?: "relevance" | "price_asc" | "price_desc" | "rating_desc" | "newest"
   offset?: number
+  channel?: Channel
 }
 
 /** Check if a product passes availability filter */
@@ -119,17 +120,32 @@ function passesRatingFilter(product: ProductDTO, minRating?: number): boolean {
   return rating >= minRating
 }
 
+/** Check if a product is visible on the given channel.
+ *  - "whatsapp": keep "all" and "whatsapp"
+ *  - "web": keep "all" and "web"
+ *  - no channel: keep only "all"
+ *  Products without a visibility field default to "all".
+ */
+function passesChannelVisibilityFilter(product: ProductDTO, channel?: Channel): boolean {
+  const visibility = (product as { visibility?: string }).visibility ?? "all"
+  if (channel === Channel.WhatsApp) return visibility === "all" || visibility === "whatsapp"
+  if (channel === Channel.Web) return visibility === "all" || visibility === "web"
+  return visibility === "all"
+}
+
 /**
  * Apply post-fetch filters that cannot be expressed as Typesense filter_by.
  * Tags are now handled by Typesense filter_by — no longer post-filtered here.
  * Availability window is time-dependent and product-specific.
+ * Channel visibility is a post-filter because Medusa metadata is not in Typesense natively.
  */
 function applyFilters(products: ProductDTO[], filters: FilterOptions): ProductDTO[] {
   return products.filter((product) =>
     passesAvailabilityFilter(product, filters.availableNow) &&
     passesAllergenFilter(product, filters.excludeAllergens) &&
     passesPriceFilter(product, filters.minPrice, filters.maxPrice) &&
-    passesRatingFilter(product, filters.minRating)
+    passesRatingFilter(product, filters.minRating) &&
+    passesChannelVisibilityFilter(product, filters.channel)
   )
 }
 
@@ -647,6 +663,7 @@ export async function searchProducts(
     minPrice: validated.minPrice,
     maxPrice: validated.maxPrice,
     minRating: validated.minRating,
+    channel,
   }
 
   // ── Determine query list ─────────────────────────────────────────────────

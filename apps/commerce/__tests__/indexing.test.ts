@@ -235,7 +235,7 @@ describe("Product Indexing Subscribers", () => {
       expect(indexProduct).not.toHaveBeenCalled()
     })
 
-    it("does not publish product.indexed NATS event (removed as dead event)", async () => {
+    it("publishes product.intelligence.purge NATS event to clean up recommendation data", async () => {
       const container = makeContainer()
 
       await productDeletedHandler({
@@ -243,7 +243,10 @@ describe("Product Indexing Subscribers", () => {
         container,
       } as any)
 
-      expect(publishNatsEvent).not.toHaveBeenCalled()
+      expect(publishNatsEvent).toHaveBeenCalledWith(
+        "product.intelligence.purge",
+        { productId: mockProduct.id },
+      )
     })
 
     it("does not throw when deleteProductFromIndex fails (idempotent)", async () => {
