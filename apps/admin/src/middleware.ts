@@ -19,18 +19,6 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Allow access if the x-admin-key header matches the configured key
-  const adminKey = request.headers.get("x-admin-key");
-  const expectedKey = process.env.NEXT_PUBLIC_ADMIN_API_KEY;
-  if (expectedKey && adminKey === expectedKey) {
-    return NextResponse.next();
-  }
-
-  // In development, allow bypass so existing dev workflow is not broken
-  if (process.env.NODE_ENV !== "production") {
-    return NextResponse.next();
-  }
-
   // Redirect unauthenticated requests to login page
   const loginUrl = request.nextUrl.clone();
   loginUrl.pathname = "/";

@@ -2,15 +2,14 @@
 
 import { useState } from 'react'
 import { AdminSidebar } from '@/components/molecules/AdminSidebar'
-import { Button } from '@/components/atoms'
 import { LogOut, Shield, Search } from 'lucide-react'
 
 /**
  * Admin layout — standalone (no next-intl, no [locale] segment).
- * Auth: dev bypass stub. Step 11 replaces with Twilio Verify OTP.
+ * Auth enforced in all environments via middleware + admin-session cookie.
  */
 export default function AdminLayout({ children }: { readonly children: React.ReactNode }) {
-  const [isStaff, setIsStaff] = useState(process.env.NODE_ENV !== 'production')
+  const [isStaff, setIsStaff] = useState(false)
 
   if (!isStaff) {
     return (
@@ -24,21 +23,6 @@ export default function AdminLayout({ children }: { readonly children: React.Rea
             Este painel é exclusivo para a equipe IbateXas.
           </p>
 
-          {process.env.NODE_ENV !== 'production' && (
-            <div className="mt-6 rounded-sm border border-dashed border-smoke-300 bg-smoke-100 p-4">
-              <p className="mb-3 text-xs font-medium text-smoke-400">
-                Dev mode — bypass auth
-              </p>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="w-full"
-                onClick={() => setIsStaff(true)}
-              >
-                Entrar como Staff (dev)
-              </Button>
-            </div>
-          )}
         </div>
       </div>
     )
@@ -73,7 +57,7 @@ export default function AdminLayout({ children }: { readonly children: React.Rea
         </header>
 
         {/* Main content */}
-        <main className="flex-1 overflow-y-auto bg-smoke-100/50 p-6">
+        <main id="main-content" className="flex-1 overflow-y-auto bg-smoke-100/50 p-6">
           {children}
         </main>
       </div>
