@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
+import { sanitizeProperties } from "../utils/sanitize-analytics.js";
 
 // Whitelist of known analytics events — rejects unknown event names
 const ALLOWED_EVENTS = new Set([
@@ -54,7 +55,8 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
       bodyLimit: 4096,
     },
     async (request, reply) => {
-      const { event, properties: _properties } = request.body;
+      const { event, properties } = request.body;
+      const safeProps = sanitizeProperties(properties ?? {});
 
       // Validate event against whitelist
       if (!ALLOWED_EVENTS.has(event)) {
@@ -75,7 +77,8 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // NATS publishing disabled (no subscriber). Re-enable when a subscriber is added
-      // (e.g., PostHog ingestion pipeline).
+      // (e.g., PostHog ingestion pipeline). Use safeProps as the event payload.
+      void safeProps;
 
       return reply.status(204).send();
     },

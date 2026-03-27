@@ -69,15 +69,23 @@ export function getSessionId(): string {
   return sessionId
 }
 
+const PII_KEYS = ['email', 'phone', 'cpf', 'nome', 'telefone', 'endereco'];
+
 /** Enrich raw event properties with session/timestamp context. */
 function enrichProperties(properties?: Record<string, unknown>): Record<string, unknown> {
-  return {
+  const merged: Record<string, unknown> = {
     ...properties,
     sessionId: sessionId ?? 'unknown',
     ibx_session_id: sessionId ?? 'unknown',
     timestamp: new Date().toISOString(),
     url: globalThis.window === undefined ? undefined : (globalThis.window as Window)?.location?.pathname,
   }
+
+  for (const key of PII_KEYS) {
+    delete merged[key];
+  }
+
+  return merged;
 }
 
 /** Fire-and-forget beacon/fetch to the analytics API. */
