@@ -180,6 +180,23 @@ cd packages/cli && npm link && cd ../..
 
 ---
 
+## Claude Code Plugins
+
+This project uses several Claude Code plugins for development quality.
+They are installed globally and persist across sessions.
+
+```bash
+# Install all project plugins (one-time)
+claude plugin install frontend-design
+claude plugin install security-guidance
+claude plugin install code-review
+claude plugin install feature-dev
+```
+
+See [plugins.md](plugins.md) for full documentation.
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |

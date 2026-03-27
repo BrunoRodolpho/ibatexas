@@ -15,6 +15,7 @@
 | ADRs, cross-cutting patterns | [docs/architecture/decisions.md](docs/architecture/decisions.md) |
 | Analytics events, PostHog dashboards | [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) |
 | Redis key patterns, TTLs | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
+| Claude Code plugins — what's installed, usage | [docs/setup/plugins.md](docs/setup/plugins.md) |
 
 ---
 
