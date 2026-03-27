@@ -9,6 +9,7 @@ import { QuantitySelector } from '../molecules/QuantitySelector'
 import { Trash2, Plus } from 'lucide-react'
 import NextImage from 'next/image'
 import { track } from '@/domains/analytics'
+import { formatBRL } from '@/lib/format'
 import { useRecommendations, type RecommendedProduct } from '@/domains/recommendations'
 import type { ProductDTO } from '@ibatexas/types'
 
@@ -23,10 +24,7 @@ export function CartDrawer() {
 
   const itemCount = getItemCount()
   const subtotal = getTotal()
-  const subtotalFormatted = (subtotal / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const subtotalFormatted = formatBRL(subtotal)
 
   const handleCheckout = () => {
     track('checkout_started', { cartTotal: subtotal, itemCount })
@@ -114,10 +112,7 @@ export function CartDrawer() {
         <div className="space-y-2">
           {/* Cart items — compact layout */}
           {items.map((item, index) => {
-            const lineTotal = ((item.price * item.quantity) / 100).toLocaleString('pt-BR', {
-              style: 'currency',
-              currency: 'BRL',
-            })
+            const lineTotal = formatBRL(item.price * item.quantity)
 
             return (
               <div
@@ -191,7 +186,7 @@ export function CartDrawer() {
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium text-charcoal-900 truncate">{rec.title}</p>
                       <p className="text-xs text-smoke-400 tabular-nums">
-                        {(rec.price / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                        {formatBRL(rec.price)}
                       </p>
                     </div>
                     <button

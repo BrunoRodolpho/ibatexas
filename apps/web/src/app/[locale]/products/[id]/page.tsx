@@ -11,6 +11,7 @@ import { MediaGallery } from "@/components/molecules/MediaGallery"
 import { QuantitySelector } from "@/components/molecules/QuantitySelector"
 import { ProductCard } from "@/components/molecules/ProductCard"
 import { Check } from "lucide-react"
+import { formatBRL, formatPerPerson } from '@/lib/format'
 import { track } from '@/domains/analytics'
 import type { ProductVariant } from "@ibatexas/types"
 
@@ -47,10 +48,7 @@ export default function ProductPage() {
 
   // Display the active variant's price, falling back to product base price
   const displayPrice = activeVariant?.price ?? product?.price ?? 0
-  const price = (displayPrice / 100).toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  })
+  const price = formatBRL(displayPrice)
 
   const handleAddToCart = useCallback(() => {
     if (!product) return
@@ -164,10 +162,7 @@ export default function ProductPage() {
               >
                 {variants.map((variant: ProductVariant) => {
                   const isSelected = (selectedVariant ?? variants[0]?.id) === variant.id
-                  const variantPrice = (variant.price / 100).toLocaleString(
-                    "pt-BR",
-                    { style: "currency", currency: "BRL" }
-                  )
+                  const variantPrice = formatBRL(variant.price)
                   return (
                     <button
                       key={variant.id}
@@ -238,7 +233,7 @@ export default function ProductPage() {
           {product.servings && product.servings > 0 && (
             <div className="mt-8">
               <p className="text-xs text-smoke-400">
-                {(displayPrice / product.servings / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} {t("product.per_serving")} · Serve {product.servings} pessoas
+                {formatPerPerson(displayPrice, product.servings)} {t("product.per_serving")} · Serve {product.servings} pessoas
               </p>
             </div>
           )}

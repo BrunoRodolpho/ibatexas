@@ -39,3 +39,8 @@ export function splitBRL(centavos: number): { prefix: string; value: string } {
   const formatted = (centavos / 100).toFixed(2).replace('.', ',')
   return { prefix: 'R$', value: formatted }
 }
+
+/** Format a numeric rating for display (e.g., 4.7 → "4,7"). Uses comma for pt-BR. */
+export function formatRating(rating: number): string {
+  return rating.toFixed(1).replace('.', ',')
+}

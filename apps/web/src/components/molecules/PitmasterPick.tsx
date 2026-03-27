@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL } from '@/lib/format'
 import { track } from '@/domains/analytics'
 import { useState, useCallback } from 'react'
 import type { ProductDTO } from '@ibatexas/types'
@@ -63,10 +64,7 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
 
   if (!product) return null
 
-  const priceFormatted = (product.price / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const priceFormatted = formatBRL(product.price)
   const displayImage = product.imageUrl || product.images?.[0] || null
 
   // ── Inline variant (compact, for search page) ──────────────────

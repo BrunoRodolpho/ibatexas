@@ -6,6 +6,7 @@ import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 import { TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL } from '@/lib/format'
 import { useQuickCartActions } from '@/domains/cart/useQuickCartActions'
 import { CartActionButton } from './CartActionButton'
 import type { ProductDTO } from '@ibatexas/types'
@@ -32,10 +33,7 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
   const product = featured[currentIndex]
   if (!product) return null
 
-  const priceFormatted = (product.price / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const priceFormatted = formatBRL(product.price)
   const displayImage = product.imageUrl || product.images?.[0] || null
   const isAdded = addedIds.has(product.id)
   const cartQty = getCartQuantity(product.id)

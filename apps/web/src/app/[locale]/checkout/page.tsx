@@ -7,15 +7,12 @@ import { useCartStore } from '@/domains/cart'
 import { useSessionStore } from '@/domains/session'
 import { Link } from "@/i18n/navigation"
 import { getApiBase } from "@/lib/api"
+import { formatBRL } from '@/lib/format'
 import { track, getSessionId } from '@/domains/analytics'
-import { Heading, Text, Button, Checkbox } from "@/components/atoms"
+import { Heading, Text, Button, Checkbox, ErrorBoundary } from "@/components/atoms"
 import Image from "next/image"
 import { CheckCircle, Lock, ShieldCheck } from "lucide-react"
 import { useOrderHistory } from "@/domains/cart/useOrderHistory"
-
-function formatPrice(centavos: number): string {
-  return (centavos / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-}
 
 type PaymentMethod = "pix" | "card" | "cash"
 type Stage = "summary" | "payment" | "pix_waiting" | "confirmed"
@@ -313,6 +310,7 @@ export default function CheckoutPage() {
   const stepLabels = [t('step_summary'), t('step_payment'), t('step_confirmation')]
 
   return (
+    <ErrorBoundary>
     <div className="min-h-screen bg-smoke-50 py-8 px-4">
       <div className="mx-auto max-w-lg space-y-6">
         <Heading as="h1" variant="h1">{t('title')}</Heading>
@@ -347,12 +345,12 @@ export default function CheckoutPage() {
           {items.map((item) => (
             <div key={item.id} className="flex justify-between text-sm text-charcoal-700">
               <span>{item.quantity}× {item.title}{item.variantTitle ? ` — ${item.variantTitle}` : ""}</span>
-              <span>{formatPrice(item.price * item.quantity)}</span>
+              <span>{formatBRL(item.price * item.quantity)}</span>
             </div>
           ))}
           <div className="border-t border-smoke-200 pt-2 mt-2 flex justify-between font-semibold text-charcoal-900">
             <span>{tCart('subtotal')}</span>
-            <span>{formatPrice(subtotal)}</span>
+            <span>{formatBRL(subtotal)}</span>
           </div>
         </div>
 
@@ -388,7 +386,7 @@ export default function CheckoutPage() {
                 )}
               </div>
               {deliveryEstimate && (
-                <p className="text-sm text-charcoal-700">{deliveryEstimate.message} · {formatPrice(deliveryEstimate.feeInCentavos)}</p>
+                <p className="text-sm text-charcoal-700">{deliveryEstimate.message} · {formatBRL(deliveryEstimate.feeInCentavos)}</p>
               )}
             </div>
           )}
@@ -408,7 +406,7 @@ export default function CheckoutPage() {
               </button>
             ))}
           </div>
-          {tipPercent > 0 && <p className="text-sm text-charcoal-700">{t('tip_value', { value: formatPrice(tipAmount) })}</p>}
+          {tipPercent > 0 && <p className="text-sm text-charcoal-700">{t('tip_value', { value: formatBRL(tipAmount) })}</p>}
         </div>
 
         {/* Payment method */}
@@ -431,16 +429,16 @@ export default function CheckoutPage() {
         <div className="bg-smoke-50 border border-smoke-200 rounded-sm p-5 space-y-2">
           {deliveryFeeAmount > 0 && (
             <div className="flex justify-between text-sm text-smoke-400">
-              <span>{t('fee_delivery')}</span><span>{formatPrice(deliveryFeeAmount)}</span>
+              <span>{t('fee_delivery')}</span><span>{formatBRL(deliveryFeeAmount)}</span>
             </div>
           )}
           {tipAmount > 0 && (
             <div className="flex justify-between text-sm text-smoke-400">
-              <span>{t('fee_tip')}</span><span>{formatPrice(tipAmount)}</span>
+              <span>{t('fee_tip')}</span><span>{formatBRL(tipAmount)}</span>
             </div>
           )}
           <div className="flex justify-between font-bold text-charcoal-900 text-lg border-t border-smoke-200 pt-2">
-            <span>{t('total')}</span><span>{formatPrice(total)}</span>
+            <span>{t('total')}</span><span>{formatBRL(total)}</span>
           </div>
         </div>
 
@@ -479,9 +477,10 @@ export default function CheckoutPage() {
           onClick={handleCheckout}
           disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate)}
         >
-          {loading ? t('processing') : t('confirm_order', { total: formatPrice(total) })}
+          {loading ? t('processing') : t('confirm_order', { total: formatBRL(total) })}
         </Button>
       </div>
     </div>
+    </ErrorBoundary>
   )
 }

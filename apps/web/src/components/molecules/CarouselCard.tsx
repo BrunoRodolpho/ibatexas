@@ -2,6 +2,7 @@
 
 import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
+import { formatBRL, formatRating } from '@/lib/format'
 
 interface CarouselCardProps {
   readonly id: string
@@ -26,10 +27,7 @@ export const CarouselCard = ({
   rating,
   tags,
 }: CarouselCardProps) => {
-  const priceFormatted = (price / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const priceFormatted = formatBRL(price)
   const hasMultipleVariants = (variantCount ?? 0) > 1
 
   const displayImage = imageUrl || images?.[0] || null
@@ -65,7 +63,7 @@ export const CarouselCard = ({
         {/* Rating badge */}
         {rating && (
           <div className="absolute top-[5%] left-[4%] z-10 bg-smoke-50/90 backdrop-blur-sm text-charcoal-900 px-[4%] py-[2%] text-[clamp(8px,2.5vw,10px)] font-medium rounded-sm">
-            {rating.toFixed(1)}
+            {formatRating(rating)}
           </div>
         )}
 

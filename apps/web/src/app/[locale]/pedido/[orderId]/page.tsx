@@ -5,11 +5,8 @@ import { useParams } from "next/navigation"
 import Image from "next/image"
 import { Link } from "@/i18n/navigation"
 import { getApiBase } from "@/lib/api"
+import { formatBRL } from '@/lib/format'
 import { OrderTimeline } from "@/components/molecules/OrderTimeline"
-
-function formatPrice(centavos: number): string {
-  return (centavos / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-}
 
 interface OrderItem {
   id: string
@@ -121,7 +118,7 @@ export default function OrderTrackingPage() {
                 )}
                 <span>{item.quantity}× {item.title}</span>
               </div>
-              <span>{formatPrice(item.unit_price * item.quantity)}</span>
+              <span>{formatBRL(item.unit_price * item.quantity)}</span>
             </div>
           ))}
         </div>
@@ -129,15 +126,15 @@ export default function OrderTrackingPage() {
         {/* Totals */}
         <div className="bg-smoke-50 border border-smoke-200 rounded-sm p-5 space-y-2">
           <div className="flex justify-between text-sm text-smoke-400">
-            <span>Subtotal</span><span>{formatPrice(order.subtotal)}</span>
+            <span>Subtotal</span><span>{formatBRL(order.subtotal)}</span>
           </div>
           {order.shipping_total > 0 && (
             <div className="flex justify-between text-sm text-smoke-400">
-              <span>Entrega</span><span>{formatPrice(order.shipping_total)}</span>
+              <span>Entrega</span><span>{formatBRL(order.shipping_total)}</span>
             </div>
           )}
           <div className="border-t border-smoke-200 pt-2 flex justify-between font-bold text-charcoal-900">
-            <span>Total</span><span>{formatPrice(order.total)}</span>
+            <span>Total</span><span>{formatBRL(order.total)}</span>
           </div>
         </div>
 

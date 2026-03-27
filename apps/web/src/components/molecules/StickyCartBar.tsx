@@ -7,6 +7,7 @@ import { ShoppingBag, Check, Clock, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { track } from '@/domains/analytics'
 import { FREE_DELIVERY_THRESHOLD } from '@/lib/constants'
+import { formatBRL } from '@/lib/format'
 
 /**
  * Sticky bottom cart bar — visible when items are in the cart.
@@ -22,10 +23,7 @@ export function StickyCartBar() {
 
   const itemCount = getItemCount()
   const subtotal = getTotal()
-  const subtotalFormatted = (subtotal / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const subtotalFormatted = formatBRL(subtotal)
 
   // Bounce animation when items are added
   const [isBouncing, setIsBouncing] = useState(false)
@@ -100,10 +98,7 @@ export function StickyCartBar() {
               {subtotal < FREE_DELIVERY_THRESHOLD ? (
                 <span className="text-[10px] text-smoke-400">
                   {t('sticky_cart.free_delivery_progress', {
-                    remaining: ((FREE_DELIVERY_THRESHOLD - subtotal) / 100).toLocaleString('pt-BR', {
-                      style: 'currency',
-                      currency: 'BRL',
-                    }),
+                    remaining: formatBRL(FREE_DELIVERY_THRESHOLD - subtotal),
                   })}
                 </span>
               ) : (

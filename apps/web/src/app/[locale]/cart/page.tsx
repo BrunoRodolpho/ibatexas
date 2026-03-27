@@ -9,6 +9,7 @@ import { CartItem, Modal } from '@/components/molecules'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
 import { apiFetch } from '@/lib/api'
+import { formatBRL } from '@/lib/format'
 import { track } from '@/domains/analytics'
 export default function CartPage() {
   const t = useTranslations()
@@ -124,7 +125,7 @@ export default function CartPage() {
                 <div className="flex justify-between">
                   <Text textColor="secondary">{t('cart.subtotal')}</Text>
                   <Text className="font-semibold">
-                    {(subtotal / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                    {formatBRL(subtotal)}
                   </Text>
                 </div>
 
@@ -132,7 +133,7 @@ export default function CartPage() {
                   <div className="flex justify-between">
                     <Text textColor="secondary">{t('cart.delivery_fee')}</Text>
                     <Text className="font-semibold">
-                      {(deliveryFee / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                      {formatBRL(deliveryFee)}
                     </Text>
                   </div>
                 )}
@@ -141,7 +142,7 @@ export default function CartPage() {
                   <div className="flex justify-between bg-accent-green/10 p-2 rounded text-accent-green">
                     <Text variant="small">{t('cart.coupon_applied_badge')} ({couponCode})</Text>
                     <Text variant="small" className="font-semibold">
-                      -{(couponDiscount / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                      -{formatBRL(couponDiscount)}
                     </Text>
                   </div>
                 )}
@@ -153,7 +154,7 @@ export default function CartPage() {
                   {t('cart.total')}
                 </Heading>
                 <Heading as="h4" variant="h4" className="font-display text-brand-600">
-                  {(total / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  {formatBRL(total)}
                 </Heading>
               </div>
 

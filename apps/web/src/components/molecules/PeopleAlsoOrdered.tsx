@@ -8,6 +8,7 @@ import { track, trackOnceVisible } from '@/domains/analytics'
 import { useCartStore } from '@/domains/cart/cart.store'
 import { CROSS_SELL_MAP } from '@/domains/product/cross-sell'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL, formatRating } from '@/lib/format'
 import type { ProductDTO } from '@ibatexas/types'
 
 interface PeopleAlsoOrderedProps {
@@ -92,10 +93,7 @@ export function PeopleAlsoOrdered({ allProducts, onAddToCart }: PeopleAlsoOrdere
 
       <div className="flex gap-3 overflow-x-auto scrollbar-hide snap-x snap-mandatory -mx-4 px-4 sm:mx-0 sm:px-0 pb-2">
         {suggestions.map((product) => {
-          const priceFormatted = (product.price / 100).toLocaleString('pt-BR', {
-            style: 'currency',
-            currency: 'BRL',
-          })
+          const priceFormatted = formatBRL(product.price)
           const displayImage = product.imageUrl || product.images?.[0]
 
           return (
@@ -131,7 +129,7 @@ export function PeopleAlsoOrdered({ allProducts, onAddToCart }: PeopleAlsoOrdere
                   {product.rating && product.rating >= 4 && product.reviewCount && product.reviewCount >= 10 && (
                     <div className="flex items-center gap-0.5 mt-0.5">
                       <Star className="w-3 h-3 fill-brand-500 text-brand-500" />
-                      <span className="text-[11px] text-charcoal-900 font-medium tabular-nums">{product.rating.toFixed(1)}</span>
+                      <span className="text-[11px] text-charcoal-900 font-medium tabular-nums">{formatRating(product.rating)}</span>
                     </div>
                   )}
                   <p className="mt-0.5 text-sm font-semibold tabular-nums text-charcoal-900">

@@ -10,6 +10,7 @@ import { getCrossSellCategory } from '@/domains/product/cross-sell'
 import { track } from '@/domains/analytics'
 import { apiFetch } from '@/lib/api'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL } from '@/lib/format'
 import type { ProductDTO } from '@ibatexas/types'
 
 const AUTO_DISMISS_MS = 6000
@@ -77,10 +78,7 @@ export function UpsellToast() {
 
   if (!upsellProduct) return null
 
-  const priceFormatted = (upsellProduct.price / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const priceFormatted = formatBRL(upsellProduct.price)
 
   const handleAdd = () => {
     addItem(

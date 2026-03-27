@@ -1,6 +1,7 @@
 import React from 'react'
 import { Card, Text, IconButton } from '../atoms'
 import { Image } from '../atoms/Image'
+import { formatBRL } from '@/lib/format'
 
 interface CartItemProps {
   readonly id: string
@@ -25,14 +26,8 @@ export const CartItem: React.FC<CartItemProps> = ({
   onQuantityChange,
   onRemove,
 }) => {
-  const formattedPrice = (price / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
-  const lineTotal = (price * quantity / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const formattedPrice = formatBRL(price)
+  const lineTotal = formatBRL(price * quantity)
 
   return (
     <Card className="p-4">

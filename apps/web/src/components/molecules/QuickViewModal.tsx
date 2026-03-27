@@ -7,7 +7,7 @@ import { Button, LinkButton, Badge, Text } from '../atoms'
 import { QuantitySelector } from './QuantitySelector'
 import NextImage from 'next/image'
 import { Star, Users, Scale } from 'lucide-react'
-import { formatBRL } from '@/lib/format'
+import { formatBRL, formatRating } from '@/lib/format'
 import { tagToBadgeVariant } from '@/domains/product'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
 import { useCartStore } from '@/domains/cart'
@@ -130,7 +130,7 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
             <div className="flex items-center gap-1 mt-1">
               <Star className="w-3 h-3 fill-brand-500 text-brand-500" />
               <span className="text-xs text-smoke-400">
-                {product.rating.toFixed(1)}
+                {formatRating(product.rating)}
                 {product.reviewCount ? ` (${product.reviewCount})` : ''}
               </span>
             </div>

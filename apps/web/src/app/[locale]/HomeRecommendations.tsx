@@ -10,6 +10,7 @@ import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 import { Plus, Sparkles } from 'lucide-react'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL } from '@/lib/format'
 import type { RecommendedProduct } from '@/domains/recommendations'
 import { AvailabilityWindow, ProductType } from '@ibatexas/types'
 import type { ProductDTO } from '@ibatexas/types'
@@ -62,10 +63,7 @@ export function HomeRecommendations() {
         {/* Horizontal scrollable cards */}
         <div className="flex gap-3 overflow-x-auto scrollbar-hide snap-x snap-mandatory pb-2 -mx-4 px-4">
           {recommendations.map((product) => {
-            const priceFormatted = (product.price / 100).toLocaleString('pt-BR', {
-              style: 'currency',
-              currency: 'BRL',
-            })
+            const priceFormatted = formatBRL(product.price)
 
             return (
               <div key={product.id} className="flex-shrink-0 snap-start w-[172px] sm:w-[192px] group">

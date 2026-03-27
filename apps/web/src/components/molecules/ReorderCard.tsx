@@ -6,6 +6,7 @@ import { useCartStore } from '@/domains/cart'
 import { useSessionStore } from '@/domains/session'
 import { useUIStore } from '@/domains/ui'
 import { Button } from '../atoms'
+import { formatBRL } from '@/lib/format'
 import { track } from '@/domains/analytics'
 import NextImage from 'next/image'
 import type { ProductDTO } from '@ibatexas/types'
@@ -35,10 +36,7 @@ export function ReorderCard() {
     addToast(t('added_all'), 'cart')
   }
 
-  const totalFormatted = (lastOrder.total / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const totalFormatted = formatBRL(lastOrder.total)
 
   return (
     <section className="bg-smoke-50">

@@ -7,6 +7,7 @@ import { Plus, Minus, Check } from 'lucide-react'
 import { Badge, type BadgeProps } from '../atoms'
 import { track } from '@/domains/analytics'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL } from '@/lib/format'
 import { useState, useCallback } from 'react'
 
 /** Badge priority order — first match wins (only 1 badge shown) */
@@ -49,10 +50,7 @@ export const ProductCardFeatured = ({
   const t = useTranslations()
   const [isAdded, setIsAdded] = useState(false)
 
-  const priceFormatted = (price / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const priceFormatted = formatBRL(price)
 
   const displayImage = imageUrl || images?.[0] || null
   const linkHref = href || `/products/${id}`

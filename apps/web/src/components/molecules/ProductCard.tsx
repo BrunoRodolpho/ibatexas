@@ -10,6 +10,7 @@ import { track } from '@/domains/analytics'
 import { useState, useCallback } from 'react'
 
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL, formatRating } from '@/lib/format'
 
 /** Badge priority order — first match wins (only 1 badge shown) */
 const BADGE_PRIORITY = ['edicao_limitada', 'chef_choice', 'popular', 'novo'] as const
@@ -46,12 +47,6 @@ interface ProductCardProps {
   readonly ordersToday?: number
   /** Card layout variant */
   readonly variant?: 'vertical' | 'horizontal'
-}
-
-// ── Helper: format price as BRL ─────────────────────────────────────────────
-
-function formatBRL(centavos: number): string {
-  return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
 // ── Helper: resolve which badge to show ─────────────────────────────────────
@@ -225,7 +220,7 @@ function SocialProof({
         <div className="mt-1.5 inline-flex items-center gap-1">
           <Star className="w-3 h-3 fill-brand-500 text-brand-500" />
           <span className="text-[11px] text-charcoal-900 font-medium tabular-nums">
-            {rating.toFixed(1)}
+            {formatRating(rating)}
           </span>
           <span className="text-[11px] text-smoke-400">({reviewCount})</span>
         </div>
