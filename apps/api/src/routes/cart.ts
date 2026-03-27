@@ -187,8 +187,8 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
             body: JSON.stringify({ variant_id: item.variantId, quantity: item.quantity }),
             headers: { "Content-Type": "application/json" },
           });
-        } catch {
-          // Skip failed items — partial sync is better than no sync
+        } catch (err) {
+          server.log.warn({ variantId: item.variantId, err }, "line item Medusa sync failed — skipping");
         }
       }
 

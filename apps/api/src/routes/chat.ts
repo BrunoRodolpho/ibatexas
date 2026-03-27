@@ -90,7 +90,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           try {
             const redis = await getRedisClient();
             await redis.set(rk(`session:owner:${sessionId}`), request.customerId!, { EX: 86400 });
-          } catch { /* Non-critical — ownership check will be skipped if Redis fails */ }
+          } catch (err) {
+            server.log.warn({ sessionId, err }, "Redis session ownership tracking failed — skipping");
+          }
         })();
       }
 
@@ -156,7 +158,9 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           reply.raw.end();
           return reply;
         }
-      } catch { /* Redis failure — fail-open, allow the request */ }
+      } catch (err) {
+        server.log.warn({ sessionId, err }, "Redis session ownership check failed — failing open");
+      }
 
       reply.raw.setHeader("Content-Type", "text/event-stream");
       reply.raw.setHeader("Cache-Control", "no-cache");
