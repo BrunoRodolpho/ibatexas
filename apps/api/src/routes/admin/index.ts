@@ -34,6 +34,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     .map((k) => k.trim())
     .filter((k) => k.length > 0);
 
+  for (const key of ADMIN_API_KEYS) {
+    if (key.length < 32) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("ADMIN_API_KEY entries must be at least 32 characters");
+      }
+      server.log.warn("ADMIN_API_KEY entry shorter than 32 chars — insecure");
+    }
+  }
+
   // DOM-001: Auth guard — accept EITHER x-admin-key header OR valid staff JWT cookie.
   // The staff JWT path runs optionalAuth first (populates request.staffId/staffRole),
   // then checks for staff credentials. Falls back to API key if no staff JWT.
