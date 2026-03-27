@@ -17,23 +17,31 @@ export function createLoyaltyService() {
     },
 
     async addStamp(customerId: string): Promise<{ stamps: number; rewarded: boolean }> {
-      const account = await this.getOrCreateAccount(customerId)
-      const newStamps = account.stamps + 1
-
-      if (newStamps >= STAMPS_FOR_REWARD) {
-        // Reward earned — reset stamps, increment redeemed
-        await prisma.loyaltyAccount.update({
+      // Atomic: upsert ensures account exists, then increment + check in a transaction
+      return prisma.$transaction(async (tx) => {
+        // Ensure account exists
+        await tx.loyaltyAccount.upsert({
           where: { customerId },
-          data: { stamps: 0, totalEarned: { increment: 1 }, redeemed: { increment: 1 } },
+          create: { customerId },
+          update: {},
         })
-        return { stamps: 0, rewarded: true }
-      }
 
-      await prisma.loyaltyAccount.update({
-        where: { customerId },
-        data: { stamps: newStamps, totalEarned: { increment: 1 } },
+        // Atomic increment — avoids TOCTOU race on concurrent order.placed events
+        const updated = await tx.loyaltyAccount.update({
+          where: { customerId },
+          data: { stamps: { increment: 1 }, totalEarned: { increment: 1 } },
+        })
+
+        if (updated.stamps >= STAMPS_FOR_REWARD) {
+          await tx.loyaltyAccount.update({
+            where: { customerId },
+            data: { stamps: 0, redeemed: { increment: 1 } },
+          })
+          return { stamps: 0, rewarded: true }
+        }
+
+        return { stamps: updated.stamps, rewarded: false }
       })
-      return { stamps: newStamps, rewarded: false }
     },
 
     async getBalance(customerId: string) {

@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 
 const mockUpsert = vi.hoisted(() => vi.fn())
 const mockUpdate = vi.hoisted(() => vi.fn())
+const mockTransaction = vi.hoisted(() => vi.fn())
 
 vi.mock("../client.js", () => ({
   prisma: {
@@ -21,6 +22,7 @@ vi.mock("../client.js", () => ({
       upsert: mockUpsert,
       update: mockUpdate,
     },
+    $transaction: mockTransaction,
   },
 }))
 
@@ -59,8 +61,20 @@ describe("LoyaltyService", () => {
   })
 
   describe("addStamp", () => {
+    // addStamp now uses $transaction — the mock executes the callback with a tx
+    // that shares the same mockUpsert/mockUpdate fns
+    beforeEach(() => {
+      mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
+        const tx = {
+          loyaltyAccount: { upsert: mockUpsert, update: mockUpdate },
+        }
+        return cb(tx)
+      })
+    })
+
     it("increments stamps from 0 to 1, rewarded=false", async () => {
       mockUpsert.mockResolvedValue(makeAccount(0))
+      // First update: atomic increment → stamps=1
       mockUpdate.mockResolvedValue(makeAccount(1))
 
       const svc = createLoyaltyService()
@@ -69,21 +83,29 @@ describe("LoyaltyService", () => {
       expect(result).toEqual({ stamps: 1, rewarded: false })
       expect(mockUpdate).toHaveBeenCalledWith({
         where: { customerId: "cust_01" },
-        data: { stamps: 1, totalEarned: { increment: 1 } },
+        data: { stamps: { increment: 1 }, totalEarned: { increment: 1 } },
       })
     })
 
     it("resets stamps to 0 and sets rewarded=true when reaching 10", async () => {
       mockUpsert.mockResolvedValue(makeAccount(9))
-      mockUpdate.mockResolvedValue(makeAccount(0, 10, 1))
+      // First update: atomic increment → stamps=10
+      mockUpdate.mockResolvedValueOnce(makeAccount(10, 10, 0))
+      // Second update: reset stamps to 0, increment redeemed
+      mockUpdate.mockResolvedValueOnce(makeAccount(0, 10, 1))
 
       const svc = createLoyaltyService()
       const result = await svc.addStamp("cust_01")
 
       expect(result).toEqual({ stamps: 0, rewarded: true })
-      expect(mockUpdate).toHaveBeenCalledWith({
+      expect(mockUpdate).toHaveBeenCalledTimes(2)
+      expect(mockUpdate).toHaveBeenNthCalledWith(1, {
         where: { customerId: "cust_01" },
-        data: { stamps: 0, totalEarned: { increment: 1 }, redeemed: { increment: 1 } },
+        data: { stamps: { increment: 1 }, totalEarned: { increment: 1 } },
+      })
+      expect(mockUpdate).toHaveBeenNthCalledWith(2, {
+        where: { customerId: "cust_01" },
+        data: { stamps: 0, redeemed: { increment: 1 } },
       })
     })
 

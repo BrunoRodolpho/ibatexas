@@ -386,9 +386,8 @@ export async function startCartIntelligenceSubscribers(
     if (!customerId) return;
 
     // Debounce: same customer viewing same product within 60s is one event
-    const viewKey = `view:${customerId}:${productId}`;
     const redis = await getRedisClient();
-    const isDuplicate = await redis.set(rk(`nats:processed:${viewKey}`), "1", { EX: 60, NX: true });
+    const isDuplicate = await redis.set(rk(`nats:processed:view:${customerId}:${productId}`), "1", { EX: 60, NX: true });
     if (isDuplicate !== "OK") return;
 
     try {
@@ -584,7 +583,11 @@ export async function startCartIntelligenceSubscribers(
       const customer = await customerSvc.getById(customerId).catch(() => null);
       if (!customer?.phone) return;
 
-      const APP_BASE_URL = process.env.APP_BASE_URL || "https://ibatexas.com.br";
+      const APP_BASE_URL = process.env.APP_BASE_URL;
+      if (!APP_BASE_URL) {
+        log?.warn("[cart-intelligence] APP_BASE_URL not set — skipping review prompt link");
+        return;
+      }
       const message = [
         `⭐ *IbateXas — Como foi sua experiência?*`,
         ``,
@@ -670,13 +673,19 @@ export async function startCartIntelligenceSubscribers(
     }
 
     try {
-      // Alert staff via notification.send
-      const { publishNatsEvent } = await import("@ibatexas/nats-client");
-      await publishNatsEvent("notification.send", {
-        type: "order_disputed",
-        channel: "whatsapp",
-        message: `⚠️ *Disputa aberta* — Pedido: ${orderId ?? "N/A"}, Motivo: ${reason}, Valor: R$${(amount / 100).toFixed(2)}`,
-      });
+      // Alert staff directly — notification.send requires customerId, but disputes are staff-only
+      const staffPhone = process.env.STAFF_ALERT_PHONE;
+      if (staffPhone) {
+        const { sendText } = await import("../whatsapp/client.js");
+        const valorFormatado = (amount / 100).toFixed(2).replace(".", ",");
+        await sendText(
+          `whatsapp:${staffPhone}`,
+          `⚠️ *Disputa aberta* — Pedido: ${orderId ?? "N/A"}, Motivo: ${reason}, Valor: R$${valorFormatado}`,
+        );
+        log?.info({ dispute_id: disputeId }, "[cart-intelligence] dispute staff alert sent");
+      } else {
+        log?.warn("[cart-intelligence] STAFF_ALERT_PHONE not set — dispute alert skipped");
+      }
 
       // Update customer profile if orderId is available
       if (orderId) {

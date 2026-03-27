@@ -154,6 +154,7 @@ export function track(
  */
 export function captureUtmParams(): void {
   if (globalThis.window === undefined) return
+  if (!useConsentStore.getState().accepted) return
   if (sessionStorage.getItem('ibx_utm_captured')) return
 
   const params = new URLSearchParams(globalThis.window.location.search)

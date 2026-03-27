@@ -34,10 +34,10 @@ export function buildCartRecoveryMessage(
   }
 
   if (tier === 2) {
-    return `Ainda pensando${nameClause}? Use o codigo VOLTA10 pra 10% off no seu pedido! Responda "meu carrinho" 🎁`;
+    return `Ainda pensando${nameClause}? Use o código VOLTA10 pra 10% off no seu pedido! Responda "meu carrinho" 🎁`;
   }
 
   // tier === 3
   const scarcityItem = hasItems ? item1 : fallbackItem;
-  return `${nameStart}Ultimas chances de garantir ${scarcityItem}! Seu carrinho expira em breve. Responda "meu carrinho" 🔥`;
+  return `${nameStart}Últimas chances de garantir ${scarcityItem}! Seu carrinho expira em breve. Responda "meu carrinho" 🔥`;
 }
