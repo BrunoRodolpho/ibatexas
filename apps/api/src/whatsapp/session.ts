@@ -277,6 +277,9 @@ export async function setWelcomeCredit(customerId: string): Promise<void> {
  */
 export async function getAndConsumeWelcomeCredit(customerId: string): Promise<string | null> {
   const redis = await getRedisClient();
-  const code = await redis.getDel(rk(`welcome:credit:${customerId}`));
-  return code ?? null;
+  const code = await redis.get(rk(`welcome:credit:${customerId}`));
+  if (code) {
+    await redis.del(rk(`welcome:credit:${customerId}`));
+  }
+  return code;
 }

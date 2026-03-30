@@ -1,0 +1,61 @@
+{
+  "name": "variant-selection",
+  "description": "Customer picks variant '1kg' after seeing options — __last_pending__ resolves to actual product name",
+  "channel": "whatsapp",
+  "customerId": "cust-007",
+  "isNewCustomer": false,
+  "mealPeriod": "dinner",
+  "turns": [
+    {
+      "input": "Quero costela",
+      "expectedEvents": ["ADD_ITEM"],
+      "expectedState": "ordering.awaiting_next",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-costela-500g", "name": "Costela 500g", "priceInCentavos": 8900, "category": "meat" },
+          { "variantId": "var-costela-1kg", "name": "Costela 1kg", "priceInCentavos": 16500, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-007",
+        "items": [
+          { "productId": "prod-costela", "variantId": "var-costela-500g", "name": "Costela 500g", "category": "meat", "quantity": 1, "priceInCentavos": 8900 }
+        ],
+        "totalInCentavos": 8900
+      },
+      "assertContext": {
+        "pendingProduct": "costela",
+        "cartId": "cart-007",
+        "items.length": 1
+      }
+    },
+    {
+      "input": "1kg",
+      "expectedEvents": ["ADD_ITEM"],
+      "expectedState": "ordering.awaiting_next",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-costela-1kg", "name": "Costela 1kg", "priceInCentavos": 16500, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-007",
+        "items": [
+          { "productId": "prod-costela", "variantId": "var-costela-1kg", "name": "Costela 1kg", "category": "meat", "quantity": 1, "priceInCentavos": 16500 }
+        ],
+        "totalInCentavos": 16500
+      },
+      "assertContext": {
+        "pendingProduct": "costela",
+        "cartId": "cart-007"
+      },
+      "assertPromptContains": ["Costela 1kg"]
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "objection-handling",
+  "description": "Customer adds item then objects to price — enters objection state, no discounts offered",
+  "channel": "whatsapp",
+  "customerId": "cust-010",
+  "isNewCustomer": false,
+  "mealPeriod": "lunch",
+  "turns": [
+    {
+      "input": "Quero costela 1kg",
+      "expectedEvents": ["ADD_ITEM"],
+      "expectedState": "ordering.awaiting_next",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-costela-1kg", "name": "Costela 1kg", "priceInCentavos": 16500, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-010",
+        "items": [
+          { "productId": "prod-costela", "variantId": "var-costela-1kg", "name": "Costela 1kg", "category": "meat", "quantity": 1, "priceInCentavos": 16500 }
+        ],
+        "totalInCentavos": 16500
+      },
+      "assertContext": {
+        "cartId": "cart-010",
+        "items.length": 1
+      }
+    },
+    {
+      "input": "economico",
+      "expectedEvents": ["OBJECTION"],
+      "assertPromptContains": ["NÃO ofereça desconto"]
+    }
+  ]
+}

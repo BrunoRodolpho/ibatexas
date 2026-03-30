@@ -1,0 +1,170 @@
+version: "0.5"
+
+environment:
+  - "FORCE_COLOR=1"
+
+env_file:
+  - ".env"
+
+log_level: info
+
+processes:
+  # ── Infrastructure (one-shot) ────────────────────────────────────────────────
+  infra:
+    command: "docker compose up -d --wait"
+    availability:
+      restart: "no"
+    readiness_probe:
+      exec:
+        command: "docker compose ps --status running --format '{{.Name}}' | wc -l | xargs test 4 -le"
+      initial_delay_seconds: 2
+      period_seconds: 3
+      timeout_seconds: 10
+      failure_threshold: 10
+
+  # ── Package build (one-shot) ────────────────────────────────────────────────
+  # Rebuild shared packages so dist/ matches source. Dependency order matters.
+  build-packages:
+    command: |
+      echo "Cleaning dist caches…" &&
+      rm -rf packages/types/dist packages/tools/dist packages/llm-provider/dist &&
+      echo "Building @ibatexas/types…" &&
+      cd packages/types && npx tsc --outDir dist && cd ../.. &&
+      echo "Building @ibatexas/tools…" &&
+      cd packages/tools && npx tsc --outDir dist && cd ../.. &&
+      echo "Building @ibatexas/llm-provider…" &&
+      cd packages/llm-provider && npx tsc --outDir dist && cd ../.. &&
+      echo "Package build complete ✓"
+    availability:
+      restart: "no"
+
+  # ── Admin cache cleanup (one-shot) ────────────────────────────────────────
+  admin-clean:
+    command: "rm -rf apps/admin/.next"
+    availability:
+      restart: "no"
+
+  # ── Commerce (Medusa) ────────────────────────────────────────────────────────
+  commerce:
+    command: "pnpm --filter @ibatexas/commerce dev"
+    depends_on:
+      infra:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 9000
+        path: "/health"
+      initial_delay_seconds: 10
+      period_seconds: 5
+      timeout_seconds: 5
+      failure_threshold: 30
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+
+  # ── API (Fastify) ───────────────────────────────────────────────────────────
+  api:
+    command: "pnpm --filter @ibatexas/api dev"
+    depends_on:
+      commerce:
+        condition: process_healthy
+      build-packages:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 3001
+        path: "/health"
+      initial_delay_seconds: 5
+      period_seconds: 3
+      timeout_seconds: 5
+      failure_threshold: 20
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+
+  # ── Web cache cleanup (one-shot) ────────────────────────────────────────────
+  web-clean:
+    command: "rm -rf apps/web/.next"
+    depends_on:
+      build-packages:
+        condition: process_completed_successfully
+    availability:
+      restart: "no"
+
+  # ── Web (Next.js storefront) ────────────────────────────────────────────────
+  web:
+    command: "pnpm --filter @ibatexas/web dev"
+    depends_on:
+      web-clean:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 3000
+        path: "/"
+      initial_delay_seconds: 5
+      period_seconds: 3
+      timeout_seconds: 5
+      failure_threshold: 20
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+
+  # ── Admin (Next.js panel) ───────────────────────────────────────────────────
+  admin:
+    command: "pnpm --filter @ibatexas/admin dev"
+    depends_on:
+      admin-clean:
+        condition: process_completed_successfully
+      build-packages:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 3002
+        path: "/"
+      initial_delay_seconds: 5
+      period_seconds: 3
+      timeout_seconds: 5
+      failure_threshold: 20
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+
+  # ── ngrok tunnel (disabled by default) ──────────────────────────────────────
+  tunnel:
+    command: 'if [ -n "$NGROK_DOMAIN" ]; then exec ngrok http 3001 --url "$NGROK_DOMAIN"; else exec ngrok http 3001; fi'
+    depends_on:
+      api:
+        condition: process_healthy
+    availability:
+      restart: "no"
+    shutdown:
+      signal: 15
+      timeout_seconds: 5
+
+  # ── Stripe webhook listener ─────────────────────────────────────────────────
+  stripe:
+    command: "stripe listen --forward-to localhost:3001/api/webhooks/stripe"
+    depends_on:
+      api:
+        condition: process_healthy
+    availability:
+      restart: "no"
+    shutdown:
+      signal: 15
+      timeout_seconds: 5

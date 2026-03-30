@@ -1,0 +1,51 @@
+{
+  "name": "out-of-range-delivery",
+  "description": "Add item → delivery with out-of-zone CEP → machine goes to offer_pickup state",
+  "channel": "whatsapp",
+  "customerId": "cust-004",
+  "isNewCustomer": false,
+  "mealPeriod": "lunch",
+  "turns": [
+    {
+      "input": "Quero frango retirada pix",
+      "expectedEvents": ["ADD_ITEM", "SET_FULFILLMENT", "SET_PAYMENT", "CHECKOUT_START"],
+      "expectedState": "checkout.confirming",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-frango", "name": "Frango Defumado", "priceInCentavos": 5200, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-004",
+        "items": [
+          { "productId": "prod-frango", "variantId": "var-frango", "name": "Frango Defumado", "category": "meat", "quantity": 1, "priceInCentavos": 5200 }
+        ],
+        "totalInCentavos": 5200
+      },
+      "assertContext": {
+        "fulfillment": "pickup",
+        "cartId": "cart-004"
+      }
+    },
+    {
+      "input": "Entrega CEP 99999-000",
+      "expectedEvents": ["SET_FULFILLMENT"],
+      "expectedState": "checkout.offer_pickup",
+      "injectDeliveryResult": {
+        "inZone": false,
+        "feeInCentavos": 0,
+        "etaMinutes": 0
+      },
+      "assertContext": {
+        "fulfillment": "delivery",
+        "deliveryCep": "99999-000",
+        "lastError": "Endereço fora da área de entrega."
+      },
+      "assertPromptContains": ["fora da área de entrega", "retirada"],
+      "assertTools": []
+    }
+  ]
+}

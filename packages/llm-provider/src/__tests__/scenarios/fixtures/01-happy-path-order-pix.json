@@ -1,0 +1,57 @@
+{
+  "name": "happy-path-order-pix",
+  "description": "Full happy path: fast-path order costela 1kg retirada pix → confirming → PIX QR post-order",
+  "channel": "whatsapp",
+  "customerId": "cust-bruno",
+  "isNewCustomer": false,
+  "mealPeriod": "dinner",
+  "turns": [
+    {
+      "input": "Quero costela 1kg retirada pix",
+      "expectedEvents": ["ADD_ITEM", "SET_FULFILLMENT", "SET_PAYMENT", "CHECKOUT_START"],
+      "expectedState": "checkout.confirming",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-costela-1kg", "name": "Costela 1kg", "priceInCentavos": 16500, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-001",
+        "items": [
+          { "productId": "prod-costela", "variantId": "var-costela-1kg", "name": "Costela 1kg", "category": "meat", "quantity": 1, "priceInCentavos": 16500 }
+        ],
+        "totalInCentavos": 16500
+      },
+      "assertContext": {
+        "fulfillment": "pickup",
+        "paymentMethod": "pix",
+        "cartId": "cart-001",
+        "items.length": 1
+      },
+      "assertPromptContains": ["Costela 1kg", "R$165,00", "Retirada", "PIX", "Confirma"],
+      "assertTools": []
+    },
+    {
+      "input": "Sim, confirmo",
+      "expectedState": "post_order",
+      "injectCheckoutResult": {
+        "success": true,
+        "paymentMethod": "pix",
+        "checkoutData": {
+          "orderId": "IXS-001",
+          "pixQrCodeText": "00020126580014br.gov.bcb.pix",
+          "pixQrCodeUrl": null
+        }
+      },
+      "assertContext": {
+        "orderId": "IXS-001",
+        "loyaltyStamps": 3
+      },
+      "assertPromptContains": ["IXS-001", "amend_order"],
+      "assertTools": ["get_loyalty_balance", "cancel_order"]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "no-stock-alternatives",
+  "description": "Customer requests unavailable item → search returns not found with alternatives → item_unavailable state with alternatives in prompt",
+  "channel": "whatsapp",
+  "customerId": "cust-005",
+  "isNewCustomer": false,
+  "mealPeriod": "lunch",
+  "turns": [
+    {
+      "input": "Quero picanha",
+      "expectedEvents": ["UNKNOWN_INPUT"],
+      "expectedState": "fallback",
+      "assertPromptContains": ["ALMOÇO"]
+    },
+    {
+      "input": "Quero costela",
+      "expectedEvents": ["ADD_ITEM"],
+      "expectedState": "ordering.item_unavailable",
+      "injectSearchResult": {
+        "found": false,
+        "products": [],
+        "alternatives": ["Frango Defumado", "Pulled Pork", "Linguiça"]
+      },
+      "assertContext": {
+        "pendingProduct": "costela",
+        "lastError": "Produto indisponível no momento",
+        "alternatives.length": 3
+      },
+      "assertPromptContains": ["Frango Defumado", "Pulled Pork", "Linguiça"],
+      "assertTools": ["search_products"]
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "name": "post-order-cancel",
+  "description": "Order placed via fast-path → customer requests cancellation → cancel_order tool available in post_order",
+  "channel": "whatsapp",
+  "customerId": "cust-009",
+  "isNewCustomer": false,
+  "mealPeriod": "dinner",
+  "turns": [
+    {
+      "input": "Quero linguiça retirada pix",
+      "expectedEvents": ["ADD_ITEM", "SET_FULFILLMENT", "SET_PAYMENT", "CHECKOUT_START"],
+      "expectedState": "checkout.confirming",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-ling", "name": "Linguiça 4un", "priceInCentavos": 3800, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-009",
+        "items": [
+          { "productId": "prod-ling", "variantId": "var-ling", "name": "Linguiça 4un", "category": "meat", "quantity": 1, "priceInCentavos": 3800 }
+        ],
+        "totalInCentavos": 3800
+      },
+      "assertContext": {
+        "fulfillment": "pickup",
+        "paymentMethod": "pix"
+      }
+    },
+    {
+      "input": "Sim confirmo",
+      "expectedState": "post_order",
+      "injectCheckoutResult": {
+        "success": true,
+        "paymentMethod": "pix",
+        "checkoutData": {
+          "orderId": "IXS-009",
+          "pixQrCodeText": "00020126580014br.gov.bcb.pix0136def456",
+          "pixQrCodeUrl": null
+        }
+      },
+      "assertContext": {
+        "orderId": "IXS-009"
+      },
+      "assertTools": ["cancel_order"]
+    },
+    {
+      "input": "desistir",
+      "expectedEvents": ["CANCEL_ORDER"],
+      "expectedState": "post_order",
+      "assertTools": ["cancel_order"],
+      "assertPromptContains": ["IXS-009"]
+    }
+  ]
+}

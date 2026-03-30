@@ -1,0 +1,40 @@
+{
+  "name": "closed-hours-guard",
+  "description": "Restaurant closed — greeting state shows FECHADO, only frozen items can be ordered",
+  "channel": "whatsapp",
+  "customerId": "cust-006",
+  "isNewCustomer": false,
+  "mealPeriod": "closed",
+  "turns": [
+    {
+      "input": "Boa noite",
+      "expectedEvents": ["GREETING"],
+      "expectedState": "browsing",
+      "assertPromptContains": ["FECHADO"],
+      "assertTools": ["search_products"]
+    },
+    {
+      "input": "Quero costela congelada",
+      "expectedEvents": ["ADD_ITEM"],
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-costela-frozen-500g", "name": "Costela Congelada 500g", "priceInCentavos": 7200, "category": "frozen" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-006",
+        "items": [
+          { "productId": "prod-costela-frozen", "variantId": "var-costela-frozen-500g", "name": "Costela Congelada 500g", "category": "frozen", "quantity": 1, "priceInCentavos": 7200 }
+        ],
+        "totalInCentavos": 7200
+      },
+      "assertContext": {
+        "cartId": "cart-006",
+        "items.length": 1
+      }
+    }
+  ]
+}

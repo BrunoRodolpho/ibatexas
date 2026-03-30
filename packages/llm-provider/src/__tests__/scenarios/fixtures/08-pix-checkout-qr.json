@@ -1,0 +1,54 @@
+{
+  "name": "pix-checkout-qr",
+  "description": "PIX checkout succeeds with QR code — post-order prompt shows copia-e-cola instructions",
+  "channel": "whatsapp",
+  "customerId": "cust-008",
+  "isNewCustomer": false,
+  "mealPeriod": "dinner",
+  "turns": [
+    {
+      "input": "Quero pulled pork retirada pix",
+      "expectedEvents": ["ADD_ITEM", "SET_FULFILLMENT", "SET_PAYMENT", "CHECKOUT_START"],
+      "expectedState": "checkout.confirming",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-pp", "name": "Pulled Pork", "priceInCentavos": 4800, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-008",
+        "items": [
+          { "productId": "prod-pp", "variantId": "var-pp", "name": "Pulled Pork", "category": "meat", "quantity": 1, "priceInCentavos": 4800 }
+        ],
+        "totalInCentavos": 4800
+      },
+      "assertContext": {
+        "fulfillment": "pickup",
+        "paymentMethod": "pix",
+        "cartId": "cart-008"
+      },
+      "assertPromptContains": ["Pulled Pork", "PIX", "Confirma"]
+    },
+    {
+      "input": "Confirmo",
+      "expectedState": "post_order",
+      "injectCheckoutResult": {
+        "success": true,
+        "paymentMethod": "pix",
+        "checkoutData": {
+          "orderId": "IXS-008",
+          "pixQrCodeText": "00020126580014br.gov.bcb.pix0136abc123",
+          "pixQrCodeUrl": null
+        }
+      },
+      "assertContext": {
+        "orderId": "IXS-008"
+      },
+      "assertPromptContains": ["IXS-008", "amend_order"],
+      "assertTools": ["cancel_order"]
+    }
+  ]
+}
