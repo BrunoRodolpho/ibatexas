@@ -6,6 +6,11 @@
 const MEDUSA_URL = process.env.MEDUSA_URL ?? "http://localhost:9000"
 const DEFAULT_TIMEOUT_MS = 10_000
 
+/** Convert Medusa v2 price (reais, e.g. 89.00) to centavos (8900). */
+export function reaisToCentavos(amount: number): number {
+  return Math.round(amount * 100)
+}
+
 // ── Error class ──────────────────────────────────────────────────────────────
 
 export class MedusaRequestError extends Error {
@@ -21,16 +26,19 @@ export class MedusaRequestError extends Error {
   }
 }
 
-// ── Admin API (x-medusa-access-token) ────────────────────────────────────────
+// ── Admin API (Authorization: Basic <secret-key>) ───────────────────────────
 
 export async function medusaAdmin(path: string, options?: RequestInit): Promise<unknown> {
-  const apiKey = process.env.MEDUSA_API_KEY ?? ""
+  const apiKey = process.env.MEDUSA_API_KEY
+  if (!apiKey) {
+    throw new Error("MEDUSA_API_KEY environment variable is not set")
+  }
   const res = await fetch(`${MEDUSA_URL}${path}`, {
     ...options,
     signal: options?.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     headers: {
       "Content-Type": "application/json",
-      "x-medusa-access-token": apiKey,
+      "Authorization": `Basic ${apiKey}`,
       ...options?.headers,
     },
   })
@@ -57,7 +65,8 @@ export async function medusaStore(path: string, options?: RequestInit): Promise<
   })
   if (!res.ok) {
     const text = await res.text()
-    console.error(`[medusa-store] ${res.status} ${path}: ${text}`)
+    const reqBody = options?.body ? String(options.body).slice(0, 500) : "(no body)"
+    console.error(`[medusa-store] ${res.status} ${path}\n  request: ${reqBody}\n  response: ${text.slice(0, 500)}`)
     throw new MedusaRequestError(res.status, text, path)
   }
   return res.json()

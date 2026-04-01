@@ -3,9 +3,18 @@ import { NextRequest, NextResponse } from "next/server";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY ?? "";
 
+const ALLOWED_PREFIXES = ["/api/admin/"];
+
 async function proxyRequest(request: NextRequest, params: { path: string[] }): Promise<NextResponse> {
   const path = params.path.join("/");
-  const url = new URL(`/${path}`, API_URL);
+  const targetPath = `/api/${path}`;
+
+  // SEC: Only allow proxying to admin API paths
+  if (!ALLOWED_PREFIXES.some((prefix) => targetPath.startsWith(prefix))) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
+  const url = new URL(targetPath, API_URL);
   url.search = request.nextUrl.search;
 
   const headers = new Headers();

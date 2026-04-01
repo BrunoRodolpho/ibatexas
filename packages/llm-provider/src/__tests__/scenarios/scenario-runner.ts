@@ -24,6 +24,7 @@ export interface ScenarioTurn {
   injectCartResult?: { success: boolean; cartId: string; items: unknown[]; totalInCentavos: number; error?: string }
   injectDeliveryResult?: { inZone: boolean; feeInCentavos: number; etaMinutes: number; error?: string }
   injectCheckoutResult?: { success: boolean; paymentMethod: string; checkoutData: unknown }
+  injectPixDetails?: { name: string; email: string; cpf: string }
 }
 
 export interface ScenarioFixture {
@@ -75,8 +76,9 @@ export function runScenario(fixture: ScenarioFixture): TurnResult[] {
     const turn = fixture.turns[i]
     const errors: string[] = []
 
-    // 1. Route the message
-    const events = routeMessage(turn.input, history)
+    // 1. Route the message (pass current machine state for context-aware routing)
+    const currentMachineState = getStateString(actor.getSnapshot())
+    const events = routeMessage(turn.input, history, currentMachineState)
 
     // 2. Verify expectedEvents
     if (turn.expectedEvents) {
@@ -107,6 +109,18 @@ export function runScenario(fixture: ScenarioFixture): TurnResult[] {
 
       if (stateAfter === "checkout.estimating_delivery" && turn.injectDeliveryResult) {
         actor.send({ type: "DELIVERY_RESULT", ...turn.injectDeliveryResult } as Parameters<typeof actor.send>[0])
+        stateAfter = getStateString(actor.getSnapshot())
+      }
+
+      // Inject PIX details (simulates LLM tool call → event injection)
+      if (stateAfter === "checkout.collecting_pix_details" && turn.injectPixDetails) {
+        actor.send({ type: "PIX_DETAILS_COLLECTED", payload: turn.injectPixDetails } as Parameters<typeof actor.send>[0])
+        stateAfter = getStateString(actor.getSnapshot())
+      }
+
+      // Auto-confirm when reviewing PIX details with checkout injection pending
+      if (stateAfter === "checkout.reviewing_pix_details" && (turn.injectCheckoutResult || turn.injectPixDetails)) {
+        actor.send({ type: "CONFIRM_ORDER" } as Parameters<typeof actor.send>[0])
         stateAfter = getStateString(actor.getSnapshot())
       }
 

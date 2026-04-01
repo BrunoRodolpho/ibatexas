@@ -32,6 +32,8 @@ export function sanitizeProperties(
         : value.length > MAX_VALUE_LENGTH
           ? value.slice(0, MAX_VALUE_LENGTH)
           : value;
+    } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      result[key] = sanitizeProperties(value as Record<string, unknown>);
     } else {
       result[key] = value;
     }

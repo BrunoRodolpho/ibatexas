@@ -8,13 +8,13 @@ const STEP_KEYS = ['pending', 'processing', 'shipped', 'delivered'] as const
 function getCircleClass(isPast: boolean, isCurrent: boolean): string {
   if (isPast) return 'bg-accent-green text-white'
   if (isCurrent) return 'bg-brand-500 text-white animate-pulse'
-  return 'bg-smoke-200 text-smoke-400'
+  return 'bg-smoke-200 text-[var(--color-text-disabled)]'
 }
 
 function getLabelClass(isPast: boolean, isCurrent: boolean): string {
   if (isCurrent) return 'text-charcoal-900 font-semibold'
   if (isPast) return 'text-charcoal-700'
-  return 'text-smoke-400'
+  return 'text-[var(--color-text-muted)]'
 }
 
 interface OrderTimelineProps {

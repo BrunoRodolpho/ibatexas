@@ -4,13 +4,14 @@
 // Auto-authenticates WhatsApp users by phone (phone IS identity on WhatsApp).
 // Includes distributed agent lock with heartbeat + message debounce.
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { createCustomerService } from "@ibatexas/domain";
 import { Channel, type AgentContext } from "@ibatexas/types";
 
 const SESSION_TTL_SECONDS = 24 * 60 * 60; // 24h
+const SESSION_IDLE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes — triggers session rotation
 const AGENT_LOCK_TTL_SECONDS = 30;
 const AGENT_LOCK_HEARTBEAT_MS = 10_000;
 const DEBOUNCE_TTL_SECONDS = 2;
@@ -50,6 +51,29 @@ interface WhatsAppSession {
 }
 
 /**
+ * Lua script: atomic check-and-rotate session.
+ * Prevents TOCTOU race where two concurrent messages after idle both
+ * create new sessions. The script atomically checks lastMessageAt,
+ * rotates if idle > threshold, and updates the timestamp.
+ *
+ * Returns the (possibly rotated) sessionId.
+ */
+const ROTATE_SESSION_SCRIPT = `
+local lastMsg = redis.call('HGET', KEYS[1], 'lastMessageAt')
+local threshold = tonumber(ARGV[1])
+local now = tonumber(ARGV[2])
+local newSessionId = ARGV[3]
+
+if lastMsg and (now - tonumber(lastMsg)) > threshold then
+  redis.call('HSET', KEYS[1], 'sessionId', newSessionId, 'lastMessageAt', tostring(now))
+  return newSessionId
+else
+  redis.call('HSET', KEYS[1], 'lastMessageAt', tostring(now))
+  return redis.call('HGET', KEYS[1], 'sessionId')
+end
+`;
+
+/**
  * Resolve a WhatsApp phone number to a session + customer.
  * Auto-authenticates: phone IS identity on WhatsApp (verified by Meta/Twilio).
  *
@@ -66,9 +90,33 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
   // Check Redis cache
   const cached = await redis.hGetAll(key);
   if (cached.sessionId && cached.customerId) {
+    // ── Ephemeral session scoping: rotate sessionId after 30min idle ──────
+    // This prevents stale cart data, machine snapshots, and conversation
+    // history from a previous interaction bleeding into a new conversation.
+    // The old machine snapshot (wa:machine:{oldSessionId}) dies naturally
+    // via TTL; the old Medusa cart is orphaned and expires independently.
+    //
+    // Uses atomic Lua script to prevent TOCTOU race: two concurrent
+    // messages after idle could both see stale lastMessageAt and both
+    // rotate, creating duplicate sessions. The Lua script does the
+    // check-and-rotate atomically in Redis.
+    const candidateSessionId = uuidv4();
+    const nowMs = Date.now();
+
+    const resolvedSessionId = await redis.eval(ROTATE_SESSION_SCRIPT, {
+      keys: [key],
+      arguments: [
+        String(SESSION_IDLE_THRESHOLD_MS),
+        String(nowMs),
+        candidateSessionId,
+      ],
+    }) as string;
+
+    await redis.expire(key, SESSION_TTL_SECONDS);
+
     return {
       phone: cached.phone || phone,
-      sessionId: cached.sessionId,
+      sessionId: resolvedSessionId,
       customerId: cached.customerId,
       isNew: false,
     };
@@ -87,14 +135,14 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
   const customer = await customerSvc.upsertFromWhatsApp(phone);
 
   const sessionId = uuidv4();
-  const now = new Date().toISOString();
+  const nowMs = String(Date.now());
 
   // Store in Redis
   await redis.hSet(key, {
     phone,
     sessionId,
     customerId: customer.id,
-    lastMessageAt: now,
+    lastMessageAt: nowMs,
   });
   await redis.expire(key, SESSION_TTL_SECONDS);
 
@@ -110,6 +158,7 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
 export function buildWhatsAppContext(
   session: WhatsAppSession,
   lastLocation?: { lat: number; lng: number } | null,
+  hints?: string[],
 ): AgentContext {
   return {
     channel: Channel.WhatsApp,
@@ -117,6 +166,7 @@ export function buildWhatsAppContext(
     customerId: session.customerId,
     userType: "customer",
     ...(lastLocation ? { lastLocation } : {}),
+    ...(hints?.length ? { hints } : {}),
   };
 }
 
@@ -124,48 +174,79 @@ export function buildWhatsAppContext(
 export async function touchSession(hash: string): Promise<void> {
   const redis = await getRedisClient();
   const key = rk(`wa:phone:${hash}`);
-  await redis.hSet(key, "lastMessageAt", new Date().toISOString());
+  await redis.hSet(key, "lastMessageAt", String(Date.now()));
   await redis.expire(key, SESSION_TTL_SECONDS);
 }
 
-// ── Agent lock (distributed, Redis-backed) ─────────────────────────────────────
+// ── Agent lock (distributed, Redis-backed, ownership-safe) ──────────────────
 
 const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
 
 /**
+ * Lua script: conditional DEL — only deletes if the lock value matches.
+ * Prevents releasing a lock that was acquired by a different process after
+ * our TTL expired.
+ */
+const RELEASE_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0
+end
+`;
+
+/**
+ * Lua script: conditional EXPIRE — only extends TTL if the lock value matches.
+ * Prevents extending a lock that was already taken over by another process.
+ */
+const EXTEND_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('EXPIRE', KEYS[1], ARGV[2])
+else
+  return 0
+end
+`;
+
+/**
  * Acquire a distributed agent lock for a phone.
  * Uses Redis SET NX with 30s TTL + heartbeat extension every 10s.
- * Returns true if lock was acquired.
+ * Returns a UUID lock value if acquired (used for ownership-safe release),
+ * or null if the lock is already held.
  *
  * Lock keyed by phoneHash (not sessionId) to prevent concurrent agent runs
  * when session rotates mid-conversation.
  */
-export async function acquireAgentLock(phoneHash: string): Promise<boolean> {
+export async function acquireAgentLock(phoneHash: string): Promise<string | null> {
   const redis = await getRedisClient();
   const key = rk(`wa:agent:${phoneHash}`);
+  const lockValue = randomUUID();
 
-  const acquired = await redis.set(key, "1", { EX: AGENT_LOCK_TTL_SECONDS, NX: true });
-  if (!acquired) return false;
+  const acquired = await redis.set(key, lockValue, { EX: AGENT_LOCK_TTL_SECONDS, NX: true });
+  if (!acquired) return null;
 
-  // Start heartbeat to extend TTL during long LLM calls
+  // Start heartbeat to extend TTL during long LLM calls — ownership-checked
   const interval = setInterval(async () => {
     try {
-      await redis.expire(key, AGENT_LOCK_TTL_SECONDS);
+      await redis.eval(EXTEND_LOCK_SCRIPT, {
+        keys: [key],
+        arguments: [lockValue, String(AGENT_LOCK_TTL_SECONDS)],
+      });
     } catch {
       // Redis may be down — lock will expire naturally
     }
   }, AGENT_LOCK_HEARTBEAT_MS);
 
   heartbeats.set(phoneHash, interval);
-  return true;
+  return lockValue;
 }
 
 /**
- * Release the agent lock. Clears heartbeat and deletes Redis key.
+ * Release the agent lock. Clears heartbeat and conditionally deletes Redis key
+ * only if the lock value matches (ownership check via Lua script).
  *
  * Lock keyed by phoneHash (not sessionId).
  */
-export async function releaseAgentLock(phoneHash: string): Promise<void> {
+export async function releaseAgentLock(phoneHash: string, lockValue: string): Promise<void> {
   const interval = heartbeats.get(phoneHash);
   if (interval) {
     clearInterval(interval);
@@ -174,7 +255,8 @@ export async function releaseAgentLock(phoneHash: string): Promise<void> {
 
   try {
     const redis = await getRedisClient();
-    await redis.del(rk(`wa:agent:${phoneHash}`));
+    const key = rk(`wa:agent:${phoneHash}`);
+    await redis.eval(RELEASE_LOCK_SCRIPT, { keys: [key], arguments: [lockValue] });
   } catch {
     // Best-effort cleanup — lock will expire via TTL
   }
@@ -242,6 +324,32 @@ export async function setSessionState(hash: string, state: string): Promise<void
   await redis.hSet(key, "state", state);
 }
 
+// ── Message deduplication ────────────────────────────────────────────────────
+
+const DEDUP_TTL_SECONDS = 300; // 5 minutes — covers WhatsApp retries (up to ~60s)
+
+/**
+ * Check if a message was already processed. Uses SHA-256 hash of
+ * phoneHash + messageBody to detect WhatsApp retries (which send
+ * the same payload after 30+ seconds, bypassing the 2s debounce).
+ *
+ * Returns true if the message is a duplicate (should be skipped).
+ */
+export async function isMessageDuplicate(
+  phoneHash: string,
+  messageBody: string,
+): Promise<boolean> {
+  const hash = createHash("sha256")
+    .update(`${phoneHash}:${messageBody}`)
+    .digest("hex")
+    .slice(0, 16);
+  const redis = await getRedisClient();
+  const key = rk(`wa:dedup:${hash}`);
+  const result = await redis.set(key, "1", { EX: DEDUP_TTL_SECONDS, NX: true });
+  // NX returns "OK" on success (first time), null if key already exists (duplicate)
+  return result !== "OK";
+}
+
 // ── LGPD opt-in tracking ────────────────────────────────────────────────────
 
 /** Check if a phone (by hash) has already accepted the LGPD opt-in disclosure. */
@@ -273,13 +381,13 @@ export async function setWelcomeCredit(customerId: string): Promise<void> {
 /**
  * Retrieve and atomically consume the welcome credit for a customer.
  * Returns the coupon code if available, null if already used or not set.
- * Deletes the key after reading to prevent double-apply.
+ * Uses GETDEL for atomic read-and-delete to prevent double-apply race.
+ *
+ * NOTE: packages/tools/src/intelligence/welcome-credit.ts has a similar
+ * function that also needs the same GETDEL fix (outside this file's ownership).
  */
 export async function getAndConsumeWelcomeCredit(customerId: string): Promise<string | null> {
   const redis = await getRedisClient();
-  const code = await redis.get(rk(`welcome:credit:${customerId}`));
-  if (code) {
-    await redis.del(rk(`welcome:credit:${customerId}`));
-  }
+  const code = await redis.getDel(rk(`welcome:credit:${customerId}`));
   return code;
 }

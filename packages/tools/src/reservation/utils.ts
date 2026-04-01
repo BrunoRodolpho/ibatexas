@@ -18,7 +18,7 @@ export function formatDateBR(date: Date): string {
     day: "2-digit",
     month: "long",
     year: "numeric",
-    timeZone: "America/Sao_Paulo",
+    timeZone: process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo",
   })
 }
 

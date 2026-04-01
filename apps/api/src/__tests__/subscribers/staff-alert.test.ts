@@ -31,6 +31,7 @@ vi.mock("@ibatexas/tools", () => ({
   PROFILE_TTL_SECONDS: 604800,
   getWhatsAppSender: mockGetWhatsAppSender,
   medusaStore: mockMedusaStore,
+  reaisToCentavos: (amount: number) => Math.round(amount * 100),
 }));
 
 vi.mock("@ibatexas/domain", () => ({
@@ -135,7 +136,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
       incr: vi.fn().mockResolvedValue(1),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 25000 } }); // R$250
+    mockMedusaStore.mockResolvedValue({ cart: { total: 250 } }); // R$250 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -154,7 +155,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
     const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 20000 } }); // exactly R$200
+    mockMedusaStore.mockResolvedValue({ cart: { total: 200 } }); // exactly R$200 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -169,7 +170,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
     const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 15000 } }); // R$150
+    mockMedusaStore.mockResolvedValue({ cart: { total: 150 } }); // R$150 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -187,7 +188,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
       incr: vi.fn().mockResolvedValue(11),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 50000 } });
+    mockMedusaStore.mockResolvedValue({ cart: { total: 500 } }); // R$500 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -204,7 +205,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
       incr: vi.fn().mockResolvedValue(10),
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 30000 } });
+    mockMedusaStore.mockResolvedValue({ cart: { total: 300 } }); // R$300 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -218,7 +219,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
     // STAFF_ALERT_PHONE not set (deleted in beforeEach)
     const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 50000 } });
+    mockMedusaStore.mockResolvedValue({ cart: { total: 500 } }); // R$500 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 

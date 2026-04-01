@@ -66,15 +66,19 @@ describe("matchShortcut", () => {
   // ── Help shortcuts ────────────────────────────────────────────────────────
 
   describe("help shortcuts", () => {
-    it.each(["ajuda", "help", "opcoes", "comandos"])(
+    it.each(["ajuda", "help", "comandos"])(
       "matches '%s' as help",
       (input) => {
         expect(matchShortcut(input)).toEqual({ type: "help" });
       },
     );
 
-    it("matches 'opções' with accent", () => {
-      expect(matchShortcut("opções")).toEqual({ type: "help" });
+    it("matches 'opcoes' as menu (not help)", () => {
+      expect(matchShortcut("opcoes")).toEqual({ type: "menu" });
+    });
+
+    it("matches 'opções' with accent (normalizes to 'opcoes', maps to menu)", () => {
+      expect(matchShortcut("opções")).toEqual({ type: "menu" });
     });
 
     it("matches 'AJUDA' case-insensitive", () => {
@@ -129,7 +133,7 @@ describe("buildHelpText", () => {
 
     expect(text).toContain("Olá!");
     expect(text).toContain("cardápio");
-    expect(text).toContain("ver nosso cardápio");
+    expect(text).toContain("nosso cardápio");
   });
 
   it("is non-empty multi-line string", () => {

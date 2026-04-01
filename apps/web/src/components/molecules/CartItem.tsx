@@ -48,7 +48,7 @@ export const CartItem: React.FC<CartItemProps> = ({
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold text-charcoal-900 truncate">{title}</h3>
           {variantTitle && (
-            <Text variant="small" textColor="secondary" className="text-smoke-400">
+            <Text variant="small" textColor="secondary" className="text-[var(--color-text-secondary)]">
               {variantTitle}
             </Text>
           )}
@@ -57,7 +57,7 @@ export const CartItem: React.FC<CartItemProps> = ({
           </Text>
 
           {specialInstructions && (
-            <p className="text-xs text-smoke-400 mt-1 line-clamp-2">
+            <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-2">
               {specialInstructions}
             </p>
           )}

@@ -137,7 +137,7 @@ export type ReservationTableGroupByOutputType = {
   _max: ReservationTableMaxAggregateOutputType | null
 }
 
-type GetReservationTableGroupByPayload<T extends ReservationTableGroupByArgs> = Prisma.PrismaPromise<
+export type GetReservationTableGroupByPayload<T extends ReservationTableGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<ReservationTableGroupByOutputType, T['by']> &
       {

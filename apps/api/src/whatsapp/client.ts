@@ -188,6 +188,39 @@ export async function sendInteractiveButtons(
   await sendText(to, `${body}\n\n${buttonLabels}\n\n_Responda com a opção desejada._`);
 }
 
+/**
+ * Send a media message (image, PDF, etc.) via Twilio's mediaUrl parameter.
+ * Optionally includes a text body alongside the media.
+ * Retries up to 3x with exponential backoff.
+ */
+export async function sendMedia(to: string, mediaUrl: string, body?: string): Promise<void> {
+  const client = getTwilioClient();
+  const from = getWhatsAppNumber();
+  const hash = hashPhone(to.replace("whatsapp:", ""));
+  const maxRetries = 3;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      await client.messages.create({
+        from,
+        to,
+        mediaUrl: [mediaUrl],
+        ...(body ? { body } : {}),
+      });
+      logger.info({ phone_hash: hash, media_url: mediaUrl }, "[whatsapp.sendMedia]");
+      return;
+    } catch (err) {
+      const isLast = attempt === maxRetries - 1;
+      logger.error(
+        { phone_hash: hash, attempt: attempt + 1, maxRetries, error: String(err) },
+        "[whatsapp.sendMedia.error]",
+      );
+      if (isLast) throw err;
+      await sleep(getRetryDelay(err, attempt));
+    }
+  }
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 export interface InteractiveRow {

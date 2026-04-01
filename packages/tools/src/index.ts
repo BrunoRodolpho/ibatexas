@@ -7,7 +7,7 @@ export { searchProducts, SearchProductsTool } from "./search/search-products.js"
 
 // ── Catalog tools ──────────────────────────────────────────────────────────────
 export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-details.js"
-export { estimateDelivery, EstimateDeliveryTool } from "./catalog/estimate-delivery.js"
+export { estimateDelivery, EstimateDeliveryTool, invalidateDeliveryCache } from "./catalog/estimate-delivery.js"
 export { reverseGeocode } from "./catalog/reverse-geocode.js"
 export type { ReverseGeocodeResult } from "./catalog/reverse-geocode.js"
 export { checkInventory, CheckInventoryTool } from "./catalog/check-inventory.js"
@@ -19,6 +19,7 @@ export { withOrderOwnership, withReservationOwnership } from "./guards/with-owne
 
 // ── Cart tools ─────────────────────────────────────────────────────────────────
 export { assertCartOwnership } from "./cart/assert-cart-ownership.js"
+export { getOrCreateCart, GetOrCreateCartTool } from "./cart/get-or-create-cart.js"
 export { getCart, GetCartTool } from "./cart/get-cart.js"
 export { addToCart, AddToCartTool } from "./cart/add-to-cart.js"
 export { updateCart, UpdateCartTool } from "./cart/update-cart.js"
@@ -28,7 +29,12 @@ export { createCheckout, CreateCheckoutTool } from "./cart/create-checkout.js"
 export { getOrderHistory, GetOrderHistoryTool } from "./cart/get-order-history.js"
 export { checkOrderStatus, CheckOrderStatusTool } from "./cart/check-order-status.js"
 export { cancelOrder, CancelOrderTool } from "./cart/cancel-order.js"
+export { amendOrder, AmendOrderTool } from "./cart/amend-order.js"
 export { reorder, ReorderTool } from "./cart/reorder.js"
+export { regeneratePix, RegeneratePixTool } from "./cart/regenerate-pix.js"
+export { cancelStalePaymentIntent } from "./cart/_stripe-helpers.js"
+export { setPixDetails, SetPixDetailsTool, SetPixDetailsInputSchema } from "./cart/set-pix-details.js"
+export type { SetPixDetailsInput } from "./cart/set-pix-details.js"
 
 // ── Intelligence tools ─────────────────────────────────────────────────────────
 export { getCustomerProfile, GetCustomerProfileTool } from "./intelligence/get-customer-profile.js"
@@ -46,6 +52,10 @@ export { PROFILE_TTL_SECONDS, RECENTLY_VIEWED_MAX } from "./intelligence/types.j
 // ── Redis ──────────────────────────────────────────────────────────────────────
 export { getRedisClient, closeRedisClient } from "./redis/client.js"
 export { rk } from "./redis/key.js"
+
+// ── Session claims ───────────────────────────────────────────────────────────
+export { createSessionToken, verifySessionToken, signSessionClaim } from "./session/signed-claims.js"
+export type { SessionClaim } from "./session/signed-claims.js"
 export { atomicIncr } from "./redis/atomic-rate-limit.js"
 export {
   RedisCircuitBreaker,
@@ -57,9 +67,43 @@ export {
 } from "./redis/circuit-breaker.js"
 export { safeRedis } from "./redis/safe-redis.js"
 
+// ── Tracing ──────────────────────────────────────────────────────────────────
+export {
+  createTrace,
+  startSpan,
+  endSpan,
+  getTraceDuration,
+  persistTrace,
+  loadTrace,
+  logSpan,
+} from "./tracing/trace.js"
+export type { TraceContext, Span } from "./tracing/trace.js"
+
+// ── Replay ───────────────────────────────────────────────────────────────────
+export { persistReplayEntry, loadReplayEntry, listRecentReplays } from "./replay/store.js"
+export type { ReplayEntry } from "./replay/store.js"
+
 // ── Mappers ────────────────────────────────────────────────────────────────────
 export { medusaToTypesenseDoc, typesenseDocToDTO } from "./mappers/product-mapper.js"
 export type { MedusaProductInput } from "./mappers/product-mapper.js"
+
+// ── Schedule helpers ─────────────────────────────────────────────────────────
+export {
+  getLocalTime,
+  getTimeStr,
+  getMealPeriodFromSchedule,
+  isAvailableFromSchedule,
+  getNextOpenDay,
+  getFrozenPickupMessage,
+} from "./schedule/schedule-helpers.js"
+
+// ── Schedule cache ──────────────────────────────────────────────────────────
+export {
+  getCachedSchedule,
+  setCachedSchedule,
+  invalidateScheduleCache,
+  loadSchedule,
+} from "./cache/schedule-cache.js"
 
 // ── Query cache ────────────────────────────────────────────────────────────────
 export {
@@ -81,7 +125,7 @@ export { getTypesenseClient, ensureCollectionExists, recreateCollection, PRODUCT
 export { indexProduct, deleteProductFromIndex, indexProductsBatch } from "./typesense/index-product.js"
 
 // ── Medusa HTTP client ────────────────────────────────────────────────────────
-export { medusaAdmin, medusaStore, MedusaRequestError } from "./medusa/client.js"
+export { medusaAdmin, medusaStore, MedusaRequestError, reaisToCentavos } from "./medusa/client.js"
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"

@@ -51,9 +51,9 @@ describe("buildOutreachMessage", () => {
 
   // ── Message content ──────────────────────────────────────────────────────
 
-  it("dormant_reorder includes days since last order", () => {
+  it("dormant_reorder includes product name in message", () => {
     const { message } = buildOutreachMessage("Ana", "Picanha", 14, 3);
-    expect(message).toContain("14");
+    expect(message).toContain("Picanha");
   });
 
   it("message includes customer name", () => {

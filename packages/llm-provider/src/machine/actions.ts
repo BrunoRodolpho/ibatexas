@@ -14,8 +14,11 @@ import {
   scheduleFollowUp,
   getCustomerProfile,
   reaisToCentavos,
+  getRedisClient,
+  rk,
 } from "@ibatexas/tools"
 import { Channel } from "@ibatexas/types"
+import { createCustomerService } from "@ibatexas/domain"
 import { computeCartFlags } from "./guards.js"
 
 // ── Helper: build tool context from machine context ──────────────────────────
@@ -347,6 +350,11 @@ export async function processCheckout(
         deliveryCep: ctx.deliveryCep ?? undefined,
       },
       toolCtx,
+      {
+        customerName: ctx.customerName ?? undefined,
+        customerEmail: ctx.customerEmail ?? undefined,
+        customerTaxId: ctx.customerTaxId ?? undefined,
+      },
     ) as {
       success: boolean
       paymentMethod: string
@@ -357,10 +365,77 @@ export async function processCheckout(
       message: string
     }
 
+    // NOTE: PIX details caching is now handled by the machine via CACHE_PIX_DETAILS
+    // event after CHECKOUT_RESULT success. The kernel detects checkout.order_placed
+    // and triggers the cache action. This ensures the side effect is machine-controlled.
+
     return result
   } catch (err) {
     console.error("[machine:processCheckout]", (err as Error).message)
     return { success: false, paymentMethod: ctx.paymentMethod, message: (err as Error).message }
+  }
+}
+
+// ── PIX details cache ────────────────────────────────────────────────────────
+
+const PIX_CACHE_TTL = 90 * 86400 // 90 days
+
+/** Cache PIX details (name, email, CPF) for returning customers.
+ *  Exported so the kernel can invoke it as a machine-controlled side effect
+ *  after CHECKOUT_RESULT success (via CACHE_PIX_DETAILS event). */
+export async function cachePixDetails(
+  customerId: string,
+  data: { name: string | null; email: string | null; cpf: string | null },
+): Promise<void> {
+  const redis = await getRedisClient()
+  const key = rk(`customer:pix:${customerId}`)
+
+  const pipeline = redis.multi()
+  if (data.name) pipeline.hSet(key, "name", data.name)
+  if (data.email) pipeline.hSet(key, "email", data.email)
+  if (data.cpf) pipeline.hSet(key, "cpf", data.cpf)
+  pipeline.expire(key, PIX_CACHE_TTL)
+  await pipeline.exec()
+
+  // Persist to Prisma
+  const svc = createCustomerService()
+  await svc.updatePixDetails(customerId, {
+    name: data.name ?? undefined,
+    email: data.email ?? undefined,
+    cpf: data.cpf ?? undefined,
+  })
+}
+
+export async function loadCachedPixDetails(
+  customerId: string,
+): Promise<{ name?: string; email?: string; cpf?: string } | null> {
+  try {
+    const redis = await getRedisClient()
+    const key = rk(`customer:pix:${customerId}`)
+    const hash = await redis.hGetAll(key)
+    if (hash && Object.keys(hash).length > 0) {
+      // Reset sliding TTL on read
+      await redis.expire(key, PIX_CACHE_TTL)
+      return {
+        name: hash.name || undefined,
+        email: hash.email || undefined,
+        cpf: hash.cpf || undefined,
+      }
+    }
+    // Fallback to DB
+    const svc = createCustomerService()
+    const customer = await svc.getById(customerId)
+    const cpf = (customer as Record<string, unknown>).cpf as string | null | undefined
+    if (customer.email || cpf) {
+      return {
+        name: customer.name ?? undefined,
+        email: customer.email ?? undefined,
+        cpf: cpf ?? undefined,
+      }
+    }
+    return null
+  } catch {
+    return null
   }
 }
 

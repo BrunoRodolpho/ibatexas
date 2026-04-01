@@ -12,6 +12,7 @@ The `ibx` CLI is the primary tool for all dev operations.
 | Node.js | 20 LTS | [nodejs.org](https://nodejs.org) or `nvm install 20` |
 | pnpm | 8+ | `npm install -g pnpm` |
 | Docker Desktop | Latest | [docker.com](https://www.docker.com) |
+| process-compose | Latest | `brew install f1bonacc1/tap/process-compose` |
 | AWS CLI | 2+ | `brew install awscli` _(production only)_ |
 | Terraform | 1.6+ | `brew install terraform` _(production only)_ |
 
@@ -64,25 +65,34 @@ cp .env.example .env
 ### Start everything
 
 ```bash
-ibx dev
+ibx dev start                              # 4 core services in TUI
+ibx dev start all                          # everything: 4 services + ngrok + Stripe webhooks
+ibx dev start --with-tunnel --with-stripe  # same as 'all' (explicit flags)
+ibx dev start commerce api                 # only specific services + their deps
+ibx dev start --no-tui                     # plain log output (no TUI)
+ibx dev start --skip-docker                # infra already running
 ```
 
-`ibx dev` handles all 4 steps automatically:
-1. `docker compose up -d --wait` — starts and waits for all containers to be healthy
-2. Runs infrastructure health checks — Postgres, Redis, Typesense, NATS
-3. Starts `medusa develop` for `apps/commerce`
-4. Polls `http://localhost:9000/health` until ready (≤90s)
-
-If Docker is already running:
-```bash
-ibx dev --skip-docker
-```
+`ibx dev start` launches [process-compose](https://github.com/F1bonacc1/process-compose), which orchestrates:
+1. Docker infrastructure (Postgres, Redis, Typesense, NATS)
+2. Commerce (Medusa) — waits for Docker healthy
+3. API — waits for Commerce healthy
+4. Web + Admin — wait for Docker healthy
+5. (optional) ngrok tunnel + Stripe listener — wait for API healthy
 
 ### Stop everything
 
 ```bash
-# Ctrl+C to stop Medusa, then:
-ibx dev stop   # stops all processes + Docker containers
+ibx dev stop          # stop all processes + Docker
+ibx dev stop web      # stop only web (keeps others running)
+ibx dev stop -f       # force-kill by port
+```
+
+### Restart a service
+
+```bash
+ibx dev restart web   # restart web without touching others
+ibx dev restart       # restart all app services
 ```
 
 ---
@@ -101,7 +111,23 @@ ibx dev stop   # stops all processes + Docker containers
 | PostHog         | https://app.posthog.com         | Analytics dashboard (cloud) |
 | PostgreSQL      | localhost:5433                  | Port 5433 (not 5432!)     |
 
-**Medusa admin login:** definido pelas variáveis `MEDUSA_ADMIN_EMAIL` e `MEDUSA_ADMIN_PASSWORD` no seu `.env`
+**Medusa admin login:** Set `MEDUSA_ADMIN_EMAIL` and `MEDUSA_ADMIN_PASSWORD` in your `.env`, then run:
+
+```bash
+ibx auth create-admin
+```
+
+This creates the admin user in the database. Login at http://localhost:9000/app with those credentials.
+If the user already exists, the command warns safely. You can also pass `--email` and `--password` flags directly.
+
+**Admin panel staff login:** Register your phone as staff to access the admin panel at http://localhost:3002/admin:
+
+```bash
+ibx auth create-staff --phone "+15125551234" --name "Your Name"
+```
+
+Supports BR (`+55`) and US (`+1`) phones. Roles: `OWNER` (default), `MANAGER`, `ATTENDANT`.
+Login uses WhatsApp OTP — enter your phone on the admin login page to receive a verification code.
 
 ---
 
@@ -209,3 +235,6 @@ See [plugins.md](plugins.md) for full documentation.
 | Docker containers unhealthy | `docker compose down -v && ibx dev` |
 | PG version mismatch (`initialized by PostgreSQL 15, not compatible with 17`) | `docker compose down -v && ibx bootstrap` |
 | `relation "X" does not exist` on startup | Run `ibx bootstrap` or manually: `ibx db migrate` then `ibx db migrate:domain` |
+| `process-compose: command not found` | `brew install f1bonacc1/tap/process-compose` |
+| TUI not rendering | Try `ibx dev start --no-tui` for plain output |
+| `Port XXXX already in use` | Ghost process — run `ibx dev stop -f` to force-kill, then retry |

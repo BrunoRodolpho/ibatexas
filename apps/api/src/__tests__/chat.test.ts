@@ -13,8 +13,11 @@ const mockCreateStream = vi.hoisted(() => vi.fn());
 const mockPushChunk = vi.hoisted(() => vi.fn());
 const mockGetStream = vi.hoisted(() => vi.fn());
 const mockCleanupStream = vi.hoisted(() => vi.fn());
+const mockAcquireWebAgentLock = vi.hoisted(() => vi.fn());
+const mockReleaseWebAgentLock = vi.hoisted(() => vi.fn());
+const mockGetRedisClient = vi.hoisted(() => vi.fn());
 
-vi.mock("@ibatexas/llm-provider", () => ({ runAgent: mockRunAgent }));
+vi.mock("@ibatexas/llm-provider", () => ({ runOrchestrator: mockRunAgent }));
 vi.mock("../session/store.js", () => ({
   loadSession: mockLoadSession,
   appendMessages: mockAppendMessages,
@@ -26,6 +29,17 @@ vi.mock("../streaming/emitter.js", () => ({
   getStream: mockGetStream,
   cleanupStream: mockCleanupStream,
 }));
+vi.mock("../streaming/execution-queue.js", () => ({
+  acquireWebAgentLock: mockAcquireWebAgentLock,
+  releaseWebAgentLock: mockReleaseWebAgentLock,
+}));
+vi.mock("@ibatexas/tools", async (importOriginal) => {
+  const orig = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...orig,
+    getRedisClient: mockGetRedisClient,
+  };
+});
 
 // ── Server factory ─────────────────────────────────────────────────────────────
 
@@ -59,6 +73,12 @@ describe("POST /api/chat/messages", () => {
     mockCreateStream.mockReturnValue(undefined);
     mockCleanupStream.mockReturnValue(undefined);
     mockPushChunk.mockReturnValue(undefined);
+    mockAcquireWebAgentLock.mockResolvedValue(true);
+    mockReleaseWebAgentLock.mockResolvedValue(undefined);
+    mockGetRedisClient.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+    });
   });
 
   it("returns { messageId } and starts agent", async () => {
@@ -88,7 +108,7 @@ describe("POST /api/chat/messages", () => {
   });
 
   it("returns 409 when a stream is already active for the session", async () => {
-    mockIsStreamActive.mockReturnValue(true);
+    mockAcquireWebAgentLock.mockResolvedValue(false);
 
     const app = await buildTestServer();
     const res = await app.inject({

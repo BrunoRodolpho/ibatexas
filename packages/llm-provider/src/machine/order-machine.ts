@@ -30,6 +30,13 @@ type InternalEvent =
   | { type: "LOYALTY_LOADED"; stamps: number | null }
   | { type: "LOGIN_SUCCESS" }
   | { type: "SET_NAME"; name: string }
+  // Post-order guarded operation results (fed back by kernel after executing mutations)
+  | { type: "CANCEL_ORDER_RESULT"; success: boolean; message: string }
+  | { type: "AMEND_ORDER_RESULT"; success: boolean; message: string }
+  | { type: "REGENERATE_PIX" }  // kernel sends this when LLM proposes regenerate_pix tool
+  | { type: "PIX_REGENERATED"; success: boolean; pixQrCodeText?: string; pixQrCodeUrl?: string }
+  // Post-checkout PIX cache event (machine-controlled side effect)
+  | { type: "CACHE_PIX_DETAILS" }
 
 // All events the machine handles
 type MachineEvent = OrderEvent | InternalEvent
@@ -81,6 +88,13 @@ export const orderMachine = setup({
     checkoutFailed: ({ event }) =>
       event.type === "CHECKOUT_RESULT" && event.success === false,
     fallbackLimitReached: ({ context }) => context.fallbackCount >= 3,
+    isPixPayment: ({ context }) => context.paymentMethod === "pix",
+    hasPixDetails: ({ context }) => context.customerEmail !== null && context.customerTaxId !== null,
+    needsPixDetails: ({ context }) => context.paymentMethod === "pix" && (context.customerEmail === null || context.customerTaxId === null),
+    // Post-order mutation guards
+    canCancelOrder: ({ context }) => !!context.orderId && context.lastAction !== "cancelled",
+    canAmendOrder: ({ context }) => !!context.orderId && context.lastAction !== "cancelled",
+    hasOrderId: ({ context }) => !!context.orderId,
   },
   actions: {
     // ── Context mutations ───────────────────────────────────────────────────
@@ -167,11 +181,18 @@ export const orderMachine = setup({
     storeCheckoutResult: assign(({ event }) => {
       if (event.type !== "CHECKOUT_RESULT") return {}
       const data = event.checkoutData as Record<string, unknown> | null
+      if (!event.success) {
+        // Failed checkout — store error but don't set orderId/orderCreatedAt
+        return {
+          checkoutResult: event.checkoutData,
+          lastError: (data?.message as string) ?? "Erro no checkout",
+        }
+      }
       return {
         checkoutResult: event.checkoutData,
         orderId: (data?.orderId as string) ?? null,
         orderCreatedAt: new Date().toISOString(),
-        lastError: event.success ? null : (data?.message as string) ?? "Erro no checkout",
+        lastError: null,
       }
     }),
 
@@ -246,6 +267,54 @@ export const orderMachine = setup({
     }),
 
     resetFallbackCount: assign({ fallbackCount: 0 }),
+
+    setPixDetails: assign(({ context, event }) => {
+      if (event.type !== "SET_PIX_DETAILS") return {}
+      return {
+        customerEmail: event.email || context.customerEmail,
+        customerTaxId: event.taxId || context.customerTaxId,
+        customerName: event.fullName || context.customerName,
+      }
+    }),
+
+    storePixDetails: assign(({ context, event }) => {
+      if (event.type !== "PIX_DETAILS_COLLECTED") return {}
+      const p = (event as { payload: { name?: string; email?: string; cpf?: string } }).payload
+      return {
+        customerEmail: (p.email || context.customerEmail) ?? null,
+        customerTaxId: (p.cpf || context.customerTaxId) ?? null,
+        customerName: p.name || context.customerName,
+      }
+    }),
+
+    // ── Post-order result actions ──────────────────────────────────────────
+    storeCancelResult: assign(({ event }) => {
+      if (event.type !== "CANCEL_ORDER_RESULT") return {}
+      return {
+        lastAction: event.success ? ("cancelled" as const) : null,
+        lastError: event.success ? null : event.message,
+      }
+    }),
+
+    storeAmendResult: assign(({ event }) => {
+      if (event.type !== "AMEND_ORDER_RESULT") return {}
+      return {
+        lastAction: event.success ? ("amended" as const) : null,
+        lastError: event.success ? null : event.message,
+      }
+    }),
+
+    storePixRegenResult: assign(({ event }) => {
+      if (event.type !== "PIX_REGENERATED") return {}
+      if (!event.success) return { lastError: "Erro ao regenerar PIX." }
+      return {
+        checkoutResult: {
+          pixQrCodeText: (event as { pixQrCodeText?: string }).pixQrCodeText,
+          pixQrCodeUrl: (event as { pixQrCodeUrl?: string }).pixQrCodeUrl,
+        },
+        lastError: null,
+      }
+    }),
   },
 }).createMachine({
   id: "order",
@@ -349,6 +418,9 @@ export const orderMachine = setup({
         CHECKOUT_START: [
           { guard: "hasCartItems", target: "checkout" },
           // Cart empty — stay in browsing
+        ],
+        CONFIRM_ORDER: [
+          { guard: "hasCartItems", target: "checkout" },
         ],
         VIEW_CART: "ordering.awaiting_next",
         SET_FULFILLMENT: {
@@ -562,10 +634,10 @@ export const orderMachine = setup({
               guard: and(["hasFulfillment", "hasPaymentMethod", "isPickup"]),
               target: "confirming",
             },
-            // Both slots filled + cash → skip confirmation
+            // Both slots filled + cash → go through confirmation (same as other methods)
             {
               guard: and(["hasFulfillment", "hasPaymentMethod", "isCashPayment"]),
-              target: "processing_payment",
+              target: "confirming",
             },
             // Both slots filled + other payment → confirm
             {
@@ -591,6 +663,11 @@ export const orderMachine = setup({
               reenter: true,
             },
             SET_NAME: { actions: "setCustomerName" },
+            // CONFIRM_ORDER in selecting_slots = re-evaluate always guards (slots may have been set)
+            CONFIRM_ORDER: {
+              target: "selecting_slots",
+              reenter: true,
+            },
             CANCEL_ORDER: "#order.idle",
             UNKNOWN_INPUT: {},
           },
@@ -639,22 +716,56 @@ export const orderMachine = setup({
               target: "selecting_slots",
               actions: "setFulfillment",
             },
+            UNKNOWN_INPUT: {
+              target: "#order.ordering.awaiting_next",
+              actions: assign({
+                fulfillment: null,
+                deliveryCep: null,
+                deliveryFeeInCentavos: null,
+                deliveryEtaMinutes: null,
+              }),
+            },
           },
         },
 
         confirming: {
           on: {
-            CONFIRM_ORDER: {
-              guard: "hasValidCart",
-              target: "processing_payment",
-              actions: "setMomentumHigh",
-            },
+            CONFIRM_ORDER: [
+              {
+                // PIX with cached details → review before proceeding
+                guard: and(["hasValidCart", "isPixPayment", "hasPixDetails"]),
+                target: "reviewing_pix_details",
+                actions: "setMomentumHigh",
+              },
+              {
+                guard: and(["hasValidCart", "needsPixDetails"]),
+                target: "collecting_pix_details",
+                actions: "setMomentumHigh",
+              },
+              {
+                guard: "hasValidCart",
+                target: "processing_payment",
+                actions: "setMomentumHigh",
+              },
+            ],
             // "fechar", "finalizar" while already in confirming = same as CONFIRM_ORDER
-            CHECKOUT_START: {
-              guard: "hasValidCart",
-              target: "processing_payment",
-              actions: "setMomentumHigh",
-            },
+            CHECKOUT_START: [
+              {
+                guard: and(["hasValidCart", "isPixPayment", "hasPixDetails"]),
+                target: "reviewing_pix_details",
+                actions: "setMomentumHigh",
+              },
+              {
+                guard: and(["hasValidCart", "needsPixDetails"]),
+                target: "collecting_pix_details",
+                actions: "setMomentumHigh",
+              },
+              {
+                guard: "hasValidCart",
+                target: "processing_payment",
+                actions: "setMomentumHigh",
+              },
+            ],
             // Allow changing mind
             SET_FULFILLMENT: {
               target: "checking_delivery",
@@ -665,6 +776,77 @@ export const orderMachine = setup({
               actions: "setPayment",
               reenter: true,
             },
+          },
+        },
+
+        collecting_pix_details: {
+          on: {
+            SET_PIX_DETAILS: [
+              {
+                // Both email and CPF provided → proceed to payment
+                guard: ({ context, event }) =>
+                  !!(event.email || context.customerEmail) && !!(event.taxId || context.customerTaxId),
+                target: "processing_payment",
+                actions: ["setPixDetails", "setMomentumHigh"],
+              },
+              {
+                // Partial data — store what we have, stay here
+                actions: "setPixDetails",
+              },
+            ],
+            PIX_DETAILS_COLLECTED: [
+              {
+                guard: ({ context, event }) => {
+                  const p = (event as { payload: { name?: string; email?: string; cpf?: string } }).payload
+                  const name = p.name || context.customerName
+                  const email = p.email || context.customerEmail
+                  const cpf = p.cpf || context.customerTaxId
+                  return !!(name?.includes(" ") && email && cpf)
+                },
+                target: "reviewing_pix_details",
+                actions: "storePixDetails",
+              },
+              {
+                actions: "storePixDetails",
+              },
+            ],
+            // "sim" to confirm cached details → proceed
+            CONFIRM_ORDER: {
+              guard: "hasPixDetails",
+              target: "processing_payment",
+              actions: "setMomentumHigh",
+            },
+            // Customer switches payment method → go back to selecting_slots
+            SET_PAYMENT: {
+              target: "selecting_slots",
+              actions: "setPayment",
+              reenter: true,
+            },
+            CANCEL_ORDER: "#order.idle",
+            UNKNOWN_INPUT: {},
+          },
+        },
+
+        reviewing_pix_details: {
+          on: {
+            CONFIRM_ORDER: {
+              guard: "hasPixDetails",
+              target: "processing_payment",
+              actions: "setMomentumHigh",
+            },
+            PIX_DETAILS_COLLECTED: {
+              target: "collecting_pix_details",
+              actions: "storePixDetails",
+            },
+            UNKNOWN_INPUT: {
+              target: "collecting_pix_details",
+            },
+            SET_PAYMENT: {
+              target: "selecting_slots",
+              actions: "setPayment",
+              reenter: true,
+            },
+            CANCEL_ORDER: "#order.idle",
           },
         },
 
@@ -695,6 +877,9 @@ export const orderMachine = setup({
           // The synthesizer checks ctx.paymentMethod to decide which variant
           // (pix/card/cash) prompt to render.
           on: {
+            // CACHE_PIX_DETAILS is a fire-and-forget signal — the kernel handles
+            // the actual cachePixDetails() call. Machine accepts and stays.
+            CACHE_PIX_DETAILS: {},
             LOYALTY_LOADED: {
               actions: "storeLoyalty",
               target: "#order.post_order",
@@ -707,45 +892,123 @@ export const orderMachine = setup({
       },
     },
 
-    // ── POST ORDER ───────────────────────────────────────────────────────────
+    // ── POST ORDER (compound — guarded mutations) ─────────────────────────
     post_order: {
+      initial: "idle",
+
+      // Common transitions from any post_order sub-state
       on: {
-        ASK_LOYALTY: "loyalty_check",
-        ASK_ORDER_STATUS: {
-          // Stay in post_order — LLM calls check_order_status tool
-        },
-        CANCEL_ORDER: {
-          // Stay in post_order — LLM calls cancel_order tool which checks PONR.
-          // On success → LLM confirms cancellation.
-          // On failure (past PONR) → LLM explains "já começamos a preparar".
-        },
-        CANCEL_ITEM: {
-          // Orchestrator checks per-item PONR, cancels item
-        },
-        AMEND_ORDER_ADD: {
-          // Orchestrator adds item to existing order (no PONR unless in_delivery)
-        },
-        AMEND_ORDER_REMOVE: {
-          // Orchestrator checks per-item PONR, removes item
-        },
-        SET_PAYMENT: {
-          // Stay in post_order — LLM calls amend_order with change_payment
-          actions: "setPayment",
-        },
+        ASK_LOYALTY: "#order.loyalty_check",
         START_ORDER: {
-          target: "browsing",
+          target: "#order.browsing",
           actions: "clearCart",
-        },
-        ADD_ITEM: {
-          // Stay in post_order — LLM uses search_products + amend_order
-          actions: ["setPendingProduct"],
         },
         GREETING: {
-          target: "idle",
+          target: "#order.idle",
           actions: "clearCart",
         },
-        UNKNOWN_INPUT: {
-          // Stay — synthesizer prompts if customer needs more
+      },
+
+      states: {
+        // Normal post-order state — LLM has read-only tools
+        idle: {
+          on: {
+            ASK_ORDER_STATUS: {
+              // Stay — LLM calls check_order_status (read-only)
+            },
+            CANCEL_ORDER: [
+              {
+                guard: "canCancelOrder",
+                target: "cancelling",
+              },
+              {
+                // Order already cancelled or no orderId — stay, synthesizer explains
+              },
+            ],
+            AMEND_ORDER_ADD: [
+              {
+                guard: "canAmendOrder",
+                target: "amending",
+              },
+            ],
+            AMEND_ORDER_REMOVE: [
+              {
+                guard: "canAmendOrder",
+                target: "amending",
+              },
+            ],
+            CANCEL_ITEM: [
+              {
+                guard: "canAmendOrder",
+                target: "amending",
+              },
+            ],
+            // PIX regeneration — guarded by hasOrderId
+            // Kernel intercepts regenerate_pix tool intent and sends REGENERATE_PIX
+            REGENERATE_PIX: [
+              {
+                guard: "hasOrderId",
+                target: "regenerating_pix",
+              },
+            ],
+            SET_PAYMENT: {
+              actions: "setPayment",
+            },
+            ADD_ITEM: {
+              actions: ["setPendingProduct"],
+            },
+            UNKNOWN_INPUT: {
+              // Stay — synthesizer prompts if customer needs more
+            },
+          },
+        },
+
+        // Kernel executes cancel_order tool, feeds CANCEL_ORDER_RESULT back
+        cancelling: {
+          after: {
+            15000: {
+              target: "idle",
+              actions: assign({ lastError: "Tempo esgotado ao cancelar. Tente novamente." }),
+            },
+          },
+          on: {
+            CANCEL_ORDER_RESULT: {
+              target: "idle",
+              actions: "storeCancelResult",
+            },
+          },
+        },
+
+        // Kernel executes amend_order tool, feeds AMEND_ORDER_RESULT back
+        amending: {
+          after: {
+            15000: {
+              target: "idle",
+              actions: assign({ lastError: "Tempo esgotado ao alterar pedido. Tente novamente." }),
+            },
+          },
+          on: {
+            AMEND_ORDER_RESULT: {
+              target: "idle",
+              actions: "storeAmendResult",
+            },
+          },
+        },
+
+        // Kernel regenerates PIX QR code, feeds PIX_REGENERATED back
+        regenerating_pix: {
+          after: {
+            15000: {
+              target: "idle",
+              actions: assign({ lastError: "Tempo esgotado ao regenerar PIX. Tente novamente." }),
+            },
+          },
+          on: {
+            PIX_REGENERATED: {
+              target: "idle",
+              actions: "storePixRegenResult",
+            },
+          },
         },
       },
     },
@@ -767,9 +1030,13 @@ export const orderMachine = setup({
       },
     },
 
-    // ── SUPPORT (terminal — handoff to human) ────────────────────────────────
+    // ── SUPPORT (handoff to human — not final, customer can return) ──────────
     support: {
-      type: "final",
+      on: {
+        GREETING: {
+          target: "idle",
+        },
+      },
     },
 
     // ── LOYALTY CHECK ────────────────────────────────────────────────────────
@@ -868,7 +1135,7 @@ export function getStateString(snapshot: { value: unknown }): string {
       }
     }
   }
-  return "fallback"
+  return "__unknown__"
 }
 
 // ── Checkout state detection ──────────────────────────────────────────────────

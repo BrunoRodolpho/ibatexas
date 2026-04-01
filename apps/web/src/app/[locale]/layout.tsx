@@ -10,6 +10,7 @@ import { ToastProvider } from "@/components/ToastProvider"
 import { PostHogProvider } from "@/components/PostHogProvider"
 import { ClientOverlays } from './ClientOverlays'
 import { CookieConsentBanner } from '@/components/molecules/CookieConsentBanner'
+import { JsonLd } from '@/components/atoms'
 
 const inter = Inter({
   subsets: ["latin"],
@@ -45,6 +46,15 @@ export default async function LocaleLayout({
   return (
     <html lang={locale}>
         <body className={`${inter.variable} ${playfair.variable} font-sans flex min-h-screen flex-col bg-smoke-50 text-charcoal-900 antialiased`}>
+        <JsonLd
+          data={{
+            '@context': 'https://schema.org',
+            '@type': 'Organization',
+            name: 'IbateXas',
+            url: 'https://ibatexas.com.br',
+            description: 'Churrascaria e restaurante em Ibaté, SP',
+          }}
+        />
         <NextIntlClientProvider messages={messages}>
           <PostHogProvider>
             <a

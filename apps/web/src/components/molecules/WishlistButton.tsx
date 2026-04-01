@@ -55,7 +55,7 @@ export function WishlistButton({ productId, className, size = 'md' }: WishlistBu
           'transition-colors duration-300',
           isFavorite
             ? 'fill-accent-red text-accent-red'
-            : 'fill-none text-smoke-400',
+            : 'fill-none text-[var(--color-text-secondary)]',
         )}
       />
     </button>

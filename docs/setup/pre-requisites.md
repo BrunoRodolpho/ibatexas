@@ -52,7 +52,7 @@ ibx bootstrap --skip-seed      # Only run migrations, skip seeds
 Bootstrap sets up the database but does **not** start Medusa or the app services. Run:
 
 ```bash
-ibx dev start                  # Start Medusa + apps
+ibx dev start                  # Start all services (TUI)
 ibx db seed                    # Seed Medusa products (requires Medusa running)
 ibx db seed:homepage           # Seed customers + reviews (requires Medusa running)
 ibx db reindex                 # Index products into Typesense

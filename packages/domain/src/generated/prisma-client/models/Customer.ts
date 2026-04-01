@@ -29,6 +29,7 @@ export type CustomerMinAggregateOutputType = {
   phone: string | null
   name: string | null
   email: string | null
+  cpf: string | null
   medusaId: string | null
   source: string | null
   firstContactAt: Date | null
@@ -41,6 +42,7 @@ export type CustomerMaxAggregateOutputType = {
   phone: string | null
   name: string | null
   email: string | null
+  cpf: string | null
   medusaId: string | null
   source: string | null
   firstContactAt: Date | null
@@ -53,6 +55,7 @@ export type CustomerCountAggregateOutputType = {
   phone: number
   name: number
   email: number
+  cpf: number
   medusaId: number
   source: number
   firstContactAt: number
@@ -67,6 +70,7 @@ export type CustomerMinAggregateInputType = {
   phone?: true
   name?: true
   email?: true
+  cpf?: true
   medusaId?: true
   source?: true
   firstContactAt?: true
@@ -79,6 +83,7 @@ export type CustomerMaxAggregateInputType = {
   phone?: true
   name?: true
   email?: true
+  cpf?: true
   medusaId?: true
   source?: true
   firstContactAt?: true
@@ -91,6 +96,7 @@ export type CustomerCountAggregateInputType = {
   phone?: true
   name?: true
   email?: true
+  cpf?: true
   medusaId?: true
   source?: true
   firstContactAt?: true
@@ -176,6 +182,7 @@ export type CustomerGroupByOutputType = {
   phone: string
   name: string | null
   email: string | null
+  cpf: string | null
   medusaId: string | null
   source: string | null
   firstContactAt: Date | null
@@ -186,7 +193,7 @@ export type CustomerGroupByOutputType = {
   _max: CustomerMaxAggregateOutputType | null
 }
 
-type GetCustomerGroupByPayload<T extends CustomerGroupByArgs> = Prisma.PrismaPromise<
+export type GetCustomerGroupByPayload<T extends CustomerGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<CustomerGroupByOutputType, T['by']> &
       {
@@ -209,6 +216,7 @@ export type CustomerWhereInput = {
   phone?: Prisma.StringFilter<"Customer"> | string
   name?: Prisma.StringNullableFilter<"Customer"> | string | null
   email?: Prisma.StringNullableFilter<"Customer"> | string | null
+  cpf?: Prisma.StringNullableFilter<"Customer"> | string | null
   medusaId?: Prisma.StringNullableFilter<"Customer"> | string | null
   source?: Prisma.StringNullableFilter<"Customer"> | string | null
   firstContactAt?: Prisma.DateTimeNullableFilter<"Customer"> | Date | string | null
@@ -219,6 +227,8 @@ export type CustomerWhereInput = {
   reviews?: Prisma.ReviewListRelationFilter
   orderItems?: Prisma.CustomerOrderItemListRelationFilter
   reservations?: Prisma.ReservationListRelationFilter
+  loyaltyAccount?: Prisma.XOR<Prisma.LoyaltyAccountNullableScalarRelationFilter, Prisma.LoyaltyAccountWhereInput> | null
+  conversations?: Prisma.ConversationListRelationFilter
 }
 
 export type CustomerOrderByWithRelationInput = {
@@ -226,6 +236,7 @@ export type CustomerOrderByWithRelationInput = {
   phone?: Prisma.SortOrder
   name?: Prisma.SortOrderInput | Prisma.SortOrder
   email?: Prisma.SortOrderInput | Prisma.SortOrder
+  cpf?: Prisma.SortOrderInput | Prisma.SortOrder
   medusaId?: Prisma.SortOrderInput | Prisma.SortOrder
   source?: Prisma.SortOrderInput | Prisma.SortOrder
   firstContactAt?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -236,6 +247,8 @@ export type CustomerOrderByWithRelationInput = {
   reviews?: Prisma.ReviewOrderByRelationAggregateInput
   orderItems?: Prisma.CustomerOrderItemOrderByRelationAggregateInput
   reservations?: Prisma.ReservationOrderByRelationAggregateInput
+  loyaltyAccount?: Prisma.LoyaltyAccountOrderByWithRelationInput
+  conversations?: Prisma.ConversationOrderByRelationAggregateInput
 }
 
 export type CustomerWhereUniqueInput = Prisma.AtLeast<{
@@ -247,6 +260,7 @@ export type CustomerWhereUniqueInput = Prisma.AtLeast<{
   NOT?: Prisma.CustomerWhereInput | Prisma.CustomerWhereInput[]
   name?: Prisma.StringNullableFilter<"Customer"> | string | null
   email?: Prisma.StringNullableFilter<"Customer"> | string | null
+  cpf?: Prisma.StringNullableFilter<"Customer"> | string | null
   source?: Prisma.StringNullableFilter<"Customer"> | string | null
   firstContactAt?: Prisma.DateTimeNullableFilter<"Customer"> | Date | string | null
   createdAt?: Prisma.DateTimeFilter<"Customer"> | Date | string
@@ -256,6 +270,8 @@ export type CustomerWhereUniqueInput = Prisma.AtLeast<{
   reviews?: Prisma.ReviewListRelationFilter
   orderItems?: Prisma.CustomerOrderItemListRelationFilter
   reservations?: Prisma.ReservationListRelationFilter
+  loyaltyAccount?: Prisma.XOR<Prisma.LoyaltyAccountNullableScalarRelationFilter, Prisma.LoyaltyAccountWhereInput> | null
+  conversations?: Prisma.ConversationListRelationFilter
 }, "id" | "phone" | "medusaId">
 
 export type CustomerOrderByWithAggregationInput = {
@@ -263,6 +279,7 @@ export type CustomerOrderByWithAggregationInput = {
   phone?: Prisma.SortOrder
   name?: Prisma.SortOrderInput | Prisma.SortOrder
   email?: Prisma.SortOrderInput | Prisma.SortOrder
+  cpf?: Prisma.SortOrderInput | Prisma.SortOrder
   medusaId?: Prisma.SortOrderInput | Prisma.SortOrder
   source?: Prisma.SortOrderInput | Prisma.SortOrder
   firstContactAt?: Prisma.SortOrderInput | Prisma.SortOrder
@@ -281,6 +298,7 @@ export type CustomerScalarWhereWithAggregatesInput = {
   phone?: Prisma.StringWithAggregatesFilter<"Customer"> | string
   name?: Prisma.StringNullableWithAggregatesFilter<"Customer"> | string | null
   email?: Prisma.StringNullableWithAggregatesFilter<"Customer"> | string | null
+  cpf?: Prisma.StringNullableWithAggregatesFilter<"Customer"> | string | null
   medusaId?: Prisma.StringNullableWithAggregatesFilter<"Customer"> | string | null
   source?: Prisma.StringNullableWithAggregatesFilter<"Customer"> | string | null
   firstContactAt?: Prisma.DateTimeNullableWithAggregatesFilter<"Customer"> | Date | string | null
@@ -293,6 +311,7 @@ export type CustomerCreateInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -303,6 +322,8 @@ export type CustomerCreateInput = {
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerUncheckedCreateInput = {
@@ -310,6 +331,7 @@ export type CustomerUncheckedCreateInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -320,6 +342,8 @@ export type CustomerUncheckedCreateInput = {
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerUpdateInput = {
@@ -327,6 +351,7 @@ export type CustomerUpdateInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -337,6 +362,8 @@ export type CustomerUpdateInput = {
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerUncheckedUpdateInput = {
@@ -344,6 +371,7 @@ export type CustomerUncheckedUpdateInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -354,6 +382,8 @@ export type CustomerUncheckedUpdateInput = {
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerCreateManyInput = {
@@ -361,6 +391,7 @@ export type CustomerCreateManyInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -373,6 +404,7 @@ export type CustomerUpdateManyMutationInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -385,6 +417,7 @@ export type CustomerUncheckedUpdateManyInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -407,6 +440,7 @@ export type CustomerCountOrderByAggregateInput = {
   phone?: Prisma.SortOrder
   name?: Prisma.SortOrder
   email?: Prisma.SortOrder
+  cpf?: Prisma.SortOrder
   medusaId?: Prisma.SortOrder
   source?: Prisma.SortOrder
   firstContactAt?: Prisma.SortOrder
@@ -419,6 +453,7 @@ export type CustomerMaxOrderByAggregateInput = {
   phone?: Prisma.SortOrder
   name?: Prisma.SortOrder
   email?: Prisma.SortOrder
+  cpf?: Prisma.SortOrder
   medusaId?: Prisma.SortOrder
   source?: Prisma.SortOrder
   firstContactAt?: Prisma.SortOrder
@@ -431,6 +466,7 @@ export type CustomerMinOrderByAggregateInput = {
   phone?: Prisma.SortOrder
   name?: Prisma.SortOrder
   email?: Prisma.SortOrder
+  cpf?: Prisma.SortOrder
   medusaId?: Prisma.SortOrder
   source?: Prisma.SortOrder
   firstContactAt?: Prisma.SortOrder
@@ -512,11 +548,42 @@ export type CustomerUpdateOneWithoutOrderItemsNestedInput = {
   update?: Prisma.XOR<Prisma.XOR<Prisma.CustomerUpdateToOneWithWhereWithoutOrderItemsInput, Prisma.CustomerUpdateWithoutOrderItemsInput>, Prisma.CustomerUncheckedUpdateWithoutOrderItemsInput>
 }
 
+export type CustomerCreateNestedOneWithoutLoyaltyAccountInput = {
+  create?: Prisma.XOR<Prisma.CustomerCreateWithoutLoyaltyAccountInput, Prisma.CustomerUncheckedCreateWithoutLoyaltyAccountInput>
+  connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutLoyaltyAccountInput
+  connect?: Prisma.CustomerWhereUniqueInput
+}
+
+export type CustomerUpdateOneRequiredWithoutLoyaltyAccountNestedInput = {
+  create?: Prisma.XOR<Prisma.CustomerCreateWithoutLoyaltyAccountInput, Prisma.CustomerUncheckedCreateWithoutLoyaltyAccountInput>
+  connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutLoyaltyAccountInput
+  upsert?: Prisma.CustomerUpsertWithoutLoyaltyAccountInput
+  connect?: Prisma.CustomerWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.CustomerUpdateToOneWithWhereWithoutLoyaltyAccountInput, Prisma.CustomerUpdateWithoutLoyaltyAccountInput>, Prisma.CustomerUncheckedUpdateWithoutLoyaltyAccountInput>
+}
+
+export type CustomerCreateNestedOneWithoutConversationsInput = {
+  create?: Prisma.XOR<Prisma.CustomerCreateWithoutConversationsInput, Prisma.CustomerUncheckedCreateWithoutConversationsInput>
+  connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutConversationsInput
+  connect?: Prisma.CustomerWhereUniqueInput
+}
+
+export type CustomerUpdateOneWithoutConversationsNestedInput = {
+  create?: Prisma.XOR<Prisma.CustomerCreateWithoutConversationsInput, Prisma.CustomerUncheckedCreateWithoutConversationsInput>
+  connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutConversationsInput
+  upsert?: Prisma.CustomerUpsertWithoutConversationsInput
+  disconnect?: Prisma.CustomerWhereInput | boolean
+  delete?: Prisma.CustomerWhereInput | boolean
+  connect?: Prisma.CustomerWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.CustomerUpdateToOneWithWhereWithoutConversationsInput, Prisma.CustomerUpdateWithoutConversationsInput>, Prisma.CustomerUncheckedUpdateWithoutConversationsInput>
+}
+
 export type CustomerCreateWithoutReservationsInput = {
   id?: string
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -526,6 +593,8 @@ export type CustomerCreateWithoutReservationsInput = {
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerUncheckedCreateWithoutReservationsInput = {
@@ -533,6 +602,7 @@ export type CustomerUncheckedCreateWithoutReservationsInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -542,6 +612,8 @@ export type CustomerUncheckedCreateWithoutReservationsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerCreateOrConnectWithoutReservationsInput = {
@@ -565,6 +637,7 @@ export type CustomerUpdateWithoutReservationsInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -574,6 +647,8 @@ export type CustomerUpdateWithoutReservationsInput = {
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerUncheckedUpdateWithoutReservationsInput = {
@@ -581,6 +656,7 @@ export type CustomerUncheckedUpdateWithoutReservationsInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -590,6 +666,8 @@ export type CustomerUncheckedUpdateWithoutReservationsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerCreateWithoutReviewsInput = {
@@ -597,6 +675,7 @@ export type CustomerCreateWithoutReviewsInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -606,6 +685,8 @@ export type CustomerCreateWithoutReviewsInput = {
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerUncheckedCreateWithoutReviewsInput = {
@@ -613,6 +694,7 @@ export type CustomerUncheckedCreateWithoutReviewsInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -622,6 +704,8 @@ export type CustomerUncheckedCreateWithoutReviewsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerCreateOrConnectWithoutReviewsInput = {
@@ -645,6 +729,7 @@ export type CustomerUpdateWithoutReviewsInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -654,6 +739,8 @@ export type CustomerUpdateWithoutReviewsInput = {
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerUncheckedUpdateWithoutReviewsInput = {
@@ -661,6 +748,7 @@ export type CustomerUncheckedUpdateWithoutReviewsInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -670,6 +758,8 @@ export type CustomerUncheckedUpdateWithoutReviewsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerCreateWithoutAddressesInput = {
@@ -677,6 +767,7 @@ export type CustomerCreateWithoutAddressesInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -686,6 +777,8 @@ export type CustomerCreateWithoutAddressesInput = {
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerUncheckedCreateWithoutAddressesInput = {
@@ -693,6 +786,7 @@ export type CustomerUncheckedCreateWithoutAddressesInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -702,6 +796,8 @@ export type CustomerUncheckedCreateWithoutAddressesInput = {
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerCreateOrConnectWithoutAddressesInput = {
@@ -725,6 +821,7 @@ export type CustomerUpdateWithoutAddressesInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -734,6 +831,8 @@ export type CustomerUpdateWithoutAddressesInput = {
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerUncheckedUpdateWithoutAddressesInput = {
@@ -741,6 +840,7 @@ export type CustomerUncheckedUpdateWithoutAddressesInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -750,6 +850,8 @@ export type CustomerUncheckedUpdateWithoutAddressesInput = {
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerCreateWithoutPreferencesInput = {
@@ -757,6 +859,7 @@ export type CustomerCreateWithoutPreferencesInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -766,6 +869,8 @@ export type CustomerCreateWithoutPreferencesInput = {
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerUncheckedCreateWithoutPreferencesInput = {
@@ -773,6 +878,7 @@ export type CustomerUncheckedCreateWithoutPreferencesInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -782,6 +888,8 @@ export type CustomerUncheckedCreateWithoutPreferencesInput = {
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerCreateOrConnectWithoutPreferencesInput = {
@@ -805,6 +913,7 @@ export type CustomerUpdateWithoutPreferencesInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -814,6 +923,8 @@ export type CustomerUpdateWithoutPreferencesInput = {
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerUncheckedUpdateWithoutPreferencesInput = {
@@ -821,6 +932,7 @@ export type CustomerUncheckedUpdateWithoutPreferencesInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -830,6 +942,8 @@ export type CustomerUncheckedUpdateWithoutPreferencesInput = {
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerCreateWithoutOrderItemsInput = {
@@ -837,6 +951,7 @@ export type CustomerCreateWithoutOrderItemsInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -846,6 +961,8 @@ export type CustomerCreateWithoutOrderItemsInput = {
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerUncheckedCreateWithoutOrderItemsInput = {
@@ -853,6 +970,7 @@ export type CustomerUncheckedCreateWithoutOrderItemsInput = {
   phone: string
   name?: string | null
   email?: string | null
+  cpf?: string | null
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
@@ -862,6 +980,8 @@ export type CustomerUncheckedCreateWithoutOrderItemsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
 
 export type CustomerCreateOrConnectWithoutOrderItemsInput = {
@@ -885,6 +1005,7 @@ export type CustomerUpdateWithoutOrderItemsInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -894,6 +1015,8 @@ export type CustomerUpdateWithoutOrderItemsInput = {
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
 
 export type CustomerUncheckedUpdateWithoutOrderItemsInput = {
@@ -901,6 +1024,7 @@ export type CustomerUncheckedUpdateWithoutOrderItemsInput = {
   phone?: Prisma.StringFieldUpdateOperationsInput | string
   name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
@@ -910,6 +1034,192 @@ export type CustomerUncheckedUpdateWithoutOrderItemsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
+}
+
+export type CustomerCreateWithoutLoyaltyAccountInput = {
+  id?: string
+  phone: string
+  name?: string | null
+  email?: string | null
+  cpf?: string | null
+  medusaId?: string | null
+  source?: string | null
+  firstContactAt?: Date | string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
+  preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
+  reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
+  orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
+}
+
+export type CustomerUncheckedCreateWithoutLoyaltyAccountInput = {
+  id?: string
+  phone: string
+  name?: string | null
+  email?: string | null
+  cpf?: string | null
+  medusaId?: string | null
+  source?: string | null
+  firstContactAt?: Date | string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
+  preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
+  reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
+  orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
+}
+
+export type CustomerCreateOrConnectWithoutLoyaltyAccountInput = {
+  where: Prisma.CustomerWhereUniqueInput
+  create: Prisma.XOR<Prisma.CustomerCreateWithoutLoyaltyAccountInput, Prisma.CustomerUncheckedCreateWithoutLoyaltyAccountInput>
+}
+
+export type CustomerUpsertWithoutLoyaltyAccountInput = {
+  update: Prisma.XOR<Prisma.CustomerUpdateWithoutLoyaltyAccountInput, Prisma.CustomerUncheckedUpdateWithoutLoyaltyAccountInput>
+  create: Prisma.XOR<Prisma.CustomerCreateWithoutLoyaltyAccountInput, Prisma.CustomerUncheckedCreateWithoutLoyaltyAccountInput>
+  where?: Prisma.CustomerWhereInput
+}
+
+export type CustomerUpdateToOneWithWhereWithoutLoyaltyAccountInput = {
+  where?: Prisma.CustomerWhereInput
+  data: Prisma.XOR<Prisma.CustomerUpdateWithoutLoyaltyAccountInput, Prisma.CustomerUncheckedUpdateWithoutLoyaltyAccountInput>
+}
+
+export type CustomerUpdateWithoutLoyaltyAccountInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
+  preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
+  reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
+  orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
+}
+
+export type CustomerUncheckedUpdateWithoutLoyaltyAccountInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
+  preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
+  reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
+  orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
+}
+
+export type CustomerCreateWithoutConversationsInput = {
+  id?: string
+  phone: string
+  name?: string | null
+  email?: string | null
+  cpf?: string | null
+  medusaId?: string | null
+  source?: string | null
+  firstContactAt?: Date | string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
+  preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
+  reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
+  orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+}
+
+export type CustomerUncheckedCreateWithoutConversationsInput = {
+  id?: string
+  phone: string
+  name?: string | null
+  email?: string | null
+  cpf?: string | null
+  medusaId?: string | null
+  source?: string | null
+  firstContactAt?: Date | string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
+  preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
+  reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
+  orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+}
+
+export type CustomerCreateOrConnectWithoutConversationsInput = {
+  where: Prisma.CustomerWhereUniqueInput
+  create: Prisma.XOR<Prisma.CustomerCreateWithoutConversationsInput, Prisma.CustomerUncheckedCreateWithoutConversationsInput>
+}
+
+export type CustomerUpsertWithoutConversationsInput = {
+  update: Prisma.XOR<Prisma.CustomerUpdateWithoutConversationsInput, Prisma.CustomerUncheckedUpdateWithoutConversationsInput>
+  create: Prisma.XOR<Prisma.CustomerCreateWithoutConversationsInput, Prisma.CustomerUncheckedCreateWithoutConversationsInput>
+  where?: Prisma.CustomerWhereInput
+}
+
+export type CustomerUpdateToOneWithWhereWithoutConversationsInput = {
+  where?: Prisma.CustomerWhereInput
+  data: Prisma.XOR<Prisma.CustomerUpdateWithoutConversationsInput, Prisma.CustomerUncheckedUpdateWithoutConversationsInput>
+}
+
+export type CustomerUpdateWithoutConversationsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
+  preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
+  reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
+  orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+}
+
+export type CustomerUncheckedUpdateWithoutConversationsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
+  preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
+  reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
+  orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
 }
 
 
@@ -922,6 +1232,7 @@ export type CustomerCountOutputType = {
   reviews: number
   orderItems: number
   reservations: number
+  conversations: number
 }
 
 export type CustomerCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -929,6 +1240,7 @@ export type CustomerCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensio
   reviews?: boolean | CustomerCountOutputTypeCountReviewsArgs
   orderItems?: boolean | CustomerCountOutputTypeCountOrderItemsArgs
   reservations?: boolean | CustomerCountOutputTypeCountReservationsArgs
+  conversations?: boolean | CustomerCountOutputTypeCountConversationsArgs
 }
 
 /**
@@ -969,12 +1281,20 @@ export type CustomerCountOutputTypeCountReservationsArgs<ExtArgs extends runtime
   where?: Prisma.ReservationWhereInput
 }
 
+/**
+ * CustomerCountOutputType without action
+ */
+export type CustomerCountOutputTypeCountConversationsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.ConversationWhereInput
+}
+
 
 export type CustomerSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
   id?: boolean
   phone?: boolean
   name?: boolean
   email?: boolean
+  cpf?: boolean
   medusaId?: boolean
   source?: boolean
   firstContactAt?: boolean
@@ -985,6 +1305,8 @@ export type CustomerSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs
   reviews?: boolean | Prisma.Customer$reviewsArgs<ExtArgs>
   orderItems?: boolean | Prisma.Customer$orderItemsArgs<ExtArgs>
   reservations?: boolean | Prisma.Customer$reservationsArgs<ExtArgs>
+  loyaltyAccount?: boolean | Prisma.Customer$loyaltyAccountArgs<ExtArgs>
+  conversations?: boolean | Prisma.Customer$conversationsArgs<ExtArgs>
   _count?: boolean | Prisma.CustomerCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["customer"]>
 
@@ -993,6 +1315,7 @@ export type CustomerSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exte
   phone?: boolean
   name?: boolean
   email?: boolean
+  cpf?: boolean
   medusaId?: boolean
   source?: boolean
   firstContactAt?: boolean
@@ -1005,6 +1328,7 @@ export type CustomerSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exte
   phone?: boolean
   name?: boolean
   email?: boolean
+  cpf?: boolean
   medusaId?: boolean
   source?: boolean
   firstContactAt?: boolean
@@ -1017,6 +1341,7 @@ export type CustomerSelectScalar = {
   phone?: boolean
   name?: boolean
   email?: boolean
+  cpf?: boolean
   medusaId?: boolean
   source?: boolean
   firstContactAt?: boolean
@@ -1024,13 +1349,15 @@ export type CustomerSelectScalar = {
   updatedAt?: boolean
 }
 
-export type CustomerOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "phone" | "name" | "email" | "medusaId" | "source" | "firstContactAt" | "createdAt" | "updatedAt", ExtArgs["result"]["customer"]>
+export type CustomerOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "phone" | "name" | "email" | "cpf" | "medusaId" | "source" | "firstContactAt" | "createdAt" | "updatedAt", ExtArgs["result"]["customer"]>
 export type CustomerInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   addresses?: boolean | Prisma.Customer$addressesArgs<ExtArgs>
   preferences?: boolean | Prisma.Customer$preferencesArgs<ExtArgs>
   reviews?: boolean | Prisma.Customer$reviewsArgs<ExtArgs>
   orderItems?: boolean | Prisma.Customer$orderItemsArgs<ExtArgs>
   reservations?: boolean | Prisma.Customer$reservationsArgs<ExtArgs>
+  loyaltyAccount?: boolean | Prisma.Customer$loyaltyAccountArgs<ExtArgs>
+  conversations?: boolean | Prisma.Customer$conversationsArgs<ExtArgs>
   _count?: boolean | Prisma.CustomerCountOutputTypeDefaultArgs<ExtArgs>
 }
 export type CustomerIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {}
@@ -1044,12 +1371,15 @@ export type $CustomerPayload<ExtArgs extends runtime.Types.Extensions.InternalAr
     reviews: Prisma.$ReviewPayload<ExtArgs>[]
     orderItems: Prisma.$CustomerOrderItemPayload<ExtArgs>[]
     reservations: Prisma.$ReservationPayload<ExtArgs>[]
+    loyaltyAccount: Prisma.$LoyaltyAccountPayload<ExtArgs> | null
+    conversations: Prisma.$ConversationPayload<ExtArgs>[]
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
     phone: string
     name: string | null
     email: string | null
+    cpf: string | null
     medusaId: string | null
     /**
      * Origin channel: 'web' | 'whatsapp'
@@ -1460,6 +1790,8 @@ export interface Prisma__CustomerClient<T, Null = never, ExtArgs extends runtime
   reviews<T extends Prisma.Customer$reviewsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$reviewsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ReviewPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   orderItems<T extends Prisma.Customer$orderItemsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$orderItemsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$CustomerOrderItemPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   reservations<T extends Prisma.Customer$reservationsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$reservationsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ReservationPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  loyaltyAccount<T extends Prisma.Customer$loyaltyAccountArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$loyaltyAccountArgs<ExtArgs>>): Prisma.Prisma__LoyaltyAccountClient<runtime.Types.Result.GetResult<Prisma.$LoyaltyAccountPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
+  conversations<T extends Prisma.Customer$conversationsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$conversationsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ConversationPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -1493,6 +1825,7 @@ export interface CustomerFieldRefs {
   readonly phone: Prisma.FieldRef<"Customer", 'String'>
   readonly name: Prisma.FieldRef<"Customer", 'String'>
   readonly email: Prisma.FieldRef<"Customer", 'String'>
+  readonly cpf: Prisma.FieldRef<"Customer", 'String'>
   readonly medusaId: Prisma.FieldRef<"Customer", 'String'>
   readonly source: Prisma.FieldRef<"Customer", 'String'>
   readonly firstContactAt: Prisma.FieldRef<"Customer", 'DateTime'>
@@ -2003,6 +2336,49 @@ export type Customer$reservationsArgs<ExtArgs extends runtime.Types.Extensions.I
   take?: number
   skip?: number
   distinct?: Prisma.ReservationScalarFieldEnum | Prisma.ReservationScalarFieldEnum[]
+}
+
+/**
+ * Customer.loyaltyAccount
+ */
+export type Customer$loyaltyAccountArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the LoyaltyAccount
+   */
+  select?: Prisma.LoyaltyAccountSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the LoyaltyAccount
+   */
+  omit?: Prisma.LoyaltyAccountOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.LoyaltyAccountInclude<ExtArgs> | null
+  where?: Prisma.LoyaltyAccountWhereInput
+}
+
+/**
+ * Customer.conversations
+ */
+export type Customer$conversationsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the Conversation
+   */
+  select?: Prisma.ConversationSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the Conversation
+   */
+  omit?: Prisma.ConversationOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.ConversationInclude<ExtArgs> | null
+  where?: Prisma.ConversationWhereInput
+  orderBy?: Prisma.ConversationOrderByWithRelationInput | Prisma.ConversationOrderByWithRelationInput[]
+  cursor?: Prisma.ConversationWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.ConversationScalarFieldEnum | Prisma.ConversationScalarFieldEnum[]
 }
 
 /**

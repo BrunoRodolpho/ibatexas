@@ -6,6 +6,15 @@ import { DataTable } from '../atoms/DataTable'
 import { Badge } from '../atoms/Badge'
 import { FilterChip } from '../molecules/FilterChip'
 import type { OrderSummary } from '@ibatexas/types'
+import {
+  ORDER_STATUS_LABELS,
+  ORDER_STATUS_FILTERS,
+  ORDER_COLUMN_HEADERS,
+  PAGE_TITLES,
+  ACTION_LABELS,
+  EMPTY_STATES,
+  MISC_LABELS,
+} from '../constants/admin-labels'
 
 const col = createColumnHelper<OrderSummary>()
 
@@ -19,16 +28,7 @@ function maskPhone(email: string) {
   return email.slice(0, 3) + '***' + email.slice(-3)
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  pending: 'pendente',
-  confirmed: 'confirmado',
-  preparing: 'preparando',
-  ready: 'pronto',
-  delivered: 'entregue',
-  canceled: 'cancelado',
-  completed: 'concluído',
-  requires_action: 'ação necessária',
-}
+const STATUS_LABELS = ORDER_STATUS_LABELS
 
 function statusVariant(status: string): 'success' | 'warning' | 'danger' | 'default' {
   const map: Record<string, 'success' | 'warning' | 'danger' | 'default'> = {
@@ -52,15 +52,7 @@ function statusBadge(status: string) {
   )
 }
 
-const STATUS_FILTERS = [
-  { id: '', label: 'Todos' },
-  { id: 'pending', label: 'Pendente' },
-  { id: 'confirmed', label: 'Confirmado' },
-  { id: 'preparing', label: 'Preparando' },
-  { id: 'ready', label: 'Pronto' },
-  { id: 'delivered', label: 'Entregue' },
-  { id: 'canceled', label: 'Cancelado' },
-] as const
+const STATUS_FILTERS = ORDER_STATUS_FILTERS
 
 export interface AdminPedidosPageProps {
   orders: OrderSummary[]
@@ -70,6 +62,8 @@ export interface AdminPedidosPageProps {
   statusFilter: string
   onStatusFilter: (status: string) => void
   onPageChange: (page: number) => void
+  onSuccess?: (msg: string) => void
+  onError?: (msg: string) => void
 }
 
 export function AdminPedidosPage({
@@ -83,31 +77,31 @@ export function AdminPedidosPage({
 }: Readonly<AdminPedidosPageProps>) {
   const columns = [
     col.accessor('displayId', {
-      header: 'Pedido #',
+      header: ORDER_COLUMN_HEADERS.displayId,
       cell: (i) => `#${i.getValue()}`,
     }),
     col.accessor('customerEmail', {
-      header: 'Cliente',
+      header: ORDER_COLUMN_HEADERS.customer,
       cell: (i) => maskPhone(i.getValue() as string),
     }),
     col.accessor('itemCount', {
-      header: 'Itens',
-      cell: (i) => `${i.getValue()} item(s)`,
+      header: ORDER_COLUMN_HEADERS.items,
+      cell: (i) => MISC_LABELS.itemCount(i.getValue() as number),
     }),
     col.accessor('total', {
-      header: 'Total',
+      header: ORDER_COLUMN_HEADERS.total,
       cell: (i) => formatBRL(i.getValue() as number),
     }),
     col.accessor('status', {
-      header: 'Status',
+      header: ORDER_COLUMN_HEADERS.status,
       cell: (i) => statusBadge(i.getValue() as string),
     }),
     col.accessor('paymentStatus', {
-      header: 'Pagamento',
+      header: ORDER_COLUMN_HEADERS.payment,
       cell: (i) => statusBadge(i.getValue() as string),
     }),
     col.accessor('createdAt', {
-      header: 'Data',
+      header: ORDER_COLUMN_HEADERS.date,
       cell: (i) => {
         const d = new Date(i.getValue() as string)
         return `${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
@@ -118,8 +112,8 @@ export function AdminPedidosPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-charcoal-900">Pedidos</h1>
-        <p className="mt-1 text-sm text-smoke-400">Gerenciamento de pedidos</p>
+        <h1 className="text-2xl font-bold text-charcoal-900">{PAGE_TITLES.orders}</h1>
+        <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{PAGE_TITLES.ordersSubtitle}</p>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -135,10 +129,10 @@ export function AdminPedidosPage({
         {statusFilter && (
           <button
             onClick={() => onStatusFilter('')}
-            className="flex items-center gap-1 text-sm text-smoke-400 hover:text-charcoal-700"
+            className="flex items-center gap-1 text-sm text-[var(--color-text-secondary)] hover:text-charcoal-700"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Limpar filtros
+            {ACTION_LABELS.clearFilters}
           </button>
         )}
       </div>
@@ -147,28 +141,28 @@ export function AdminPedidosPage({
         data={orders}
         columns={columns}
         isLoading={loading}
-        emptyMessage="Nenhum pedido encontrado"
+        emptyMessage={EMPTY_STATES.orders}
         pageSize={20}
       />
 
       {/* Server-side pagination */}
       {totalPages > 1 && !loading && (
         <div className="flex items-center justify-between text-sm text-charcoal-700">
-          <span>Página {page} de {totalPages}</span>
+          <span>{MISC_LABELS.pageOf(page, totalPages)}</span>
           <div className="flex gap-2">
             <button
               className="rounded-sm border border-smoke-200 bg-smoke-50 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-100 disabled:opacity-40"
               onClick={() => onPageChange(page - 1)}
               disabled={page <= 1}
             >
-              Anterior
+              {ACTION_LABELS.previous}
             </button>
             <button
               className="rounded-sm border border-smoke-200 bg-smoke-50 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-100 disabled:opacity-40"
               onClick={() => onPageChange(page + 1)}
               disabled={page >= totalPages}
             >
-              Próximo
+              {ACTION_LABELS.next}
             </button>
           </div>
         </div>

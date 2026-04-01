@@ -143,14 +143,14 @@ export function CartDrawer() {
                     </h4>
                     <button
                       onClick={() => removeItem(item.id)}
-                      className="min-w-[36px] min-h-[44px] -mt-2 flex items-center justify-center text-smoke-400 hover:text-accent-red transition-colors duration-300"
+                      className="min-w-[36px] min-h-[44px] -mt-2 flex items-center justify-center text-[var(--color-text-secondary)] hover:text-accent-red transition-colors duration-300"
                       aria-label={t('remove_item', { title: item.title })}
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
                   </div>
                   {item.variantTitle && (
-                    <p className="text-[11px] text-smoke-400 -mt-0.5">{item.variantTitle}</p>
+                    <p className="text-[11px] text-[var(--color-text-secondary)] -mt-0.5">{item.variantTitle}</p>
                   )}
                   <div className="flex items-center justify-between mt-0.5">
                     <QuantitySelector
@@ -172,7 +172,7 @@ export function CartDrawer() {
           {/* Cross-sell suggestions — below items */}
           {crossSellItems.length > 0 && (
             <div className="pt-2 border-t border-smoke-200">
-              <p className="text-[11px] font-semibold uppercase tracking-editorial text-smoke-400 mb-3">
+              <p className="text-[11px] font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-3">
                 {t('you_might_like')}
               </p>
               <div className="space-y-2">
@@ -185,13 +185,13 @@ export function CartDrawer() {
                     )}
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-medium text-charcoal-900 truncate">{rec.title}</p>
-                      <p className="text-xs text-smoke-400 tabular-nums">
+                      <p className="text-xs text-[var(--color-text-secondary)] tabular-nums">
                         {formatBRL(rec.price)}
                       </p>
                     </div>
                     <button
                       onClick={() => handleCrossSellAdd(rec)}
-                      className="min-w-[32px] min-h-[32px] flex items-center justify-center rounded-sm border border-smoke-200 text-smoke-400 hover:border-brand-500 hover:text-brand-600 transition-colors"
+                      className="min-w-[32px] min-h-[32px] flex items-center justify-center rounded-sm border border-smoke-200 text-[var(--color-text-secondary)] hover:border-brand-500 hover:text-brand-600 transition-colors"
                       aria-label={`${t('add_suggestion')} ${rec.title}`}
                     >
                       <Plus className="w-3.5 h-3.5" />

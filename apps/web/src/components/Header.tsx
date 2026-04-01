@@ -71,7 +71,7 @@ export function Header() {
                     key={href}
                     href={href}
                     className={`relative text-[11px] font-medium uppercase tracking-[0.08em] transition-colors duration-300 group/nav ${
-                      active ? 'text-charcoal-900' : 'text-smoke-400 hover:text-charcoal-700'
+                      active ? 'text-charcoal-900' : 'text-[var(--color-text-secondary)] hover:text-charcoal-700'
                     }`}
                   >
                     {t(label)}
@@ -95,7 +95,7 @@ export function Header() {
             <div className="flex items-center">
               <Link
                 href="/search"
-                className="p-2 text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+                className="p-2 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
                 aria-label={t("common.search")}
               >
                 <svg className="h-[15px] w-[15px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -105,7 +105,7 @@ export function Header() {
 
               <Link
                 href="/lista-desejos"
-                className="relative p-2 text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+                className="relative p-2 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
                 aria-label={t("wishlist.title")}
               >
                 <Heart className="h-[15px] w-[15px]" />
@@ -118,7 +118,7 @@ export function Header() {
 
               <button
                 onClick={handleCartClick}
-                className="relative p-2 text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+                className="relative p-2 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
                 aria-label={t("nav.cart")}
               >
                 <svg className="h-[15px] w-[15px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -138,14 +138,14 @@ export function Header() {
               {userType === 'guest' ? (
                 <Link
                   href="/entrar"
-                  className="ml-1 text-[11px] font-medium uppercase tracking-[0.08em] text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+                  className="ml-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
                 >
                   {t("nav.login")}
                 </Link>
               ) : (
                 <Link
                   href="/account"
-                  className="p-2 text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+                  className="p-2 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
                   aria-label={t("nav.account")}
                 >
                   <svg className="h-[15px] w-[15px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">

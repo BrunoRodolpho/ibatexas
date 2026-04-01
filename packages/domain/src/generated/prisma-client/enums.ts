@@ -38,3 +38,20 @@ export const StaffRole = {
 } as const
 
 export type StaffRole = (typeof StaffRole)[keyof typeof StaffRole]
+
+
+export const ConversationChannel = {
+  whatsapp: 'whatsapp',
+  web: 'web'
+} as const
+
+export type ConversationChannel = (typeof ConversationChannel)[keyof typeof ConversationChannel]
+
+
+export const MessageRole = {
+  user: 'user',
+  assistant: 'assistant',
+  system: 'system'
+} as const
+
+export type MessageRole = (typeof MessageRole)[keyof typeof MessageRole]

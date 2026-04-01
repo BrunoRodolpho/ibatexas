@@ -32,7 +32,7 @@ export async function checkDormantCustomers(log?: FastifyBaseLogger | null): Pro
     new Intl.DateTimeFormat("pt-BR", {
       hour: "numeric",
       hour12: false,
-      timeZone: "America/Sao_Paulo",
+      timeZone: process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo",
     }).format(new Date()),
     10,
   );

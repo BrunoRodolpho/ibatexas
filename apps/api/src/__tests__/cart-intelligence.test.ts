@@ -2,7 +2,7 @@
 // Handlers: cart.abandoned, order.placed, order.refunded, order.disputed, order.canceled,
 //           product.viewed, review.submitted, cart.item_added
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -14,6 +14,7 @@ const MOCK_PROFILE_TTL_SECONDS = vi.hoisted(() => 604800); // 7 days
 const mockRecordOrderItems = vi.hoisted(() => vi.fn());
 const mockGetWhatsAppSender = vi.hoisted(() => vi.fn());
 const mockMedusaAdminFetch = vi.hoisted(() => vi.fn());
+const mockSendText = vi.hoisted(() => vi.fn());
 
 // Store registered handlers so we can invoke them in tests
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
@@ -44,6 +45,10 @@ vi.mock("@ibatexas/domain", () => ({
 
 vi.mock("../jobs/review-prompt.js", () => ({
   scheduleReviewPrompt: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../whatsapp/client.js", () => ({
+  sendText: mockSendText,
 }));
 
 // ── Import after mocks ────────────────────────────────────────────────────────
@@ -714,10 +719,16 @@ describe("order.disputed handler (EVT-003)", () => {
     vi.clearAllMocks();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
     mockPublishNatsEvent.mockResolvedValue(undefined);
+    mockSendText.mockResolvedValue(undefined);
+    process.env.STAFF_ALERT_PHONE = "+5519900000099";
     await registerSubscribers();
   });
 
-  it("publishes notification.send alert for staff", async () => {
+  afterEach(() => {
+    delete process.env.STAFF_ALERT_PHONE;
+  });
+
+  it("sends direct WhatsApp alert to staff phone for disputes", async () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockMedusaAdminFetch.mockResolvedValue({
@@ -731,12 +742,9 @@ describe("order.disputed handler (EVT-003)", () => {
       reason: "fraudulent",
     });
 
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "notification.send",
-      expect.objectContaining({
-        type: "order_disputed",
-        channel: "whatsapp",
-      }),
+    expect(mockSendText).toHaveBeenCalledWith(
+      "whatsapp:+5519900000099",
+      expect.stringContaining("order_d01"),
     );
   });
 
@@ -772,10 +780,10 @@ describe("order.disputed handler (EVT-003)", () => {
       reason: "duplicate",
     });
 
-    // Should still send notification
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "notification.send",
-      expect.objectContaining({ type: "order_disputed" }),
+    // Should still send WhatsApp alert to staff
+    expect(mockSendText).toHaveBeenCalledWith(
+      "whatsapp:+5519900000099",
+      expect.stringContaining("N/A"),
     );
     // But no Medusa fetch or profile update
     expect(mockMedusaAdminFetch).not.toHaveBeenCalled();

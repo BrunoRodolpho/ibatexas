@@ -7,6 +7,15 @@ import { DataTable } from '../atoms/DataTable'
 import { Switch } from '../atoms/Switch'
 import { FilterChip } from '../molecules/FilterChip'
 import type { AdminProductRow } from '@ibatexas/types'
+import {
+  PRODUCT_TYPE_LABELS,
+  PRODUCT_COLUMN_HEADERS,
+  PAGE_TITLES,
+  ACTION_LABELS,
+  SEARCH_PLACEHOLDERS,
+  EMPTY_STATES,
+  MISC_LABELS,
+} from '../constants/admin-labels'
 
 const col = createColumnHelper<AdminProductRow>()
 
@@ -28,7 +37,7 @@ function renderImage(
   return <img src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} />
 }
 
-const TYPE_LABELS: Record<string, string> = { food: 'Comida', frozen: 'Congelado', merchandise: 'Loja' }
+const TYPE_LABELS = PRODUCT_TYPE_LABELS
 
 function renderProductType(type: string) {
   return <span className="capitalize">{TYPE_LABELS[type] ?? type}</span>
@@ -50,10 +59,10 @@ function renderEditAction(productId: string, medusaAdminUrl: string) {
       href={`${medusaAdminUrl}/app/products/${productId}`}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
+      className="flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-charcoal-800"
       onClick={(e) => e.stopPropagation()}
     >
-      Editar
+      {ACTION_LABELS.edit}
       <ExternalLink className="h-3 w-3" />
     </a>
   )
@@ -71,6 +80,8 @@ export interface AdminCardapioPageProps {
   SearchInputComponent: ComponentType<{ onSearch: (q: string) => void; placeholder?: string }>
   ImageComponent?: // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ComponentType<any>
+  onSuccess?: (msg: string) => void
+  onError?: (msg: string) => void
 }
 
 export function AdminCardapioPage({
@@ -91,15 +102,15 @@ export function AdminCardapioPage({
       enableSorting: false,
       cell: (i) => renderImage(i.getValue() as string | null, ImageComponent),
     }),
-    col.accessor('title', { header: 'Nome' }),
-    col.accessor('category', { header: 'Categoria' }),
+    col.accessor('title', { header: PRODUCT_COLUMN_HEADERS.name }),
+    col.accessor('category', { header: PRODUCT_COLUMN_HEADERS.category }),
     col.accessor('productType', {
-      header: 'Tipo',
+      header: PRODUCT_COLUMN_HEADERS.type,
       cell: (i) => renderProductType(i.getValue() as string),
     }),
-    col.accessor('variantCount', { header: 'Variantes' }),
+    col.accessor('variantCount', { header: PRODUCT_COLUMN_HEADERS.variants }),
     col.accessor('status', {
-      header: 'Status',
+      header: PRODUCT_COLUMN_HEADERS.status,
       cell: (i) => renderStatusSwitch(i.row.original, onToggleStatus),
     }),
     col.display({
@@ -112,14 +123,14 @@ export function AdminCardapioPage({
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-charcoal-900">Cardápio</h1>
+        <h1 className="text-2xl font-bold text-charcoal-900">{PAGE_TITLES.menu}</h1>
         <a
           href={`${medusaAdminUrl}/app/products/create`}
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
         >
-          + Adicionar produto
+          {ACTION_LABELS.addProduct}
           <ExternalLink className="h-3.5 w-3.5" />
         </a>
       </div>
@@ -127,34 +138,34 @@ export function AdminCardapioPage({
       <div className="flex flex-wrap items-center gap-3">
         <SearchInputComponent
           onSearch={onSearch}
-          placeholder="Buscar produtos..."
+          placeholder={SEARCH_PLACEHOLDERS.products}
         />
         <FilterChip
           id="food"
-          label="Comida"
+          label={PRODUCT_TYPE_LABELS.food}
           selected={typeFilter === 'food'}
           onToggle={() => onTypeFilter(typeFilter === 'food' ? '' : 'food')}
         />
         <FilterChip
           id="frozen"
-          label="Congelado"
+          label={PRODUCT_TYPE_LABELS.frozen}
           selected={typeFilter === 'frozen'}
           onToggle={() => onTypeFilter(typeFilter === 'frozen' ? '' : 'frozen')}
         />
         {typeFilter && (
           <button
             onClick={() => onTypeFilter('')}
-            className="flex items-center gap-1 text-sm text-smoke-400 hover:text-charcoal-700"
+            className="flex items-center gap-1 text-sm text-[var(--color-text-secondary)] hover:text-charcoal-700"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Limpar filtros
+            {ACTION_LABELS.clearFilters}
           </button>
         )}
       </div>
 
       {error && (
         <div className="rounded-lg bg-accent-red/10 p-4 text-sm text-accent-red">
-          Erro: {error.message}
+          {MISC_LABELS.errorPrefix} {error.message}
         </div>
       )}
 
@@ -162,7 +173,7 @@ export function AdminCardapioPage({
         data={data}
         columns={columns}
         isLoading={loading}
-        emptyMessage="Nenhum produto encontrado"
+        emptyMessage={EMPTY_STATES.products}
         pageSize={25}
       />
     </div>

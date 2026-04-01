@@ -3,7 +3,7 @@
 // Queries Medusa for pending orders older than PIX_EXPIRY_MINUTES (default 30).
 // For each expired PIX order: cancels via Medusa admin and publishes "payment.pix_expired".
 
-import { medusaAdmin } from "@ibatexas/tools";
+import { medusaAdmin, MedusaRequestError, cancelStalePaymentIntent } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import * as Sentry from "@sentry/node";
 import { createQueue, createWorker, type Job } from "./queue.js";
@@ -47,8 +47,25 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
 
     for (const order of orders) {
       try {
+        // Don't cancel orders with scheduled pickup — PIX can be regenerated
+        if (order.metadata?.["scheduledPickup"] === "true") {
+          // Just cancel the Stripe PI (prevent stale QR usage) but keep the Medusa order
+          const piId = order.metadata?.["stripePaymentIntentId"];
+          if (piId) {
+            await cancelStalePaymentIntent(piId);
+          }
+          effectiveLogger?.info({ order_id: order.id }, "Skipped cancel for scheduled-pickup order (PIX expired but order preserved)");
+          continue; // skip order cancellation
+        }
+
         // Cancel the expired order via Medusa
         await medusaAdmin(`/admin/orders/${order.id}/cancel`, { method: "POST" });
+
+        // Cancel the Stripe PaymentIntent to prevent late PIX scans
+        const piId = order.metadata?.["stripePaymentIntentId"];
+        if (piId) {
+          await cancelStalePaymentIntent(piId);
+        }
 
         await publishNatsEvent("payment.pix_expired", {
           eventType: "payment.pix_expired",
@@ -73,7 +90,13 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
       }
     }
   } catch (err) {
-    effectiveLogger?.error({ error: String(err) }, "[pix-expiry] Error querying pending orders");
+    if (err instanceof MedusaRequestError && err.statusCode === 401) {
+      effectiveLogger?.error(
+        "[pix-expiry] Medusa returned 401 Unauthorized — check MEDUSA_API_KEY is set and valid",
+      );
+    } else {
+      effectiveLogger?.error({ error: String(err) }, "[pix-expiry] Error querying pending orders");
+    }
     Sentry.withScope((scope) => {
       scope.setTag("job", "pix-expiry-checker");
       scope.setTag("source", "background-job");

@@ -9,6 +9,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createDeliveryZoneService } from "@ibatexas/domain";
+import { invalidateDeliveryCache } from "@ibatexas/tools";
 
 const DeliveryZoneIdParams = z.object({ id: z.string().min(1) });
 
@@ -49,6 +50,7 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
     async (request, reply) => {
       const deliveryZoneSvc = createDeliveryZoneService();
       const zone = await deliveryZoneSvc.create(request.body);
+      void invalidateDeliveryCache();
       return reply.code(201).send({ zone });
     },
   );
@@ -67,6 +69,7 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
     async (request, reply) => {
       const deliveryZoneSvc = createDeliveryZoneService();
       const zone = await deliveryZoneSvc.update(request.params.id, request.body);
+      void invalidateDeliveryCache();
       return reply.send({ zone });
     },
   );
@@ -84,6 +87,7 @@ export async function deliveryZoneRoutes(server: FastifyInstance): Promise<void>
     async (request, reply) => {
       const deliveryZoneSvc = createDeliveryZoneService();
       await deliveryZoneSvc.remove(request.params.id);
+      void invalidateDeliveryCache();
       return reply.send({ ok: true });
     },
   );

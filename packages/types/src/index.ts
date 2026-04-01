@@ -55,6 +55,7 @@ export {
   CheckOrderStatusInputSchema,
   CreateCheckoutInputSchema,
   GetCartInputSchema,
+  GetOrCreateCartInputSchema,
   UpdateCartInputSchema,
   RemoveFromCartInputSchema,
   ReorderInputSchema,
@@ -62,6 +63,11 @@ export {
   GetOrderHistoryInputSchema,
   type AddToCartInput,
   type CancelOrderInput,
+  CancelItemInputSchema,
+  type CancelItemInput,
+  AmendOrderInputSchema,
+  type AmendOrderInput,
+  type AmendOrderResult,
   type CheckOrderStatusInput,
   type CreateCheckoutInput,
   type GetCartInput,
@@ -70,6 +76,8 @@ export {
   type ReorderInput,
   type ApplyCouponInput,
   type GetOrderHistoryInput,
+  RegeneratePixInputSchema,
+  type RegeneratePixInput,
 } from "./cart.types.js"
 
 // Intelligence types
@@ -111,6 +119,13 @@ export {
   type HandoffToHumanOutput,
   type ScheduleFollowUpInput,
 } from "./tools.js"
+
+// Schedule types
+export type {
+  DaySchedule,
+  HolidayEntry,
+  RestaurantSchedule,
+} from "./schedule.types.js"
 
 // Reservation types
 export {

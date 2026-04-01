@@ -86,7 +86,7 @@ export function PeopleAlsoOrdered({ allProducts, onAddToCart }: PeopleAlsoOrdere
         <h3 className="font-display text-display-2xs font-semibold text-charcoal-900 tracking-display">
           {t('people_also_ordered.title')}
         </h3>
-        <p className="mt-1 text-xs text-smoke-400">
+        <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
           {t('people_also_ordered.subtitle')}
         </p>
       </div>
@@ -116,7 +116,7 @@ export function PeopleAlsoOrdered({ allProducts, onAddToCart }: PeopleAlsoOrdere
                     />
                   ) : (
                     <div className="absolute inset-0 bg-smoke-100 flex items-center justify-center">
-                      <span className="text-smoke-300 text-[8px] uppercase tracking-widest">IbateXas</span>
+                      <span className="text-[var(--color-text-muted)] text-[8px] uppercase tracking-widest">IbateXas</span>
                     </div>
                   )}
                 </div>

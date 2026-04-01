@@ -1,9 +1,10 @@
 'use client'
 
-import { AdminPedidosPage } from '@ibatexas/ui'
+import { AdminPedidosPage, useToast } from '@ibatexas/ui'
 import { useAdminOrdersPage } from '@/domains/admin/admin.hooks'
 
 export default function PedidosPage() {
+  const { addToast } = useToast()
   const { orders, loading, page, totalPages, statusFilter, onStatusFilter, onPageChange } =
     useAdminOrdersPage()
 
@@ -16,6 +17,8 @@ export default function PedidosPage() {
       statusFilter={statusFilter}
       onStatusFilter={onStatusFilter}
       onPageChange={onPageChange}
+      onSuccess={(msg) => addToast({ type: 'success', message: msg })}
+      onError={(msg) => addToast({ type: 'error', message: msg })}
     />
   )
 }

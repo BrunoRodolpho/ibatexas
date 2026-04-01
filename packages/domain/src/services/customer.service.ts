@@ -141,6 +141,21 @@ export function createCustomerService() {
     },
 
     /**
+     * Update PIX billing details (name, email, CPF) after successful PIX checkout.
+     * Persists to DB so data survives Redis TTL expiry.
+     */
+    async updatePixDetails(customerId: string, data: { name?: string; email?: string; cpf?: string }) {
+      await prisma.customer.update({
+        where: { id: customerId },
+        data: {
+          ...(data.name ? { name: data.name } : {}),
+          ...(data.email ? { email: data.email } : {}),
+          ...(data.cpf ? { cpf: data.cpf } : {}),
+        },
+      })
+    },
+
+    /**
      * Fetch customer by ID. Used by GET /auth/me.
      */
     async getById(customerId: string) {

@@ -6,6 +6,8 @@
 
 import { createDeliveryZoneService } from "@ibatexas/domain";
 import { reverseGeocode } from "./reverse-geocode.js";
+import { getRedisClient } from "../redis/client.js";
+import { rk } from "../redis/key.js";
 
 export interface EstimateDeliveryInput {
   cep?: string;
@@ -23,6 +25,50 @@ export interface EstimateDeliveryOutput {
 }
 
 const CEP_RE = /^\d{8}$/;
+
+// ── Delivery zone cache ──────────────────────────────────────────────────────
+// Caches per-CEP results in Redis (1h TTL). Most customers order from the same
+// set of CEPs — this skips ViaCEP + DB lookups for known addresses.
+
+const DELIVERY_CACHE_TTL = Number.parseInt(process.env.DELIVERY_CACHE_TTL || "3600", 10); // 1 hour
+
+async function getCachedDeliveryResult(cep: string): Promise<EstimateDeliveryOutput | null> {
+  try {
+    const redis = await getRedisClient();
+    const cached = await redis.get(rk(`delivery:cep:${cep}`));
+    return cached ? JSON.parse(cached) as EstimateDeliveryOutput : null;
+  } catch {
+    return null; // Cache miss on error — fall through to live lookup
+  }
+}
+
+async function cacheDeliveryResult(cep: string, result: EstimateDeliveryOutput): Promise<void> {
+  try {
+    const redis = await getRedisClient();
+    await redis.set(rk(`delivery:cep:${cep}`), JSON.stringify(result), { EX: DELIVERY_CACHE_TTL });
+  } catch {
+    // Non-critical — next call will just miss cache
+  }
+}
+
+/** Invalidate all delivery zone caches (call from admin zone update). */
+export async function invalidateDeliveryCache(): Promise<void> {
+  try {
+    const redis = await getRedisClient();
+    // Scan for delivery:cep:* keys and delete them
+    const pattern = rk("delivery:cep:*");
+    let cursor = 0;
+    do {
+      const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+      cursor = result.cursor;
+      if (result.keys.length > 0) {
+        await redis.del(result.keys);
+      }
+    } while (cursor !== 0);
+  } catch {
+    // Best-effort cache invalidation
+  }
+}
 
 // ── Haversine distance ────────────────────────────────────────────────────────
 
@@ -44,6 +90,10 @@ async function estimateDeliveryByCep(cep: string): Promise<EstimateDeliveryOutpu
   if (!CEP_RE.test(cleanCep)) {
     return { success: false, message: "CEP inválido. Informe 8 dígitos numéricos." };
   }
+
+  // Check cache first — skip ViaCEP + DB for known CEPs
+  const cached = await getCachedDeliveryResult(cleanCep);
+  if (cached) return cached;
 
   // Confirm CEP exists via ViaCEP
   let viaCepOk = true;
@@ -70,14 +120,19 @@ async function estimateDeliveryByCep(cep: string): Promise<EstimateDeliveryOutpu
   const match = await deliveryZoneSvc.findActiveByPrefix(prefix5, cleanCep);
 
   if (!match) {
-    return {
+    const phone = process.env.RESTAURANT_PHONE ?? "";
+    const phoneHint = phone ? ` ou ligue ${phone}` : "";
+    const outOfZone: EstimateDeliveryOutput = {
       success: false,
-      message: `Infelizmente não entregamos no CEP ${cleanCep} ainda. Consulte nosso cardápio para retirada no local.`,
+      cep: cleanCep,
+      message: `Infelizmente não entregamos no CEP ${cleanCep} ainda. Você pode retirar no restaurante${phoneHint} ou tentar outro endereço.`,
     };
+    void cacheDeliveryResult(cleanCep, outOfZone);
+    return outOfZone;
   }
 
   const feeReais = (match.feeInCentavos / 100).toFixed(2).replace(".", ",");
-  return {
+  const result: EstimateDeliveryOutput = {
     success: true,
     cep: cleanCep,
     zoneName: match.name,
@@ -85,6 +140,8 @@ async function estimateDeliveryByCep(cep: string): Promise<EstimateDeliveryOutpu
     estimatedMinutes: match.estimatedMinutes,
     message: `Entregamos em ${match.name}! Taxa: R$${feeReais}. Prazo estimado: ${match.estimatedMinutes} minutos.`,
   };
+  void cacheDeliveryResult(cleanCep, result);
+  return result;
 }
 
 // ── Haversine-based fallback ──────────────────────────────────────────────────
@@ -141,9 +198,20 @@ export async function estimateDelivery(input: EstimateDeliveryInput): Promise<Es
     typeof input.latitude === "number" && typeof input.longitude === "number";
 
   if (!hasCep && !hasCoords) {
+    // No input — list active delivery zones so customer knows where we deliver
+    const deliveryZoneSvc = createDeliveryZoneService();
+    const zones = await deliveryZoneSvc.listAll();
+    const activeZones = zones.filter((z) => z.active);
+    if (activeZones.length === 0) {
+      return { success: false, message: "No momento estamos apenas com retirada no restaurante." };
+    }
+    const zoneList = activeZones.map((z) => {
+      const fee = (z.feeInCentavos / 100).toFixed(2).replace(".", ",");
+      return `${z.name} — R$${fee} (~${z.estimatedMinutes}min)`;
+    }).join("\n");
     return {
-      success: false,
-      message: "Informe um CEP ou compartilhe sua localização para estimar a entrega.",
+      success: true,
+      message: `Áreas de entrega:\n${zoneList}\nInforme seu CEP para confirmar.`,
     };
   }
 

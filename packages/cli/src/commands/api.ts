@@ -291,13 +291,14 @@ export function registerApiCommands(api: Command) {
         ],
       })
 
-      const variants: { title: string; price: number }[] = []
+      const variants: { title: string; price: number; priceReais: number }[] = []
       let addMore = true
       while (addMore) {
         const variantTitle = await input({ message: `Variant title (e.g. "500g"):` })
         const priceStr = await input({ message: `Price in BRL (e.g. 89.00):` })
-        const price = Math.round(Number.parseFloat(priceStr) * 100)
-        variants.push({ title: variantTitle, price })
+        const priceReais = Number.parseFloat(priceStr)
+        const price = Math.round(priceReais * 100) // centavos for internal use
+        variants.push({ title: variantTitle, price, priceReais })
 
         const another = await select({
           message: "Add another variant?",
@@ -335,6 +336,8 @@ export function registerApiCommands(api: Command) {
             variants: variants.map((v) => ({
               title: v.title,
               manage_inventory: false,
+              // Medusa v2 accepts prices in reais (main currency unit)
+              prices: [{ amount: v.priceReais, currency_code: "brl" }],
               ...(hasMultipleVariants ? { options: { Variante: v.title } } : {}),
             })),
             metadata: {
@@ -344,10 +347,7 @@ export function registerApiCommands(api: Command) {
           },
         })
 
-        spinner2.succeed(chalk.green(`Product "${title}" created`))
-        console.log(
-          chalk.gray(`  Prices must be set via the Medusa admin panel or the Pricing Module API.`)
-        )
+        spinner2.succeed(chalk.green(`Product "${title}" created with prices`))
       } catch (err) {
         spinner2.fail(chalk.red("Failed to create product"))
         console.error(chalk.gray(String(err)))

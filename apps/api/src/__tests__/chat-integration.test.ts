@@ -25,7 +25,7 @@ const mockLoadSession = vi.hoisted(() => vi.fn().mockResolvedValue([]))
 const mockAppendMessages = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 
 vi.mock("@ibatexas/llm-provider", () => ({
-  runAgent: mockRunAgent,
+  runOrchestrator: mockRunAgent,
 }))
 
 vi.mock("../session/store.js", () => ({
@@ -36,6 +36,22 @@ vi.mock("../session/store.js", () => ({
 vi.mock("uuid", () => ({
   v4: () => "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee",
 }))
+
+vi.mock("../streaming/execution-queue.js", () => ({
+  acquireWebAgentLock: vi.fn().mockResolvedValue(true),
+  releaseWebAgentLock: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock("@ibatexas/tools", async (importOriginal) => {
+  const orig = (await importOriginal()) as Record<string, unknown>
+  return {
+    ...orig,
+    getRedisClient: vi.fn().mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+    }),
+  }
+})
 
 import { chatRoutes } from "../routes/chat.js"
 
@@ -171,6 +187,7 @@ describe("Chat routes integration", () => {
       "22222222-3333-4444-a555-666666666666",
       [{ role: "user", content: "E o cardápio?" }],
       false,
+      { customerId: undefined, channel: "web" },
     )
   })
 

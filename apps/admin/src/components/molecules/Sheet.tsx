@@ -57,7 +57,7 @@ export function Sheet({
           </h2>
           <button
             onClick={onClose}
-            className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-smoke-400 hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
+            className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
             aria-label="Fechar"
           >
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

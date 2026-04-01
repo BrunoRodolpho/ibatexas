@@ -86,6 +86,19 @@
   --spacing-34: 8.5rem;
   --spacing-38: 9.5rem;
 
+  /* ── Semantic tokens (consumed by @ibatexas/ui components) ──────── */
+  --color-text-primary: var(--color-charcoal-900);
+  --color-text-secondary: var(--color-smoke-700);
+  --color-text-muted: var(--color-smoke-500);
+  --color-text-disabled: var(--color-smoke-400);
+  --color-text-inverse: var(--color-smoke-50);
+  --color-surface: var(--color-smoke-50);
+  --color-surface-elevated: #ffffff;
+  --color-surface-muted: var(--color-smoke-100);
+  --color-overlay: rgba(0, 0, 0, 0.5);
+  --color-border: var(--color-smoke-200);
+  --color-border-strong: var(--color-smoke-300);
+
   /* ── Transition (heavy, expensive feel) ────────────────────────── */
   --ease-luxury: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-800: 800ms;
@@ -225,6 +238,21 @@
   ::selection {
     background-color: #FFE4CC;
     color: #3D1800;
+  }
+
+  /* Dark mode overrides — activated by .dark class on <html> */
+  .dark {
+    --color-text-primary: var(--color-smoke-50);
+    --color-text-secondary: var(--color-smoke-200);
+    --color-text-muted: var(--color-smoke-400);
+    --color-text-disabled: var(--color-smoke-600);
+    --color-text-inverse: var(--color-charcoal-900);
+    --color-surface: var(--color-charcoal-900);
+    --color-surface-elevated: var(--color-charcoal-800);
+    --color-surface-muted: var(--color-charcoal-700);
+    --color-overlay: rgba(0, 0, 0, 0.7);
+    --color-border: var(--color-charcoal-600);
+    --color-border-strong: var(--color-smoke-600);
   }
 }
 

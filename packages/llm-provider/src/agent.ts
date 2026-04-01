@@ -1,293 +1,374 @@
-// AgentOrchestrator — core agent loop for IbateXas.
+// AgentOrchestrator — Hybrid State-Flow pipeline for IbateXas.
 //
-// runAgent streams a response from Claude, handling tool calls in a loop:
-//   1. Send message + history to Claude with tool definitions
-//   2. Stream text deltas → yield StreamChunk { type: "text_delta" }
-//   3. On tool_use stop_reason: execute tools with retry, append results, loop
-//   4. On end_turn: yield { type: "done" }, stop
+// 4-phase pipeline per message:
+//   1. ROUTER:      keyword regex → structured OrderEvent[]
+//   2. KERNEL:      XState processes events → guards, context mutations, async side effects
+//   3. SYNTHESIZER: state + context → tiny system prompt + filtered tools
+//   4. LLM:        synthesized prompt + message → natural language response
 //
-// Retry policy: each tool call retried up to 3 times with exponential backoff.
-// Guard: max 10 agent turns prevents infinite loops.
+// The LLM NEVER makes business decisions (auth, availability, payment).
+// It only generates customer-facing text from the synthesized prompt.
+//
+// Info-only tools (search, details, nutritional) are still available to the LLM
+// per state, but cart/checkout tools are machine-controlled.
 
-import Anthropic from "@anthropic-ai/sdk"
-import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropic-ai/sdk/resources/messages.js"
-import { Channel, NonRetryableError, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
-import { SYSTEM_PROMPT } from "./system-prompt.js"
-import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
-import { getRedisClient, rk } from "@ibatexas/tools"
+import type { MessageParam } from "@anthropic-ai/sdk/resources/messages.js"
+import { Channel, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
+import { loadSchedule } from "@ibatexas/tools"
 
-const MAX_TURNS = Number.parseInt(process.env.AGENT_MAX_TURNS || "10", 10)
-const MAX_TOOL_RETRIES = Number.parseInt(process.env.AGENT_MAX_TOOL_RETRIES || "3", 10)
-const AGENT_MAX_TOKENS = Number.parseInt(process.env.AGENT_MAX_TOKENS || "2048", 10)
-// Per-conversation retry budget to prevent runaway cost
-const MAX_CONVERSATION_RETRIES = Number.parseInt(process.env.AGENT_MAX_CONVERSATION_RETRIES || "10", 10)
+// Machine imports
+import { extractIllusionContext, createLatencyEnvelope, ALLOWED_POST_LLM_EVENTS } from "./machine/types.js"
+import type { OrderContext } from "./machine/types.js"
+import { routeMessage, extractCustomerName } from "./router.js"
+import { synthesizePrompt } from "./prompt-synthesizer.js"
+import type { SupervisorModifiers } from "./prompt-synthesizer.js"
+import { loadMachineState, persistMachineState } from "./machine/persistence.js"
+import { fetchCustomerProfile, ensureCart, estimateDeliveryAction, loadCachedPixDetails } from "./machine/actions.js"
+import { createActor } from "xstate"
+import { orderMachine } from "./machine/order-machine.js"
 
-// Daily token budget per session (default 100K tokens)
-const SESSION_TOKEN_BUDGET = Number.parseInt(process.env.AGENT_SESSION_TOKEN_BUDGET || "100000", 10)
-const TOKEN_BUDGET_TTL = 86400 // 24 hours in seconds
+// Layer 3: Supervisor
+import { evaluateSupervisor } from "./supervisor.js"
 
-// ── Anthropic client (singleton) ──────────────────────────────────────────────
+// Layer 1: Kernel executor
+import {
+  executeKernel,
+  createDefaultContext,
+  isCheckoutState,
+  withTimeout,
+  CART_TIMEOUT,
+  DELIVERY_TIMEOUT,
+  LOYALTY_TIMEOUT,
+} from "./kernel-executor.js"
 
-let _client: Anthropic | null = null
+// Layer 2: LLM responder
+import {
+  generateResponse,
+  getSessionTokenCount,
+  SESSION_TOKEN_BUDGET,
+  _resetClient,
+} from "./llm-responder.js"
 
-function getClient(): Anthropic {
-  // 60s timeout prevents indefinite hangs during API outages
-  _client ??= new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    timeout: 60_000,
-  })
-  return _client
-}
-
-/** @internal Reset singleton for test isolation */
-export function _resetClient(): void {
-  _client = null
-}
-
-// ── Retry helper ──────────────────────────────────────────────────────────────
-
-/**
- * Execute a tool with exponential backoff retry.
- * On all retries exhausted: returns an error object (never throws).
- * Claude receives the error as a tool result and can respond gracefully.
- *
- * Accepts a shared conversationRetries counter to enforce a per-conversation
- * retry budget across all tool calls.
- */
-async function executeWithRetry(
-  name: string,
-  input: unknown,
-  ctx: AgentContext,
-  conversationRetries: { count: number },
-): Promise<unknown> {
-  let lastError: Error | undefined
-
-  for (let attempt = 0; attempt < MAX_TOOL_RETRIES; attempt++) {
-    try {
-      return await executeTool(name, input, ctx)
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err))
-      // Non-retryable errors (auth, business rules) should not be retried
-      if (lastError instanceof NonRetryableError) {
-        return { error: lastError.message, toolName: name }
-      }
-      // Track retries against conversation budget
-      conversationRetries.count++
-      if (conversationRetries.count >= MAX_CONVERSATION_RETRIES) {
-        return { error: "Limite de tentativas atingido. Tente novamente mais tarde.", toolName: name }
-      }
-      if (attempt < MAX_TOOL_RETRIES - 1) {
-        await new Promise((r) => setTimeout(r, 200 * 2 ** attempt))
-      }
-    }
-  }
-
-  return { error: lastError?.message ?? "Falha desconhecida", toolName: name }
-}
-
-// ── Stream helpers ────────────────────────────────────────────────────────────
-
-/** Stream text deltas from a Claude message stream, yielding StreamChunk for each delta. */
-async function* streamTextDeltas(
-  stream: ReturnType<Anthropic["messages"]["stream"]>,
-): AsyncGenerator<StreamChunk> {
-  for await (const event of stream) {
-    if (
-      event.type === "content_block_delta" &&
-      event.delta.type === "text_delta"
-    ) {
-      yield { type: "text_delta", delta: event.delta.text }
-    }
-  }
-}
-
-/** Process all tool_use blocks from a finalMessage, executing each with retry. */
-async function processToolCalls(
-  content: ContentBlock[],
-  context: AgentContext,
-  onChunk: (chunk: StreamChunk) => void,
-  conversationRetries: { count: number },
-): Promise<ToolResultBlockParam[]> {
-  const toolResults: ToolResultBlockParam[] = []
-
-  for (const block of content) {
-    if (block.type !== "tool_use") continue
-
-    onChunk({ type: "tool_start", toolName: block.name, toolUseId: block.id })
-
-    const result = await executeWithRetry(block.name, block.input, context, conversationRetries)
-    const isError = typeof result === "object" && result !== null && "error" in result
-
-    onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: !isError })
-
-    toolResults.push({
-      type: "tool_result",
-      tool_use_id: block.id,
-      content: JSON.stringify(result),
-    })
-  }
-
-  return toolResults
-}
-
-/** Build system prompt with channel-specific hint */
-function buildSystemPrompt(channel: Channel): string {
-  const channelHint =
-    channel === Channel.WhatsApp
-      ? "\n\n[Canal atual: WhatsApp — respostas curtas, sem tabelas, URLs diretos]"
-      : "\n\n[Canal atual: Web — markdown completo]"
-  return SYSTEM_PROMPT + channelHint
-}
-
-// ── Per-session token budget helpers ─────────────────────────────────────────
-
-/**
- * Check if the session has exceeded its daily token budget.
- * Returns the current token count or -1 if Redis is unavailable (fail-open).
- */
-async function getSessionTokenCount(sessionId: string): Promise<number> {
-  try {
-    const redis = await getRedisClient()
-    const count = await redis.get(rk(`llm:tokens:${sessionId}`))
-    return count ? Number.parseInt(count, 10) : 0
-  } catch {
-    // Fail-open: if Redis is down, allow the request
-    return 0
-  }
-}
-
-/**
- * Increment the session's token counter after a response.
- * Sets 24h TTL on first write.
- */
-async function trackSessionTokens(sessionId: string, tokensUsed: number): Promise<void> {
-  try {
-    const redis = await getRedisClient()
-    const key = rk(`llm:tokens:${sessionId}`)
-    const newCount = await redis.incrBy(key, tokensUsed)
-    // Set TTL only on first increment (when count equals the tokens just added)
-    if (newCount === tokensUsed) {
-      await redis.expire(key, TOKEN_BUDGET_TTL)
-    }
-  } catch {
-    // Non-critical: tracking failure should not block the agent
-  }
-}
+// Re-export for backward compatibility
+export { _resetClient }
 
 // ── Main agent loop ───────────────────────────────────────────────────────────
 
 /**
- * Run the agent loop, streaming chunks to the caller.
- *
- * @param message   — current user message
- * @param history   — prior messages in this session (oldest first)
- * @param context   — session metadata (channel, sessionId, customerId, userType)
+ * Run the 4-phase Hybrid State-Flow pipeline:
+ *   1. Router:      message → OrderEvent[]
+ *   2. Kernel:      events → state transitions + async side effects
+ *   3. Synthesizer: state + context → tiny system prompt + filtered tools
+ *   4. LLM:        synthesized prompt + message → natural language response
  */
 export async function* runAgent(
   message: string,
   history: AgentMessage[],
   context: AgentContext,
 ): AsyncGenerator<StreamChunk> {
-  // Check per-session token budget before processing
+  // ── Load persisted machine state early (needed for budget bypass) ────────
+  const loadResult = await loadMachineState(context.sessionId)
+  let snapshot = loadResult?.snapshot ?? null
+
+  console.info("[agent] snapshot_loaded=%s stale=%s reason=%s state=%s",
+    !!snapshot,
+    loadResult?.isStale ?? "n/a",
+    loadResult?.staleReason ?? "none",
+    snapshot ? (snapshot as { value?: unknown }).value : "null",
+  )
+
+  // ── Phase 1: ROUTER (run early so we can use events for stale detection) ──
+  // Pass machine state to router so it can use authoritative checkout detection
+  // instead of fragile history keyword matching
+  let snapshotStateStr: string | undefined
+  if (snapshot) {
+    const sv = (snapshot as { value?: unknown }).value
+    if (typeof sv === "string") snapshotStateStr = sv
+    else if (typeof sv === "object" && sv !== null) {
+      // Compound state like { checkout: "confirming" } → "checkout.confirming"
+      const [parent, child] = Object.entries(sv)[0] ?? []
+      snapshotStateStr = child ? `${parent}.${child}` : parent
+    }
+  }
+  const events = routeMessage(message, history, snapshotStateStr)
+
+  console.info("[agent] router_events=%s", JSON.stringify(events.map(e => ({ type: e.type, confidence: (e as { confidence?: number }).confidence }))))
+
+  // ── Stale session detection (triple-expiry) ────────────────────────────
+  if (loadResult?.isStale) {
+    console.info("[agent] Discarding stale snapshot — reason: %s", loadResult.staleReason)
+    snapshot = null
+  } else if (snapshot) {
+    // Legacy check: discard checkout snapshot on GREETING
+    const snapshotValue = (snapshot as { value?: unknown }).value
+    const isStaleCheckout = isCheckoutState(snapshotValue)
+    const hasGreeting = events.some((e) => e.type === "GREETING")
+    if (isStaleCheckout && hasGreeting) {
+      console.info("[agent] Discarding stale checkout snapshot — GREETING in checkout state")
+      snapshot = null
+    }
+  }
+
+  // Recovery UX: if stale snapshot had cart items, inform the customer
+  if (loadResult?.isStale && loadResult.snapshot) {
+    const staleCtx = (loadResult.snapshot as { context?: { items?: unknown[] } })?.context
+    const hadItems = Array.isArray(staleCtx?.items) && staleCtx.items.length > 0
+    if (hadItems) {
+      const reason = loadResult.staleReason
+      const recoveryMsg = reason === "expired" || reason === "idle"
+        ? "Sua sessão anterior expirou, mas estou aqui pra te ajudar de novo! O que vai ser hoje? 🍖"
+        : "Tive que recomeçar aqui, mas estou pronto! O que posso fazer por você? 🍖"
+      yield { type: "text_delta", delta: recoveryMsg }
+      yield { type: "done", inputTokens: 0, outputTokens: 0 }
+      return
+    }
+  }
+
+  const isInCheckout = snapshot
+    ? isCheckoutState((snapshot as { value?: unknown }).value)
+    : false
+
+  // ── Token budget check (bypassed for checkout states) ──────────────────
+  // If the customer is mid-checkout, they must be allowed to complete the
+  // transaction — this is a "point of no return" for the business flow.
   const currentTokens = await getSessionTokenCount(context.sessionId)
-  if (currentTokens >= SESSION_TOKEN_BUDGET) {
-    yield { type: "text_delta", delta: "Limite de uso atingido. Tente novamente amanhã." }
+  if (!isInCheckout && currentTokens >= SESSION_TOKEN_BUDGET) {
+    const phone = process.env.RESTAURANT_PHONE ?? ""
+    const site = process.env.RESTAURANT_SITE_URL ?? "ibatexas.com.br"
+    const contactInfo = phone
+      ? `\n📞 Ligue: ${phone}\n🌐 Acesse: ${site}`
+      : `\n🌐 Acesse: ${site}`
+    const rateLimitMsg =
+      `Por hoje cheguei no meu limite aqui, mas seu carrinho tá salvo!\n` +
+      `Amanhã a gente continua de onde parou.${contactInfo ? ` Se for urgente:${contactInfo}` : ""} 🍖`
+    yield { type: "text_delta", delta: rateLimitMsg }
     yield { type: "done", inputTokens: 0, outputTokens: 0 }
     return
   }
 
-  const client = getClient()
-  const model = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6"
+  // ── Phase 2: KERNEL ─────────────────────────────────────────────────────
+  // (events already computed above for stale session detection)
+  const channel = context.channel === Channel.WhatsApp ? "whatsapp" : "web" as const
 
-  // Build mutable messages array — grows as tool results are appended
-  const messages: MessageParam[] = [
-    ...history.map((m) => ({ role: m.role, content: m.content } as MessageParam)),
-    { role: "user", content: message },
-  ]
+  // Build initial context for new sessions
+  const machineContext = createDefaultContext(channel, context.customerId ?? null)
 
-  const systemPrompt = buildSystemPrompt(context.channel)
+  // If customer is authenticated, try to load profile for isNewCustomer flag
+  // and pre-fill slots for returning customers (fulfillment, payment, CEP)
+  if (context.customerId && !snapshot) {
+    const profile = await withTimeout(
+      fetchCustomerProfile(machineContext, context.sessionId),
+      LOYALTY_TIMEOUT,
+      { isNewCustomer: true, orderCount: 0 } as Awaited<ReturnType<typeof fetchCustomerProfile>>,
+      "fetchCustomerProfile",
+    )
+    machineContext.isNewCustomer = profile.isNewCustomer
+    // Pre-fill returning customer preferences — saves 2 questions in checkout
+    if (!profile.isNewCustomer) {
+      if (profile.lastFulfillment) machineContext.fulfillment = profile.lastFulfillment
+      if (profile.lastPaymentMethod) machineContext.paymentMethod = profile.lastPaymentMethod
+      if (profile.lastDeliveryCep) machineContext.deliveryCep = profile.lastDeliveryCep
+    }
+    // Pre-fill customer name if known
+    if (profile.name) machineContext.customerName = profile.name
 
-  // Per-conversation retry budget shared across all tool calls
-  const conversationRetries = { count: 0 }
-
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
-    // ── Stream one turn ─────────────────────────────────────────────────────
-    let stream: ReturnType<typeof client.messages.stream>
-    try {
-      stream = client.messages.stream({
-        model,
-        system: systemPrompt,
-        messages,
-        tools: TOOL_DEFINITIONS,
-        max_tokens: AGENT_MAX_TOKENS,
-      })
-    } catch (err) {
-      console.error("[agent] Failed to start stream:", (err as Error).message)
-      yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
-      return
+    // Pre-fill PIX details for returning customers (name, email, CPF)
+    const pixCache = await withTimeout(
+      loadCachedPixDetails(context.customerId!),
+      1500,
+      null,
+      "loadCachedPixDetails",
+    )
+    if (pixCache) {
+      if (pixCache.email) machineContext.customerEmail = pixCache.email
+      if (pixCache.cpf) machineContext.customerTaxId = pixCache.cpf
+      if (pixCache.name && !machineContext.customerName) machineContext.customerName = pixCache.name
     }
 
-    // Yield text deltas as they arrive
-    try {
-      yield* streamTextDeltas(stream)
-    } catch (err) {
-      console.error("[agent] Stream error:", (err as Error).message)
-      yield { type: "error", message: "Erro ao processar sua mensagem. Tente novamente." }
-      return
+    // Session recovery: if Redis snapshot expired but Medusa cart still exists,
+    // reconstruct cart data so the customer doesn't lose their items
+    const recoveredCart = await withTimeout(
+      ensureCart(machineContext, context.sessionId),
+      CART_TIMEOUT,
+      { success: false, cartId: "", items: [], totalInCentavos: 0 } as Awaited<ReturnType<typeof ensureCart>>,
+      "ensureCart:recovery",
+    )
+    if (recoveredCart.success && recoveredCart.items.length > 0) {
+      machineContext.cartId = recoveredCart.cartId
+      machineContext.items = recoveredCart.items
+      machineContext.totalInCentavos = recoveredCart.totalInCentavos
     }
-
-    const finalMessage = await stream.finalMessage()
-    const { stop_reason, usage } = finalMessage
-
-    // Track token usage after each turn
-    const turnTokens = usage.input_tokens + usage.output_tokens
-    void trackSessionTokens(context.sessionId, turnTokens)
-
-    // ── End turn — finish gracefully ──────────────────────────────────────
-    if (stop_reason === "end_turn") {
-      yield {
-        type: "done",
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-      }
-      return
-    }
-
-    // When response is truncated by max_tokens, signal to the client
-    if (stop_reason === "max_tokens") {
-      yield { type: "text_delta", delta: "\n\n[Resposta truncada — limite de tamanho atingido.]" }
-      yield {
-        type: "done",
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-      }
-      return
-    }
-
-    // ── Tool use ────────────────────────────────────────────────────────────
-    if (stop_reason === "tool_use") {
-      messages.push({ role: "assistant", content: finalMessage.content })
-
-      const pendingChunks: StreamChunk[] = []
-      const toolResults = await processToolCalls(
-        finalMessage.content,
-        context,
-        (chunk) => pendingChunks.push(chunk),
-        conversationRetries,
-      )
-      for (const chunk of pendingChunks) {
-        yield chunk
-      }
-
-      // Feed all tool results back to Claude as a single user message
-      messages.push({ role: "user", content: toolResults })
-      continue
-    }
-
-    // ── Unexpected stop reason ───────────────────────────────────────────────
-    yield { type: "error", message: `Stop inesperado: ${stop_reason}` }
-    return
   }
 
-  yield { type: "error", message: "Limite de turnos do agente atingido." }
+  // Name extraction from message — non-blocking, stores name in context
+  if (!machineContext.customerName) {
+    const detectedName = extractCustomerName(message)
+    if (detectedName) machineContext.customerName = detectedName
+  }
+
+  const statusMessages: string[] = []
+  const kernelOutput = await executeKernel(
+    events,
+    machineContext,
+    context.sessionId,
+    snapshot,
+    (msg) => statusMessages.push(msg),
+  )
+  const { stateValue, context: machineCtx } = kernelOutput
+
+  console.info("[agent] kernel_output state=%s cartId=%s items=%d orderId=%s",
+    stateValue,
+    machineCtx.cartId ?? "null",
+    machineCtx.items?.length ?? 0,
+    machineCtx.orderId ?? "null",
+  )
+
+  // Emit kernel metadata so the orchestrator can use state-aware fallbacks
+  yield { type: "kernel_done" as const, stateValue, context: machineCtx as unknown as Record<string, unknown> }
+
+  for (const msg of statusMessages) {
+    yield { type: "status" as const, message: msg }
+  }
+
+  // ── Phase 2.5: Proactive delivery estimate for bare CEP ────────────────
+  // When the router detected ASK_DELIVERY with a CEP, call estimateDeliveryAction
+  // deterministically and inject the result into the prompt — don't rely on LLM.
+  const askDeliveryEvent = events.find(
+    (e) => e.type === "ASK_DELIVERY" && "cep" in e && (e as { cep?: string }).cep,
+  ) as { type: "ASK_DELIVERY"; cep: string } | undefined
+
+  let deliveryInjection: string | null = null
+  if (askDeliveryEvent) {
+    try {
+      const dr = await withTimeout(
+        estimateDeliveryAction(askDeliveryEvent.cep),
+        DELIVERY_TIMEOUT,
+        { success: false, inZone: false, feeInCentavos: 0, etaMinutes: 0, error: "Timeout" } as Awaited<ReturnType<typeof estimateDeliveryAction>>,
+        "estimateDelivery:proactive",
+      )
+      if (dr.success && dr.inZone) {
+        const fee = (dr.feeInCentavos / 100).toFixed(2).replace(".", ",")
+        deliveryInjection = `\n[RESULTADO ENTREGA CEP ${askDeliveryEvent.cep}]: Entregamos! Zona: ${dr.zoneName ?? "—"}, taxa: R$${fee}, ~${dr.etaMinutes}min.`
+      } else {
+        const addr = process.env.RESTAURANT_ADDRESS || process.env.NEXT_PUBLIC_ADDRESS || ""
+        deliveryInjection = `\n[RESULTADO ENTREGA CEP ${askDeliveryEvent.cep}]: Fora da área de entrega.${addr ? ` Endereço para retirada: ${addr}.` : ""} Sugira retirada.`
+      }
+    } catch {
+      deliveryInjection = `\n[RESULTADO ENTREGA CEP ${askDeliveryEvent.cep}]: Erro ao verificar. Peça para o cliente tentar novamente.`
+    }
+  }
+
+  // ── PIX data (buffered — yield AFTER LLM text so customer gets explanation first) ──
+  const cr = machineCtx.checkoutResult as Record<string, unknown> | null
+  const pendingPixData = (cr?.pixQrCodeText || cr?.pixQrCodeUrl)
+    ? {
+        type: "pix_data" as const,
+        pixQrCodeText: cr.pixQrCodeText as string | undefined,
+        pixQrCodeUrl: cr.pixQrCodeUrl as string | undefined,
+        pixExpiresAt: cr.pixExpiresAt as string | undefined,
+        orderId: machineCtx.orderId as string | undefined,
+      }
+    : null
+
+  // ── Phase 2.7: SUPERVISOR (Layer 3 — evaluate and select mode) ──────────
+  // Supervisor runs pure heuristics (<50ms), never modifies state.
+  // Failure is safe to ignore — system works without it.
+  let supervisorModifiers: SupervisorModifiers | undefined
+  try {
+    const envelope = createLatencyEnvelope()
+    const remainingBudget = Math.max(0, envelope.hardDeadlineMs - (Date.now() - envelope.messageReceivedAt))
+    const supervisorOutput = await evaluateSupervisor({
+      userMessage: message,
+      stateValue,
+      contextSnapshot: machineCtx,
+      illusionContext: extractIllusionContext(machineCtx),
+      candidateResponse: "", // pre-LLM evaluation — no candidate yet
+      latencyBudgetMs: remainingBudget,
+      conversationHistory: history.map((m) => ({ role: m.role, content: m.content })),
+    })
+    if (supervisorOutput.confidence >= 0.8) {
+      // High confidence: apply all modifiers
+      supervisorModifiers = {
+        toneAdjustment: supervisorOutput.modifiers.toneAdjustment,
+        verbosityScale: supervisorOutput.modifiers.verbosityScale,
+      }
+    } else if (supervisorOutput.confidence >= 0.5) {
+      // Medium confidence: apply tone only, keep default verbosity
+      supervisorModifiers = {
+        toneAdjustment: supervisorOutput.modifiers.toneAdjustment,
+      }
+    }
+    // Below 0.5: ignore modifiers entirely
+  } catch {
+    // Supervisor failure is safe to ignore
+  }
+
+  // ── Phase 3: SYNTHESIZER ────────────────────────────────────────────────
+  const schedule = await loadSchedule()
+  const synthesized = synthesizePrompt(stateValue, machineCtx, channel, schedule, supervisorModifiers)
+
+  // Inject proactive delivery result into system prompt
+  if (deliveryInjection) {
+    synthesized.systemPrompt += deliveryInjection
+  }
+
+  // ── Phase 4: LLM (natural language generation only) ─────────────────────
+  const isPostCheckout = (
+    stateValue.startsWith("post_order") || stateValue === "checkout.order_placed"
+  ) && !!machineCtx.orderId
+
+  const historyMessages: MessageParam[] = history.map((m) => ({
+    role: m.role,
+    content: m.content,
+  } as MessageParam))
+
+  const pendingMachineEvents: Array<{ type: string; payload: Record<string, unknown> }> = []
+
+  yield* generateResponse({
+    synthesized,
+    message,
+    history: historyMessages,
+    agentContext: context,
+    machineCtx,
+    isPostCheckout,
+    stateValue,
+    onToolEvent: (evt) => pendingMachineEvents.push(evt),
+  })
+
+  // Post-LLM: inject tool events into machine (LLM proposes → Machine commits)
+  // FIX 2 (P0-2): Validate event types against allowlist; process sequentially (no coalescing)
+  if (pendingMachineEvents.length > 0) {
+    try {
+      // Load latest snapshot and replay events through machine
+      const latestSnapshot = await loadMachineState(context.sessionId)
+      if (latestSnapshot?.snapshot) {
+        const postActor = createActor(orderMachine, {
+          snapshot: latestSnapshot.snapshot,
+        } as unknown as { input: OrderContext })
+        postActor.start()
+
+        const injectedTypes: string[] = []
+        for (const evt of pendingMachineEvents) {
+          if (!ALLOWED_POST_LLM_EVENTS.has(evt.type)) {
+            console.warn("[agent] Blocked unauthorized post-LLM event: %s", evt.type)
+            continue
+          }
+          postActor.send({ type: evt.type, payload: evt.payload } as any)
+          injectedTypes.push(evt.type)
+        }
+
+        if (injectedTypes.length > 0) {
+          await persistMachineState(context.sessionId, postActor.getSnapshot())
+          console.info("[agent] Post-LLM events injected: %s", injectedTypes.join(", "))
+        }
+      }
+    } catch (err) {
+      console.error("[agent] Post-LLM event injection failed:", (err as Error).message)
+    }
+  }
+
+  // Yield buffered PIX data after LLM explanation text
+  if (pendingPixData) {
+    yield pendingPixData
+  }
 }

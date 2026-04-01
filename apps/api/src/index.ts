@@ -2,9 +2,10 @@ import * as Sentry from "@sentry/node";
 import { buildServer } from "./server.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
+import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
-import { prisma } from "@ibatexas/domain";
+import { prisma, createScheduleService } from "@ibatexas/domain";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
 import logger from "./lib/logger.js";
@@ -51,6 +52,14 @@ const start = async (): Promise<void> => {
 
   try {
     await server.listen({ port: PORT, host: "0.0.0.0" });
+    // Seed schedule from env vars if table is empty (no-op if rows exist)
+    try {
+      const scheduleSvc = createScheduleService();
+      await scheduleSvc.seedFromEnv();
+    } catch (err) {
+      server.log.warn({ error: String(err) }, "[startup] Schedule seed failed — run 'ibx db migrate:domain'");
+    }
+
     // Initialize WhatsApp sender (before background jobs that may send notifications)
     initWhatsAppSender();
     // Start background jobs and NATS subscribers after server is listening
@@ -66,6 +75,7 @@ const start = async (): Promise<void> => {
       // Register subscribers BEFORE starting jobs to prevent race condition
       await startCartIntelligenceSubscribers(server.log);
       await startHandoffSubscriber(server.log);
+      await startConversationArchiver(server.log);
 
       // Start all BullMQ background workers
       registerWorkers(server.log);

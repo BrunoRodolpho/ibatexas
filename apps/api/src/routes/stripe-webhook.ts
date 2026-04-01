@@ -15,6 +15,7 @@ import Stripe from "stripe";
 import { getRedisClient, rk, medusaAdmin } from "@ibatexas/tools";
 import { createOrderService } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { markPixPaid } from "../jobs/pix-expiry-monitor.js";
 
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -42,7 +43,9 @@ async function handlePaymentSucceeded(
   }
 
   const svc = createOrderService(medusaAdmin);
-  const result = await svc.capturePayment(orderId, paymentIntent.id);
+  const result = await svc.capturePayment(orderId, paymentIntent.id, {
+    amountInCentavos: paymentIntent.amount,
+  });
 
   if (!result) {
     logger.info({ event_id: event.id, order_id: orderId }, "Order already processed — no-op");
@@ -55,6 +58,11 @@ async function handlePaymentSucceeded(
     customerId: result.customerId,
     items: result.items,
     stripePaymentIntentId: paymentIntent.id,
+  });
+
+  // Mark PIX as paid so expiry monitor skips reminders for this order
+  await markPixPaid(orderId).catch((err) => {
+    logger.warn({ error: String(err), order_id: orderId }, "[stripe.pix.mark_paid_failed]");
   });
 
   logger.info(

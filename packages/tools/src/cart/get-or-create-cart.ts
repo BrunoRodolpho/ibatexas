@@ -25,11 +25,15 @@ interface CartSummary {
   message: string;
 }
 
-/** Build the Redis key for the active cart. Prefer customerId; fall back to sessionId for guests. */
+/**
+ * Build the Redis key for the active cart.
+ * Uses sessionId to scope carts to individual conversation sessions.
+ * This prevents stale cart data from a previous session bleeding into
+ * a new conversation (ephemeral session scoping).
+ * Falls back to customerId only for legacy compatibility.
+ */
 function cartRedisKey(ctx: AgentContext): string {
-  if (ctx.customerId) {
-    return rk(`cart:active:${ctx.customerId}`);
-  }
+  // Session-scoped: each sessionId gets its own cart binding
   return rk(`cart:active:session:${ctx.sessionId}`);
 }
 
@@ -104,31 +108,57 @@ export async function getOrCreateCart(
     await redis.del(key);
   }
 
-  // 2. Create a new cart (customer association handled via Medusa session headers)
-  const cartData = (await medusaStoreFetch("/store/carts", {
-    method: "POST",
-    body: JSON.stringify({}),
-  })) as { cart?: { id: string } };
-
-  const cartId = cartData.cart?.id;
-  if (!cartId) {
-    return {
-      cartId: "",
-      items: [],
-      total: 0,
-      message: "Erro ao criar carrinho. Tente novamente.",
-    };
+  // 2. Acquire creation lock to prevent TOCTOU race (two concurrent calls
+  //    both see null → both POST to Medusa → duplicate carts).
+  const lockKey = rk(`cart:create:lock:${ctx.sessionId}`);
+  const locked = await redis.set(lockKey, "1", { NX: true, EX: 10 });
+  if (!locked) {
+    // Another call is creating the cart — wait briefly and retry reading
+    await new Promise((r) => setTimeout(r, 500));
+    const racedCartId = await redis.get(key);
+    if (racedCartId) return parseCart(racedCartId, { id: racedCartId, items: [], total: 0 });
+    // If still null after retry, proceed with creation (lock may have expired)
   }
 
-  // 3. Persist in Redis
-  await redis.set(key, cartId, { EX: CART_TTL_SECONDS });
+  try {
+    // Re-read after acquiring lock (the other caller may have finished)
+    const postLockCartId = await redis.get(key);
+    if (postLockCartId) {
+      const cart = await validateExistingCart(postLockCartId);
+      if (cart) {
+        await redis.expire(key, CART_TTL_SECONDS);
+        return parseCart(postLockCartId, cart);
+      }
+    }
 
-  return {
-    cartId,
-    items: [],
-    total: 0,
-    message: `Carrinho criado (${cartId}). Pronto para adicionar itens.`,
-  };
+    // 3. Create a new cart (customer association handled via Medusa session headers)
+    const cartData = (await medusaStoreFetch("/store/carts", {
+      method: "POST",
+      body: JSON.stringify({}),
+    })) as { cart?: { id: string } };
+
+    const cartId = cartData.cart?.id;
+    if (!cartId) {
+      return {
+        cartId: "",
+        items: [],
+        total: 0,
+        message: "Erro ao criar carrinho. Tente novamente.",
+      };
+    }
+
+    // 4. Persist in Redis
+    await redis.set(key, cartId, { EX: CART_TTL_SECONDS });
+
+    return {
+      cartId,
+      items: [],
+      total: 0,
+      message: `Carrinho criado (${cartId}). Pronto para adicionar itens.`,
+    };
+  } finally {
+    await redis.del(lockKey).catch(() => {});
+  }
 }
 
 export const GetOrCreateCartTool = {

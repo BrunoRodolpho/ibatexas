@@ -114,7 +114,7 @@ export function UpsellToast() {
 
         {/* Product info */}
         <div className="flex-1 min-w-0">
-          <p className="text-[11px] text-smoke-400 font-medium">{t('upsell.also_add')}</p>
+          <p className="text-[11px] text-[var(--color-text-secondary)] font-medium">{t('upsell.also_add')}</p>
           <p className="text-sm font-semibold text-charcoal-900 truncate">{upsellProduct.title}</p>
           <p className="text-xs tabular-nums text-smoke-500">{priceFormatted}</p>
         </div>
@@ -131,7 +131,7 @@ export function UpsellToast() {
         {/* Dismiss */}
         <button
           onClick={handleDismiss}
-          className="flex-shrink-0 text-smoke-400 hover:text-charcoal-900 transition-colors"
+          className="flex-shrink-0 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors"
           aria-label="Fechar sugestão"
         >
           <X className="w-4 h-4" strokeWidth={2} />

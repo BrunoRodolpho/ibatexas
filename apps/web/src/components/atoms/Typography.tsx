@@ -20,7 +20,7 @@ const textVariants = cva('', {
     textColor: {
       primary: 'text-charcoal-900',
       secondary: 'text-charcoal-700',
-      muted: 'text-smoke-400',
+      muted: 'text-[var(--color-text-muted)]',
       accent: 'text-brand-500',
       danger: 'text-accent-red',
       success: 'text-accent-green',

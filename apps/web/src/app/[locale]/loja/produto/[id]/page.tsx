@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import type { Metadata } from 'next'
 import PDPContent from './PDPContent'
+import { JsonLd } from '@/components/atoms'
 
 /** ISR: revalidate product pages every 60s — keeps SEO content fresh */
 export const revalidate = 60
@@ -57,9 +58,39 @@ function PDPSkeleton() {
 // ── Server Component wrapper ─────────────────────────────────────────────
 export default async function ProductPage({ params }: ProductPageProps) {
   const { id } = await params
+
+  // Fetch product for JSON-LD (Next.js deduplicates with generateMetadata fetch)
+  let productJsonLd: Record<string, unknown> | null = null
+  try {
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+    const res = await fetch(`${apiBase}/api/products/${id}`, { next: { revalidate: 60 } })
+    if (res.ok) {
+      const product = await res.json()
+      const image = product.images?.[0] || product.imageUrl || undefined
+      productJsonLd = {
+        '@context': 'https://schema.org',
+        '@type': 'Product',
+        name: product.title,
+        description: product.description || `${product.title} — Churrasco defumado artesanal`,
+        ...(image ? { image } : {}),
+        offers: {
+          '@type': 'Offer',
+          price: (product.price ?? 0) / 100,
+          priceCurrency: 'BRL',
+          availability: 'https://schema.org/InStock',
+        },
+      }
+    }
+  } catch {
+    // JSON-LD is non-critical — page renders without it
+  }
+
   return (
-    <Suspense fallback={<PDPSkeleton />}>
-      <PDPContent productId={id} />
-    </Suspense>
+    <>
+      {productJsonLd && <JsonLd data={productJsonLd} />}
+      <Suspense fallback={<PDPSkeleton />}>
+        <PDPContent productId={id} />
+      </Suspense>
+    </>
   )
 }

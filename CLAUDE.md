@@ -13,9 +13,11 @@
 | Prisma schema, entities, NATS events | [docs/architecture/design/domain-model.md](docs/architecture/design/domain-model.md) |
 | 25 AI tools — auth level, inputs, outputs | [docs/architecture/design/agent-tools.md](docs/architecture/design/agent-tools.md) |
 | ADRs, cross-cutting patterns | [docs/architecture/decisions.md](docs/architecture/decisions.md) |
+| Zero-Trust LLM, tool classification, intent bridge | [docs/architecture/decisions.md](docs/architecture/decisions.md) (ADR #9) |
 | Analytics events, PostHog dashboards | [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) |
 | Redis key patterns, TTLs | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
 | Claude Code plugins — what's installed, usage | [docs/setup/plugins.md](docs/setup/plugins.md) |
+| WhatsApp state machine, XState, prompt routing | [docs/architecture/design/hybrid-state-flow.md](docs/architecture/design/hybrid-state-flow.md) |
 
 ---
 
@@ -36,6 +38,8 @@ If a command does not exist for what you need, add it to `packages/cli/` first, 
 6. **`.env`:** never committed — update `.env.example` when adding new vars
 7. **Redis keys:** always use `rk()` from `@ibatexas/tools` — never build raw key strings inline. This includes cache modules, session stores, and job schedulers.
 8. **Analytics events:** add to `AnalyticsEvent` union in `apps/web/src/domains/analytics/events.ts` AND document in `docs/ops/analytics-dashboards.md`
+9. **LLM Authority:** the LLM is a semantic parser with zero state-mutation authority. Mutating tools use `executeToolDirect()` (kernel-only). Never add mutating tools to `STATE_TOOLS` in the prompt synthesizer — they are kernel-controlled via `TOOL_CLASSIFICATION` in `packages/llm-provider/src/machine/types.ts`.
+10. **Redis locks:** always use UUID lock values with Lua conditional release. Never use plain `redis.del()` to release a lock — use the ownership-checking Lua script pattern. See `apps/api/src/whatsapp/session.ts` for reference.
 
 ---
 

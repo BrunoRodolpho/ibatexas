@@ -24,7 +24,7 @@ export function FirstVisitBanner() {
     <div className="relative bg-brand-50 border border-brand-200 rounded-sm p-4 mb-6 animate-reveal">
       <button
         onClick={dismiss}
-        className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center text-smoke-400 hover:text-charcoal-900 transition-colors"
+        className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors"
         aria-label={t('dismiss')}
       >
         <X className="w-4 h-4" />
@@ -33,7 +33,7 @@ export function FirstVisitBanner() {
       <p className="font-display text-sm font-semibold text-charcoal-900 mb-1">
         {t('title')}
       </p>
-      <p className="text-xs text-smoke-400 mb-3 pr-8">
+      <p className="text-xs text-[var(--color-text-secondary)] mb-3 pr-8">
         {t('body')}
       </p>
       <div className="flex items-center gap-3">
@@ -51,7 +51,7 @@ export function FirstVisitBanner() {
         </a>
         <button
           onClick={dismiss}
-          className="text-xs text-smoke-400 hover:text-charcoal-900 transition-colors"
+          className="text-xs text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors"
         >
           {t('dismiss')}
         </button>

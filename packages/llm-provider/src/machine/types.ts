@@ -11,37 +11,49 @@ export type SecondaryIntent = {
 
 // ── Events (Router output) ─────────────────────────────────────────────────
 
+// Base confidence field — optional so existing consumers that don't read it still work.
+// Range: 0.0 (no confidence) to 1.0 (exact match). Set by the router on every emitted event.
+type WithConfidence = { confidence?: number }
+
 export type OrderEvent =
-  | { type: "START_ORDER" }
-  | { type: "ADD_ITEM"; productName: string; quantity: number; variantHint?: string; secondaryIntent?: SecondaryIntent }
-  | { type: "REMOVE_ITEM"; productName: string }
-  | { type: "UPDATE_QTY"; productName: string; quantity: number }
-  | { type: "VIEW_CART" }
-  | { type: "CLEAR_CART" }
-  | { type: "APPLY_COUPON"; code: string }
-  | { type: "SET_FULFILLMENT"; method: "pickup" | "delivery"; cep?: string; lat?: number; lng?: number }
-  | { type: "SET_PAYMENT"; method: "pix" | "card" | "cash" }
-  | { type: "CHECKOUT_START" }
-  | { type: "CONFIRM_ORDER" }
-  | { type: "CANCEL_ORDER" }
-  | { type: "ASK_MENU"; subtype?: "food" | "frozen" | "merch" }
-  | { type: "ASK_PRODUCT"; productName: string }
-  | { type: "ASK_PRICE"; productName: string }
-  | { type: "ASK_HOURS" }
-  | { type: "ASK_DELIVERY"; cep?: string; lat?: number; lng?: number }
-  | { type: "RESERVE_TABLE"; date?: string; time?: string; partySize?: number }
-  | { type: "ASK_LOYALTY" }
-  | { type: "ASK_REORDER" }
-  | { type: "ASK_ORDER_STATUS" }
-  | { type: "CANCEL_ITEM"; productName: string }
-  | { type: "AMEND_ORDER_ADD"; productName: string; quantity: number }
-  | { type: "AMEND_ORDER_REMOVE"; productName: string }
-  | { type: "HANDOFF_HUMAN" }
-  | { type: "OBJECTION"; subtype: "expensive" | "thinking" | "later" | "unknown" }
-  | { type: "GREETING" }
-  | { type: "UPSELL_ACCEPT"; productName: string }
-  | { type: "UPSELL_DECLINE" }
-  | { type: "UNKNOWN_INPUT"; raw: string }
+  | ({ type: "START_ORDER" } & WithConfidence)
+  | ({ type: "ADD_ITEM"; productName: string; quantity: number; variantHint?: string; secondaryIntent?: SecondaryIntent } & WithConfidence)
+  | ({ type: "REMOVE_ITEM"; productName: string } & WithConfidence)
+  | ({ type: "UPDATE_QTY"; productName: string; quantity: number } & WithConfidence)
+  | ({ type: "VIEW_CART" } & WithConfidence)
+  | ({ type: "CLEAR_CART" } & WithConfidence)
+  | ({ type: "APPLY_COUPON"; code: string } & WithConfidence)
+  | ({ type: "SET_FULFILLMENT"; method: "pickup" | "delivery"; cep?: string; lat?: number; lng?: number } & WithConfidence)
+  | ({ type: "SET_PAYMENT"; method: "pix" | "card" | "cash" } & WithConfidence)
+  | ({ type: "CHECKOUT_START" } & WithConfidence)
+  | ({ type: "CONFIRM_ORDER" } & WithConfidence)
+  | ({ type: "CANCEL_ORDER" } & WithConfidence)
+  | ({ type: "ASK_MENU"; subtype?: "food" | "frozen" | "merch" } & WithConfidence)
+  | ({ type: "ASK_PRODUCT"; productName: string } & WithConfidence)
+  | ({ type: "ASK_PRICE"; productName: string } & WithConfidence)
+  | ({ type: "ASK_HOURS" } & WithConfidence)
+  | ({ type: "ASK_DELIVERY"; cep?: string; lat?: number; lng?: number } & WithConfidence)
+  | ({ type: "RESERVE_TABLE"; date?: string; time?: string; partySize?: number } & WithConfidence)
+  | ({ type: "ASK_LOYALTY" } & WithConfidence)
+  | ({ type: "ASK_REORDER" } & WithConfidence)
+  | ({ type: "ASK_ORDER_STATUS" } & WithConfidence)
+  | ({ type: "CANCEL_ITEM"; productName: string } & WithConfidence)
+  | ({ type: "AMEND_ORDER_ADD"; productName: string; quantity: number } & WithConfidence)
+  | ({ type: "AMEND_ORDER_REMOVE"; productName: string } & WithConfidence)
+  | ({ type: "HANDOFF_HUMAN" } & WithConfidence)
+  | ({ type: "OBJECTION"; subtype: "expensive" | "thinking" | "later" | "unknown" } & WithConfidence)
+  | ({ type: "GREETING" } & WithConfidence)
+  | ({ type: "UPSELL_ACCEPT"; productName: string } & WithConfidence)
+  | ({ type: "UPSELL_DECLINE" } & WithConfidence)
+  | ({ type: "UNKNOWN_INPUT"; raw: string } & WithConfidence)
+  | ({ type: "SET_PIX_DETAILS"; email: string; taxId: string; fullName?: string } & WithConfidence)
+  | ({ type: "PIX_DETAILS_COLLECTED"; payload: { name?: string; email?: string; cpf?: string } } & WithConfidence)
+
+/** Events that tools may inject post-LLM response */
+export const ALLOWED_POST_LLM_EVENTS = new Set([
+  "PIX_DETAILS_COLLECTED",
+  "SET_NAME",
+]) as ReadonlySet<string>
 
 // ── Cart item (mirror of Medusa line item) ──────────────────────────────────
 
@@ -83,6 +95,8 @@ export interface OrderContext {
   deliveryEtaMinutes: number | null
   paymentMethod: "pix" | "card" | "cash" | null
   tipInCentavos: number
+  customerEmail: string | null
+  customerTaxId: string | null  // CPF format: 000.000.000-00
 
   // Upsell tracking
   upsellRound: number // 0, 1, or 2
@@ -206,6 +220,187 @@ function getMealPeriodFromScheduleInline(
   return "closed"
 }
 
+// ── IllusionContext (Layer 2 — perception/UX fields, NOT business logic) ────
+
+export interface IllusionContext {
+  momentum: "high" | "cooling" | "lost"
+  secondaryIntent: SecondaryIntent | null
+  lastObjectionSubtype: "expensive" | "thinking" | "later" | "unknown" | null
+}
+
+/** Extract ILLUSION fields from OrderContext for Layer 2 orchestrator. */
+export function extractIllusionContext(ctx: OrderContext): IllusionContext {
+  return {
+    momentum: ctx.momentum,
+    secondaryIntent: ctx.secondaryIntent,
+    lastObjectionSubtype: ctx.lastObjectionSubtype,
+  }
+}
+
+// ── DerivedFields (computable from CORE context — not persisted separately) ──
+
+export interface DerivedFields {
+  isAuthenticated: boolean
+  hasMainDish: boolean
+  hasSide: boolean
+  hasDrink: boolean
+  isCombo: boolean
+}
+
+/** Compute DERIVED fields from CORE context. */
+export function computeDerivedFields(ctx: OrderContext): DerivedFields {
+  const hasMainDish = ctx.items.some((i) => ["meat", "sandwich", "combo"].includes(i.category))
+  const hasSide = ctx.items.some((i) => i.category === "side")
+  const hasDrink = ctx.items.some((i) => i.category === "drink")
+  const isCombo = ctx.items.some((i) => i.category === "combo")
+  return {
+    isAuthenticated: ctx.customerId !== null,
+    hasMainDish,
+    hasSide,
+    hasDrink,
+    isCombo,
+  }
+}
+
+// ── Event Bridge contract types (3-Layer Architecture) ──────────────────────
+
+/** Layer 1 → Layer 2: Kernel output after processing events. */
+export interface KernelOutput {
+  stateValue: string
+  context: OrderContext
+  illusionContext: IllusionContext
+  pendingAction: PendingAction | null
+  transitionMetadata: {
+    fromState: string
+    toState: string
+    eventType: string
+    timestamp: number
+  }
+}
+
+/** Async side-effect the orchestrator must execute between transitions. */
+export type PendingAction =
+  | { type: "SEARCH_PRODUCT"; productName: string }
+  | { type: "ADD_TO_CART"; variantId: string; quantity: number }
+  | { type: "ENSURE_CART" }
+  | { type: "ESTIMATE_DELIVERY"; cep?: string; lat?: number; lng?: number }
+  | { type: "PROCESS_CHECKOUT" }
+  | { type: "FETCH_LOYALTY" }
+  | { type: "FETCH_PROFILE" }
+  | { type: "SCHEDULE_FOLLOW_UP"; reason: string; delayHours: number }
+
+/** Layer 2 → Layer 3: Evaluation request for the Supervisor. */
+export interface SupervisorInput {
+  userMessage: string
+  stateValue: string
+  contextSnapshot: Readonly<OrderContext>
+  illusionContext: Readonly<IllusionContext>
+  candidateResponse: string
+  latencyBudgetMs: number
+  conversationHistory: ReadonlyArray<{ role: string; content: string }>
+}
+
+/** Supervisor operating mode. */
+export type SupervisorMode = "SPEED_MODE" | "EMPATHY_MODE" | "DIRECT_MODE" | "RECOVERY_MODE"
+
+/** Layer 3 → Layer 2: Supervisor evaluation result. */
+export interface SupervisorOutput {
+  mode: SupervisorMode
+  modifiers: {
+    toneAdjustment?: string
+    verbosityScale: number
+    suggestedPhrasing?: string
+    skipUpsell?: boolean
+  }
+  confidence: number
+  reasoning?: string
+}
+
+/** Latency envelope tracking — passed through the orchestrator pipeline. */
+export interface LatencyEnvelope {
+  ttfbDeadlineMs: number   // 800ms from message receipt
+  softDeadlineMs: number   // 2500ms from message receipt
+  hardDeadlineMs: number   // 4000ms from message receipt
+  messageReceivedAt: number
+}
+
+/** Create a LatencyEnvelope from the current timestamp. */
+export function createLatencyEnvelope(messageReceivedAt: number = Date.now()): LatencyEnvelope {
+  return {
+    ttfbDeadlineMs: 800,
+    softDeadlineMs: 2500,
+    hardDeadlineMs: 4000,
+    messageReceivedAt,
+  }
+}
+
+// ── Tool classification (Zero-Trust LLM model) ─────────────────────────────
+
+/**
+ * Tool classification for the Zero-Trust LLM model.
+ *
+ * READ_ONLY: Tools that only query data. LLM can call these freely (within state-gate).
+ * MUTATING: Tools that change system state. These MUST go through the kernel executor.
+ *           The LLM may PROPOSE calling them, but the Machine DECIDES and EXECUTES.
+ */
+export const TOOL_CLASSIFICATION = {
+  READ_ONLY: new Set([
+    "search_products",
+    "get_product_details",
+    "estimate_delivery",
+    "check_inventory",
+    "get_nutritional_info",
+    "check_table_availability",
+    "get_my_reservations",
+    "get_cart",
+    "get_order_history",
+    "check_order_status",
+    "get_customer_profile",
+    "get_recommendations",
+    "get_also_added",
+    "get_ordered_together",
+    "get_loyalty_balance",
+  ]),
+
+  MUTATING: new Set([
+    "add_to_cart",
+    "remove_from_cart",
+    "update_cart",
+    "apply_coupon",
+    "get_or_create_cart",
+    "create_checkout",
+    "cancel_order",
+    "amend_order",
+    "reorder",
+    "create_reservation",
+    "modify_reservation",
+    "cancel_reservation",
+    "join_waitlist",
+    "submit_review",
+    "update_preferences",
+    "handoff_to_human",
+    "schedule_follow_up",
+    "regenerate_pix",
+    "set_pix_details",
+  ]),
+} as const
+
+// ── Intent Bridge (LLM proposes, Machine decides) ───────────────────────────
+
+/**
+ * When the LLM calls a mutating tool, instead of executing it directly,
+ * the system captures it as a ToolIntent. The kernel executor validates
+ * the intent against the current machine state and decides whether to execute.
+ */
+export interface ToolIntent {
+  /** Tool name the LLM wants to call */
+  toolName: string
+  /** Raw input from the LLM (pre-validated) */
+  input: unknown
+  /** Tool use ID from the Anthropic API (for returning results) */
+  toolUseId: string
+}
+
 // ── Default context factory ─────────────────────────────────────────────────
 
 export function createDefaultContext(
@@ -228,6 +423,8 @@ export function createDefaultContext(
     deliveryEtaMinutes: null,
     paymentMethod: null,
     tipInCentavos: 0,
+    customerEmail: null,
+    customerTaxId: null,
     upsellRound: 0,
     hasMainDish: false,
     hasSide: false,

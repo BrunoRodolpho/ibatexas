@@ -62,7 +62,7 @@ export const Modal: React.FC<ModalProps> = ({
             {closeButton && (
               <button
                 onClick={onClose}
-                className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-smoke-400 hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
+                className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
                 style={{ transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)' }}
                 aria-label="Fechar"
               >
@@ -141,7 +141,7 @@ export const Sheet: React.FC<SheetProps> = ({
           {closeButton && (
             <button
               onClick={onClose}
-              className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-smoke-400 hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
+              className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
               style={{ transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)' }}
               aria-label="Fechar"
             >

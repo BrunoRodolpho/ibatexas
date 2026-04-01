@@ -137,7 +137,7 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
           <h2 className="text-sm font-semibold text-charcoal-900">{editing ? 'Editar zona' : 'Nova zona'}</h2>
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
-              <label htmlFor="zone-name" className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Nome</label>
+              <label htmlFor="zone-name" className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Nome</label>
               <input
                 id="zone-name"
                 value={form.name}
@@ -147,7 +147,7 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
               />
             </div>
             <div className="col-span-2">
-              <label htmlFor="zone-cep" className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">
+              <label htmlFor="zone-cep" className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">
                 Prefixos CEP (5 dígitos, separados por vírgula)
               </label>
               <input
@@ -159,7 +159,7 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
               />
             </div>
             <div>
-              <label htmlFor="zone-fee" className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Taxa (R$)</label>
+              <label htmlFor="zone-fee" className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Taxa (R$)</label>
               <input
                 id="zone-fee"
                 type="number"
@@ -170,7 +170,7 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
               />
             </div>
             <div>
-              <label htmlFor="zone-time" className="block text-xs font-semibold uppercase tracking-editorial text-smoke-400 mb-1">Prazo (min)</label>
+              <label htmlFor="zone-time" className="block text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-1">Prazo (min)</label>
               <input
                 id="zone-time"
                 type="number"
@@ -200,7 +200,7 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
             </button>
             <button
               onClick={() => { setCreating(false); setEditing(null) }}
-              className="rounded-sm border border-smoke-200 px-4 py-2 text-sm text-smoke-400 hover:border-smoke-300"
+              className="rounded-sm border border-smoke-200 px-4 py-2 text-sm text-[var(--color-text-secondary)] hover:border-smoke-300"
             >
               Cancelar
             </button>
@@ -209,10 +209,10 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
       )}
 
       {loading && (
-        <p className="text-sm text-smoke-400">Carregando...</p>
+        <p className="text-sm text-[var(--color-text-secondary)]">Carregando...</p>
       )}
       {!loading && zones.length === 0 && (
-        <p className="text-sm text-smoke-400">Nenhuma zona de entrega cadastrada.</p>
+        <p className="text-sm text-[var(--color-text-secondary)]">Nenhuma zona de entrega cadastrada.</p>
       )}
       {!loading && zones.length > 0 && (
         <div className="space-y-2">
@@ -222,18 +222,18 @@ export function AdminZonasPage({ apiBase }: Readonly<AdminZonasPageProps>) {
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-charcoal-900">{zone.name}</span>
                   {!zone.active && (
-                    <span className="text-xs rounded-full bg-smoke-200 px-2 py-0.5 text-smoke-400">Inativa</span>
+                    <span className="text-xs rounded-full bg-smoke-200 px-2 py-0.5 text-[var(--color-text-secondary)]">Inativa</span>
                   )}
                 </div>
-                <p className="text-xs text-smoke-400 mt-0.5">
+                <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">
                   CEPs: {zone.cepPrefixes.join(', ')} · {formatPrice(zone.feeInCentavos)} · {zone.estimatedMinutes} min
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => openEdit(zone)} className="p-1.5 rounded hover:bg-smoke-200 text-smoke-400 hover:text-charcoal-700">
+                <button onClick={() => openEdit(zone)} className="p-1.5 rounded hover:bg-smoke-200 text-[var(--color-text-secondary)] hover:text-charcoal-700">
                   <Pencil className="h-4 w-4" />
                 </button>
-                <button onClick={() => handleDelete(zone.id)} className="p-1.5 rounded hover:bg-accent-red/10 text-smoke-400 hover:text-accent-red">
+                <button onClick={() => handleDelete(zone.id)} className="p-1.5 rounded hover:bg-accent-red/10 text-[var(--color-text-secondary)] hover:text-accent-red">
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>

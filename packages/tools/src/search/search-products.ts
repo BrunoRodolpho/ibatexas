@@ -20,9 +20,9 @@ import {
   type SearchProductsInput,
   type SearchProductsOutput,
   type ProductDTO,
-  AvailabilityWindow,
   Channel,
 } from "@ibatexas/types"
+import { isAvailableNow } from "../catalog/availability.js"
 import { generateEmbedding } from "../embeddings/client.js"
 import { rk } from "../redis/key.js"
 import {
@@ -45,36 +45,6 @@ import type { TypesenseHit, TypesenseFacetCount } from "../typesense/types.js"
 
 type UserType = "guest" | "customer" | "staff"
 
-// ── Availability ──────────────────────────────────────────────────────────────
-
-/**
- * Check if a product's availability window is currently open.
- * All hours read from env vars — never hardcoded.
- */
-function isAvailableNow(availabilityWindow: string): boolean {
-  const now = new Date()
-  const tz = process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo"
-  const brazilTime = new Date(now.toLocaleString("en-US", { timeZone: tz }))
-  const hour = brazilTime.getHours()
-
-  const lunchStart = Number.parseInt(process.env.RESTAURANT_LUNCH_START_HOUR || "11", 10)
-  const lunchEnd = Number.parseInt(process.env.RESTAURANT_LUNCH_END_HOUR || "15", 10)
-  const dinnerStart = Number.parseInt(process.env.RESTAURANT_DINNER_START_HOUR || "18", 10)
-  const dinnerEnd = Number.parseInt(process.env.RESTAURANT_DINNER_END_HOUR || "23", 10)
-
-  switch (availabilityWindow) {
-    case AvailabilityWindow.ALMOCO:
-      return hour >= lunchStart && hour < lunchEnd
-    case AvailabilityWindow.JANTAR:
-      return hour >= dinnerStart && hour < dinnerEnd
-    case AvailabilityWindow.CONGELADOS:
-    case AvailabilityWindow.SEMPRE:
-      return true
-    default:
-      return true
-  }
-}
-
 // ── Filters ───────────────────────────────────────────────────────────────────
 
 interface FilterOptions {
@@ -89,12 +59,6 @@ interface FilterOptions {
   sort?: "relevance" | "price_asc" | "price_desc" | "rating_desc" | "newest"
   offset?: number
   channel?: Channel
-}
-
-/** Check if a product passes availability filter */
-function passesAvailabilityFilter(product: ProductDTO, availableNow: boolean): boolean {
-  if (!availableNow) return true
-  return isAvailableNow(product.availabilityWindow)
 }
 
 /** Check if a product passes allergen filter */
@@ -136,17 +100,33 @@ function passesChannelVisibilityFilter(product: ProductDTO, channel?: Channel): 
 /**
  * Apply post-fetch filters that cannot be expressed as Typesense filter_by.
  * Tags are now handled by Typesense filter_by — no longer post-filtered here.
- * Availability window is time-dependent and product-specific.
+ * Availability window is time-dependent and product-specific — annotated, not excluded.
  * Channel visibility is a post-filter because Medusa metadata is not in Typesense natively.
  */
 function applyFilters(products: ProductDTO[], filters: FilterOptions): ProductDTO[] {
-  return products.filter((product) =>
-    passesAvailabilityFilter(product, filters.availableNow) &&
+  // Step 1: annotate availability (never exclude — bot needs to explain unavailable items)
+  const annotated = filters.availableNow
+    ? products.map((p) => ({ ...p, isAvailableNow: isAvailableNow(p.availabilityWindow) }))
+    : products
+
+  // Step 2: hard filters (allergens, price, rating, channel) still exclude
+  const filtered = annotated.filter((product) =>
     passesAllergenFilter(product, filters.excludeAllergens) &&
     passesPriceFilter(product, filters.minPrice, filters.maxPrice) &&
     passesRatingFilter(product, filters.minRating) &&
     passesChannelVisibilityFilter(product, filters.channel)
   )
+
+  // Step 3: sort available products first when availability annotation is active
+  if (filters.availableNow) {
+    filtered.sort((a, b) => {
+      if (a.isAvailableNow === false && b.isAvailableNow !== false) return 1
+      if (a.isAvailableNow !== false && b.isAvailableNow === false) return -1
+      return 0
+    })
+  }
+
+  return filtered
 }
 
 // ── Typesense search ──────────────────────────────────────────────────────────
@@ -311,14 +291,11 @@ async function diagnoseNoResults(
     return "allergen_filtered"
   }
 
-  // Check availability filter
-  const afterAvailability = applyFilters(rawDocs, {
-    tags: filters.tags,
-    availableNow: filters.availableNow,
-    excludeAllergens: [], // skip allergen for this check
-  })
-  if (afterAvailability.length === 0) {
-    return "not_available_now"
+  // Availability no longer excludes products (they're annotated instead),
+  // but if all results are unavailable, that's still a useful signal.
+  if (filters.availableNow) {
+    const allUnavailable = rawDocs.every((p) => !isAvailableNow(p.availabilityWindow))
+    if (allUnavailable) return "not_available_now"
   }
 
   return "no_match"
@@ -736,7 +713,7 @@ export async function searchProducts(
  */
 export const SearchProductsTool = {
   name: "search_products",
-  description: "Busca o catálogo de produtos usando busca semântica + palavras-chave. Use `queries` para buscar múltiplos produtos distintos em paralelo (ex: costela de porco E boi). Ex: 'costela defumada', 'entrada premium', 'algo vegetariano'",
+  description: "Busca o catálogo de produtos usando busca semântica + palavras-chave. Use `queries` para buscar múltiplos produtos distintos em paralelo (ex: costela de porco E boi). Quando availableNow: true, cada produto retornado inclui isAvailableNow (boolean). Produtos indisponíveis aparecem no final com isAvailableNow: false — informe o cliente sobre a janela de disponibilidade.",
   inputSchema: {
     type: "object",
     properties: {
@@ -756,7 +733,7 @@ export const SearchProductsTool = {
       },
       availableNow: {
         type: "boolean",
-        description: "Filtrar pelo janela de disponibilidade atual (almoço/jantar)",
+        description: "Anota cada produto com isAvailableNow (boolean) baseado na janela atual. Produtos indisponíveis não são removidos — aparecem no final dos resultados.",
       },
       excludeAllergens: {
         type: "array",

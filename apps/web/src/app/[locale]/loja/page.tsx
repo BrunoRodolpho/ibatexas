@@ -5,6 +5,7 @@ import { useProducts } from '@/domains/product'
 import { ProductGrid } from '@/components/organisms'
 import { Text } from '@/components/atoms'
 import { Link } from '@/i18n/navigation'
+import { JsonLd } from '@/components/atoms'
 
 export default function ShopPage() {
   const t = useTranslations()
@@ -22,6 +23,20 @@ export default function ShopPage() {
 
   return (
     <div>
+      <JsonLd
+        data={{
+          '@context': 'https://schema.org',
+          '@type': 'WebPage',
+          name: 'Loja IbateXas',
+          url: 'https://ibatexas.com.br/loja',
+          description: 'Loja online da IbateXas — churrasco defumado artesanal em Ibaté, SP',
+          isPartOf: {
+            '@type': 'WebSite',
+            name: 'IbateXas',
+            url: 'https://ibatexas.com.br',
+          },
+        }}
+      />
       {/* ── Featured section: editorial grid ───────────────────── */}
       <section className="bg-smoke-50">
         <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8 lg:py-12">

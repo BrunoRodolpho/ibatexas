@@ -83,7 +83,7 @@ export const ShippingEstimate = () => {
                     <Text className="font-medium">
                       {option.service === 'PAC' ? t('shop.shipping.pac') : t('shop.shipping.sedex')}
                     </Text>
-                    <Text variant="small" className="text-smoke-400">
+                    <Text variant="small" className="text-[var(--color-text-secondary)]">
                       {option.estimatedDays} {t('shop.shipping.business_days')}
                     </Text>
                   </div>
@@ -94,7 +94,7 @@ export const ShippingEstimate = () => {
               ))}
             </div>
             
-            <Text variant="xs" className="text-smoke-400">
+            <Text variant="xs" className="text-[var(--color-text-secondary)]">
               ✓ {t('shop.shipping.info')} • {t('shop.shipping.origin')}
             </Text>
           </div>

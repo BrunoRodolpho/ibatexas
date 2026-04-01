@@ -80,12 +80,12 @@ export type PrismaVersion = {
 }
 
 /**
- * Prisma Client JS version: 7.5.0
- * Query Engine version: 280c870be64f457428992c43c1f6d557fab6e29e
+ * Prisma Client JS version: 7.6.0
+ * Query Engine version: 75cbdc1eb7150937890ad5465d861175c6624711
  */
 export const prismaVersion: PrismaVersion = {
-  client: "7.5.0",
-  engine: "280c870be64f457428992c43c1f6d557fab6e29e"
+  client: "7.6.0",
+  engine: "75cbdc1eb7150937890ad5465d861175c6624711"
 }
 
 /**
@@ -395,7 +395,12 @@ export const ModelName = {
   Address: 'Address',
   CustomerPreferences: 'CustomerPreferences',
   CustomerOrderItem: 'CustomerOrderItem',
-  DeliveryZone: 'DeliveryZone'
+  LoyaltyAccount: 'LoyaltyAccount',
+  Conversation: 'Conversation',
+  ConversationMessage: 'ConversationMessage',
+  DeliveryZone: 'DeliveryZone',
+  WeeklySchedule: 'WeeklySchedule',
+  Holiday: 'Holiday'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -411,7 +416,7 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
     omit: GlobalOmitOptions
   }
   meta: {
-    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "deliveryZone"
+    modelProps: "table" | "timeSlot" | "reservation" | "reservationTable" | "waitlist" | "review" | "staff" | "customer" | "address" | "customerPreferences" | "customerOrderItem" | "loyaltyAccount" | "conversation" | "conversationMessage" | "deliveryZone" | "weeklySchedule" | "holiday"
     txIsolationLevel: TransactionIsolationLevel
   }
   model: {
@@ -1229,6 +1234,228 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         }
       }
     }
+    LoyaltyAccount: {
+      payload: Prisma.$LoyaltyAccountPayload<ExtArgs>
+      fields: Prisma.LoyaltyAccountFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.LoyaltyAccountFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.LoyaltyAccountFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>
+        }
+        findFirst: {
+          args: Prisma.LoyaltyAccountFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.LoyaltyAccountFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>
+        }
+        findMany: {
+          args: Prisma.LoyaltyAccountFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>[]
+        }
+        create: {
+          args: Prisma.LoyaltyAccountCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>
+        }
+        createMany: {
+          args: Prisma.LoyaltyAccountCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.LoyaltyAccountCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>[]
+        }
+        delete: {
+          args: Prisma.LoyaltyAccountDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>
+        }
+        update: {
+          args: Prisma.LoyaltyAccountUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>
+        }
+        deleteMany: {
+          args: Prisma.LoyaltyAccountDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.LoyaltyAccountUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.LoyaltyAccountUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>[]
+        }
+        upsert: {
+          args: Prisma.LoyaltyAccountUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$LoyaltyAccountPayload>
+        }
+        aggregate: {
+          args: Prisma.LoyaltyAccountAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateLoyaltyAccount>
+        }
+        groupBy: {
+          args: Prisma.LoyaltyAccountGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.LoyaltyAccountGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.LoyaltyAccountCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.LoyaltyAccountCountAggregateOutputType> | number
+        }
+      }
+    }
+    Conversation: {
+      payload: Prisma.$ConversationPayload<ExtArgs>
+      fields: Prisma.ConversationFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.ConversationFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.ConversationFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>
+        }
+        findFirst: {
+          args: Prisma.ConversationFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.ConversationFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>
+        }
+        findMany: {
+          args: Prisma.ConversationFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>[]
+        }
+        create: {
+          args: Prisma.ConversationCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>
+        }
+        createMany: {
+          args: Prisma.ConversationCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.ConversationCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>[]
+        }
+        delete: {
+          args: Prisma.ConversationDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>
+        }
+        update: {
+          args: Prisma.ConversationUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>
+        }
+        deleteMany: {
+          args: Prisma.ConversationDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.ConversationUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.ConversationUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>[]
+        }
+        upsert: {
+          args: Prisma.ConversationUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationPayload>
+        }
+        aggregate: {
+          args: Prisma.ConversationAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateConversation>
+        }
+        groupBy: {
+          args: Prisma.ConversationGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.ConversationGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.ConversationCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.ConversationCountAggregateOutputType> | number
+        }
+      }
+    }
+    ConversationMessage: {
+      payload: Prisma.$ConversationMessagePayload<ExtArgs>
+      fields: Prisma.ConversationMessageFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.ConversationMessageFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.ConversationMessageFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>
+        }
+        findFirst: {
+          args: Prisma.ConversationMessageFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.ConversationMessageFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>
+        }
+        findMany: {
+          args: Prisma.ConversationMessageFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>[]
+        }
+        create: {
+          args: Prisma.ConversationMessageCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>
+        }
+        createMany: {
+          args: Prisma.ConversationMessageCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.ConversationMessageCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>[]
+        }
+        delete: {
+          args: Prisma.ConversationMessageDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>
+        }
+        update: {
+          args: Prisma.ConversationMessageUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>
+        }
+        deleteMany: {
+          args: Prisma.ConversationMessageDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.ConversationMessageUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.ConversationMessageUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>[]
+        }
+        upsert: {
+          args: Prisma.ConversationMessageUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$ConversationMessagePayload>
+        }
+        aggregate: {
+          args: Prisma.ConversationMessageAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateConversationMessage>
+        }
+        groupBy: {
+          args: Prisma.ConversationMessageGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.ConversationMessageGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.ConversationMessageCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.ConversationMessageCountAggregateOutputType> | number
+        }
+      }
+    }
     DeliveryZone: {
       payload: Prisma.$DeliveryZonePayload<ExtArgs>
       fields: Prisma.DeliveryZoneFieldRefs
@@ -1300,6 +1527,154 @@ export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runt
         count: {
           args: Prisma.DeliveryZoneCountArgs<ExtArgs>
           result: runtime.Types.Utils.Optional<Prisma.DeliveryZoneCountAggregateOutputType> | number
+        }
+      }
+    }
+    WeeklySchedule: {
+      payload: Prisma.$WeeklySchedulePayload<ExtArgs>
+      fields: Prisma.WeeklyScheduleFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.WeeklyScheduleFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.WeeklyScheduleFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>
+        }
+        findFirst: {
+          args: Prisma.WeeklyScheduleFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.WeeklyScheduleFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>
+        }
+        findMany: {
+          args: Prisma.WeeklyScheduleFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>[]
+        }
+        create: {
+          args: Prisma.WeeklyScheduleCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>
+        }
+        createMany: {
+          args: Prisma.WeeklyScheduleCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.WeeklyScheduleCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>[]
+        }
+        delete: {
+          args: Prisma.WeeklyScheduleDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>
+        }
+        update: {
+          args: Prisma.WeeklyScheduleUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>
+        }
+        deleteMany: {
+          args: Prisma.WeeklyScheduleDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.WeeklyScheduleUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.WeeklyScheduleUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>[]
+        }
+        upsert: {
+          args: Prisma.WeeklyScheduleUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$WeeklySchedulePayload>
+        }
+        aggregate: {
+          args: Prisma.WeeklyScheduleAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateWeeklySchedule>
+        }
+        groupBy: {
+          args: Prisma.WeeklyScheduleGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.WeeklyScheduleGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.WeeklyScheduleCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.WeeklyScheduleCountAggregateOutputType> | number
+        }
+      }
+    }
+    Holiday: {
+      payload: Prisma.$HolidayPayload<ExtArgs>
+      fields: Prisma.HolidayFieldRefs
+      operations: {
+        findUnique: {
+          args: Prisma.HolidayFindUniqueArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload> | null
+        }
+        findUniqueOrThrow: {
+          args: Prisma.HolidayFindUniqueOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>
+        }
+        findFirst: {
+          args: Prisma.HolidayFindFirstArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload> | null
+        }
+        findFirstOrThrow: {
+          args: Prisma.HolidayFindFirstOrThrowArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>
+        }
+        findMany: {
+          args: Prisma.HolidayFindManyArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>[]
+        }
+        create: {
+          args: Prisma.HolidayCreateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>
+        }
+        createMany: {
+          args: Prisma.HolidayCreateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        createManyAndReturn: {
+          args: Prisma.HolidayCreateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>[]
+        }
+        delete: {
+          args: Prisma.HolidayDeleteArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>
+        }
+        update: {
+          args: Prisma.HolidayUpdateArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>
+        }
+        deleteMany: {
+          args: Prisma.HolidayDeleteManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateMany: {
+          args: Prisma.HolidayUpdateManyArgs<ExtArgs>
+          result: BatchPayload
+        }
+        updateManyAndReturn: {
+          args: Prisma.HolidayUpdateManyAndReturnArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>[]
+        }
+        upsert: {
+          args: Prisma.HolidayUpsertArgs<ExtArgs>
+          result: runtime.Types.Utils.PayloadToResult<Prisma.$HolidayPayload>
+        }
+        aggregate: {
+          args: Prisma.HolidayAggregateArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.AggregateHoliday>
+        }
+        groupBy: {
+          args: Prisma.HolidayGroupByArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.HolidayGroupByOutputType>[]
+        }
+        count: {
+          args: Prisma.HolidayCountArgs<ExtArgs>
+          result: runtime.Types.Utils.Optional<Prisma.HolidayCountAggregateOutputType> | number
         }
       }
     }
@@ -1443,6 +1818,7 @@ export const CustomerScalarFieldEnum = {
   phone: 'phone',
   name: 'name',
   email: 'email',
+  cpf: 'cpf',
   medusaId: 'medusaId',
   source: 'source',
   firstContactAt: 'firstContactAt',
@@ -1495,6 +1871,46 @@ export const CustomerOrderItemScalarFieldEnum = {
 export type CustomerOrderItemScalarFieldEnum = (typeof CustomerOrderItemScalarFieldEnum)[keyof typeof CustomerOrderItemScalarFieldEnum]
 
 
+export const LoyaltyAccountScalarFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  stamps: 'stamps',
+  totalEarned: 'totalEarned',
+  redeemed: 'redeemed',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type LoyaltyAccountScalarFieldEnum = (typeof LoyaltyAccountScalarFieldEnum)[keyof typeof LoyaltyAccountScalarFieldEnum]
+
+
+export const ConversationScalarFieldEnum = {
+  id: 'id',
+  sessionId: 'sessionId',
+  customerId: 'customerId',
+  channel: 'channel',
+  startedAt: 'startedAt',
+  endedAt: 'endedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type ConversationScalarFieldEnum = (typeof ConversationScalarFieldEnum)[keyof typeof ConversationScalarFieldEnum]
+
+
+export const ConversationMessageScalarFieldEnum = {
+  id: 'id',
+  conversationId: 'conversationId',
+  role: 'role',
+  content: 'content',
+  metadata: 'metadata',
+  sentAt: 'sentAt',
+  createdAt: 'createdAt'
+} as const
+
+export type ConversationMessageScalarFieldEnum = (typeof ConversationMessageScalarFieldEnum)[keyof typeof ConversationMessageScalarFieldEnum]
+
+
 export const DeliveryZoneScalarFieldEnum = {
   id: 'id',
   name: 'name',
@@ -1502,11 +1918,40 @@ export const DeliveryZoneScalarFieldEnum = {
   feeInCentavos: 'feeInCentavos',
   estimatedMinutes: 'estimatedMinutes',
   active: 'active',
+  centerLat: 'centerLat',
+  centerLng: 'centerLng',
+  radiusKm: 'radiusKm',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 } as const
 
 export type DeliveryZoneScalarFieldEnum = (typeof DeliveryZoneScalarFieldEnum)[keyof typeof DeliveryZoneScalarFieldEnum]
+
+
+export const WeeklyScheduleScalarFieldEnum = {
+  id: 'id',
+  dayOfWeek: 'dayOfWeek',
+  isOpen: 'isOpen',
+  lunchStart: 'lunchStart',
+  lunchEnd: 'lunchEnd',
+  dinnerStart: 'dinnerStart',
+  dinnerEnd: 'dinnerEnd',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type WeeklyScheduleScalarFieldEnum = (typeof WeeklyScheduleScalarFieldEnum)[keyof typeof WeeklyScheduleScalarFieldEnum]
+
+
+export const HolidayScalarFieldEnum = {
+  id: 'id',
+  date: 'date',
+  label: 'label',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type HolidayScalarFieldEnum = (typeof HolidayScalarFieldEnum)[keyof typeof HolidayScalarFieldEnum]
 
 
 export const SortOrder = {
@@ -1522,6 +1967,14 @@ export const JsonNullValueInput = {
 } as const
 
 export type JsonNullValueInput = (typeof JsonNullValueInput)[keyof typeof JsonNullValueInput]
+
+
+export const NullableJsonNullValueInput = {
+  DbNull: DbNull,
+  JsonNull: JsonNull
+} as const
+
+export type NullableJsonNullValueInput = (typeof NullableJsonNullValueInput)[keyof typeof NullableJsonNullValueInput]
 
 
 export const QueryMode = {
@@ -1661,6 +2114,48 @@ export type ListEnumStaffRoleFieldRefInput<$PrismaModel> = FieldRefInputType<$Pr
 
 
 /**
+ * Reference to a field of type 'ConversationChannel'
+ */
+export type EnumConversationChannelFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ConversationChannel'>
+    
+
+
+/**
+ * Reference to a field of type 'ConversationChannel[]'
+ */
+export type ListEnumConversationChannelFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'ConversationChannel[]'>
+    
+
+
+/**
+ * Reference to a field of type 'MessageRole'
+ */
+export type EnumMessageRoleFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'MessageRole'>
+    
+
+
+/**
+ * Reference to a field of type 'MessageRole[]'
+ */
+export type ListEnumMessageRoleFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'MessageRole[]'>
+    
+
+
+/**
+ * Reference to a field of type 'Decimal'
+ */
+export type DecimalFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'Decimal'>
+    
+
+
+/**
+ * Reference to a field of type 'Decimal[]'
+ */
+export type ListDecimalFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'Decimal[]'>
+    
+
+
+/**
  * Reference to a field of type 'Float'
  */
 export type FloatFieldRefInput<$PrismaModel> = FieldRefInputType<$PrismaModel, 'Float'>
@@ -1779,7 +2274,12 @@ export type GlobalOmitConfig = {
   address?: Prisma.AddressOmit
   customerPreferences?: Prisma.CustomerPreferencesOmit
   customerOrderItem?: Prisma.CustomerOrderItemOmit
+  loyaltyAccount?: Prisma.LoyaltyAccountOmit
+  conversation?: Prisma.ConversationOmit
+  conversationMessage?: Prisma.ConversationMessageOmit
   deliveryZone?: Prisma.DeliveryZoneOmit
+  weeklySchedule?: Prisma.WeeklyScheduleOmit
+  holiday?: Prisma.HolidayOmit
 }
 
 /* Types for Logging */

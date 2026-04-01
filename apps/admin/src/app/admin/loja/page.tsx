@@ -5,10 +5,11 @@ import Image from 'next/image'
 import { MEDUSA_ADMIN_URL, apiFetch } from '@/lib/api'
 import { useAdminProducts, useAdminProduct } from '@/domains/admin'
 import { SearchInput, Sheet } from '@/components/molecules'
-import { AdminLojaPage } from '@ibatexas/ui'
+import { AdminLojaPage, useToast } from '@ibatexas/ui'
 import type { AdminProductRow } from '@ibatexas/types'
 
 export default function ShopManagement() {
+  const { addToast } = useToast()
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const { data: productDetail, loading: detailLoading } = useAdminProduct(selectedId)
@@ -26,8 +27,10 @@ export default function ShopManagement() {
         method: 'PATCH',
         body: JSON.stringify({ status: newStatus }),
       })
+      addToast({ type: 'success', message: 'Status do produto atualizado' })
     } catch (e) {
       console.error('Failed to toggle status', e)
+      addToast({ type: 'error', message: e instanceof Error ? e.message : 'Erro ao atualizar status' })
     }
   }
 
@@ -37,8 +40,10 @@ export default function ShopManagement() {
         method: 'PATCH',
         body: JSON.stringify({ metadata: { inStock: !product.inStock } }),
       })
+      addToast({ type: 'success', message: 'Estoque atualizado' })
     } catch (e) {
       console.error('Failed to toggle stock', e)
+      addToast({ type: 'error', message: e instanceof Error ? e.message : 'Erro ao atualizar estoque' })
     }
   }
 
@@ -58,6 +63,8 @@ export default function ShopManagement() {
       SearchInputComponent={SearchInput}
       SheetComponent={Sheet}
       ImageComponent={Image}
+      onSuccess={(msg) => addToast({ type: 'success', message: msg })}
+      onError={(msg) => addToast({ type: 'error', message: msg })}
     />
   )
 }

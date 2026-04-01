@@ -5,6 +5,7 @@ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts")
 
 const isDev = process.env.NODE_ENV !== "production"
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
+const posthogHost = process.env.NEXT_PUBLIC_POSTHOG_HOST || "https://us.posthog.com"
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -42,10 +43,10 @@ const nextConfig = {
             value: [
               "default-src 'self'",
               // unsafe-eval only needed in dev for Next.js hot-reload
-              `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""} https://app.posthog.com`,
+              `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""} ${posthogHost} https://*.posthog.com`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com https://*.cloudinary.com",
-              `connect-src 'self' https://app.posthog.com ${apiUrl}${isDev ? ' http://*:3001' : ''}`,
+              `connect-src 'self' ${posthogHost} https://*.posthog.com ${apiUrl}${isDev ? ' http://*:3001' : ''}`,
               "font-src 'self' https://fonts.gstatic.com",
               "media-src 'self'",
               "frame-ancestors 'none'",

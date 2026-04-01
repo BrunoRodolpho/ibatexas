@@ -10,8 +10,9 @@ import {
   type SortingState,
   type PaginationState,
   type Header,
+  type Row,
 } from '@tanstack/react-table'
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react'
 
 // ── Sub-component: sort icon for column header ──────────────────────────────
@@ -56,6 +57,13 @@ interface DataTableProps<T> {
   readonly emptyMessage?: string
   readonly onRowClick?: (row: T) => void
   readonly rowClassName?: (row: T) => string | undefined
+  /**
+   * Custom renderer for mobile card layout (<768px).
+   * When provided, each row renders using this function instead of the auto-generated card.
+   * Recommended when the table has more than 4 columns, since auto-generated cards
+   * may become too tall or show low-value fields on small screens.
+   */
+  readonly mobileCardRenderer?: (row: Row<T>) => React.ReactNode
 }
 
 export function DataTable<T>({
@@ -66,6 +74,7 @@ export function DataTable<T>({
   emptyMessage = 'Nenhum item encontrado.',
   onRowClick,
   rowClassName,
+  mobileCardRenderer,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [pagination, setPagination] = useState<PaginationState>({
@@ -87,7 +96,7 @@ export function DataTable<T>({
 
   if (isLoading) {
     return (
-      <div className="w-full overflow-hidden rounded-sm border border-smoke-200 bg-smoke-50">
+      <div className="w-full overflow-x-auto rounded-sm border border-smoke-200 bg-smoke-50">
         <table className="w-full text-[13px]">
           <thead>
             <tr className="border-b border-smoke-100 bg-smoke-100/50">
@@ -114,9 +123,13 @@ export function DataTable<T>({
     )
   }
 
+  const rows = table.getRowModel().rows
+  const isEmpty = rows.length === 0
+
   return (
     <div className="w-full space-y-2">
-      <div className="overflow-hidden rounded-sm border border-smoke-200 bg-smoke-50">
+      {/* ── Desktop table (md+) ──────────────────────────────────────────── */}
+      <div className="hidden overflow-x-auto rounded-sm border border-smoke-200 bg-smoke-50 md:block">
         <table className="w-full text-[13px]">
           <thead>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -133,7 +146,7 @@ export function DataTable<T>({
             ))}
           </thead>
           <tbody>
-            {table.getRowModel().rows.length === 0 ? (
+            {isEmpty ? (
               <tr>
                 <td
                   colSpan={columns.length}
@@ -143,7 +156,7 @@ export function DataTable<T>({
                 </td>
               </tr>
             ) : (
-              table.getRowModel().rows.map((row) => (
+              rows.map((row) => (
                 <tr
                   key={row.id}
                   className={`border-b border-smoke-100 last:border-0 hover:bg-smoke-100/50 ${
@@ -165,24 +178,77 @@ export function DataTable<T>({
         </table>
       </div>
 
-      {/* Pagination */}
+      {/* ── Mobile card layout (<md) ─────────────────────────────────────── */}
+      <div className="space-y-3 md:hidden">
+        {isEmpty ? (
+          <div className="rounded-sm border border-smoke-200 bg-smoke-50 px-4 py-12 text-center text-smoke-400">
+            {emptyMessage}
+          </div>
+        ) : (
+          rows.map((row) => {
+            const cardProps = onRowClick
+              ? {
+                  role: 'button' as const,
+                  tabIndex: 0,
+                  onClick: () => onRowClick(row.original),
+                  onKeyDown: (e: React.KeyboardEvent) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      onRowClick(row.original)
+                    }
+                  },
+                }
+              : {}
+
+            return (
+              <div
+                key={row.id}
+                className={`border border-smoke-200 rounded-sm p-4 space-y-2 bg-smoke-50 text-[13px] ${
+                  onRowClick ? 'cursor-pointer hover:bg-smoke-100/50' : ''
+                } ${rowClassName?.(row.original) ?? ''}`}
+                {...cardProps}
+              >
+                {mobileCardRenderer
+                  ? mobileCardRenderer(row)
+                  : row.getVisibleCells().map((cell) => {
+                      const headerValue = cell.column.columnDef.header
+                      const label =
+                        typeof headerValue === 'string' ? headerValue : cell.column.id
+                      return (
+                        <div key={cell.id} className="flex flex-col gap-0.5">
+                          <span className="text-[10px] uppercase tracking-wider font-medium text-smoke-400">
+                            {label}
+                          </span>
+                          <span className="text-charcoal-700">
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </span>
+                        </div>
+                      )
+                    })}
+              </div>
+            )
+          })
+        )}
+      </div>
+
+      {/* ── Pagination ───────────────────────────────────────────────────── */}
       {table.getPageCount() > 1 && (
-        <div className="flex items-center justify-between text-sm text-charcoal-700">
+        <div className="flex flex-col items-center gap-2 text-sm text-charcoal-700 md:flex-row md:justify-between">
           <span>
             Página {table.getState().pagination.pageIndex + 1} de {table.getPageCount()}
             {' '}·{' '}
             {data.length} {data.length === 1 ? 'item' : 'itens'}
           </span>
-          <div className="flex gap-2">
+          <div className="flex w-full gap-2 md:w-auto">
             <button
-              className="rounded-sm border border-smoke-200 bg-smoke-50 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-100 disabled:opacity-40"
+              className="flex-1 rounded-sm border border-smoke-200 bg-smoke-50 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-100 disabled:opacity-40 md:flex-none"
               onClick={() => table.previousPage()}
               disabled={!table.getCanPreviousPage()}
             >
               Anterior
             </button>
             <button
-              className="rounded-sm border border-smoke-200 bg-smoke-50 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-100 disabled:opacity-40"
+              className="flex-1 rounded-sm border border-smoke-200 bg-smoke-50 px-3 py-1 text-xs font-medium text-charcoal-700 hover:bg-smoke-100 disabled:opacity-40 md:flex-none"
               onClick={() => table.nextPage()}
               disabled={!table.getCanNextPage()}
             >

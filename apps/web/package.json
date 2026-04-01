@@ -15,6 +15,7 @@
     "@ibatexas/types": "workspace:*",
     "@ibatexas/ui": "workspace:*",
     "@sentry/nextjs": "^10.45.0",
+    "@tanstack/react-virtual": "^3.13.23",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.577.0",

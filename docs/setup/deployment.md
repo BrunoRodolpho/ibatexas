@@ -91,7 +91,7 @@ graph TD
 
 - **3 app services**: api, web, admin — all ECS Fargate behind ALB with host-based routing
 - **Redis**: ElastiCache `cache.t4g.micro` — BullMQ queues, caching, sessions
-- **NATS**: ECS Fargate with JetStream — event bus (`cart.abandoned`, `order.placed`, etc.)
+- **NATS**: ECS Fargate with JetStream — event bus (`cart.abandoned`, `order.placed`, `conversation.message.appended`, etc.)
 - **Typesense**: ECS Fargate with EFS — search index with persistent storage
 - **Deploys**: GitHub Actions with OIDC (no long-lived AWS keys)
 
@@ -128,7 +128,7 @@ push to main → build → push ECR → migrate → deploy ECS → wait stable �
 
 1. **Build**: Multi-stage Docker builds (Node 22, pnpm 10.32.1)
 2. **Push**: ECR with commit SHA tags
-3. **Migrate**: Prisma migrations via `DIRECT_DATABASE_URL` (direct Supabase connection, port 5432)
+3. **Migrate**: Prisma migrations via `DIRECT_DATABASE_URL` (direct Supabase connection, port 5432). Includes domain schema migration for `conversations` + `conversation_messages` tables.
 4. **Deploy**: Sequential ECS service updates (api → web → admin)
 5. **Wait**: ECS deployment controller waits for stability (10 min timeout)
 6. **Health** (production only): HTTP checks on all 3 public endpoints

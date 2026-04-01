@@ -32,7 +32,14 @@
     },
     {
       "input": "Sim confirmo",
+      "expectedState": "checkout.collecting_pix_details",
+      "assertPromptContains": ["email", "CPF"],
+      "assertTools": []
+    },
+    {
+      "input": "Maria Santos maria@email.com 987.654.321-00",
       "expectedState": "post_order",
+      "injectPixDetails": { "name": "Maria Santos", "email": "maria@email.com", "cpf": "987.654.321-00" },
       "injectCheckoutResult": {
         "success": true,
         "paymentMethod": "pix",

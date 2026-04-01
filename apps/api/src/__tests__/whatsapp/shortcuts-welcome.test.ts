@@ -29,15 +29,13 @@ describe("welcome shortcuts", () => {
 });
 
 describe("buildWelcomeText", () => {
-  it("mentions R$15 credit", () => {
-    expect(buildWelcomeText()).toContain("R$15");
+  it("mentions the menu invite", () => {
+    expect(buildWelcomeText()).toContain("menu");
   });
 
-  it("mentions taste preference options", () => {
+  it("mentions slow cooking process", () => {
     const text = buildWelcomeText();
-    expect(text).toContain("mal-passada");
-    expect(text).toContain("ao ponto");
-    expect(text).toContain("bem-passada");
+    expect(text).toContain("low & slow");
   });
 
   it("is pt-BR and mentions IbateXas", () => {

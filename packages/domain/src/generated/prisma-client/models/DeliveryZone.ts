@@ -15,6 +15,7 @@ import type * as Prisma from "../internal/prismaNamespace.js"
 /**
  * Model DeliveryZone
  * Delivery zone defined by CEP prefix matching.
+ * Optional centerLat/centerLng/radiusKm define a circular zone for GPS pin fallback.
  */
 export type DeliveryZoneModel = runtime.Types.Result.DefaultSelection<Prisma.$DeliveryZonePayload>
 
@@ -29,11 +30,17 @@ export type AggregateDeliveryZone = {
 export type DeliveryZoneAvgAggregateOutputType = {
   feeInCentavos: number | null
   estimatedMinutes: number | null
+  centerLat: runtime.Decimal | null
+  centerLng: runtime.Decimal | null
+  radiusKm: number | null
 }
 
 export type DeliveryZoneSumAggregateOutputType = {
   feeInCentavos: number | null
   estimatedMinutes: number | null
+  centerLat: runtime.Decimal | null
+  centerLng: runtime.Decimal | null
+  radiusKm: number | null
 }
 
 export type DeliveryZoneMinAggregateOutputType = {
@@ -42,6 +49,9 @@ export type DeliveryZoneMinAggregateOutputType = {
   feeInCentavos: number | null
   estimatedMinutes: number | null
   active: boolean | null
+  centerLat: runtime.Decimal | null
+  centerLng: runtime.Decimal | null
+  radiusKm: number | null
   createdAt: Date | null
   updatedAt: Date | null
 }
@@ -52,6 +62,9 @@ export type DeliveryZoneMaxAggregateOutputType = {
   feeInCentavos: number | null
   estimatedMinutes: number | null
   active: boolean | null
+  centerLat: runtime.Decimal | null
+  centerLng: runtime.Decimal | null
+  radiusKm: number | null
   createdAt: Date | null
   updatedAt: Date | null
 }
@@ -63,6 +76,9 @@ export type DeliveryZoneCountAggregateOutputType = {
   feeInCentavos: number
   estimatedMinutes: number
   active: number
+  centerLat: number
+  centerLng: number
+  radiusKm: number
   createdAt: number
   updatedAt: number
   _all: number
@@ -72,11 +88,17 @@ export type DeliveryZoneCountAggregateOutputType = {
 export type DeliveryZoneAvgAggregateInputType = {
   feeInCentavos?: true
   estimatedMinutes?: true
+  centerLat?: true
+  centerLng?: true
+  radiusKm?: true
 }
 
 export type DeliveryZoneSumAggregateInputType = {
   feeInCentavos?: true
   estimatedMinutes?: true
+  centerLat?: true
+  centerLng?: true
+  radiusKm?: true
 }
 
 export type DeliveryZoneMinAggregateInputType = {
@@ -85,6 +107,9 @@ export type DeliveryZoneMinAggregateInputType = {
   feeInCentavos?: true
   estimatedMinutes?: true
   active?: true
+  centerLat?: true
+  centerLng?: true
+  radiusKm?: true
   createdAt?: true
   updatedAt?: true
 }
@@ -95,6 +120,9 @@ export type DeliveryZoneMaxAggregateInputType = {
   feeInCentavos?: true
   estimatedMinutes?: true
   active?: true
+  centerLat?: true
+  centerLng?: true
+  radiusKm?: true
   createdAt?: true
   updatedAt?: true
 }
@@ -106,6 +134,9 @@ export type DeliveryZoneCountAggregateInputType = {
   feeInCentavos?: true
   estimatedMinutes?: true
   active?: true
+  centerLat?: true
+  centerLng?: true
+  radiusKm?: true
   createdAt?: true
   updatedAt?: true
   _all?: true
@@ -204,6 +235,9 @@ export type DeliveryZoneGroupByOutputType = {
   feeInCentavos: number
   estimatedMinutes: number
   active: boolean
+  centerLat: runtime.Decimal | null
+  centerLng: runtime.Decimal | null
+  radiusKm: number | null
   createdAt: Date
   updatedAt: Date
   _count: DeliveryZoneCountAggregateOutputType | null
@@ -213,7 +247,7 @@ export type DeliveryZoneGroupByOutputType = {
   _max: DeliveryZoneMaxAggregateOutputType | null
 }
 
-type GetDeliveryZoneGroupByPayload<T extends DeliveryZoneGroupByArgs> = Prisma.PrismaPromise<
+export type GetDeliveryZoneGroupByPayload<T extends DeliveryZoneGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<DeliveryZoneGroupByOutputType, T['by']> &
       {
@@ -238,6 +272,9 @@ export type DeliveryZoneWhereInput = {
   feeInCentavos?: Prisma.IntFilter<"DeliveryZone"> | number
   estimatedMinutes?: Prisma.IntFilter<"DeliveryZone"> | number
   active?: Prisma.BoolFilter<"DeliveryZone"> | boolean
+  centerLat?: Prisma.DecimalNullableFilter<"DeliveryZone"> | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: Prisma.DecimalNullableFilter<"DeliveryZone"> | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: Prisma.IntNullableFilter<"DeliveryZone"> | number | null
   createdAt?: Prisma.DateTimeFilter<"DeliveryZone"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"DeliveryZone"> | Date | string
 }
@@ -249,6 +286,9 @@ export type DeliveryZoneOrderByWithRelationInput = {
   feeInCentavos?: Prisma.SortOrder
   estimatedMinutes?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  centerLat?: Prisma.SortOrderInput | Prisma.SortOrder
+  centerLng?: Prisma.SortOrderInput | Prisma.SortOrder
+  radiusKm?: Prisma.SortOrderInput | Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -263,6 +303,9 @@ export type DeliveryZoneWhereUniqueInput = Prisma.AtLeast<{
   feeInCentavos?: Prisma.IntFilter<"DeliveryZone"> | number
   estimatedMinutes?: Prisma.IntFilter<"DeliveryZone"> | number
   active?: Prisma.BoolFilter<"DeliveryZone"> | boolean
+  centerLat?: Prisma.DecimalNullableFilter<"DeliveryZone"> | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: Prisma.DecimalNullableFilter<"DeliveryZone"> | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: Prisma.IntNullableFilter<"DeliveryZone"> | number | null
   createdAt?: Prisma.DateTimeFilter<"DeliveryZone"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"DeliveryZone"> | Date | string
 }, "id">
@@ -274,6 +317,9 @@ export type DeliveryZoneOrderByWithAggregationInput = {
   feeInCentavos?: Prisma.SortOrder
   estimatedMinutes?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  centerLat?: Prisma.SortOrderInput | Prisma.SortOrder
+  centerLng?: Prisma.SortOrderInput | Prisma.SortOrder
+  radiusKm?: Prisma.SortOrderInput | Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   _count?: Prisma.DeliveryZoneCountOrderByAggregateInput
@@ -293,6 +339,9 @@ export type DeliveryZoneScalarWhereWithAggregatesInput = {
   feeInCentavos?: Prisma.IntWithAggregatesFilter<"DeliveryZone"> | number
   estimatedMinutes?: Prisma.IntWithAggregatesFilter<"DeliveryZone"> | number
   active?: Prisma.BoolWithAggregatesFilter<"DeliveryZone"> | boolean
+  centerLat?: Prisma.DecimalNullableWithAggregatesFilter<"DeliveryZone"> | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: Prisma.DecimalNullableWithAggregatesFilter<"DeliveryZone"> | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: Prisma.IntNullableWithAggregatesFilter<"DeliveryZone"> | number | null
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"DeliveryZone"> | Date | string
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"DeliveryZone"> | Date | string
 }
@@ -304,6 +353,9 @@ export type DeliveryZoneCreateInput = {
   feeInCentavos: number
   estimatedMinutes: number
   active?: boolean
+  centerLat?: runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: number | null
   createdAt?: Date | string
   updatedAt?: Date | string
 }
@@ -315,6 +367,9 @@ export type DeliveryZoneUncheckedCreateInput = {
   feeInCentavos: number
   estimatedMinutes: number
   active?: boolean
+  centerLat?: runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: number | null
   createdAt?: Date | string
   updatedAt?: Date | string
 }
@@ -326,6 +381,9 @@ export type DeliveryZoneUpdateInput = {
   feeInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
   estimatedMinutes?: Prisma.IntFieldUpdateOperationsInput | number
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  centerLat?: Prisma.NullableDecimalFieldUpdateOperationsInput | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: Prisma.NullableDecimalFieldUpdateOperationsInput | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -337,6 +395,9 @@ export type DeliveryZoneUncheckedUpdateInput = {
   feeInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
   estimatedMinutes?: Prisma.IntFieldUpdateOperationsInput | number
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  centerLat?: Prisma.NullableDecimalFieldUpdateOperationsInput | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: Prisma.NullableDecimalFieldUpdateOperationsInput | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -348,6 +409,9 @@ export type DeliveryZoneCreateManyInput = {
   feeInCentavos: number
   estimatedMinutes: number
   active?: boolean
+  centerLat?: runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: number | null
   createdAt?: Date | string
   updatedAt?: Date | string
 }
@@ -359,6 +423,9 @@ export type DeliveryZoneUpdateManyMutationInput = {
   feeInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
   estimatedMinutes?: Prisma.IntFieldUpdateOperationsInput | number
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  centerLat?: Prisma.NullableDecimalFieldUpdateOperationsInput | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: Prisma.NullableDecimalFieldUpdateOperationsInput | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -370,6 +437,9 @@ export type DeliveryZoneUncheckedUpdateManyInput = {
   feeInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
   estimatedMinutes?: Prisma.IntFieldUpdateOperationsInput | number
   active?: Prisma.BoolFieldUpdateOperationsInput | boolean
+  centerLat?: Prisma.NullableDecimalFieldUpdateOperationsInput | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  centerLng?: Prisma.NullableDecimalFieldUpdateOperationsInput | runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  radiusKm?: Prisma.NullableIntFieldUpdateOperationsInput | number | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -381,6 +451,9 @@ export type DeliveryZoneCountOrderByAggregateInput = {
   feeInCentavos?: Prisma.SortOrder
   estimatedMinutes?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  centerLat?: Prisma.SortOrder
+  centerLng?: Prisma.SortOrder
+  radiusKm?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -388,6 +461,9 @@ export type DeliveryZoneCountOrderByAggregateInput = {
 export type DeliveryZoneAvgOrderByAggregateInput = {
   feeInCentavos?: Prisma.SortOrder
   estimatedMinutes?: Prisma.SortOrder
+  centerLat?: Prisma.SortOrder
+  centerLng?: Prisma.SortOrder
+  radiusKm?: Prisma.SortOrder
 }
 
 export type DeliveryZoneMaxOrderByAggregateInput = {
@@ -396,6 +472,9 @@ export type DeliveryZoneMaxOrderByAggregateInput = {
   feeInCentavos?: Prisma.SortOrder
   estimatedMinutes?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  centerLat?: Prisma.SortOrder
+  centerLng?: Prisma.SortOrder
+  radiusKm?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -406,6 +485,9 @@ export type DeliveryZoneMinOrderByAggregateInput = {
   feeInCentavos?: Prisma.SortOrder
   estimatedMinutes?: Prisma.SortOrder
   active?: Prisma.SortOrder
+  centerLat?: Prisma.SortOrder
+  centerLng?: Prisma.SortOrder
+  radiusKm?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -413,6 +495,9 @@ export type DeliveryZoneMinOrderByAggregateInput = {
 export type DeliveryZoneSumOrderByAggregateInput = {
   feeInCentavos?: Prisma.SortOrder
   estimatedMinutes?: Prisma.SortOrder
+  centerLat?: Prisma.SortOrder
+  centerLng?: Prisma.SortOrder
+  radiusKm?: Prisma.SortOrder
 }
 
 export type DeliveryZoneCreatecepPrefixesInput = {
@@ -424,6 +509,22 @@ export type DeliveryZoneUpdatecepPrefixesInput = {
   push?: string | string[]
 }
 
+export type NullableDecimalFieldUpdateOperationsInput = {
+  set?: runtime.Decimal | runtime.DecimalJsLike | number | string | null
+  increment?: runtime.Decimal | runtime.DecimalJsLike | number | string
+  decrement?: runtime.Decimal | runtime.DecimalJsLike | number | string
+  multiply?: runtime.Decimal | runtime.DecimalJsLike | number | string
+  divide?: runtime.Decimal | runtime.DecimalJsLike | number | string
+}
+
+export type NullableIntFieldUpdateOperationsInput = {
+  set?: number | null
+  increment?: number
+  decrement?: number
+  multiply?: number
+  divide?: number
+}
+
 
 
 export type DeliveryZoneSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -433,6 +534,9 @@ export type DeliveryZoneSelect<ExtArgs extends runtime.Types.Extensions.Internal
   feeInCentavos?: boolean
   estimatedMinutes?: boolean
   active?: boolean
+  centerLat?: boolean
+  centerLng?: boolean
+  radiusKm?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["deliveryZone"]>
@@ -444,6 +548,9 @@ export type DeliveryZoneSelectCreateManyAndReturn<ExtArgs extends runtime.Types.
   feeInCentavos?: boolean
   estimatedMinutes?: boolean
   active?: boolean
+  centerLat?: boolean
+  centerLng?: boolean
+  radiusKm?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["deliveryZone"]>
@@ -455,6 +562,9 @@ export type DeliveryZoneSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.
   feeInCentavos?: boolean
   estimatedMinutes?: boolean
   active?: boolean
+  centerLat?: boolean
+  centerLng?: boolean
+  radiusKm?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["deliveryZone"]>
@@ -466,11 +576,14 @@ export type DeliveryZoneSelectScalar = {
   feeInCentavos?: boolean
   estimatedMinutes?: boolean
   active?: boolean
+  centerLat?: boolean
+  centerLng?: boolean
+  radiusKm?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }
 
-export type DeliveryZoneOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "cepPrefixes" | "feeInCentavos" | "estimatedMinutes" | "active" | "createdAt" | "updatedAt", ExtArgs["result"]["deliveryZone"]>
+export type DeliveryZoneOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "name" | "cepPrefixes" | "feeInCentavos" | "estimatedMinutes" | "active" | "centerLat" | "centerLng" | "radiusKm" | "createdAt" | "updatedAt", ExtArgs["result"]["deliveryZone"]>
 
 export type $DeliveryZonePayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "DeliveryZone"
@@ -482,6 +595,9 @@ export type $DeliveryZonePayload<ExtArgs extends runtime.Types.Extensions.Intern
     feeInCentavos: number
     estimatedMinutes: number
     active: boolean
+    centerLat: runtime.Decimal | null
+    centerLng: runtime.Decimal | null
+    radiusKm: number | null
     createdAt: Date
     updatedAt: Date
   }, ExtArgs["result"]["deliveryZone"]>
@@ -913,6 +1029,9 @@ export interface DeliveryZoneFieldRefs {
   readonly feeInCentavos: Prisma.FieldRef<"DeliveryZone", 'Int'>
   readonly estimatedMinutes: Prisma.FieldRef<"DeliveryZone", 'Int'>
   readonly active: Prisma.FieldRef<"DeliveryZone", 'Boolean'>
+  readonly centerLat: Prisma.FieldRef<"DeliveryZone", 'Decimal'>
+  readonly centerLng: Prisma.FieldRef<"DeliveryZone", 'Decimal'>
+  readonly radiusKm: Prisma.FieldRef<"DeliveryZone", 'Int'>
   readonly createdAt: Prisma.FieldRef<"DeliveryZone", 'DateTime'>
   readonly updatedAt: Prisma.FieldRef<"DeliveryZone", 'DateTime'>
 }

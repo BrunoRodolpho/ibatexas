@@ -4,7 +4,9 @@
   "private": true,
   "//build": "build runs tsc --noEmit for CI type-checking; use build:medusa for actual Medusa deployment builds",
   "turbo": {
-    "build": { "outputs": [] }
+    "build": {
+      "outputs": []
+    }
   },
   "scripts": {
     "dev": "medusa develop",
@@ -27,8 +29,11 @@
     "@medusajs/draft-order": "^2.13.4",
     "@medusajs/framework": "^2.13.4",
     "@medusajs/medusa": "^2.13.4",
+    "@medusajs/payment-stripe": "^2.13.5",
     "@medusajs/utils": "^2.13.4",
-    "@medusajs/workflows-sdk": "^2.13.4"
+    "@medusajs/workflows-sdk": "^2.13.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@medusajs/cli": "^2.13.4",

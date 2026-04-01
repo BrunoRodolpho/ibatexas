@@ -22,6 +22,13 @@ declare module "fastify" {
 
 type DoneCallback = (err?: Error) => void
 
+class RedisUnavailableError extends Error {
+  constructor() {
+    super("Redis revocation check unavailable");
+    this.name = "RedisUnavailableError";
+  }
+}
+
 async function extractAuth(request: FastifyRequest): Promise<void> {
   try {
     // @fastify/jwt decorates server with jwtVerify — call it here
@@ -35,7 +42,9 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
         const revoked = await redis.get(rk(`jwt:revoked:${payload.jti}`));
         if (revoked) return; // Treat revoked token as unauthenticated
       } catch {
-        // If Redis is down, allow through — revocation is best-effort
+        // SEC: Fail closed — if Redis is unreachable, reject the request
+        // to prevent revoked tokens from being accepted
+        throw new RedisUnavailableError();
       }
     }
 
@@ -48,7 +57,9 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
     } else {
       request.customerId = payload.sub;
     }
-  } catch {
+  } catch (err) {
+    // SEC: Redis failure must propagate — do not silently accept potentially revoked tokens
+    if (err instanceof RedisUnavailableError) throw err;
     // Invalid or missing JWT — caller decides whether to throw
   }
 }
@@ -73,7 +84,15 @@ export function requireAuth(
       return;
     }
     done();
-  }, done);
+  }, (err) => {
+    if (err instanceof RedisUnavailableError) {
+      void reply
+        .code(503)
+        .send({ error: "Service temporarily unavailable" });
+      return;
+    }
+    done(err);
+  });
 }
 
 /**
@@ -84,8 +103,16 @@ export function requireAuth(
  */
 export function optionalAuth(
   request: FastifyRequest,
-  _reply: FastifyReply,
+  reply: FastifyReply,
   done: DoneCallback,
 ): void {
-  extractAuth(request).then(() => done(), done);
+  extractAuth(request).then(() => done(), (err) => {
+    if (err instanceof RedisUnavailableError) {
+      void reply
+        .code(503)
+        .send({ error: "Service temporarily unavailable" });
+      return;
+    }
+    done(err);
+  });
 }

@@ -11,10 +11,11 @@ Example: `production:customer:profile:cust_123`
 
 | Pattern | Type | TTL | Description | Source file |
 |---------|------|-----|-------------|-------------|
-| `session:{sessionId}` | List | 24-48 h | Chat conversation history (guest 48h, authenticated 24h) | `apps/api/src/session/store.ts` |
+| `session:{sessionId}` | List | 24-48 h | Chat conversation history (guest 48h, authenticated 24h). **CDC:** each `appendMessages()` publishes `conversation.message.appended` to NATS for durable Postgres archival. | `apps/api/src/session/store.ts` |
 | `active:carts` | Hash | 48 h | Hash of active cart IDs with metadata `{cartId, sessionType, lastActivity}` polled by abandoned-cart-checker | `apps/api/src/routes/cart.ts` |
 | `cart:nudge:{cartId}` | String (JSON) | 48 h | Tracks which recovery tier was sent for an abandoned cart `{tier, sentAt}` | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `customer:profile:{customerId}` | Hash | 30 d | Cached customer profile — orderCount, favoriteTags, lastSeenAt, scores | `apps/api/src/subscribers/cart-intelligence.ts` |
+| `customer:pix:{customerId}` | Hash | 90 d | Cached PIX billing details — name, email, cpf. Pre-filled on returning customer sessions. | `packages/llm-provider/src/machine/actions.ts` |
 | `customer:recentlyViewed:{customerId}` | List | 7 d | Last 20 product IDs viewed (LPUSH + LTRIM) | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `copurchase:{productId}` | Sorted Set | 30 d | Products bought together with `productId`, score = co-purchase count | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `product:global:score` | Sorted Set | 30 d | Global product popularity by total units ordered | `apps/api/src/subscribers/cart-intelligence.ts` |
@@ -23,12 +24,17 @@ Example: `production:customer:profile:cust_123`
 | `query_log:{timestamp}:{sessionId}:{hash}` | String (JSON) | 7 d | Query log entries for analytics | `packages/tools/src/cache/query-cache.ts` |
 | ~~`product_embedding:{productId}`~~ | — | — | REMOVED — dead embeddings code deleted | — |
 | ~~`embedding:{key}`~~ | — | — | REMOVED — dead embeddings code deleted | — |
+| `wa:machine:{sessionId}` | String (JSON) | 24 h | XState machine snapshot for WhatsApp bot stateless handling | `packages/llm-provider/src/machine/persistence.ts` |
 | `wa:phone:{phoneHash}` | Hash | 24 h | WhatsApp session — phone, sessionId, customerId, lastMessageAt, state | `apps/api/src/whatsapp/session.ts` |
 | `wa:rate:{phoneHash}` | String | 60 s | WhatsApp rate limit counter (max 20/min) | `apps/api/src/routes/whatsapp-webhook.ts` |
 | `wa:webhook:{MessageSid}` | String | 24 h | WhatsApp webhook idempotency (prevents Twilio retry reprocessing) | `apps/api/src/routes/whatsapp-webhook.ts` |
 | `wa:debounce:{phoneHash}` | String | 2 s | WhatsApp message debounce (batches rapid-fire messages) | `apps/api/src/whatsapp/session.ts` |
-| `wa:agent:{phoneHash}` | String | 30 s | WhatsApp distributed agent lock (heartbeat extends TTL every 10s) | `apps/api/src/whatsapp/session.ts` |
-| `wa:optin:{phoneHash}` | String | none | LGPD opt-in consent marker — set on first WhatsApp contact after disclosure | `apps/api/src/whatsapp/session.ts` |
+| `wa:agent:{phoneHash}` | String (UUID) | 30 s | WhatsApp agent lock — UUID value, Lua conditional release, 10s heartbeat | `apps/api/src/whatsapp/session.ts` |
+| `web:agent:{sessionId}` | String (UUID) | 30 s | Web chat agent lock — UUID value, Lua conditional release, 10s heartbeat | `apps/api/src/streaming/execution-queue.ts` |
+| `cart:create:lock:{sessionId}` | String | 10 s | Cart creation lock (prevents TOCTOU double-create race) | `packages/tools/src/cart/get-or-create-cart.ts` |
+| `cart:owner:{cartId}` | String | 24 h | Cart ownership mapping (IDOR prevention) | `apps/api/src/routes/cart.ts` |
+| `session:secret:{sessionId}` | String (UUID) | 1 h | Guest session secret (prevents session hijacking) | `apps/api/src/routes/chat.ts` |
+| `wa:optin:{phoneHash}` | String | none (residual risk — should add 365d TTL) | LGPD opt-in consent marker — set on first WhatsApp contact after disclosure | `apps/api/src/whatsapp/session.ts` |
 | `otp:ip:{ip}` | String | 1 h | OTP send rate limit per IP (max 10/hour) | `apps/api/src/routes/auth.ts` |
 | `otp:rate:{phoneHash}` | String | 10 min | OTP send rate limit (max 3 per phone per 10 min) | `apps/api/src/routes/auth.ts` |
 | `otp:fail:{phoneHash}` | String | 1 h | OTP brute-force counter (locks after 5 failures per hour) | `apps/api/src/routes/auth.ts` |
@@ -55,11 +61,13 @@ Example: `production:customer:profile:cust_123`
 | `outreach:last:{customerId}` | String | 3-7 d | Cooldown flag preventing repeated outreach to the same customer | `apps/api/src/jobs/proactive-engagement.ts` |
 | `outreach:weekly:count` | String (counter) | 7 d | Weekly outreach message counter for admin dashboard | `apps/api/src/jobs/proactive-engagement.ts` |
 | `follow-up:scheduled` | Sorted Set | none (entries have individual TTLs via score) | Scheduled follow-up reminders, polled every 15min | `packages/tools/src/intelligence/schedule-follow-up.ts` |
+| `wa:nudge:replied:{phoneHash}` | String | 120 s | Set on any incoming WhatsApp message; checked by hesitation nudge job. If present, nudge is skipped. | `apps/api/src/jobs/hesitation-nudge.ts` |
 | `metrics:conversations:daily:{date}` | String (counter) | 48 h | Daily WhatsApp conversation count (new sessions) | `apps/api/src/routes/whatsapp-webhook.ts` |
 | `metrics:wa_orders:daily:{date}` | String (counter) | 48 h | Daily WhatsApp order count | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `metrics:messages:{sessionId}` | String (counter) | 48 h | Message count per WhatsApp session | `apps/api/src/routes/whatsapp-webhook.ts` |
 | `metrics:avg_messages_to_checkout` | String (number) | none | Exponential moving average of messages-to-checkout (0.9 old + 0.1 new) | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `alert:staff:hourly` | String (counter) | 1 h | Staff high-value cart alert rate limiter (max 10/hour) | `apps/api/src/subscribers/cart-intelligence.ts` |
+| `restaurant:schedule` | String (JSON) | none | Cached restaurant weekly schedule + holidays. Invalidated on every admin write (no TTL). | `packages/tools/src/cache/schedule-cache.ts` |
 
 **Removed patterns** (documented previously but not found in code):
 - `cart:session:{cartId}` — does not exist; carts are tracked via `active:carts` hash + `session:{sessionId}` list
@@ -123,7 +131,10 @@ ibx intel global-score-rebuild --reset
 - Co-purchase sets now have 30-day TTL (refreshed on each order)
 - Embedding cache (30 d TTL) accounts for the most memory; monitor with `ibx svc health redis`
 - For multi-tenant / staging isolation, `APP_ENV` prefix prevents key bleed
-- All keys now have TTLs — no unbounded growth patterns remain
+- Agent locks now use UUID values with Lua conditional release — prevents cascading lock breaches
+- `welcome:credit:{customerId}` uses atomic `GETDEL` to prevent double-apply race condition
+- Metrics counters use `atomicIncr()` Lua script — no more immortal keys from INCR/EXPIRE race
+- All keys have TTLs except `wa:optin:*` (residual — should be 365d) and `metrics:avg_messages_to_checkout` (single key, acceptable)
 
 ---
 

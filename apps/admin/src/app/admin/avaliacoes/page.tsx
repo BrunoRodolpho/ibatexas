@@ -1,9 +1,10 @@
 'use client'
 
-import { AdminAvaliacoesPage } from '@ibatexas/ui'
+import { AdminAvaliacoesPage, useToast } from '@ibatexas/ui'
 import { useAdminReviews } from '@/domains/admin/admin.hooks'
 
 export default function AvaliacoesPage() {
+  const { addToast } = useToast()
   const { reviews, loading, ratingFilter, setRatingFilter } = useAdminReviews()
 
   return (
@@ -12,6 +13,8 @@ export default function AvaliacoesPage() {
       loading={loading}
       ratingFilter={ratingFilter}
       onRatingFilter={setRatingFilter}
+      onSuccess={(msg) => addToast({ type: 'success', message: msg })}
+      onError={(msg) => addToast({ type: 'error', message: msg })}
     />
   )
 }

@@ -22,7 +22,7 @@ export function TextArea({ ref, className, error, errorMessage, counter, maxLeng
           error
             ? 'border-red-600 focus-visible:border-red-700'
             : 'border-smoke-200 focus-visible:border-charcoal-900',
-          'disabled:text-smoke-400 disabled:cursor-not-allowed',
+          'disabled:text-[var(--color-text-disabled)] disabled:cursor-not-allowed',
           className
         )}
         {...props}
@@ -35,7 +35,7 @@ export function TextArea({ ref, className, error, errorMessage, counter, maxLeng
           <p
             className={clsx(
               'text-xs ml-auto',
-              charCount === maxLength ? 'text-red-600 font-medium' : 'text-smoke-400'
+              charCount === maxLength ? 'text-red-600 font-medium' : 'text-[var(--color-text-secondary)]'
             )}
           >
             {charCount}/{maxLength}

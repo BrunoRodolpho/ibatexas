@@ -23,7 +23,7 @@ export function Label({ ref, className, required, error, helper, children, ...pr
         {required && <span className="text-accent-red ml-1">*</span>}
       </label>
       {helper && (
-        <p className={clsx('text-xs', error ? 'text-accent-red' : 'text-smoke-400')}>
+        <p className={clsx('text-xs', error ? 'text-accent-red' : 'text-[var(--color-text-secondary)]')}>
           {helper}
         </p>
       )}

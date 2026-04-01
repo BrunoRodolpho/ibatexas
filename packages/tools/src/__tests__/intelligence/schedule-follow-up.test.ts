@@ -26,13 +26,13 @@ vi.mock("../../redis/key.js", () => ({
 // ── Import after mocks ────────────────────────────────────────────────────────
 
 import { scheduleFollowUp } from "../../intelligence/schedule-follow-up.js"
-import type { AgentContext } from "@ibatexas/types"
+import { Channel, type AgentContext } from "@ibatexas/types"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 function makeCtx(overrides: Partial<AgentContext> = {}): AgentContext {
   return {
-    channel: "whatsapp",
+    channel: Channel.WhatsApp,
     sessionId: "sess_test",
     customerId: "cust_test",
     userType: "customer",

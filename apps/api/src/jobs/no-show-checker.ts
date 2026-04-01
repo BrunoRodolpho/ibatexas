@@ -12,7 +12,7 @@ import type { FastifyBaseLogger } from "fastify"
 
 const GRACE_PERIOD_MINUTES = Number.parseInt(process.env.NO_SHOW_GRACE_MINUTES || "15", 10)
 const REPEAT_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes
-const RESTAURANT_TZ = process.env.RESTAURANT_TIMEZONE || "America/Chicago"
+const RESTAURANT_TZ = process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo"
 
 let queue: Queue | null = null
 let worker: Worker | null = null

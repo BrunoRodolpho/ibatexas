@@ -151,7 +151,7 @@ export const ProductCardFeatured = ({
             </h3>
 
             {subtitle && (
-              <p className="mt-3 text-sm text-smoke-400 leading-relaxed">
+              <p className="mt-3 text-sm text-[var(--color-text-secondary)] leading-relaxed">
                 {subtitle}
               </p>
             )}

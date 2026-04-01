@@ -34,7 +34,14 @@
     },
     {
       "input": "Confirmo",
+      "expectedState": "checkout.collecting_pix_details",
+      "assertPromptContains": ["email", "CPF"],
+      "assertTools": []
+    },
+    {
+      "input": "Ana Costa ana@teste.com 111.222.333-44",
       "expectedState": "post_order",
+      "injectPixDetails": { "name": "Ana Costa", "email": "ana@teste.com", "cpf": "111.222.333-44" },
       "injectCheckoutResult": {
         "success": true,
         "paymentMethod": "pix",

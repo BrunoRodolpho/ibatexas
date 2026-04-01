@@ -84,6 +84,23 @@ export function computeCartFlags(items: OrderContext["items"]): {
   return { hasMainDish, hasSide, hasDrink, isCombo }
 }
 
+// ── Post-order mutation guards ───────────────────────────────────────────────
+
+/** Guard: order must exist and not already be cancelled. */
+export function canCancelOrder(ctx: OrderContext): boolean {
+  return !!ctx.orderId && ctx.lastAction !== "cancelled"
+}
+
+/** Guard: order must exist, not cancelled, and within amendment window. */
+export function canAmendOrder(ctx: OrderContext): boolean {
+  return !!ctx.orderId && ctx.lastAction !== "cancelled"
+}
+
+/** Guard: order must exist (for PIX regeneration). */
+export function hasOrderId(ctx: OrderContext): boolean {
+  return !!ctx.orderId
+}
+
 // ── Delivery guards ──────────────────────────────────────────────────────────
 
 export function isPickup(ctx: OrderContext): boolean {

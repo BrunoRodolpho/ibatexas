@@ -57,7 +57,7 @@ export function RadioGroup({ ref, name, options, value, onChange, error, errorMe
               >
                 <div className="font-medium">{opt.label}</div>
                 {opt.description && (
-                  <div className="text-xs text-smoke-400">{opt.description}</div>
+                  <div className="text-xs text-[var(--color-text-secondary)]">{opt.description}</div>
                 )}
               </label>
             </div>

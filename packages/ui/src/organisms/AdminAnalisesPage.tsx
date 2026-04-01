@@ -31,7 +31,7 @@ export function AdminAnalisesPage({
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-charcoal-900">Análises</h1>
-        <p className="mt-1 text-sm text-smoke-400">Métricas do dia</p>
+        <p className="mt-1 text-sm text-[var(--color-text-secondary)]">Métricas do dia</p>
       </div>
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-8">

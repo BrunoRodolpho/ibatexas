@@ -36,7 +36,14 @@
     },
     {
       "input": "Sim, confirmo",
+      "expectedState": "checkout.collecting_pix_details",
+      "assertPromptContains": ["email", "CPF"],
+      "assertTools": []
+    },
+    {
+      "input": "Bruno Silva bruno@ibatexas.com 123.456.789-00",
       "expectedState": "post_order",
+      "injectPixDetails": { "name": "Bruno Silva", "email": "bruno@ibatexas.com", "cpf": "123.456.789-00" },
       "injectCheckoutResult": {
         "success": true,
         "paymentMethod": "pix",

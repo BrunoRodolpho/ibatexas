@@ -31,6 +31,8 @@ vi.mock("@ibatexas/tools", () => {
     joinWaitlist: vi.fn(async () => ({ waitlistId: "wl_01" })),
     JoinWaitlistTool: makeTool("join_waitlist"),
     // Cart tools
+    getOrCreateCart: vi.fn(async () => ({ cartId: "cart_01", items: [], totalInCentavos: 0 })),
+    GetOrCreateCartTool: makeTool("get_or_create_cart"),
     getCart: vi.fn(async () => ({ cart: null })),
     GetCartTool: makeTool("get_cart"),
     addToCart: vi.fn(async () => ({ success: true })),
@@ -49,8 +51,15 @@ vi.mock("@ibatexas/tools", () => {
     CheckOrderStatusTool: makeTool("check_order_status"),
     cancelOrder: vi.fn(async () => ({ success: true })),
     CancelOrderTool: makeTool("cancel_order"),
+    amendOrder: vi.fn(async () => ({ success: true })),
+    AmendOrderTool: makeTool("amend_order"),
     reorder: vi.fn(async () => ({ cartId: "cart_01" })),
     ReorderTool: makeTool("reorder"),
+    regeneratePix: vi.fn(async () => ({ success: true, pixQrCodeText: "00020126" })),
+    RegeneratePixTool: makeTool("regenerate_pix"),
+    setPixDetails: vi.fn(async () => ({ valid: true, event: { type: "PIX_DETAILS_COLLECTED", payload: {} }, errors: [], missing: [], message: "" })),
+    SetPixDetailsTool: makeTool("set_pix_details"),
+    SetPixDetailsInputSchema: { parse: vi.fn((x: unknown) => x) },
     // Intelligence tools
     getCustomerProfile: vi.fn(async () => ({})),
     GetCustomerProfileTool: makeTool("get_customer_profile"),
@@ -97,8 +106,8 @@ const ctx: AgentContext = {
 // ── TOOL_DEFINITIONS ──────────────────────────────────────────────────────────
 
 describe("TOOL_DEFINITIONS", () => {
-  it("has 30 registered tools", () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(30)
+  it("has 34 registered tools", () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(34)
   })
 
   it("uses input_schema (snake_case) for Anthropic API", () => {

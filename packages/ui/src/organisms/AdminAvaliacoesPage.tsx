@@ -4,6 +4,12 @@ import { createColumnHelper } from '@tanstack/react-table'
 import { Star } from 'lucide-react'
 import { DataTable } from '../atoms/DataTable'
 import { FilterChip } from '../molecules/FilterChip'
+import {
+  RATING_FILTERS as RATING_FILTER_OPTIONS,
+  REVIEW_COLUMN_HEADERS,
+  PAGE_TITLES,
+  EMPTY_STATES,
+} from '../constants/admin-labels'
 
 export interface AdminReview {
   id: string
@@ -16,14 +22,7 @@ export interface AdminReview {
 
 const col = createColumnHelper<AdminReview>()
 
-const RATING_FILTERS = [
-  { id: '', label: 'Todos' },
-  { id: '5', label: '5' },
-  { id: '4', label: '4' },
-  { id: '3', label: '3' },
-  { id: '2', label: '2' },
-  { id: '1', label: '1' },
-] as const
+const RATING_FILTERS = RATING_FILTER_OPTIONS
 
 function renderStars(rating: number) {
   return (
@@ -55,6 +54,8 @@ export interface AdminAvaliacoesPageProps {
   loading: boolean
   ratingFilter: string
   onRatingFilter: (rating: string) => void
+  onSuccess?: (msg: string) => void
+  onError?: (msg: string) => void
 }
 
 export function AdminAvaliacoesPage({
@@ -65,33 +66,33 @@ export function AdminAvaliacoesPage({
 }: Readonly<AdminAvaliacoesPageProps>) {
   const columns = [
     col.accessor('rating', {
-      header: 'Estrelas',
+      header: REVIEW_COLUMN_HEADERS.stars,
       cell: (i) => renderStars(i.getValue()),
     }),
     col.accessor('comment', {
-      header: 'Comentário',
+      header: REVIEW_COLUMN_HEADERS.comment,
       cell: (i) => i.getValue() ?? '—',
     }),
     col.accessor('productId', {
-      header: 'Produto',
+      header: REVIEW_COLUMN_HEADERS.product,
       cell: (i) => {
         const id = i.getValue()
-        return id ? <span className="font-mono text-xs text-smoke-400">{id.slice(0, 8)}…</span> : '—'
+        return id ? <span className="font-mono text-xs text-[var(--color-text-secondary)]">{id.slice(0, 8)}…</span> : '—'
       },
     }),
     col.accessor('customerPhone', {
-      header: 'Cliente',
+      header: REVIEW_COLUMN_HEADERS.customer,
       cell: (i) => i.getValue() ?? '—',
     }),
     col.accessor('createdAt', {
-      header: 'Data',
+      header: REVIEW_COLUMN_HEADERS.date,
       cell: (i) => formatDate(i.getValue()),
     }),
   ]
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-charcoal-900">Avaliações</h1>
+      <h1 className="text-2xl font-bold text-charcoal-900">{PAGE_TITLES.reviews}</h1>
 
       <div className="flex flex-wrap items-center gap-3">
         {RATING_FILTERS.map((f) => (
@@ -109,7 +110,7 @@ export function AdminAvaliacoesPage({
         data={reviews}
         columns={columns}
         isLoading={loading}
-        emptyMessage="Nenhuma avaliação encontrada"
+        emptyMessage={EMPTY_STATES.reviews}
         pageSize={20}
         rowClassName={(r) => r.rating <= 2 ? 'bg-red-50' : undefined}
       />

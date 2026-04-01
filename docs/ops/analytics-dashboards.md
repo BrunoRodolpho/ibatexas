@@ -283,6 +283,14 @@ flowchart TD
 | `proactive_nudge_sent` | Outreach message sent to dormant customer | `customerId`, `messageType`, `daysSinceLast` |
 | `proactive_nudge_converted` | Order placed within 24h of nudge | `customerId`, `messageType`, `orderTotal` |
 
+### Conversation Archival Events (NATS only — not PostHog)
+
+| Event | Trigger | Key Properties |
+|-------|---------|---------------|
+| `conversation.message.appended` | `appendMessages()` in session store | `sessionId`, `customerId`, `channel`, `messages[]` |
+
+**Note:** Conversation archival events flow through NATS to the `conversation-archiver` subscriber (Postgres persistence), NOT through PostHog. These are infrastructure events for durable storage, not analytics events.
+
 ### Agent Performance Events
 
 | Event | Trigger | Key Properties |

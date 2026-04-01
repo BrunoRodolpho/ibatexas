@@ -30,7 +30,7 @@ export function MobileBottomNav() {
               key={href}
               href={resolvedHref}
               className={`flex flex-col items-center justify-center flex-1 py-2 transition-colors duration-500 ease-luxury ${
-                isActive ? 'text-brand-500' : 'text-smoke-400'
+                isActive ? 'text-brand-500' : 'text-[var(--color-text-secondary)]'
               }`}
             >
               <Icon className="h-[22px] w-[22px]" strokeWidth={1.5} />

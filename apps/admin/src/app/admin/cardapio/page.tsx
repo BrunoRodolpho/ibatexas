@@ -5,10 +5,11 @@ import Image from 'next/image'
 import { MEDUSA_ADMIN_URL, apiFetch } from '@/lib/api'
 import { useAdminProducts } from '@/domains/admin'
 import { SearchInput } from '@/components/molecules'
-import { AdminCardapioPage } from '@ibatexas/ui'
+import { AdminCardapioPage, useToast } from '@ibatexas/ui'
 import type { AdminProductRow } from '@ibatexas/types'
 
 export default function MenuManagement() {
+  const { addToast } = useToast()
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'food' | 'frozen' | ''>('')
 
@@ -25,8 +26,10 @@ export default function MenuManagement() {
         method: 'PATCH',
         body: JSON.stringify({ status: newStatus }),
       })
+      addToast({ type: 'success', message: 'Status do produto atualizado' })
     } catch (e) {
       console.error('Failed to toggle status', e)
+      addToast({ type: 'error', message: e instanceof Error ? e.message : 'Erro ao atualizar status' })
     }
   }
 
@@ -42,6 +45,8 @@ export default function MenuManagement() {
       onToggleStatus={handleToggleStatus}
       SearchInputComponent={SearchInput}
       ImageComponent={Image}
+      onSuccess={(msg) => addToast({ type: 'success', message: msg })}
+      onError={(msg) => addToast({ type: 'error', message: msg })}
     />
   )
 }

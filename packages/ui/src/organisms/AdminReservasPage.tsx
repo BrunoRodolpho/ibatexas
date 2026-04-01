@@ -5,6 +5,14 @@ import { RefreshCw } from 'lucide-react'
 import { DataTable } from '../atoms/DataTable'
 import { Badge } from '../atoms/Badge'
 import { FilterChip } from '../molecules/FilterChip'
+import {
+  RESERVATION_STATUS_LABELS,
+  RESERVATION_STATUS_FILTERS,
+  RESERVATION_COLUMN_HEADERS,
+  PAGE_TITLES,
+  ACTION_LABELS,
+  EMPTY_STATES,
+} from '../constants/admin-labels'
 
 export interface AdminReservation {
   id: string
@@ -16,14 +24,7 @@ export interface AdminReservation {
   status: 'pending' | 'confirmed' | 'seated' | 'completed' | 'cancelled' | 'no_show'
 }
 
-const STATUS_LABELS: Record<AdminReservation['status'], string> = {
-  pending: 'Pendente',
-  confirmed: 'Confirmada',
-  seated: 'Sentada',
-  completed: 'Completa',
-  cancelled: 'Cancelada',
-  no_show: 'No Show',
-}
+const STATUS_LABELS = RESERVATION_STATUS_LABELS as Record<AdminReservation['status'], string>
 
 const STATUS_BADGE_VARIANT: Record<AdminReservation['status'], 'warning' | 'primary' | 'success' | 'default' | 'danger'> = {
   pending: 'warning',
@@ -34,15 +35,7 @@ const STATUS_BADGE_VARIANT: Record<AdminReservation['status'], 'warning' | 'prim
   no_show: 'danger',
 }
 
-const STATUS_FILTERS = [
-  { id: '', label: 'Todos' },
-  { id: 'pending', label: 'Pendente' },
-  { id: 'confirmed', label: 'Confirmada' },
-  { id: 'seated', label: 'Sentada' },
-  { id: 'completed', label: 'Completa' },
-  { id: 'cancelled', label: 'Cancelada' },
-  { id: 'no_show', label: 'No Show' },
-] as const
+const STATUS_FILTERS = RESERVATION_STATUS_FILTERS
 
 const col = createColumnHelper<AdminReservation>()
 
@@ -73,6 +66,8 @@ export interface AdminReservasPageProps {
   onStatusFilter: (status: string) => void
   onCheckin: (id: string) => void
   onComplete: (id: string) => void
+  onSuccess?: (msg: string) => void
+  onError?: (msg: string) => void
 }
 
 export function AdminReservasPage({
@@ -87,28 +82,28 @@ export function AdminReservasPage({
 }: Readonly<AdminReservasPageProps>) {
   const columns = [
     col.accessor('id', {
-      header: 'ID',
+      header: RESERVATION_COLUMN_HEADERS.id,
       cell: (i) => (
-        <span className="font-mono text-xs text-smoke-400" title={i.getValue()}>
+        <span className="font-mono text-xs text-[var(--color-text-secondary)]" title={i.getValue()}>
           {truncateId(i.getValue())}
         </span>
       ),
     }),
     col.accessor('customerName', {
-      header: 'Cliente',
+      header: RESERVATION_COLUMN_HEADERS.customer,
       cell: (i) => i.getValue() ?? i.row.original.customerPhone ?? '—',
     }),
-    col.accessor('partySize', { header: 'Pessoas' }),
+    col.accessor('partySize', { header: RESERVATION_COLUMN_HEADERS.partySize }),
     col.accessor('dateTime', {
-      header: 'Data/Hora',
+      header: RESERVATION_COLUMN_HEADERS.dateTime,
       cell: (i) => formatDateTime(i.getValue()),
     }),
     col.accessor('tableNumber', {
-      header: 'Mesa',
+      header: RESERVATION_COLUMN_HEADERS.table,
       cell: (i) => i.getValue() ?? '—',
     }),
     col.accessor('status', {
-      header: 'Status',
+      header: RESERVATION_COLUMN_HEADERS.status,
       cell: (i) => {
         const status = i.getValue()
         return (
@@ -130,7 +125,7 @@ export function AdminReservasPage({
                 onClick={(e) => { e.stopPropagation(); onCheckin(id) }}
                 className="rounded-md bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-700"
               >
-                Check-in
+                {ACTION_LABELS.checkin}
               </button>
             )}
             {status === 'seated' && (
@@ -138,7 +133,7 @@ export function AdminReservasPage({
                 onClick={(e) => { e.stopPropagation(); onComplete(id) }}
                 className="rounded-md bg-charcoal-800 px-3 py-1 text-xs font-medium text-white hover:bg-charcoal-900"
               >
-                Completar
+                {ACTION_LABELS.complete}
               </button>
             )}
           </div>
@@ -149,7 +144,7 @@ export function AdminReservasPage({
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-charcoal-900">Reservas</h1>
+      <h1 className="text-2xl font-bold text-charcoal-900">{PAGE_TITLES.reservations}</h1>
 
       <div className="flex flex-wrap items-center gap-3">
         <input
@@ -170,10 +165,10 @@ export function AdminReservasPage({
         {(statusFilter || dateFilter) && (
           <button
             onClick={() => { onStatusFilter(''); onDateFilter('') }}
-            className="flex items-center gap-1 text-sm text-smoke-400 hover:text-charcoal-700"
+            className="flex items-center gap-1 text-sm text-[var(--color-text-secondary)] hover:text-charcoal-700"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Limpar filtros
+            {ACTION_LABELS.clearFilters}
           </button>
         )}
       </div>
@@ -182,7 +177,7 @@ export function AdminReservasPage({
         data={reservations}
         columns={columns}
         isLoading={loading}
-        emptyMessage="Nenhuma reserva encontrada"
+        emptyMessage={EMPTY_STATES.reservations}
         pageSize={25}
       />
     </div>

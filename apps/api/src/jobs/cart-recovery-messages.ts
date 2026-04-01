@@ -30,14 +30,15 @@ export function buildCartRecoveryMessage(
 
   if (tier === 1) {
     const cartRef = hasItems ? `${item1}${andMore}` : "seus itens";
-    return `Oi${nameClause}! Parece que ${cartRef} ficou no seu carrinho. Quer finalizar? Responda "meu carrinho" 🛒`;
+    return `Oi${nameClause}! Seu ${cartRef} tá te esperando. Ficou alguma dúvida? Responda "meu carrinho" e eu ajudo 🛒`;
   }
 
   if (tier === 2) {
-    return `Ainda pensando${nameClause}? Use o código VOLTA10 pra 10% off no seu pedido! Responda "meu carrinho" 🎁`;
+    const cartRef = hasItems ? item1 : "seus defumados";
+    return `${nameStart}Seu ${cartRef} vai ficar incrível — horas de fogo lento! Use VOLTA10 pra 10% off e garanta hoje. Responda "meu carrinho" 🎁`;
   }
 
   // tier === 3
   const scarcityItem = hasItems ? item1 : fallbackItem;
-  return `${nameStart}Últimas chances de garantir ${scarcityItem}! Seu carrinho expira em breve. Responda "meu carrinho" 🔥`;
+  return `${nameStart}Última chance — seu carrinho com ${scarcityItem} expira em breve. Ainda dá tempo! Responda "meu carrinho" 🔥`;
 }

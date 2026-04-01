@@ -189,11 +189,11 @@ export function findProductMention(msg: string): string | null {
  */
 export function extractProducts(
   msg: string,
-): Array<{ name: string; qty: number; variant?: string }> {
+): Array<{ name: string; qty: number; variant?: string; confidence: number }> {
   const norm = normalize(msg)
 
   // 1. Try legacy exact regex first (zero-cost, already correct)
-  const regexResults: Array<{ name: string; qty: number; variant?: string }> = []
+  const regexResults: Array<{ name: string; qty: number; variant?: string; confidence: number }> = []
   for (const { name, pattern } of PRODUCT_PATTERNS) {
     const match = pattern.exec(norm)
     if (!match) continue
@@ -206,7 +206,7 @@ export function extractProducts(
     const qtyMatch = /(\d+)\s*$/.exec(qtyBefore)
     if (qtyMatch) qty = parseInt(qtyMatch[1], 10)
     const variant = extractVariant(window, name)
-    regexResults.push({ name, qty, ...(variant !== undefined ? { variant } : {}) })
+    regexResults.push({ name, qty, confidence: 1.0, ...(variant !== undefined ? { variant } : {}) })
   }
   if (regexResults.length > 0) return regexResults
 
@@ -219,7 +219,8 @@ export function extractProducts(
       if (match && match.score < 0.3) {
         const qty = extractQuantityFromNorm(norm)
         const variant = extractVariant(norm, match.id)
-        return [{ name: match.id, qty, ...(variant !== undefined ? { variant } : {}) }]
+        const confidence = Math.round((1 - match.score) * 100) / 100
+        return [{ name: match.id, qty, confidence, ...(variant !== undefined ? { variant } : {}) }]
       }
     }
   }
@@ -229,7 +230,8 @@ export function extractProducts(
   if (fullMatch && fullMatch.score < 0.4) {
     const qty = extractQuantityFromNorm(norm)
     const variant = extractVariant(norm, fullMatch.id)
-    return [{ name: fullMatch.id, qty, ...(variant !== undefined ? { variant } : {}) }]
+    const confidence = Math.round((1 - fullMatch.score) * 100) / 100
+    return [{ name: fullMatch.id, qty, confidence, ...(variant !== undefined ? { variant } : {}) }]
   }
 
   return []
@@ -330,6 +332,32 @@ export function extractCustomerName(msg: string): string | null {
   return null
 }
 
+export function extractEmail(msg: string): string | null {
+  const match = /\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/.exec(msg)
+  return match ? match[1]!.toLowerCase() : null
+}
+
+export function extractCpf(msg: string): string | null {
+  const match = /\b(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11})\b/.exec(msg)
+  if (!match) return null
+  const raw = match[1]!.replace(/\D/g, "")
+  if (raw.length !== 11) return null
+  return raw.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4")
+}
+
+export function extractFullName(msg: string): string | null {
+  // Remove email and CPF from message, remaining text is the name
+  const cleaned = msg
+    .replace(/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g, "")
+    .replace(/\b(\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11})\b/g, "")
+    .trim()
+  if (cleaned.length < 3) return null
+  // Must have at least 2 words for a full name
+  const words = cleaned.split(/\s+/).filter(w => w.length > 0)
+  if (words.length < 2) return null
+  return words.map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ")
+}
+
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()
 }
@@ -376,6 +404,7 @@ export function historyHasUpsellQuestion(history: AgentMessage[]): boolean {
 export function routeMessage(
   message: string,
   history: AgentMessage[],
+  currentMachineState?: string,
 ): OrderEvent[] {
   const norm = normalize(message)
 
@@ -387,12 +416,27 @@ export function routeMessage(
   const GREETING_RE = /\b(oi|ola|bom\s+dia|boa\s+tarde|boa\s+noite|eai|fala)\b/
   const hasGreeting = GREETING_RE.test(norm)
 
+  // ── PIX details collection — LLM extracts via set_pix_details tool ──
+  if (currentMachineState === "checkout.collecting_pix_details" || currentMachineState === "checkout.reviewing_pix_details") {
+    // Affirmative in reviewing state → confirm
+    if (/\b(sim|isso|pode|bora|certo|ok|beleza|confirmo)\b/.test(norm)) {
+      return [{ type: "CONFIRM_ORDER", confidence: 0.9 }]
+    }
+    // Negation → re-enter data
+    if (/\b(nao|não|trocar|outro|mudar|alterar|corrigir)\b/.test(norm)) {
+      return [{ type: "UNKNOWN_INPUT", raw: message, confidence: 0.0 }]
+    }
+    // Everything else → UNKNOWN_INPUT so the LLM handles via tool
+    return [{ type: "UNKNOWN_INPUT", raw: message, confidence: 0.0 }]
+  }
+
   // ── Fast path ──────────────────────────────────────────────────────────────
   if (products.length > 0 && payment !== null && fulfillment !== null) {
     const events: OrderEvent[] = products.map((p) => ({
       type: "ADD_ITEM" as const,
       productName: p.name,
       quantity: p.qty,
+      confidence: p.confidence,
       ...(p.variant !== undefined ? { variantHint: p.variant } : {}),
     }))
 
@@ -404,14 +448,15 @@ export function routeMessage(
     events.push({
       type: "SET_FULFILLMENT",
       method: fulfillment.method,
+      confidence: 1.0,
       ...(fulfillment.cep !== undefined ? { cep: fulfillment.cep } : {}),
     })
 
-    events.push({ type: "SET_PAYMENT", method: payment })
-    events.push({ type: "CHECKOUT_START" })
+    events.push({ type: "SET_PAYMENT", method: payment, confidence: 1.0 })
+    events.push({ type: "CHECKOUT_START", confidence: 1.0 })
 
     // Prepend GREETING to reset machine from stale states (post_order, etc.)
-    if (hasGreeting) events.unshift({ type: "GREETING" })
+    if (hasGreeting) events.unshift({ type: "GREETING", confidence: 1.0 })
 
     return events
   }
@@ -424,6 +469,7 @@ export function routeMessage(
         type: "ADD_ITEM" as const,
         productName: p.name,
         quantity: 1,
+        confidence: 1.0,
         ...(p.variant !== undefined ? { variantHint: p.variant } : {}),
       }))
 
@@ -432,14 +478,15 @@ export function routeMessage(
         events.push({
           type: "SET_FULFILLMENT",
           method: fulfillment.method,
+          confidence: 1.0,
           ...(fulfillment.cep ? { cep: fulfillment.cep } : {}),
         })
       }
       if (payment !== null) {
-        events.push({ type: "SET_PAYMENT", method: payment })
+        events.push({ type: "SET_PAYMENT", method: payment, confidence: 1.0 })
       }
       if (fulfillment !== null && payment !== null) {
-        events.push({ type: "CHECKOUT_START" })
+        events.push({ type: "CHECKOUT_START", confidence: 1.0 })
       }
 
       return events
@@ -451,7 +498,41 @@ export function routeMessage(
   const QTY_CORRECTION_RE = /\b(so\s+(?:um|uma|dois|duas|\d+)|(?:um|uma|dois|duas|\d+)\s+so|apenas\s+(?:um|uma|dois|duas|\d+))\b/
   if (QTY_CORRECTION_RE.test(norm)) {
     const qty = extractQuantityFromNorm(norm)
-    return [{ type: "UPDATE_QTY", productName: "__last_pending__", quantity: qty }]
+    return [{ type: "UPDATE_QTY", productName: "__last_pending__", quantity: qty, confidence: 1.0 }]
+  }
+
+  // ── Confirm order (MUST run before product matching) ──────────────────────
+  // Short affirmative messages like "sim", "pode", "ok" can fuzzy-match product
+  // names in Fuse.js. Check for confirmation FIRST when machine is in checkout.
+  const AFFIRMATIVE_RE = /\b(sim|isso|pode|bora|manda|vai|fecha|certo|ok|beleza|perfeito|confirmar|confirmo|fechado)\b/
+  if (AFFIRMATIVE_RE.test(norm)) {
+    // Explicit confirmation — always CONFIRM_ORDER
+    if (/\b(confirmar|confirmo|fechado)\b/.test(norm)) {
+      return [{ type: "CONFIRM_ORDER", confidence: 1.0 }]
+    }
+    // Machine state: authoritative checkout detection
+    const machineInCheckout = currentMachineState?.startsWith("checkout")
+    const machineInOrdering = currentMachineState?.startsWith("ordering")
+
+    if (machineInCheckout && !historyHasUpsellQuestion(history)) {
+      return [{ type: "CONFIRM_ORDER", confidence: 0.95 }]
+    }
+    if (machineInOrdering && !historyHasUpsellQuestion(history) && historyInCheckout(history)) {
+      return [{ type: "CONFIRM_ORDER", confidence: 0.8 }]
+    }
+    // Fallback: history-based (when machine state not available)
+    if (!currentMachineState && historyInCheckout(history) && !historyHasUpsellQuestion(history)) {
+      return [{ type: "CONFIRM_ORDER", confidence: 0.7 }]
+    }
+    // Affirmative after upsell = accept upsell
+    if (historyHasUpsellQuestion(history)) {
+      return [{ type: "UPSELL_ACCEPT", productName: "__last_suggested__", confidence: 0.8 }]
+    }
+    // Short bare affirmative (1-2 words) with low-confidence product match → don't treat as product
+    if (norm.split(/\s+/).length <= 2 && products.every((p) => p.confidence < 0.8)) {
+      // Fall through to UNKNOWN_INPUT — let LLM handle conversationally
+      return [{ type: "UNKNOWN_INPUT", raw: message, confidence: 0.0 }]
+    }
   }
 
   // ── Products mentioned ─────────────────────────────────────────────────────
@@ -460,6 +541,7 @@ export function routeMessage(
       type: "ADD_ITEM" as const,
       productName: p.name,
       quantity: p.qty,
+      confidence: p.confidence,
       ...(p.variant !== undefined ? { variantHint: p.variant } : {}),
     }))
     const secondary = detectSecondaryIntent(norm)
@@ -471,17 +553,18 @@ export function routeMessage(
       addEvents.push({
         type: "SET_FULFILLMENT",
         method: fulfillment.method,
+        confidence: 1.0,
         ...(fulfillment.cep !== undefined ? { cep: fulfillment.cep } : {}),
       })
     }
     if (payment !== null) {
-      addEvents.push({ type: "SET_PAYMENT", method: payment })
+      addEvents.push({ type: "SET_PAYMENT", method: payment, confidence: 1.0 })
     }
     if (fulfillment !== null && payment !== null) {
-      addEvents.push({ type: "CHECKOUT_START" })
+      addEvents.push({ type: "CHECKOUT_START", confidence: 1.0 })
     }
     // Prepend GREETING to reset machine from stale states
-    if (hasGreeting) addEvents.unshift({ type: "GREETING" })
+    if (hasGreeting) addEvents.unshift({ type: "GREETING", confidence: 1.0 })
     return addEvents
   }
 
@@ -493,6 +576,7 @@ export function routeMessage(
       productName: "__last_pending__",
       quantity: 1,
       variantHint: norm.trim(),
+      confidence: 1.0,
     }]
   }
 
@@ -503,196 +587,183 @@ export function routeMessage(
       events.push({
         type: "SET_FULFILLMENT",
         method: fulfillment.method,
+        confidence: 1.0,
         ...(fulfillment.cep ? { cep: fulfillment.cep } : {}),
       })
     }
     if (payment) {
-      events.push({ type: "SET_PAYMENT", method: payment })
+      events.push({ type: "SET_PAYMENT", method: payment, confidence: 1.0 })
     }
     if (fulfillment && payment) {
-      events.push({ type: "CHECKOUT_START" })
+      events.push({ type: "CHECKOUT_START", confidence: 1.0 })
     }
     return events
   }
 
   // ── Greeting ───────────────────────────────────────────────────────────────
   if (/\b(oi|ola|bom\s+dia|boa\s+tarde|boa\s+noite|eai|fala)\b/.test(norm)) {
-    return [{ type: "GREETING" }]
+    return [{ type: "GREETING", confidence: 1.0 }]
   }
 
   // ── Frozen / merch explicit requests ──────────────────────────────────────
   if (/\b(congelado|congelados|levar\s+pra\s+casa)\b/.test(norm)) {
-    return [{ type: "ASK_MENU", subtype: "frozen" as const }]
+    return [{ type: "ASK_MENU", subtype: "frozen" as const, confidence: 1.0 }]
   }
   if (/\b(bone|camiseta|loja|mercadoria|merch)\b/.test(norm)) {
-    return [{ type: "ASK_MENU", subtype: "merch" as const }]
+    return [{ type: "ASK_MENU", subtype: "merch" as const, confidence: 1.0 }]
   }
 
   // ── Food category requests ─────────────────────────────────────────────────
   if (/\b(prato|pratos|porcao|porcoes)\b/.test(norm)) {
-    return [{ type: "ASK_MENU", subtype: "food" as const }]
+    return [{ type: "ASK_MENU", subtype: "food" as const, confidence: 1.0 }]
   }
 
   // ── Menu inquiry ───────────────────────────────────────────────────────────
   if (/\b(cardapio|menu|o\s+que\s+tem|lanche|lanches|sanduiche|sanduiches|opcao|opcoes)\b/.test(norm)) {
-    return [{ type: "ASK_MENU" }]
+    return [{ type: "ASK_MENU", confidence: 1.0 }]
   }
 
   // ── Price inquiry ──────────────────────────────────────────────────────────
   if (/\b(quanto\s+custa|preco|valor)\b/.test(norm)) {
     const productName = findProductMention(message)
     if (productName !== null) {
-      return [{ type: "ASK_PRICE", productName }]
+      return [{ type: "ASK_PRICE", productName, confidence: 1.0 }]
     }
   }
 
   // ── View cart ──────────────────────────────────────────────────────────────
   if (/\b(carrinho|sacola|meu\s+pedido)\b/.test(norm)) {
-    return [{ type: "VIEW_CART" }]
+    return [{ type: "VIEW_CART", confidence: 1.0 }]
   }
 
   // ── Remove item ────────────────────────────────────────────────────────────
   if (/\b(tirar|tira)\b/.test(norm) || /\bremov(er|e)\b/.test(norm)) {
     const productName = findProductMention(message)
     if (productName !== null) {
-      return [{ type: "REMOVE_ITEM", productName }]
+      return [{ type: "REMOVE_ITEM", productName, confidence: 1.0 }]
     }
   }
 
   // ── Clear cart ─────────────────────────────────────────────────────────────
   if (/\b(limpar|zerar|esvaziar)\b/.test(norm)) {
-    return [{ type: "CLEAR_CART" }]
+    return [{ type: "CLEAR_CART", confidence: 1.0 }]
   }
 
   // ── Apply coupon ───────────────────────────────────────────────────────────
   if (/\b(cupom|codigo|fiel)\b/.test(norm)) {
     const code = extractCouponCode(message)
     if (code !== null) {
-      return [{ type: "APPLY_COUPON", code }]
+      return [{ type: "APPLY_COUPON", code, confidence: 1.0 }]
     }
   }
 
   // ── Order status inquiry ───────────────────────────────────────────────────
   if (/\b(status|andamento|onde\s+esta|acompanhar)\b/.test(norm)) {
-    return [{ type: "ASK_ORDER_STATUS" }]
+    return [{ type: "ASK_ORDER_STATUS", confidence: 1.0 }]
   }
 
   // ── Checkout start ─────────────────────────────────────────────────────────
   // "pagar" only triggers checkout when it's the dominant intent (not "quanto custa pra pagar entrega")
   if (/\b(finalizar|finalizado|fechar|fechado|fechamos|checkout)\b/.test(norm)) {
-    return [{ type: "CHECKOUT_START" }]
+    return [{ type: "CHECKOUT_START", confidence: 1.0 }]
   }
   if (/\bpagar\b/.test(norm) && !(/\bquanto\b/.test(norm) || /\bcusta\b/.test(norm) || /\bpreco\b/.test(norm))) {
-    return [{ type: "CHECKOUT_START" }]
+    return [{ type: "CHECKOUT_START", confidence: 1.0 }]
   }
 
-  // ── Confirm order ──────────────────────────────────────────────────────────
-  // Explicit confirmation — always routes to CONFIRM_ORDER (unambiguous intent)
-  if (/\b(confirmar|confirmo|fechado)\b/.test(norm)) {
-    return [{ type: "CONFIRM_ORDER" }]
-  }
-  // Implicit confirmation — requires checkout context to avoid false positives
-  if (
-    /\b(sim|isso|pode|bora|manda|vai|fecha|certo)\b/.test(norm) &&
-    historyInCheckout(history) &&
-    // Prevent false positive: "sim" after upsell question is not confirmation
-    !historyHasUpsellQuestion(history)
-  ) {
-    return [{ type: "CONFIRM_ORDER" }]
-  }
+  // (CONFIRM_ORDER logic moved above product matching to prevent Fuse.js false positives)
 
   // ── Cancel (item-aware) ──────────────────────────────────────────────────
   // If a product is mentioned with cancel intent, it's per-item cancel, not full order
   if (/\b(cancelar|cancela)\b/.test(norm)) {
     const productName = findProductMention(message)
     if (productName !== null) {
-      return [{ type: "CANCEL_ITEM", productName }]
+      return [{ type: "CANCEL_ITEM", productName, confidence: 1.0 }]
     }
-    return [{ type: "CANCEL_ORDER" }]
+    return [{ type: "CANCEL_ORDER", confidence: 1.0 }]
   }
   if (/\b(desistir)\b/.test(norm)) {
-    return [{ type: "CANCEL_ORDER" }]
+    return [{ type: "CANCEL_ORDER", confidence: 1.0 }]
   }
 
   // ── Reservation ────────────────────────────────────────────────────────────
   if (/\b(reserva|mesa|agendar)\b/.test(norm)) {
-    return [{ type: "RESERVE_TABLE" }]
+    return [{ type: "RESERVE_TABLE", confidence: 1.0 }]
   }
 
   // ── Loyalty ────────────────────────────────────────────────────────────────
   if (/\b(selos|fidelidade|pontos|recompensa)\b/.test(norm)) {
-    return [{ type: "ASK_LOYALTY" }]
+    return [{ type: "ASK_LOYALTY", confidence: 1.0 }]
   }
 
   // ── Reorder (expanded patterns) ──────────────────────────────────────────
   if (/\b(repetir|ultimo\s+pedido|de\s+novo|mesmo\s+pedido|mesmo\s+de\s+sempre|de\s+sempre|o\s+mesmo)\b/.test(norm)) {
-    return [{ type: "ASK_REORDER" }]
+    return [{ type: "ASK_REORDER", confidence: 1.0 }]
   }
 
   // ── Handoff to human ───────────────────────────────────────────────────────
   if (/\b(atendente|humano|reclamacao|problema|gerente)\b/.test(norm)) {
-    return [{ type: "HANDOFF_HUMAN" }]
+    return [{ type: "HANDOFF_HUMAN", confidence: 1.0 }]
   }
 
   // ── Hours inquiry ──────────────────────────────────────────────────────────
   if (/\b(horario|funcionamento|abre|fecha)\b/.test(norm)) {
-    return [{ type: "ASK_HOURS" }]
+    return [{ type: "ASK_HOURS", confidence: 1.0 }]
   }
 
   // ── Restaurant address inquiry (not delivery) ────────────────────────────
   if (/\bendereco\b/.test(norm) && /\b(restaurante|voces|ibatexas|retirada|localizacao|onde\s+fica)\b/.test(norm)) {
-    return [{ type: "UNKNOWN_INPUT", raw: message }]
+    return [{ type: "UNKNOWN_INPUT", raw: message, confidence: 0.0 }]
   }
 
   // ── Delivery / CEP inquiry ─────────────────────────────────────────────────
   if (/\b(entrega|cep)\b/.test(norm) || (/\bendereco\b/.test(norm) && /\b(entrega|entregar|meu|cep)\b/.test(norm))) {
     const cep = extractCep(message)
-    return [{ type: "ASK_DELIVERY", ...(cep !== null ? { cep } : {}) }]
+    return [{ type: "ASK_DELIVERY", confidence: 1.0, ...(cep !== null ? { cep } : {}) }]
   }
 
   // CEP alone (no delivery keyword) also triggers ASK_DELIVERY
   const standaloneCep = extractCep(message)
   if (standaloneCep !== null) {
-    return [{ type: "ASK_DELIVERY", cep: standaloneCep }]
+    return [{ type: "ASK_DELIVERY", cep: standaloneCep, confidence: 1.0 }]
   }
 
   // ── Objection ──────────────────────────────────────────────────────────────
   if (/\b(caro|cara|barato|mais\s+em\s+conta|mais\s+acessivel|economico)\b/.test(norm)) {
-    return [{ type: "OBJECTION", subtype: "expensive" }]
+    return [{ type: "OBJECTION", subtype: "expensive", confidence: 1.0 }]
   }
   if (/\b(pensar|vou\s+ver)\b/.test(norm)) {
-    return [{ type: "OBJECTION", subtype: "thinking" }]
+    return [{ type: "OBJECTION", subtype: "thinking", confidence: 1.0 }]
   }
   // "depois" only triggers objection when it's the dominant intent — not when
   // mixed with an ordering clause like "quero costela, mas depois adiciono bebida"
   if (/\b(nao\s+sei)\b/.test(norm)) {
     // "nao sei qual/quanto/como/..." is a question, not hesitation
     if (/\bnao\s+sei\s+(qual|quanto|como|que|se|onde)\b/.test(norm)) {
-      return [{ type: "UNKNOWN_INPUT", raw: message }]
+      return [{ type: "UNKNOWN_INPUT", raw: message, confidence: 0.0 }]
     }
     // In checkout context, it's hesitation about paying
     if (historyInCheckout(history)) {
-      return [{ type: "OBJECTION", subtype: "later" }]
+      return [{ type: "OBJECTION", subtype: "later", confidence: 0.8 }]
     }
     // Default: treat as indecision, not objection
-    return [{ type: "UNKNOWN_INPUT", raw: message }]
+    return [{ type: "UNKNOWN_INPUT", raw: message, confidence: 0.0 }]
   }
   if (/\bdepois\b/.test(norm) && !findProductMention(message)) {
-    return [{ type: "OBJECTION", subtype: "later" }]
+    return [{ type: "OBJECTION", subtype: "later", confidence: 1.0 }]
   }
 
   // ── Fail-soft: food-related words but no product matched → show menu ─────
   if (FOOD_KEYWORDS_RE.test(norm)) {
-    return [{ type: "ASK_MENU" }]
+    return [{ type: "ASK_MENU", confidence: 0.8 }]
   }
 
-  // ── Short affirmative fallback ───────────────────────────────────────────
-  // "sim", "ok", "bora" etc. are always confirmations, never product requests.
-  // Catches cases where historyInCheckout fails (empty/stale history).
-  if (/^(sim|ok|bora|vai|pode|certo|isso)$/.test(norm.trim())) {
-    return [{ type: "CONFIRM_ORDER" }]
-  }
+  // ── Short affirmative without checkout context → let LLM handle ──────────
+  // "sim", "ok" etc. are ambiguous without checkout history.
+  // The guarded CONFIRM_ORDER path (line ~596) already handles checkout context.
+  // Bare affirmatives fall through to UNKNOWN_INPUT so the LLM can respond
+  // conversationally instead of silently confirming a stale order.
 
   // ── Fallback ───────────────────────────────────────────────────────────────
-  return [{ type: "UNKNOWN_INPUT", raw: message }]
+  return [{ type: "UNKNOWN_INPUT", raw: message, confidence: 0.0 }]
 }

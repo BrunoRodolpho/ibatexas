@@ -45,7 +45,7 @@ const SHORTCUT_MAP: Record<string, ShortcutAction> = {
   // Help
   ajuda: { type: "help" },
   help: { type: "help" },
-  opcoes: { type: "help" },
+  opcoes: { type: "menu" },
   comandos: { type: "help" },
 
   // Loyalty
@@ -77,11 +77,11 @@ export function matchShortcut(body: string): ShortcutAction | null {
  */
 export function buildWelcomeText(): string {
   return [
-    "Bem-vindo ao IbateXas! 🥩 Voce tem R$15 de credito no seu primeiro pedido!",
+    "Ei, que bom que você veio! 🥩",
     "",
-    "Vamos comecar: voce prefere carne *mal-passada*, *ao ponto* ou *bem-passada*?",
+    "Aqui no IbateXas é tudo defumado low & slow — mínimo 8h de fogo lento com carvalho americano.",
     "",
-    "(Responda com sua preferencia e eu te mostro as melhores opcoes!)",
+    "Quer conhecer nosso cardápio? Responda *menu* ou me diga o que procura!",
   ].join("\n");
 }
 
@@ -101,10 +101,11 @@ export function buildHelpText(): string {
   return [
     "Olá! 👋 Aqui está o que posso fazer:",
     "",
-    "*menu* ou *cardápio* — ver nosso cardápio",
-    "*carrinho* — ver seu carrinho atual",
-    "*reserva* — fazer uma reserva de mesa",
-    "*ajuda* — ver esta mensagem",
+    "*menu* ou *cardápio* — nosso cardápio (atualizado em tempo real)",
+    "*carrinho* — seu carrinho atual",
+    "*reserva* — reservar mesa",
+    "*fidelidade* — seus selos do programa",
+    "*ajuda* — esta mensagem",
     "",
     "Ou me diga o que procura e eu ajudo! 🍖",
   ].join("\n");

@@ -38,7 +38,7 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().optional(),
 
   // Restaurant
-  RESTAURANT_TIMEZONE: z.string().default("America/Chicago"),
+  RESTAURANT_TIMEZONE: z.string().default("America/Sao_Paulo"),
   NO_SHOW_GRACE_MINUTES: z.coerce.number().int().positive().default(15),
 
   // Critical infrastructure env vars — fail-fast if missing

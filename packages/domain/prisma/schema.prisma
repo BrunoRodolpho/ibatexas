@@ -212,6 +212,7 @@ model Customer {
   phone          String    @unique
   name           String?
   email          String?
+  cpf            String?   @db.VarChar(14) // format: 000.000.000-00
   medusaId       String?   @unique @map("medusa_id")
   source         String?                            /// Origin channel: 'web' | 'whatsapp'
   firstContactAt DateTime? @map("first_contact_at") /// Timestamp of first interaction
@@ -224,6 +225,7 @@ model Customer {
   orderItems     CustomerOrderItem[]
   reservations   Reservation[]           // AUDIT-FIX: DL-F08 — inverse relation
   loyaltyAccount LoyaltyAccount?
+  conversations  Conversation[]
 
   @@index([phone])
   @@map("customers")
@@ -310,6 +312,57 @@ model LoyaltyAccount {
   @@schema("ibx_domain")
 }
 
+// ─── Conversations ────────────────────────────────────────────────────────────
+
+enum ConversationChannel {
+  whatsapp
+  web
+  @@schema("ibx_domain")
+}
+
+enum MessageRole {
+  user
+  assistant
+  system
+  @@schema("ibx_domain")
+}
+
+model Conversation {
+  id         String              @id @default(cuid())
+  sessionId  String              @unique @map("session_id")
+  customerId String?             @map("customer_id")
+  channel    ConversationChannel
+  startedAt  DateTime            @default(now()) @map("started_at")
+  endedAt    DateTime?           @map("ended_at")
+  createdAt  DateTime            @default(now()) @map("created_at")
+  updatedAt  DateTime            @updatedAt @map("updated_at")
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  messages ConversationMessage[]
+
+  @@index([customerId])
+  @@index([channel])
+  @@index([startedAt])
+  @@map("conversations")
+  @@schema("ibx_domain")
+}
+
+model ConversationMessage {
+  id             String      @id @default(cuid())
+  conversationId String      @map("conversation_id")
+  role           MessageRole
+  content        String
+  metadata       Json?
+  sentAt         DateTime    @default(now()) @map("sent_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, sentAt])
+  @@map("conversation_messages")
+  @@schema("ibx_domain")
+}
+
 // ─── Delivery ─────────────────────────────────────────────────────────────────
 
 /// Delivery zone defined by CEP prefix matching.
@@ -328,5 +381,34 @@ model DeliveryZone {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("delivery_zones")
+  @@schema("ibx_domain")
+}
+
+// ─── Restaurant Schedule ────────────────────────────────────────────────────
+
+model WeeklySchedule {
+  id          String   @id @default(cuid())
+  dayOfWeek   Int      @map("day_of_week") // 0=Sun, 1=Mon ... 6=Sat
+  isOpen      Boolean  @default(true) @map("is_open")
+  lunchStart  String?  @db.VarChar(5) @map("lunch_start")  // "11:00"
+  lunchEnd    String?  @db.VarChar(5) @map("lunch_end")    // "15:00"
+  dinnerStart String?  @db.VarChar(5) @map("dinner_start") // "18:00"
+  dinnerEnd   String?  @db.VarChar(5) @map("dinner_end")   // "23:00"
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([dayOfWeek])
+  @@map("weekly_schedules")
+  @@schema("ibx_domain")
+}
+
+model Holiday {
+  id        String   @id @default(cuid())
+  date      DateTime @unique @db.Date
+  label     String   @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("holidays")
   @@schema("ibx_domain")
 }

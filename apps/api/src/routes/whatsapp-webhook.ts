@@ -19,7 +19,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { parse as parseQuerystring } from "node:querystring";
 import twilio from "twilio";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
-import { runAgent } from "@ibatexas/llm-provider";
+import { runOrchestrator } from "@ibatexas/llm-provider";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
   normalizePhone,
@@ -37,10 +37,11 @@ import {
   getLastLocation,
 } from "../whatsapp/session.js";
 import { collectAgentResponse } from "../whatsapp/formatter.js";
-import { sendText } from "../whatsapp/client.js";
+import { sendText, sendMedia } from "../whatsapp/client.js";
 import { matchShortcut, buildHelpText, buildWelcomeText } from "../whatsapp/shortcuts.js";
-import { handleStateMachine, transitionTo } from "../whatsapp/state-machine.js";
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
+import { scheduleHesitationNudge, markCustomerReplied } from "../jobs/hesitation-nudge.js";
+import { schedulePixExpiryMonitor } from "../jobs/pix-expiry-monitor.js";
 
 const MAX_RATE_PER_MINUTE = 20;
 const DEBOUNCE_MS = 2000;
@@ -64,8 +65,8 @@ async function retryForMissedMessages(
   const lastMsg = postHistory.at(-1);
   if (lastMsg?.role !== "user") return;
 
-  const retryLock = await acquireAgentLock(hash);
-  if (!retryLock) return;
+  const retryLockValue = await acquireAgentLock(hash);
+  if (!retryLockValue) return;
 
   try {
     const retryHistory = await loadSession(session.sessionId);
@@ -77,19 +78,19 @@ async function retryForMissedMessages(
 
     log.info({ phone_hash: hash }, "[whatsapp.agent.retry] Re-running agent for missed messages");
     const retryResponse = await collectAgentResponse(
-      runAgent(retryInput, retryTrimmed, retryContext),
+      runOrchestrator(retryInput, retryTrimmed, retryContext),
     );
 
     if (retryResponse.text) {
       await sendText(`whatsapp:${phone}`, retryResponse.text);
       await appendMessages(session.sessionId, [
         { role: "assistant", content: retryResponse.text },
-      ]);
+      ], true, { customerId: session.customerId, channel: "whatsapp" });
     }
   } catch (retryErr) {
     log.error(retryErr, "[whatsapp.agent.retry.error] Retry agent processing failed");
   } finally {
-    await releaseAgentLock(hash);
+    await releaseAgentLock(hash, retryLockValue);
   }
 }
 
@@ -182,7 +183,6 @@ async function checkWebhookRateLimit(redis: Awaited<ReturnType<typeof getRedisCl
 
 async function handleShortcut(
   shortcutType: string,
-  hash: string,
 ): Promise<string | null> {
   switch (shortcutType) {
     case "help":
@@ -190,8 +190,7 @@ async function handleShortcut(
     case "welcome":
       return buildWelcomeText();
     case "menu":
-      await transitionTo(hash, "browsing");
-      return null; // Fall through to agent
+      return null; // Fall through to agent (XState handles state)
     case "cart":
       return null; // Fall through to agent
     case "reservation":
@@ -283,10 +282,20 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
         return reply.code(200).type("text/xml").send("<Response/>");
       }
 
+      // Content-based dedup removed — caused false positives for short repeated
+      // words ("Sim" to add item, then "Sim" to confirm order = second silently
+      // dropped). SID-based idempotency (step 4 above) is sufficient.
+
       // ── 5. Rate limit ──────────────────────────────────────────────────────
       const rateLimited = await checkWebhookRateLimit(redis, hash);
       if (rateLimited) {
         server.log.warn({ phone_hash: hash }, "[whatsapp.rate] Rate limit exceeded");
+        const rateSite = process.env.RESTAURANT_SITE_URL ?? "ibatexas.com.br";
+        const ratePhone = process.env.RESTAURANT_PHONE ?? "";
+        const rateMsg = ratePhone
+          ? `Você está enviando mensagens rápido demais! 😅 Aguarde um momento ou acesse ${rateSite} / ligue ${ratePhone}`
+          : `Você está enviando mensagens rápido demais! 😅 Aguarde um momento ou acesse ${rateSite}`;
+        await sendText(`whatsapp:${phone}`, rateMsg).catch(() => {});
         return reply.code(429).type("text/xml").send("<Response/>");
       }
 
@@ -310,33 +319,24 @@ async function tryShortcutOrStateMachine(
   messageBody: string,
   hash: string,
   phone: string,
-  session: { sessionId: string },
+  session: { sessionId: string; customerId?: string },
   log: LogFn,
 ): Promise<boolean> {
   const shortcut = matchShortcut(messageBody);
   if (shortcut) {
     log.info({ phone_hash: hash, shortcut: shortcut.type }, "[whatsapp.shortcut]");
-    const response = await handleShortcut(shortcut.type, hash);
+    const response = await handleShortcut(shortcut.type);
     if (response) {
       await sendText(`whatsapp:${phone}`, response);
-      await appendMessages(session.sessionId, [{ role: "assistant", content: response }]);
+      await appendMessages(session.sessionId, [{ role: "assistant", content: response }], true, {
+        customerId: session.customerId,
+        channel: "whatsapp",
+      });
       return true;
     }
   }
 
-  const interactiveId = body.ListId || body.ButtonPayload || undefined;
-  const stateAction = await handleStateMachine(hash, messageBody, interactiveId);
-  if (stateAction) {
-    log.info(
-      { phone_hash: hash, action: stateAction.action, next_state: stateAction.nextState },
-      "[whatsapp.state_machine]",
-    );
-    await transitionTo(hash, stateAction.nextState);
-    const paramsSuffix = stateAction.params ? `, params=${JSON.stringify(stateAction.params)}` : "";
-    const stateMessage = `[state_action: ${stateAction.action}${paramsSuffix}]`;
-    await appendMessages(session.sessionId, [{ role: "user", content: stateMessage }], true);
-  }
-
+  // Legacy state machine removed — all flows handled by XState kernel
   return false;
 }
 
@@ -352,6 +352,9 @@ async function handleMessageAsync(
   try {
   const startMs = Date.now();
 
+  // ── Cancel any pending hesitation nudge on incoming message ────────────────
+  await markCustomerReplied(hash);
+
   // ── Media handling ──────────────────────────────────────────────────────────
   if (numMedia > 0 && !messageBody) {
     await sendText(
@@ -364,29 +367,23 @@ async function handleMessageAsync(
   // ── Resolve session ─────────────────────────────────────────────────────────
   const session = await resolveWhatsAppSession(phone);
 
-  // ── Track daily conversation count ─────────────────────────────────────────
+  // ── Track daily conversation count (SEC-003: atomic INCR + EXPIRE) ─────────
   if (session.isNew) {
     try {
       const metricsRedis = await getRedisClient();
       const todayDateStr = new Date().toISOString().slice(0, 10);
       const convKey = rk(`metrics:conversations:daily:${todayDateStr}`);
-      const convCount = await metricsRedis.incr(convKey);
-      if (convCount === 1) {
-        await metricsRedis.expire(convKey, 48 * 60 * 60);
-      }
+      await atomicIncr(metricsRedis, convKey, 48 * 60 * 60);
     } catch (metricsErr) {
       log.warn({ error: String(metricsErr) }, "[whatsapp.metrics] Failed to track conversation count");
     }
   }
 
-  // ── Track per-session message count ─────────────────────────────────────────
+  // ── Track per-session message count (SEC-003: atomic INCR + EXPIRE) ────────
   try {
     const metricsRedis = await getRedisClient();
     const msgCountKey = rk(`metrics:messages:${session.sessionId}`);
-    const msgCount = await metricsRedis.incr(msgCountKey);
-    if (msgCount === 1) {
-      await metricsRedis.expire(msgCountKey, 48 * 60 * 60);
-    }
+    await atomicIncr(metricsRedis, msgCountKey, 48 * 60 * 60);
   } catch (metricsErr) {
     log.warn({ error: String(metricsErr) }, "[whatsapp.metrics] Failed to track message count");
   }
@@ -400,7 +397,10 @@ async function handleMessageAsync(
     // If message body is empty, synthesize a location message for the agent
     if (!messageBody) {
       const locationText = `[localização compartilhada: lat=${lat}, lng=${lng}]`;
-      await appendMessages(session.sessionId, [{ role: "user", content: locationText }], true);
+      await appendMessages(session.sessionId, [{ role: "user", content: locationText }], true, {
+        customerId: session.customerId,
+        channel: "whatsapp",
+      });
     }
   }
   log.info(
@@ -411,18 +411,21 @@ async function handleMessageAsync(
   // Refresh TTL
   await touchSession(hash);
 
-  // ── Welcome credit for new customers triggering first-order flow ─────────────
+  // ── Welcome credit for new customers ────────────────────────────────────────
+  // Set unconditionally — the bot promises R$15 in first_contact prompt, so the
+  // credit must exist in Redis before checkout. getAndConsumeWelcomeCredit() is
+  // idempotent (getDel), so no risk of double-apply.
   if (session.isNew) {
-    const lowerBody = messageBody.toLowerCase();
-    if (lowerBody.includes("credito") || lowerBody.includes("r$15") || lowerBody.includes("primeira vez")) {
-      await setWelcomeCredit(session.customerId);
-      log.info({ customer_id: session.customerId }, "[whatsapp] Welcome credit set for new customer");
-    }
+    await setWelcomeCredit(session.customerId);
+    log.info({ customer_id: session.customerId }, "[whatsapp] Welcome credit set for new customer");
+
+    // Schedule hesitation nudge — will fire in ~45s if customer hasn't replied
+    await scheduleHesitationNudge({ phone, phoneHash: hash, customerId: session.customerId });
   }
 
   // ── LGPD opt-in disclosure (once per phone) ─────────────────────────────────
-  const optedIn = await hasOptedIn(hash);
-  if (!optedIn) {
+  const lgpdJustSent = !(await hasOptedIn(hash));
+  if (lgpdJustSent) {
     await sendText(`whatsapp:${phone}`, LGPD_OPTIN_MESSAGE);
     await markOptedIn(hash);
   }
@@ -431,7 +434,10 @@ async function handleMessageAsync(
   // For location-only messages, the synthesized location text was already appended above.
   const userMessage = buildUserMessage(body, messageBody);
   if (userMessage) {
-    await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true);
+    await appendMessages(session.sessionId, [{ role: "user", content: userMessage }], true, {
+      customerId: session.customerId,
+      channel: "whatsapp",
+    });
   }
 
   // ── Debounce (batch rapid-fire messages) ────────────────────────────────────
@@ -450,8 +456,8 @@ async function handleMessageAsync(
   await sleep(DEBOUNCE_MS);
 
   // ── Agent lock (keyed by phoneHash to handle session rotation) ─────────────
-  const lockAcquired = await acquireAgentLock(hash);
-  if (!lockAcquired) {
+  const lockValue = await acquireAgentLock(hash);
+  if (!lockValue) {
     // Another agent run is in progress — our message is in the session history
     return;
   }
@@ -471,7 +477,8 @@ async function handleMessageAsync(
     const agentInput = lastUserMsg?.content || userMessage;
 
     const lastLocation = await getLastLocation(hash);
-    const context = buildWhatsAppContext(session, lastLocation);
+    const hints = lgpdJustSent ? ["lgpd_just_sent"] : undefined;
+    const context = buildWhatsAppContext(session, lastLocation, hints);
 
     log.info(
       { phone_hash: hash, session_id: session.sessionId, history_length: trimmedHistory.length },
@@ -480,7 +487,7 @@ async function handleMessageAsync(
 
     // ── Run agent ───────────────────────────────────────────────────────────
     const agentResponse = await collectAgentResponse(
-      runAgent(agentInput, trimmedHistory, context),
+      runOrchestrator(agentInput, trimmedHistory, context),
     );
 
     const durationMs = Date.now() - startMs;
@@ -495,6 +502,13 @@ async function handleMessageAsync(
       "[whatsapp.agent.finish]",
     );
 
+    // Status messages (e.g., "Só um instante…") are NOT sent as separate WhatsApp
+    // messages — they create noise with two rapid messages. They're used only in
+    // the web SSE stream for typing indicators. Logged for observability.
+    if (agentResponse.statusMessages?.length) {
+      log.info({ phone_hash: hash, status_count: agentResponse.statusMessages.length }, "[whatsapp.status_suppressed]");
+    }
+
     // ── Send response ─────────────────────────────────────────────────────
     if (agentResponse.text) {
       await sendText(`whatsapp:${phone}`, agentResponse.text);
@@ -502,7 +516,38 @@ async function handleMessageAsync(
       // Save assistant response to session
       await appendMessages(session.sessionId, [
         { role: "assistant", content: agentResponse.text },
-      ]);
+      ], true, { customerId: session.customerId, channel: "whatsapp" });
+    }
+
+    // ── PIX follow-up: send copia-e-cola + QR code if LLM omitted them ──
+    if (agentResponse.pixData) {
+      const { pixQrCodeText, pixQrCodeUrl } = agentResponse.pixData;
+      const textHasPixCode = pixQrCodeText && agentResponse.text?.includes(pixQrCodeText);
+
+      if (pixQrCodeText && !textHasPixCode) {
+        await sendText(
+          `whatsapp:${phone}`,
+          `*Código PIX (copia e cola):*\n\n${pixQrCodeText}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
+        );
+      }
+
+      if (pixQrCodeUrl) {
+        await sendMedia(`whatsapp:${phone}`, pixQrCodeUrl, "QR Code PIX").catch((err) => {
+          log.warn({ error: String(err) }, "[whatsapp.pix.qr_send_failed] Falling back to text-only PIX");
+        });
+      }
+
+      // Schedule PIX expiry reminders (25min reminder + 30min expired)
+      const pixOrderId = agentResponse.pixData.orderId;
+      if (pixQrCodeText && (pixOrderId || session.customerId)) {
+        void schedulePixExpiryMonitor({
+          phone,
+          phoneHash: hash,
+          orderId: pixOrderId || session.customerId!,
+        }).catch((err) => {
+          log.warn({ error: String(err) }, "[whatsapp.pix.expiry_schedule_failed]");
+        });
+      }
     }
 
   } catch (err) {
@@ -518,7 +563,7 @@ async function handleMessageAsync(
       // Best-effort — can't do more
     }
   } finally {
-    await releaseAgentLock(hash);
+    await releaseAgentLock(hash, lockValue);
 
     // Re-check for unprocessed messages after lock release
     try {

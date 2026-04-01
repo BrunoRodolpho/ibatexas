@@ -39,3 +39,7 @@ export {
   type AdminAvaliacoesPageProps,
   type AdminReview,
 } from './AdminAvaliacoesPage'
+export {
+  AdminHorariosPage,
+  type AdminHorariosPageProps,
+} from './AdminHorariosPage'

@@ -14,7 +14,7 @@
 //   ibatexas.notification.send       → stub: logs notification intent (delivery TBD)
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
-import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender } from "@ibatexas/tools";
+import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender, reaisToCentavos, atomicIncr } from "@ibatexas/tools";
 import * as Sentry from "@sentry/node";
 import { createCustomerService, createLoyaltyService } from "@ibatexas/domain";
 import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
@@ -215,19 +215,17 @@ export async function startCartIntelligenceSubscribers(
         if (staffPhone) {
           const { medusaStore } = await import("@ibatexas/tools");
           const cartData = await medusaStore(`/store/carts/${cartId}`) as { cart?: { total?: number } };
-          const total = cartData?.cart?.total ?? 0;
-          if (total > 20000) {
+          // Medusa v2 returns total in reais — convert to centavos
+          const totalCentavos = reaisToCentavos(cartData?.cart?.total ?? 0);
+          if (totalCentavos > 20000) { // R$200
             const alertKey = rk("alert:staff:hourly");
-            const alertCount = await redis.incr(alertKey);
-            if (alertCount === 1) {
-              await redis.expire(alertKey, 60 * 60);
-            }
+            const alertCount = await atomicIncr(redis, alertKey, 60 * 60);
             if (alertCount <= 10) {
               const { sendText } = await import("../whatsapp/client.js");
-              const valorFormatado = (total / 100).toFixed(2).replace(".", ",");
+              const valorFormatado = (totalCentavos / 100).toFixed(2).replace(".", ",");
               const alertMsg = `🚨 Carrinho de alto valor abandonado!\nValor: R$${valorFormatado}\nCliente: ${customerName ?? "Anonimo"}\nAcao: Ligue para recuperar.`;
               await sendText(`whatsapp:${staffPhone}`, alertMsg);
-              log?.info({ cart_id: cartId, total, alert_count: alertCount }, "[cart-intelligence] staff alert sent for high-value cart");
+              log?.info({ cart_id: cartId, total: totalCentavos, alert_count: alertCount }, "[cart-intelligence] staff alert sent for high-value cart");
             } else {
               log?.info({ cart_id: cartId, alert_count: alertCount }, "[cart-intelligence] Staff alert rate limit reached");
             }
@@ -309,10 +307,7 @@ export async function startCartIntelligenceSubscribers(
         if (phone) {
           const todayDateStr = new Date().toISOString().slice(0, 10);
           const waOrderKey = rk(`metrics:wa_orders:daily:${todayDateStr}`);
-          const waOrderCount = await redis.incr(waOrderKey);
-          if (waOrderCount === 1) {
-            await redis.expire(waOrderKey, 48 * 60 * 60);
-          }
+          await atomicIncr(redis, waOrderKey, 48 * 60 * 60);
 
           // Update exponential moving average of messages-to-checkout
           const { hashPhone } = await import("../whatsapp/session.js");

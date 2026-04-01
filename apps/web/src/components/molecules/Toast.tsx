@@ -61,7 +61,7 @@ export const Toast: React.FC<ToastProps> = ({ id, message, type, duration, onClo
         onClick={() => onClose(id)}
         className={clsx(
           'leading-none flex-shrink-0 hover:opacity-70',
-          isCart ? 'text-sm text-smoke-400' : 'text-lg'
+          isCart ? 'text-sm text-[var(--color-text-secondary)]' : 'text-lg'
         )}
         aria-label="Fechar notificação"
       >

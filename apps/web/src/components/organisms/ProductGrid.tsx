@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback } from 'react'
+import { useCallback, useRef, useState, useEffect, useMemo } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { ProductCard } from '../molecules/ProductCard'
 import { ProductCardFeatured } from '../molecules/ProductCardFeatured'
 import { useTranslations } from 'next-intl'
@@ -36,6 +37,47 @@ interface ProductGridProps {
   readonly isLoading?: boolean
   readonly isEmpty?: boolean
   readonly emptyMessage?: string
+}
+
+const VIRTUALIZATION_THRESHOLD = 20
+const ESTIMATED_ROW_HEIGHT = 400
+const VIRTUAL_CONTAINER_HEIGHT = '80vh'
+
+/**
+ * Responsive breakpoint config per column setting.
+ * Each entry maps a Tailwind breakpoint minimum width (px) to the column count.
+ * Entries are ordered smallest-first; the hook picks the last matching one.
+ */
+const RESPONSIVE_COLS: Record<number, Array<[minWidth: number, cols: number]>> = {
+  1: [[0, 1]],
+  2: [[0, 1], [768, 2]],
+  3: [[0, 2], [768, 3]],
+  4: [[0, 2], [768, 3], [1024, 4]],
+  5: [[0, 2], [640, 3], [768, 4], [1024, 5]],
+}
+
+/** Returns the current column count based on window width and the columns prop. */
+function useResponsiveCols(columns: number): number {
+  const breakpoints = RESPONSIVE_COLS[columns] ?? RESPONSIVE_COLS[5]!
+  const fallback = breakpoints[breakpoints.length - 1]![1]
+
+  const [cols, setCols] = useState(fallback)
+
+  useEffect(() => {
+    function calc() {
+      const w = window.innerWidth
+      let result = breakpoints[0]![1]
+      for (const [minW, c] of breakpoints) {
+        if (w >= minW) result = c
+      }
+      setCols(result)
+    }
+    calc()
+    window.addEventListener('resize', calc)
+    return () => window.removeEventListener('resize', calc)
+  }, [breakpoints])
+
+  return cols
 }
 
 export const ProductGrid = ({
@@ -97,7 +139,7 @@ export const ProductGrid = ({
     return (
       <div className="flex flex-col items-center justify-center py-24 gap-4">
         <div className="w-16 h-px bg-smoke-200" />
-        <p className="font-display text-xl text-smoke-300 tracking-display">
+        <p className="font-display text-xl text-[var(--color-text-muted)] tracking-display">
           {emptyMessage || t('shop.no_products')}
         </p>
         <div className="w-16 h-px bg-smoke-200" />
@@ -109,6 +151,8 @@ export const ProductGrid = ({
   const showFeatured = featured && products.length >= 3
   const heroProduct = showFeatured ? products[0] : null
   const gridProducts = showFeatured ? products.slice(1) : products
+
+  const shouldVirtualize = gridProducts.length > VIRTUALIZATION_THRESHOLD
 
   return (
     <div className="relative">
@@ -148,40 +192,169 @@ export const ProductGrid = ({
         </div>
       )}
 
-      {/* Standard grid */}
+      {/* Standard grid — virtualized when item count exceeds threshold */}
       {gridProducts.length > 0 && (
-        <div className={`grid ${gridColsClass} gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8 gap-y-6 lg:gap-y-8`}>
-          {gridProducts.map((product, index) => {
-            // Only stagger first 8 cards; subsequent cards (infinite scroll) appear instantly
-            const baseIndex = showFeatured ? index + 1 : index
-            const delay = baseIndex < 8 ? baseIndex * 60 : 0
-            return (
-            <div
-              key={product.id}
-              className={`h-full ${delay > 0 ? 'opacity-0 animate-reveal' : ''}`}
-              style={delay > 0 ? { animationDelay: `${delay}ms` } : undefined}
-            >
-              <ProductCard
-                {...product}
-                variantCount={product.variants?.length}
-                href={getProductHref?.(product)}
-                onAddToCart={onAddToCart ? () => onAddToCart(product.id) : undefined}
-                priority={index < 4}
-                cartQuantity={getCartQuantity(product.id)}
-                onUpdateQuantity={(qty) => {
-                  const itemId = getCartItemId(product.id)
-                  if (itemId) updateItem(itemId, { quantity: qty })
-                }}
-                onRemoveFromCart={() => {
-                  const itemId = getCartItemId(product.id)
-                  if (itemId) removeItem(itemId)
-                }}
-              />
-            </div>
-            )
-          })}
-        </div>
+        shouldVirtualize ? (
+          <VirtualizedGrid
+            gridProducts={gridProducts}
+            columns={columns}
+            gridColsClass={gridColsClass}
+            showFeatured={showFeatured}
+            onAddToCart={onAddToCart}
+            getProductHref={getProductHref}
+            getCartQuantity={getCartQuantity}
+            getCartItemId={getCartItemId}
+            updateItem={updateItem}
+            removeItem={removeItem}
+          />
+        ) : (
+          <div className={`grid ${gridColsClass} gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8 gap-y-6 lg:gap-y-8`}>
+            {gridProducts.map((product, index) => {
+              // Only stagger first 8 cards; subsequent cards (infinite scroll) appear instantly
+              const baseIndex = showFeatured ? index + 1 : index
+              const delay = baseIndex < 8 ? baseIndex * 60 : 0
+              return (
+              <div
+                key={product.id}
+                className={`h-full ${delay > 0 ? 'opacity-0 animate-reveal' : ''}`}
+                style={delay > 0 ? { animationDelay: `${delay}ms` } : undefined}
+              >
+                <ProductCard
+                  {...product}
+                  variantCount={product.variants?.length}
+                  href={getProductHref?.(product)}
+                  onAddToCart={onAddToCart ? () => onAddToCart(product.id) : undefined}
+                  priority={index < 4}
+                  cartQuantity={getCartQuantity(product.id)}
+                  onUpdateQuantity={(qty) => {
+                    const itemId = getCartItemId(product.id)
+                    if (itemId) updateItem(itemId, { quantity: qty })
+                  }}
+                  onRemoveFromCart={() => {
+                    const itemId = getCartItemId(product.id)
+                    if (itemId) removeItem(itemId)
+                  }}
+                />
+              </div>
+              )
+            })}
+          </div>
+        )
       )}
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Virtualized sub-grid (extracted so hooks are called unconditionally) */
+/* ------------------------------------------------------------------ */
+
+interface VirtualizedGridProps {
+  gridProducts: Product[]
+  columns: number
+  gridColsClass: string
+  showFeatured: boolean
+  onAddToCart?: (productId: string) => void
+  getProductHref?: (product: Product) => string
+  getCartQuantity: (productId: string) => number
+  getCartItemId: (productId: string) => string | undefined
+  updateItem: (id: string, data: { quantity: number }) => void
+  removeItem: (id: string) => void
+}
+
+function VirtualizedGrid({
+  gridProducts,
+  columns,
+  gridColsClass,
+  showFeatured,
+  onAddToCart,
+  getProductHref,
+  getCartQuantity,
+  getCartItemId,
+  updateItem,
+  removeItem,
+}: VirtualizedGridProps) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const activeCols = useResponsiveCols(columns)
+
+  const rowCount = useMemo(
+    () => Math.ceil(gridProducts.length / activeCols),
+    [gridProducts.length, activeCols],
+  )
+
+  const virtualizer = useVirtualizer({
+    count: rowCount,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    overscan: 3,
+  })
+
+  return (
+    <div
+      ref={scrollRef}
+      style={{ height: VIRTUAL_CONTAINER_HEIGHT }}
+      className="overflow-auto"
+    >
+      <div
+        style={{
+          height: virtualizer.getTotalSize(),
+          width: '100%',
+          position: 'relative',
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const startIdx = virtualRow.index * activeCols
+          const rowProducts = gridProducts.slice(startIdx, startIdx + activeCols)
+
+          return (
+            <div
+              key={virtualRow.key}
+              data-index={virtualRow.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: '100%',
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+              className="pb-6 lg:pb-8"
+            >
+              <div className={`grid ${gridColsClass} gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8`}>
+                {rowProducts.map((product, colIdx) => {
+                  const flatIndex = startIdx + colIdx
+                  const baseIndex = showFeatured ? flatIndex + 1 : flatIndex
+                  const delay = baseIndex < 8 ? baseIndex * 60 : 0
+                  return (
+                    <div
+                      key={product.id}
+                      className={`h-full ${delay > 0 ? 'opacity-0 animate-reveal' : ''}`}
+                      style={delay > 0 ? { animationDelay: `${delay}ms` } : undefined}
+                    >
+                      <ProductCard
+                        {...product}
+                        variantCount={product.variants?.length}
+                        href={getProductHref?.(product)}
+                        onAddToCart={onAddToCart ? () => onAddToCart(product.id) : undefined}
+                        priority={flatIndex < 4}
+                        cartQuantity={getCartQuantity(product.id)}
+                        onUpdateQuantity={(qty) => {
+                          const itemId = getCartItemId(product.id)
+                          if (itemId) updateItem(itemId, { quantity: qty })
+                        }}
+                        onRemoveFromCart={() => {
+                          const itemId = getCartItemId(product.id)
+                          if (itemId) removeItem(itemId)
+                        }}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

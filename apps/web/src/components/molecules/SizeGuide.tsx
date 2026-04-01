@@ -20,7 +20,7 @@ export const SizeGuide = ({ isOpen, onClose }: SizeGuideProps) => {
       size="lg"
     >
       <div className="p-6">
-        <Text className="text-smoke-400 mb-6">
+        <Text className="text-[var(--color-text-secondary)] mb-6">
           Medidas em centímetros. As medidas podem variar 2cm para mais ou menos.
         </Text>
         
@@ -71,7 +71,7 @@ export const SizeGuide = ({ isOpen, onClose }: SizeGuideProps) => {
             <Text className="font-medium text-charcoal-900 mb-2">
               Como medir:
             </Text>
-            <ul className="space-y-2 text-sm text-smoke-400">
+            <ul className="space-y-2 text-sm text-[var(--color-text-secondary)]">
               <li>
                 <strong>Largura do Peito:</strong> Meça de uma axila até a outra, na parte mais larga do peito
               </li>

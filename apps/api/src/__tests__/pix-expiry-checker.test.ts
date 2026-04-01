@@ -14,9 +14,13 @@ const mockSentryWithScope = vi.hoisted(() => vi.fn());
 
 // ── Module mocks ───────────────────────────────────────────────────────────────
 
-vi.mock("@ibatexas/tools", () => ({
-  medusaAdmin: mockMedusaAdmin,
-}));
+vi.mock("@ibatexas/tools", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ibatexas/tools")>();
+  return {
+    medusaAdmin: mockMedusaAdmin,
+    MedusaRequestError: actual.MedusaRequestError,
+  };
+});
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,

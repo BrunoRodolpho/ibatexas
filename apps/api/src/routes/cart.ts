@@ -17,10 +17,12 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk, estimateDelivery, createCheckout } from "@ibatexas/tools";
+import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
+
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 
 const CartIdParams = z.object({ id: z.string().min(1) });
 const CartItemParams = z.object({ id: z.string().min(1), itemId: z.string().min(1) });
@@ -44,6 +46,27 @@ async function trackCartId(cartId: string, sessionType: "guest" | "customer" = "
 export async function untrackCartId(cartId: string): Promise<void> {
   const redis = await getRedisClient();
   await redis.hDel(rk("active:carts"), cartId);
+}
+
+/**
+ * SEC: Verify that the authenticated customer owns the cart.
+ * Guest carts (no customerId) skip verification.
+ * On first access by a customer, ownership is claimed.
+ */
+async function verifyCartOwnership(
+  cartId: string,
+  customerId: string | undefined,
+  redis: RedisClient,
+): Promise<boolean> {
+  if (!customerId) return true; // Guest carts — no verification possible
+  const ownerKey = rk(`cart:owner:${cartId}`);
+  const owner = await redis.get(ownerKey);
+  if (!owner) {
+    // First access — claim ownership
+    await redis.set(ownerKey, customerId, { EX: 86400 });
+    return true;
+  }
+  return owner === customerId;
 }
 
 export async function cartRoutes(server: FastifyInstance): Promise<void> {
@@ -99,6 +122,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
+      // SEC: Verify cart ownership before mutation
+      const redis = await getRedisClient();
+      if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
+        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
+      }
+
       // Ensure cart is tracked for abandoned-cart detection
       await trackCartId(request.params.id, request.customerId ? "customer" : "guest");
 
@@ -124,6 +153,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
+      // SEC: Verify cart ownership before mutation
+      const redis = await getRedisClient();
+      if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
+        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
+      }
+
       const data = await medusaStore(
         `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
         {
@@ -148,6 +183,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
+      // SEC: Verify cart ownership before mutation
+      const redis = await getRedisClient();
+      if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
+        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
+      }
+
       const data = await medusaStore(
         `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
         { method: "DELETE" },
@@ -176,6 +217,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params;
       const { items } = request.body;
+
+      // SEC: Verify cart ownership before mutation
+      const redis = await getRedisClient();
+      if (!(await verifyCartOwnership(id, request.customerId, redis))) {
+        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
+      }
 
       await trackCartId(id, request.customerId ? "customer" : "guest");
 
@@ -220,7 +267,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
     },
   );
 
-  // POST /api/cart/:id/payment-sessions — initialize payment
+  // POST /api/cart/:id/payment-sessions — initialize payment (Medusa v2 flow)
   app.post(
     "/api/cart/:id/payment-sessions",
     {
@@ -232,9 +279,27 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      const data = await medusaStore(`/store/carts/${request.params.id}/payment-sessions`, {
+      // Medusa v2: payment sessions live on payment collections, not carts
+      const cartData = await medusaStore(`/store/carts/${request.params.id}`) as {
+        cart?: { payment_collection?: { id: string } };
+      };
+      let pcId = cartData.cart?.payment_collection?.id;
+      if (!pcId) {
+        const pcData = await medusaStore(`/store/payment-collections`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cart_id: request.params.id }),
+        }) as { payment_collection?: { id: string } };
+        pcId = pcData.payment_collection?.id;
+      }
+      if (!pcId) {
+        return reply.status(500).send({ error: "Failed to create payment collection" });
+      }
+      const body = (request.body as { provider_id?: string }) ?? {};
+      const data = await medusaStore(`/store/payment-collections/${pcId}/payment-sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
       return reply.send(data);
     },
@@ -257,6 +322,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
+      // SEC: Verify cart ownership before checkout
+      const redis = await getRedisClient();
+      if (!(await verifyCartOwnership(request.body.cartId, request.customerId, redis))) {
+        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
+      }
+
       // SEC-001: Cash/PIX requires authentication — Stripe validates identity for card payments
       const { paymentMethod } = request.body;
       if ((paymentMethod === "cash" || paymentMethod === "pix") && !request.customerId) {
@@ -349,7 +420,18 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
       }
 
-      return reply.send({ order: data.order });
+      // Medusa v2 returns prices in reais — convert to centavos for frontend
+      const order = {
+        ...data.order,
+        total: reaisToCentavos(data.order.total),
+        subtotal: reaisToCentavos(data.order.subtotal),
+        shipping_total: reaisToCentavos(data.order.shipping_total),
+        items: data.order.items.map((i) => ({
+          ...i,
+          unit_price: reaisToCentavos(i.unit_price),
+        })),
+      };
+      return reply.send({ order });
     },
   );
 

@@ -191,7 +191,7 @@ describe("POST /api/webhooks/stripe — idempotency", () => {
         status: "pending",
         customer_id: "cus_01",
         items: [
-          { variant_id: "var_01", quantity: 2, unit_price: 8900, title: "Costela", product_id: "prod_01" },
+          { variant_id: "var_01", quantity: 2, unit_price: 89, title: "Costela", product_id: "prod_01" },
         ],
       },
     });
@@ -235,7 +235,7 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
         status: "pending",
         customer_id: "cus_01",
         items: [
-          { variant_id: "var_01", quantity: 2, unit_price: 8900, title: "Costela", product_id: "prod_01" },
+          { variant_id: "var_01", quantity: 2, unit_price: 89, title: "Costela", product_id: "prod_01" },
         ],
       },
     });

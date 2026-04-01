@@ -89,6 +89,22 @@ Customer (Twilio Verify + Medusa)
   │           ├── location: TableLocation
   │           └── accessible: boolean
   │
+  ├── Conversation[] (Postgres, CDC from Redis via NATS)
+  │     ├── id: string (cuid)
+  │     ├── sessionId: string (unique)         ← maps to Redis session:{sessionId}
+  │     ├── customerId: string | null          ← FK to Customer, SetNull on delete
+  │     ├── channel: 'whatsapp' | 'web'
+  │     ├── startedAt: Date
+  │     ├── endedAt: Date | null
+  │     │
+  │     └── ConversationMessage[]
+  │           ├── id: string (cuid)
+  │           ├── conversationId: string       ← FK to Conversation, Cascade on delete
+  │           ├── role: 'user' | 'assistant' | 'system'
+  │           ├── content: string
+  │           ├── metadata: Json | null
+  │           └── sentAt: Date
+  │
   └── Review[] (Postgres)
         ├── id: string
         ├── orderId: string                    ← Medusa order id
@@ -133,6 +149,10 @@ interface SpecialRequest {
   type: SpecialRequestType
   notes?: string           // free text, e.g. "aniversário da Maria, 50 anos"
 }
+
+type ConversationChannel = 'whatsapp' | 'web'
+
+type MessageRole = 'user' | 'assistant' | 'system'
 ```
 
 ---
@@ -247,6 +267,7 @@ interface BusinessEvent<T = Record<string, unknown>> {
 | `whatsapp.message.received` | WhatsApp webhook (telemetry) | `{ phoneHash, sessionId, hasMedia }` |
 | `whatsapp.message.sent` | WhatsApp webhook (telemetry) | `{ phoneHash, sessionId, toolsUsed, durationMs }` |
 | `web.{eventType}` | Analytics endpoint (`analytics.ts`) | Dynamic — mirrors client PostHog event payload |
+| `conversation.message.appended` | `appendMessages()` in session store (CDC) | `{ sessionId, customerId, channel, messages[{role, content, sentAt}] }` |
 
 **Notes:**
 - `notification.send` subscriber is stubbed — actual delivery not yet implemented
@@ -362,11 +383,12 @@ model Customer {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  addresses    Address[]
-  preferences  CustomerPreferences?
-  reviews      Review[]
-  orderItems   CustomerOrderItem[]
-  reservations Reservation[]
+  addresses     Address[]
+  preferences   CustomerPreferences?
+  reviews       Review[]
+  orderItems    CustomerOrderItem[]
+  reservations  Reservation[]
+  conversations Conversation[]
 }
 
 model Address {
@@ -436,5 +458,50 @@ enum ReservationStatus {
   completed
   cancelled
   no_show
+}
+
+enum ConversationChannel {
+  whatsapp
+  web
+}
+
+enum MessageRole {
+  user
+  assistant
+  system
+}
+
+model Conversation {
+  id         String              @id @default(cuid())
+  sessionId  String              @unique @map("session_id")
+  customerId String?             @map("customer_id")
+  channel    ConversationChannel
+  startedAt  DateTime            @default(now()) @map("started_at")
+  endedAt    DateTime?           @map("ended_at")
+  createdAt  DateTime            @default(now()) @map("created_at")
+  updatedAt  DateTime            @updatedAt @map("updated_at")
+
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  messages ConversationMessage[]
+
+  @@index([customerId])
+  @@index([channel])
+  @@index([startedAt])
+  @@map("conversations")
+}
+
+model ConversationMessage {
+  id             String      @id @default(cuid())
+  conversationId String      @map("conversation_id")
+  role           MessageRole
+  content        String
+  metadata       Json?
+  sentAt         DateTime    @default(now()) @map("sent_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, sentAt])
+  @@map("conversation_messages")
 }
 ```

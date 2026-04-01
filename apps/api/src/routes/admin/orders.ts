@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { medusaAdmin } from "./_shared.js";
+import { reaisToCentavos } from "@ibatexas/tools";
 
 const OrdersAdminQuery = z.object({
   status: z.string().optional(),
@@ -48,7 +49,21 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
 
       try {
         const data = await medusaAdmin(`/admin/orders?${qs}`) as Record<string, unknown>;
-        return reply.send({ orders: data.orders ?? [], count: data.count ?? 0 });
+        // Medusa v2 returns prices in reais — convert to centavos for admin UI (formatBRL expects centavos)
+        const rawOrders = (data.orders ?? []) as Array<Record<string, unknown>>;
+        const orders = rawOrders.map((o) => ({
+          ...o,
+          total: reaisToCentavos((o.total as number) ?? 0),
+          subtotal: reaisToCentavos((o.subtotal as number) ?? 0),
+          shipping_total: reaisToCentavos((o.shipping_total as number) ?? 0),
+          items: Array.isArray(o.items)
+            ? (o.items as Array<Record<string, unknown>>).map((i) => ({
+                ...i,
+                unit_price: reaisToCentavos((i.unit_price as number) ?? 0),
+              }))
+            : o.items,
+        }));
+        return reply.send({ orders, count: data.count ?? 0 });
       } catch (err) {
         server.log.error(err, "Failed to fetch orders from Medusa");
         reply.code(502).send({ error: "Failed to fetch orders from Medusa" });

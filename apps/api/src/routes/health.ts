@@ -77,7 +77,7 @@ async function checkTypesense(): Promise<CheckResult> {
 }
 
 export async function healthRoutes(server: FastifyInstance): Promise<void> {
-  server.get("/health", { config: { rateLimit: false }, schema: { tags: ["health"], summary: "Deep health check" } }, async (_request, reply) => {
+  server.get("/health", { config: { rateLimit: false }, logLevel: "silent" as const, schema: { tags: ["health"], summary: "Deep health check" } }, async (request, reply) => {
     const [redis, postgres, nats, typesense] = await Promise.all([
       checkRedis(),
       checkPostgres(),
@@ -107,6 +107,13 @@ export async function healthRoutes(server: FastifyInstance): Promise<void> {
       timestamp: new Date().toISOString(),
       checks,
     };
+
+    // Only log when something is wrong — healthy polls are silent
+    if (criticalFail) {
+      request.log.error({ checks }, "[health] UNHEALTHY");
+    } else if (anyFail) {
+      request.log.warn({ checks }, "[health] DEGRADED");
+    }
 
     // Return 503 if critical dependency fails
     const statusCode = criticalFail ? 503 : 200;

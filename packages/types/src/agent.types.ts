@@ -19,6 +19,7 @@ export interface AgentContext {
   customerId?: string
   userType: UserType
   lastLocation?: { lat: number; lng: number }
+  hints?: string[]
 }
 
 export type AgentMessage = {
@@ -30,5 +31,8 @@ export type StreamChunk =
   | { type: "text_delta"; delta: string }
   | { type: "tool_start"; toolName: string; toolUseId: string }
   | { type: "tool_result"; toolName: string; toolUseId: string; success: boolean }
+  | { type: "pix_data"; pixQrCodeText?: string; pixQrCodeUrl?: string; pixExpiresAt?: string; orderId?: string }
   | { type: "done"; inputTokens?: number; outputTokens?: number }
   | { type: "error"; message: string }
+  | { type: "status"; message: string }
+  | { type: "kernel_done"; stateValue: string; context: Record<string, unknown> }
