@@ -337,10 +337,12 @@ function AdminHeaderContent({ onLogout }: { readonly onLogout: () => void }) {
  */
 export default function AdminRootLayout({ children }: { readonly children: React.ReactNode }) {
   const { toasts, removeToast, addToast } = useToast()
-  const [authStatus, setAuthStatus] = useState<AuthStatus>(() =>
-    typeof document !== 'undefined' ? checkSession() : 'loading'
-  )
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('loading')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  /* ── Session check on mount ─────────────────────────────────────── */
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- SSR requires initial 'loading' state; cookie check must run client-side only
+  useEffect(() => { setAuthStatus(checkSession()) }, [])
 
   /* ── Session refresh interval (every 5 min) ─────────────────────── */
   useEffect(() => {
