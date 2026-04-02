@@ -19,7 +19,6 @@ import {
 } from "@ibatexas/tools"
 import { Channel } from "@ibatexas/types"
 import { createCustomerService } from "@ibatexas/domain"
-import { computeCartFlags } from "./guards.js"
 
 // ── Helper: build tool context from machine context ──────────────────────────
 

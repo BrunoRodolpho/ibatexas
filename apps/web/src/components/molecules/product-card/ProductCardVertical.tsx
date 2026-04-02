@@ -162,7 +162,7 @@ export function ProductCardVertical({
   callbacks,
   priority,
   description,
-  variantCount,
+  variantCount: _variantCount,
   computed,
   handlers,
   isAdded,

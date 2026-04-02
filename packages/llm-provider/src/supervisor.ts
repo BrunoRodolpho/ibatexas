@@ -9,7 +9,7 @@
 // - Supervisor failure → ignore and continue (system works without it)
 // - Execution must complete in <50ms (pure heuristics, no LLM call)
 
-import type { SupervisorInput, SupervisorOutput, SupervisorMode } from "./machine/types.js"
+import type { SupervisorInput, SupervisorOutput } from "./machine/types.js"
 
 // ── Default output (safe fallback) ──────────────────────────────────────────
 

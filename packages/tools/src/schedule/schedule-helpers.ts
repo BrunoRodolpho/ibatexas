@@ -2,7 +2,7 @@
 // Uses Intl.DateTimeFormat.formatToParts() for correct timezone conversion
 // (replaces the broken `new Date(toLocaleString())` antipattern).
 
-import type { DaySchedule, RestaurantSchedule } from "@ibatexas/domain"
+import type { RestaurantSchedule } from "@ibatexas/domain"
 
 // ── Timezone-correct local time ──────────────────────────────────────────────
 

@@ -173,7 +173,7 @@ export type StaffGroupByOutputType = {
   _max: StaffMaxAggregateOutputType | null
 }
 
-export type GetStaffGroupByPayload<T extends StaffGroupByArgs> = Prisma.PrismaPromise<
+type GetStaffGroupByPayload<T extends StaffGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<StaffGroupByOutputType, T['by']> &
       {

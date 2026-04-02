@@ -17,6 +17,7 @@ export interface AgentWhatsAppResponse {
 // ── Emoji enforcement ─────────────────────────────────────────────────────────
 
 // Unicode emoji regex — covers common emoji ranges (emoticons, symbols, flags)
+// eslint-disable-next-line no-misleading-character-class -- intentional combined Unicode ranges for emoji matching
 const EMOJI_RE = /[\u{1F300}-\u{1F9FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1FA00}-\u{1FAFF}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu;
 
 /**

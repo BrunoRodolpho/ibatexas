@@ -353,6 +353,7 @@ export async function* runAgent(
             console.warn("[agent] Blocked unauthorized post-LLM event: %s", evt.type)
             continue
           }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- XState event union requires dynamic dispatch
           postActor.send({ type: evt.type, payload: evt.payload } as any)
           injectedTypes.push(evt.type)
         }

@@ -322,8 +322,8 @@ describe("releaseAgentLock", () => {
     mockRedis.del.mockResolvedValue(1);
 
     // Acquire first to set up heartbeat
-    await acquireAgentLock("sess-rel");
-    await releaseAgentLock("sess-rel");
+    const lockValue = await acquireAgentLock("sess-rel");
+    await releaseAgentLock("sess-rel", lockValue!);
 
     expect(mockRedis.del).toHaveBeenCalledWith(
       expect.stringContaining("wa:agent:sess-rel"),
@@ -334,14 +334,14 @@ describe("releaseAgentLock", () => {
     mockRedis.del.mockResolvedValue(0);
 
     // Release without acquiring — should not throw
-    await expect(releaseAgentLock("sess-none")).resolves.toBeUndefined();
+    await expect(releaseAgentLock("sess-none", "fake-lock")).resolves.toBeUndefined();
   });
 
   it("handles Redis errors gracefully (best-effort)", async () => {
     mockRedis.del.mockRejectedValue(new Error("Redis down"));
 
     // Should not throw even if Redis fails
-    await expect(releaseAgentLock("sess-err")).resolves.toBeUndefined();
+    await expect(releaseAgentLock("sess-err", "fake-lock")).resolves.toBeUndefined();
   });
 });
 

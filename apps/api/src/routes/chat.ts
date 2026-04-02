@@ -14,7 +14,6 @@ import { loadSession, appendMessages } from "../session/store.js";
 import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
 import { optionalAuth } from "../middleware/auth.js";
 import {
-  isStreamActive,
   createStream,
   pushChunk,
   getStream,

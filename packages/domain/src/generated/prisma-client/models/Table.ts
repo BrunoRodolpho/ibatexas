@@ -213,7 +213,7 @@ export type TableGroupByOutputType = {
   _max: TableMaxAggregateOutputType | null
 }
 
-export type GetTableGroupByPayload<T extends TableGroupByArgs> = Prisma.PrismaPromise<
+type GetTableGroupByPayload<T extends TableGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<TableGroupByOutputType, T['by']> &
       {

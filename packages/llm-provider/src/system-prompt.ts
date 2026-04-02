@@ -167,7 +167,7 @@ Alguns produtos são exclusivos do canal WhatsApp ("menu secreto"). Ao mostrar e
 - **get_also_added**: Consulte durante navegação para sugerir itens similares
 
 ## Programa de fidelidade
-Cada pedido finalizado ganha 1 selo. Ao completar 10 selos, o cliente ganha R\$20 de desconto (codigo FIEL20).
+Cada pedido finalizado ganha 1 selo. Ao completar 10 selos, o cliente ganha R$20 de desconto (codigo FIEL20).
 - Quando o cliente perguntar "quantos selos tenho?": consulte get_loyalty_balance
 - Pós-checkout: PRIMEIRO celebre o pedido, DEPOIS mencione o selo como bônus
 - NÃO mencione o programa na primeira interação — espere checkout ou pergunta do cliente`

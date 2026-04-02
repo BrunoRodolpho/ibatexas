@@ -890,7 +890,7 @@ async function runLogs(service: string | undefined, opts: { lines?: string; env?
   envBanner(env)
 
   const logGroup = `/ecs/ibatexas/${env}/${svc}`
-  const lines = opts.lines ?? "50"
+  const _lines = opts.lines ?? "50"
 
   try {
     await execa("aws", ["logs", "tail", logGroup, "--follow", "--since", "1h", "--format", "short", "--region", DEFAULT_REGION], { stdio: "inherit" })
@@ -1150,7 +1150,7 @@ async function runExplain() {
 
   // 5. Check secrets
   stepNum++
-  let missingSecrets: string[] = []
+  const missingSecrets: string[] = []
   for (const name of MANUAL_SECRETS) {
     const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
     if (res.exitCode !== 0) { missingSecrets.push(name); continue }

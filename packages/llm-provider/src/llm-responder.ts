@@ -242,7 +242,7 @@ async function processToolCalls(
       }
 
       // kind === "result" — unwrap the data and continue with normal processing
-      const actualResult = result.data
+      const actualResult = (result as { kind: "result"; data: unknown }).data
       const isError = typeof actualResult === "object" && actualResult !== null && "error" in actualResult
 
       // Capture machine events from extraction tools (LLM proposes → Machine commits)

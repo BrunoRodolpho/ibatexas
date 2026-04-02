@@ -51,7 +51,7 @@ const BUFFERED_STATES = new Set([
 ])
 
 // States where text must be checked against forbidden patterns (even without buffering)
-const CHECKED_STATES = new Set([
+const _CHECKED_STATES = new Set([
   "ordering.awaiting_next",
   "ordering.item_unavailable",
   "ordering.validating_item",

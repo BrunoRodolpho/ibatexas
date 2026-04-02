@@ -3,7 +3,7 @@
 
 import type { RestaurantSchedule } from "@ibatexas/domain"
 import { AvailabilityWindow } from "@ibatexas/types"
-import { isAvailableFromSchedule, getMealPeriodFromSchedule } from "../schedule/schedule-helpers.js"
+import { isAvailableFromSchedule } from "../schedule/schedule-helpers.js"
 
 /**
  * Check if a product's availability window is currently open.

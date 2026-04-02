@@ -168,7 +168,7 @@ export type ConversationMessageGroupByOutputType = {
   _max: ConversationMessageMaxAggregateOutputType | null
 }
 
-export type GetConversationMessageGroupByPayload<T extends ConversationMessageGroupByArgs> = Prisma.PrismaPromise<
+type GetConversationMessageGroupByPayload<T extends ConversationMessageGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<ConversationMessageGroupByOutputType, T['by']> &
       {

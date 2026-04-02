@@ -14,9 +14,9 @@
 // the machine via the orchestrator in agent.ts. The machine receives results
 // as follow-up events (SEARCH_RESULT, CART_UPDATED, etc.).
 
-import { setup, assign, and, not, type MachineContext } from "xstate"
+import { setup, assign, and, not } from "xstate"
 import type { OrderContext, OrderEvent } from "./types.js"
-import { createDefaultContext, getCurrentMealPeriod } from "./types.js"
+import { getCurrentMealPeriod } from "./types.js"
 import { computeCartFlags } from "./guards.js"
 
 // ── Internal events (fed back by the orchestrator after async actions) ────────
