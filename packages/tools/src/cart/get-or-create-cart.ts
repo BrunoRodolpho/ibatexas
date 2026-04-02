@@ -13,7 +13,8 @@
 
 import type { AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient } from "../redis/client.js";
+import { rk } from "../redis/key.js";
 import { reaisToCentavos } from "../medusa/client.js";
 
 const CART_TTL_SECONDS = 24 * 60 * 60; // 24h — matches session TTL
