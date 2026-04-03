@@ -27,7 +27,14 @@ vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
 }))
 
-vi.mock("../atoms", () => ({
+vi.mock("@/i18n/navigation", () => ({
+  Link: ({ children, href, ...rest }: { children?: unknown; href?: string; [key: string]: unknown }) => ({
+    type: "a",
+    props: { href, ...rest, children },
+  }),
+}))
+
+vi.mock("@/components/atoms", () => ({
   LinkButton: ({ children, href }: { children: unknown; href: string }) => ({
     type: "a",
     props: { href, children },
