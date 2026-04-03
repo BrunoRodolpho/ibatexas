@@ -53,6 +53,32 @@ resource "aws_cloudwatch_log_group" "admin" {
 locals {
   account_id = data.aws_caller_identity.current.account_id
 
+  # Per-service secret injection — only inject what each service actually reads
+  service_secrets = {
+    api = [
+      "JWT_SECRET",
+      "DATABASE_URL",
+      "ANTHROPIC_API_KEY",
+      "STRIPE_SECRET_KEY",
+      "STRIPE_WEBHOOK_SECRET",
+      "TWILIO_AUTH_TOKEN",
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_VERIFY_SID",
+      "MEDUSA_API_KEY",
+      "TYPESENSE_API_KEY",
+      "REDIS_URL",
+      "NATS_URL",
+      "CORS_ORIGIN",
+      "SENTRY_DSN",
+    ]
+    web = [
+      "SENTRY_DSN",
+    ]
+    admin = [
+      "SENTRY_DSN",
+    ]
+  }
+
   services = {
     api = {
       port             = 3001
@@ -115,7 +141,7 @@ resource "aws_ecs_task_definition" "this" {
       }
 
       secrets = [
-        for secret_name in local.secret_names : {
+        for secret_name in local.service_secrets[each.key] : {
           name      = secret_name
           valueFrom = aws_secretsmanager_secret.this[secret_name].arn
         }

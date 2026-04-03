@@ -11,14 +11,14 @@ interface FilterChipProps {
   readonly onRemove?: (id: string) => void
 }
 
-export const FilterChip: React.FC<FilterChipProps> = ({
+export function FilterChip({
   id,
   label,
   selected,
   onToggle,
   removable = false,
   onRemove,
-}) => {
+}: FilterChipProps): React.JSX.Element {
   return (
     <button
       onClick={() => onToggle(id)}

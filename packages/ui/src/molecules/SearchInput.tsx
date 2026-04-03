@@ -14,7 +14,7 @@ interface SearchInputProps {
   readonly className?: string
 }
 
-export const SearchInput: React.FC<SearchInputProps> = ({
+export function SearchInput({
   placeholder = 'Buscar produtos...',
   onSearch,
   suggestions = [],
@@ -22,7 +22,7 @@ export const SearchInput: React.FC<SearchInputProps> = ({
   debounceMs = 300,
   variant = 'card',
   className,
-}) => {
+}: SearchInputProps): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const [timeoutId, setTimeoutId] = useState<NodeJS.Timeout>()

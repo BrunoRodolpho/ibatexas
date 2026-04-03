@@ -21,8 +21,8 @@ From fresh AWS account to running in production.
 ```bash
 ibx infra init                     # S3 bucket + DynamoDB lock table
 terraform -chdir=infra/terraform/environments/dev init -migrate-state
-ibx infra apply                    # Provision all AWS resources (~99 resources, ~5-10 min one-time)
-ibx infra secrets                  # Populate 17 Secrets Manager entries (interactive)
+ibx infra apply                    # Provision all AWS resources (~94 resources, ~5-10 min one-time)
+ibx infra secrets                  # Populate 14 Secrets Manager entries (interactive)
 ibx infra github                   # Set GitHub repo secrets (OIDC role, DB URLs)
 git push origin dev                # Trigger first staging deploy
 ```
@@ -139,7 +139,7 @@ push to main → build (~2-3 min) → push ECR (~1 min) → migrate → deploy E
 |--------|-----------|------|-------------|
 | `ibx infra apply` | Terraform (create/update AWS resources) | 5-10 min first run, seconds after | Only when changing infrastructure |
 | `git push origin dev` | GitHub Actions (build → ECR → ECS) | ~5-7 min | Every code change |
-| `ibx infra secrets` | AWS CLI (populate Secrets Manager) | ~2 min | When adding/rotating secrets |
+| `ibx infra secrets` | AWS CLI (populate Secrets Manager) | ~2 min | When adding/rotating secrets (14 secrets) |
 | `ibx infra github` | gh CLI (set GitHub repo secrets) | ~1 min | One-time setup |
 
 ---
@@ -220,12 +220,33 @@ Check: `ibx infra status` (look at ACM Certificate line)
 ### 7. Populate Secrets
 
 ```bash
-ibx infra secrets          # Interactive prompts for all 17 secrets
+ibx infra secrets          # Interactive prompts for all 14 secrets
 # OR for CI:
 ibx infra secrets --from-env   # Reads from environment variables
 ```
 
 **REDIS_URL** and **NATS_URL** are auto-populated by Terraform — you don't need to set these.
+
+Secrets are injected per-service (not all secrets to all services):
+
+| Secret | API | Web | Admin |
+|--------|:---:|:---:|:-----:|
+| JWT_SECRET | **Required** | - | - |
+| DATABASE_URL | **Required** | - | - |
+| ANTHROPIC_API_KEY | **Required** | - | - |
+| STRIPE_SECRET_KEY | **Required** | - | - |
+| STRIPE_WEBHOOK_SECRET | **Required** | - | - |
+| TWILIO_AUTH_TOKEN | **Required** | - | - |
+| TWILIO_ACCOUNT_SID | **Required** | - | - |
+| TWILIO_VERIFY_SID | **Required** | - | - |
+| MEDUSA_API_KEY | **Required** | - | - |
+| TYPESENSE_API_KEY | Optional | - | - |
+| REDIS_URL | **Required** | - | - |
+| NATS_URL | **Required** | - | - |
+| CORS_ORIGIN | Optional | - | - |
+| SENTRY_DSN | Optional | Optional | Optional |
+
+> `DIRECT_DATABASE_URL` is NOT an ECS secret — it's a GitHub Actions secret used only for Prisma migrations during deploys.
 
 ### 8. GitHub Secrets
 
@@ -249,8 +270,7 @@ ibx infra deploy --watch   # Or push + monitor in one command
 | Stripe | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | [stripe.com/dashboard](https://stripe.com/dashboard) |
 | Twilio | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SID` | [twilio.com/console](https://twilio.com/console) |
 | Anthropic | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) |
-| OpenAI | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com) |
-| Sentry | `SENTRY_DSN` | [sentry.io](https://sentry.io) — create 3 projects (api, web, admin) |
+| Sentry | `SENTRY_DSN` | [sentry.io](https://sentry.io) — optional, set to `"disabled"` to skip |
 | PostHog | (set in app config) | [posthog.com](https://posthog.com) |
 
 ---
@@ -299,9 +319,9 @@ ECR keeps the last 25 images (lifecycle policy), so previous images are always a
 
 ### ECS deploy succeeds but app crashes
 
-**Cause**: Missing or invalid secrets in Secrets Manager. The API validates all env vars at startup (Zod schema) and crashes if required ones are missing.
+**Cause**: Missing or invalid secrets in Secrets Manager. The API validates all env vars at startup (Zod schema) and crashes if required ones are missing. ECS also fails to start tasks if a referenced secret has no value.
 
-**Fix**: `ibx infra secrets` → populate missing values. Then trigger a new deploy.
+**Fix**: `ibx infra secrets` → populate missing values. Secrets are injected per-service (see table in Step 7) — only the API needs most secrets; web and admin only need SENTRY_DSN. Then trigger a new deploy.
 
 ### GitHub Actions deploy fails
 

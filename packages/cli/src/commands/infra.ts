@@ -20,7 +20,6 @@ const AUTO_POPULATED_SECRETS = ["REDIS_URL", "NATS_URL"]
 const ALL_SECRETS = [
   "JWT_SECRET",
   "DATABASE_URL",
-  "DIRECT_DATABASE_URL",
   "SENTRY_DSN",
   "ANTHROPIC_API_KEY",
   "STRIPE_SECRET_KEY",
@@ -30,12 +29,8 @@ const ALL_SECRETS = [
   "TWILIO_VERIFY_SID",
   "NATS_URL",
   "REDIS_URL",
-  "MEDUSA_ADMIN_API_KEY",
   "MEDUSA_API_KEY",
-  "MEDUSA_PUBLISHABLE_KEY",
   "TYPESENSE_API_KEY",
-  "OPENAI_API_KEY",
-  "COOKIE_SECRET",
   "CORS_ORIGIN",
 ]
 
@@ -50,23 +45,19 @@ const GITHUB_SECRETS = [
 
 /** Secrets that should use password-style prompt (masked input) */
 const SENSITIVE_SECRETS = new Set([
-  "JWT_SECRET", "DATABASE_URL", "DIRECT_DATABASE_URL", "ANTHROPIC_API_KEY",
+  "JWT_SECRET", "DATABASE_URL", "ANTHROPIC_API_KEY",
   "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "TWILIO_AUTH_TOKEN",
-  "OPENAI_API_KEY", "COOKIE_SECRET", "MEDUSA_ADMIN_API_KEY", "MEDUSA_API_KEY",
-  "TYPESENSE_API_KEY",
+  "MEDUSA_API_KEY", "TYPESENSE_API_KEY",
 ])
 
 // ── Secret Validators ─────────────────────────────────────────────────────────
 
 const SECRET_VALIDATORS: Record<string, (v: string) => string | true> = {
   DATABASE_URL:          v => v.startsWith("postgresql://") || "Must start with postgresql://",
-  DIRECT_DATABASE_URL:   v => v.startsWith("postgresql://") || "Must start with postgresql://",
   CORS_ORIGIN:           v => v.startsWith("http") || "Must be a URL (https://...)",
-  SENTRY_DSN:            v => v.startsWith("https://") || "Must be a Sentry DSN URL",
   STRIPE_SECRET_KEY:     v => v.startsWith("sk_") || "Must start with sk_",
   STRIPE_WEBHOOK_SECRET: v => v.startsWith("whsec_") || "Must start with whsec_",
   ANTHROPIC_API_KEY:     v => v.length > 10 || "API key too short",
-  OPENAI_API_KEY:        v => v.length > 10 || "API key too short",
 }
 
 function validateSecret(name: string, value: string): string | true {
@@ -79,16 +70,6 @@ function validateSecret(name: string, value: string): string | true {
 function crossValidateSecrets(secrets: Record<string, string>, env: string): string[] {
   const warnings: string[] = []
   const dbUrl = secrets.DATABASE_URL
-  const directUrl = secrets.DIRECT_DATABASE_URL
-  if (dbUrl && directUrl) {
-    try {
-      const dbHost = new URL(dbUrl).hostname
-      const directHost = new URL(directUrl).hostname
-      if (dbHost !== directHost) {
-        warnings.push(`DATABASE_URL host (${dbHost}) differs from DIRECT_DATABASE_URL host (${directHost})`)
-      }
-    } catch { /* malformed URLs already caught by Layer 1 */ }
-  }
   if (secrets.CORS_ORIGIN?.includes("localhost") && env !== "dev") {
     warnings.push(`CORS_ORIGIN contains "localhost" in ${env} environment`)
   }
@@ -607,7 +588,7 @@ async function runApply(opts: { plan?: string; env?: string }) {
   console.log(chalk.yellow.bold("  ❗ Infrastructure provisioned — deployment is NOT ready yet"))
   console.log("")
   console.log(chalk.white("  Missing steps:"))
-  console.log(chalk.red("    ✗ Secrets not populated (17 required)"))
+  console.log(chalk.red(`    ✗ Secrets not populated (${ALL_SECRETS.length} required)`))
   console.log(chalk.red("    ✗ GitHub secrets not configured"))
   console.log(chalk.red("    ✗ No images in ECR (first deploy hasn't run)"))
   console.log("")
@@ -752,13 +733,13 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
 // ── Subcommand: secrets:export ────────────────────────────────────────────────
 
 const SECRET_CATEGORIES: { label: string; keys: string[] }[] = [
-  { label: "Auth", keys: ["JWT_SECRET", "COOKIE_SECRET"] },
-  { label: "Database (Supabase)", keys: ["DATABASE_URL", "DIRECT_DATABASE_URL"] },
+  { label: "Auth", keys: ["JWT_SECRET"] },
+  { label: "Database (Supabase)", keys: ["DATABASE_URL"] },
   { label: "Observability", keys: ["SENTRY_DSN"] },
-  { label: "AI", keys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
+  { label: "AI", keys: ["ANTHROPIC_API_KEY"] },
   { label: "Payments", keys: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"] },
   { label: "WhatsApp (Twilio)", keys: ["TWILIO_AUTH_TOKEN", "TWILIO_ACCOUNT_SID", "TWILIO_VERIFY_SID"] },
-  { label: "Medusa Commerce", keys: ["MEDUSA_ADMIN_API_KEY", "MEDUSA_API_KEY", "MEDUSA_PUBLISHABLE_KEY"] },
+  { label: "Medusa Commerce", keys: ["MEDUSA_API_KEY"] },
   { label: "Search", keys: ["TYPESENSE_API_KEY"] },
   { label: "Web", keys: ["CORS_ORIGIN"] },
 ]

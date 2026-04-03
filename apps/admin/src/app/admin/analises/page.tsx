@@ -3,7 +3,7 @@
 import { AdminAnalisesPage } from '@ibatexas/ui'
 import { useAdminAnalytics } from '@/domains/admin/admin.hooks'
 
-export default function AnalisesPage() {
+export default function AnalisesPage(): React.JSX.Element {
   const { metrics, loading } = useAdminAnalytics()
 
   return (

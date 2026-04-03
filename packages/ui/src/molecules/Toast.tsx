@@ -56,7 +56,7 @@ export interface ToastProps {
   readonly onClose: (id: string) => void
 }
 
-export const Toast: React.FC<ToastProps> = ({
+export function Toast({
   id,
   message,
   type,
@@ -64,7 +64,7 @@ export const Toast: React.FC<ToastProps> = ({
   duration,
   icon,
   onClose,
-}) => {
+}: ToastProps): React.JSX.Element | null {
   const effectiveDuration = duration ?? DEFAULT_DURATIONS[type]
   const isPersistent = effectiveDuration === 0
 
@@ -184,11 +184,11 @@ export interface ToastContainerProps {
   readonly onClose: (id: string) => void
 }
 
-export const ToastContainer: React.FC<ToastContainerProps> = ({
+export function ToastContainer({
   toasts,
   position = 'bottom-right',
   onClose,
-}) => {
+}: ToastContainerProps): React.JSX.Element | null {
   if (toasts.length === 0) return null
 
   return (

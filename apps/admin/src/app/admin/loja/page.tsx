@@ -8,7 +8,7 @@ import { SearchInput, Sheet } from '@/components/molecules'
 import { AdminLojaPage, useToast } from '@ibatexas/ui'
 import type { AdminProductRow } from '@ibatexas/types'
 
-export default function ShopManagement() {
+export default function ShopManagement(): React.JSX.Element {
   const { addToast } = useToast()
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)

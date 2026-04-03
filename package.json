@@ -40,7 +40,8 @@
       "@mikro-orm/core": "medusa transitive fix — GHSA-gwhv-j974-6fxm / GHSA-qpfv-44f3-qqx6 SQL injection",
       "path-to-regexp": "medusa>express transitive fix — GHSA-37ch-88jc-xwx2 ReDoS",
       "lodash": "medusa/prisma transitive fix — GHSA-r5fr-rjxr-66jc code injection via _.template",
-      "picomatch": "eslint-config-next/vitest transitive fix — GHSA-c2c7-rcm5-vvqj ReDoS"
+      "picomatch": "eslint-config-next/vitest transitive fix — GHSA-c2c7-rcm5-vvqj ReDoS",
+      "@types/react, @types/react-dom": "medusa pulls React 18 types — force single version to fix JSX portability errors"
     },
     "overrides": {
       "hono": "4.12.8",
@@ -56,7 +57,9 @@
       "path-to-regexp": "0.1.13",
       "lodash": "4.18.1",
       "picomatch@<3": "2.3.2",
-      "picomatch@>=4": "4.0.4"
+      "picomatch@>=4": "4.0.4",
+      "@types/react": "19.2.14",
+      "@types/react-dom": "19.2.3"
     },
     "auditConfig": {
       "ignoreCves": [

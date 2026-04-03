@@ -6,7 +6,7 @@ export default function AdminError({
 }: Readonly<{
   error: Error & { digest?: string }
   reset: () => void
-}>) {
+}>): React.JSX.Element {
   return (
     <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-4 text-center">
       <h2 className="text-2xl font-bold text-accent-red">Erro no painel admin</h2>

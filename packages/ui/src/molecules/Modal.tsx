@@ -12,11 +12,13 @@ import {
 
 /* ── Shared close-button icon ─────────────────────────────────────── */
 
-const CloseIcon: React.FC = () => (
-  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-  </svg>
-)
+function CloseIcon(): React.JSX.Element {
+  return (
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  )
+}
 
 /* ══════════════════════════════════════════════════════════════════════
  * Modal
@@ -30,7 +32,7 @@ export interface ModalProps extends BaseOverlayProps {
   readonly size?: OverlaySize
 }
 
-export const Modal: React.FC<ModalProps> = ({
+export function Modal({
   isOpen,
   title,
   children,
@@ -38,7 +40,7 @@ export const Modal: React.FC<ModalProps> = ({
   closeButton = true,
   footer,
   size = 'md',
-}) => {
+}: ModalProps): React.JSX.Element | null {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const titleId = useId()
 
@@ -118,7 +120,7 @@ export interface SheetProps extends BaseOverlayProps {
   readonly position?: SheetPosition
 }
 
-export const Sheet: React.FC<SheetProps> = ({
+export function Sheet({
   isOpen,
   title,
   children,
@@ -126,7 +128,7 @@ export const Sheet: React.FC<SheetProps> = ({
   closeButton = true,
   footer,
   position = 'right',
-}) => {
+}: SheetProps): React.JSX.Element | null {
   const sheetRef = useRef<HTMLDialogElement>(null)
   const titleId = useId()
 

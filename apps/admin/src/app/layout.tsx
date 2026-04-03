@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   description: 'Painel de administração — IbateXas',
 }
 
-export default function RootLayout({ children }: { readonly children: React.ReactNode }) {
+export default function RootLayout({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
   return (
     <html lang="pt-BR">
       <body className="bg-smoke-50 text-charcoal-900 antialiased">

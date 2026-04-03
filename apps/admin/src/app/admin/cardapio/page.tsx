@@ -8,7 +8,7 @@ import { SearchInput } from '@/components/molecules'
 import { AdminCardapioPage, useToast } from '@ibatexas/ui'
 import type { AdminProductRow } from '@ibatexas/types'
 
-export default function MenuManagement() {
+export default function MenuManagement(): React.JSX.Element {
   const { addToast } = useToast()
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'food' | 'frozen' | ''>('')

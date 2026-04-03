@@ -3,7 +3,7 @@
 import { AdminAvaliacoesPage, useToast } from '@ibatexas/ui'
 import { useAdminReviews } from '@/domains/admin/admin.hooks'
 
-export default function AvaliacoesPage() {
+export default function AvaliacoesPage(): React.JSX.Element {
   const { addToast } = useToast()
   const { reviews, loading, ratingFilter, setRatingFilter } = useAdminReviews()
 

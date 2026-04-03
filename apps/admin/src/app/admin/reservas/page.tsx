@@ -4,7 +4,7 @@ import { useCallback } from 'react'
 import { AdminReservasPage, useToast } from '@ibatexas/ui'
 import { useAdminReservationsPage } from '@/domains/admin/admin.hooks'
 
-export default function ReservasPage() {
+export default function ReservasPage(): React.JSX.Element {
   const { addToast } = useToast()
   const {
     reservations,

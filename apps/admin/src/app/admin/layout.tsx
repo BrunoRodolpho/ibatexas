@@ -335,7 +335,7 @@ function AdminHeaderContent({ onLogout }: { readonly onLogout: () => void }) {
  * Admin layout — standalone (no next-intl, no [locale] segment).
  * Auth enforced in all environments via middleware + admin-session cookie.
  */
-export default function AdminRootLayout({ children }: { readonly children: React.ReactNode }) {
+export default function AdminRootLayout({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
   const { toasts, removeToast, addToast } = useToast()
   const [authStatus, setAuthStatus] = useState<AuthStatus>('loading')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
