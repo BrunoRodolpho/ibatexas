@@ -295,21 +295,21 @@ const CHECKS: InfraCheckDef[] = [
     label: "Secrets Populated",
     severity: "blocking",
     run: async (env) => {
-      let populated = 0
-      let empty = 0
-      const missing: string[] = []
-      for (const name of ALL_SECRETS) {
-        const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
-        if (res.exitCode === 0) {
-          try {
-            const data = JSON.parse(res.stdout)
-            if (data.SecretString && data.SecretString.trim()) { populated++; continue }
-          } catch { /* fall through */ }
-        }
-        empty++
-        missing.push(name)
-      }
-      if (empty === 0) return { status: "ok", detail: `${populated}/${ALL_SECRETS.length} populated` }
+      const results = await Promise.all(
+        ALL_SECRETS.map(async (name) => {
+          const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
+          if (res.exitCode === 0) {
+            try {
+              const data = JSON.parse(res.stdout)
+              if (data.SecretString?.trim()) return { name, ok: true }
+            } catch { /* fall through */ }
+          }
+          return { name, ok: false }
+        }),
+      )
+      const populated = results.filter(r => r.ok).length
+      const missing = results.filter(r => !r.ok).map(r => r.name)
+      if (missing.length === 0) return { status: "ok", detail: `${populated}/${ALL_SECRETS.length} populated` }
       if (populated === 0) return { status: "error", detail: `0/${ALL_SECRETS.length} — none set` }
       return { status: "warn", detail: `${populated}/${ALL_SECRETS.length} — missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` +${missing.length - 3} more` : ""}` }
     },
@@ -620,10 +620,19 @@ async function runApply(opts: { plan?: string; env?: string }) {
 
 // ── Subcommand: secrets ───────────────────────────────────────────────────────
 
-async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boolean }) {
+async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boolean; only?: string }) {
   const env = opts.env ?? getEnvironment()
   console.log(chalk.bold.blue("\n  🔐  Secrets Manager\n"))
   envBanner(env)
+
+  const targetSecrets = opts.only
+    ? opts.only.split(",").map(s => s.trim()).filter(s => MANUAL_SECRETS.includes(s))
+    : MANUAL_SECRETS
+
+  if (opts.only && targetSecrets.length === 0) {
+    console.log(chalk.red(`  ✗ None of the specified secrets are valid. Available: ${MANUAL_SECRETS.join(", ")}`))
+    return
+  }
 
   let populated = 0
   let skipped = 0
@@ -631,23 +640,38 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
   let invalid = 0
   const populatedValues: Record<string, string> = {}
 
-  for (const name of MANUAL_SECRETS) {
+  // Pre-fetch all secrets in parallel to avoid sequential AWS calls
+  const existingSecrets = new Map<string, string>()
+  if (!opts.force) {
+    const spinner = ora("  Checking existing secrets…").start()
+    const checks = await Promise.all(
+      targetSecrets.map(async (name) => {
+        const id = secretPath(env, name)
+        const check = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", id, "--region", DEFAULT_REGION, "--output", "json"])
+        if (check.exitCode === 0) {
+          try {
+            const data = JSON.parse(check.stdout)
+            if (data.SecretString?.trim()) return { name, value: data.SecretString as string }
+          } catch { /* not set */ }
+        }
+        return { name, value: null }
+      }),
+    )
+    for (const { name, value } of checks) {
+      if (value) existingSecrets.set(name, value)
+    }
+    spinner.succeed(`  ${existingSecrets.size}/${targetSecrets.length} secrets already set`)
+  }
+
+  for (const name of targetSecrets) {
     const id = secretPath(env, name)
 
-    // Check if already set
-    if (!opts.force) {
-      const check = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", id, "--region", DEFAULT_REGION, "--output", "json"])
-      if (check.exitCode === 0) {
-        try {
-          const data = JSON.parse(check.stdout)
-          if (data.SecretString?.trim()) {
-            console.log(chalk.green(`  ✓ ${name.padEnd(28)} (already set)`))
-            alreadySet++
-            populatedValues[name] = data.SecretString
-            continue
-          }
-        } catch { /* fall through to prompt */ }
-      }
+    // Check if already set (from parallel pre-fetch)
+    if (!opts.force && existingSecrets.has(name)) {
+      console.log(chalk.green(`  ✓ ${name.padEnd(28)} (already set)`))
+      alreadySet++
+      populatedValues[name] = existingSecrets.get(name)!
+      continue
     }
 
     if (opts.fromEnv) {
@@ -718,11 +742,115 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
 
   // Summary
   console.log(chalk.bold(`\n  Summary: ${chalk.green(`${populated} populated`)}, ${chalk.gray(`${alreadySet} already set`)}, ${chalk.yellow(`${skipped} skipped`)}, ${chalk.red(`${invalid} invalid`)}`))
-  const remaining = MANUAL_SECRETS.length - populated - alreadySet
+  const remaining = targetSecrets.length - populated - alreadySet
   if (remaining > 0) {
     console.log(chalk.yellow(`  ⚠ ${remaining} secret(s) still empty — deploy may fail`))
   }
   console.log("")
+}
+
+// ── Subcommand: secrets:export ────────────────────────────────────────────────
+
+const SECRET_CATEGORIES: { label: string; keys: string[] }[] = [
+  { label: "Auth", keys: ["JWT_SECRET", "COOKIE_SECRET"] },
+  { label: "Database (Supabase)", keys: ["DATABASE_URL", "DIRECT_DATABASE_URL"] },
+  { label: "Observability", keys: ["SENTRY_DSN"] },
+  { label: "AI", keys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
+  { label: "Payments", keys: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"] },
+  { label: "WhatsApp (Twilio)", keys: ["TWILIO_AUTH_TOKEN", "TWILIO_ACCOUNT_SID", "TWILIO_VERIFY_SID"] },
+  { label: "Medusa Commerce", keys: ["MEDUSA_ADMIN_API_KEY", "MEDUSA_API_KEY", "MEDUSA_PUBLISHABLE_KEY"] },
+  { label: "Search", keys: ["TYPESENSE_API_KEY"] },
+  { label: "Web", keys: ["CORS_ORIGIN"] },
+]
+
+async function runSecretsExport(opts: { file?: string }) {
+  const dotenv = await import("dotenv")
+  const sourcePath = path.resolve(ROOT, opts.file ?? ".env")
+
+  console.log(chalk.bold.blue("\n  📦  Secrets Export\n"))
+
+  if (!fs.existsSync(sourcePath)) {
+    console.log(chalk.red(`  ✗ File not found: ${sourcePath}`))
+    return
+  }
+
+  const parsed = dotenv.parse(fs.readFileSync(sourcePath, "utf-8"))
+  const lines: string[] = [
+    "# ── IbateXas Secrets ──────────────────────────────────────────────────────────",
+    `# Generated from ${opts.file ?? ".env"} — do NOT commit this file`,
+    `# Usage: ibx infra secrets:push`,
+    "# ──────────────────────────────────────────────────────────────────────────────",
+    "",
+  ]
+
+  let exported = 0
+  const missing: string[] = []
+
+  for (const category of SECRET_CATEGORIES) {
+    const catLines: string[] = []
+    for (const key of category.keys) {
+      if (!MANUAL_SECRETS.includes(key)) continue
+      const value = parsed[key]
+      if (value) {
+        catLines.push(`export ${key}="${value}"`)
+        exported++
+      } else {
+        catLines.push(`# export ${key}=""`)
+        missing.push(key)
+      }
+    }
+    if (catLines.length > 0) {
+      lines.push(`# ${category.label}`)
+      lines.push(...catLines)
+      lines.push("")
+    }
+  }
+
+  const outPath = path.resolve(ROOT, "infra/secrets.env")
+  fs.writeFileSync(outPath, lines.join("\n"), "utf-8")
+
+  console.log(chalk.green(`  ✓ Written to infra/secrets.env`))
+  console.log(chalk.bold(`\n  Summary: ${chalk.green(`${exported} exported`)}, ${chalk.yellow(`${missing.length} missing`)}`))
+  if (missing.length > 0) {
+    console.log(chalk.yellow(`  ⚠ Missing: ${missing.join(", ")}`))
+    console.log(chalk.gray(`    Fill them in infra/secrets.env before running: ibx infra secrets:push`))
+  }
+  console.log("")
+}
+
+// ── Subcommand: secrets:push ─────────────────────────────────────────────────
+
+async function runSecretsPush(opts: { file?: string; env?: string; force?: boolean; only?: string }) {
+  const sourcePath = path.resolve(ROOT, opts.file ?? "infra/secrets.env")
+
+  console.log(chalk.bold.blue("\n  🚀  Secrets Push\n"))
+
+  if (!fs.existsSync(sourcePath)) {
+    console.log(chalk.red(`  ✗ File not found: ${sourcePath}`))
+    console.log(chalk.gray(`    Run: ibx infra secrets:export`))
+    return
+  }
+
+  const content = fs.readFileSync(sourcePath, "utf-8")
+  let loaded = 0
+
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith("#")) continue
+    // Match: export KEY="value", export KEY=value, KEY="value", KEY=value
+    const match = trimmed.match(/^(?:export\s+)?([A-Z_]+)=["']?(.+?)["']?$/)
+    if (match) {
+      const [, key, value] = match
+      if (MANUAL_SECRETS.includes(key)) {
+        process.env[key] = value
+        loaded++
+      }
+    }
+  }
+
+  console.log(chalk.gray(`  Loaded ${loaded} secrets from ${opts.file ?? "infra/secrets.env"}\n`))
+
+  await runSecrets({ fromEnv: true, force: opts.force, only: opts.only, env: opts.env })
 }
 
 // ── Subcommand: github ────────────────────────────────────────────────────────
@@ -1150,15 +1278,18 @@ async function runExplain() {
 
   // 5. Check secrets
   stepNum++
-  const missingSecrets: string[] = []
-  for (const name of MANUAL_SECRETS) {
-    const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
-    if (res.exitCode !== 0) { missingSecrets.push(name); continue }
-    try {
-      const data = JSON.parse(res.stdout)
-      if (!data.SecretString?.trim()) missingSecrets.push(name)
-    } catch { missingSecrets.push(name) }
-  }
+  const secretResults = await Promise.all(
+    MANUAL_SECRETS.map(async (name) => {
+      const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
+      if (res.exitCode !== 0) return name
+      try {
+        const data = JSON.parse(res.stdout)
+        if (!data.SecretString?.trim()) return name
+      } catch { return name }
+      return null
+    }),
+  )
+  const missingSecrets = secretResults.filter((n): n is string => n !== null)
   if (missingSecrets.length === 0) {
     findings.push({ step: stepNum, label: "Secrets", ok: true, detail: "all populated" })
   } else {
@@ -1216,11 +1347,27 @@ export function registerInfraCommands(infra: Command) {
 
   infra
     .command("secrets")
-    .description("Populate Secrets Manager entries (interactive, --from-env for CI)")
+    .description("Populate Secrets Manager entries (interactive, --from-env for CI, --only to filter)")
     .option("--env <name>", "Environment name", "dev")
     .option("--force", "Re-prompt for secrets that already have values")
     .option("--from-env", "Non-interactive: read values from environment variables")
+    .option("--only <names>", "Comma-separated list of secret names to process")
     .action(runSecrets)
+
+  infra
+    .command("secrets:export")
+    .description("Export MANUAL_SECRETS from .env to infra/secrets.env")
+    .option("--file <path>", "Source .env file path", ".env")
+    .action(runSecretsExport)
+
+  infra
+    .command("secrets:push")
+    .description("Push infra/secrets.env to AWS Secrets Manager")
+    .option("--file <path>", "Source secrets.env file path", "infra/secrets.env")
+    .option("--env <name>", "Environment name", "dev")
+    .option("--force", "Re-push secrets that already have values")
+    .option("--only <names>", "Comma-separated list of secret names to process")
+    .action(runSecretsPush)
 
   infra
     .command("github")

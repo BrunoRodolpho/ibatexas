@@ -451,7 +451,14 @@ ibx infra apply --env staging          # target a different environment
 ibx infra secrets                      # interactive prompt for 17 Secrets Manager entries
 ibx infra secrets --force              # re-prompt even for populated secrets
 ibx infra secrets --from-env           # non-interactive: read from environment variables (CI)
+ibx infra secrets --only DATABASE_URL  # process a single secret
+ibx infra secrets --only DATABASE_URL,JWT_SECRET --force  # update specific secrets
 ibx infra secrets --env staging        # target a different environment
+ibx infra secrets:export               # export MANUAL_SECRETS from .env to infra/secrets.env
+ibx infra secrets:export --file .env.production  # export from a different .env file
+ibx infra secrets:push                 # push infra/secrets.env to AWS Secrets Manager
+ibx infra secrets:push --force         # re-push even for populated secrets
+ibx infra secrets:push --only DATABASE_URL  # push a single secret from the file
 
 # GitHub CI/CD secrets
 ibx infra github                       # set repo secrets (OIDC role ARN, DB URLs, SONAR_TOKEN)
@@ -478,6 +485,12 @@ Verifies AWS account identity and region before creating resources. Idempotent â
 
 `ibx infra secrets` validates each secret (URL format, key prefixes, minimum length) and runs
 cross-validation after all inputs (e.g., DATABASE_URL vs DIRECT_DATABASE_URL host mismatch).
+
+`ibx infra secrets:export` reads the local `.env` file and extracts only the 17 MANUAL_SECRETS
+into `infra/secrets.env` (grouped by category). Missing keys are commented out with a warning.
+
+`ibx infra secrets:push` reads `infra/secrets.env` and pushes the values to AWS Secrets Manager
+using the existing `--from-env` pipeline. Supports `--force` and `--only` flags.
 
 `ibx infra status` shows a deployment health confidence summary (HEALTHY / PARTIALLY HEALTHY / NOT READY)
 plus grouped checks for AWS, Terraform, ECS services, image freshness, secret staleness, and GitHub secrets.
