@@ -8,6 +8,7 @@ const mockRedis = vi.hoisted(() => ({
   get: vi.fn(),
   set: vi.fn(),
   del: vi.fn(),
+  getDel: vi.fn(),
 }));
 
 vi.mock("@ibatexas/tools", () => ({
@@ -54,36 +55,33 @@ describe("setWelcomeCredit", () => {
 
 describe("getAndConsumeWelcomeCredit", () => {
   it("returns coupon code and deletes key on first call", async () => {
-    mockRedis.get.mockResolvedValue("BEMVINDO15");
-    mockRedis.del.mockResolvedValue(1);
+    mockRedis.getDel.mockResolvedValue("BEMVINDO15");
 
     const code = await getAndConsumeWelcomeCredit("cust-123");
 
     expect(code).toBe("BEMVINDO15");
-    expect(mockRedis.del).toHaveBeenCalledWith(
+    expect(mockRedis.getDel).toHaveBeenCalledWith(
       expect.stringContaining("welcome:credit:cust-123"),
     );
   });
 
   it("returns null when no credit exists", async () => {
-    mockRedis.get.mockResolvedValue(null);
+    mockRedis.getDel.mockResolvedValue(null);
 
     const code = await getAndConsumeWelcomeCredit("cust-123");
 
     expect(code).toBeNull();
-    expect(mockRedis.del).not.toHaveBeenCalled();
   });
 
   it("is consumed — second call returns null", async () => {
-    // First call: code present
-    mockRedis.get.mockResolvedValueOnce("BEMVINDO15");
-    mockRedis.del.mockResolvedValue(1);
+    // First call: getDel atomically returns and deletes
+    mockRedis.getDel.mockResolvedValueOnce("BEMVINDO15");
 
     const first = await getAndConsumeWelcomeCredit("cust-456");
     expect(first).toBe("BEMVINDO15");
 
-    // Second call: key deleted, get returns null
-    mockRedis.get.mockResolvedValueOnce(null);
+    // Second call: key already deleted, getDel returns null
+    mockRedis.getDel.mockResolvedValueOnce(null);
 
     const second = await getAndConsumeWelcomeCredit("cust-456");
     expect(second).toBeNull();

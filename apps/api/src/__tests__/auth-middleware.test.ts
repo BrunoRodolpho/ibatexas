@@ -242,7 +242,7 @@ describe("JWT revocation (SEC-004)", () => {
     expect(body.customerId).toBe("cust_ok");
   });
 
-  it("allows through when Redis is down (best-effort revocation)", async () => {
+  it("fails closed when Redis is down (SEC-004: reject rather than accept potentially revoked tokens)", async () => {
     sideEffects.length = 0;
     mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
       this.user = { sub: "cust_fallback", userType: "customer", jti: "some-jti" };
@@ -254,9 +254,8 @@ describe("JWT revocation (SEC-004)", () => {
       url: "/protected",
     });
 
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body.customerId).toBe("cust_fallback");
+    // Fail closed: Redis unavailable → 503, not 200
+    expect(response.statusCode).toBe(503);
   });
 
   it("skips revocation check for legacy tokens without jti", async () => {

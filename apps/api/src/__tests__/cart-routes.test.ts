@@ -124,11 +124,12 @@ describe("POST /api/cart — create cart", () => {
     });
 
     expect(res.statusCode).toBe(201);
+    // Cart creation sends empty body — customer association happens via Medusa session
     expect(mockMedusaStore).toHaveBeenCalledWith(
       "/store/carts",
       expect.objectContaining({
         method: "POST",
-        body: expect.stringContaining("cus_01"),
+        body: "{}",
       }),
     );
   });
