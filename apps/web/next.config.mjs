@@ -45,7 +45,7 @@ const nextConfig = {
               // unsafe-eval only needed in dev for Next.js hot-reload
               `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""} ${posthogHost} https://*.posthog.com`,
               "style-src 'self' 'unsafe-inline'",
-              "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com https://*.cloudinary.com",
+              "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com https://*.cloudinary.com https://qr.stripe.com",
               `connect-src 'self' ${posthogHost} https://*.posthog.com ${apiUrl}${isDev ? ' http://*:3001' : ''}`,
               "font-src 'self' https://fonts.gstatic.com",
               "media-src 'self'",

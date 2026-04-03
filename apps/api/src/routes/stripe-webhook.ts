@@ -12,7 +12,7 @@
 
 import type { FastifyInstance } from "fastify";
 import Stripe from "stripe";
-import { getRedisClient, rk, medusaAdmin } from "@ibatexas/tools";
+import { getRedisClient, rk, medusaAdmin, medusaStore } from "@ibatexas/tools";
 import { createOrderService } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { markPixPaid } from "../jobs/pix-expiry-monitor.js";
@@ -36,7 +36,35 @@ async function handlePaymentSucceeded(
     "Stripe webhook received",
   );
 
-  const orderId = paymentIntent.metadata?.["medusaOrderId"];
+  let orderId = paymentIntent.metadata?.["medusaOrderId"];
+
+  // PIX flow: cart was not completed at checkout time — complete it now
+  // that payment has succeeded, creating the Medusa order.
+  const cartId = paymentIntent.metadata?.["cartId"];
+  if (!orderId && cartId) {
+    try {
+      const completedData = await medusaStore(`/store/carts/${cartId}/complete`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      }) as { type?: string; order?: { id: string; display_id?: number } };
+
+      orderId = completedData.order?.display_id
+        ? `IBX-${String(completedData.order.display_id).padStart(4, "0")}`
+        : completedData.order?.id;
+
+      if (orderId) {
+        // Persist orderId back to the PaymentIntent for future reference
+        const stripe = getStripe();
+        await stripe.paymentIntents.update(paymentIntent.id, {
+          metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
+        });
+        logger.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
+      }
+    } catch (err) {
+      logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
+    }
+  }
+
   if (!orderId) {
     logger.warn({ event_id: event.id }, "payment_intent.succeeded missing medusaOrderId metadata");
     return;

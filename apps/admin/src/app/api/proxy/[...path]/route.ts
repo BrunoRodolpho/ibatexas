@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY ?? "";
 
-const ALLOWED_PREFIXES = ["/api/admin/"];
+const ALLOWED_PREFIXES = ["/api/admin/", "/api/auth/staff/"];
 
 async function proxyRequest(request: NextRequest, params: { path: string[] }): Promise<NextResponse> {
   const path = params.path.join("/");

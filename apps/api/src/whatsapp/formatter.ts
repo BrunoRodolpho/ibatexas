@@ -10,7 +10,7 @@ export interface AgentWhatsAppResponse {
   toolsUsed: string[];
   inputTokens?: number;
   outputTokens?: number;
-  pixData?: { pixQrCodeText?: string; pixQrCodeUrl?: string; pixExpiresAt?: string; orderId?: string };
+  pixData?: { pixCopyPaste?: string; pixQrCode?: string; pixExpiresAt?: string; orderId?: string };
   statusMessages?: string[];
 }
 
@@ -74,8 +74,8 @@ export async function collectAgentResponse(
           break;
         case "pix_data":
           pixData = {
-            pixQrCodeText: chunk.pixQrCodeText,
-            pixQrCodeUrl: chunk.pixQrCodeUrl,
+            pixCopyPaste: chunk.pixCopyPaste,
+            pixQrCode: chunk.pixQrCode,
             pixExpiresAt: chunk.pixExpiresAt,
             orderId: chunk.orderId,
           };

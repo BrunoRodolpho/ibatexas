@@ -45,8 +45,8 @@
         "paymentMethod": "pix",
         "checkoutData": {
           "orderId": "IXS-009",
-          "pixQrCodeText": "00020126580014br.gov.bcb.pix0136def456",
-          "pixQrCodeUrl": null
+          "pixCopyPaste": "00020126580014br.gov.bcb.pix0136def456",
+          "pixQrCode": null
         }
       },
       "assertContext": {

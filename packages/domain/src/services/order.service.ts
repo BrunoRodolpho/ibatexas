@@ -72,7 +72,7 @@ export function createOrderService(medusaAdminFn?: MedusaFetch) {
       orderId: string,
       customerId?: string,
     ): Promise<{ order: MedusaOrder; ownershipValid: boolean }> {
-      const data = await fetchAdmin(`/admin/orders/${orderId}?expand=items`) as { order: MedusaOrder }
+      const data = await fetchAdmin(`/admin/orders/${orderId}`) as { order: MedusaOrder }
       const order = data.order
 
       if (customerId) {
@@ -217,7 +217,7 @@ export function createOrderService(medusaAdminFn?: MedusaFetch) {
       paymentIntentId: string,
       options?: { amountInCentavos?: number },
     ): Promise<{ customerId: string | undefined; items: OrderItem[] } | null> {
-      const data = await fetchAdmin(`/admin/orders/${orderId}?expand=items`) as { order: MedusaOrder }
+      const data = await fetchAdmin(`/admin/orders/${orderId}`) as { order: MedusaOrder }
       const order = data.order
 
       if (order.status !== "pending") return null

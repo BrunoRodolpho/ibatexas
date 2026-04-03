@@ -62,7 +62,7 @@ function sortReviews(reviews: ReviewItem[]): ReviewItem[] {
 /** Fetch top reviews from popular products */
 async function loadTopReviews(signal: AbortSignal): Promise<ReviewItem[]> {
   const res = await apiFetch<{ items?: Array<{ id: string; title: string }>; products?: Array<{ id: string; title: string }> }>(
-    '/api/products?sort=popular&limit=6',
+    '/api/products?sort=rating_desc&limit=6',
     { signal },
   )
   const products = (res.items ?? res.products ?? []).slice(0, 3)

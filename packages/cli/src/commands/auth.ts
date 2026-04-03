@@ -35,6 +35,7 @@ function buildFlushPatterns(phoneHash: string | undefined): FlushPattern[] {
   return [
     { label: "rate-limit", pattern: rk("otp:rate:*") },
     { label: "fail-count", pattern: rk("otp:fail:*") },
+    { label: "ip-rate-limit", pattern: rk("otp:ip:*") },
   ]
 }
 

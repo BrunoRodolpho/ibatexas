@@ -83,6 +83,10 @@ export default function CheckoutContent() {
   const [result, setResult] = useState<CheckoutResult | null>(null)
   const checkoutStartedRef = useRef(false)
   const checkoutCompletedRef = useRef(false)
+  const [pixName, setPixName] = useState("")
+  const [pixEmail, setPixEmail] = useState("")
+  const [pixCpf, setPixCpf] = useState("")
+  const pixDetailsFetched = useRef(false)
 
   const subtotal = getTotal()
   const deliveryFeeAmount = deliveryType === "delivery" ? (deliveryEstimate?.feeInCentavos ?? 0) : 0
@@ -129,6 +133,20 @@ export default function CheckoutContent() {
     return () => globalThis.removeEventListener('beforeunload', handleBeforeUnload)
   }, [stage, total])
 
+  // ── Load cached PIX details for authenticated customers ──────────────
+  useEffect(() => {
+    if (paymentMethod !== "pix" || !isAuthenticated() || pixDetailsFetched.current) return
+    pixDetailsFetched.current = true
+    fetch(`${getApiBase()}/api/cart/pix-details`, { credentials: "include" })
+      .then((r) => r.ok ? r.json() as Promise<{ name?: string; email?: string; cpf?: string }> : null)
+      .then((data) => {
+        if (data?.name && !pixName) setPixName(data.name)
+        if (data?.email && !pixEmail) setPixEmail(data.email)
+        if (data?.cpf && !pixCpf) setPixCpf(data.cpf)
+      })
+      .catch(() => { /* non-critical */ })
+  }, [paymentMethod]) // eslint-disable-line react-hooks/exhaustive-deps
+
   if (items.length === 0 && stage === "summary") {
     return (
       <div className="min-h-screen bg-smoke-50 flex items-center justify-center px-4">
@@ -161,6 +179,36 @@ export default function CheckoutContent() {
     }
   }
 
+  function formatCpf(value: string): string {
+    const digits = value.replace(/\D/g, "").slice(0, 11)
+    if (digits.length <= 3) return digits
+    if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`
+    if (digits.length <= 9) return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`
+    return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`
+  }
+
+  function isValidCpf(cpf: string): boolean {
+    const digits = cpf.replace(/\D/g, "")
+    if (digits.length !== 11) return false
+    if (/^(\d)\1+$/.test(digits)) return false
+    let sum = 0
+    for (let i = 0; i < 9; i++) sum += Number(digits[i]) * (10 - i)
+    let check = 11 - (sum % 11)
+    if (check >= 10) check = 0
+    if (check !== Number(digits[9])) return false
+    sum = 0
+    for (let i = 0; i < 10; i++) sum += Number(digits[i]) * (11 - i)
+    check = 11 - (sum % 11)
+    if (check >= 10) check = 0
+    return check === Number(digits[10])
+  }
+
+  const pixFieldsValid = paymentMethod !== "pix" || (
+    pixName.trim().split(/\s+/).length >= 2 &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pixEmail) &&
+    isValidCpf(pixCpf)
+  )
+
   async function handleCheckout() {
     if (!medusaCartId) {
       setError(t('cart_not_found'))
@@ -178,6 +226,12 @@ export default function CheckoutContent() {
           paymentMethod,
           tipInCentavos: tipAmount > 0 ? tipAmount : undefined,
           deliveryCep: deliveryType === "delivery" ? cepInput : undefined,
+          items: items.map((i) => ({ variantId: i.variantId, quantity: i.quantity })),
+          ...(paymentMethod === "pix" ? {
+            pixName: pixName.trim() || undefined,
+            pixEmail: pixEmail.trim() || undefined,
+            pixCpf: pixCpf.replace(/\D/g, "") || undefined,
+          } : {}),
         }),
       })
       if (!res.ok) {
@@ -217,6 +271,7 @@ export default function CheckoutContent() {
       }
 
       if (paymentMethod === "pix") {
+        clearCart()
         setStage("pix_waiting")
       } else if (paymentMethod === "cash") {
         clearCart()
@@ -423,6 +478,37 @@ export default function CheckoutContent() {
               </button>
             ))}
           </div>
+
+          {/* PIX billing fields */}
+          {paymentMethod === "pix" && (
+            <div className="space-y-2 mt-3 pt-3 border-t border-smoke-200">
+              <p className="text-xs font-semibold uppercase tracking-editorial text-smoke-400">{t('pix_billing_label')}</p>
+              <input
+                type="text"
+                placeholder={t('pix_name_placeholder')}
+                value={pixName}
+                onChange={(e) => setPixName(e.target.value)}
+                className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+              />
+              <input
+                type="email"
+                placeholder={t('pix_email_placeholder')}
+                value={pixEmail}
+                onChange={(e) => setPixEmail(e.target.value)}
+                className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+              />
+              <input
+                type="text"
+                placeholder={t('pix_cpf_placeholder')}
+                value={pixCpf}
+                onChange={(e) => setPixCpf(formatCpf(e.target.value))}
+                className="w-full rounded-sm border border-smoke-200 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+              />
+              {pixCpf.replace(/\D/g, "").length === 11 && !isValidCpf(pixCpf) && (
+                <p className="text-xs text-accent-red">{t('pix_cpf_invalid')}</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Total */}
@@ -475,7 +561,7 @@ export default function CheckoutContent() {
           size="lg"
           className="w-full"
           onClick={handleCheckout}
-          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate)}
+          disabled={loading || !termsAccepted || (deliveryType === "delivery" && !deliveryEstimate) || !pixFieldsValid}
         >
           {loading ? t('processing') : t('confirm_order', { total: formatBRL(total) })}
         </Button>

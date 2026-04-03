@@ -17,12 +17,71 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos } from "@ibatexas/tools";
+import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, MedusaRequestError, cancelStalePaymentIntent } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
+import { createCustomerService } from "@ibatexas/domain";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+const PIX_CACHE_TTL = 90 * 86400; // 90 days
+
+async function loadCachedPixDetails(
+  customerId: string,
+): Promise<{ name?: string; email?: string; cpf?: string } | null> {
+  try {
+    const redis = await getRedisClient();
+    const key = rk(`customer:pix:${customerId}`);
+    const hash = await redis.hGetAll(key);
+    if (hash && Object.keys(hash).length > 0) {
+      await redis.expire(key, PIX_CACHE_TTL);
+      return {
+        name: hash.name || undefined,
+        email: hash.email || undefined,
+        cpf: hash.cpf || undefined,
+      };
+    }
+    const svc = createCustomerService();
+    const customer = await svc.getById(customerId);
+    const cpf = (customer as Record<string, unknown>).cpf as string | null | undefined;
+    if (customer.email || cpf) {
+      return {
+        name: customer.name ?? undefined,
+        email: customer.email ?? undefined,
+        cpf: cpf ?? undefined,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function cachePixDetailsForCustomer(
+  customerId: string,
+  data: { name?: string; email?: string; cpf?: string },
+): Promise<void> {
+  try {
+    const redis = await getRedisClient();
+    const key = rk(`customer:pix:${customerId}`);
+    const pipeline = redis.multi();
+    if (data.name) pipeline.hSet(key, "name", data.name);
+    if (data.email) pipeline.hSet(key, "email", data.email);
+    if (data.cpf) pipeline.hSet(key, "cpf", data.cpf);
+    pipeline.expire(key, PIX_CACHE_TTL);
+    await pipeline.exec();
+
+    const svc = createCustomerService();
+    await svc.updatePixDetails(customerId, {
+      name: data.name,
+      email: data.email,
+      cpf: data.cpf,
+    });
+  } catch (err) {
+    console.warn("[cart/checkout] Failed to cache PIX details:", (err as Error).message);
+  }
+}
 
 const CartIdParams = z.object({ id: z.string().min(1) });
 const CartItemParams = z.object({ id: z.string().min(1), itemId: z.string().min(1) });
@@ -80,12 +139,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      const body: Record<string, unknown> = {};
-      if (request.customerId) body["customer_id"] = request.customerId;
-
       const data = await medusaStore("/store/carts", {
         method: "POST",
-        body: JSON.stringify(body),
+        body: JSON.stringify({}),
         headers: { "Content-Type": "application/json" },
       });
 
@@ -317,6 +373,13 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           paymentMethod: z.enum(["pix", "card", "cash"]),
           tipInCentavos: z.number().int().min(0).optional(),
           deliveryCep: z.string().optional(),
+          items: z.array(z.object({
+            variantId: z.string().min(1),
+            quantity: z.number().int().min(1),
+          })).optional(),
+          pixName: z.string().optional(),
+          pixEmail: z.string().email().optional(),
+          pixCpf: z.string().optional(),
         }),
       },
       preHandler: optionalAuth,
@@ -329,7 +392,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // SEC-001: Cash/PIX requires authentication — Stripe validates identity for card payments
-      const { paymentMethod } = request.body;
+      const { paymentMethod, items: localItems } = request.body;
       if ((paymentMethod === "cash" || paymentMethod === "pix") && !request.customerId) {
         return reply.status(401).send({
           statusCode: 401,
@@ -338,23 +401,138 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
-      const result = await createCheckout(request.body, {
+      // Sync local cart items to Medusa if provided (web app keeps items in local state)
+      let cartId = request.body.cartId;
+
+      if (localItems && localItems.length > 0) {
+        let needsNewCart = false;
+
+        try {
+          const existingCart = await medusaStore(`/store/carts/${cartId}`) as {
+            cart?: {
+              completed_at?: string;
+              items?: Array<{ id: string }>;
+              payment_collection?: {
+                id: string;
+                payment_sessions?: Array<{ id: string; provider_id: string; data?: { id?: string } }>;
+              };
+            };
+          };
+
+          if (existingCart.cart?.completed_at) {
+            needsNewCart = true;
+          } else if (existingCart.cart?.payment_collection?.payment_sessions?.length) {
+            // Cancel Stripe PIs to prevent orphaned QR codes from charging the customer
+            for (const session of existingCart.cart.payment_collection.payment_sessions) {
+              const piId = session.data?.id;
+              if (piId && session.provider_id.includes("stripe")) {
+                await cancelStalePaymentIntent(piId).catch(() => {});
+              }
+            }
+            needsNewCart = true;
+          } else {
+            // Cart is clean — just clear old items before re-adding
+            const existingItems = existingCart.cart?.items ?? [];
+            for (const item of existingItems) {
+              await medusaStore(`/store/carts/${cartId}/line-items/${item.id}`, {
+                method: "DELETE",
+              }).catch(() => {});
+            }
+          }
+        } catch (err) {
+          // Cart doesn't exist in Medusa (purged/expired) — create fresh
+          if (err instanceof MedusaRequestError && err.statusCode === 404) {
+            needsNewCart = true;
+          } else {
+            throw err;
+          }
+        }
+
+        if (needsNewCart) {
+          const newCart = await medusaStore("/store/carts", {
+            method: "POST",
+            body: JSON.stringify({}),
+            headers: { "Content-Type": "application/json" },
+          }) as { cart?: { id: string } };
+          if (!newCart.cart?.id) {
+            return reply.status(500).send({ statusCode: 500, error: "Internal", message: "Não foi possível criar um novo carrinho." });
+          }
+          cartId = newCart.cart.id;
+          await trackCartId(cartId, request.customerId ? "customer" : "guest");
+        }
+
+        // Add local items to the (possibly new) cart
+        for (const item of localItems) {
+          await medusaStore(`/store/carts/${cartId}/line-items`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ variant_id: item.variantId, quantity: item.quantity }),
+          });
+        }
+      }
+
+      // Resolve PIX billing details: form fields override cached data
+      let pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } | undefined;
+      if (paymentMethod === "pix") {
+        const pixName = request.body.pixName;
+        const pixEmail = request.body.pixEmail;
+        const pixCpf = request.body.pixCpf;
+
+        // Try loading cached PIX details for authenticated customers
+        let cached: { name?: string; email?: string; cpf?: string } | null = null;
+        if (request.customerId) {
+          cached = await loadCachedPixDetails(request.customerId);
+        }
+
+        pixExtra = {
+          customerName: pixName ?? cached?.name,
+          customerEmail: pixEmail ?? cached?.email,
+          customerTaxId: pixCpf ?? cached?.cpf,
+        };
+      }
+
+      const result = await createCheckout({ ...request.body, cartId }, {
         channel: Channel.Web,
-        sessionId: request.body.cartId,
+        sessionId: cartId,
         customerId: request.customerId,
         userType: request.userType ?? "guest",
-      });
+      }, pixExtra);
 
       if (!result.success) {
         return reply.status(400).send(result);
       }
 
+      // Cache PIX details for authenticated customers on successful checkout
+      if (result.success && paymentMethod === "pix" && request.customerId && pixExtra) {
+        void cachePixDetailsForCustomer(request.customerId, {
+          name: pixExtra.customerName,
+          email: pixExtra.customerEmail,
+          cpf: pixExtra.customerTaxId,
+        });
+      }
+
       // Untrack cart from abandoned-cart detection on successful checkout
       if (result.orderId) {
-        await untrackCartId(request.body.cartId);
+        await untrackCartId(cartId);
       }
 
       return reply.send(result);
+    },
+  );
+
+  // GET /api/cart/pix-details — load cached PIX billing details for authenticated customer
+  app.get(
+    "/api/cart/pix-details",
+    {
+      schema: {
+        tags: ["cart"],
+        summary: "Buscar dados PIX salvos do cliente",
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const cached = await loadCachedPixDetails(request.customerId!);
+      return reply.send(cached ?? {});
     },
   );
 

@@ -55,7 +55,7 @@ vi.mock("@ibatexas/tools", () => {
     AmendOrderTool: makeTool("amend_order"),
     reorder: vi.fn(async () => ({ cartId: "cart_01" })),
     ReorderTool: makeTool("reorder"),
-    regeneratePix: vi.fn(async () => ({ success: true, pixQrCodeText: "00020126" })),
+    regeneratePix: vi.fn(async () => ({ success: true, pixCopyPaste: "00020126" })),
     RegeneratePixTool: makeTool("regenerate_pix"),
     setPixDetails: vi.fn(async () => ({ valid: true, event: { type: "PIX_DETAILS_COLLECTED", payload: {} }, errors: [], missing: [], message: "" })),
     SetPixDetailsTool: makeTool("set_pix_details"),

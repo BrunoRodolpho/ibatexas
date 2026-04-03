@@ -142,8 +142,8 @@ function formatOrderConfirmation(ctx: OrderContext, schedule?: RestaurantSchedul
   // Extract structured fields from checkoutResult
   const cr = ctx.checkoutResult as Record<string, unknown> | null
   const orderId = ctx.orderId ?? (cr?.orderId as string | undefined) ?? null
-  const pixQrCodeUrl = cr?.pixQrCodeUrl as string | undefined
-  const pixQrCodeText = cr?.pixQrCodeText as string | undefined
+  const pixQrCode = cr?.pixQrCode as string | undefined
+  const pixCopyPaste = cr?.pixCopyPaste as string | undefined
 
   // Per-item prep time breakdown
   const itemLines = ctx.items.map((item) => {
@@ -202,12 +202,12 @@ function formatOrderConfirmation(ctx: OrderContext, schedule?: RestaurantSchedul
 
   // Payment details
   if (ctx.paymentMethod === "pix") {
-    if (pixQrCodeText) {
-      prompt += `\nPIX copia-e-cola:\n${pixQrCodeText}\n`
+    if (pixCopyPaste) {
+      prompt += `\nPIX copia-e-cola:\n${pixCopyPaste}\n`
       prompt += "OBRIGATÓRIO: inclua o código PIX copia-e-cola COMPLETO na mensagem — o cliente precisa dele para pagar. Copie exatamente como está acima.\n"
     }
-    if (pixQrCodeUrl) prompt += `QR Code: ${pixQrCodeUrl}\n`
-    if (!pixQrCodeText && !pixQrCodeUrl) prompt += "\nERRO: código PIX não foi gerado. Informe ao cliente que houve um problema técnico e peça para tentar novamente. NUNCA diga que o PIX será enviado depois — ele deve aparecer AGORA ou o pedido falhou.\n"
+    if (pixQrCode) prompt += `QR Code: ${pixQrCode}\n`
+    if (!pixCopyPaste && !pixQrCode) prompt += "\nERRO: código PIX não foi gerado. Informe ao cliente que houve um problema técnico e peça para tentar novamente. NUNCA diga que o PIX será enviado depois — ele deve aparecer AGORA ou o pedido falhou.\n"
     prompt += "Pagamento confirmado automaticamente.\n"
   } else if (ctx.paymentMethod === "card") {
     prompt += "\nPagamento via cartão confirmado.\n"
@@ -462,7 +462,7 @@ Se o cliente já informou um dos dois, pergunte só o que falta.`
     // Transient state — usually transitions to post_order via LOYALTY_LOADED immediately.
     // This prompt is rendered if the LLM is called before loyalty fetch completes.
     const cr = ctx.checkoutResult as Record<string, unknown> | null
-    const hasPixData = !!(cr?.pixQrCodeText || cr?.pixQrCodeUrl)
+    const hasPixData = !!(cr?.pixCopyPaste || cr?.pixQrCode)
     if (!ctx.orderId && !cr?.orderId && !hasPixData) {
       return "ERRO INTERNO: dados do pedido não disponíveis. Informe ao cliente que houve um problema técnico e peça para tentar novamente."
     }

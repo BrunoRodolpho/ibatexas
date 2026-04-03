@@ -34,7 +34,7 @@ type InternalEvent =
   | { type: "CANCEL_ORDER_RESULT"; success: boolean; message: string }
   | { type: "AMEND_ORDER_RESULT"; success: boolean; message: string }
   | { type: "REGENERATE_PIX" }  // kernel sends this when LLM proposes regenerate_pix tool
-  | { type: "PIX_REGENERATED"; success: boolean; pixQrCodeText?: string; pixQrCodeUrl?: string }
+  | { type: "PIX_REGENERATED"; success: boolean; pixCopyPaste?: string; pixQrCode?: string }
   // Post-checkout PIX cache event (machine-controlled side effect)
   | { type: "CACHE_PIX_DETAILS" }
 
@@ -309,8 +309,8 @@ export const orderMachine = setup({
       if (!event.success) return { lastError: "Erro ao regenerar PIX." }
       return {
         checkoutResult: {
-          pixQrCodeText: (event as { pixQrCodeText?: string }).pixQrCodeText,
-          pixQrCodeUrl: (event as { pixQrCodeUrl?: string }).pixQrCodeUrl,
+          pixCopyPaste: (event as { pixCopyPaste?: string }).pixCopyPaste,
+          pixQrCode: (event as { pixQrCode?: string }).pixQrCode,
         },
         lastError: null,
       }

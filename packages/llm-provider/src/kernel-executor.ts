@@ -118,7 +118,7 @@ async function cancelOrderAction(
 async function regeneratePixAction(
   ctx: OrderContext,
   sessionId: string,
-): Promise<{ success: boolean; message: string; pixQrCodeText?: string; pixQrCodeUrl?: string }> {
+): Promise<{ success: boolean; message: string; pixCopyPaste?: string; pixQrCode?: string }> {
   if (!ctx.orderId) {
     return { success: false, message: "Pedido não encontrado." }
   }
@@ -131,8 +131,8 @@ async function regeneratePixAction(
     return {
       success: result.success,
       message: result.message,
-      pixQrCodeText: result.pixQrCodeText,
-      pixQrCodeUrl: result.pixQrCodeUrl,
+      pixCopyPaste: result.pixCopyPaste,
+      pixQrCode: result.pixQrCode,
     }
   } catch (err) {
     console.error("[kernel:regeneratePix]", (err as Error).message)
@@ -453,8 +453,8 @@ export async function executeKernel(
       actor.send({
         type: "PIX_REGENERATED",
         success: pixResult.success,
-        pixQrCodeText: pixResult.pixQrCodeText,
-        pixQrCodeUrl: pixResult.pixQrCodeUrl,
+        pixCopyPaste: pixResult.pixCopyPaste,
+        pixQrCode: pixResult.pixQrCode,
       })
     }
 

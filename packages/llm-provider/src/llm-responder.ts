@@ -53,7 +53,7 @@ export function buildConfirmationFallback(ctx: OrderContext): string {
   const fulfillment = ctx.fulfillment === "delivery" ? "Entrega" : "Retirada"
 
   const cr = ctx.checkoutResult as Record<string, unknown> | null
-  const hasPixData = !!(cr?.pixQrCodeText)
+  const hasPixData = !!(cr?.pixCopyPaste)
 
   if (ctx.paymentMethod === "pix" && !hasPixData) {
     return [

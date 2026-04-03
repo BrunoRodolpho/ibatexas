@@ -31,7 +31,7 @@ export type StreamChunk =
   | { type: "text_delta"; delta: string }
   | { type: "tool_start"; toolName: string; toolUseId: string }
   | { type: "tool_result"; toolName: string; toolUseId: string; success: boolean }
-  | { type: "pix_data"; pixQrCodeText?: string; pixQrCodeUrl?: string; pixExpiresAt?: string; orderId?: string }
+  | { type: "pix_data"; pixCopyPaste?: string; pixQrCode?: string; pixExpiresAt?: string; orderId?: string }
   | { type: "done"; inputTokens?: number; outputTokens?: number }
   | { type: "error"; message: string }
   | { type: "status"; message: string }

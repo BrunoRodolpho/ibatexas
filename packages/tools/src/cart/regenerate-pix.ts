@@ -13,8 +13,8 @@ interface RegeneratePixInput {
 
 interface RegeneratePixOutput {
   success: boolean;
-  pixQrCodeText?: string;
-  pixQrCodeUrl?: string;
+  pixCopyPaste?: string;
+  pixQrCode?: string;
   pixExpiresAt?: string;
   message: string;
 }
@@ -88,8 +88,8 @@ export async function regeneratePix(
 
   return {
     success: true,
-    pixQrCodeText: pixData.data,
-    pixQrCodeUrl: pixData.image_url_svg,
+    pixCopyPaste: pixData.data,
+    pixQrCode: pixData.image_url_svg,
     pixExpiresAt: pixData.expires_at
       ? new Date(pixData.expires_at * 1000).toISOString()
       : undefined,

@@ -320,8 +320,8 @@ export async function estimateDeliveryAction(
 export interface CheckoutResult {
   success: boolean
   paymentMethod: string
-  pixQrCodeUrl?: string
-  pixQrCodeText?: string
+  pixQrCode?: string
+  pixCopyPaste?: string
   stripeClientSecret?: string
   orderId?: string
   message: string
@@ -357,8 +357,8 @@ export async function processCheckout(
     ) as {
       success: boolean
       paymentMethod: string
-      pixQrCodeUrl?: string
-      pixQrCodeText?: string
+      pixQrCode?: string
+      pixCopyPaste?: string
       stripeClientSecret?: string
       orderId?: string
       message: string

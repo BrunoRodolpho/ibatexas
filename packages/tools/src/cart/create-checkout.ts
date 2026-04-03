@@ -26,8 +26,8 @@ export interface CreateCheckoutOutput {
   success: boolean;
   paymentMethod: string;
   // PIX
-  pixQrCodeUrl?: string;
-  pixQrCodeText?: string;
+  pixQrCode?: string;
+  pixCopyPaste?: string;
   pixExpiresAt?: string;
   // Card
   stripeClientSecret?: string;
@@ -104,26 +104,24 @@ async function confirmPixAndGetQrCode(
       };
     }
 
-    // Complete cart in Medusa to create the order
-    let medusaOrderId: string | undefined
+    // Store cartId in PaymentIntent metadata so the webhook can complete
+    // the cart and create the Medusa order when PIX payment succeeds.
+    // Cart completion must NOT happen here — the payment session is not
+    // authorized yet (customer hasn't scanned the QR code).
     try {
-      const completedData = await medusaStoreFetch(`/store/carts/${cartId}/complete`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      }) as { type?: string; order?: { id: string; display_id?: number } }
-      medusaOrderId = completedData.order?.display_id
-        ? `IBX-${String(completedData.order.display_id).padStart(4, "0")}`
-        : completedData.order?.id
+      await stripe.paymentIntents.update(paymentIntentId, {
+        metadata: { cartId },
+      });
     } catch (err) {
-      console.warn("[create_checkout] Cart completion failed (order may be created by webhook):", (err as Error).message)
+      console.warn("[create_checkout] Failed to set cartId metadata on PI:", (err as Error).message);
     }
 
     return {
       success: true,
       paymentMethod: "pix",
-      orderId: medusaOrderId ?? paymentIntentId,
-      pixQrCodeUrl: pixData.image_url_svg ?? pixData.image_url_png,
-      pixQrCodeText: pixData.data,
+      orderId: paymentIntentId,
+      pixQrCode: pixData.image_url_svg ?? pixData.image_url_png,
+      pixCopyPaste: pixData.data,
       pixExpiresAt: pixData.expires_at
         ? new Date(pixData.expires_at * 1000).toISOString()
         : undefined,

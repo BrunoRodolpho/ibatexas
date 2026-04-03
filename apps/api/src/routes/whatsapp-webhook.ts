@@ -521,25 +521,25 @@ async function handleMessageAsync(
 
     // ── PIX follow-up: send copia-e-cola + QR code if LLM omitted them ──
     if (agentResponse.pixData) {
-      const { pixQrCodeText, pixQrCodeUrl } = agentResponse.pixData;
-      const textHasPixCode = pixQrCodeText && agentResponse.text?.includes(pixQrCodeText);
+      const { pixCopyPaste, pixQrCode } = agentResponse.pixData;
+      const textHasPixCode = pixCopyPaste && agentResponse.text?.includes(pixCopyPaste);
 
-      if (pixQrCodeText && !textHasPixCode) {
+      if (pixCopyPaste && !textHasPixCode) {
         await sendText(
           `whatsapp:${phone}`,
-          `*Código PIX (copia e cola):*\n\n${pixQrCodeText}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
+          `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
         );
       }
 
-      if (pixQrCodeUrl) {
-        await sendMedia(`whatsapp:${phone}`, pixQrCodeUrl, "QR Code PIX").catch((err) => {
+      if (pixQrCode) {
+        await sendMedia(`whatsapp:${phone}`, pixQrCode, "QR Code PIX").catch((err) => {
           log.warn({ error: String(err) }, "[whatsapp.pix.qr_send_failed] Falling back to text-only PIX");
         });
       }
 
       // Schedule PIX expiry reminders (25min reminder + 30min expired)
       const pixOrderId = agentResponse.pixData.orderId;
-      if (pixQrCodeText && (pixOrderId || session.customerId)) {
+      if (pixCopyPaste && (pixOrderId || session.customerId)) {
         void schedulePixExpiryMonitor({
           phone,
           phoneHash: hash,

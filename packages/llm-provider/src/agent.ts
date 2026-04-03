@@ -260,11 +260,11 @@ export async function* runAgent(
 
   // ── PIX data (buffered — yield AFTER LLM text so customer gets explanation first) ──
   const cr = machineCtx.checkoutResult as Record<string, unknown> | null
-  const pendingPixData = (cr?.pixQrCodeText || cr?.pixQrCodeUrl)
+  const pendingPixData = (cr?.pixCopyPaste || cr?.pixQrCode)
     ? {
         type: "pix_data" as const,
-        pixQrCodeText: cr.pixQrCodeText as string | undefined,
-        pixQrCodeUrl: cr.pixQrCodeUrl as string | undefined,
+        pixCopyPaste: cr.pixCopyPaste as string | undefined,
+        pixQrCode: cr.pixQrCode as string | undefined,
         pixExpiresAt: cr.pixExpiresAt as string | undefined,
         orderId: machineCtx.orderId as string | undefined,
       }

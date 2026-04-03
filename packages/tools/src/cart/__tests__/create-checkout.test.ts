@@ -310,8 +310,8 @@ describe("createCheckout", () => {
 
       expect(result.success).toBe(true)
       expect(result.paymentMethod).toBe("pix")
-      expect(result.pixQrCodeUrl).toBe("https://stripe.com/pix-qr.svg")
-      expect(result.pixQrCodeText).toContain("00020126")
+      expect(result.pixQrCode).toBe("https://stripe.com/pix-qr.svg")
+      expect(result.pixCopyPaste).toContain("00020126")
       expect(result.pixExpiresAt).toBeDefined()
     })
 
