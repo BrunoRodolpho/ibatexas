@@ -10,6 +10,7 @@
 // - Uses aggregate _avg and _count correctly
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { syncReviewStats } from "../sync-review-stats.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -39,10 +40,6 @@ vi.mock("../../typesense/client.js", () => ({
   getTypesenseClient: mockGetTypesenseClient,
   COLLECTION: "products",
 }))
-
-// -- Imports ──────────────────────────────────────────────────────────────────
-
-import { syncReviewStats } from "../sync-review-stats.js"
 
 // -- Tests ────────────────────────────────────────────────────────────────────
 

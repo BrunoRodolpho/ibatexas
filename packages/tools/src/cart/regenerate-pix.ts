@@ -1,11 +1,11 @@
 // regenerate_pix tool — generate a new PIX QR code for a pending order
 // Used when the customer's previous PIX expired but the order is still active.
 
+import type Stripe from "stripe";
 import { NonRetryableError, type AgentContext } from "@ibatexas/types";
 import { createOrderService } from "@ibatexas/domain";
 import { medusaAdmin } from "../medusa/client.js";
 import { cancelStalePaymentIntent, getStripe } from "./_stripe-helpers.js";
-import type Stripe from "stripe";
 
 interface RegeneratePixInput {
   orderId: string;

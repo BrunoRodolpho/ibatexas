@@ -11,6 +11,8 @@
 // - Items without variant_id are skipped
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { reorder } from "../reorder.js"
+import { makeCtx, makeGuestCtx } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -26,11 +28,6 @@ vi.mock("../_shared.js", () => ({
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }))
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { reorder } from "../reorder.js"
-import { makeCtx, makeGuestCtx } from "./fixtures/medusa.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

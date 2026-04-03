@@ -8,6 +8,9 @@
 // - products without visibility metadata treated as "all"
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
+import { searchProducts } from "../search-products.js"
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
@@ -44,12 +47,6 @@ vi.mock("../../cache/query-cache.js", () => ({
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: vi.fn().mockResolvedValue(undefined),
 }))
-
-// ── Imports ───────────────────────────────────────────────────────────────────
-
-import { searchProducts } from "../search-products.js"
-import { Channel } from "@ibatexas/types"
-import type { AgentContext } from "@ibatexas/types"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

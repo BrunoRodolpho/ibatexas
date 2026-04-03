@@ -1,9 +1,9 @@
 // reorder tool — create a new cart from a previous order's items
 
 import { ReorderInputSchema, NonRetryableError, type ReorderInput, type AgentContext } from "@ibatexas/types";
-import { medusaAdminFetch, medusaStoreFetch } from "./_shared.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { withOrderOwnership } from "../guards/with-ownership.js";
+import { medusaAdminFetch, medusaStoreFetch } from "./_shared.js";
 
 async function reorderImpl(
   input: ReorderInput,

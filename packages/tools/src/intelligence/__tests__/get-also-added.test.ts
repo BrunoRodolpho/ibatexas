@@ -9,6 +9,8 @@
 // - Uses rk() for Redis key
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import type { AgentContext } from "@ibatexas/types"
+import { getAlsoAdded } from "../get-also-added.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -28,11 +30,6 @@ vi.mock("../../redis/key.js", () => ({
 vi.mock("../query-products-by-ids.js", () => ({
   queryProductsByIds: mockQueryProductsByIds,
 }))
-
-// -- Imports ──────────────────────────────────────────────────────────────────
-
-import type { AgentContext } from "@ibatexas/types"
-import { getAlsoAdded } from "../get-also-added.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
 

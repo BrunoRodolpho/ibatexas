@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import type { ProductDTO } from "@ibatexas/types"
+import { getProductDetails } from "../get-product-details.js"
 
 const mockRetrieve = vi.hoisted(() => vi.fn())
 const mockTypesenseDocToDTO = vi.hoisted(() =>
@@ -40,8 +41,6 @@ vi.mock("../../typesense/client.js", () => ({
 vi.mock("../../mappers/product-mapper.js", () => ({
   typesenseDocToDTO: mockTypesenseDocToDTO,
 }))
-
-import { getProductDetails } from "../get-product-details.js"
 
 describe("getProductDetails", () => {
   beforeEach(() => {

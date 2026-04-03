@@ -2,6 +2,7 @@
 // Covers: product with nutritional data, product without nutritional data
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { getNutritionalInfo } from "../get-nutritional-info.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -10,10 +11,6 @@ const mockMedusaAdmin = vi.hoisted(() => vi.fn())
 vi.mock("../../medusa/client.js", () => ({
   medusaAdmin: mockMedusaAdmin,
 }))
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { getNutritionalInfo } from "../get-nutritional-info.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

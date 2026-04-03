@@ -3,6 +3,7 @@
 // No DB, no network.
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { estimateDelivery } from "../estimate-delivery.js"
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
@@ -11,10 +12,13 @@ const mockFindActiveWithCoords = vi.hoisted(() => vi.fn())
 const mockReverseGeocode = vi.hoisted(() => vi.fn())
 const mockFetch = vi.hoisted(() => vi.fn())
 
+const mockListAll = vi.hoisted(() => vi.fn())
+
 vi.mock("@ibatexas/domain", () => ({
   createDeliveryZoneService: () => ({
     findActiveByPrefix: mockFindActiveByPrefix,
     findActiveWithCoords: mockFindActiveWithCoords,
+    listAll: mockListAll,
   }),
 }))
 
@@ -23,10 +27,6 @@ vi.mock("../reverse-geocode.js", () => ({
 }))
 
 vi.stubGlobal("fetch", mockFetch)
-
-// ── Imports ───────────────────────────────────────────────────────────────────
-
-import { estimateDelivery } from "../estimate-delivery.js"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -134,10 +134,21 @@ describe("estimateDelivery — Haversine accuracy", () => {
 })
 
 describe("estimateDelivery — validation", () => {
-  it("returns error when neither cep nor lat/lng are provided", async () => {
+  it("lists active delivery zones when neither cep nor lat/lng are provided", async () => {
+    mockListAll.mockResolvedValueOnce([ZONE_SP])
+
+    const result = await estimateDelivery({})
+
+    expect(result.success).toBe(true)
+    expect(result.message).toMatch(/CEP/)
+  })
+
+  it("returns error when no active delivery zones exist", async () => {
+    mockListAll.mockResolvedValueOnce([])
+
     const result = await estimateDelivery({})
 
     expect(result.success).toBe(false)
-    expect(result.message).toMatch(/CEP/)
+    expect(result.message).toMatch(/retirada/)
   })
 })

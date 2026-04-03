@@ -7,6 +7,8 @@
 // - stampsNeeded=0 returns reward message
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel, type AgentContext } from "@ibatexas/types"
+import { getLoyaltyBalance } from "../../intelligence/get-loyalty-balance.js"
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
@@ -19,11 +21,6 @@ vi.mock("@ibatexas/domain", () => ({
     getOrCreateAccount: mockGetOrCreateAccount,
   }),
 }))
-
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { getLoyaltyBalance } from "../../intelligence/get-loyalty-balance.js"
-import { Channel, type AgentContext } from "@ibatexas/types"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

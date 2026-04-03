@@ -22,9 +22,8 @@ import {
   type ProductDTO,
   Channel,
 } from "@ibatexas/types"
+import { publishNatsEvent } from "@ibatexas/nats-client"
 import { isAvailableNow } from "../catalog/availability.js"
-import { generateEmbedding } from "../embeddings/client.js"
-import { rk } from "../redis/key.js"
 import {
   getExactQueryCache,
   setExactQueryCache,
@@ -36,8 +35,9 @@ import {
   embeddingToBucket,
   type CacheFilterContext,
 } from "../cache/query-cache.js"
+import { generateEmbedding } from "../embeddings/client.js"
 import { typesenseDocToDTO, type TypesenseProductDoc } from "../mappers/product-mapper.js"
-import { publishNatsEvent } from "@ibatexas/nats-client"
+import { rk } from "../redis/key.js"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
 import type { TypesenseHit, TypesenseFacetCount } from "../typesense/types.js"
 

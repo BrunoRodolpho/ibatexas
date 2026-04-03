@@ -9,6 +9,7 @@
 // - imageUrl is undefined when null
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { queryProductsByIds } from "../query-products-by-ids.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -19,10 +20,6 @@ vi.mock("../../typesense/client.js", () => ({
   getTypesenseClient: mockGetTypesenseClient,
   COLLECTION: "products",
 }))
-
-// -- Imports ──────────────────────────────────────────────────────────────────
-
-import { queryProductsByIds } from "../query-products-by-ids.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
 

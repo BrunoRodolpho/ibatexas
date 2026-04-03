@@ -7,6 +7,8 @@
 // - Correct URL and method
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { removeFromCart } from "../remove-from-cart.js"
+import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -19,11 +21,6 @@ vi.mock("../_shared.js", () => ({
 vi.mock("../assert-cart-ownership.js", () => ({
   assertCartOwnership: vi.fn().mockResolvedValue({ id: "cart_01", customer_id: "cus_01" }),
 }))
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { removeFromCart } from "../remove-from-cart.js"
-import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

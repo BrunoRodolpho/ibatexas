@@ -4,19 +4,22 @@
 // Scenarios:
 // - Cash payment → completes cart, publishes NATS order.placed
 // - Card payment → returns stripeClientSecret
-// - PIX payment → calls Stripe to retrieve QR code
+// - PIX payment → calls Stripe confirm to retrieve QR code
 // - Missing Stripe session → {success: false}
 // - Metadata (tip, CEP, customerId) passed to cart update
 // - Unsupported payment method → {success: false}
 // - PIX retrieval error → graceful fallback
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { createCheckout } from "../create-checkout.js"
+import { makeCtx, makePaymentSession } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
 const mockMedusaStoreFetch = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
-const mockStripeRetrieve = vi.hoisted(() => vi.fn())
+const mockStripeConfirm = vi.hoisted(() => vi.fn())
+const mockStripeUpdate = vi.hoisted(() => vi.fn())
 
 vi.mock("../_shared.js", () => ({
   medusaStoreFetch: mockMedusaStoreFetch,
@@ -30,16 +33,12 @@ vi.mock("stripe", () => {
   return {
     default: vi.fn().mockImplementation(() => ({
       paymentIntents: {
-        retrieve: mockStripeRetrieve,
+        confirm: mockStripeConfirm,
+        update: mockStripeUpdate,
       },
     })),
   }
 })
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { createCheckout } from "../create-checkout.js"
-import { makeCtx, makePaymentSession } from "./fixtures/medusa.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -50,39 +49,84 @@ const BASE_INPUT = {
   paymentMethod: "cash" as const,
 }
 
-const PAYMENT_SESSION_RESPONSE = {
-  cart: {
-    payment_sessions: [makePaymentSession()],
-  },
+// Cart total check response — first call in every createCheckout path
+const CART_WITH_TOTAL = { cart: { total: 8900, items: [{ id: "item_01" }] } }
+
+// cartForPC response — second GET /store/carts call (after metadata update)
+// No pre-existing payment_collection, so source will POST /store/payment-collections
+const CART_FOR_PC_NO_PC = { cart: { items: [], region_id: "reg_br" } }
+
+// Payment collection created by POST /store/payment-collections
+const PAYMENT_COLLECTION_RESPONSE = { payment_collection: { id: "pc_test_01" } }
+
+// Payment session init response from POST /store/payment-collections/pc_test_01/payment-sessions
+// Matches the extraction path: rawSessionData.payment_session
+const PAYMENT_SESSION_INIT_RESPONSE = {
+  payment_session: makePaymentSession(),
+}
+
+// Providers response for non-cash payments
+const PAYMENT_PROVIDERS_RESPONSE = {
+  payment_providers: [{ id: "pp_stripe_stripe", is_enabled: true }],
+}
+
+// ── Helper: build mock sequence for cash checkout ─────────────────────────────
+// Actual call sequence for cash:
+//   1. GET  /store/carts/cart_01          (total check)
+//   2. POST /store/carts/cart_01          (metadata update)
+//   3. GET  /store/carts/cart_01          (cartForPC — get payment_collection)
+//   4. POST /store/payment-collections    (create PC, no existing one)
+//   5. POST /store/payment-collections/pc_test_01/payment-sessions (init session)
+//   6. POST /store/carts/cart_01/complete
+
+function setupCashMocks(_cartItemsResponse = { cart: { items: [] } }) {
+  mockMedusaStoreFetch
+    .mockResolvedValueOnce(CART_WITH_TOTAL)           // 1. cart total check
+    .mockResolvedValueOnce({})                         // 2. cart metadata update
+    .mockResolvedValueOnce(CART_FOR_PC_NO_PC)          // 3. cartForPC
+    .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE) // 4. create payment collection
+    .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE) // 5. init payment session
+    .mockResolvedValueOnce({ order: { id: "order_01" } }) // 6. complete
+}
+
+// Helper: build mock sequence for card/pix checkout
+// Actual call sequence for card/pix:
+//   1. GET  /store/carts/cart_01           (total check)
+//   2. POST /store/carts/cart_01           (metadata update)
+//   3. GET  /store/carts/cart_01           (cartForPC)
+//   4. POST /store/payment-collections     (create PC)
+//   5. GET  /store/payment-providers       (resolve stripe provider)
+//   6. POST /store/payment-collections/pc_test_01/payment-sessions (init session)
+
+function setupStripeMocks(sessionResponse = PAYMENT_SESSION_INIT_RESPONSE) {
+  mockMedusaStoreFetch
+    .mockResolvedValueOnce(CART_WITH_TOTAL)              // 1. cart total check
+    .mockResolvedValueOnce({})                            // 2. cart metadata update
+    .mockResolvedValueOnce(CART_FOR_PC_NO_PC)             // 3. cartForPC
+    .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)   // 4. create payment collection
+    .mockResolvedValueOnce(PAYMENT_PROVIDERS_RESPONSE)    // 5. payment providers
+    .mockResolvedValueOnce(sessionResponse)               // 6. init payment session
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-// Cart total check response (first call in all createCheckout paths)
-const CART_WITH_TOTAL = { cart: { total: 8900, items: [{ id: "item_01" }] } }
-
 describe("createCheckout", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // Default: cart total check, cart update, payment session init, and complete all succeed
     mockMedusaStoreFetch.mockResolvedValue({})
     mockPublishNatsEvent.mockResolvedValue(undefined)
-    // Set STRIPE_SECRET_KEY for Stripe constructor
+    mockStripeConfirm.mockResolvedValue({})
+    mockStripeUpdate.mockResolvedValue({})
     process.env.STRIPE_SECRET_KEY = "sk_test_123"
   })
 
   describe("metadata update", () => {
     it("updates cart with customerId in metadata", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
-        .mockResolvedValueOnce({}) // cart metadata update
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items
-        .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
+      setupCashMocks()
 
       await createCheckout(BASE_INPUT, CTX)
 
-      // Call 1 is cart total check, call 2 is metadata update
+      // Call index 1 (0-based) is metadata update
       expect(mockMedusaStoreFetch).toHaveBeenNthCalledWith(
         2,
         "/store/carts/cart_01",
@@ -94,32 +138,22 @@ describe("createCheckout", () => {
     })
 
     it("includes tipInCentavos in metadata when provided", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
-        .mockResolvedValueOnce({}) // cart metadata update
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items
-        .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
+      setupCashMocks()
 
       await createCheckout({ ...BASE_INPUT, tipInCentavos: 1000 }, CTX)
 
-      // Call 0 is cart total check, call 1 is metadata update
+      // calls[1] is the metadata update (0-based index 1)
       const [, opts] = mockMedusaStoreFetch.mock.calls[1]
       const body = JSON.parse(opts.body)
       expect(body.metadata.tipInCentavos).toBe("1000")
     })
 
     it("includes deliveryCep in metadata when provided", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
-        .mockResolvedValueOnce({}) // cart metadata update
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items
-        .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
+      setupCashMocks()
 
       await createCheckout({ ...BASE_INPUT, deliveryCep: "12345-678" }, CTX)
 
-      // Call 0 is cart total check, call 1 is metadata update
+      // calls[1] is the metadata update (0-based index 1)
       const [, opts] = mockMedusaStoreFetch.mock.calls[1]
       const body = JSON.parse(opts.body)
       expect(body.metadata.deliveryCep).toBe("12345-678")
@@ -127,8 +161,6 @@ describe("createCheckout", () => {
   })
 
   describe("cash payment", () => {
-    // Cash checkout fetches cart items before completing
-    // Mock order: (0) cart total check, (1) cart metadata, (2) payment sessions, (3) fetch cart items, (4) complete
     const CART_ITEMS_RESPONSE = {
       cart: {
         items: [
@@ -138,12 +170,7 @@ describe("createCheckout", () => {
     }
 
     it("completes cart directly for cash payment", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
-        .mockResolvedValueOnce({}) // cart metadata
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
-        .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
+      setupCashMocks()
 
       const result = await createCheckout(BASE_INPUT, CTX)
 
@@ -152,13 +179,8 @@ describe("createCheckout", () => {
       expect(result.orderId).toBe("order_01")
     })
 
-    it("calls cart complete endpoint with cash provider", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
-        .mockResolvedValueOnce({}) // cart metadata
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
-        .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete
+    it("calls cart complete endpoint for cash payment", async () => {
+      setupCashMocks()
 
       await createCheckout(BASE_INPUT, CTX)
 
@@ -166,17 +188,24 @@ describe("createCheckout", () => {
         "/store/carts/cart_01/complete",
         {
           method: "POST",
-          body: JSON.stringify({ payment_provider_id: "cash" }),
+          body: JSON.stringify({}),
         },
       )
     })
 
     it("publishes order.placed NATS event with items on cash success", async () => {
+      // Use cart items in cartForPC so they appear in the NATS payload
       mockMedusaStoreFetch
         .mockResolvedValueOnce(CART_WITH_TOTAL)
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
-        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
+        .mockResolvedValueOnce({
+          cart: {
+            items: CART_ITEMS_RESPONSE.cart.items,
+            region_id: "reg_br",
+          },
+        })
+        .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
+        .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE)
         .mockResolvedValueOnce({ order: { id: "order_01" } })
 
       await createCheckout(BASE_INPUT, CTX)
@@ -188,7 +217,8 @@ describe("createCheckout", () => {
           orderId: "order_01",
           paymentMethod: "cash",
           customerId: CTX.customerId,
-          items: [{ productId: "prod_01", variantId: "var_01", quantity: 2, priceInCentavos: 5000 }],
+          // unit_price: 5000 passed through reaisToCentavos() → 500000
+          items: [{ productId: "prod_01", variantId: "var_01", quantity: 2, priceInCentavos: 500000 }],
         }),
       )
     })
@@ -197,8 +227,9 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce(CART_WITH_TOTAL)
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
-        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
+        .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
+        .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
+        .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE)
         .mockResolvedValueOnce({ order: { id: "order_42" } })
 
       const result = await createCheckout(BASE_INPUT, CTX)
@@ -211,8 +242,9 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce(CART_WITH_TOTAL)
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
-        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
+        .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
+        .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
+        .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE)
         .mockResolvedValueOnce({ order: undefined })
 
       const result = await createCheckout(BASE_INPUT, CTX)
@@ -226,8 +258,9 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce(CART_WITH_TOTAL)
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
-        .mockResolvedValueOnce(CART_ITEMS_RESPONSE) // fetch cart items
+        .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
+        .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
+        .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE)
         .mockResolvedValueOnce({ order: undefined })
 
       await createCheckout(BASE_INPUT, CTX)
@@ -240,10 +273,7 @@ describe("createCheckout", () => {
     const CARD_INPUT = { ...BASE_INPUT, paymentMethod: "card" as const }
 
     it("returns stripeClientSecret on success", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
-        .mockResolvedValueOnce({}) // cart metadata
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions with stripe
+      setupStripeMocks()
 
       const result = await createCheckout(CARD_INPUT, CTX)
 
@@ -253,10 +283,7 @@ describe("createCheckout", () => {
     })
 
     it("returns message about using client_secret in frontend", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL)
-        .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+      setupStripeMocks()
 
       const result = await createCheckout(CARD_INPUT, CTX)
 
@@ -267,7 +294,10 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce(CART_WITH_TOTAL)
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ cart: { payment_sessions: [] } })
+        .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
+        .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
+        .mockResolvedValueOnce(PAYMENT_PROVIDERS_RESPONSE)
+        .mockResolvedValueOnce({ payment_session: { data: {} } }) // no client_secret
 
       const result = await createCheckout(CARD_INPUT, CTX)
 
@@ -279,7 +309,10 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce(CART_WITH_TOTAL)
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ cart: { payment_sessions: null } })
+        .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
+        .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
+        .mockResolvedValueOnce(PAYMENT_PROVIDERS_RESPONSE)
+        .mockResolvedValueOnce({}) // no payment_session at all
 
       const result = await createCheckout(CARD_INPUT, CTX)
 
@@ -291,12 +324,10 @@ describe("createCheckout", () => {
     const PIX_INPUT = { ...BASE_INPUT, paymentMethod: "pix" as const }
 
     it("retrieves PIX QR code from Stripe", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
-        .mockResolvedValueOnce({}) // cart metadata
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
+      setupStripeMocks()
 
-      mockStripeRetrieve.mockResolvedValue({
+      mockStripeConfirm.mockResolvedValue({
+        status: "requires_action",
         next_action: {
           pix_display_qr_code: {
             data: "00020126580014br.gov.bcb.pix...",
@@ -305,6 +336,7 @@ describe("createCheckout", () => {
           },
         },
       })
+      mockStripeUpdate.mockResolvedValue({})
 
       const result = await createCheckout(PIX_INPUT, CTX)
 
@@ -316,12 +348,10 @@ describe("createCheckout", () => {
     })
 
     it("returns success message about scanning QR code", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL)
-        .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+      setupStripeMocks()
 
-      mockStripeRetrieve.mockResolvedValue({
+      mockStripeConfirm.mockResolvedValue({
+        status: "requires_action",
         next_action: {
           pix_display_qr_code: {
             data: "pix-code-data",
@@ -329,37 +359,34 @@ describe("createCheckout", () => {
           },
         },
       })
+      mockStripeUpdate.mockResolvedValue({})
 
       const result = await createCheckout(PIX_INPUT, CTX)
 
       expect(result.message).toContain("PIX gerado com sucesso")
     })
 
-    it("returns fallback message when PIX data is missing", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL)
-        .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+    it("returns success:false when PIX data is missing", async () => {
+      setupStripeMocks()
 
-      mockStripeRetrieve.mockResolvedValue({
+      mockStripeConfirm.mockResolvedValue({
+        status: "requires_action",
         next_action: {
           pix_display_qr_code: {},
         },
       })
+      mockStripeUpdate.mockResolvedValue({})
 
       const result = await createCheckout(PIX_INPUT, CTX)
 
-      expect(result.success).toBe(true)
-      expect(result.message).toContain("Finalize o pagamento")
+      expect(result.success).toBe(false)
+      expect(result.message).toContain("N\u00e3o foi poss\u00edvel gerar o QR Code PIX")
     })
 
-    it("returns success:false when Stripe PIX retrieval throws", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL)
-        .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+    it("returns success:false when Stripe PIX confirm throws", async () => {
+      setupStripeMocks()
 
-      mockStripeRetrieve.mockRejectedValue(new Error("Stripe error"))
+      mockStripeConfirm.mockRejectedValue(new Error("Stripe error"))
 
       const result = await createCheckout(PIX_INPUT, CTX)
 
@@ -372,7 +399,10 @@ describe("createCheckout", () => {
       mockMedusaStoreFetch
         .mockResolvedValueOnce(CART_WITH_TOTAL)
         .mockResolvedValueOnce({})
-        .mockResolvedValueOnce({ cart: { payment_sessions: [] } })
+        .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
+        .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
+        .mockResolvedValueOnce(PAYMENT_PROVIDERS_RESPONSE)
+        .mockResolvedValueOnce({}) // no client_secret or payment intent id
 
       const result = await createCheckout(PIX_INPUT, CTX)
 
@@ -381,13 +411,11 @@ describe("createCheckout", () => {
     })
 
     it("converts expires_at timestamp to ISO string", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL)
-        .mockResolvedValueOnce({})
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE)
+      setupStripeMocks()
 
       const expiresAtUnix = 1711987200
-      mockStripeRetrieve.mockResolvedValue({
+      mockStripeConfirm.mockResolvedValue({
+        status: "requires_action",
         next_action: {
           pix_display_qr_code: {
             data: "pix-code",
@@ -396,6 +424,7 @@ describe("createCheckout", () => {
           },
         },
       })
+      mockStripeUpdate.mockResolvedValue({})
 
       const result = await createCheckout(PIX_INPUT, CTX)
 
@@ -431,21 +460,16 @@ describe("createCheckout", () => {
   })
 
   describe("payment sessions initialization", () => {
-    it("initializes payment sessions on the cart", async () => {
-      mockMedusaStoreFetch
-        .mockResolvedValueOnce(CART_WITH_TOTAL) // cart total check
-        .mockResolvedValueOnce({}) // cart metadata
-        .mockResolvedValueOnce(PAYMENT_SESSION_RESPONSE) // payment sessions
-        .mockResolvedValueOnce({ cart: { items: [] } }) // fetch cart items
-        .mockResolvedValueOnce({ order: { id: "order_01" } }) // complete (for cash)
+    it("initializes payment session on the payment collection", async () => {
+      setupCashMocks()
 
       await createCheckout(BASE_INPUT, CTX)
 
       expect(mockMedusaStoreFetch).toHaveBeenCalledWith(
-        "/store/carts/cart_01/payment-sessions",
+        "/store/payment-collections/pc_test_01/payment-sessions",
         {
           method: "POST",
-          body: JSON.stringify({}),
+          body: JSON.stringify({ provider_id: "pp_system_default" }),
         },
       )
     })

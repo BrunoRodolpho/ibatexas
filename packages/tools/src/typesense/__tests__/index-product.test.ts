@@ -8,6 +8,7 @@
 // - deleteProductFromIndex ignores 404 (idempotent delete)
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { indexProduct, deleteProductFromIndex, indexProductsBatch } from "../index-product.js"
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
@@ -38,10 +39,6 @@ vi.mock("../client.js", () => ({
 
 // Note: generateEmbedding is injected via deps parameter — no need to mock the module.
 // We pass mock embedding functions directly to indexProduct() and indexProductsBatch().
-
-// ── Imports ───────────────────────────────────────────────────────────────────
-
-import { indexProduct, deleteProductFromIndex, indexProductsBatch } from "../index-product.js"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

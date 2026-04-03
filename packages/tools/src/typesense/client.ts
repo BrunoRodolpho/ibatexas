@@ -85,7 +85,7 @@ export async function ensureCollectionExists(): Promise<void> {
       // Collection doesn't exist; create it
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await typesenseClient.collections().create(PRODUCTS_COLLECTION_SCHEMA as any)
-      console.log(`[Typesense] Created ${COLLECTION} collection`)
+      console.warn(`[Typesense] Created ${COLLECTION} collection`)
     } else {
       throw err
     }
@@ -108,5 +108,5 @@ export async function recreateCollection(): Promise<void> {
   }
 
   await ensureCollectionExists()
-  console.log(`[Typesense] Recreated ${COLLECTION} collection`)
+  console.warn(`[Typesense] Recreated ${COLLECTION} collection`)
 }

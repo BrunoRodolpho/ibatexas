@@ -10,6 +10,10 @@
 // - Malformed JSON in Redis: falls back gracefully
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
+import { getCustomerProfile } from "../get-customer-profile.js"
+import { PROFILE_TTL_SECONDS } from "../types.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -59,13 +63,6 @@ vi.mock("@ibatexas/domain", () => ({
     },
   }),
 }))
-
-// -- Imports ──────────────────────────────────────────────────────────────────
-
-import { Channel } from "@ibatexas/types"
-import type { AgentContext } from "@ibatexas/types"
-import { getCustomerProfile } from "../get-customer-profile.js"
-import { PROFILE_TTL_SECONDS } from "../types.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
 

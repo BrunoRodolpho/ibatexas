@@ -102,7 +102,7 @@ export async function loadMachineState(
 
     // Legacy format (no wrapper) — treat as stale
     if (!("version" in parsed)) {
-      console.info("[machine:load] Legacy snapshot without version — discarding")
+      console.warn("[machine:load] Legacy snapshot without version — discarding")
       return null
     }
 
@@ -121,7 +121,7 @@ export async function loadMachineState(
 
     // Version mismatch — schema changed between deploys
     if (wrapper.version !== SNAPSHOT_VERSION) {
-      console.info("[machine:load] Version mismatch (got %d, want %d) — discarding", wrapper.version, SNAPSHOT_VERSION)
+      console.warn("[machine:load] Version mismatch (got %d, want %d) — discarding", wrapper.version, SNAPSHOT_VERSION)
       return { snapshot: wrapper.snapshot, createdAt: wrapper.createdAt, isStale: true, staleReason: "version_mismatch" }
     }
 

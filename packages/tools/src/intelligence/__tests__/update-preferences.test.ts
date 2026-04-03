@@ -11,6 +11,10 @@
 // - pt-BR messages
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
+import { updatePreferences } from "../update-preferences.js"
+import { PROFILE_TTL_SECONDS } from "../types.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -64,13 +68,6 @@ vi.mock("../../redis/client.js", () => ({
 vi.mock("../../redis/key.js", () => ({
   rk: mockRk,
 }))
-
-// -- Imports ──────────────────────────────────────────────────────────────────
-
-import { Channel } from "@ibatexas/types"
-import type { AgentContext } from "@ibatexas/types"
-import { updatePreferences } from "../update-preferences.js"
-import { PROFILE_TTL_SECONDS } from "../types.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
 

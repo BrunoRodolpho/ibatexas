@@ -7,6 +7,8 @@
 // - Correct payload format (promo_codes array)
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { applyCoupon } from "../apply-coupon.js"
+import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -19,11 +21,6 @@ vi.mock("../_shared.js", () => ({
 vi.mock("../assert-cart-ownership.js", () => ({
   assertCartOwnership: vi.fn().mockResolvedValue({ id: "cart_01", customer_id: "cus_01" }),
 }))
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { applyCoupon } from "../apply-coupon.js"
-import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

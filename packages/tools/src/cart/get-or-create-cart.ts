@@ -12,10 +12,10 @@
 //   5. Store new cartId in Redis (24h TTL)
 
 import type { AgentContext } from "@ibatexas/types";
-import { medusaStoreFetch } from "./_shared.js";
+import { reaisToCentavos } from "../medusa/client.js";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
-import { reaisToCentavos } from "../medusa/client.js";
+import { medusaStoreFetch } from "./_shared.js";
 
 const CART_TTL_SECONDS = 24 * 60 * 60; // 24h — matches session TTL
 

@@ -9,6 +9,9 @@
 // - orderCount mapping from groupBy
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
+import { getOrderedTogether } from "../get-ordered-together.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -46,12 +49,6 @@ vi.mock("@ibatexas/domain", () => ({
 vi.mock("../query-products-by-ids.js", () => ({
   queryProductsByIds: mockQueryProductsByIds,
 }))
-
-// -- Imports ──────────────────────────────────────────────────────────────────
-
-import { Channel } from "@ibatexas/types"
-import type { AgentContext } from "@ibatexas/types"
-import { getOrderedTogether } from "../get-ordered-together.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
 

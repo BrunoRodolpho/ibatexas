@@ -2,8 +2,8 @@
 // Uses the WhatsAppSender interface injected at startup from apps/api.
 
 import type { ReservationDTO, WaitlistDTO } from "@ibatexas/types"
-import { locationLabel, formatDateBR } from "./utils.js"
 import { getWhatsAppSender } from "../whatsapp/sender.js"
+import { locationLabel, formatDateBR } from "./utils.js"
 
 const APP_BASE_URL = process.env.APP_BASE_URL || "https://ibatexas.com.br"
 
@@ -34,7 +34,7 @@ export async function sendReservationConfirmation(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.info("[whatsapp.stub] Reservation confirmation:", {
+    console.warn("[whatsapp.stub] Reservation confirmation:", {
       to: phone ?? reservation.customerId,
       message,
     })
@@ -79,7 +79,7 @@ export async function sendReservationModified(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.info("[whatsapp.stub] Reservation modified:", { to: phone ?? reservation.customerId, message })
+    console.warn("[whatsapp.stub] Reservation modified:", { to: phone ?? reservation.customerId, message })
     return
   }
   if (!phone) return
@@ -112,7 +112,7 @@ export async function sendReservationCancelled(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.info("[whatsapp.stub] Reservation cancelled:", { to: phone ?? reservationId, message })
+    console.warn("[whatsapp.stub] Reservation cancelled:", { to: phone ?? reservationId, message })
     return
   }
   if (!phone) return
@@ -145,7 +145,7 @@ export async function sendReservationReminder(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.info("[whatsapp.stub] Reservation reminder:", { to: phone ?? reservation.customerId, message })
+    console.warn("[whatsapp.stub] Reservation reminder:", { to: phone ?? reservation.customerId, message })
     return
   }
   if (!phone) return
@@ -184,7 +184,7 @@ export async function notifyWaitlistSpotAvailable(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.info("[whatsapp.stub] Waitlist notification:", {
+    console.warn("[whatsapp.stub] Waitlist notification:", {
       to: phone ?? waitlist.customerId,
       message,
     })

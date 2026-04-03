@@ -8,6 +8,8 @@
 // - Correct payload sent to Medusa
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { addToCart } from "../add-to-cart.js"
+import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -25,11 +27,6 @@ vi.mock("../assert-cart-ownership.js", () => ({
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }))
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { addToCart } from "../add-to-cart.js"
-import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

@@ -7,9 +7,9 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropic-ai/sdk/resources/messages.js"
 import { NonRetryableError, type AgentContext, type StreamChunk } from "@ibatexas/types"
+import { getRedisClient, rk } from "@ibatexas/tools"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 import type { ToolExecutionResult } from "./tool-registry.js"
-import { getRedisClient, rk } from "@ibatexas/tools"
 import type { OrderContext, SynthesizedPrompt, ToolIntent } from "./machine/types.js"
 import { shouldBufferText, validateBufferedText } from "./validation-layer.js"
 
@@ -226,7 +226,7 @@ async function processToolCalls(
     // ── Intent bridge: mutating tool intercepted by the Zero-Trust layer ──
     if (isToolExecutionResult(result)) {
       if (result.kind === "intent" && result.intent) {
-        console.info("[llm-responder] Intent captured for mutating tool: %s", block.name)
+        console.warn("[llm-responder] Intent captured for mutating tool: %s", block.name)
         onToolIntent?.(result.intent)
         onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
         toolResults.push({

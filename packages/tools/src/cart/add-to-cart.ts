@@ -1,13 +1,13 @@
 // add_to_cart tool — add a product variant to the Medusa cart
 
 import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
-import { medusaStoreFetch } from "./_shared.js";
+import { publishNatsEvent } from "@ibatexas/nats-client";
 import { MedusaRequestError } from "../medusa/client.js";
 import { invalidateAllQueryCache } from "../cache/query-cache.js";
-import { publishNatsEvent } from "@ibatexas/nats-client";
-import { assertCartOwnership } from "./assert-cart-ownership.js";
 import { isAvailableNow, describeAvailabilityWindow } from "../catalog/availability.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
+import { assertCartOwnership } from "./assert-cart-ownership.js";
+import { medusaStoreFetch } from "./_shared.js";
 
 /** Lightweight lookup: get a product's availability window from its variant ID via Typesense.
  *  Medusa v2 removed /store/variants/{id} — search Typesense's variantsJson field instead.

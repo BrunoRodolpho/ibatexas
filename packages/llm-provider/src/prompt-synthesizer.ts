@@ -7,6 +7,7 @@
 // state. Smaller prompts = fewer hallucinations, lower latency, lower cost.
 
 import type { RestaurantSchedule } from "@ibatexas/types"
+import { getTimeStr, getFrozenPickupMessage } from "@ibatexas/tools"
 import type { OrderContext, SynthesizedPrompt } from "./machine/types.js"
 import { getCurrentMealPeriod } from "./machine/types.js"
 import {
@@ -14,7 +15,6 @@ import {
   BASE_VOICE_WEB,
   getCurrentMenu,
 } from "./prompt-sections.js"
-import { getTimeStr, getFrozenPickupMessage } from "@ibatexas/tools"
 
 // ── Token limits ──────────────────────────────────────────────────────────────
 

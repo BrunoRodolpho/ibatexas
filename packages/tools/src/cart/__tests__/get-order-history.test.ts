@@ -8,6 +8,8 @@
 // - Correct query params (customer_id, limit)
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { getOrderHistory } from "../get-order-history.js"
+import { makeCtx, makeGuestCtx, ordersListResponse, makeOrder } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -16,11 +18,6 @@ const mockMedusaAdminFetch = vi.hoisted(() => vi.fn())
 vi.mock("../_shared.js", () => ({
   medusaAdminFetch: mockMedusaAdminFetch,
 }))
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { getOrderHistory } from "../get-order-history.js"
-import { makeCtx, makeGuestCtx, ordersListResponse, makeOrder } from "./fixtures/medusa.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 

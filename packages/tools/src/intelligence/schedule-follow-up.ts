@@ -3,9 +3,9 @@
 // Redis sorted set `follow-up:scheduled` with the fire timestamp as score.
 // The follow-up poller reads this set every 15 minutes and publishes follow-up.due events.
 
+import type { AgentContext } from "@ibatexas/types";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
-import type { AgentContext } from "@ibatexas/types";
 
 export interface ScheduleFollowUpInput {
   delayHours: number;

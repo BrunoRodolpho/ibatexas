@@ -2,7 +2,6 @@
 // and prompt synthesizer outputs for key states.
 
 import { describe, it, expect } from "vitest"
-
 import { SYSTEM_PROMPT } from "../system-prompt.js"
 import { synthesizePrompt } from "../prompt-synthesizer.js"
 import type { OrderContext } from "../machine/types.js"

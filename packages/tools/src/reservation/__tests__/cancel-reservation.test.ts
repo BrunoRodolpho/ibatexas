@@ -9,6 +9,7 @@
 // - Next waitlist entry is notified on cancellation
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { cancelReservation } from "../cancel-reservation.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -97,10 +98,6 @@ vi.mock("../notifications.js", () => ({
   sendReservationConfirmation: vi.fn(),
   sendReservationCancelled: vi.fn().mockResolvedValue(undefined),
 }))
-
-// ── Imports ────────────────────────────────────────────────────────────────────
-
-import { cancelReservation } from "../cancel-reservation.js"
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 

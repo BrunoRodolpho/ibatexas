@@ -89,7 +89,7 @@ export async function setPixDetails(
   // If semantic errors were found, return early
   if (errors.length > 0) {
     const durationMs = Date.now() - startMs
-    console.info(
+    console.warn(
       "[extraction] tool=%s valid=%s fields=%s errors=%s latency=%dms",
       "set_pix_details",
       false,
@@ -154,7 +154,7 @@ export async function setPixDetails(
   })
 
   const durationMs = Date.now() - startMs
-  console.info(
+  console.warn(
     "[extraction] tool=%s valid=%s fields=%s errors=%s latency=%dms",
     "set_pix_details",
     hasAnyValid,

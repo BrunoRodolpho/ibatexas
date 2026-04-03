@@ -91,9 +91,9 @@ vi.mock("@ibatexas/tools", () => {
   }
 })
 
-import { executeTool } from "../tool-registry.js"
 import { Channel, type AgentContext } from "@ibatexas/types"
 import { modifyReservation, joinWaitlist, checkTableAvailability } from "@ibatexas/tools"
+import { executeTool } from "../tool-registry.js"
 
 const guestCtx: AgentContext = {
   channel: Channel.Web,

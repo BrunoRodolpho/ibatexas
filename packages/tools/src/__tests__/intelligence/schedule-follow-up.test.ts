@@ -8,6 +8,8 @@
 // - returns error when customerId is missing from context
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel, type AgentContext } from "@ibatexas/types"
+import { scheduleFollowUp } from "../../intelligence/schedule-follow-up.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -22,11 +24,6 @@ vi.mock("../../redis/client.js", () => ({
 vi.mock("../../redis/key.js", () => ({
   rk: mockRk,
 }))
-
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { scheduleFollowUp } from "../../intelligence/schedule-follow-up.js"
-import { Channel, type AgentContext } from "@ibatexas/types"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

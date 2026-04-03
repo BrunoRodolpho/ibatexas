@@ -6,7 +6,8 @@
 // - medusaAdminFetch: correct admin token header, JSON parse, error status
 // - Both: timeout signal, custom options passthrough
 
-import { describe, it, expect, beforeEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { medusaStoreFetch, medusaAdminFetch } from "../_shared.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -15,10 +16,6 @@ const mockFetch = vi.hoisted(() => vi.fn())
 // ── Mock global.fetch ────────────────────────────────────────────────────────
 
 vi.stubGlobal("fetch", mockFetch)
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { medusaStoreFetch, medusaAdminFetch } from "../_shared.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -129,6 +126,11 @@ describe("medusaStoreFetch", () => {
 describe("medusaAdminFetch", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    process.env.MEDUSA_API_KEY = "test-admin-key"
+  })
+
+  afterEach(() => {
+    delete process.env.MEDUSA_API_KEY
   })
 
   it("sends correct admin access token header", async () => {
@@ -140,7 +142,7 @@ describe("medusaAdminFetch", () => {
     expect(mockFetch).toHaveBeenCalledOnce()
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toContain("/admin/orders/order_01")
-    expect(opts.headers["x-medusa-access-token"]).toBeDefined()
+    expect(opts.headers["Authorization"]).toBeDefined()
     expect(opts.headers["Content-Type"]).toBe("application/json")
   })
 

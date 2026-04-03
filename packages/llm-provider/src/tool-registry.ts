@@ -80,7 +80,6 @@ import {
   SetPixDetailsInputSchema,
 } from "@ibatexas/tools"
 import type { AgentContext } from "@ibatexas/types"
-import { TOOL_CLASSIFICATION, type ToolIntent } from "./machine/types.js"
 import {
   SearchProductsInputSchema,
   CheckAvailabilityInputSchema,
@@ -114,6 +113,7 @@ import {
 } from "@ibatexas/types"
 import { z } from "zod"
 import type { Tool } from "@anthropic-ai/sdk/resources/index.js"
+import { TOOL_CLASSIFICATION, type ToolIntent } from "./machine/types.js"
 
 // ── Tool definitions (passed to Claude API) ───────────────────────────────────
 // SearchProductsTool uses `inputSchema` (camelCase) for internal use.

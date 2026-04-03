@@ -104,7 +104,7 @@ export async function loadTrace(traceId: string): Promise<unknown | null> {
  * Log a span completion at debug level.
  */
 export function logSpan(trace: TraceContext, span: Span): void {
-  console.debug(
+  console.warn(
     "[trace:%s] [span:%s] %dms",
     trace.traceId,
     span.name,

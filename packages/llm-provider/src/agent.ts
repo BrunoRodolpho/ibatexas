@@ -15,8 +15,7 @@
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages.js"
 import { Channel, type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
 import { loadSchedule } from "@ibatexas/tools"
-
-// Machine imports
+import { createActor } from "xstate"
 import { extractIllusionContext, createLatencyEnvelope, ALLOWED_POST_LLM_EVENTS } from "./machine/types.js"
 import type { OrderContext } from "./machine/types.js"
 import { routeMessage, extractCustomerName } from "./router.js"
@@ -24,13 +23,8 @@ import { synthesizePrompt } from "./prompt-synthesizer.js"
 import type { SupervisorModifiers } from "./prompt-synthesizer.js"
 import { loadMachineState, persistMachineState } from "./machine/persistence.js"
 import { fetchCustomerProfile, ensureCart, estimateDeliveryAction, loadCachedPixDetails } from "./machine/actions.js"
-import { createActor } from "xstate"
 import { orderMachine } from "./machine/order-machine.js"
-
-// Layer 3: Supervisor
 import { evaluateSupervisor } from "./supervisor.js"
-
-// Layer 1: Kernel executor
 import {
   executeKernel,
   createDefaultContext,
@@ -40,8 +34,6 @@ import {
   DELIVERY_TIMEOUT,
   LOYALTY_TIMEOUT,
 } from "./kernel-executor.js"
-
-// Layer 2: LLM responder
 import {
   generateResponse,
   getSessionTokenCount,
@@ -70,7 +62,7 @@ export async function* runAgent(
   const loadResult = await loadMachineState(context.sessionId)
   let snapshot = loadResult?.snapshot ?? null
 
-  console.info("[agent] snapshot_loaded=%s stale=%s reason=%s state=%s",
+  console.warn("[agent] snapshot_loaded=%s stale=%s reason=%s state=%s",
     !!snapshot,
     loadResult?.isStale ?? "n/a",
     loadResult?.staleReason ?? "none",
@@ -92,11 +84,11 @@ export async function* runAgent(
   }
   const events = routeMessage(message, history, snapshotStateStr)
 
-  console.info("[agent] router_events=%s", JSON.stringify(events.map(e => ({ type: e.type, confidence: (e as { confidence?: number }).confidence }))))
+  console.warn("[agent] router_events=%s", JSON.stringify(events.map(e => ({ type: e.type, confidence: (e as { confidence?: number }).confidence }))))
 
   // ── Stale session detection (triple-expiry) ────────────────────────────
   if (loadResult?.isStale) {
-    console.info("[agent] Discarding stale snapshot — reason: %s", loadResult.staleReason)
+    console.warn("[agent] Discarding stale snapshot — reason: %s", loadResult.staleReason)
     snapshot = null
   } else if (snapshot) {
     // Legacy check: discard checkout snapshot on GREETING
@@ -104,7 +96,7 @@ export async function* runAgent(
     const isStaleCheckout = isCheckoutState(snapshotValue)
     const hasGreeting = events.some((e) => e.type === "GREETING")
     if (isStaleCheckout && hasGreeting) {
-      console.info("[agent] Discarding stale checkout snapshot — GREETING in checkout state")
+      console.warn("[agent] Discarding stale checkout snapshot — GREETING in checkout state")
       snapshot = null
     }
   }
@@ -216,7 +208,7 @@ export async function* runAgent(
   )
   const { stateValue, context: machineCtx } = kernelOutput
 
-  console.info("[agent] kernel_output state=%s cartId=%s items=%d orderId=%s",
+  console.warn("[agent] kernel_output state=%s cartId=%s items=%d orderId=%s",
     stateValue,
     machineCtx.cartId ?? "null",
     machineCtx.items?.length ?? 0,
@@ -360,7 +352,7 @@ export async function* runAgent(
 
         if (injectedTypes.length > 0) {
           await persistMachineState(context.sessionId, postActor.getSnapshot())
-          console.info("[agent] Post-LLM events injected: %s", injectedTypes.join(", "))
+          console.warn("[agent] Post-LLM events injected: %s", injectedTypes.join(", "))
         }
       }
     } catch (err) {

@@ -38,7 +38,6 @@ export function Sheet({
   return (
     <>
       {/* Backdrop — closes sheet on click */}
-      {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events -- backdrop is non-interactive; keyboard close handled via Escape listener */}
       <div
         className="fixed inset-0 z-50 bg-black/50 animate-fade-in"
         onClick={onClose}

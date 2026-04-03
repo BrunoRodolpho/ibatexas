@@ -7,14 +7,14 @@
 // IMPORTANT: PIX and card orders are only confirmed via Stripe webhook —
 // never by client polling alone to avoid stuck-pending orders.
 
+import Stripe from "stripe";
 import { CreateCheckoutInputSchema, NonRetryableError, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
-import { medusaStoreFetch } from "./_shared.js";
-import { reaisToCentavos } from "../medusa/client.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { reaisToCentavos } from "../medusa/client.js";
+import { loadSchedule } from "../cache/schedule-cache.js";
 import { getAndConsumeWelcomeCredit } from "../intelligence/welcome-credit.js";
 import { getMealPeriodFromSchedule } from "../schedule/schedule-helpers.js";
-import { loadSchedule } from "../cache/schedule-cache.js";
-import Stripe from "stripe";
+import { medusaStoreFetch } from "./_shared.js";
 
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -59,7 +59,7 @@ async function confirmPixAndGetQrCode(
     const stripe = getStripe();
     const returnUrl = process.env.RESTAURANT_SITE_URL ?? process.env.NEXT_PUBLIC_URL ?? "https://ibatexas.com.br";
 
-    console.info("[create_checkout] Confirming PI %s with PIX (name=%s email=%s)",
+    console.warn("[create_checkout] Confirming PI %s with PIX (name=%s email=%s)",
       paymentIntentId, customer.name ?? "fallback", customer.email ? "present" : "fallback");
 
     // PIX requires: name, email, tax_id (CPF/CNPJ)
@@ -91,7 +91,7 @@ async function confirmPixAndGetQrCode(
       };
     };
 
-    console.info("[create_checkout] PI status=%s next_action=%s", confirmed.status, !!confirmed.next_action);
+    console.warn("[create_checkout] PI status=%s next_action=%s", confirmed.status, !!confirmed.next_action);
 
     const pixData = confirmed.next_action?.pix_display_qr_code;
 
@@ -168,7 +168,7 @@ export async function createCheckout(
           method: "POST",
           body: JSON.stringify({ promo_codes: [welcomeCode] }),
         });
-        console.log(`[checkout] Welcome credit ${welcomeCode} applied for customer ${ctx.customerId}`);
+        console.warn(`[checkout] Welcome credit ${welcomeCode} applied for customer ${ctx.customerId}`);
       }
     } catch (err) {
       // Medusa rejected the code (expired, already used, or not configured) — continue without discount
@@ -249,7 +249,7 @@ export async function createCheckout(
         (p) => p.id.includes("stripe"),
       );
       providerId = stripeProvider?.id ?? "pp_stripe_stripe";
-      console.info("[create_checkout] Resolved Stripe provider_id: %s", providerId);
+      console.warn("[create_checkout] Resolved Stripe provider_id: %s", providerId);
     } catch {
       // Fallback to common default
       providerId = "pp_stripe_stripe";
@@ -267,7 +267,7 @@ export async function createCheckout(
   );
 
   // Debug: log the response shape to diagnose Stripe data extraction
-  console.info("[create_checkout] payment session response: %s", JSON.stringify(rawSessionData).slice(0, 1500));
+  console.warn("[create_checkout] payment session response: %s", JSON.stringify(rawSessionData).slice(0, 1500));
 
   // Medusa v2 response shape varies — try multiple extraction paths
   const sessionObj = rawSessionData as Record<string, unknown>;
@@ -282,7 +282,7 @@ export async function createCheckout(
   const clientSecret = (stripeData as { client_secret?: string }).client_secret;
   const paymentIntentId = (stripeData as { id?: string }).id;
 
-  console.info("[create_checkout] extracted clientSecret=%s paymentIntentId=%s",
+  console.warn("[create_checkout] extracted clientSecret=%s paymentIntentId=%s",
     clientSecret ? "present" : "MISSING",
     paymentIntentId ?? "MISSING",
   );

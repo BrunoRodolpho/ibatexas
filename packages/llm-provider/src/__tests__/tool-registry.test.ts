@@ -3,7 +3,6 @@
 import { describe, it, expect, vi } from "vitest"
 
 // ── Mock all tool implementations ─────────────────────────────────────────────
-
 vi.mock("@ibatexas/tools", () => {
   const makeTool = (name: string) => ({
     name,
@@ -92,9 +91,9 @@ vi.mock("@ibatexas/tools", () => {
   }
 })
 
-import { executeTool, TOOL_DEFINITIONS } from "../tool-registry.js"
 import { Channel, type AgentContext } from "@ibatexas/types"
 import { createReservation, cancelReservation, getMyReservations } from "@ibatexas/tools"
+import { executeTool, TOOL_DEFINITIONS } from "../tool-registry.js"
 
 const ctx: AgentContext = {
   channel: Channel.WhatsApp,

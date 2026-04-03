@@ -17,6 +17,14 @@
 // - One product.viewed event per product in merged results
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { SearchProductsInputSchema, Channel } from "@ibatexas/types"
+import type { ProductDTO } from "@ibatexas/types"
+import { publishNatsEvent } from "@ibatexas/nats-client"
+import { searchProducts, SearchProductsTool } from "../search-products.js"
+import {
+  getExactQueryCache,
+  getQueryCache,
+} from "../../cache/query-cache.js"
 
 // ── Hoisted mocks (available inside vi.mock factories before module loading) ───
 
@@ -58,20 +66,6 @@ vi.mock("@ibatexas/nats-client", () => ({
 
 // Note: mappers/product-mapper.js is NOT mocked — we use the real
 // typesenseDocToDTO to verify mapper correctness (Bug 6 regression).
-
-// ── Imports ───────────────────────────────────────────────────────────────────
-// Must come after vi.mock() calls so the mocked versions are used.
-
-import { searchProducts, SearchProductsTool } from "../search-products.js"
-import { SearchProductsInputSchema, Channel } from "@ibatexas/types"
-import type { ProductDTO } from "@ibatexas/types"
-import { publishNatsEvent } from "@ibatexas/nats-client"
-
-// Import mocked cache functions so vi.mocked() can configure them per-test.
-import {
-  getExactQueryCache,
-  getQueryCache,
-} from "../../cache/query-cache.js"
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -349,7 +343,7 @@ describe("searchProducts", () => {
       expect(mockTypesenseSearch).toHaveBeenCalledTimes(1)
     })
 
-    it("not_available_now: when availability filter removes all results", async () => {
+    it("not_available_now: when availableNow=true, unavailable products are annotated isAvailableNow:false and sorted last", async () => {
       // Use impossible hours so 'almoco' window is never open
       const origStart = process.env.RESTAURANT_LUNCH_START_HOUR
       const origEnd = process.env.RESTAURANT_LUNCH_END_HOUR
@@ -366,8 +360,11 @@ describe("searchProducts", () => {
 
         const result = await searchProducts({ query: "costela", availableNow: true })
 
-        expect(result.products).toHaveLength(0)
-        expect(result.noResultsReason).toBe("not_available_now")
+        // Availability no longer excludes products — they are annotated and sorted last
+        expect(result.products).toHaveLength(1)
+        expect((result.products[0] as { isAvailableNow?: boolean }).isAvailableNow).toBe(false)
+        // noResultsReason is absent because products ARE returned (just unavailable)
+        expect(result.noResultsReason).toBeUndefined()
       } finally {
         process.env.RESTAURANT_LUNCH_START_HOUR = origStart
         process.env.RESTAURANT_LUNCH_END_HOUR = origEnd

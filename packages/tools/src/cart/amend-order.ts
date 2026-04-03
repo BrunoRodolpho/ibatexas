@@ -5,12 +5,12 @@
 // - remove / update_qty: Subject to per-item AMEND_PONR window
 // - Escalates to admin when PONR has expired
 
+import type Stripe from "stripe";
 import { AmendOrderInputSchema, NonRetryableError, type AmendOrderInput, type AmendOrderResult, type AgentContext } from "@ibatexas/types";
 import { createOrderService } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdmin } from "../medusa/client.js";
 import { cancelStalePaymentIntent, getStripe } from "./_stripe-helpers.js";
-import type Stripe from "stripe";
 
 /**
  * After a successful amendment, cancel the old Stripe PI and create a new one

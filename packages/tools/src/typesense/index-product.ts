@@ -1,10 +1,10 @@
 // Index products into Typesense
 // Called from Medusa subscribers on product create/update/delete
 
-import { getTypesenseClient, COLLECTION } from "./client.js"
 import { medusaToTypesenseDoc, type MedusaProductInput, type TypesenseProductDoc } from "../mappers/product-mapper.js"
 import { generateEmbedding } from "../embeddings/client.js"
 import { rk } from "../redis/key.js"
+import { getTypesenseClient, COLLECTION } from "./client.js"
 import { isTypesenseError, type TypesenseImportResult } from "./types.js"
 
 /**
@@ -37,7 +37,7 @@ export async function indexProduct(
   }
 
   await typesenseClient.collections(COLLECTION).documents().upsert(doc)
-  console.log(`[Typesense] Indexed: ${product.id} (${product.title})`)
+  console.warn(`[Typesense] Indexed: ${product.id} (${product.title})`)
 }
 
 /**
@@ -48,10 +48,10 @@ export async function deleteProductFromIndex(productId: string): Promise<void> {
   try {
     const typesenseClient = getTypesenseClient()
     await typesenseClient.collections(COLLECTION).documents(productId).delete()
-    console.log(`[Typesense] Deleted from index: ${productId}`)
+    console.warn(`[Typesense] Deleted from index: ${productId}`)
   } catch (err: unknown) {
     if (isTypesenseError(err) && err.httpStatus === 404) {
-      console.log(`[Typesense] Product not in index (already removed): ${productId}`)
+      console.warn(`[Typesense] Product not in index (already removed): ${productId}`)
       return
     }
     console.error(`[Typesense] Failed to delete product ${productId}:`, (err as Error).message)
@@ -95,5 +95,5 @@ export async function indexProductsBatch(
     console.error(`[Typesense] ${failures.length}/${docs.length} batch index failures:`, failures)
   }
 
-  console.log(`[Typesense] Batch indexed ${docs.length - failures.length}/${docs.length} products`)
+  console.warn(`[Typesense] Batch indexed ${docs.length - failures.length}/${docs.length} products`)
 }

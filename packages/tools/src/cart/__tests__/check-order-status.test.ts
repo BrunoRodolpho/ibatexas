@@ -9,6 +9,8 @@
 // - LGPD: customer_id in metadata fallback
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { checkOrderStatus } from "../check-order-status.js"
+import { makeCtx, makeGuestCtx, orderResponse } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -17,11 +19,6 @@ const mockMedusaAdmin = vi.hoisted(() => vi.fn())
 vi.mock("../../medusa/client.js", () => ({
   medusaAdmin: mockMedusaAdmin,
 }))
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { checkOrderStatus } from "../check-order-status.js"
-import { makeCtx, makeGuestCtx, orderResponse } from "./fixtures/medusa.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -55,9 +52,9 @@ describe("checkOrderStatus", () => {
   it("calls admin endpoint for ownership guard and domain service", async () => {
     await checkOrderStatus(INPUT, CTX)
 
-    // SEC-002 guard calls without expand, then domain service calls with expand
+    // SEC-002 guard and domain service both call without expand
     expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_01")
-    expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_01?expand=items")
+    expect(mockMedusaAdmin).toHaveBeenCalledTimes(2)
   })
 
   it("throws 'Acesso negado' when order belongs to different customer (SEC-002)", async () => {
@@ -119,6 +116,6 @@ describe("checkOrderStatus", () => {
     await checkOrderStatus(input, CTX)
 
     expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_99")
-    expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_99?expand=items")
+    expect(mockMedusaAdmin).toHaveBeenCalledTimes(2)
   })
 })

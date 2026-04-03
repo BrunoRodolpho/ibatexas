@@ -5,9 +5,9 @@
 // Returns fee, estimated minutes and zone name, or an out-of-area message.
 
 import { createDeliveryZoneService } from "@ibatexas/domain";
-import { reverseGeocode } from "./reverse-geocode.js";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
+import { reverseGeocode } from "./reverse-geocode.js";
 
 export interface EstimateDeliveryInput {
   cep?: string;

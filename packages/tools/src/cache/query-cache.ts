@@ -9,9 +9,9 @@
 // Called by product.updated and product.deleted subscribers.
 
 import { createHash } from "node:crypto"
+import { Channel, type QueryCacheEntry, type QueryLogEntry, type ProductDTO } from "@ibatexas/types"
 import { getRedisClient } from "../redis/client.js"
 import { rk } from "../redis/key.js"
-import { Channel, type QueryCacheEntry, type QueryLogEntry, type ProductDTO } from "@ibatexas/types"
 
 // ── Shared filter context ─────────────────────────────────────────────────────
 
@@ -236,7 +236,7 @@ export async function invalidateAllQueryCache(): Promise<number> {
 
     if (keys.length > 0) {
       await redisClient.del(keys)
-      console.log(`[Cache] Invalidated ${keys.length} query cache entries`)
+      console.warn(`[Cache] Invalidated ${keys.length} query cache entries`)
     }
 
     return keys.length

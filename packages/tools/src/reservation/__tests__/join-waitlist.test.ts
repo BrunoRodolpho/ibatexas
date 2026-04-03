@@ -8,6 +8,7 @@
 // - Position is derived from count query
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { joinWaitlist } from "../join-waitlist.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -49,10 +50,6 @@ vi.mock("@ibatexas/domain", () => ({
     },
   }),
 }))
-
-// ── Imports ────────────────────────────────────────────────────────────────────
-
-import { joinWaitlist } from "../join-waitlist.js"
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 

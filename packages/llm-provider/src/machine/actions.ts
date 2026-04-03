@@ -3,7 +3,6 @@
 // The machine invokes them — the LLM never sees cart/checkout tools.
 
 import type { AgentContext, SearchProductsOutput, ProductDTO } from "@ibatexas/types"
-import type { OrderContext, CartItem, ItemCategory } from "./types.js"
 import {
   searchProducts,
   getOrCreateCart,
@@ -19,6 +18,7 @@ import {
 } from "@ibatexas/tools"
 import { Channel } from "@ibatexas/types"
 import { createCustomerService } from "@ibatexas/domain"
+import type { OrderContext, CartItem, ItemCategory } from "./types.js"
 
 // ── Helper: build tool context from machine context ──────────────────────────
 

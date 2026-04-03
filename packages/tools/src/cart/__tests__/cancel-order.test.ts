@@ -9,6 +9,8 @@
 // - Medusa admin fetch error on cancel → throws
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { cancelOrder } from "../cancel-order.js"
+import { makeCtx, makeGuestCtx, orderResponse } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -17,11 +19,6 @@ const mockMedusaAdmin = vi.hoisted(() => vi.fn())
 vi.mock("../../medusa/client.js", () => ({
   medusaAdmin: mockMedusaAdmin,
 }))
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { cancelOrder } from "../cancel-order.js"
-import { makeCtx, makeGuestCtx, orderResponse } from "./fixtures/medusa.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -61,7 +58,6 @@ describe("cancelOrder", () => {
     const result = await cancelOrder(INPUT, CTX)
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain("completed")
     expect(result.message).toContain("não pode ser cancelado")
   })
 
@@ -73,7 +69,7 @@ describe("cancelOrder", () => {
     const result = await cancelOrder(INPUT, CTX)
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain("shipped")
+    expect(result.message).toContain("não pode ser cancelado")
   })
 
   it("cancels order with pending status and returns success", async () => {
@@ -105,9 +101,10 @@ describe("cancelOrder", () => {
 
     await cancelOrder(INPUT, CTX)
 
-    expect(mockMedusaAdmin).toHaveBeenCalledTimes(2)
-    expect(mockMedusaAdmin).toHaveBeenNthCalledWith(1, "/admin/orders/order_01?expand=items")
+    expect(mockMedusaAdmin).toHaveBeenCalledTimes(3)
+    expect(mockMedusaAdmin).toHaveBeenNthCalledWith(1, "/admin/orders/order_01")
     expect(mockMedusaAdmin).toHaveBeenNthCalledWith(2, "/admin/orders/order_01/cancel", { method: "POST" })
+    expect(mockMedusaAdmin).toHaveBeenNthCalledWith(3, "/admin/orders/order_01")
   })
 
   it("allows cancel when customer_id is in metadata", async () => {
@@ -148,6 +145,7 @@ describe("cancelOrder", () => {
 
     const result = await cancelOrder(INPUT, CTX)
 
-    expect(result.message).toContain("atendimento")
+    expect(result.message).toContain("não pode ser cancelado")
+    expect(result.needsEscalation).toBe(true)
   })
 })

@@ -7,6 +7,7 @@
 // The kernel runs perfectly without any LLM.
 
 import { createActor } from "xstate"
+import { cancelOrder, regeneratePix } from "@ibatexas/tools"
 import { orderMachine, getStateString, createDefaultContext, isCheckoutState } from "./machine/order-machine.js"
 import type { OrderContext, KernelOutput } from "./machine/types.js"
 import { extractIllusionContext } from "./machine/types.js"
@@ -22,7 +23,6 @@ import {
   scheduleFollowUpAction,
   buildToolContext,
 } from "./machine/actions.js"
-import { cancelOrder, regeneratePix } from "@ibatexas/tools"
 
 // Re-export for consumers that need these (agent.ts, orchestrator.ts)
 export { createDefaultContext, isCheckoutState }
@@ -167,7 +167,7 @@ export async function executeKernel(
   actor.start()
 
   const initialState = getStateString(actor.getSnapshot())
-  console.info("[kernel] initial_state=%s snapshot=%s", initialState, !!snapshot)
+  console.warn("[kernel] initial_state=%s snapshot=%s", initialState, !!snapshot)
   let lastEventType = ""
 
   const addItemCount = events.filter(e => e.type === "ADD_ITEM").length
@@ -192,7 +192,7 @@ export async function executeKernel(
     let stateStr = getStateString(currentState)
     const ctx = currentState.context
 
-    console.info("[kernel] event=%s pre=%s post=%s cartId=%s items=%d",
+    console.warn("[kernel] event=%s pre=%s post=%s cartId=%s items=%d",
       event.type, preState, stateStr, ctx.cartId ?? "null", ctx.items?.length ?? 0,
     )
 

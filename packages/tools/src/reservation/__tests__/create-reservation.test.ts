@@ -8,6 +8,7 @@
 // - WhatsApp stub is called with correct reservation DTO
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { createReservation } from "../create-reservation.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -99,10 +100,6 @@ vi.mock("@ibatexas/nats-client", () => ({
 vi.mock("../notifications.js", () => ({
   sendReservationConfirmation: mockSendReservationConfirmation,
 }))
-
-// ── Imports ────────────────────────────────────────────────────────────────────
-
-import { createReservation } from "../create-reservation.js"
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 

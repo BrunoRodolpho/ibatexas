@@ -10,6 +10,8 @@
 // - Happy path → {success: true, reservation: dto}, NATS published
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { modifyReservation } from "../modify-reservation.js"
+
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockReservationFindUnique = vi.hoisted(() => vi.fn())
@@ -78,10 +80,6 @@ vi.mock("../notifications.js", () => ({
   sendReservationCancelled: vi.fn(),
   notifyWaitlistSpotAvailable: vi.fn(),
 }))
-
-// ── Imports ────────────────────────────────────────────────────────────────────
-
-import { modifyReservation } from "../modify-reservation.js"
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
