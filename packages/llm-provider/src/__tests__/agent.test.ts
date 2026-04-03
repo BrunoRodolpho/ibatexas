@@ -182,7 +182,7 @@ describe("runAgent", () => {
     const chunks = await collectChunks("tem costela?", [], baseContext)
 
     expect(mockExecuteTool).toHaveBeenCalledOnce()
-    expect(mockExecuteTool).toHaveBeenCalledWith("search_products", { query: "costela" }, baseContext)
+    expect(mockExecuteTool).toHaveBeenCalledWith("search_products", { query: "costela" }, baseContext, toolUseId)
 
     const toolStart = chunks.find((c) => c.type === "tool_start")
     const toolResult = chunks.find((c) => c.type === "tool_result")

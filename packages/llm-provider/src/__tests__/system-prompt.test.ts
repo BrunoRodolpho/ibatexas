@@ -13,12 +13,12 @@ describe("SYSTEM_PROMPT", () => {
     expect(SYSTEM_PROMPT).toContain("get_recommendations")
   })
 
-  it("includes all 5 intelligence tool names", () => {
+  it("includes all 4 READ_ONLY intelligence tool names", () => {
     expect(SYSTEM_PROMPT).toContain("get_customer_profile")
     expect(SYSTEM_PROMPT).toContain("get_recommendations")
     expect(SYSTEM_PROMPT).toContain("get_ordered_together")
     expect(SYSTEM_PROMPT).toContain("get_also_added")
-    expect(SYSTEM_PROMPT).toContain("update_preferences")
+    // update_preferences is MUTATING (kernel-controlled), not in LLM prompt
   })
 })
 
