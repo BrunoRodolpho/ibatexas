@@ -27,7 +27,7 @@ resource "aws_ecs_task_definition" "typesense" {
       file_system_id     = aws_efs_file_system.typesense.id
       transit_encryption = "ENABLED"
 
-      authorization_configuration {
+      authorization_config {
         access_point_id = aws_efs_access_point.typesense.id
         iam             = "ENABLED"
       }

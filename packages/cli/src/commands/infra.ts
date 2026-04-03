@@ -7,7 +7,7 @@ import { ROOT } from "../utils/root.js"
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_REGION = process.env.AWS_REGION ?? "sa-east-1"
+const DEFAULT_REGION = process.env.AWS_REGION ?? "us-east-1"
 const STATE_BUCKET = "ibatexas-terraform-state"
 const LOCK_TABLE = "ibatexas-terraform-locks"
 const SECRET_PATH_PREFIX = "ibatexas"

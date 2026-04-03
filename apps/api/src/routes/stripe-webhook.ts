@@ -36,7 +36,7 @@ async function handlePaymentSucceeded(
     "Stripe webhook received",
   );
 
-  let orderId = paymentIntent.metadata?.["medusaOrderId"];
+  let orderId: string | undefined = paymentIntent.metadata?.["medusaOrderId"];
 
   // PIX flow: cart was not completed at checkout time — complete it now
   // that payment has succeeded, creating the Medusa order.

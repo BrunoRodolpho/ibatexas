@@ -9,7 +9,7 @@ From fresh AWS account to running in production.
 | Tool | Version | Install |
 |------|---------|---------|
 | AWS CLI | v2+ | `brew install awscli` → `aws configure` |
-| Terraform | >= 1.6 | `brew install terraform` |
+| Terraform | >= 1.6 | `brew install tfenv && tfenv install 1.9.8 && tfenv use 1.9.8` |
 | gh CLI | latest | `brew install gh` → `gh auth login` |
 | Supabase | — | Create project at [supabase.com](https://supabase.com) (South America - São Paulo region) |
 | Domain | — | `ibatexas.com.br` registered at a domain registrar |
@@ -20,10 +20,8 @@ From fresh AWS account to running in production.
 
 ```bash
 ibx infra init                     # S3 bucket + DynamoDB lock table
-# Uncomment S3 backend in infra/terraform/environments/dev/main.tf
-terraform init -migrate-state \
-  -chdir=infra/terraform/environments/dev
-ibx infra apply                    # Provision all AWS resources (~25 resources)
+terraform -chdir=infra/terraform/environments/dev init -migrate-state
+ibx infra apply                    # Provision all AWS resources (~99 resources, ~5-10 min one-time)
 ibx infra secrets                  # Populate 17 Secrets Manager entries (interactive)
 ibx infra github                   # Set GitHub repo secrets (OIDC role, DB URLs)
 git push origin dev                # Trigger first staging deploy
@@ -99,12 +97,14 @@ graph TD
 
 ## How CD Works
 
+> **Deploy time:** A regular CD deploy takes **~5-7 minutes** (build + push + rolling update). This is much faster than the initial `ibx infra apply` which provisions infrastructure from scratch. Terraform is NOT involved in regular deploys — only Docker build, ECR push, and ECS service update.
+
 ### Staging — push to `dev`
 
 Workflow: `.github/workflows/deploy-staging.yml`
 
 ```
-push to dev → build 3 Docker images → push to ECR → run Prisma migrations → deploy ECS → wait stable
+push to dev → build 3 Docker images (~2-3 min) → push to ECR (~1 min) → run Prisma migrations → deploy ECS → wait stable (~2-3 min)
 ```
 
 - **Auto-deploys** on every push to `dev`
@@ -116,7 +116,7 @@ push to dev → build 3 Docker images → push to ECR → run Prisma migrations 
 Workflow: `.github/workflows/deploy.yml`
 
 ```
-push to main → build → push ECR → migrate → deploy ECS → wait stable → health check
+push to main → build (~2-3 min) → push ECR (~1 min) → migrate → deploy ECS → wait stable (~2-3 min) → health check
 ```
 
 - **Auto-deploys** on every push to `main`
@@ -133,6 +133,15 @@ push to main → build → push ECR → migrate → deploy ECS → wait stable �
 5. **Wait**: ECS deployment controller waits for stability (10 min timeout)
 6. **Health** (production only): HTTP checks on all 3 public endpoints
 
+### Infrastructure vs. CD — what runs when?
+
+| Action | What runs | Time | When needed |
+|--------|-----------|------|-------------|
+| `ibx infra apply` | Terraform (create/update AWS resources) | 5-10 min first run, seconds after | Only when changing infrastructure |
+| `git push origin dev` | GitHub Actions (build → ECR → ECS) | ~5-7 min | Every code change |
+| `ibx infra secrets` | AWS CLI (populate Secrets Manager) | ~2 min | When adding/rotating secrets |
+| `ibx infra github` | gh CLI (set GitHub repo secrets) | ~1 min | One-time setup |
+
 ---
 
 ## Step-by-Step Setup
@@ -140,18 +149,39 @@ push to main → build → push ECR → migrate → deploy ECS → wait stable �
 ### 1. AWS Bootstrap
 
 ```bash
-aws configure              # Access Key, Secret, region: sa-east-1
+brew install awscli        # Install AWS CLI (v2)
+aws configure              # Prompts for credentials (see below)
+brew install tfenv         # Terraform version manager (HashiCorp license change blocks brew install terraform >= 1.6)
+tfenv install 1.9.8        # Install Terraform 1.9.8
+tfenv use 1.9.8            # Activate it
 ibx infra init             # Creates S3 bucket + DynamoDB lock table
 ```
 
+**Getting AWS credentials for `aws configure`:**
+
+1. Log in at [console.aws.amazon.com](https://console.aws.amazon.com)
+2. Click your username (top-right) → **Security credentials**
+3. Scroll to **Access keys** → **Create access key**
+4. Copy the **Access Key ID** and **Secret Access Key** (shown only once — save it)
+
+When prompted by `aws configure`, enter:
+
+| Prompt | Value |
+|--------|-------|
+| AWS Access Key ID | *(from step 4)* |
+| AWS Secret Access Key | *(from step 4)* |
+| Default region name | `us-east-1` |
+| Default output format | `json` |
+
 ### 2. Enable Terraform State Backend
 
-Uncomment the S3 backend block in `infra/terraform/environments/dev/main.tf` (lines 17-23), then:
+Migrate to the S3 backend:
 
 ```bash
-cd infra/terraform/environments/dev
-terraform init -migrate-state
+terraform -chdir=infra/terraform/environments/dev init -migrate-state
 ```
+
+> **Note:** `-chdir` must come before the subcommand (`init`), not after.
 
 ### 3. Supabase Project
 
@@ -166,11 +196,20 @@ Create project at [supabase.com](https://supabase.com) in **South America (São 
 ibx infra apply
 ```
 
-This provisions ~25 AWS resources: ECS cluster, ALB, ECR repos, Route53 zone, ACM certs, ElastiCache, NATS/Typesense services, security groups, IAM roles, Secrets Manager entries.
+This provisions ~99 AWS resources: ECS cluster, ALB, ECR repos, Route53 zone, ACM certs, ElastiCache, NATS/Typesense services, EFS, security groups, IAM roles, Secrets Manager entries, Cloud Map service discovery.
+
+> **Timing:** First `ibx infra apply` takes ~5-10 minutes (ElastiCache and ALB are the slowest). ACM certificate validation can add up to 10 minutes — it will timeout if DNS nameservers aren't configured yet (re-run after configuring). Subsequent `ibx infra apply` runs are fast (seconds) since Terraform only applies diffs.
 
 ### 5. Domain Nameservers
 
-After apply, copy the 4 Route53 NS records (shown in output) and set them at your domain registrar.
+After apply, copy the 4 Route53 NS records and set them at your domain registrar.
+
+```bash
+# Nameservers are shown in the apply output, or fetch them with:
+terraform -chdir=infra/terraform/environments/dev output route53_nameservers
+```
+
+Set all 4 NS records at your domain registrar for `ibatexas.com.br`. DNS propagation can take 5 min to 24 hours.
 
 ### 6. ACM Certificate Validation
 

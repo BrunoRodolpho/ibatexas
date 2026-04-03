@@ -61,7 +61,7 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | Events | NATS Core — domain events, analytics pipeline |
 | Analytics | PostHog (client-side) + sendBeacon → NATS (server-side) |
 | Payments | Stripe (card + PIX) |
-| Cloud | AWS sa-east-1 (ECS Fargate, RDS, CloudFront) |
+| Cloud | AWS us-east-1 (ECS Fargate, RDS, CloudFront) |
 
 ---
 

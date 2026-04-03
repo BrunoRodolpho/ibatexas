@@ -1,5 +1,5 @@
 environment     = "dev"
-region          = "sa-east-1"
+region          = "us-east-1"
 domain_name     = "ibatexas.com.br"
 api_image_tag   = "latest"
 web_image_tag   = "latest"

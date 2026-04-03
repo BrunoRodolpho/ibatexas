@@ -438,7 +438,7 @@ against installed versions. Highlights when upstream upgrades could unblock over
 ```bash
 # Bootstrap (fresh AWS account → ready for terraform)
 ibx infra init                         # create S3 state bucket + DynamoDB lock table (idempotent)
-ibx infra init --region us-east-1      # override default region (sa-east-1)
+ibx infra init --region sa-east-1      # override default region (us-east-1)
 
 # Terraform operations
 ibx infra plan                         # terraform plan with state safety check

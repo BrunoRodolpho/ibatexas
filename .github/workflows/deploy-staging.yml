@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  AWS_REGION: sa-east-1
+  AWS_REGION: us-east-1
   ECS_CLUSTER: ibatexas-dev
   ENVIRONMENT: dev
 

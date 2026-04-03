@@ -14,7 +14,7 @@ The `ibx` CLI is the primary tool for all dev operations.
 | Docker Desktop | Latest | [docker.com](https://www.docker.com) |
 | process-compose | Latest | `brew install f1bonacc1/tap/process-compose` |
 | AWS CLI | 2+ | `brew install awscli` _(production only)_ |
-| Terraform | 1.6+ | `brew install terraform` _(production only)_ |
+| Terraform | 1.6+ | `brew install tfenv && tfenv install 1.9.8 && tfenv use 1.9.8` _(production only)_ |
 
 ---
 

@@ -184,8 +184,6 @@ resource "aws_ecs_service" "this" {
     rollback = true
   }
 
-  depends_on = [aws_lb_listener.https]
-
   tags = {
     Environment = var.environment
   }
