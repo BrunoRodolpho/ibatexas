@@ -149,8 +149,8 @@ test.describe("SEC-001: Checkout payment gating", () => {
     });
     // Should NOT be 401 — the auth gate passes for card payments
     expect(response.status()).not.toBe(401);
-    // Will likely be 400 or 500 because the cart doesn't exist in Medusa
-    expect([400, 404, 500]).toContain(response.status());
+    // Will likely be 400/500 (validation/internal) or 502 (Medusa unreachable/cart not found)
+    expect([400, 404, 500, 502]).toContain(response.status());
   });
 });
 

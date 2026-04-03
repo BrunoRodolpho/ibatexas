@@ -91,7 +91,7 @@ const STATE_TOOLS: Array<[pattern: string, tools: string[]]> = [
   ["post_order.cancelling", []],
   ["post_order.amending", []],
   ["post_order.regenerating_pix", []],
-  ["post_order", ["get_loyalty_balance", "check_order_status", "search_products"]],
+  ["post_order.", ["get_loyalty_balance", "check_order_status", "search_products"]],
   ["reservation", ["check_table_availability", "get_my_reservations"]],
   ["support", ["handoff_to_human"]],
   ["loyalty_check", ["get_loyalty_balance"]],
@@ -603,7 +603,9 @@ export function synthesizePrompt(
   const baseVoice = channel === "whatsapp" ? BASE_VOICE_WHATSAPP : BASE_VOICE_WEB
 
   // 2. State-specific instruction block
+  //    Compound states (e.g. "post_order.idle") fall back to parent key ("post_order")
   const templateFn = STATE_PROMPTS[stateValue]
+    ?? (stateValue.includes(".") ? STATE_PROMPTS[stateValue.split(".")[0]!] : undefined)
   const effectiveState = stateValue === "__unknown__" ? "fallback" : stateValue
   const rawStateBlock = templateFn !== undefined ? templateFn(freshContext, schedule) : STATE_PROMPTS["fallback"](freshContext, schedule)
   const stateBlock = applyMomentumModifier(rawStateBlock, freshContext.momentum)

@@ -193,6 +193,7 @@ export const orderMachine = setup({
         orderId: (data?.orderId as string) ?? null,
         orderCreatedAt: new Date().toISOString(),
         lastError: null,
+        pendingProduct: null, // Item was ordered — no longer pending
       }
     }),
 

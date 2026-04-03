@@ -40,7 +40,7 @@
     },
     {
       "input": "Ana Costa ana@teste.com 111.222.333-44",
-      "expectedState": "post_order",
+      "expectedState": "post_order.idle",
       "injectPixDetails": { "name": "Ana Costa", "email": "ana@teste.com", "cpf": "111.222.333-44" },
       "injectCheckoutResult": {
         "success": true,
@@ -54,8 +54,8 @@
       "assertContext": {
         "orderId": "IXS-008"
       },
-      "assertPromptContains": ["IXS-008", "amend_order"],
-      "assertTools": ["cancel_order"]
+      "assertPromptContains": ["IXS-008", "Cancelar"],
+      "assertTools": ["get_loyalty_balance", "check_order_status"]
     }
   ]
 }

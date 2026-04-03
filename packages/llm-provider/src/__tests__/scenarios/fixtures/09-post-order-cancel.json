@@ -38,7 +38,7 @@
     },
     {
       "input": "Maria Santos maria@email.com 987.654.321-00",
-      "expectedState": "post_order",
+      "expectedState": "post_order.idle",
       "injectPixDetails": { "name": "Maria Santos", "email": "maria@email.com", "cpf": "987.654.321-00" },
       "injectCheckoutResult": {
         "success": true,
@@ -52,14 +52,13 @@
       "assertContext": {
         "orderId": "IXS-009"
       },
-      "assertTools": ["cancel_order"]
+      "assertTools": ["check_order_status"]
     },
     {
       "input": "desistir",
       "expectedEvents": ["CANCEL_ORDER"],
-      "expectedState": "post_order",
-      "assertTools": ["cancel_order"],
-      "assertPromptContains": ["IXS-009"]
+      "expectedState": "post_order.cancelling",
+      "assertTools": []
     }
   ]
 }

@@ -42,7 +42,7 @@
     },
     {
       "input": "Bruno Silva bruno@ibatexas.com 123.456.789-00",
-      "expectedState": "post_order",
+      "expectedState": "post_order.idle",
       "injectPixDetails": { "name": "Bruno Silva", "email": "bruno@ibatexas.com", "cpf": "123.456.789-00" },
       "injectCheckoutResult": {
         "success": true,
@@ -57,8 +57,8 @@
         "orderId": "IXS-001",
         "loyaltyStamps": 3
       },
-      "assertPromptContains": ["IXS-001", "amend_order"],
-      "assertTools": ["get_loyalty_balance", "cancel_order"]
+      "assertPromptContains": ["IXS-001", "Cancelar"],
+      "assertTools": ["get_loyalty_balance", "check_order_status"]
     }
   ]
 }
