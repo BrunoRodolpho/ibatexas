@@ -3,15 +3,15 @@
 // POST /api/chat/messages — accept a user message, start agent, return messageId
 // GET  /api/chat/stream/:sessionId — SSE stream of agent response chunks
 
+import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { Channel, type AgentContext } from "@ibatexas/types";
 import { runOrchestrator } from "@ibatexas/llm-provider";
-import { loadSession, appendMessages } from "../session/store.js";
 import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
+import { loadSession, appendMessages } from "../session/store.js";
 import { optionalAuth } from "../middleware/auth.js";
 import {
   createStream,

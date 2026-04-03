@@ -2,6 +2,8 @@
 // Verifies tier progression, cooldown enforcement, and active:carts retention.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
+import { checkAbandonedCarts, stopAbandonedCartChecker } from "../../jobs/abandoned-cart-checker.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -59,11 +61,6 @@ vi.mock("../../jobs/queue.js", () => ({
     close: vi.fn(),
   })),
 }));
-
-// ── Import after mocks ─────────────────────────────────────────────────────
-
-import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
-import { checkAbandonedCarts, stopAbandonedCartChecker } from "../../jobs/abandoned-cart-checker.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

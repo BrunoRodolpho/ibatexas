@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest"
 import Fastify from "fastify"
 import type { FastifyInstance } from "fastify"
+import { healthRoutes } from "../routes/health.js"
 
 // Mock external dependencies so health checks pass in unit tests
 vi.mock("@ibatexas/tools", () => ({
@@ -35,8 +36,6 @@ beforeAll(() => {
 afterAll(() => {
   globalThis.fetch = originalFetch
 })
-
-import { healthRoutes } from "../routes/health.js"
 
 describe("GET /health", () => {
   let server: FastifyInstance

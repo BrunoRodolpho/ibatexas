@@ -4,6 +4,11 @@
 //        @sentry/node (captureException), ./jobs/queue.js (BullMQ factories).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  checkPixExpiry,
+  startPixExpiryChecker,
+  stopPixExpiryChecker,
+} from "../jobs/pix-expiry-checker.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -42,14 +47,6 @@ vi.mock("../jobs/queue.js", () => ({
     close: vi.fn(),
   })),
 }));
-
-// ── Import source after mocks ───────────────────────────────────────────────
-
-import {
-  checkPixExpiry,
-  startPixExpiryChecker,
-  stopPixExpiryChecker,
-} from "../jobs/pix-expiry-checker.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

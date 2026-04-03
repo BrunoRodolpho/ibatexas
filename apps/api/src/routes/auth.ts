@@ -6,11 +6,11 @@
 // POST /api/auth/logout      — revoke JWT, delete refresh token, clear cookies
 // GET  /api/auth/me          — return current customer from JWT
 
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import twilio from "twilio";
-import { createHash, randomUUID } from "node:crypto";
 import { createCustomerService, createStaffService } from "@ibatexas/domain";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { requireAuth, optionalAuth } from "../middleware/auth.js";

@@ -2,6 +2,13 @@
 // POST /api/analytics/track → validate → rate limit → 204
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import sensible from "@fastify/sensible";
+import { analyticsRoutes } from "../routes/analytics.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -10,16 +17,6 @@ const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
-
-// ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
-import sensible from "@fastify/sensible";
-import { analyticsRoutes } from "../routes/analytics.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });

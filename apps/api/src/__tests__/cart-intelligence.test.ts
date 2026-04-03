@@ -3,6 +3,7 @@
 //           product.viewed, review.submitted, cart.item_added
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { startCartIntelligenceSubscribers } from "../subscribers/cart-intelligence.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -50,10 +51,6 @@ vi.mock("../jobs/review-prompt.js", () => ({
 vi.mock("../whatsapp/client.js", () => ({
   sendText: mockSendText,
 }));
-
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { startCartIntelligenceSubscribers } from "../subscribers/cart-intelligence.js";
 
 // ── Mock Redis client ─────────────────────────────────────────────────────────
 

@@ -7,9 +7,9 @@
 import { getRedisClient } from "@ibatexas/tools";
 import { publishNatsEvent, outboxKey } from "@ibatexas/nats-client";
 import * as Sentry from "@sentry/node";
-import { createQueue, createWorker, type Job } from "./queue.js";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
+import { createQueue, createWorker, type Job } from "./queue.js";
 
 const REPEAT_INTERVAL_MS = 60_000; // 60 seconds
 const CRITICAL_EVENTS = ["order.placed", "reservation.created"] as const;

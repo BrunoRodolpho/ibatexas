@@ -8,9 +8,9 @@
 // 4. If replied → skip (no-op)
 
 import { getRedisClient, rk } from "@ibatexas/tools";
+import type { Queue, Worker } from "bullmq";
 import { sendText } from "../whatsapp/client.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
-import type { Queue, Worker } from "bullmq";
 
 const NUDGE_DELAY_MS = Number.parseInt(
   process.env.HESITATION_NUDGE_DELAY_MS || "45000",

@@ -2,6 +2,8 @@
 // POST /api/webhooks/whatsapp — Twilio incoming message webhook
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import { whatsappWebhookRoutes } from "../routes/whatsapp-webhook.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -99,9 +101,6 @@ vi.mock("../whatsapp/constants.js", () => ({
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import { whatsappWebhookRoutes } from "../routes/whatsapp-webhook.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });

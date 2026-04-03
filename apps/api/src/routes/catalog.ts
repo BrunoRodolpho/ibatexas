@@ -11,9 +11,9 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { Channel, type ProductVariant } from "@ibatexas/types";
 import { searchProducts, getProductDetails, buildPersonalizedQuery } from "@ibatexas/tools";
-import { medusaAdmin, medusaStore } from "./admin/_shared.js";
-import { optionalAuth } from "../middleware/auth.js";
 import { createReviewService } from "@ibatexas/domain";
+import { optionalAuth } from "../middleware/auth.js";
+import { medusaAdmin, medusaStore } from "./admin/_shared.js";
 
 const ProductsQuery = z.object({
   query: z.string().min(1).max(200).optional(),

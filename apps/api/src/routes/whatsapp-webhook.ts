@@ -15,8 +15,8 @@
 // Debounce:
 //   - 2s window via rk('wa:debounce:{phoneHash}') NX to batch rapid-fire messages
 
-import type { FastifyInstance, FastifyRequest } from "fastify";
 import { parse as parseQuerystring } from "node:querystring";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import twilio from "twilio";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { runOrchestrator } from "@ibatexas/llm-provider";

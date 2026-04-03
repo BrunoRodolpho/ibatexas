@@ -7,7 +7,11 @@
 // POST /api/reservations/:id/waitlist
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import Fastify from "fastify"
+import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod"
+import sensible from "@fastify/sensible"
 import type { FastifyRequest, FastifyReply } from "fastify"
+import { reservationRoutes } from "../routes/reservations.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -41,13 +45,6 @@ vi.mock("../middleware/auth.js", () => ({
     request.customerId = customerId
   },
 }))
-
-// ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify"
-import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod"
-import sensible from "@fastify/sensible"
-import { reservationRoutes } from "../routes/reservations.js"
 
 async function buildTestServer() {
   const app = Fastify({ logger: false })

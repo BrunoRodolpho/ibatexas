@@ -2,6 +2,7 @@
 // Verifies Redis cleanup logic when a product is deleted
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -47,10 +48,6 @@ vi.mock("@sentry/node", () => ({
 vi.mock("../../jobs/review-prompt.js", () => ({
   scheduleReviewPrompt: vi.fn().mockResolvedValue(undefined),
 }));
-
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

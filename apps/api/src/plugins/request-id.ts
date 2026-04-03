@@ -8,8 +8,8 @@
 // Registration: call registerRequestId(server) directly in buildServer.
 // genReqId is set at server construction time (passed to Fastify constructor).
 
-import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
+import type { FastifyInstance } from "fastify";
 import * as Sentry from "@sentry/node";
 
 const HEADER = "x-request-id";

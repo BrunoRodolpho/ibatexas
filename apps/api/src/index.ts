@@ -1,11 +1,11 @@
 import * as Sentry from "@sentry/node";
+import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
+import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
+import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
-import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
-import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
-import { prisma, createScheduleService } from "@ibatexas/domain";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
 import logger from "./lib/logger.js";

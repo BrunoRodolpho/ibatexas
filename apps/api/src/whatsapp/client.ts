@@ -5,8 +5,8 @@
 // All sends log phone hash, never raw phone numbers.
 
 import twilio from "twilio";
-import { hashPhone } from "./session.js";
 import logger from "../lib/logger.js";
+import { hashPhone } from "./session.js";
 
 /** Compute retry delay: uses Retry-After header for 429, exponential backoff otherwise. */
 function getRetryDelay(err: unknown, attempt: number): number {

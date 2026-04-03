@@ -1,6 +1,7 @@
 // Unit tests for staff high-value cart alert in cart.abandoned subscriber
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -71,10 +72,6 @@ vi.mock("../../session/store.js", () => ({
 vi.mock("../../whatsapp/session.js", () => ({
   hashPhone: vi.fn((phone: string) => `hash_${phone}`),
 }));
-
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -9,9 +9,9 @@
 // 3. If paid → skip. If not → send message.
 
 import { getRedisClient, rk, medusaAdmin } from "@ibatexas/tools";
+import type { Queue, Worker } from "bullmq";
 import { sendText } from "../whatsapp/client.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
-import type { Queue, Worker } from "bullmq";
 
 const PIX_REMINDER_DELAY_MS = Number.parseInt(
   process.env.PIX_REMINDER_DELAY_MS || "1500000", // 25 minutes

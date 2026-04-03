@@ -1,6 +1,18 @@
 // Unit tests for whatsapp/session.ts — mock Redis, prisma, uuid.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  normalizePhone,
+  hashPhone,
+  resolveWhatsAppSession,
+  buildWhatsAppContext,
+  touchSession,
+  acquireAgentLock,
+  releaseAgentLock,
+  tryDebounce,
+  getSessionState,
+  setSessionState,
+} from "../whatsapp/session.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -37,19 +49,6 @@ vi.mock("@ibatexas/domain", () => ({
 vi.mock("@ibatexas/types", () => ({
   Channel: { Web: "web", WhatsApp: "whatsapp" },
 }));
-
-import {
-  normalizePhone,
-  hashPhone,
-  resolveWhatsAppSession,
-  buildWhatsAppContext,
-  touchSession,
-  acquireAgentLock,
-  releaseAgentLock,
-  tryDebounce,
-  getSessionState,
-  setSessionState,
-} from "../whatsapp/session.js";
 
 beforeEach(() => {
   vi.clearAllMocks();

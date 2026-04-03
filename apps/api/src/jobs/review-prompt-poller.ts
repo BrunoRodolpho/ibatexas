@@ -6,9 +6,9 @@
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import * as Sentry from "@sentry/node";
-import { createQueue, createWorker, type Job } from "./queue.js";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
+import { createQueue, createWorker, type Job } from "./queue.js";
 
 const REPEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const BATCH_CAP = 100; // max entries per tick (at 5000 orders/day ~= 17 per 5-min window)

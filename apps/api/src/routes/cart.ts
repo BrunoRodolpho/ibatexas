@@ -20,8 +20,8 @@ import { z } from "zod";
 import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, MedusaRequestError, cancelStalePaymentIntent } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { createCustomerService } from "@ibatexas/domain";
-import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
+import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 

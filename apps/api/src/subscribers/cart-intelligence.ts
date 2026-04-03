@@ -17,10 +17,10 @@ import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender, reaisToCentavos, atomicIncr } from "@ibatexas/tools";
 import * as Sentry from "@sentry/node";
 import { createCustomerService, createLoyaltyService } from "@ibatexas/domain";
+import type { FastifyBaseLogger } from "fastify";
 import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
 import { buildCartRecoveryMessage } from "../jobs/cart-recovery-messages.js";
 import { loadSession } from "../session/store.js";
-import type { FastifyBaseLogger } from "fastify";
 
 const RECENTLY_VIEWED_MAX = 20;
 const NATS_DEDUP_TTL = 604_800; // 7 days — matches Stripe webhook window

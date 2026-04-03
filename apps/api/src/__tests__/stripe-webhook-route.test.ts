@@ -2,6 +2,8 @@
 // POST /api/webhooks/stripe — payment_intent.succeeded / payment_intent.payment_failed
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import { stripeWebhookRoutes } from "../routes/stripe-webhook.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -26,11 +28,6 @@ vi.mock("@ibatexas/tools", () => ({
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
-
-// ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import { stripeWebhookRoutes } from "../routes/stripe-webhook.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });

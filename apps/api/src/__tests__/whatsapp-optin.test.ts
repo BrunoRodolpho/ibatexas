@@ -1,6 +1,7 @@
 // Unit tests for WhatsApp LGPD opt-in — hasOptedIn / markOptedIn
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { hasOptedIn, markOptedIn } from "../whatsapp/session.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -21,8 +22,6 @@ vi.mock("@ibatexas/domain", () => ({
 vi.mock("@ibatexas/types", () => ({
   Channel: { Web: "web", WhatsApp: "whatsapp" },
 }));
-
-import { hasOptedIn, markOptedIn } from "../whatsapp/session.js";
 
 beforeEach(() => {
   vi.clearAllMocks();

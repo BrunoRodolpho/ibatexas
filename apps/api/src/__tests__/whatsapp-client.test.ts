@@ -1,6 +1,14 @@
 // Unit tests for whatsapp/client.ts — mock twilio.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  splitForWhatsApp,
+  sendText,
+  sendInteractiveList,
+  sendInteractiveButtons,
+  phoneHash,
+  getWhatsAppNumber,
+} from "../whatsapp/client.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -16,15 +24,6 @@ vi.mock("twilio", () => ({
 vi.stubEnv("TWILIO_ACCOUNT_SID", "AC_test_sid");
 vi.stubEnv("TWILIO_AUTH_TOKEN", "test_auth_token");
 vi.stubEnv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+15551234567");
-
-import {
-  splitForWhatsApp,
-  sendText,
-  sendInteractiveList,
-  sendInteractiveButtons,
-  phoneHash,
-  getWhatsAppNumber,
-} from "../whatsapp/client.js";
 
 beforeEach(() => {
   vi.clearAllMocks();

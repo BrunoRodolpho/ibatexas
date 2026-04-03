@@ -2,6 +2,11 @@
 // Mocks all external dependencies: Redis, NATS, domain, WhatsApp client, Medusa.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  checkDormantCustomers,
+  startProactiveEngagement,
+  stopProactiveEngagement,
+} from "../jobs/proactive-engagement.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -57,14 +62,6 @@ vi.mock("../jobs/queue.js", () => ({
 vi.mock("../jobs/weather-helper.js", () => ({
   fetchWeatherCondition: mockFetchWeatherCondition,
 }));
-
-// ── Import source after mocks ───────────────────────────────────────────────
-
-import {
-  checkDormantCustomers,
-  startProactiveEngagement,
-  stopProactiveEngagement,
-} from "../jobs/proactive-engagement.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

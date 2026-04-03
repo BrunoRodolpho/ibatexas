@@ -1,7 +1,14 @@
 // Unit tests for /api/me routes — LGPD data export and anonymization
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { meRoutes } from "../routes/me.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -28,14 +35,6 @@ vi.mock("../middleware/auth.js", () => ({
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
-import sensible from "@fastify/sensible";
-import { meRoutes } from "../routes/me.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });

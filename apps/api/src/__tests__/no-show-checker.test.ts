@@ -3,6 +3,8 @@
 // Tests call the exported checkNoShows() processor directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { publishNatsEvent } from "@ibatexas/nats-client"
+import { checkNoShows, startNoShowChecker, stopNoShowChecker } from "../jobs/no-show-checker.js"
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -30,9 +32,6 @@ vi.mock("../jobs/queue.js", () => ({
     close: vi.fn(),
   })),
 }))
-
-import { checkNoShows, startNoShowChecker, stopNoShowChecker } from "../jobs/no-show-checker.js"
-import { publishNatsEvent } from "@ibatexas/nats-client"
 
 describe("no-show checker", () => {
   beforeEach(() => {

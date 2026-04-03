@@ -1,6 +1,7 @@
 // Unit tests for welcome credit helpers in whatsapp/session.ts
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { setWelcomeCredit, getAndConsumeWelcomeCredit } from "../../whatsapp/session.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -28,8 +29,6 @@ vi.mock("@ibatexas/types", () => ({
 }));
 
 vi.mock("uuid", () => ({ v4: vi.fn().mockReturnValue("test-uuid") }));
-
-import { setWelcomeCredit, getAndConsumeWelcomeCredit } from "../../whatsapp/session.js";
 
 beforeEach(() => {
   vi.clearAllMocks();

@@ -11,6 +11,7 @@ import {
 } from "fastify-type-provider-zod"
 import sensible from "@fastify/sensible"
 import type { FastifyInstance } from "fastify"
+import { chatRoutes } from "../routes/chat.js"
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 
@@ -52,8 +53,6 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
     }),
   }
 })
-
-import { chatRoutes } from "../routes/chat.js"
 
 async function buildTestServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false })

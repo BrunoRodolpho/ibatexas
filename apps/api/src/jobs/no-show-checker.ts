@@ -6,9 +6,9 @@
 import { createReservationService } from "@ibatexas/domain"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import * as Sentry from "@sentry/node"
-import { createQueue, createWorker, type Job } from "./queue.js"
 import type { Queue, Worker } from "bullmq"
 import type { FastifyBaseLogger } from "fastify"
+import { createQueue, createWorker, type Job } from "./queue.js"
 
 const GRACE_PERIOD_MINUTES = Number.parseInt(process.env.NO_SHOW_GRACE_MINUTES || "15", 10)
 const REPEAT_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes

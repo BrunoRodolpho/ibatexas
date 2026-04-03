@@ -4,7 +4,14 @@
 // POST /api/cart/:id/promotions, POST /api/cart/:id/payment-sessions
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { cartRoutes } from "../routes/cart.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -48,14 +55,6 @@ vi.mock("../middleware/auth.js", () => ({
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
-import sensible from "@fastify/sensible";
-import { cartRoutes } from "../routes/cart.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });

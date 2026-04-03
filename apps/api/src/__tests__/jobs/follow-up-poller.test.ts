@@ -8,6 +8,7 @@
 // - Sentry called on publish error
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { processFollowUps } from "../../jobs/follow-up-poller.js";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -43,10 +44,6 @@ vi.mock("../../jobs/queue.js", () => ({
     close: vi.fn(),
   })),
 }));
-
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { processFollowUps } from "../../jobs/follow-up-poller.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

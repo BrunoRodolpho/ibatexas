@@ -7,12 +7,12 @@
 // so the idle threshold uses the correct session TTL per session type.
 
 import { getRedisClient, rk } from "@ibatexas/tools";
-import { loadSession } from "../session/store.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import * as Sentry from "@sentry/node";
-import { createQueue, createWorker, type Job } from "./queue.js";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
+import { loadSession } from "../session/store.js";
+import { createQueue, createWorker, type Job } from "./queue.js";
 
 const IDLE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 hours
 const SCAN_COUNT = 100; // HSCAN cursor batch size

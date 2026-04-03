@@ -2,6 +2,7 @@
 // Exercises startHandoffSubscriber() by capturing the NATS callback and invoking it directly.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { startHandoffSubscriber } from "../subscribers/handoff-subscriber.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -15,10 +16,6 @@ vi.mock("@ibatexas/nats-client", () => ({
 vi.mock("@ibatexas/tools", () => ({
   getWhatsAppSender: mockGetWhatsAppSender,
 }))
-
-// ── Import source after mocks ──────────────────────────────────────────────────
-
-import { startHandoffSubscriber } from "../subscribers/handoff-subscriber.js"
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

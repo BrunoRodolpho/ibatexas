@@ -3,6 +3,11 @@
 // Tests call the exported processor functions directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { checkAbandonedCarts } from "../jobs/abandoned-cart-checker.js";
+import { processOutbox } from "../jobs/outbox-retry.js";
+import { checkNoShows } from "../jobs/no-show-checker.js";
+import { pollReviewPrompts } from "../jobs/review-prompt-poller.js";
+import { sendReminders } from "../jobs/reservation-reminder.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -70,14 +75,6 @@ vi.mock("../jobs/queue.js", () => ({
     close: vi.fn(),
   })),
 }));
-
-// ── Import sources after mocks ──────────────────────────────────────────────
-
-import { checkAbandonedCarts } from "../jobs/abandoned-cart-checker.js";
-import { processOutbox } from "../jobs/outbox-retry.js";
-import { checkNoShows } from "../jobs/no-show-checker.js";
-import { pollReviewPrompts } from "../jobs/review-prompt-poller.js";
-import { sendReminders } from "../jobs/reservation-reminder.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

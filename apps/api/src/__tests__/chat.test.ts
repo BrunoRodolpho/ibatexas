@@ -2,6 +2,14 @@
 // Mocks runAgent, loadSession, appendMessages, and the streaming emitter.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import sensible from "@fastify/sensible";
+import { Channel } from "@ibatexas/types";
+import { chatRoutes } from "../routes/chat.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -42,15 +50,6 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
 });
 
 // ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
-import sensible from "@fastify/sensible";
-import { chatRoutes } from "../routes/chat.js";
-import { Channel } from "@ibatexas/types";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });
@@ -139,7 +138,7 @@ describe("POST /api/chat/messages", () => {
   it("pushes error chunk when agent throws", async () => {
     mockRunAgent.mockImplementation(async function* () {
       throw new Error("Agent crashed");
-      // eslint-disable-next-line no-unreachable
+       
       yield { type: "done" };
     });
 
