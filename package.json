@@ -32,24 +32,17 @@
   "packageManager": "pnpm@10.32.1",
   "pnpm": {
     "overrideNotes": {
-      "hono, @hono/node-server, effect": "prisma security — remove when prisma >= 7.6 fixes upstream",
-      "multer": "medusa transitive fix — remove when medusa upgrades multer",
-      "fast-xml-parser": "aws-sdk/xml-builder security — remove when @aws-sdk updates",
-      "@posthog/core": "posthog transitive fix — remove when posthog-js ships fixed version",
       "minimatch, rollup, glob": "vitest/vite toolchain — review on vite 6 upgrade",
       "@mikro-orm/core": "medusa transitive fix — GHSA-gwhv-j974-6fxm / GHSA-qpfv-44f3-qqx6 SQL injection",
       "path-to-regexp": "medusa>express transitive fix — GHSA-37ch-88jc-xwx2 ReDoS",
       "lodash": "medusa/prisma transitive fix — GHSA-r5fr-rjxr-66jc code injection via _.template",
       "picomatch": "eslint-config-next/vitest transitive fix — GHSA-c2c7-rcm5-vvqj ReDoS",
-      "@types/react, @types/react-dom": "medusa pulls React 18 types — force single version to fix JSX portability errors"
+      "@types/react, @types/react-dom": "medusa pulls React 18 types — force single version to fix JSX portability errors",
+      "vite@7": "vitest>vite v7 transitive fix — GHSA-v2wj-q39q-566r (server.fs.deny bypass) + GHSA-p9ff-h696-f583 (WebSocket file read). Scoped to v7 so medusa's vite v5 is untouched. Remove when vitest pulls vite >= 7.3.2.",
+      "ajv": "@medusajs/cli>...>@rushstack/node-core-library>ajv transitive fix — GHSA-2g4f-4pwh-qvx6 ReDoS via $data option. Remove when rushstack updates.",
+      "esbuild": "@medusajs/framework>vite v5>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS issue. Remove when medusa upgrades vite to v6+ (vite 6.4.2+ already pulls esbuild >=0.25)."
     },
     "overrides": {
-      "hono": "4.12.8",
-      "@hono/node-server": "1.19.11",
-      "effect": "3.21.0",
-      "multer": "2.1.1",
-      "fast-xml-parser": "5.5.8",
-      "@posthog/core": "1.24.1",
       "minimatch": "10.2.4",
       "rollup": "4.59.0",
       "glob": "13.0.6",
@@ -59,12 +52,20 @@
       "picomatch@<3": "2.3.2",
       "picomatch@>=4": "4.0.4",
       "@types/react": "19.2.14",
-      "@types/react-dom": "19.2.3"
+      "@types/react-dom": "19.2.3",
+      "vite@7": "7.3.2",
+      "ajv": "8.18.0",
+      "esbuild": "0.25.0"
     },
     "auditConfig": {
       "ignoreCves": [
-        "CVE-2026-34950"
-      ]
+        "CVE-2026-34950",
+        "CVE-2026-35042"
+      ],
+      "ignoreCveNotes": {
+        "CVE-2026-35042": "fast-jwt <=6.1.0 GHSA-hm7r-c7qw-ghp6 — accepts unknown `crit` header extensions (RFC 7515 violation). No upstream patch released yet. Mitigation: we never set or trust `crit` headers in our JWT flow (Twilio Verify OTP only). Re-check when nearform/fast-jwt ships a fix.",
+        "GHSA-4w7w-66w2-5vf9": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). vite <=6.4.1 path traversal in optimized deps .map handling. Pulled by @medusajs/framework which has a hard peer dep on `vite ^5.4.21`, so we cannot override to 6.4.2+ without breaking medusa's admin-vite-plugin. Dev-server-only vuln, not exploitable in production builds. Stays as a moderate in audit output (below the --audit-level=high CI threshold). Remove when medusa upgrades to vite v6+."
+      }
     },
     "onlyBuiltDependencies": [
       "@prisma/client",

@@ -6,26 +6,25 @@ interface Target {
   overridesUnlocked: string[]
 }
 
+// `vite` is intentionally NOT tracked here: medusa peer-pins vite ^5.4.21, so we
+// cannot upgrade it via override (would break @medusajs/admin-vite-plugin). The
+// vite v5 transitive vuln is documented in `auditConfig.ignoreCveNotes` in
+// package.json. Re-add this target only when medusa supports vite v6+.
 const targets: Target[] = [
   {
     name: "prisma",
-    current: "7.5.0",
-    overridesUnlocked: ["hono", "@hono/node-server", "effect"],
+    current: "7.6.0",
+    overridesUnlocked: [],
   },
   {
     name: "@medusajs/medusa",
-    current: "2.13.4",
-    overridesUnlocked: ["multer", "fast-xml-parser"],
-  },
-  {
-    name: "vite",
-    current: "5.4.21",
-    overridesUnlocked: ["minimatch", "rollup", "glob"],
+    current: "2.13.5",
+    overridesUnlocked: ["@mikro-orm/core", "path-to-regexp", "ajv", "esbuild"],
   },
   {
     name: "posthog-js",
-    current: "1.363.1",
-    overridesUnlocked: ["@posthog/core"],
+    current: "1.364.7",
+    overridesUnlocked: [],
   },
 ]
 
