@@ -39,7 +39,7 @@
       "picomatch": "eslint-config-next/vitest transitive fix — GHSA-c2c7-rcm5-vvqj ReDoS",
       "@types/react, @types/react-dom": "medusa pulls React 18 types — force single version to fix JSX portability errors",
       "vite@7": "vitest>vite v7 transitive fix — GHSA-v2wj-q39q-566r (server.fs.deny bypass) + GHSA-p9ff-h696-f583 (WebSocket file read). Scoped to v7 so medusa's vite v5 is untouched. Remove when vitest pulls vite >= 7.3.2.",
-      "ajv": "@medusajs/cli>...>@rushstack/node-core-library>ajv transitive fix — GHSA-2g4f-4pwh-qvx6 ReDoS via $data option. Remove when rushstack updates.",
+      "@rushstack/node-core-library>ajv": "@medusajs/cli>...>@rushstack/node-core-library>ajv transitive fix — GHSA-2g4f-4pwh-qvx6 ReDoS via $data option. Scoped (not global) because @eslint/eslintrc uses ajv v6 API and breaks if forced to v8 ('NOT SUPPORTED: option missingRefs' / 'Cannot set defaultMeta'). Remove when rushstack updates.",
       "esbuild": "@medusajs/framework>vite v5>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS issue. Remove when medusa upgrades vite to v6+ (vite 6.4.2+ already pulls esbuild >=0.25)."
     },
     "overrides": {
@@ -54,7 +54,7 @@
       "@types/react": "19.2.14",
       "@types/react-dom": "19.2.3",
       "vite@7": "7.3.2",
-      "ajv": "8.18.0",
+      "@rushstack/node-core-library>ajv": "8.18.0",
       "esbuild": "0.25.0"
     },
     "auditConfig": {
