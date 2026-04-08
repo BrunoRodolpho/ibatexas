@@ -53,7 +53,11 @@ const SENSITIVE_SECRETS = new Set([
 // ── Secret Validators ─────────────────────────────────────────────────────────
 
 const SECRET_VALIDATORS: Record<string, (v: string) => string | true> = {
-  DATABASE_URL:          v => v.startsWith("postgresql://") || "Must start with postgresql://",
+  DATABASE_URL:          v => {
+    if (!v.startsWith("postgresql://")) return "Must start with postgresql://"
+    if (v.includes("supabase.co:5432")) return "Use the pooler connection (port 6543), not direct (port 5432). The direct host is IPv6-only and unreachable from ECS Fargate."
+    return true
+  },
   CORS_ORIGIN:           v => v.startsWith("http") || "Must be a URL (https://...)",
   STRIPE_SECRET_KEY:     v => v.startsWith("sk_") || "Must start with sk_",
   STRIPE_WEBHOOK_SECRET: v => v.startsWith("whsec_") || "Must start with whsec_",
@@ -75,6 +79,9 @@ function crossValidateSecrets(secrets: Record<string, string>, env: string): str
   }
   if (dbUrl && !dbUrl.includes("supabase") && env !== "dev") {
     warnings.push(`DATABASE_URL doesn't reference Supabase in ${env} — is this intentional?`)
+  }
+  if (dbUrl?.includes("db.") && dbUrl.includes("supabase.co:5432")) {
+    warnings.push(`DATABASE_URL uses direct Supabase host (IPv6-only) — ECS Fargate cannot reach it. Use the pooler URL (port 6543) instead.`)
   }
   return warnings
 }

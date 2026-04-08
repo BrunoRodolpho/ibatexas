@@ -190,6 +190,18 @@ Create project at [supabase.com](https://supabase.com) in **South America (São 
 - `DATABASE_URL` — pooler connection (port 6543, for app runtime)
 - `DIRECT_DATABASE_URL` — direct connection (port 5432, for Prisma migrations)
 
+> **Important:** You must use the **pooler** connection string (port 6543) for `DATABASE_URL`, not the direct connection (port 5432). The direct Supabase host (`db.<ref>.supabase.co`) resolves to IPv6 only, which is unreachable from ECS Fargate. The pooler host (`aws-0-sa-east-1.pooler.supabase.com`) has IPv4 addresses and works correctly.
+>
+> ```
+> # Correct — pooler (IPv4, works on ECS)
+> postgresql://postgres.<PROJECT_REF>:<PASSWORD>@aws-0-sa-east-1.pooler.supabase.com:6543/postgres
+>
+> # Wrong — direct (IPv6 only, unreachable from ECS)
+> postgresql://postgres:<PASSWORD>@db.<PROJECT_REF>.supabase.co:5432/postgres
+> ```
+>
+> See [docs/setup/supabase.md](supabase.md) for full setup instructions.
+
 ### 4. Terraform Apply
 
 ```bash
@@ -246,6 +258,17 @@ Secrets are injected per-service (not all secrets to all services):
 | CORS_ORIGIN | Optional | - | - |
 | SENTRY_DSN | Optional | Optional | Optional |
 
+> **JWT_SECRET** must be at least 32 characters. Generate a secure one with:
+> ```bash
+> aws secretsmanager put-secret-value --secret-id ibatexas/dev/JWT_SECRET \
+>   --secret-string "$(openssl rand -base64 48)" --region us-east-1
+> ```
+
+> **SENTRY_DSN** must have a value even if you don't use Sentry — ECS tasks will fail to start if the secret exists but has no value. To disable Sentry, set it to `"disabled"`:
+> ```bash
+> aws secretsmanager put-secret-value --secret-id ibatexas/dev/SENTRY_DSN --secret-string "disabled" --region us-east-1
+> ```
+
 > `DIRECT_DATABASE_URL` is NOT an ECS secret — it's a GitHub Actions secret used only for Prisma migrations during deploys.
 
 ### 8. GitHub Secrets
@@ -284,6 +307,94 @@ ibx infra checklist        # Numbered deployment checklist
 ibx infra explain          # Root cause analysis for failures
 ibx infra doctor           # Deep diagnostics (ECR, CloudWatch, Cloud Map)
 ```
+
+---
+
+## Manual Deploy (AWS CLI)
+
+When you need to deploy without GitHub Actions (e.g., testing locally, CI is down, or faster iteration):
+
+### Prerequisites
+
+- AWS CLI configured (`aws configure`)
+- Docker running
+- Your AWS Account ID. Find it with:
+
+```bash
+aws sts get-caller-identity --query Account --output text
+```
+
+Use this value wherever you see `<ACCOUNT_ID>` below.
+
+- ECR login (once per 12 hours):
+
+```bash
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
+```
+
+### Deploy a single service
+
+Replace `SERVICE` with `api`, `web`, or `admin`:
+
+```bash
+# 1. Build the Docker image
+docker build --platform linux/amd64 -t ibatexas-SERVICE -f apps/SERVICE/Dockerfile .
+
+# 2. Tag for ECR
+docker tag ibatexas-SERVICE:latest \
+  <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/ibatexas-SERVICE:latest
+
+# 3. Push to ECR
+docker push <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/ibatexas-SERVICE:latest
+
+# 4. Update ECS service (triggers rolling deployment)
+aws ecs update-service --cluster ibatexas-dev --service ibatexas-dev-SERVICE --force-new-deployment
+
+# 5. Wait for stability (~2-3 min)
+aws ecs wait services-stable --cluster ibatexas-dev --services ibatexas-dev-SERVICE
+```
+
+### Monitoring a deployment
+
+Check deployment status:
+
+```bash
+aws ecs describe-services --cluster ibatexas-dev --services ibatexas-dev-SERVICE \
+  --query "services[0].deployments[*].{status:status,running:runningCount,desired:desiredCount,rollout:rolloutState}" \
+  --output table
+```
+
+- **PRIMARY** = the new deployment, **ACTIVE** = the previous one
+- `rollout: IN_PROGRESS` means tasks are still starting
+- Once `running` matches `desired` and rollout shows `COMPLETED`, the deploy is done
+
+If `running` stays at 0 for more than 5 minutes, check recent service events for errors:
+
+```bash
+aws ecs describe-services --cluster ibatexas-dev --services ibatexas-dev-SERVICE \
+  --query "services[0].events[:5].message" --output text
+```
+
+### Deploy all three services
+
+```bash
+for svc in api web admin; do
+  docker build --platform linux/amd64 -t ibatexas-$svc -f apps/$svc/Dockerfile . && \
+  docker tag ibatexas-$svc:latest <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/ibatexas-$svc:latest && \
+  docker push <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/ibatexas-$svc:latest && \
+  aws ecs update-service --cluster ibatexas-dev --service ibatexas-dev-$svc --force-new-deployment
+done
+
+# Wait for all three to stabilize
+aws ecs wait services-stable --cluster ibatexas-dev \
+  --services ibatexas-dev-api ibatexas-dev-web ibatexas-dev-admin
+```
+
+> **Note:** Manual deploys skip Prisma migrations. If your changes include schema changes, run migrations first:
+> ```bash
+> pnpm --filter @ibatexas/domain exec prisma migrate deploy
+> ```
 
 ---
 
@@ -367,7 +478,19 @@ Default VPC subnets need `assign_public_ip = true` for Fargate tasks (no NAT gat
 
 ### Supabase connection timeouts
 
-Ensure ECS security groups allow outbound to `0.0.0.0/0` on ports 5432 (direct) and 6543 (pooler). Supabase is external — no VPC peering.
+Ensure ECS security groups allow outbound to `0.0.0.0/0` on port 6543 (pooler). Supabase is external — no VPC peering.
+
+### Postgres `ENETUNREACH` / IPv6 errors
+
+**Cause**: `DATABASE_URL` uses the direct Supabase host (`db.<ref>.supabase.co:5432`) which resolves to IPv6 only. ECS Fargate doesn't support IPv6 outbound by default.
+
+**Fix**: Use the Supabase **pooler** connection string instead (port 6543). The pooler hostname (`aws-0-sa-east-1.pooler.supabase.com`) has IPv4 addresses:
+
+```bash
+aws secretsmanager put-secret-value --secret-id ibatexas/dev/DATABASE_URL \
+  --secret-string "postgresql://postgres.<PROJECT_REF>:<PASSWORD>@aws-0-sa-east-1.pooler.supabase.com:6543/postgres" \
+  --region us-east-1
+```
 
 ### Cold-start deploy timeouts
 

@@ -150,7 +150,9 @@ resource "aws_ecs_task_definition" "this" {
       environment = concat([
         {
           name  = "NODE_ENV"
-          value = var.environment == "production" ? "production" : "development"
+          # Always "production" — Docker images are built with --prod (no devDependencies).
+          # Use APP_ENV (below) to distinguish dev/staging/production environments.
+          value = "production"
         },
         {
           name  = "PORT"
@@ -204,6 +206,9 @@ resource "aws_ecs_service" "this" {
     container_name   = each.key
     container_port   = each.value.port
   }
+
+  # Give containers time to boot before ALB health checks start failing
+  health_check_grace_period_seconds = 60
 
   deployment_circuit_breaker {
     enable   = true
