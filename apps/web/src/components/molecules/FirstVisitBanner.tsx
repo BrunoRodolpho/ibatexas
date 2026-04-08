@@ -1,14 +1,29 @@
 'use client'
 
+import { useTransition } from 'react'
 import { useTranslations } from 'next-intl'
-import { X } from 'lucide-react'
-import { LinkButton } from '../atoms'
+import { ArrowRight, Loader2, X } from 'lucide-react'
+import { Button } from '../atoms'
+import { useRouter } from '@/i18n/navigation'
 import { useFirstVisit } from '@/domains/session/useFirstVisit'
 import { track } from '@/domains/analytics/track'
 
+// `track` is still used by the WhatsApp click handler below.
+
+/**
+ * First-visit promotional banner.
+ *
+ * The primary CTA used to be a LinkButton labeled "Ver Cardápio" — a silent
+ * navigation with no feedback. Users perceived it as broken ("clicked Add and
+ * nothing happened"). It now uses `useTransition` so the button visibly enters
+ * a pending state during navigation, with a spinner and disabled state — the
+ * click acknowledgment users were missing.
+ */
 export function FirstVisitBanner() {
   const t = useTranslations('first_visit')
   const { isFirstVisit, dismiss } = useFirstVisit()
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
 
   if (!isFirstVisit) return null
 
@@ -18,6 +33,15 @@ export function FirstVisitBanner() {
 
   function handleWhatsAppClick() {
     track('whatsapp_cta_clicked', { source: 'first_visit_banner' })
+  }
+
+  function handlePrimaryClick() {
+    // No analytics event yet — adding one would require updating the
+    // AnalyticsEvent union + dashboard docs (CLAUDE.md rule #8). Out of scope
+    // for the visual-feedback fix; revisit when wiring acquisition funnel.
+    startTransition(() => {
+      router.push('/search?q=kit')
+    })
   }
 
   return (
@@ -30,16 +54,32 @@ export function FirstVisitBanner() {
         <X className="w-4 h-4" />
       </button>
 
-      <p className="font-display text-sm font-semibold text-charcoal-900 mb-1">
+      <p className="text-sm font-semibold text-charcoal-900 mb-1">
         {t('title')}
       </p>
       <p className="text-xs text-[var(--color-text-secondary)] mb-3 pr-8">
         {t('body')}
       </p>
       <div className="flex items-center gap-3">
-        <LinkButton href="/search?q=kit" variant="brand" size="sm">
-          {t('cta')}
-        </LinkButton>
+        <Button
+          variant="brand"
+          size="sm"
+          onClick={handlePrimaryClick}
+          disabled={isPending}
+          aria-busy={isPending}
+        >
+          {isPending ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2.5} />
+              {t('cta')}
+            </>
+          ) : (
+            <>
+              {t('cta')}
+              <ArrowRight className="w-3.5 h-3.5" strokeWidth={2.5} />
+            </>
+          )}
+        </Button>
         <a
           href={whatsappHref}
           target="_blank"

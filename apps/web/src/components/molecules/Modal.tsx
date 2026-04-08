@@ -40,7 +40,7 @@ export const Modal: React.FC<ModalProps> = ({
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-50 bg-black bg-opacity-50"
+        className="fixed inset-0 z-50 bg-[var(--color-overlay)]"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -64,7 +64,7 @@ export const Modal: React.FC<ModalProps> = ({
             {closeButton && (
               <button
                 onClick={onClose}
-                className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
+                className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500 focus-brand"
                 style={{ transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)' }}
                 aria-label={t('close')}
               >
@@ -119,7 +119,7 @@ export const Sheet: React.FC<SheetProps> = ({
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-50 bg-black/50 animate-fade-in"
+        className="fixed inset-0 z-50 bg-[var(--color-overlay)] animate-fade-in"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -153,7 +153,7 @@ export const Sheet: React.FC<SheetProps> = ({
             {closeButton && (
               <button
                 onClick={onClose}
-                className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500"
+                className="rounded-sm min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-700 hover:bg-smoke-100 transition-all duration-500 focus-brand"
                 style={{ transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)' }}
                 aria-label={t('close')}
               >

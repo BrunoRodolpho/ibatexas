@@ -118,7 +118,7 @@ export function StickyCartBar() {
             </div>
             <div className="flex flex-col items-start">
               <span className="text-sm font-medium">
-                {itemCount} {itemCount === 1 ? 'item' : 'itens'}
+                {t('sticky_cart.items', { count: itemCount })}
               </span>
               {subtotal < FREE_DELIVERY_THRESHOLD ? (
                 <span className="text-[10px] text-smoke-400">

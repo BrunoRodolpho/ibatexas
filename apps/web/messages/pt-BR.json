@@ -35,7 +35,7 @@
     "delivery_cta_title": "Entrega Rápida e Segura",
     "delivery_cta_subtitle": "Acompanhe seu pedido em tempo real",
     "delivery_cta_badge": "Sem espera",
-    "stats_hours_value": "16h",
+    "stats_hours_value": "14h",
     "stats_hours_label": "Defumação lenta",
     "stats_ingredients_value": "100%",
     "stats_ingredients_label": "Ingredientes selecionados",
@@ -66,7 +66,7 @@
     "section_order": "ENCOMENDAS",
     "featured_badge_new": "Novo",
     "featured_badge_popular": "Mais Vendido",
-    "featured_primary_title": "Costela Defumada 16h",
+    "featured_primary_title": "Costela Defumada 14h",
     "featured_primary_desc": "Defumação lenta em madeira de carvalho. Serve até 4 pessoas.",
     "featured_primary_price": "R$ 189,00",
     "featured_secondary_title": "Brisket Angus",
@@ -80,7 +80,7 @@
     "process_step1_title": "Seleção",
     "process_step1_desc": "Cortes nobres de fornecedores certificados.",
     "process_step2_title": "Defumação",
-    "process_step2_desc": "16 horas em defumador offset com madeira de carvalho.",
+    "process_step2_desc": "14 horas em defumador offset com madeira de carvalho.",
     "process_step3_title": "Embalagem",
     "process_step3_desc": "Selada a vácuo, mantém frescor por 7 dias.",
     "process_step4_title": "Entrega",
@@ -553,6 +553,7 @@
   },
   "sticky_cart": {
     "view": "Ver Carrinho",
+    "items": "{count, plural, one {# item} other {# itens}}",
     "free_delivery_progress": "Falta {remaining} para frete grátis",
     "free_delivery_reached": "Frete grátis!",
     "estimated_delivery": "Entrega estimada: ~{minutes} min",
@@ -622,7 +623,8 @@
   },
   "upsell": {
     "also_add": "Adicionar também?",
-    "add": "Adicionar"
+    "add": "Adicionar",
+    "dismiss_suggestion": "Fechar sugestão"
   },
   "reviews_section": {
     "title": "O Que Nossos Clientes Dizem",

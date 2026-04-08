@@ -312,6 +312,12 @@
   .surface-elevated { @apply bg-white shadow-md; }
   .surface-inverted { @apply bg-charcoal-900 text-smoke-100; }
 
+  /* Shared focus-visible ring for interactive atoms — keeps a11y contracts
+     consistent across Button/QuantitySelector/WishlistButton/Modal close. */
+  .focus-brand {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-smoke-50;
+  }
+
   /* Steam effect — CSS-only rising wisps */
   .steam-effect {
     position: relative;

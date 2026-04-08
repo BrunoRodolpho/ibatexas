@@ -68,10 +68,13 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
   const displayImage = product.imageUrl || product.images?.[0] || null
 
   // ── Inline variant (compact, for search page) ──────────────────
+  // Whole card is clickable via the Link's after:absolute pseudo-element on
+  // the title — same pattern as ProductCardVertical. CTA button sits above
+  // the click overlay via `relative z-10`.
   if (variant === 'inline') {
     return (
       <div className="mb-4">
-        <div className="surface-card rounded-card overflow-hidden">
+        <div className="group relative surface-card rounded-card overflow-hidden">
           <div className="flex items-center gap-3 p-3 sm:p-4">
             <div className="relative w-16 h-16 flex-shrink-0 rounded-sm overflow-hidden bg-smoke-100">
               {displayImage ? (
@@ -97,8 +100,11 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
                   {t('pitmaster_pick.label')}
                 </span>
               </div>
-              <h3 className="font-display text-sm font-medium text-charcoal-900 leading-snug truncate">
-                <Link href={`/products/${product.id}`}>
+              <h3 className="text-sm font-semibold text-charcoal-900 leading-snug truncate">
+                <Link
+                  href={`/loja/produto/${product.id}`}
+                  className="after:absolute after:inset-0 after:content-['']"
+                >
                   {product.title}
                 </Link>
               </h3>
@@ -107,7 +113,7 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
               </span>
             </div>
             {onAddToCart && (
-              <div className="flex-shrink-0">
+              <div className="flex-shrink-0 relative z-10">
                 <button
                   onClick={handleQuickAdd}
                   className={`inline-flex items-center gap-1 text-xs font-medium px-3 py-2 rounded-sm transition-all duration-300 ease-luxury active:scale-95 ${
@@ -133,9 +139,11 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
   }
 
   // ── Card variant (default, homepage) ───────────────────────────
+  // Click target = the entire card. Title's <Link> uses after:absolute
+  // pseudo-element to fill the parent. CTA button sits above via z-10.
   return (
     <section>
-      <div className="surface-card rounded-card overflow-hidden">
+      <div className="group relative surface-card rounded-card overflow-hidden">
         <div className="flex flex-col sm:flex-row">
           {/* Image side */}
           <div className="relative w-full sm:w-48 h-48 sm:h-auto flex-shrink-0 overflow-hidden bg-smoke-100">
@@ -148,7 +156,7 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
                   sizes="(max-width: 640px) 100vw, 192px"
                   placeholder="blur"
                   blurDataURL={BLUR_PLACEHOLDER}
-                  className="object-cover"
+                  className="object-cover transition-transform duration-800 ease-luxury group-hover:scale-[1.03]"
                 />
                 <div className="absolute inset-0 bg-brand-50/5 mix-blend-multiply pointer-events-none" />
               </>
@@ -170,12 +178,15 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
             </div>
 
             {/* Product info */}
-            <h3 className="font-display text-display-2xs font-semibold text-charcoal-900 tracking-display mb-1">
-              <Link href={`/products/${product.id}`}>
+            <h3 className="font-display text-display-2xs font-semibold text-charcoal-900 tracking-display mb-1 group-hover:text-charcoal-700 transition-colors duration-500">
+              <Link
+                href={`/loja/produto/${product.id}`}
+                className="after:absolute after:inset-0 after:content-['']"
+              >
                 {product.title}
               </Link>
             </h3>
-            <p className="text-sm text-smoke-500 mb-3 font-display italic">
+            <p className="text-sm text-smoke-500 mb-3 italic">
               {product.description || t('pitmaster_pick.description')}
             </p>
 
