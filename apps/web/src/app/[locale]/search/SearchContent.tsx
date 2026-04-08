@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { ProductGrid } from '@/components/organisms'
+import { Container } from '@/components/atoms'
 import { useUIStore } from '@/domains/ui'
 import { useCartStore } from '@/domains/cart'
 import { useProducts } from '@/domains/product'
@@ -264,8 +265,8 @@ export default function SearchContent() {
     <div className="min-h-[60vh] bg-smoke-50">
       {/* ── Category row + filter trigger — sticky below header ── */}
       <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200">
-        <div className="relative max-w-[1200px] mx-auto">
-          <div className="flex items-center gap-1 px-4 sm:px-6 py-2">
+        <Container padding="none" className="relative">
+          <div className="flex items-center gap-1 px-5 sm:px-6 lg:px-8 py-2">
             <div className="flex-1 overflow-hidden">
               <SearchCategoryRow
                 categories={CATEGORIES}
@@ -304,7 +305,7 @@ export default function SearchContent() {
                 aria-hidden="true"
               />
               {/* Unified single-row filter panel */}
-              <div className="absolute top-full left-0 right-0 z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 sm:px-6 py-2.5 animate-fade-up">
+              <div className="absolute top-full left-0 right-0 z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-5 sm:px-6 lg:px-8 py-2.5 animate-fade-up">
                 <div className="flex flex-wrap items-center gap-1.5">
                   {/* Tags label + pills */}
                   <span className="text-[10px] font-medium uppercase tracking-editorial text-smoke-400 mr-0.5">
@@ -316,10 +317,10 @@ export default function SearchContent() {
                       <button
                         key={tag.id}
                         onClick={() => handleTagToggle(tag.id)}
-                        className={`rounded-full border px-2 py-0.5 text-[11px] transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-1 ${
+                        className={`rounded-full border px-3 py-1.5 text-xs min-h-[36px] transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-1 ${
                           isActive
                             ? 'border-charcoal-900 bg-charcoal-900 text-smoke-50'
-                            : 'border-smoke-200 text-charcoal-700 hover:border-smoke-300'
+                            : 'border-smoke-200 bg-smoke-100 text-charcoal-700 hover:border-smoke-300'
                         }`}
                       >
                         {tag.label}
@@ -340,10 +341,10 @@ export default function SearchContent() {
                       <button
                         key={opt.value}
                         onClick={() => handleSortChange(opt.value)}
-                        className={`rounded-full border px-2 py-0.5 text-[11px] transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-1 ${
+                        className={`rounded-full border px-3 py-1.5 text-xs min-h-[36px] transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-charcoal-900 focus-visible:ring-offset-1 ${
                           isActive
                             ? 'border-charcoal-900 bg-charcoal-900 text-smoke-50'
-                            : 'border-smoke-200 text-charcoal-700 hover:border-smoke-300'
+                            : 'border-smoke-200 bg-smoke-100 text-charcoal-700 hover:border-smoke-300'
                         }`}
                       >
                         {opt.label}
@@ -368,10 +369,10 @@ export default function SearchContent() {
               </div>
             </>
           )}
-        </div>
+        </Container>
       </div>
 
-      <div className="max-w-[1200px] mx-auto px-4 sm:px-6">
+      <Container className="py-16 lg:py-24">
         {/* ══════════════════════════════════════════════════════════
             BROWSE MODE — discovery-first layout
             ══════════════════════════════════════════════════════════ */}
@@ -379,7 +380,7 @@ export default function SearchContent() {
           <>
             {/* 1. Pitmaster Recomenda — card variant, decent size */}
             {pitmasterProduct && (
-              <div className="mt-8 mb-6">
+              <div className="mb-6">
                 <PitmasterPick
                   product={pitmasterProduct}
                   onAddToCart={handleAddToCart}
@@ -428,8 +429,8 @@ export default function SearchContent() {
           </div>
         )}
         {!isZeroState && !isLoading && (
-          <div className="flex items-center justify-between mt-2 mb-3">
-            <p className="text-sm text-smoke-400">
+          <div className="flex items-center justify-between mt-2 mb-8">
+            <p className="text-base font-medium text-smoke-500">
               {allProducts.length} {allProducts.length === 1 ? 'produto' : 'produtos'}
               {searchQuery && ` para "${searchQuery}"`}
             </p>
@@ -505,7 +506,7 @@ export default function SearchContent() {
             </>
           )}
         </div>
-      </div>
+      </Container>
 
       {/* Filter dropdown is now inline above (inside the sticky bar) */}
     </div>

@@ -13,9 +13,14 @@ import { BLUR_PLACEHOLDER } from '@/lib/constants'
 import { formatBRL } from '@/lib/format'
 import type { ProductDTO } from '@ibatexas/types'
 
-// Was 6000 — too fast for users to read + react. Bumped to 9s and the bar
-// pauses on hover so the user controls dismissal.
-const AUTO_DISMISS_MS = 9000
+// Was 6000, then 9000. Audit P1-3 bumped to 12s after cases where users on
+// slower connections missed the toast entirely. Bar pauses on hover / focus,
+// so dwelling readers are still in full control of dismissal.
+const AUTO_DISMISS_MS = 12000
+// Debounce window: collapses rapid triggerCategory changes (e.g. two
+// back-to-back adds) into a single cross-sell fetch so we don't flood the
+// backend while the cart is mid-update.
+const TRIGGER_DEBOUNCE_MS = 300
 
 /**
  * Post-add-to-cart upsell toast.
@@ -32,7 +37,8 @@ export function UpsellToast() {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [isPaused, setIsPaused] = useState(false)
 
-  // Fetch a cross-sell product when trigger fires
+  // Fetch a cross-sell product when trigger fires — debounced so a burst of
+  // add-to-cart actions results in a single fetch.
   useEffect(() => {
     if (!triggerCategory) return
 
@@ -43,28 +49,33 @@ export function UpsellToast() {
     }
 
     const controller = new AbortController()
-    apiFetch<{ items?: ProductDTO[]; products?: ProductDTO[] }>(
-      `/api/products?categoryHandle=${crossCategory}&limit=1`,
-      { signal: controller.signal },
-    )
-      .then((res) => {
-        const items = res.items ?? res.products ?? []
-        if (items.length > 0) {
-          const p = items[0]
-          setUpsellProduct({
-            productId: p.id,
-            title: p.title,
-            price: p.price,
-            imageUrl: p.imageUrl || p.images?.[0],
-          })
-          track('upsell_toast_shown', { productId: p.id, crossCategory })
-        } else {
-          dismissUpsell()
-        }
-      })
-      .catch(() => dismissUpsell())
+    const debounceTimer = setTimeout(() => {
+      apiFetch<{ items?: ProductDTO[]; products?: ProductDTO[] }>(
+        `/api/products?categoryHandle=${crossCategory}&limit=1`,
+        { signal: controller.signal },
+      )
+        .then((res) => {
+          const items = res.items ?? res.products ?? []
+          if (items.length > 0) {
+            const p = items[0]
+            setUpsellProduct({
+              productId: p.id,
+              title: p.title,
+              price: p.price,
+              imageUrl: p.imageUrl || p.images?.[0],
+            })
+            track('upsell_toast_shown', { productId: p.id, crossCategory })
+          } else {
+            dismissUpsell()
+          }
+        })
+        .catch(() => dismissUpsell())
+    }, TRIGGER_DEBOUNCE_MS)
 
-    return () => controller.abort()
+    return () => {
+      clearTimeout(debounceTimer)
+      controller.abort()
+    }
   }, [triggerCategory, setUpsellProduct, dismissUpsell])
 
   // Auto-dismiss timer — pauses while hovered so the user has time to read.
@@ -101,7 +112,13 @@ export function UpsellToast() {
 
   return (
     <div
-      className="fixed bottom-[7.5rem] sm:bottom-20 left-4 right-4 sm:left-auto sm:right-6 sm:max-w-sm z-50 animate-fade-up"
+      className="fixed left-4 right-4 sm:left-auto sm:right-6 sm:max-w-sm z-50 animate-fade-up"
+      style={{
+        // Sits above the StickyCartBar (~4.5rem tall) + safe-area + gap, so
+        // it never collides with the sticky CTA on small phones. See
+        // audit P1-3.
+        bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)',
+      }}
       onMouseEnter={() => setIsPaused(true)}
       onMouseLeave={() => setIsPaused(false)}
       onFocus={() => setIsPaused(true)}
