@@ -129,7 +129,7 @@ export function UpsellToast() {
       aria-atomic="true"
     >
       <div className="surface-card rounded-card overflow-hidden shadow-lg">
-        <div className="p-2.5 flex items-center gap-2.5">
+        <div className="p-3 flex items-center gap-3">
           {/* Product thumbnail */}
           {upsellProduct.imageUrl && (
             <div className="relative w-9 h-9 rounded-sm overflow-hidden flex-shrink-0 bg-smoke-100">

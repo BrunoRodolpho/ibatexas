@@ -12,6 +12,11 @@ interface WishlistButtonProps {
   readonly productId: string
   readonly className?: string
   readonly size?: 'sm' | 'md'
+  /** Optional enrichment for analytics — call-sites with the data in hand
+   *  should pass it so wishlist_toggled events can be segmented. */
+  readonly price?: number
+  readonly title?: string
+  readonly categoryHandle?: string
 }
 
 /**
@@ -24,7 +29,7 @@ interface WishlistButtonProps {
  *   the heart visually never flipped state. We now subscribe directly to
  *   `s.items.includes(productId)` so the component re-renders on every toggle.
  */
-export function WishlistButton({ productId, className, size = 'md' }: WishlistButtonProps) {
+export function WishlistButton({ productId, className, size = 'md', price, title, categoryHandle }: WishlistButtonProps) {
   const t = useTranslations()
   const { addToast } = useUIStore()
   const isFavorite = useWishlistStore((s) => s.items.includes(productId))
@@ -49,7 +54,13 @@ export function WishlistButton({ productId, className, size = 'md' }: WishlistBu
     setIsPopping(true)
     if (popTimerRef.current) clearTimeout(popTimerRef.current)
     popTimerRef.current = setTimeout(() => setIsPopping(false), 320)
-    track('wishlist_toggled', { productId, action: wasFavorite ? 'removed' : 'added' })
+    track('wishlist_toggled', {
+      productId,
+      action: wasFavorite ? 'removed' : 'added',
+      ...(price !== undefined && { price }),
+      ...(title && { title }),
+      ...(categoryHandle && { categoryHandle }),
+    })
     addToast(
       wasFavorite ? t('wishlist.removed') : t('wishlist.added'),
       'success',

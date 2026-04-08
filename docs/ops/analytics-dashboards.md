@@ -78,10 +78,12 @@ flowchart TD
 | Event | Trigger | Properties |
 |-------|---------|------------|
 | `quick_add_clicked` | "+" button on ProductCard | `productId`, `source` |
-| `add_to_cart` | Item added to cart | `productId`, `variantId`, `quantity`, `source` (pdp\|listing\|cross_sell) |
-| `sticky_cta_used` | Mobile sticky CTA tap | `productId`, `quantity` |
+| `quick_add_failed` | ProductCard quick-add handler rejected / threw | `productId`, `source`, `reason` |
+| `add_to_cart` | Item added to cart | `productId`, `variantId`, `quantity`, `source` (pdp\|pdp_sticky\|listing\|cross_sell) |
+| `sticky_cta_used` | Mobile sticky CTA tap | `productId`, `quantity`, `source` (pdp_sticky) |
 | `cart_drawer_opened` | Cart drawer opens | — |
 | `cart_abandonment_nudge` | Abandonment nudge shown to returning user with stale cart | `cartId`, `itemCount` |
+| `coupon_validation_failed` | Coupon code rejected by /api/coupons/validate or request errored | `code`, `reason` (invalid\|error) |
 | `cross_sell_viewed` | Cross-sell section enters viewport | `productId`, `suggestedIds[]` |
 | `cross_sell_added` | Cross-sell item added to cart | `productId`, `suggestedId` |
 | `also_added_viewed` | "Also added" section enters viewport (PDP) | `productId`, `suggestedIds[]` |
@@ -111,7 +113,7 @@ flowchart TD
 
 | Event | Trigger | Properties |
 |-------|---------|------------|
-| `wishlist_toggled` | User adds/removes product from wishlist | `productId`, `action` (add\|remove) |
+| `wishlist_toggled` | User adds/removes product from wishlist | `productId`, `action` (add\|remove), optional `price`, `title`, `categoryHandle` |
 
 ### Search Events
 

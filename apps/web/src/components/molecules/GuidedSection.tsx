@@ -128,14 +128,14 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
           <>
             <button
               onClick={() => setCurrentIndex((i) => (i - 1 + featured.length) % featured.length)}
-              className="absolute left-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm shadow-md flex items-center justify-center text-charcoal-900 hover:bg-white transition-all"
+              className="absolute left-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm shadow-md flex items-center justify-center text-charcoal-900 hover:bg-white active:scale-95 transition-all focus-brand"
               aria-label={t('common.previous')}
             >
               <ChevronLeft className="w-4 h-4" strokeWidth={2} />
             </button>
             <button
               onClick={() => setCurrentIndex((i) => (i + 1) % featured.length)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm shadow-md flex items-center justify-center text-charcoal-900 hover:bg-white transition-all"
+              className="absolute right-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm shadow-md flex items-center justify-center text-charcoal-900 hover:bg-white active:scale-95 transition-all focus-brand"
               aria-label={t('common.next')}
             >
               <ChevronRight className="w-4 h-4" strokeWidth={2} />
@@ -146,7 +146,7 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
 
       {/* Dot indicators */}
       {featured.length > 1 && (
-        <div className="flex items-center justify-center gap-1.5 mt-3">
+        <div className="flex items-center justify-center gap-2 mt-3">
           {featured.map((p, i) => (
             <button
               key={`dot-${p.id}`}

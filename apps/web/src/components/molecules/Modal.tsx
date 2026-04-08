@@ -53,11 +53,11 @@ export const Modal: React.FC<ModalProps> = ({
       >
         <div
           className={clsx(
-            'bg-smoke-50 rounded-sm shadow-xl max-h-screen overflow-y-auto w-full mx-4 pointer-events-auto',
+            'surface-card rounded-card shadow-xl max-h-screen overflow-y-auto w-full mx-4 pointer-events-auto',
             sizeClasses[size]
           )}
         >
-          <div className="sticky top-0 bg-smoke-50 border-b border-smoke-200 px-6 py-4 flex items-center justify-between rounded-t-sm">
+          <div className="sticky top-0 bg-smoke-50 border-b border-smoke-200 px-6 py-4 flex items-center justify-between rounded-t-card">
             <h2 id="modal-title" className="text-base font-semibold text-charcoal-900">
               {title}
             </h2>
@@ -78,7 +78,7 @@ export const Modal: React.FC<ModalProps> = ({
           <div className="px-6 py-4">{children}</div>
 
           {footer && (
-            <div className="border-t border-smoke-200 px-6 py-4 bg-smoke-100 rounded-b-sm">
+            <div className="border-t border-smoke-200 px-6 py-4 bg-smoke-100 rounded-b-card">
               {footer}
             </div>
           )}
@@ -138,7 +138,7 @@ export const Sheet: React.FC<SheetProps> = ({
         className={clsx(
           'fixed z-50 bg-smoke-50 shadow-xl p-0 border-none',
           position === 'bottom'
-            ? 'bottom-0 left-0 right-0 max-h-[85vh] rounded-t-lg animate-slide-in-bottom'
+            ? 'bottom-0 left-0 right-0 max-h-[85vh] rounded-t-card animate-slide-in-bottom'
             : 'top-0 bottom-0 w-[90vw] max-w-sm h-full',
           position === 'right' && 'right-0 animate-slide-in-right',
           position === 'left' && 'left-0 animate-slide-in-left',

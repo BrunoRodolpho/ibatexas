@@ -28,20 +28,23 @@ export default function CartContent() {
 
   const handleApplyCoupon = async () => {
     if (!couponInput.trim()) return
+    const code = couponInput.toUpperCase()
     try {
       const res = await apiFetch<{ valid: boolean; discount?: number }>('/api/coupons/validate', {
         method: 'POST',
-        body: JSON.stringify({ code: couponInput.toUpperCase() }),
+        body: JSON.stringify({ code }),
       })
       if (res.valid) {
-        useCartStore.getState().setCouponCode(couponInput.toUpperCase())
+        useCartStore.getState().setCouponCode(code)
         setCouponDiscount(res.discount ?? 0)
         addToast(t('cart.coupon_applied', { code: couponInput }), 'success')
         setShowCouponModal(false)
       } else {
+        track('coupon_validation_failed', { code, reason: 'invalid' })
         addToast(t('cart.coupon_invalid'), 'error')
       }
     } catch {
+      track('coupon_validation_failed', { code, reason: 'error' })
       addToast(t('cart.coupon_error'), 'error')
     }
   }

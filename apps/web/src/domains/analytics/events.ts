@@ -20,6 +20,7 @@ export type AnalyticsEvent =
   // ── Cart ───────────────────────────────────────────────────────
   | 'cart_drawer_opened'
   | 'cart_abandonment_nudge'
+  | 'coupon_validation_failed'
   // ── Checkout ───────────────────────────────────────────────────
   | 'checkout_started'
   | 'checkout_step_completed'
