@@ -34,7 +34,7 @@
     "overrideNotes": {
       "minimatch, rollup, glob": "vitest/vite toolchain — review on vite 6 upgrade",
       "@mikro-orm/core": "medusa transitive fix — GHSA-gwhv-j974-6fxm / GHSA-qpfv-44f3-qqx6 SQL injection",
-      "path-to-regexp": "medusa>express transitive fix — GHSA-37ch-88jc-xwx2 ReDoS",
+      "express>path-to-regexp": "medusa>express transitive fix — GHSA-37ch-88jc-xwx2 ReDoS. Scoped (not global) because @medusajs/framework declares path-to-regexp ^8.2.0 and uses the v6+ named-export API; forcing 0.1.13 globally crashes commerce at startup with 'pathToRegexp is not a function'. next@16 also declares 6.3.0 and would be silently downgraded. Remove when medusa drops express 4.",
       "lodash": "medusa/prisma transitive fix — GHSA-r5fr-rjxr-66jc code injection via _.template",
       "picomatch": "eslint-config-next/vitest transitive fix — GHSA-c2c7-rcm5-vvqj ReDoS",
       "@types/react, @types/react-dom": "medusa pulls React 18 types — force single version to fix JSX portability errors",
@@ -47,7 +47,7 @@
       "rollup": "4.59.0",
       "glob": "13.0.6",
       "@mikro-orm/core": "6.6.10",
-      "path-to-regexp": "0.1.13",
+      "express>path-to-regexp": "0.1.13",
       "lodash": "4.18.1",
       "picomatch@<3": "2.3.2",
       "picomatch@>=4": "4.0.4",
