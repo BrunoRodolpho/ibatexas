@@ -1,10 +1,10 @@
 'use client'
 
 import React from 'react'
-import { Link } from '@/i18n/navigation'
+import { Link, useRouter } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
 
-import { Heading, Text, Button, RadioGroup } from '@/components/atoms'
+import { Heading, Text, Button, RadioGroup, Container } from '@/components/atoms'
 import { CartItem, Modal } from '@/components/molecules'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
@@ -13,6 +13,7 @@ import { formatBRL } from '@/lib/format'
 import { track } from '@/domains/analytics'
 export default function CartContent() {
   const t = useTranslations()
+  const router = useRouter()
   const { items, deliveryType, couponCode, deliveryFee: storeDeliveryFee, getTotal, getItemCount, removeItem, updateItem, setDeliveryType } =
     useCartStore()
   const { addToast } = useUIStore()
@@ -46,9 +47,10 @@ export default function CartContent() {
   }
 
   const handleCheckout = () => {
+    // Store default is 'delivery' (see cart.store.ts). We still guard here
+    // for persisted-null legacy sessions, but the CTA is no longer disabled.
     if (!deliveryType) {
-      addToast(t('cart.select_delivery_type'), 'warning')
-      return
+      setDeliveryType('delivery')
     }
     track('checkout_started', {
       cartTotal: total,
@@ -56,6 +58,7 @@ export default function CartContent() {
       deliveryType,
     })
     addToast(t('cart.checkout_progress'), 'success')
+    router.push('/checkout')
   }
 
   if (items.length === 0) {
@@ -78,7 +81,8 @@ export default function CartContent() {
 
   return (
     <div className="min-h-screen bg-smoke-50">
-      <div className="max-w-6xl mx-auto px-4 py-6">
+      {/* pb-32 lg:pb-6 leaves room for the mobile sticky CTA below. */}
+      <Container padding="tight" className="py-6 pb-32 lg:pb-6">
         {/* Header */}
         <div className="mb-6">
           <Heading as="h1" variant="h2" className="font-display">
@@ -101,7 +105,7 @@ export default function CartContent() {
 
           {/* Summary Sidebar */}
           <div className="lg:col-span-1">
-            <div className="bg-smoke-50 rounded-sm border border-smoke-200 p-6 sticky top-4 space-y-4">
+            <div className="bg-smoke-50 rounded-sm border border-smoke-200 p-6 sticky top-[72px] space-y-4">
               {/* Delivery Type */}
               <div>
                 <Heading as="h3" variant="h5" className="mb-3">
@@ -174,7 +178,6 @@ export default function CartContent() {
                 size="lg"
                 className="w-full"
                 onClick={handleCheckout}
-                disabled={!deliveryType}
               >
                 {t('cart.proceed_checkout')}
               </Button>
@@ -188,6 +191,33 @@ export default function CartContent() {
             </div>
           </div>
         </div>
+      </Container>
+
+      {/*
+        Mobile sticky checkout bar — pinned bottom on < lg.
+        Desktop already has the sidebar with `sticky top-4`, but on mobile the
+        sidebar collapses below the items list, putting the checkout button
+        far below the fold. This bar surfaces total + CTA at all times.
+      */}
+      <div className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-smoke-50 border-t border-smoke-200 shadow-[0_-12px_28px_-16px_rgba(0,0,0,0.18)]">
+        <Container padding="tight" className="py-3 flex items-center gap-3">
+          <div className="flex flex-col">
+            <Text variant="small" textColor="muted">
+              {t('cart.total')}
+            </Text>
+            <Text className="font-display text-lg font-semibold text-charcoal-900 tabular-nums leading-none">
+              {formatBRL(total)}
+            </Text>
+          </div>
+          <Button
+            variant="brand"
+            size="lg"
+            className="flex-1"
+            onClick={handleCheckout}
+          >
+            {t('cart.proceed_checkout')}
+          </Button>
+        </Container>
       </div>
 
       {/* Coupon Modal */}

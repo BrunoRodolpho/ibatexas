@@ -81,7 +81,11 @@ export const useCartStore = create<CartState>()(
   persist(
     (set, get) => ({
       items: [],
-      deliveryType: null,
+      // Default to 'delivery' — the dominant mode for this storefront (audit
+      // P0-3). Previously `null` caused the checkout CTA to be silently
+      // disabled on mobile until the user scrolled down and discovered the
+      // radio group, producing hard drop-offs.
+      deliveryType: 'delivery',
       termsAccepted: false,
 
       addItem: (product, quantity, specialInstructions, variant) => {
@@ -128,7 +132,7 @@ export const useCartStore = create<CartState>()(
       clearCart: () =>
         set({
           items: [],
-          deliveryType: null,
+          deliveryType: 'delivery',
           couponCode: undefined,
           selectedAddress: undefined,
           selectedTimeSlot: undefined,

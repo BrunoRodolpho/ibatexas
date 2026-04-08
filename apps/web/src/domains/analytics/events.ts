@@ -10,6 +10,7 @@
 export type AnalyticsEvent =
   // ── Storefront ─────────────────────────────────────────────────
   | 'quick_add_clicked'
+  | 'quick_add_failed'
   | 'add_to_cart'
   | 'sticky_cta_used'
   | 'pdp_viewed'

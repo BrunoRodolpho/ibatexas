@@ -4,7 +4,7 @@ import { useTranslations } from 'next-intl'
 import { useProductDetail, useProducts, tagToBadgeVariant, getCrossSellCategory } from '@/domains/product'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
-import { Heading, Text, Button, Badge, LinkButton } from '@/components/atoms'
+import { Heading, Text, Button, Badge, LinkButton, Container } from '@/components/atoms'
 import { SizeSelector, ShippingEstimate, QuantitySelector, DeliveryPromise } from '@/components/molecules'
 import { StickyBottomBar } from '@/components/molecules/StickyBottomBar'
 import { ProductGrid } from '@/components/organisms'
@@ -27,7 +27,7 @@ interface PDPContentProps {
 // ── Skeleton Loading ─────────────────────────────────────────────────────
 function PDPSkeleton() {
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6">
+    <Container size="xl">
       {/* Breadcrumb skeleton */}
       <div className="mb-6 flex gap-2">
         <Skeleton variant="text" className="h-3 w-12" />
@@ -68,7 +68,7 @@ function PDPSkeleton() {
           </div>
         </div>
       </div>
-    </div>
+    </Container>
   )
 }
 
@@ -83,9 +83,11 @@ export default function PDPContent({ productId }: PDPContentProps) {
   const [isAdding, setIsAdding] = useState(false)
   const [showStickyCTA, setShowStickyCTA] = useState(false)
   const [stickyShown, setStickyShown] = useState(false)
+  const [variantShake, setVariantShake] = useState(false)
   const mainCTARef = useRef<HTMLButtonElement>(null)
   const storyRef = useRef<HTMLDivElement>(null)
   const crossSellRef = useRef<HTMLDivElement>(null)
+  const variantPickerRef = useRef<HTMLDivElement>(null)
 
   // ── Track PDP view ──────────────────────────────────────────────────
   useEffect(() => {
@@ -201,7 +203,18 @@ export default function PDPContent({ productId }: PDPContentProps) {
   const { prefix: pricePrefix, value: priceValue } = splitBRL(currentPrice)
 
   const handleAddToCart = async () => {
-    if (!selectedVariant) return
+    // Guard: when variants exist but none selected, scroll the picker into
+    // view and shake it instead of silently no-op'ing a disabled button
+    // (audit P0-2). Button is kept enabled precisely so mobile users get
+    // this feedback on tap.
+    if (!selectedVariant) {
+      if (hasVariants) {
+        variantPickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        setVariantShake(true)
+        setTimeout(() => setVariantShake(false), 500)
+      }
+      return
+    }
 
     setIsAdding(true)
     try {
@@ -233,7 +246,10 @@ export default function PDPContent({ productId }: PDPContentProps) {
 
   return (
     <div>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6">
+      {/* Canonical `default` rhythm so the PDP top breathes the same as
+          /loja and the homepage sections. Was relying on the breadcrumb's
+          `mb-6` for top space, which felt abrupt after the loja list. */}
+      <Container size="xl" className="py-16 lg:py-24">
         {/* ── Breadcrumb ───────────────────────────────────────────────── */}
         <nav className="mb-6 flex items-center gap-1.5 text-xs text-smoke-400" aria-label="Breadcrumb">
           <Link href="/" className="hover:text-charcoal-900 transition-colors duration-300">{t('common.home')}</Link>
@@ -256,7 +272,18 @@ export default function PDPContent({ productId }: PDPContentProps) {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
           {/* ── Product Images ──────────────────────────────────────── */}
-          <div className="space-y-4">
+          {/* Wishlist heart sits on top of the gallery (top-right) so it
+              doesn't compete with the primary "Adicionar ao Carrinho" CTA
+              below. Matches the placement on every product card.
+
+              `lg:sticky lg:top-24 lg:self-start` pins the gallery while the
+              right column scrolls — without `self-start` the grid would
+              stretch the cell to match the right column's height and break
+              sticky. Classic Amazon/Shopify PDP pattern. */}
+          <div className="relative space-y-4 lg:sticky lg:top-24 lg:self-start">
+            <div className="absolute top-3 right-3 z-10">
+              <WishlistButton productId={productId} />
+            </div>
             <MediaGallery
               images={product.images ?? []}
               thumbnail={product.imageUrl}
@@ -286,7 +313,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
             <div>
               <div className="flex items-baseline">
                 <span className="text-base text-smoke-400">{pricePrefix}</span>
-                <span className="text-2xl font-semibold text-charcoal-900 tabular-nums ml-0.5">
+                <span className="text-3xl font-semibold text-charcoal-900 tabular-nums ml-0.5">
                   {priceValue}
                 </span>
               </div>
@@ -325,11 +352,16 @@ export default function PDPContent({ productId }: PDPContentProps) {
 
             {/* Size Selection */}
             {hasVariants && (
-              <SizeSelector
-                variants={product.variants}
-                selectedVariant={selectedVariantId}
-                onVariantChange={setSelectedVariantId}
-              />
+              <div
+                ref={variantPickerRef}
+                className={variantShake ? 'animate-shake' : undefined}
+              >
+                <SizeSelector
+                  variants={product.variants}
+                  selectedVariant={selectedVariantId}
+                  onVariantChange={setSelectedVariantId}
+                />
+              </div>
             )}
 
             {/* ── Quantity + Add to Cart ──────────────────────────────── */}
@@ -344,25 +376,26 @@ export default function PDPContent({ productId }: PDPContentProps) {
                 />
               </div>
 
+              {/* Hint sits ABOVE the CTA so users see WHY the action won't
+                  proceed before tapping (audit P0-2). */}
+              {!selectedVariant && hasVariants && (
+                <Text variant="small" className="text-brand-500">
+                  {t('product.select_size')}
+                </Text>
+              )}
+
               <div className="flex items-center gap-3">
                 <Button
                   ref={mainCTARef}
                   onClick={handleAddToCart}
-                  disabled={!selectedVariant || isAdding}
+                  disabled={isAdding}
                   isLoading={isAdding}
                   className="flex-1"
                   size="lg"
                 >
                   {isAdding ? t('product.adding') : t('product.add_to_cart')}
                 </Button>
-                <WishlistButton productId={productId} />
               </div>
-
-              {!selectedVariant && hasVariants && (
-                <Text variant="small" className="text-brand-500 text-center">
-                  {t('product.select_size')}
-                </Text>
-              )}
             </div>
 
             {/* Product Description */}
@@ -408,11 +441,14 @@ export default function PDPContent({ productId }: PDPContentProps) {
             )}
           </div>
         </div>
-      </div>
+      </Container>
 
       {/* ── Storytelling Section (full-bleed) — Dynamic content ──────────── */}
-      <div ref={storyRef} className="mt-16 bg-smoke-100 grain-overlay">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-16">
+      {/* Background shift (smoke-100) is the visual section break — no margin
+          needed between this and the main grid. Snaps to `loose` rhythm
+          since this is the emphasized story moment for the product. */}
+      <div ref={storyRef} className="bg-smoke-100 grain-overlay">
+        <Container size="xl" className="py-24 lg:py-32">
           {/* Brand accent divider */}
           <div className="h-px w-16 bg-brand-500 mb-8" />
 
@@ -492,12 +528,13 @@ export default function PDPContent({ productId }: PDPContentProps) {
               </Text>
             </div>
           </div>
-        </div>
+        </Container>
       </div>
 
       {/* ── "Also Added" Section (feature-flagged) ──────────────────────── */}
       {alsoAddedProducts.length > 0 && (
-        <div ref={alsoAddedRef} className="max-w-7xl mx-auto px-4 sm:px-6 pt-16">
+        <div ref={alsoAddedRef}>
+        <Container size="xl" className="py-16 lg:py-24">
           <div className="mb-8">
             <div className="h-px w-16 bg-brand-500 mb-6" />
             <Heading as="h2" variant="h2" className="font-display text-display-sm text-charcoal-900">
@@ -522,12 +559,14 @@ export default function PDPContent({ productId }: PDPContentProps) {
             }}
             getProductHref={(p) => `/loja/produto/${p.id}`}
           />
+        </Container>
         </div>
       )}
 
       {/* ── Cross-Sell Section ─────────────────────────────────────────────── */}
       {crossSellProducts.length > 0 && (
-        <div ref={crossSellRef} className="max-w-7xl mx-auto px-4 sm:px-6 py-16">
+        <div ref={crossSellRef}>
+        <Container size="xl" className="py-16 lg:py-24">
           <div className="mb-8">
             <div className="h-px w-16 bg-brand-500 mb-6" />
             <Heading as="h2" variant="h2" className="font-display text-display-sm text-charcoal-900">
@@ -541,17 +580,18 @@ export default function PDPContent({ productId }: PDPContentProps) {
             onAddToCart={handleCrossSellAdd}
             getProductHref={(p) => `/loja/produto/${p.id}`}
           />
+        </Container>
         </div>
       )}
 
       {/* ── People Also Ordered — cart-aware cross-sell ──────────────────── */}
       {allProductsPool.length > 0 && (
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-8">
+        <Container size="xl" className="py-16 lg:py-24">
           <PeopleAlsoOrdered
             allProducts={allProductsPool}
             onAddToCart={handlePeopleAlsoOrderedAdd}
           />
-        </div>
+        </Container>
       )}
 
       {/* ── Sticky Mobile CTA ─────────────────────────────────────────────── */}
@@ -561,11 +601,11 @@ export default function PDPContent({ productId }: PDPContentProps) {
           quantity={quantity}
           onQuantityChange={setQuantity}
           onAction={() => {
-            track('sticky_cta_used', { productId: product.id, quantity })
+            track('sticky_cta_used', { productId: product.id, quantity, source: 'pdp_sticky' })
             handleAddToCart()
           }}
           actionLabel={t('common.add')}
-          disabled={!selectedVariant || isAdding}
+          disabled={isAdding}
           isLoading={isAdding}
         />
       )}

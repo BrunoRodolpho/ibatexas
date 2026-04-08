@@ -51,7 +51,7 @@ export interface ProductCardProps {
   readonly isBundle?: boolean
   readonly bundleServings?: number
   readonly href?: string
-  readonly onAddToCart?: () => void
+  readonly onAddToCart?: () => void | Promise<void>
   readonly priority?: boolean
   /** Current quantity in cart (0 or undefined = not in cart) */
   readonly cartQuantity?: number
