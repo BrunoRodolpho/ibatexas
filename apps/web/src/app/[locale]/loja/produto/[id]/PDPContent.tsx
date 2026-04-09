@@ -203,8 +203,9 @@ export default function PDPContent({ productId }: PDPContentProps) {
   // ── Track unified cross-sell visibility ─────────────────────────────
   useEffect(() => {
     if (!crossSellRef.current || !product?.id || unifiedSuggestions.length === 0) return
-    return trackOnceVisible(crossSellRef.current, 'cross_sell_viewed', {
+    return trackOnceVisible(crossSellRef.current, 'pdp_cross_sell_viewed', {
       productId: product.id,
+      count: unifiedSuggestions.length,
       suggestedIds: unifiedSuggestions.map((p) => p.id),
     })
   }, [product?.id, unifiedSuggestions])

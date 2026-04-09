@@ -45,6 +45,11 @@ export type AnalyticsEvent =
   | 'also_added_viewed'
   | 'also_added_cart'
   | 'homepage_recs_clicked'
+  | 'homepage_recs_viewed'
+  | 'home_carousel_viewed'
+  | 'search_results_viewed'
+  | 'cart_drawer_cross_sell_viewed'
+  | 'pdp_cross_sell_viewed'
   // ── Reorder ──────────────────────────────────────────────────
   | 'reorder_completed'
   // ── Conversion UX ─────────────────────────────────────────────

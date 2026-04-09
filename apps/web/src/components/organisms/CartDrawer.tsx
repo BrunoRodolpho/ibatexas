@@ -8,7 +8,8 @@ import { LinkButton, Text } from '../atoms'
 import { QuantitySelector } from '../molecules/QuantitySelector'
 import { Trash2, Plus } from 'lucide-react'
 import NextImage from 'next/image'
-import { track } from '@/domains/analytics'
+import { track, trackOnceVisible } from '@/domains/analytics'
+import { useEffect, useRef } from 'react'
 import { formatBRL } from '@/lib/format'
 import { useRecommendations, type RecommendedProduct } from '@/domains/recommendations'
 import type { ProductDTO } from '@ibatexas/types'
@@ -34,6 +35,18 @@ export function CartDrawer() {
   // Cross-sell: exclude items already in cart
   const cartProductIds = new Set(items.map((i) => i.productId))
   const crossSellItems = (recommendations ?? []).filter((r) => !cartProductIds.has(r.id)).slice(0, 3)
+
+  // Impression tracking for the drawer cross-sell scroller. Fires once per
+  // drawer open when the scroller actually has items to show — gives
+  // `cross_sell_added` from this surface a CTR denominator.
+  const crossSellRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!isOpen || !crossSellRef.current || crossSellItems.length === 0) return
+    return trackOnceVisible(crossSellRef.current, 'cart_drawer_cross_sell_viewed', {
+      count: crossSellItems.length,
+      productIds: crossSellItems.map((r) => r.id),
+    })
+  }, [isOpen, crossSellItems])
 
   const handleCrossSellAdd = (rec: RecommendedProduct) => {
     const minimalProduct = {
@@ -176,7 +189,7 @@ export function CartDrawer() {
             image, title, price, and a tappable + button.
           */}
           {crossSellItems.length > 0 && (
-            <div className="pt-4 mt-2 border-t border-smoke-200">
+            <div ref={crossSellRef} className="pt-4 mt-2 border-t border-smoke-200">
               <p className="text-[11px] font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-3">
                 {t('you_might_like')}
               </p>

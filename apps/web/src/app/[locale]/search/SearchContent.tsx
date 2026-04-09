@@ -155,6 +155,24 @@ export default function SearchContent() {
     track('search_performed', { query: searchQuery, resultCount: totalFound })
   }, [isLoading, searchQuery, totalFound])
 
+  // Fire impression event every time a result set settles (including
+  // category/tag-only browses where `searchQuery` is empty). Pairs with
+  // product_card_clicked / add_to_cart for CTR and add-rate dashboards.
+  useEffect(() => {
+    if (isLoading) return
+    const filtersApplied = {
+      hasQuery: !!searchQuery,
+      tagCount: selectedFilters.tags.length,
+      category: selectedFilters.category || null,
+      sort: selectedFilters.sort,
+    }
+    track('search_results_viewed', {
+      query: searchQuery || null,
+      resultCount: totalFound,
+      filtersApplied,
+    })
+  }, [isLoading, searchQuery, totalFound, selectedFilters.tags, selectedFilters.category, selectedFilters.sort])
+
   const handleTagToggle = (tagId: string) => {
     const newTags = selectedFilters.tags.includes(tagId)
       ? selectedFilters.tags.filter((t) => t !== tagId)

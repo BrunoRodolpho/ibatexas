@@ -90,6 +90,11 @@ flowchart TD
 | `also_added_viewed` | "Also added" section enters viewport (PDP) — legacy, superseded by unified `cross_sell_viewed` | `productId`, `suggestedIds[]` |
 | `also_added_cart` | "Also added" item added to cart — legacy, superseded by `pdp_cross_sell_added` | `productId`, `suggestedId` |
 | `homepage_recs_clicked` | User clicks a recommended product on homepage | `productId` |
+| `homepage_recs_viewed` | HomeRecommendations section enters viewport | `count`, `productIds[]` |
+| `home_carousel_viewed` | Home featured-products carousel enters viewport | `count` |
+| `search_results_viewed` | Search results settle (fires on every filter/query change) | `query`, `resultCount`, `filtersApplied` |
+| `cart_drawer_cross_sell_viewed` | Cart drawer cross-sell scroller rendered with ≥1 item | `count`, `productIds[]` |
+| `pdp_cross_sell_viewed` | Unified PDP cross-sell section enters viewport | `productId`, `count`, `suggestedIds[]` |
 
 ### Conversion UX Events
 

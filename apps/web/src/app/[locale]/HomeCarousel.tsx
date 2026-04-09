@@ -1,12 +1,25 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import { ScrollReveal } from '@/components/atoms'
 import { ProductCarousel } from '@/components/organisms/ProductCarousel'
 import { useProducts } from '@/domains/product'
+import { trackOnceVisible } from '@/domains/analytics'
 
 export default function HomeCarousel() {
   const { data: productsData, loading: productsLoading } = useProducts({ limit: 12 })
   const topProducts = productsData?.items ?? []
+  const sectionRef = useRef<HTMLElement>(null)
+
+  // Fire impression event once the carousel mounts with products. Gives
+  // every `homepage_recs_clicked` / `product_card_clicked` fired from here
+  // a denominator for CTR dashboards.
+  useEffect(() => {
+    if (!sectionRef.current || productsLoading || topProducts.length === 0) return
+    return trackOnceVisible(sectionRef.current, 'home_carousel_viewed', {
+      count: topProducts.length,
+    })
+  }, [productsLoading, topProducts.length])
 
   // Show a light spacer when no products (prevents orange→dark merge)
   if (!productsLoading && topProducts.length === 0) {
@@ -20,7 +33,7 @@ export default function HomeCarousel() {
   // Section.tsx (`py-16 lg:py-24`). The orange section above uses `loose`,
   // so the transition reads loose → default, which matches the narrative.
   return (
-    <section className="relative bg-smoke-50 overflow-hidden warm-glow">
+    <section ref={sectionRef} className="relative bg-smoke-50 overflow-hidden warm-glow">
       <div className="relative py-16 lg:py-24">
         <ProductCarousel
           products={topProducts}
