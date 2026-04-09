@@ -76,6 +76,22 @@
   --shadow-lg: 0 10px 24px -4px rgba(120,80,40,0.08), 0 4px 8px -2px rgba(120,80,40,0.03);
   --shadow-xl: 0 20px 48px -8px rgba(120,80,40,0.10), 0 8px 16px -4px rgba(120,80,40,0.04);
 
+  /* ── Shadow escalation scale (design-system-v2, semantic) ────────
+     Additive aliases so new components can reach for intent-named
+     elevation tokens instead of rediscovering `shadow-md`/`shadow-lg`
+     ad-hoc. Existing shadow-* tokens above stay for back-compat. */
+  --shadow-flat: none;
+  --shadow-raised: 0 1px 2px 0 rgba(120,80,40,0.05);
+  --shadow-elevated: 0 12px 28px -12px rgba(120,80,40,0.14), 0 4px 8px -4px rgba(120,80,40,0.06);
+  --shadow-overlay: 0 24px 48px -16px rgba(30,20,10,0.24), 0 8px 16px -8px rgba(30,20,10,0.10);
+
+  /* ── Button height scale (design-system-v2, semantic) ───────────
+     WCAG 2.1 AA tap target floor is 44px → btn-h-md is the default.
+     Exposed via Tailwind v4 as `h-btn-sm`, `h-btn-md`, `h-btn-lg`. */
+  --height-btn-sm: 2.25rem;  /* 36px — pills, filter chips */
+  --height-btn-md: 2.75rem;  /* 44px — default, WCAG tap target */
+  --height-btn-lg: 3.25rem;  /* 52px — primary CTAs */
+
   /* ── Border Radius ─────────────────────────────────────────────── */
   --radius-card: 10px;
 
