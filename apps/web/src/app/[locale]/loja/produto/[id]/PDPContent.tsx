@@ -1,14 +1,14 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useProductDetail, useProducts, tagToBadgeVariant, getCrossSellCategory } from '@/domains/product'
+import { useProductDetail, useProducts, tagToBadgeVariant, getCrossSellCategory, CROSS_SELL_MAP } from '@/domains/product'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
 import { Heading, Text, Button, Badge, LinkButton, Container } from '@/components/atoms'
 import { SizeSelector, ShippingEstimate, QuantitySelector, DeliveryPromise } from '@/components/molecules'
 import { StickyBottomBar } from '@/components/molecules/StickyBottomBar'
 import { ProductGrid } from '@/components/organisms'
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { Link } from '@/i18n/navigation'
 import { MediaGallery } from '@/components/molecules/MediaGallery'
@@ -16,7 +16,6 @@ import { WishlistButton } from '@/components/molecules/WishlistButton'
 import { track, trackOnceVisible, trackScrollDepth } from '@/domains/analytics'
 import { formatBRL, splitBRL } from '@/lib/format'
 import { useAlsoAdded } from '@/domains/recommendations'
-import { PeopleAlsoOrdered } from '@/components/molecules/PeopleAlsoOrdered'
 import { Skeleton } from '@/components/atoms/Skeleton'
 import { AvailabilityWindow, type ProductDTO, type ProductVariant } from '@ibatexas/types'
 
@@ -76,6 +75,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
   const t = useTranslations()
   const { data: product, loading, error } = useProductDetail(productId)
   const addToCart = useCartStore(s => s.addItem)
+  const cartItems = useCartStore(s => s.items)
   const { addToast } = useUIStore()
   const openCartDrawer = useUIStore(s => s.openCartDrawer)
   const [selectedVariantId, setSelectedVariantId] = useState<string>('')
@@ -128,19 +128,12 @@ export default function PDPContent({ productId }: PDPContentProps) {
     })
   }, [product?.id, loading])
 
-  // ── "Also added" data (feature-flagged) ────────────────────────────
+  // ── Cross-sell data sources — fed into a single unified section ────
+  // Three inputs, one surface: (1) collaborative "also added" signal,
+  // (2) category-based cross-sell, (3) cart-aware complementary picks
+  // from a broader pool. Merged and deduped in `unifiedSuggestions`.
   const { data: alsoAddedProducts } = useAlsoAdded(product?.id)
-  const alsoAddedRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!alsoAddedRef.current || !product?.id || alsoAddedProducts.length === 0) return
-    return trackOnceVisible(alsoAddedRef.current, 'also_added_viewed', {
-      productId: product.id,
-      suggestedIds: alsoAddedProducts.map((p) => p.id),
-    })
-  }, [product?.id, alsoAddedProducts])
-
-  // ── Cross-sell data ─────────────────────────────────────────────────
   const productCategory = product?.tags?.[0] || product?.categoryHandle || ''
   const crossSellCategory = getCrossSellCategory(productCategory)
 
@@ -154,27 +147,67 @@ export default function PDPContent({ productId }: PDPContentProps) {
     [crossSellData?.items, productId],
   )
 
-  // ── Broader product pool for PeopleAlsoOrdered (cart-aware cross-sell) ──
+  // Broader product pool for cart-aware complementary picks
   const { data: allProductsData } = useProducts({ limit: 50 })
   const allProductsPool = useMemo(() => allProductsData?.items ?? [], [allProductsData?.items])
 
-  const handlePeopleAlsoOrderedAdd = useCallback((pid: string) => {
-    const p = allProductsPool.find((prod) => prod.id === pid)
-    if (!p) return
-    const defaultVariant = p.variants?.[0]
-    addToCart(p, 1, undefined, defaultVariant)
-    track('people_also_ordered_added', { productId: product?.id ?? '', suggestedId: pid, source: 'pdp' })
-    addToast(t('toast.added_to_cart'), 'cart')
-  }, [allProductsPool, addToCart, addToast, t, product?.id])
+  type SuggestionSource = 'also_added' | 'cross_sell' | 'people_also_ordered'
+  interface UnifiedSuggestion {
+    readonly id: string
+    readonly title: string
+    readonly price: number
+    readonly imageUrl: string | null
+    readonly source: SuggestionSource
+  }
 
-  // ── Track cross-sell visibility ─────────────────────────────────────
+  const unifiedSuggestions = useMemo<UnifiedSuggestion[]>(() => {
+    const seen = new Set<string>([productId])
+    const merged: UnifiedSuggestion[] = []
+
+    // 1. Collaborative "also added" — highest signal, goes first
+    for (const p of alsoAddedProducts) {
+      if (seen.has(p.id)) continue
+      seen.add(p.id)
+      merged.push({ id: p.id, title: p.title, price: p.price, imageUrl: p.imageUrl ?? null, source: 'also_added' })
+    }
+
+    // 2. Category cross-sell
+    for (const p of crossSellProducts) {
+      if (seen.has(p.id)) continue
+      seen.add(p.id)
+      merged.push({ id: p.id, title: p.title, price: p.price, imageUrl: p.imageUrl ?? null, source: 'cross_sell' })
+    }
+
+    // 3. Cart-aware complementary — only when cart has items
+    if (cartItems.length > 0 && allProductsPool.length > 0) {
+      const cartProductIds = new Set(cartItems.map((i) => i.productId))
+      const crossCategories = new Set<string>()
+      for (const item of cartItems) {
+        const p = allProductsPool.find((pp) => pp.id === item.productId)
+        if (p?.categoryHandle) {
+          CROSS_SELL_MAP[p.categoryHandle]?.forEach((c) => crossCategories.add(c))
+        }
+      }
+      for (const p of allProductsPool) {
+        if (seen.has(p.id) || cartProductIds.has(p.id)) continue
+        if (p.categoryHandle && crossCategories.has(p.categoryHandle)) {
+          seen.add(p.id)
+          merged.push({ id: p.id, title: p.title, price: p.price, imageUrl: p.imageUrl ?? null, source: 'people_also_ordered' })
+        }
+      }
+    }
+
+    return merged.slice(0, 8)
+  }, [productId, alsoAddedProducts, crossSellProducts, allProductsPool, cartItems])
+
+  // ── Track unified cross-sell visibility ─────────────────────────────
   useEffect(() => {
-    if (!crossSellRef.current || !product?.id || crossSellProducts.length === 0) return
+    if (!crossSellRef.current || !product?.id || unifiedSuggestions.length === 0) return
     return trackOnceVisible(crossSellRef.current, 'cross_sell_viewed', {
       productId: product.id,
-      suggestedIds: crossSellProducts.map((p) => p.id),
+      suggestedIds: unifiedSuggestions.map((p) => p.id),
     })
-  }, [product?.id, crossSellProducts])
+  }, [product?.id, unifiedSuggestions])
 
   if (loading) {
     return <PDPSkeleton />
@@ -235,12 +268,32 @@ export default function PDPContent({ productId }: PDPContentProps) {
     }
   }
 
-  const handleCrossSellAdd = (crossProductId: string) => {
-    const p = crossSellProducts.find((cp) => cp.id === crossProductId)
-    if (!p) return
-    const defaultVariant = p.variants?.[0]
-    addToCart(p, 1, undefined, defaultVariant)
-    track('cross_sell_added', { productId: product.id, suggestedId: crossProductId })
+  const handleUnifiedCrossSellAdd = (suggestedId: string) => {
+    const suggestion = unifiedSuggestions.find((s) => s.id === suggestedId)
+    if (!suggestion) return
+    // Look up the full product (with variants) from whichever pool it came from
+    const full =
+      crossSellProducts.find((p) => p.id === suggestedId) ??
+      allProductsPool.find((p) => p.id === suggestedId)
+    if (full) {
+      const defaultVariant = full.variants?.[0]
+      addToCart(full, 1, undefined, defaultVariant)
+    } else {
+      // Also-added entries only ship a minimal shape; build a stub for the cart
+      const stub = {
+        id: suggestion.id,
+        title: suggestion.title,
+        price: suggestion.price,
+        imageUrl: suggestion.imageUrl,
+        variants: [],
+      } as unknown as ProductDTO
+      addToCart(stub, 1)
+    }
+    track('pdp_cross_sell_added', {
+      productId: product.id,
+      suggestedId,
+      source: suggestion.source,
+    })
     addToast(t('toast.added_to_cart'), 'cart')
   }
 
@@ -531,67 +584,33 @@ export default function PDPContent({ productId }: PDPContentProps) {
         </Container>
       </div>
 
-      {/* ── "Also Added" Section (feature-flagged) ──────────────────────── */}
-      {alsoAddedProducts.length > 0 && (
-        <div ref={alsoAddedRef}>
-        <Container size="xl" className="py-16 lg:py-24">
-          <div className="mb-8">
-            <div className="h-px w-16 bg-brand-500 mb-6" />
-            <Heading as="h2" variant="h2" className="font-display text-display-sm text-charcoal-900">
-              {t('product.also_added')}
-            </Heading>
-          </div>
-
-          <ProductGrid
-            products={alsoAddedProducts.map((p) => ({
-              id: p.id,
-              title: p.title,
-              price: p.price,
-              imageUrl: p.imageUrl ?? null,
-            }))}
-            columns={4}
-            onAddToCart={(id) => {
-              const rec = alsoAddedProducts.find((p) => p.id === id)
-              if (!rec) return
-              addToCart({ id: rec.id, title: rec.title, price: rec.price, imageUrl: rec.imageUrl ?? null, variants: [] } as unknown as ProductDTO, 1)
-              track('also_added_cart', { productId: product.id, suggestedId: id })
-              addToast(t('toast.added_to_cart'), 'cart')
-            }}
-            getProductHref={(p) => `/loja/produto/${p.id}`}
-          />
-        </Container>
-        </div>
-      )}
-
-      {/* ── Cross-Sell Section ─────────────────────────────────────────────── */}
-      {crossSellProducts.length > 0 && (
+      {/* ── Unified "You might also like" cross-sell section ─────────────
+          Merges three upstream signals (also-added, category cross-sell,
+          cart-aware pool) into a single deduped grid. Previously three
+          stacked sections pushed reviews + hydration way below the fold. */}
+      {unifiedSuggestions.length > 0 && (
         <div ref={crossSellRef}>
-        <Container size="xl" className="py-16 lg:py-24">
-          <div className="mb-8">
-            <div className="h-px w-16 bg-brand-500 mb-6" />
-            <Heading as="h2" variant="h2" className="font-display text-display-sm text-charcoal-900">
-              {t('product.cross_sell_title')}
-            </Heading>
-          </div>
+          <Container size="xl" className="py-16 lg:py-24">
+            <div className="mb-8">
+              <div className="h-px w-16 bg-brand-500 mb-6" />
+              <Heading as="h2" variant="h2" className="font-display text-display-sm text-charcoal-900">
+                {t('product.you_might_also_like')}
+              </Heading>
+            </div>
 
-          <ProductGrid
-            products={crossSellProducts}
-            columns={4}
-            onAddToCart={handleCrossSellAdd}
-            getProductHref={(p) => `/loja/produto/${p.id}`}
-          />
-        </Container>
+            <ProductGrid
+              products={unifiedSuggestions.map(({ id, title, price, imageUrl }) => ({
+                id,
+                title,
+                price,
+                imageUrl,
+              }))}
+              columns={4}
+              onAddToCart={handleUnifiedCrossSellAdd}
+              getProductHref={(p) => `/loja/produto/${p.id}`}
+            />
+          </Container>
         </div>
-      )}
-
-      {/* ── People Also Ordered — cart-aware cross-sell ──────────────────── */}
-      {allProductsPool.length > 0 && (
-        <Container size="xl" className="py-16 lg:py-24">
-          <PeopleAlsoOrdered
-            allProducts={allProductsPool}
-            onAddToCart={handlePeopleAlsoOrderedAdd}
-          />
-        </Container>
       )}
 
       {/* ── Sticky Mobile CTA ─────────────────────────────────────────────── */}

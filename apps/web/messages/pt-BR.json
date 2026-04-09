@@ -198,6 +198,7 @@
     "pairing": "Harmonização",
     "pairing_default": "Sirva com coleslaw cremoso, cornbread artesanal e uma cerveja IPA bem gelada. Para uma experiência completa, acompanhe com nosso molho barbecue da casa.",
     "cross_sell_title": "Para uma experiência completa",
+    "you_might_also_like": "Você também pode gostar",
     "scarcity": "Últimas {count} unidades!",
     "bundle_per_person": "{price} por pessoa · Bundle para {servings}",
     "serves": "Serve {count}",

@@ -17,6 +17,7 @@ export type AnalyticsEvent =
   | 'product_card_clicked'
   | 'cross_sell_viewed'
   | 'cross_sell_added'
+  | 'pdp_cross_sell_added'
   // ── Cart ───────────────────────────────────────────────────────
   | 'cart_drawer_opened'
   | 'cart_abandonment_nudge'

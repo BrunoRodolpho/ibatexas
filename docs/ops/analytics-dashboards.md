@@ -85,9 +85,10 @@ flowchart TD
 | `cart_abandonment_nudge` | Abandonment nudge shown to returning user with stale cart | `cartId`, `itemCount` |
 | `coupon_validation_failed` | Coupon code rejected by /api/coupons/validate or request errored | `code`, `reason` (invalid\|error) |
 | `cross_sell_viewed` | Cross-sell section enters viewport | `productId`, `suggestedIds[]` |
-| `cross_sell_added` | Cross-sell item added to cart | `productId`, `suggestedId` |
-| `also_added_viewed` | "Also added" section enters viewport (PDP) | `productId`, `suggestedIds[]` |
-| `also_added_cart` | "Also added" item added to cart | `productId`, `suggestedId` |
+| `cross_sell_added` | Cross-sell item added to cart (cart drawer, legacy PDP callsites) | `productId`, `suggestedId` |
+| `pdp_cross_sell_added` | Item added from the unified PDP cross-sell section | `productId`, `suggestedId`, `source` (also_added\|cross_sell\|people_also_ordered) |
+| `also_added_viewed` | "Also added" section enters viewport (PDP) — legacy, superseded by unified `cross_sell_viewed` | `productId`, `suggestedIds[]` |
+| `also_added_cart` | "Also added" item added to cart — legacy, superseded by `pdp_cross_sell_added` | `productId`, `suggestedId` |
 | `homepage_recs_clicked` | User clicks a recommended product on homepage | `productId` |
 
 ### Conversion UX Events
