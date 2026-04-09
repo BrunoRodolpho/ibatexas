@@ -1,19 +1,44 @@
 'use client'
 
+import { useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { useProducts } from '@/domains/product'
+import { useCartStore } from '@/domains/cart'
+import { useUIStore } from '@/domains/ui'
 import { ProductGrid } from '@/components/organisms'
-import { Text } from '@/components/atoms'
+import { ProductGridSkeleton } from '@/components/molecules/ProductGridSkeleton'
+import { Container, Text } from '@/components/atoms'
 import { Link } from '@/i18n/navigation'
 import { JsonLd } from '@/components/atoms'
+import { track } from '@/domains/analytics'
 
 export default function ShopPage() {
   const t = useTranslations()
   const { data, loading, error } = useProducts({ limit: 12, productType: 'merchandise' })
+  const addItem = useCartStore((s) => s.addItem)
+  const triggerUpsell = useUIStore((s) => s.triggerUpsell)
+  const addToast = useUIStore((s) => s.addToast)
+
+  // Standardized add-to-cart for the shop landing — toast + upsell trigger.
+  // Was missing entirely; the featured cards used to do nothing on click.
+  const handleAddToCart = useCallback(
+    (productId: string) => {
+      const product = data?.items?.find((p) => p.id === productId)
+      if (!product) return
+      const defaultVariant = product.variants?.[0]
+      addItem(product, 1, undefined, defaultVariant)
+      track('add_to_cart', { productId, source: 'shop_featured' })
+      addToast(t('toast.added_to_cart'), 'cart')
+      if (product.categoryHandle) {
+        triggerUpsell(product.categoryHandle)
+      }
+    },
+    [data?.items, addItem, addToast, t, triggerUpsell],
+  )
 
   if (error) {
     return (
-      <div className="text-center py-20">
+      <div className="text-center py-12 lg:py-16">
         <Text variant="body" className="text-accent-red">
           {t('common.error')}: {error.message}
         </Text>
@@ -39,26 +64,18 @@ export default function ShopPage() {
       />
       {/* ── Featured section: editorial grid ───────────────────── */}
       <section className="bg-smoke-50">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8 lg:py-12">
-          <div className="flex items-end justify-between mb-8">
-            <h2 className="font-display text-display-sm font-semibold text-charcoal-900 tracking-display">
+        <Container className="py-16 lg:py-24">
+          {/* Removed the "Ver todos os Produtos →" link — it pointed back to
+              /loja itself, which is the page the user is already on. */}
+          <div className="mb-8">
+            <h2 className="font-display text-display-sm font-bold text-charcoal-900 tracking-display">
               {t('shop.featured')}
             </h2>
-            <Link
-              href="/loja"
-              className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
-            >
-              {t('shop.view_all')} →
-            </Link>
           </div>
 
           {(() => {
             if (loading) {
-              return (
-                <div className="text-center py-16">
-                  <Text className="text-smoke-400">{t('common.loading')}</Text>
-                </div>
-              )
+              return <ProductGridSkeleton columns={4} />
             }
             if (data?.items?.length) {
               return (
@@ -66,12 +83,13 @@ export default function ShopPage() {
                   products={data.items}
                   columns={4}
                   featured
+                  onAddToCart={handleAddToCart}
                   getProductHref={(product) => `/loja/produto/${product.id}`}
                 />
               )
             }
             return (
-              <div className="py-20 text-center">
+              <div className="py-12 lg:py-16 text-center">
                 <p className="font-display text-2xl text-smoke-300 tracking-display">
                   Em breve
                 </p>
@@ -81,12 +99,12 @@ export default function ShopPage() {
               </div>
             )
           })()}
-        </div>
+        </Container>
       </section>
 
       {/* ── Categories: minimal stacked layout ─────────────────── */}
       <section className="bg-smoke-100">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-10 lg:py-12">
+        <Container className="py-16 lg:py-24">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-smoke-200">
             <Link href="/loja/camisetas" className="group bg-smoke-100 p-8 lg:p-12 transition-colors duration-500 ease-luxury hover:bg-smoke-50">
               <div className="flex items-center gap-4 mb-4">
@@ -133,7 +151,7 @@ export default function ShopPage() {
               </p>
             </Link>
           </div>
-        </div>
+        </Container>
       </section>
     </div>
   )

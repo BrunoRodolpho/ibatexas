@@ -5,6 +5,7 @@ import { Link } from '@/i18n/navigation'
 import { useTranslations } from 'next-intl'
 import { Plus, Minus, Check } from 'lucide-react'
 import { Badge, type BadgeProps } from '../atoms'
+import { WishlistButton } from './WishlistButton'
 import { track } from '@/domains/analytics'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
 import { formatBRL } from '@/lib/format'
@@ -53,7 +54,7 @@ export const ProductCardFeatured = ({
   const priceFormatted = formatBRL(price)
 
   const displayImage = imageUrl || images?.[0] || null
-  const linkHref = href || `/products/${id}`
+  const linkHref = href || `/loja/produto/${id}`
 
   // Single priority badge (first match wins)
   const priorityTag = tags?.find((tag) =>
@@ -140,6 +141,11 @@ export const ProductCardFeatured = ({
                 </Badge>
               </div>
             )}
+
+            {/* Wishlist heart — top right of image, matches ProductCardVertical */}
+            <div className="absolute top-3 right-3 z-20">
+              <WishlistButton productId={id} size="sm" />
+            </div>
           </div>
 
           {/* Details — right side on desktop, below on mobile */}

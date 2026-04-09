@@ -1,14 +1,16 @@
+import { Container } from '@/components/atoms'
+
 export default function SearchLoading() {
   return (
     <div className="min-h-screen bg-smoke-50">
       {/* Search bar skeleton */}
-      <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-3">
-        <div className="max-w-[1200px] mx-auto">
+      <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 py-3">
+        <Container>
           <div className="h-10 w-full rounded-sm skeleton" />
-        </div>
+        </Container>
       </div>
 
-      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16 lg:py-20">
+      <Container className="py-16 lg:py-24">
         {/* Header skeleton */}
         <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
           <div className="h-8 w-48 rounded-sm skeleton" />
@@ -35,7 +37,7 @@ export default function SearchLoading() {
             </div>
           ))}
         </div>
-      </div>
+      </Container>
     </div>
   )
 }

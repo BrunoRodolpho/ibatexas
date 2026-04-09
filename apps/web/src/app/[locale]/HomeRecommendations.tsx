@@ -5,7 +5,7 @@ import { useRecommendations } from '@/domains/recommendations'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
 import { track } from '@/domains/analytics'
-import { Heading } from '@/components/atoms'
+import { Heading, Container } from '@/components/atoms'
 import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 import { Plus, Sparkles } from 'lucide-react'
@@ -51,7 +51,7 @@ export function HomeRecommendations() {
 
   return (
     <section className="bg-smoke-50 border-t border-smoke-200/30">
-      <div className="mx-auto max-w-[1280px] px-6 lg:px-8 py-16 lg:py-24">
+      <Container size="xl" className="py-16 lg:py-24">
         {/* Section header */}
         <div className="flex items-center gap-2 mb-8">
           <Sparkles className="w-5 h-5 text-brand-500" strokeWidth={2} />
@@ -122,7 +122,7 @@ export function HomeRecommendations() {
             )
           })}
         </div>
-      </div>
+      </Container>
     </section>
   )
 }

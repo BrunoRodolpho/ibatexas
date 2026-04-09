@@ -12,7 +12,7 @@ export default function AccountPage() {
 
   if (!customerId) {
     return (
-      <div className="min-h-screen bg-smoke-50 mx-auto max-w-md px-4 py-12 text-center sm:px-6">
+      <div className="min-h-screen bg-smoke-50 mx-auto max-w-md px-4 py-16 lg:py-24 text-center sm:px-6">
         <h1 className="text-3xl font-display text-charcoal-900">{t("account.title")}</h1>
         <p className="mt-4 text-smoke-400">{t("account.login_required")}</p>
 
@@ -35,7 +35,7 @@ export default function AccountPage() {
   }
 
   return (
-    <div className="min-h-screen bg-smoke-50 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-smoke-50 mx-auto max-w-7xl px-4 py-16 lg:py-24 sm:px-6 lg:px-8">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-display text-charcoal-900">{t("account.title")}</h1>
         <button

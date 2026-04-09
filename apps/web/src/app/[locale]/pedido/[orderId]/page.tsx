@@ -77,7 +77,7 @@ export default function OrderTrackingPage() {
   }
 
   return (
-    <div className="min-h-screen bg-smoke-50 py-8 px-4">
+    <div className="min-h-screen bg-smoke-50 py-16 lg:py-24 px-4">
       <div className="mx-auto max-w-lg space-y-6">
         <h1 className="text-3xl font-display text-charcoal-900">Pedido #{order.display_id}</h1>
 

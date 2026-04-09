@@ -158,7 +158,7 @@ export function CartDrawer() {
                       onQuantityChange={(qty) => updateItem(item.id, { quantity: qty })}
                       min={1}
                       max={99}
-                      size="sm"
+                      size="xs"
                     />
                     <span className="text-xs font-semibold text-charcoal-900 tabular-nums">
                       {lineTotal}
@@ -169,33 +169,51 @@ export function CartDrawer() {
             )
           })}
 
-          {/* Cross-sell suggestions — below items */}
+          {/*
+            Cross-sell — horizontal scroller of properly sized cards.
+            Was a vertical stack of 40×40 thumbnails, easy to miss. The new
+            layout gives each suggestion a real product card moment with
+            image, title, price, and a tappable + button.
+          */}
           {crossSellItems.length > 0 && (
-            <div className="pt-2 border-t border-smoke-200">
+            <div className="pt-4 mt-2 border-t border-smoke-200">
               <p className="text-[11px] font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-3">
                 {t('you_might_like')}
               </p>
-              <div className="space-y-2">
+              <div className="-mx-4 px-4 flex gap-3 overflow-x-auto scrollbar-hide snap-x snap-mandatory">
                 {crossSellItems.map((rec) => (
-                  <div key={rec.id} className="flex items-center gap-2.5">
-                    {rec.imageUrl && (
-                      <div className="w-10 h-10 flex-shrink-0 rounded-sm overflow-hidden bg-smoke-100">
-                        <NextImage src={rec.imageUrl} alt={rec.title} width={40} height={40} className="object-cover w-full h-full" />
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-charcoal-900 truncate">{rec.title}</p>
-                      <p className="text-xs text-[var(--color-text-secondary)] tabular-nums">
-                        {formatBRL(rec.price)}
-                      </p>
+                  <div
+                    key={rec.id}
+                    className="snap-start flex-shrink-0 w-[148px] surface-card rounded-card overflow-hidden flex flex-col"
+                  >
+                    <div className="relative aspect-square bg-smoke-100">
+                      {rec.imageUrl && (
+                        <NextImage
+                          src={rec.imageUrl}
+                          alt={rec.title}
+                          fill
+                          sizes="148px"
+                          className="object-cover"
+                        />
+                      )}
                     </div>
-                    <button
-                      onClick={() => handleCrossSellAdd(rec)}
-                      className="min-w-[32px] min-h-[32px] flex items-center justify-center rounded-sm border border-smoke-200 text-[var(--color-text-secondary)] hover:border-brand-500 hover:text-brand-600 transition-colors"
-                      aria-label={`${t('add_suggestion')} ${rec.title}`}
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="p-2.5 flex flex-col flex-1">
+                      <p className="text-xs font-medium text-charcoal-900 leading-snug line-clamp-2 min-h-[2.25rem]">
+                        {rec.title}
+                      </p>
+                      <div className="mt-2 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-charcoal-900 tabular-nums">
+                          {formatBRL(rec.price)}
+                        </span>
+                        <button
+                          onClick={() => handleCrossSellAdd(rec)}
+                          className="w-7 h-7 flex items-center justify-center rounded-full bg-brand-500 text-white hover:bg-brand-600 active:scale-95 transition-all duration-300 ease-luxury"
+                          aria-label={`${t('add_suggestion')} ${rec.title}`}
+                        >
+                          <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
