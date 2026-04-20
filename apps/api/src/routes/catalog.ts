@@ -11,9 +11,9 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { Channel, type ProductVariant } from "@ibatexas/types";
 import { searchProducts, getProductDetails, buildPersonalizedQuery } from "@ibatexas/tools";
-import { medusaAdmin, medusaStore } from "./admin/_shared.js";
-import { optionalAuth } from "../middleware/auth.js";
 import { createReviewService } from "@ibatexas/domain";
+import { optionalAuth } from "../middleware/auth.js";
+import { medusaAdmin, medusaStore } from "./admin/_shared.js";
 
 const ProductsQuery = z.object({
   query: z.string().min(1).max(200).optional(),
@@ -24,7 +24,7 @@ const ProductsQuery = z.object({
     .transform((v) => v === "true"),
   productType: z.enum(["food", "frozen", "merchandise"]).optional(),
   categoryHandle: z.string().optional(),
-  limit: z.coerce.number().int().min(1).max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
   offset: z.coerce.number().int().min(0).optional(),
   sort: z.enum(["relevance", "price_asc", "price_desc", "rating_desc", "newest"]).optional(),
   excludeAllergens: z.string().optional(), // comma-separated list
@@ -106,19 +106,21 @@ const CategoriesResponse = z.object({
   categories: z.array(z.unknown()),
 });
 
-// Zod schemas for Medusa API response validation
+// Zod schemas for Medusa API response validation.
+// Note: Medusa's admin `remapProductResponse` helper flattens
+// variants[].price_set.prices → variants[].prices in the HTTP response, so
+// even though the fallback asks for `variants.price_set.prices.*`, the
+// payload we parse here uses the top-level `prices` key on each variant.
 const MedusaProductResponse = z.object({
   product: z.object({
     variants: z.array(z.object({
       id: z.string(),
       title: z.string(),
       sku: z.string().nullable(),
-      price_set: z.object({
-        prices: z.array(z.object({
-          amount: z.number(),
-          currency_code: z.string(),
-        })).optional(),
-      }).optional(),
+      prices: z.array(z.object({
+        amount: z.number(),
+        currency_code: z.string(),
+      })).optional(),
     })),
   }).optional(),
 });
@@ -270,8 +272,13 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
         (product.variants.length > 0 && product.variants.every((v) => v.price === 0));
       if (needsEnrichment) {
         try {
+          // Explicit field list — do NOT use `fields=*`. Medusa v2's docs
+          // treat `*` as a relation prefix (e.g. `*variants`), not a
+          // top-level wildcard; passing bare `*` trips a 500 unknown_error
+          // on the admin product detail endpoint in 2.13.5. Listing exactly
+          // what we read keeps us off that code path.
           const data = await medusaAdmin(
-            `/admin/products/${id}?fields=*,+variants,+variants.price_set,+variants.price_set.prices`,
+            `/admin/products/${id}?fields=id,variants.id,variants.title,variants.sku,variants.price_set.prices.amount,variants.price_set.prices.currency_code`,
           );
           const parsed = MedusaProductResponse.safeParse(data);
           if (parsed.success) {
@@ -282,7 +289,7 @@ export async function catalogRoutes(server: FastifyInstance): Promise<void> {
               sku: v.sku ?? null,
               // Medusa v2 stores in reais — convert to centavos
               price: Math.round(
-                (v.price_set?.prices?.find((pr) => pr.currency_code === "brl")?.amount ?? 0) * 100
+                (v.prices?.find((pr) => pr.currency_code === "brl")?.amount ?? 0) * 100
               ),
             }));
           } else {

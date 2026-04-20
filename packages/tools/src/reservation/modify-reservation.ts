@@ -5,8 +5,8 @@
 import { createReservationService } from "@ibatexas/domain"
 import { ModifyReservationInputSchema, type ModifyReservationInput, type ModifyReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
-import { sendReservationModified } from "./notifications.js"
 import { withReservationOwnership } from "../guards/with-ownership.js"
+import { sendReservationModified } from "./notifications.js"
 
 // SEC-002: Ownership guard wrapper — rejects before any business logic
 export const modifyReservation = withReservationOwnership(modifyReservationImpl)

@@ -5,13 +5,13 @@
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import * as Sentry from "@sentry/node";
-import { createQueue, createWorker, type Job } from "./queue.js";
 import { createCustomerService } from "@ibatexas/domain";
-import { sendText } from "../whatsapp/client.js";
-import { buildOutreachMessage } from "./outreach-messages.js";
-import { fetchWeatherCondition } from "./weather-helper.js";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
+import { sendText } from "../whatsapp/client.js";
+import { createQueue, createWorker, type Job } from "./queue.js";
+import { buildOutreachMessage } from "./outreach-messages.js";
+import { fetchWeatherCondition } from "./weather-helper.js";
 
 const REPEAT_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 const DORMANT_THRESHOLD_DAYS = 7;
@@ -32,7 +32,7 @@ export async function checkDormantCustomers(log?: FastifyBaseLogger | null): Pro
     new Intl.DateTimeFormat("pt-BR", {
       hour: "numeric",
       hour12: false,
-      timeZone: "America/Sao_Paulo",
+      timeZone: process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo",
     }).format(new Date()),
     10,
   );

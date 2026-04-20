@@ -4,6 +4,9 @@ import type { ProductDTO, ProductVariant } from '@ibatexas/types'
 import {
   resolveVariant, resolveCartItemId, buildCartItem, migrateCartState,
   getCartType as getCartTypePure, hasMerchandise as hasMerchandisePure, hasFood as hasFoodPure,
+  hasKitchenOnlyFood as hasKitchenOnlyFoodPure,
+  getKitchenItems as getKitchenItemsPure,
+  getAvailableItems as getAvailableItemsPure,
 } from './cart.logic'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || ''
@@ -75,13 +78,20 @@ interface CartState {
   getCartType: () => "food" | "merchandise" | "mixed" | "empty"
   hasMerchandise: () => boolean
   hasFood: () => boolean
+  hasKitchenOnlyFood: () => boolean
+  getKitchenItems: () => CartItem[]
+  getAvailableItems: () => CartItem[]
 }
 
 export const useCartStore = create<CartState>()(
   persist(
     (set, get) => ({
       items: [],
-      deliveryType: null,
+      // Default to 'delivery' — the dominant mode for this storefront (audit
+      // P0-3). Previously `null` caused the checkout CTA to be silently
+      // disabled on mobile until the user scrolled down and discovered the
+      // radio group, producing hard drop-offs.
+      deliveryType: 'delivery',
       termsAccepted: false,
 
       addItem: (product, quantity, specialInstructions, variant) => {
@@ -128,7 +138,7 @@ export const useCartStore = create<CartState>()(
       clearCart: () =>
         set({
           items: [],
-          deliveryType: null,
+          deliveryType: 'delivery',
           couponCode: undefined,
           selectedAddress: undefined,
           selectedTimeSlot: undefined,
@@ -162,6 +172,9 @@ export const useCartStore = create<CartState>()(
       getCartType: () => getCartTypePure(get().items),
       hasMerchandise: () => hasMerchandisePure(get().items),
       hasFood: () => hasFoodPure(get().items),
+      hasKitchenOnlyFood: () => hasKitchenOnlyFoodPure(get().items),
+      getKitchenItems: () => getKitchenItemsPure(get().items),
+      getAvailableItems: () => getAvailableItemsPure(get().items),
     }),
     {
       name: 'cart_v1',

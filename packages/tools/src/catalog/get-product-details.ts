@@ -1,9 +1,9 @@
 // get_product_details tool: fetch a single product from Typesense by ID
 
 import type { ProductDTO } from "@ibatexas/types"
+import { publishNatsEvent } from "@ibatexas/nats-client"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
 import { typesenseDocToDTO, type TypesenseProductDoc } from "../mappers/product-mapper.js"
-import { publishNatsEvent } from "@ibatexas/nats-client"
 
 /**
  * Retrieve full product details by ID from Typesense.

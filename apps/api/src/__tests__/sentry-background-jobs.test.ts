@@ -3,6 +3,11 @@
 // Tests call the exported processor functions directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { checkAbandonedCarts } from "../jobs/abandoned-cart-checker.js";
+import { processOutbox } from "../jobs/outbox-retry.js";
+import { checkNoShows } from "../jobs/no-show-checker.js";
+import { pollReviewPrompts } from "../jobs/review-prompt-poller.js";
+import { sendReminders } from "../jobs/reservation-reminder.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -70,14 +75,6 @@ vi.mock("../jobs/queue.js", () => ({
     close: vi.fn(),
   })),
 }));
-
-// ── Import sources after mocks ──────────────────────────────────────────────
-
-import { checkAbandonedCarts } from "../jobs/abandoned-cart-checker.js";
-import { processOutbox } from "../jobs/outbox-retry.js";
-import { checkNoShows } from "../jobs/no-show-checker.js";
-import { pollReviewPrompts } from "../jobs/review-prompt-poller.js";
-import { sendReminders } from "../jobs/reservation-reminder.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -174,6 +171,8 @@ describe("Sentry reporting in background jobs", () => {
   describe("outbox-retry", () => {
     it("reports per-event re-publish errors to Sentry", async () => {
       mockRedis.lRange.mockResolvedValue(['{"eventType":"order.placed"}']);
+      mockRedis.set.mockResolvedValue("OK"); // lock acquired
+      (mockRedis as Record<string, unknown>)["eval"] = vi.fn().mockResolvedValue(1); // lock released
       mockPublishNatsEvent.mockRejectedValue(new Error("NATS down"));
 
       await processOutbox(createMockLogger());

@@ -1,0 +1,702 @@
+// Prompt synthesizer for the IbateXas Hybrid State-Flow architecture.
+//
+// Maps an XState machine state value + OrderContext → a tiny, targeted
+// SynthesizedPrompt that is given to the LLM for that single turn.
+//
+// Design principle: the LLM only sees instructions relevant to the current
+// state. Smaller prompts = fewer hallucinations, lower latency, lower cost.
+
+import type { RestaurantSchedule } from "@ibatexas/types"
+import { getTimeStr, getFrozenPickupMessage } from "@ibatexas/tools"
+import type { OrderContext, SynthesizedPrompt } from "./machine/types.js"
+import { getCurrentMealPeriod } from "./machine/types.js"
+import {
+  BASE_VOICE_WHATSAPP,
+  BASE_VOICE_WEB,
+  getCurrentMenu,
+} from "./prompt-sections.js"
+
+// ── Token limits ──────────────────────────────────────────────────────────────
+
+const DEFAULT_WHATSAPP_TOKENS = 512
+const MAX_TOKENS_WEB = 1024
+
+// States that need more tokens (order summaries, confirmations, zone lists)
+const WHATSAPP_TOKEN_LIMITS: Record<string, number> = {
+  "post_order": 768,
+  "ordering.awaiting_next": 768,
+  // "ordering.item_added" removed — transient state, logic merged into awaiting_next
+  "checkout.collecting_pix_details": 512,
+  "checkout.reviewing_pix_details": 512,
+  "checkout.confirming": 768,
+  "checkout.order_placed": 768,
+  "reorder": 300,
+}
+
+// ── Formatting helpers ────────────────────────────────────────────────────────
+
+/**
+ * Converts an integer in centavos to a Brazilian Real string.
+ * Example: 8900 → "R$89,00"
+ */
+export function centavosToReais(centavos: number): string {
+  const reais = centavos / 100
+  return `R$${reais.toFixed(2).replace(".", ",")}`
+}
+
+/**
+ * Formats the cart items into a human-readable list with individual prices
+ * and a running total line at the end.
+ */
+export function formatCartSummary(
+  items: OrderContext["items"],
+  totalInCentavos: number,
+): string {
+  if (items.length === 0) return "Carrinho vazio."
+
+  const lines = items.map(
+    (item) =>
+      `• ${item.quantity}x ${item.name} — ${centavosToReais(item.priceInCentavos * item.quantity)}`,
+  )
+  lines.push(`Total: ${centavosToReais(totalInCentavos)}`)
+  return lines.join("\n")
+}
+
+/**
+ * Returns a sentence listing the slots the customer still needs to fill
+ * (fulfillment method and/or payment method). Returns an empty string when
+ * all slots are already set.
+ */
+export function formatMissingSlots(ctx: OrderContext): string {
+  const missing: string[] = []
+  if (ctx.fulfillment === null) missing.push("forma de entrega (entrega ou retirada)")
+  if (ctx.paymentMethod === null) missing.push("forma de pagamento (PIX, cartão ou dinheiro)")
+  if (missing.length === 0) return ""
+  return `Falta confirmar: ${missing.join(" e ")}.`
+}
+
+// ── State → tools map ─────────────────────────────────────────────────────────
+
+// Keys are exact state values or glob-style prefixes ending in ".*".
+// Lookup happens in declaration order; first match wins.
+
+const STATE_TOOLS: Array<[pattern: string, tools: string[]]> = [
+  ["idle", ["get_customer_profile", "search_products", "check_order_status", "get_order_history"]],
+  ["first_contact", ["get_customer_profile", "search_products"]],
+  ["browsing", ["search_products", "get_product_details", "check_inventory", "get_nutritional_info", "estimate_delivery", "check_order_status", "get_order_history"]],
+  ["ordering.", ["search_products", "get_also_added", "get_ordered_together"]],
+  ["checkout.collecting_pix_details", ["set_pix_details"]],
+  ["checkout.reviewing_pix_details", []],
+  ["checkout.", []],
+  ["post_order.cancelling", []],
+  ["post_order.amending", []],
+  ["post_order.regenerating_pix", []],
+  ["post_order.", ["get_loyalty_balance", "check_order_status", "check_payment_status", "search_products"]],
+  ["reservation", ["check_table_availability", "get_my_reservations"]],
+  ["support", ["handoff_to_human"]],
+  ["loyalty_check", ["get_loyalty_balance"]],
+  ["reorder", ["get_order_history", "search_products"]],
+  ["objection", ["schedule_follow_up"]],
+  ["fallback", ["search_products", "get_customer_profile", "estimate_delivery", "check_order_status", "get_order_history"]],
+]
+
+function resolveTools(stateValue: string, ctx?: OrderContext): string[] {
+  for (const [pattern, tools] of STATE_TOOLS) {
+    if (pattern.endsWith(".")) {
+      // prefix match — e.g. "ordering." matches "ordering.item_added"
+      if (stateValue.startsWith(pattern) || stateValue === pattern.slice(0, -1)) {
+        // When closed + item_unavailable: remove search tools to prevent LLM
+        // from bypassing the machine's frozen-only search filter.
+        if (stateValue === "ordering.item_unavailable" && ctx?.mealPeriod === "closed") {
+          return tools.filter((t) => t !== "search_products")
+        }
+        return tools
+      }
+    } else {
+      if (stateValue === pattern) return tools
+    }
+  }
+  // Unknown state — return an empty tool list (safe default)
+  return []
+}
+
+// ── Order confirmation formatter ──────────────────────────────────────────────
+
+/**
+ * Build a structured order confirmation prompt with:
+ * - Order ID
+ * - Per-item prep times
+ * - PIX/card/cash payment details
+ * - Estimated pickup/delivery time with closing-time guard
+ * - Loyalty stamps
+ * - Post-order actions (status, cancel, amend)
+ */
+function formatOrderConfirmation(ctx: OrderContext, schedule?: RestaurantSchedule): string {
+  const stamps = ctx.loyaltyStamps ?? 0
+  const phone = process.env.RESTAURANT_PHONE || null
+  const contactInfo = phone ? `Telefone: ${phone}` : "Site: ibatexas.com.br"
+  const fulfillmentLabel = ctx.fulfillment === "pickup"
+    ? "Retirada no restaurante"
+    : `Entrega${ctx.deliveryCep ? ` — CEP ${ctx.deliveryCep}` : ""}`
+
+  // Extract structured fields from checkoutResult
+  const cr = ctx.checkoutResult as Record<string, unknown> | null
+  const orderId = ctx.orderId ?? (cr?.orderId as string | undefined) ?? null
+  const pixQrCode = cr?.pixQrCode as string | undefined
+  const pixCopyPaste = cr?.pixCopyPaste as string | undefined
+
+  // Per-item prep time breakdown
+  const itemLines = ctx.items.map((item) => {
+    const prep = item.preparationTimeMinutes
+    const prepLabel = prep && prep > 0 ? ` (~${prep}min preparo)` : " (pronto)"
+    return `• ${item.quantity}x ${item.name} — ${centavosToReais(item.priceInCentavos * item.quantity)}${prepLabel}`
+  })
+
+  // Overall ETA = max(all item prep times) + fulfillment buffer
+  const maxPrepMinutes = Math.max(0, ...ctx.items.map((i) => i.preparationTimeMinutes ?? 0))
+  const bufferMinutes = ctx.fulfillment === "delivery" ? (ctx.deliveryEtaMinutes ?? 40) : 5
+  const totalEstimateMinutes = maxPrepMinutes + bufferMinutes
+
+  // Closing time guard — uses Intl for correct timezone
+  const tz = process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo"
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", hour12: false }).formatToParts(new Date())
+  let currentHour = 0, currentMinute = 0
+  for (const p of parts) {
+    if (p.type === "hour") currentHour = Number.parseInt(p.value, 10)
+    if (p.type === "minute") currentMinute = Number.parseInt(p.value, 10)
+  }
+  if (currentHour === 24) currentHour = 0
+
+  // Determine closing hour from schedule or env vars
+  let closingHour: number
+  if (schedule) {
+    const dayStr = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" }).format(new Date())
+    const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }
+    const dow = dayMap[dayStr] ?? new Date().getDay()
+    const day = schedule.days.find((d) => d.dayOfWeek === dow)
+    if (ctx.mealPeriod === "lunch" && day?.lunchEnd) {
+      closingHour = Number.parseInt(day.lunchEnd.split(":")[0]!, 10)
+    } else if (day?.dinnerEnd) {
+      closingHour = Number.parseInt(day.dinnerEnd.split(":")[0]!, 10)
+    } else {
+      closingHour = 23
+    }
+  } else {
+    closingHour = ctx.mealPeriod === "lunch"
+      ? Number.parseInt(process.env.RESTAURANT_LUNCH_END_HOUR || "15", 10)
+      : Number.parseInt(process.env.RESTAURANT_DINNER_END_HOUR || "23", 10)
+  }
+
+  const pickupMinuteOfDay = currentHour * 60 + currentMinute + totalEstimateMinutes
+  const closingMinuteOfDay = closingHour * 60
+  const closingWarning = pickupMinuteOfDay > closingMinuteOfDay
+    ? `\nATENÇÃO: horário de preparo pode ultrapassar o fechamento (${closingHour}h). Informe o cliente.`
+    : ""
+
+  let prompt = ctx.customerName
+    ? `Pedido de ${ctx.customerName} confirmado!\n`
+    : "Boa escolha! Pedido confirmado!\n"
+  if (orderId) prompt += `Número do pedido: #${orderId}\n`
+  prompt += `\nItens:\n${itemLines.join("\n")}\n`
+  prompt += `Total: ${centavosToReais(ctx.totalInCentavos)}\n`
+
+  // Payment details
+  if (ctx.paymentMethod === "pix") {
+    if (pixCopyPaste) {
+      prompt += `\nPIX copia-e-cola:\n${pixCopyPaste}\n`
+      prompt += "OBRIGATÓRIO: inclua o código PIX copia-e-cola COMPLETO na mensagem — o cliente precisa dele para pagar. Copie exatamente como está acima.\n"
+    }
+    if (pixQrCode) prompt += `QR Code: ${pixQrCode}\n`
+    if (!pixCopyPaste && !pixQrCode) prompt += "\nERRO: código PIX não foi gerado. Informe ao cliente que houve um problema técnico e peça para tentar novamente. NUNCA diga que o PIX será enviado depois — ele deve aparecer AGORA ou o pedido falhou.\n"
+    prompt += "Pagamento confirmado automaticamente.\n"
+  } else if (ctx.paymentMethod === "card") {
+    prompt += "\nPagamento via cartão confirmado.\n"
+  } else {
+    prompt += `\nPagamento em dinheiro na ${fulfillmentLabel.toLowerCase()}.\n`
+  }
+
+  // Fulfillment + ETA (frozen after-hours → next-day pickup instead of meaningless ETA)
+  prompt += `\n${fulfillmentLabel}.\n`
+  const isFrozenAfterHours = ctx.mealPeriod === "closed" && schedule
+  if (isFrozenAfterHours) {
+    prompt += getFrozenPickupMessage(schedule!, tz) + "\n"
+  } else {
+    prompt += `Tempo estimado: ~${totalEstimateMinutes} minutos.\n`
+    prompt += closingWarning
+  }
+
+  // Contact info first, loyalty as cherry-on-top bonus
+  prompt += `\n${contactInfo}\n`
+  prompt += `Ah, e mais um selo — ${stamps}/10.\n`
+
+  // LLM instructions
+  if (ctx.paymentMethod === "pix") {
+    prompt += "\nNUNCA diga 'Bom apetite' — o pagamento PIX ainda não foi confirmado. Diga que o pedido será confirmado automaticamente assim que o PIX for pago."
+  }
+  prompt += "\nApresente TODAS essas informações ao cliente de forma organizada."
+  // Payment status context (from decoupled Payment table)
+  if (ctx.paymentStatus) {
+    prompt += `\n\nStatus do pagamento: ${ctx.paymentStatus}.`
+    if (ctx.paymentStatus === "payment_expired") {
+      prompt += " O pagamento PIX expirou. Ofereça gerar novo PIX ou trocar forma de pagamento."
+    } else if (ctx.paymentStatus === "payment_failed") {
+      prompt += " O pagamento falhou. Ofereça tentar novamente ou trocar forma de pagamento."
+    } else if (ctx.paymentStatus === "paid") {
+      prompt += " Pagamento confirmado."
+    } else if (ctx.paymentStatus === "cash_pending") {
+      prompt += " Pagamento em dinheiro — será confirmado na entrega/retirada."
+    }
+  }
+
+  prompt += "\n\nAções disponíveis pós-pedido:\n- Status: consulte check_order_status (mostra tempo RESTANTE real)\n- Pagamento: consulte check_payment_status para ver status atual do pagamento\n- Cancelar: se o cliente quiser cancelar, confirme a intenção. O sistema processará o cancelamento.\n- Adicionar item: confirme o que o cliente quer adicionar. O sistema processará a alteração.\n- Fidelidade: consulte get_loyalty_balance\n- Trocar pagamento: confirme a nova forma de pagamento. O sistema processará a troca.\n- Novo PIX: se o PIX expirou, confirme. O sistema gerará um novo QR (limite: 3/hora, 5/pedido).\nSempre mostre o resumo completo do pedido após qualquer alteração."
+  if (orderId) {
+    prompt += `\nSe o cliente disser "novo pix", "mandar pix de novo", ou pedir novo código: use regenerate_pix com o orderId "${orderId}".`
+    prompt += `\nSe o cliente perguntar sobre pagamento: use check_payment_status com orderId="${orderId}".`
+  }
+  prompt += "\nIMPORTANTE: NUNCA diga 'confirmado', 'cancelado' ou 'alterado' antes do sistema processar. Diga \"Vou verificar...\" e aguarde. Só apresente o resultado DEPOIS que o sistema confirmar."
+
+  return prompt
+}
+
+// ── State → prompt template map ───────────────────────────────────────────────
+
+// Each entry is a function that receives the full OrderContext and an optional
+// schedule, returning the state-specific instruction block. These are combined
+// with the base voice in synthesizePrompt().
+
+type PromptTemplate = (ctx: OrderContext, schedule?: RestaurantSchedule) => string
+
+const STATE_PROMPTS: Record<string, PromptTemplate> = {
+  idle: (ctx) => {
+    if (ctx.lastAction === "cancelled") {
+      return "Pedido cancelado e carrinho esvaziado. Confirme ao cliente que o pedido foi cancelado. Pergunte se deseja mais algo."
+    }
+    if (ctx.mealPeriod === "closed") {
+      return "Restaurante fechado. Almoço 11h-15h, jantar 18h-23h. Se perguntarem, congelados disponíveis (Costela R$72/R$135, Pulled Pork R$42, Molho BBQ R$24). NÃO aceite pedidos frescos para outro horário. Seja breve."
+    }
+    if (ctx.activeOrderId) {
+      const nameGreeting = ctx.customerName ? ` Nome: ${ctx.customerName}.` : ""
+      return `Cliente RECORRENTE com pedido ativo (#${ctx.activeOrderDisplayId ?? "?"}, status: ${ctx.activeOrderStatus ?? "em andamento"}).${nameGreeting} Cumprimente e pergunte se quer acompanhar o pedido ou pedir algo novo. Use check_order_status com orderId="${ctx.activeOrderId}" se pedir status.`
+    }
+    if (!ctx.isNewCustomer) {
+      const nameGreeting = ctx.customerName ? ` Nome do cliente: ${ctx.customerName}.` : ""
+      return `Cliente RECORRENTE.${nameGreeting} Cumprimente pelo nome se disponível. 'E aí, vai querer o de sempre?' Pergunte como pode ajudar. NÃO re-ofereça promoção de boas-vindas.`
+    }
+    return "Cliente iniciando conversa. Cumprimente e pergunte como pode ajudar."
+  },
+
+  first_contact: (ctx) => {
+    const period = ctx.mealPeriod === "lunch" ? "almoço"
+      : ctx.mealPeriod === "dinner" ? "jantar" : null
+    const timeCtx = period ? ` Estamos no ${period}.` : ""
+    return `Cliente NOVO (nunca pediu).${timeCtx} Cumprimente com entusiasmo e pergunte o que está com vontade de comer. NÃO mencione crédito, descontos ou promoções — capture a intenção primeiro.`
+  },
+
+  browsing: (ctx, schedule) => {
+    const period = ctx.mealPeriod === "lunch" ? "ALMOÇO (11h-15h)"
+      : ctx.mealPeriod === "dinner" ? "JANTAR (18h-23h)"
+      : "FECHADO"
+    const menu = getCurrentMenu(schedule)
+    if (ctx.mealPeriod === "closed") {
+      return `Período ATUAL: ${period}.\n${menu}\nSe o cliente quiser ver congelados, apresente as opções. Caso contrário, informe os horários de funcionamento.`
+    }
+    return `Período ATUAL: ${period}.\n${menu}\nIMPORTANTE: APENAS itens listados acima estão disponíveis AGORA. Não sugira itens de outros períodos.\nAo apresentar itens, lidere com experiência, não preço. Ex: "Nossa costela leva mais de 10h de defumação" antes de "R$89".\nSe o cliente parecer indeciso (respostas vagas, "não sei", silêncio): ofereça atalho — "Se quiser, te indico os mais pedidos — facilita bastante"\nAjude o cliente a escolher.`
+  },
+
+  "ordering.validating_item": (ctx) => {
+    const product = ctx.pendingProduct ?? "um produto"
+    let base: string
+    if (ctx.mealPeriod === "closed") {
+      base = `Cliente quer ${product}. FECHADO — só congelados: Costela R$72/R$135, Pulled Pork R$42, Molho BBQ R$24. Se não for congelado, informe e apresente opções. NÃO aceite encomenda fresca para outro horário.`
+    } else {
+      base = `Cliente quer ${product}. Apresente opções/variantes disponíveis.`
+    }
+    if (ctx.lastSearchResult !== null) {
+      return `${base}\nResultado da busca: ${JSON.stringify(ctx.lastSearchResult)}`
+    }
+    return base
+  },
+
+  "ordering.item_unavailable": (ctx, schedule) => {
+    const product = ctx.pendingProduct ?? "este produto"
+    const reason = ctx.lastError ?? "não disponível no momento"
+    const altList =
+      ctx.alternatives.length > 0
+        ? ctx.alternatives.join(", ")
+        : "nenhuma alternativa encontrada"
+    const menu = getCurrentMenu(schedule)
+
+    let prompt: string
+    if (ctx.mealPeriod === "closed") {
+      prompt = `Cliente pediu ${product} mas o restaurante está FECHADO agora. Comida fresca só no almoço (11h-15h) ou jantar (18h-23h). Somente CONGELADOS disponíveis para encomenda e retirada.\n${menu}\nNUNCA aceite encomenda de comida fresca (${product}) para outro horário — o sistema NÃO suporta agendamento de pratos frescos. NUNCA diga "posso encomendar pra amanhã" para itens que não são congelados.\nSe o cliente quiser, apresente os congelados. Caso contrário, informe os horários e diga que pode ajudar com ${product} no próximo período aberto.`
+    } else {
+      prompt = `Cliente pediu ${product} mas NÃO disponível agora. ${reason}. Alternativas: ${altList}.\n${menu}\nExplique a janela e sugira. Varie a forma de recomendar — não repita 'carro-chefe', 'especialidade', ou 'mais pedido' em turnos consecutivos.`
+    }
+
+    const filledSlots: string[] = []
+    if (ctx.fulfillment !== null) filledSlots.push(`entrega: ${ctx.fulfillment}`)
+    if (ctx.paymentMethod !== null) filledSlots.push(`pagamento: ${ctx.paymentMethod}`)
+    if (filledSlots.length > 0) {
+      prompt += ` Cliente já informou ${filledSlots.join(" e ")} — guarde esses dados.`
+    }
+
+    // Hard anti-hallucination guard: cart is empty, no order exists
+    if (ctx.items.length === 0) {
+      prompt += `\nATENÇÃO: o carrinho está VAZIO — nenhum item foi adicionado com sucesso. NUNCA diga "pedido registrado", "pedido encaminhado", "confirmação em instantes" ou qualquer variação. O pedido NÃO existe ainda.`
+    }
+
+    return prompt
+  },
+
+  // NOTE: "ordering.item_added" is transient (auto-transitions to awaiting_next).
+  // Its logic is merged into "ordering.awaiting_next" below.
+
+  "ordering.awaiting_next": (ctx) => {
+    // ── Variant selection (merged from item_added — handles multi-variant products) ──
+    if (ctx.lastSearchResult && Array.isArray(ctx.lastSearchResult) && (ctx.lastSearchResult as unknown[]).length > 1 && ctx.pendingProduct) {
+      const variants = ctx.lastSearchResult as Array<{ name: string; priceInCentavos: number }>
+      const variantList = variants.map((v) => `${v.name} — ${centavosToReais(v.priceInCentavos)}`).join("\n")
+      let variantPrompt = `Cliente quer ${ctx.pendingProduct}. Variantes disponíveis:\n${variantList}\n`
+      if (!ctx.isNewCustomer) {
+        variantPrompt += "Cliente já pediu antes — assuma a variante do pedido anterior com confiança. Ex: 'Costela 500g igual da última vez — mando?'"
+      } else {
+        variantPrompt += "Cliente novo — sugira a variante mais popular com tom médio. Ex: 'Vou com a 500g (a mais pedida), ok?'"
+      }
+      return variantPrompt
+    }
+
+    const summary = formatCartSummary(ctx.items, ctx.totalInCentavos)
+    const creditLine = ctx.isNewCustomer && !ctx.couponApplied ? "Lembre o cliente: R$15 de desconto de boas-vindas será aplicado ao finalizar. NÃO subtraia do total mostrado — o sistema aplica automaticamente no checkout." : ""
+
+    // Upsell: suggest complementary item when main dish + no side/drink
+    let upsellLine = ""
+    if (!ctx.isCombo && ctx.upsellRound < 2 && ctx.hasMainDish && (!ctx.hasSide || !ctx.hasDrink)) {
+      const meatNames = ctx.items
+        .filter((i) => i.category === "meat" || i.category === "sandwich")
+        .map((i) => i.name)
+        .join(", ")
+      const suggestions: string[] = []
+      if (!ctx.hasSide) suggestions.push("Farofa(R$16)", "Mandioca Frita(R$18)")
+      if (!ctx.hasDrink) suggestions.push("Refri(R$8)", "Limonada(R$14)")
+      if (ctx.mealPeriod === "lunch" && ctx.totalInCentavos > 8000) suggestions.push("Brownie(R$22)")
+      if (suggestions.length > 0) {
+        upsellLine = `Sugira UM complemento na mesma mensagem — "Combina demais com..." ou "Quem pede ${meatNames || "isso"} geralmente leva...": ${suggestions.join(", ")}. Máximo 1 sugestão. Se recusar, siga em frente.`
+      }
+    }
+
+    // CONVERSION OPTIMIZATION: if only fulfillment + payment missing, ask both in one shot
+    if (ctx.fulfillment === null && ctx.paymentMethod === null && ctx.items.length > 0) {
+      return [
+        summary,
+        creditLine,
+        upsellLine,
+        "Pergunte entrega/retirada E forma de pagamento NA MESMA mensagem. Ex: 'Entrega ou retirada? E como quer pagar — PIX, cartão ou dinheiro?' Isso reduz etapas pro cliente.",
+      ].filter(Boolean).join("\n")
+    }
+
+    const missing = formatMissingSlots(ctx)
+    if (missing) {
+      return [summary, creditLine, upsellLine, `OBRIGATÓRIO antes de fechar: ${missing} Pergunte sobre o que falta PRIMEIRO. Só depois pergunte se quer adicionar mais algo.`].filter(Boolean).join("\n")
+    }
+    // Pre-filled preferences acknowledgment for returning customers
+    const prefillNote = (ctx.fulfillment && ctx.paymentMethod && !ctx.isNewCustomer)
+      ? `Cliente recorrente — preferências anteriores pré-preenchidas: ${ctx.fulfillment === "delivery" ? "entrega" : "retirada"}, ${ctx.paymentMethod}. Mencione casualmente: "Mantive ${ctx.fulfillment === "delivery" ? "entrega" : "retirada"} e ${ctx.paymentMethod} igual da última vez — se quiser mudar é só avisar."`
+      : ""
+    const instruction = "Sempre MOSTRE o resumo do carrinho ao cliente. Pergunte de forma natural: 'Quer mais alguma coisa ou fechamos?'"
+    return [summary, creditLine, upsellLine, prefillNote, instruction].filter(Boolean).join("\n")
+  },
+
+  "checkout.awaiting_login": (ctx) => {
+    const summary = formatCartSummary(ctx.items, ctx.totalInCentavos)
+    return `[BLOQUEIO: LOGIN OBRIGATÓRIO] Cliente quer pagar mas NÃO está logado.\n${summary}\nReconheça o pedido com entusiasmo. DEPOIS explique que para PIX/cartão precisa estar identificado. Link: ibatexas.com.br/entrar`
+  },
+
+  "checkout.selecting_slots": (ctx) => {
+    const summary = formatCartSummary(ctx.items, ctx.totalInCentavos)
+    const missing: string[] = []
+    if (!ctx.customerName) missing.push("nome pra quem é o pedido")
+    if (!ctx.fulfillment) missing.push("entrega ou retirada")
+    if (!ctx.paymentMethod) missing.push("forma de pagamento (PIX, cartão ou dinheiro)")
+    return `${summary}\nPergunte: ${missing.join(" e ")} — tudo na MESMA mensagem, de forma natural.
+Exemplo: "Entrega ou retirada? E como quer pagar — PIX, cartão ou dinheiro?"
+Se o cliente já informou um dos dois, pergunte só o que falta.`
+  },
+
+  "checkout.offer_pickup": (ctx) => {
+    const summary = formatCartSummary(ctx.items, ctx.totalInCentavos)
+    const addr = process.env.RESTAURANT_ADDRESS || process.env.NEXT_PUBLIC_ADDRESS || ""
+    const addrLine = addr ? ` Endereço para retirada: ${addr}.` : ""
+    return `${summary}\nEndereço fora da área de entrega. Informe e sugira retirada.${addrLine}`
+  },
+
+  "checkout.confirming": (ctx) => {
+    const summary = formatCartSummary(ctx.items, ctx.totalInCentavos)
+    const fulfillmentLabel =
+      ctx.fulfillment === "pickup" ? "Retirada no restaurante" : `Entrega${ctx.deliveryCep ? ` — CEP ${ctx.deliveryCep}` : ""}`
+    const paymentLabel =
+      ctx.paymentMethod === "pix"
+        ? "PIX"
+        : ctx.paymentMethod === "card"
+          ? "Cartão"
+          : "Dinheiro"
+    const feeLine =
+      ctx.fulfillment === "delivery" && ctx.deliveryFeeInCentavos !== null
+        ? `\nTaxa de entrega: ${centavosToReais(ctx.deliveryFeeInCentavos)}`
+        : ""
+    const tipLine = ctx.tipInCentavos > 0 ? `\nGorjeta: ${centavosToReais(ctx.tipInCentavos)}` : ""
+
+    // Checkout failed on previous attempt — surface the error
+    if (ctx.lastError) {
+      return `ERRO ao processar o pedido: ${ctx.lastError}\nInforme que houve um problema técnico e pergunte se quer tentar novamente.\n${summary}${feeLine}${tipLine}\nEntrega: ${fulfillmentLabel}\nPagamento: ${paymentLabel}`
+    }
+
+    return `${summary}${feeLine}${tipLine}\nEntrega: ${fulfillmentLabel}\nPagamento: ${paymentLabel}\nSe o cliente acabou de voltar (cumprimentou ou parece estar retomando), diga algo como "Oi de novo! Seu pedido tá aqui:" antes do resumo.\nOBRIGATÓRIO: SEMPRE inclua o total na mensagem para o cliente confirmar o valor antes de prosseguir.\nPergunte: 'Confirma o pedido?'\nNUNCA diga 'confirmado', 'registrado' ou 'finalizado'. O sistema confirma automaticamente — você só apresenta o resultado DEPOIS.\nNUNCA gere número de pedido, código PIX ou confirmação nesta etapa. O pedido AINDA NÃO foi enviado ao sistema.`
+  },
+
+  "checkout.collecting_pix_details": (ctx) => {
+    const summary = formatCartSummary(ctx.items, ctx.totalInCentavos)
+    const hasName = ctx.customerName?.includes(" ")
+    const hasEmail = !!ctx.customerEmail
+    const hasCpf = !!ctx.customerTaxId
+
+    if (hasName && hasEmail && hasCpf) {
+      const masked = ctx.customerTaxId!.replace(/(\d{3})\.\d{3}\.\d{3}(-\d{2})/, "$1.***.***$2")
+      return `${summary}\nDados para PIX:\n• ${ctx.customerName}\n• ${ctx.customerEmail}\n• CPF ${masked}\nPergunte se quer confirmar ou alterar.`
+    }
+
+    const missing: string[] = []
+    if (!hasName) missing.push("nome completo")
+    if (!hasEmail) missing.push("email")
+    if (!hasCpf) missing.push("CPF")
+
+    return `${summary}\nPara gerar o PIX, colete os dados do cliente: ${missing.join(", ")}.\nNÃO invente dados. Peça o que falta de forma natural.\nSe o cliente mandou dados parciais, guarde o que tem e peça o restante.`
+  },
+
+  "checkout.reviewing_pix_details": (ctx) => {
+    const masked = ctx.customerTaxId!.replace(/(\d{3})\.\d{3}\.\d{3}(-\d{2})/, "$1.***.***$2")
+    return `Confirma os dados para PIX?\n• ${ctx.customerName}\n• ${ctx.customerEmail}\n• CPF ${masked}\nPergunte: "Confirma?" Se quiser alterar, diga "alterar".`
+  },
+
+  "checkout.order_placed": (ctx, schedule) => {
+    // Transient state — usually transitions to post_order via LOYALTY_LOADED immediately.
+    // This prompt is rendered if the LLM is called before loyalty fetch completes.
+    const cr = ctx.checkoutResult as Record<string, unknown> | null
+    const hasPixData = !!(cr?.pixCopyPaste || cr?.pixQrCode)
+    if (!ctx.orderId && !cr?.orderId && !hasPixData) {
+      return "ERRO INTERNO: dados do pedido não disponíveis. Informe ao cliente que houve um problema técnico e peça para tentar novamente."
+    }
+    return formatOrderConfirmation(ctx, schedule)
+  },
+
+  post_order: (ctx, schedule) => {
+    // Guard: no order data means checkout never completed
+    const cr = ctx.checkoutResult as Record<string, unknown> | null
+    if (!ctx.orderId && !cr?.orderId) {
+      return "Nenhum pedido foi finalizado ainda. Pergunte se o cliente deseja continuar."
+    }
+
+    // Pending product amendment (customer asked to add item post-order)
+    if (ctx.pendingProduct) {
+      const orderRef = ctx.orderId ? `#${ctx.orderId}` : ""
+      const summary = formatCartSummary(ctx.items, ctx.totalInCentavos)
+      const fulfillmentLabel = ctx.fulfillment === "pickup"
+        ? "Retirada no restaurante"
+        : `Entrega${ctx.deliveryCep ? ` — CEP ${ctx.deliveryCep}` : ""}`
+      return `Pedido ${orderRef} confirmado.\n${summary}\n${fulfillmentLabel}\n\nCliente quer adicionar "${ctx.pendingProduct}". Confirme a intenção com o cliente. O sistema processará a alteração no pedido.`
+    }
+
+    // Payment status alert for expired/failed (customer may need to retry)
+    if (ctx.paymentStatus === "payment_expired") {
+      return formatOrderConfirmation(ctx, schedule) + "\n\nATENÇÃO: O PIX expirou. Pergunte se o cliente quer gerar novo PIX ou trocar forma de pagamento."
+    }
+    if (ctx.paymentStatus === "payment_failed") {
+      return formatOrderConfirmation(ctx, schedule) + "\n\nATENÇÃO: O pagamento falhou. Pergunte se o cliente quer tentar novamente ou trocar forma de pagamento."
+    }
+
+    // Full confirmation with explicit tool instructions
+    return formatOrderConfirmation(ctx, schedule)
+  },
+
+  reservation: () =>
+    "Fluxo de reserva. Pergunte data, horário e nº de pessoas.",
+
+  support: () =>
+    "Conectando com atendente. Informe que alguém vai entrar em contato.",
+
+  loyalty_check: (ctx) => {
+    const stamps = ctx.loyaltyStamps ?? 0
+    const base = `Cliente tem ${stamps}/10 selos.`
+    if (stamps >= 10) {
+      return `${base} Parabéns! Código FIEL20!`
+    }
+    return base
+  },
+
+  reorder: () =>
+    `Cliente quer repetir um pedido anterior.
+1. Consulte get_order_history para ver os últimos pedidos.
+2. Apresente o pedido mais recente como sugestão: "Costela 500g + Farofa, entrega no 14815-000, PIX — igual da última vez?"
+3. Se o cliente confirmar, o sistema recriará o carrinho automaticamente.
+4. Se o cliente quiser mudar algo, ajude normalmente.`,
+
+  objection: (ctx) => {
+    switch (ctx.lastObjectionSubtype) {
+      case "expensive":
+        return "Cliente achou caro. Reframe valor, NÃO preço: destaque a defumação artesanal e o diferencial. Sugira porções menores ('500g serve 2 pessoas — menos de R$45 por pessoa') ou combos ('Combo Brisket já vem completo — R$68'). NÃO ofereça desconto. NÃO diga 'Sem pressa!'."
+      case "thinking":
+        return "Cliente vai pensar. 'Tranquilo! Carrinho salvo 24h — qualquer dúvida é só mandar.' NÃO use 'Sem pressa!' (clichê). NÃO empurre nada. Confirme que o carrinho está salvo e deixe a porta aberta."
+      case "later":
+        return "Cliente quer deixar pra depois. Confirme que o carrinho está salvo e que pode retomar a qualquer momento. Não pressione."
+      default:
+        return "Cliente expressou uma objeção. Ouça e responda de forma empática. Não pressione — ofereça alternativa ou deixe a porta aberta."
+    }
+  },
+
+  fallback: (ctx, schedule) => {
+    const period = ctx.mealPeriod === "lunch" ? "ALMOÇO (11h-15h)"
+      : ctx.mealPeriod === "dinner" ? "JANTAR (18h-23h)"
+      : "FECHADO"
+    const menu = getCurrentMenu(schedule)
+    const constraint = "NUNCA gere número de pedido, total, confirmação de pedido, ou forma de entrega/pagamento. O fluxo de pedido é controlado pelo sistema — você NÃO pode confirmar pedidos."
+    if (ctx.mealPeriod === "closed") {
+      return `${constraint}\nNão entendi a intenção. Pergunte de forma amigável como pode ajudar.\nPeríodo ATUAL: ${period}.\n${menu}\nNÃO sugira congelados a menos que o cliente peça.`
+    }
+    return `${constraint}\nNão entendi a intenção. Pergunte de forma amigável como pode ajudar.\nPeríodo ATUAL: ${period}.\n${menu}`
+  },
+}
+
+// ── Momentum modifier ─────────────────────────────────────────────────────────
+
+/**
+ * Appends momentum-aware tone modifiers to the state block.
+ * - high: push next step, suggest checkout
+ * - cooling: reduce pressure, suggest alternatives
+ * - lost: re-anchor with strong suggestion or save cart
+ */
+function applyMomentumModifier(stateBlock: string, momentum: OrderContext["momentum"]): string {
+  switch (momentum) {
+    case "cooling":
+      return stateBlock + "\n[TOM: Cliente hesitante — reduza pressão. Sem urgência. Ofereça alternativa leve: 'Sem pressa — se quiser ir no mais simples, o combo resolve bem.']"
+    case "lost":
+      return stateBlock + "\n[TOM: Cliente perdeu interesse — re-ancore. Sugira fechar com o que tem ou salvar carrinho: 'Posso guardar seu carrinho pra depois — só mandar mensagem que retomamos.']"
+    default:
+      return stateBlock
+  }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+// ── Momentum-based token multipliers ────────────────────────────────────────
+
+const MOMENTUM_TOKEN_MULTIPLIER: Record<OrderContext["momentum"], number> = {
+  high: 0.7,     // compress responses when momentum is high
+  cooling: 1.0,  // normal verbosity
+  lost: 1.2,     // expand responses to re-engage
+}
+
+// ── Supervisor modifier types ───────────────────────────────────────────────
+
+export interface SupervisorModifiers {
+  toneAdjustment?: string
+  verbosityScale?: number
+}
+
+/**
+ * Assembles a minimal, state-targeted system prompt for a single LLM turn.
+ *
+ * @param stateValue - The current XState machine state value (e.g. "ordering.item_added")
+ * @param context    - The full OrderContext snapshot from the machine
+ * @param channel    - Delivery channel, controls base voice and maxTokens
+ * @param schedule   - Optional restaurant schedule for meal period
+ * @param supervisorModifiers - Optional Supervisor modifiers for tone/verbosity
+ * @returns          A SynthesizedPrompt ready to pass directly to the LLM call
+ */
+export function synthesizePrompt(
+  stateValue: string,
+  context: OrderContext,
+  channel: "whatsapp" | "web",
+  schedule?: RestaurantSchedule,
+  supervisorModifiers?: SupervisorModifiers,
+): SynthesizedPrompt {
+  // 0. Sync mealPeriod — context snapshot may be stale from Redis
+  const freshContext: OrderContext = { ...context, mealPeriod: getCurrentMealPeriod(schedule) }
+
+  // 0b. Current time so the LLM can answer "que horas são?" and reason about hours
+  const tz = process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo"
+  const timeStr = getTimeStr(tz)
+
+  // 1. Channel-appropriate base voice
+  const baseVoice = channel === "whatsapp" ? BASE_VOICE_WHATSAPP : BASE_VOICE_WEB
+
+  // 2. State-specific instruction block
+  //    Compound states (e.g. "post_order.idle") fall back to parent key ("post_order")
+  const templateFn = STATE_PROMPTS[stateValue]
+    ?? (stateValue.includes(".") ? STATE_PROMPTS[stateValue.split(".")[0]!] : undefined)
+  const effectiveState = stateValue === "__unknown__" ? "fallback" : stateValue
+  const rawStateBlock = templateFn !== undefined ? templateFn(freshContext, schedule) : STATE_PROMPTS["fallback"](freshContext, schedule)
+  const stateBlock = applyMomentumModifier(rawStateBlock, freshContext.momentum)
+
+  // 3. Supervisor tone adjustment (Layer 3 → Layer 2)
+  const toneDirective = supervisorModifiers?.toneAdjustment
+    ? `\n[SUPERVISOR: ${supervisorModifiers.toneAdjustment}]`
+    : ""
+
+  // 4. Compute maxTokens with momentum multiplier + supervisor verbosity
+  const baseTokens = channel === "whatsapp"
+    ? (WHATSAPP_TOKEN_LIMITS[effectiveState] ?? DEFAULT_WHATSAPP_TOKENS)
+    : MAX_TOKENS_WEB
+
+  const momentumMultiplier = MOMENTUM_TOKEN_MULTIPLIER[freshContext.momentum]
+  const supervisorVerbosity = supervisorModifiers?.verbosityScale ?? 1.0
+  const adjustedTokens = Math.round(baseTokens * momentumMultiplier * supervisorVerbosity)
+
+  // Clamp to reasonable bounds (minimum 200, maximum 2x base)
+  const finalTokens = Math.max(200, Math.min(adjustedTokens, baseTokens * 2))
+
+  // 5. Assemble and return
+  return {
+    systemPrompt: `${baseVoice}\n\nHORA ATUAL: ${timeStr}\n\n${stateBlock}${toneDirective}`,
+    availableTools: resolveTools(effectiveState, freshContext),
+    maxTokens: finalTokens,
+  }
+}
+
+// ── Deterministic fallback responses (for hard deadline enforcement) ─────────
+
+const STATE_FALLBACKS: Record<string, (ctx: OrderContext) => string> = {
+  "idle": () => "Oi! Sou o atendente do IbateXas. O que posso fazer por você? 🍖",
+  "first_contact": () => "Bem-vindo ao IbateXas! Quer ver nosso cardápio ou já sabe o que quer pedir?",
+  "browsing": () => "Temos vários cortes e combos disponíveis. O que te interessa?",
+  "ordering.awaiting_next": (ctx) => {
+    const items = ctx.items.map((i) => `${i.quantity}x ${i.name}`).join(", ")
+    return items
+      ? `No carrinho: ${items}. Quer adicionar mais alguma coisa ou fechar?`
+      : "O que gostaria de pedir?"
+  },
+  "checkout.selecting_slots": (ctx) => {
+    const missing = []
+    if (!ctx.fulfillment) missing.push("forma de receber (retirada ou entrega)")
+    if (!ctx.paymentMethod) missing.push("forma de pagamento (PIX, cartão ou dinheiro)")
+    return missing.length > 0
+      ? `Pra fechar, preciso saber: ${missing.join(" e ")}.`
+      : "Tudo certo! Posso confirmar seu pedido?"
+  },
+  "checkout.confirming": () => "Confirma o pedido?",
+  "objection": () => "Tá tudo certo, seu carrinho fica salvo. Qualquer coisa é só mandar mensagem!",
+  "fallback": () => "Desculpa, não entendi. Pode repetir de outra forma?",
+  "support": () => "Vou te conectar com um atendente humano. Um momento.",
+}
+
+/**
+ * Build a deterministic fallback response when the LLM fails or times out.
+ * Used by the Orchestrator's hard deadline enforcement.
+ */
+export function buildDeterministicFallback(stateValue: string, ctx: OrderContext): string {
+  // Map __unknown__ to fallback for deterministic responses
+  const resolvedState = stateValue === "__unknown__" ? "fallback" : stateValue
+  // Try exact match, then prefix match, then generic fallback
+  const fn = STATE_FALLBACKS[resolvedState]
+    ?? Object.entries(STATE_FALLBACKS).find(([k]) => stateValue.startsWith(k))?.[1]
+    ?? STATE_FALLBACKS["fallback"]
+  return fn(ctx)
+}

@@ -50,7 +50,7 @@ interface UIState {
   openCartDrawer: () => void
   closeCartDrawer: () => void
   toggleCartDrawer: () => void
-  setFilters: (filters: UIState['selectedFilters']) => void
+  setFilters: (filters: Partial<UIState['selectedFilters']>) => void
   resetFilters: () => void
   addToast: (message: string, type: ToastType, duration?: number) => void
   removeToast: (id: string) => void

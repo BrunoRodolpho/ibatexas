@@ -7,6 +7,7 @@
 // - Non-existent resource → throws "não encontrado/encontrada"
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { assertOrderOwnership, assertReservationOwnership } from "../ownership.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -25,10 +26,6 @@ vi.mock("@ibatexas/domain", () => ({
     },
   },
 }))
-
-// ── Imports ────────────────────────────────────────────────────────────────────
-
-import { assertOrderOwnership, assertReservationOwnership } from "../ownership.js"
 
 // ── assertOrderOwnership ───────────────────────────────────────────────────────
 

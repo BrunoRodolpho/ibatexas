@@ -18,9 +18,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.80.0",
+    "@anthropic-ai/sdk": "^0.82.0",
+    "@ibatexas/domain": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
+    "fuse.js": "^7.1.0",
+    "xstate": "^5.29.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

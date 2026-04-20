@@ -8,6 +8,8 @@
 // - Limit is respected
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { ReservationStatus } from "@ibatexas/types"
+import { getMyReservations } from "../get-my-reservations.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -51,11 +53,6 @@ vi.mock("../utils.js", () => ({
   assignTables: vi.fn(),
   releaseReservation: vi.fn(),
 }))
-
-// ── Imports ────────────────────────────────────────────────────────────────────
-
-import { getMyReservations } from "../get-my-reservations.js"
-import { ReservationStatus } from "@ibatexas/types"
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 

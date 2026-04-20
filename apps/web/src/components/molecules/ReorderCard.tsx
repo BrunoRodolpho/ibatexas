@@ -6,6 +6,7 @@ import { useCartStore } from '@/domains/cart'
 import { useSessionStore } from '@/domains/session'
 import { useUIStore } from '@/domains/ui'
 import { Button } from '../atoms'
+import { formatBRL } from '@/lib/format'
 import { track } from '@/domains/analytics'
 import NextImage from 'next/image'
 import type { ProductDTO } from '@ibatexas/types'
@@ -35,10 +36,7 @@ export function ReorderCard() {
     addToast(t('added_all'), 'cart')
   }
 
-  const totalFormatted = (lastOrder.total / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const totalFormatted = formatBRL(lastOrder.total)
 
   return (
     <section className="bg-smoke-50">
@@ -47,7 +45,7 @@ export function ReorderCard() {
           <div className="flex items-center justify-between mb-3">
             <div>
               <h3 className="font-display text-sm font-semibold text-charcoal-900">{t('title')}</h3>
-              <p className="text-xs text-smoke-400">{t('subtitle', { total: totalFormatted })}</p>
+              <p className="text-xs text-[var(--color-text-secondary)]">{t('subtitle', { total: totalFormatted })}</p>
             </div>
             <Button variant="brand" size="sm" onClick={handleReorder}>
               {t('cta')}
@@ -62,14 +60,14 @@ export function ReorderCard() {
                   </div>
                 ) : (
                   <div className="w-12 h-12 rounded-sm bg-smoke-100 flex items-center justify-center">
-                    <span className="text-[8px] text-smoke-300">IBX</span>
+                    <span className="text-[8px] text-[var(--color-text-muted)]">IBX</span>
                   </div>
                 )}
               </div>
             ))}
             {lastOrder.items.length > 4 && (
               <div className="w-12 h-12 rounded-sm bg-smoke-100 flex items-center justify-center flex-shrink-0">
-                <span className="text-xs text-smoke-400">+{lastOrder.items.length - 4}</span>
+                <span className="text-xs text-[var(--color-text-secondary)]">+{lastOrder.items.length - 4}</span>
               </div>
             )}
           </div>

@@ -1,6 +1,18 @@
 // Unit tests for whatsapp/session.ts — mock Redis, prisma, uuid.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  normalizePhone,
+  hashPhone,
+  resolveWhatsAppSession,
+  buildWhatsAppContext,
+  touchSession,
+  acquireAgentLock,
+  releaseAgentLock,
+  tryDebounce,
+  getSessionState,
+  setSessionState,
+} from "../whatsapp/session.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -14,6 +26,7 @@ const mockRedis = vi.hoisted(() => ({
   set: vi.fn(),
   del: vi.fn(),
   incr: vi.fn(),
+  eval: vi.fn(),
 }));
 
 const mockAtomicIncr = vi.hoisted(() => vi.fn().mockResolvedValue(1));
@@ -36,19 +49,6 @@ vi.mock("@ibatexas/domain", () => ({
 vi.mock("@ibatexas/types", () => ({
   Channel: { Web: "web", WhatsApp: "whatsapp" },
 }));
-
-import {
-  normalizePhone,
-  hashPhone,
-  resolveWhatsAppSession,
-  buildWhatsAppContext,
-  touchSession,
-  acquireAgentLock,
-  releaseAgentLock,
-  tryDebounce,
-  getSessionState,
-  setSessionState,
-} from "../whatsapp/session.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -129,6 +129,9 @@ describe("resolveWhatsAppSession", () => {
       sessionId: "sess-cached",
       customerId: "cust-cached",
     });
+    // ROTATE_SESSION_SCRIPT returns existing sessionId when not idle
+    mockRedis.eval.mockResolvedValue("sess-cached");
+    mockRedis.expire.mockResolvedValue(undefined);
 
     const session = await resolveWhatsAppSession(phone);
 
@@ -147,6 +150,8 @@ describe("resolveWhatsAppSession", () => {
       sessionId: "sess-1",
       customerId: "cust-1",
     });
+    mockRedis.eval.mockResolvedValue("sess-1");
+    mockRedis.expire.mockResolvedValue(undefined);
 
     const session = await resolveWhatsAppSession(phone);
     expect(session.phone).toBe("+5511888877766");
@@ -157,6 +162,8 @@ describe("resolveWhatsAppSession", () => {
       sessionId: "sess-1",
       customerId: "cust-1",
     });
+    mockRedis.eval.mockResolvedValue("sess-1");
+    mockRedis.expire.mockResolvedValue(undefined);
 
     const session = await resolveWhatsAppSession(phone);
     expect(session.phone).toBe(phone);
@@ -278,70 +285,68 @@ describe("touchSession", () => {
 // ── acquireAgentLock / releaseAgentLock ────────────────────────────────────────
 
 describe("acquireAgentLock", () => {
-  it("returns true when lock is acquired (SET NX succeeds)", async () => {
+  it("returns UUID lock value when lock is acquired (SET NX succeeds)", async () => {
     mockRedis.set.mockResolvedValue("OK");
+    mockRedis.eval.mockResolvedValue(undefined);
 
-    const acquired = await acquireAgentLock("sess-1");
+    const lockValue = await acquireAgentLock("sess-1");
 
-    expect(acquired).toBe(true);
+    expect(lockValue).toBeTypeOf("string");
+    expect(lockValue).toBeTruthy();
     expect(mockRedis.set).toHaveBeenCalledWith(
       expect.stringContaining("wa:agent:sess-1"),
-      "1",
+      expect.any(String),
       { EX: 30, NX: true },
     );
   });
 
-  it("returns false when lock already held (SET NX fails)", async () => {
+  it("returns null when lock already held (SET NX fails)", async () => {
     mockRedis.set.mockResolvedValue(null);
 
-    const acquired = await acquireAgentLock("sess-1");
+    const lockValue = await acquireAgentLock("sess-1");
 
-    expect(acquired).toBe(false);
+    expect(lockValue).toBeNull();
   });
 
   it("starts heartbeat interval on successful acquisition", async () => {
     mockRedis.set.mockResolvedValue("OK");
-    mockRedis.expire.mockResolvedValue(undefined);
+    mockRedis.eval.mockResolvedValue(undefined);
 
     await acquireAgentLock("sess-hb");
 
     // Advance time to trigger heartbeat (10s interval)
     await vi.advanceTimersByTimeAsync(10_000);
 
-    // Heartbeat calls expire to extend TTL
-    expect(mockRedis.expire).toHaveBeenCalledWith(
-      expect.stringContaining("wa:agent:sess-hb"),
-      30,
-    );
+    // Heartbeat uses Lua script via eval for ownership-checked TTL extension
+    expect(mockRedis.eval).toHaveBeenCalled();
   });
 });
 
 describe("releaseAgentLock", () => {
-  it("clears heartbeat and deletes Redis key", async () => {
+  it("clears heartbeat and releases lock via Lua script", async () => {
     mockRedis.set.mockResolvedValue("OK");
-    mockRedis.del.mockResolvedValue(1);
+    mockRedis.eval.mockResolvedValue(undefined);
 
     // Acquire first to set up heartbeat
-    await acquireAgentLock("sess-rel");
-    await releaseAgentLock("sess-rel");
+    const lockValue = await acquireAgentLock("sess-rel");
+    await releaseAgentLock("sess-rel", lockValue!);
 
-    expect(mockRedis.del).toHaveBeenCalledWith(
-      expect.stringContaining("wa:agent:sess-rel"),
-    );
+    // Release uses Lua eval for ownership-checked delete (CLAUDE.md rule #10)
+    expect(mockRedis.eval).toHaveBeenCalled();
   });
 
   it("handles release when no heartbeat exists (no-op)", async () => {
-    mockRedis.del.mockResolvedValue(0);
+    mockRedis.eval.mockResolvedValue(0);
 
     // Release without acquiring — should not throw
-    await expect(releaseAgentLock("sess-none")).resolves.toBeUndefined();
+    await expect(releaseAgentLock("sess-none", "fake-lock")).resolves.toBeUndefined();
   });
 
   it("handles Redis errors gracefully (best-effort)", async () => {
     mockRedis.del.mockRejectedValue(new Error("Redis down"));
 
     // Should not throw even if Redis fails
-    await expect(releaseAgentLock("sess-err")).resolves.toBeUndefined();
+    await expect(releaseAgentLock("sess-err", "fake-lock")).resolves.toBeUndefined();
   });
 });
 

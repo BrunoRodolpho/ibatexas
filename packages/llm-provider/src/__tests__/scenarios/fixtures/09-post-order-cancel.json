@@ -1,0 +1,64 @@
+{
+  "name": "post-order-cancel",
+  "description": "Order placed via fast-path → customer requests cancellation → cancel_order tool available in post_order",
+  "channel": "whatsapp",
+  "customerId": "cust-009",
+  "isNewCustomer": false,
+  "mealPeriod": "dinner",
+  "turns": [
+    {
+      "input": "Quero linguiça retirada pix",
+      "expectedEvents": ["ADD_ITEM", "SET_FULFILLMENT", "SET_PAYMENT", "CHECKOUT_START"],
+      "expectedState": "checkout.confirming",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-ling", "name": "Linguiça 4un", "priceInCentavos": 3800, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-009",
+        "items": [
+          { "productId": "prod-ling", "variantId": "var-ling", "name": "Linguiça 4un", "category": "meat", "quantity": 1, "priceInCentavos": 3800 }
+        ],
+        "totalInCentavos": 3800
+      },
+      "assertContext": {
+        "fulfillment": "pickup",
+        "paymentMethod": "pix"
+      }
+    },
+    {
+      "input": "Sim confirmo",
+      "expectedState": "checkout.collecting_pix_details",
+      "assertPromptContains": ["email", "CPF"],
+      "assertTools": []
+    },
+    {
+      "input": "Maria Santos maria@email.com 987.654.321-00",
+      "expectedState": "post_order.idle",
+      "injectPixDetails": { "name": "Maria Santos", "email": "maria@email.com", "cpf": "987.654.321-00" },
+      "injectCheckoutResult": {
+        "success": true,
+        "paymentMethod": "pix",
+        "checkoutData": {
+          "orderId": "IXS-009",
+          "pixCopyPaste": "00020126580014br.gov.bcb.pix0136def456",
+          "pixQrCode": null
+        }
+      },
+      "assertContext": {
+        "orderId": "IXS-009"
+      },
+      "assertTools": ["check_order_status"]
+    },
+    {
+      "input": "desistir",
+      "expectedEvents": ["CANCEL_ORDER"],
+      "expectedState": "post_order.cancelling",
+      "assertTools": []
+    }
+  ]
+}

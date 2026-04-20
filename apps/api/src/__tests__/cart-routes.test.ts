@@ -4,7 +4,14 @@
 // POST /api/cart/:id/promotions, POST /api/cart/:id/payment-sessions
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { cartRoutes } from "../routes/cart.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -13,11 +20,44 @@ const mockRk = vi.hoisted(() => vi.fn());
 const mockMedusaStore = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 
+const MockMedusaRequestError = vi.hoisted(() =>
+  class extends Error {
+    statusCode: number;
+    constructor(statusCode: number, message: string) {
+      super(message);
+      this.statusCode = statusCode;
+    }
+  }
+);
+
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
   estimateDelivery: vi.fn(async () => ({ success: true })),
   createCheckout: vi.fn(async () => ({ success: true })),
+  reaisToCentavos: (amount: number) => Math.round(amount * 100),
+  MedusaRequestError: MockMedusaRequestError,
+  cancelStalePaymentIntent: vi.fn().mockResolvedValue(undefined),
+  loadSchedule: vi.fn().mockResolvedValue({ days: {} }),
+  getMealPeriodFromSchedule: vi.fn().mockReturnValue("lunch"),
+}));
+
+vi.mock("@ibatexas/domain", () => ({
+  createCustomerService: () => ({
+    getById: vi.fn().mockResolvedValue(null),
+  }),
+  createPaymentQueryService: () => ({
+    getActiveByOrderId: vi.fn().mockResolvedValue(null),
+  }),
+  prisma: {
+    orderProjection: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+  },
+}));
+
+vi.mock("@ibatexas/nats-client", () => ({
+  publishNatsEvent: vi.fn(),
 }));
 
 vi.mock("../routes/admin/_shared.js", () => ({
@@ -47,14 +87,6 @@ vi.mock("../middleware/auth.js", () => ({
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
-import sensible from "@fastify/sensible";
-import { cartRoutes } from "../routes/cart.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });
@@ -123,11 +155,12 @@ describe("POST /api/cart — create cart", () => {
     });
 
     expect(res.statusCode).toBe(201);
+    // Cart creation sends empty body — customer association happens via Medusa session
     expect(mockMedusaStore).toHaveBeenCalledWith(
       "/store/carts",
       expect.objectContaining({
         method: "POST",
-        body: expect.stringContaining("cus_01"),
+        body: "{}",
       }),
     );
   });
@@ -160,13 +193,14 @@ describe("GET /api/cart/:id — get cart", () => {
   });
 
   it("returns cart data from Medusa", async () => {
+    // Medusa v2 returns prices in reais — this is a passthrough proxy
     mockMedusaStore.mockResolvedValue({
       cart: {
         id: "cart_01",
         items: [
-          { id: "item_01", variant_id: "var_01", quantity: 2, unit_price: 8900 },
+          { id: "item_01", variant_id: "var_01", quantity: 2, unit_price: 89 },
         ],
-        total: 17800,
+        total: 178,
       },
     });
 
@@ -180,7 +214,7 @@ describe("GET /api/cart/:id — get cart", () => {
     const body = res.json();
     expect(body.cart.id).toBe("cart_01");
     expect(body.cart.items).toHaveLength(1);
-    expect(body.cart.total).toBe(17800);
+    expect(body.cart.total).toBe(178);
   });
 
   it("calls medusaStore with correct path", async () => {
@@ -333,8 +367,9 @@ describe("POST /api/cart/:id/promotions — apply coupon", () => {
   });
 
   it("applies promotion code to cart", async () => {
+    // Medusa v2 returns discount_total in reais — passthrough proxy
     mockMedusaStore.mockResolvedValue({
-      cart: { id: "cart_01", discount_total: 1000 },
+      cart: { id: "cart_01", discount_total: 10 },
     });
 
     const app = await buildTestServer();
@@ -366,8 +401,9 @@ describe("POST /api/cart/:id/promotions — apply coupon", () => {
   });
 
   it("accepts multiple promo codes", async () => {
+    // Medusa v2 returns discount_total in reais — passthrough proxy
     mockMedusaStore.mockResolvedValue({
-      cart: { id: "cart_01", discount_total: 2000 },
+      cart: { id: "cart_01", discount_total: 20 },
     });
 
     const app = await buildTestServer();
@@ -379,52 +415,64 @@ describe("POST /api/cart/:id/promotions — apply coupon", () => {
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.cart.discount_total).toBe(2000);
+    expect(body.cart.discount_total).toBe(20);
   });
 });
 
-describe("POST /api/cart/:id/payment-sessions — initialize payment", () => {
+describe("POST /api/cart/:id/payment-sessions — initialize payment (v2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
-  it("initializes payment sessions for cart", async () => {
-    mockMedusaStore.mockResolvedValue({
-      cart: {
-        id: "cart_01",
-        payment_sessions: [{ provider_id: "stripe" }],
-      },
-    });
+  it("creates payment collection then initializes session", async () => {
+    // First call: GET cart (no payment_collection yet)
+    // Second call: POST payment-collections
+    // Third call: POST payment-sessions on collection
+    mockMedusaStore
+      .mockResolvedValueOnce({ cart: { id: "cart_01", payment_collection: null } })
+      .mockResolvedValueOnce({ payment_collection: { id: "pc_01" } })
+      .mockResolvedValueOnce({ payment_session: { id: "ps_01", provider_id: "pp_stripe_stripe" } });
 
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
       url: "/api/cart/cart_01/payment-sessions",
+      payload: { provider_id: "pp_stripe_stripe" },
     });
 
     expect(res.statusCode).toBe(200);
     expect(mockMedusaStore).toHaveBeenCalledWith(
-      "/store/carts/cart_01/payment-sessions",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ "Content-Type": "application/json" }),
-      }),
+      "/store/payment-collections",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(mockMedusaStore).toHaveBeenCalledWith(
+      "/store/payment-collections/pc_01/payment-sessions",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 
-  it("calls the correct Medusa endpoint", async () => {
-    mockMedusaStore.mockResolvedValue({ cart: { id: "cart_special" } });
+  it("reuses existing payment collection", async () => {
+    // Cart already has a payment collection
+    mockMedusaStore
+      .mockResolvedValueOnce({ cart: { id: "cart_02", payment_collection: { id: "pc_existing" } } })
+      .mockResolvedValueOnce({ payment_session: { id: "ps_02" } });
 
     const app = await buildTestServer();
     await app.inject({
       method: "POST",
-      url: "/api/cart/cart_special/payment-sessions",
+      url: "/api/cart/cart_02/payment-sessions",
+      payload: { provider_id: "pp_stripe_stripe" },
     });
 
-    expect(mockMedusaStore).toHaveBeenCalledWith(
-      "/store/carts/cart_special/payment-sessions",
+    // Should NOT create a new payment collection
+    expect(mockMedusaStore).not.toHaveBeenCalledWith(
+      "/store/payment-collections",
       expect.anything(),
+    );
+    expect(mockMedusaStore).toHaveBeenCalledWith(
+      "/store/payment-collections/pc_existing/payment-sessions",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 });
@@ -436,14 +484,15 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
   });
 
   it("returns 403/404 when order belongs to a different customer", async () => {
+    // Medusa v2 returns prices in reais — route converts to centavos
     mockMedusaAdmin.mockResolvedValue({
       order: {
         id: "order_01",
         status: "completed",
         display_id: 42,
-        total: 17800,
-        subtotal: 15800,
-        shipping_total: 2000,
+        total: 178,
+        subtotal: 158,
+        shipping_total: 20,
         customer_id: "cust_OTHER",
         items: [],
         created_at: "2026-03-18T00:00:00.000Z",
@@ -464,16 +513,17 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
   });
 
   it("returns order when customer_id matches", async () => {
+    // Medusa v2 returns prices in reais — route converts to centavos
     mockMedusaAdmin.mockResolvedValue({
       order: {
         id: "order_02",
         status: "completed",
         display_id: 43,
-        total: 8900,
-        subtotal: 8900,
+        total: 89,
+        subtotal: 89,
         shipping_total: 0,
         customer_id: "cust_ME",
-        items: [{ id: "item_01", title: "Costela", quantity: 1, unit_price: 8900 }],
+        items: [{ id: "item_01", title: "Costela", quantity: 1, unit_price: 89 }],
         created_at: "2026-03-18T00:00:00.000Z",
       },
     });
@@ -490,15 +540,17 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
     expect(body.order.id).toBe("order_02");
   });
 
-  it("returns 401 when not authenticated", async () => {
+  it("returns 404 when order not found (unauthenticated)", async () => {
+    // Route uses optionalAuth to support stripe-return polling for PIX orders
+    mockMedusaAdmin.mockResolvedValue({ order: undefined });
     const app = await buildTestServer();
     const res = await app.inject({
       method: "GET",
-      url: "/api/cart/orders/order_01",
+      url: "/api/cart/orders/order_not_found",
       // No x-customer-id header
     });
 
-    expect(res.statusCode).toBe(401);
+    expect(res.statusCode).toBe(404);
   });
 });
 

@@ -57,6 +57,22 @@ vi.mock("next-intl", () => ({
   useTranslations: mockUseTranslations,
 }))
 
+const MockComponent = vi.hoisted(() =>
+  class {
+    props: unknown
+    constructor(props: unknown) { this.props = props }
+    render(): unknown { return null }
+  }
+)
+
+const mockUseState = vi.hoisted(() =>
+  vi.fn((initial: unknown) => [typeof initial === "function" ? (initial as () => unknown)() : initial, vi.fn()]),
+)
+
+const mockUseEffect = vi.hoisted(() => vi.fn())
+const mockUseRef = vi.hoisted(() => vi.fn((initial: unknown) => ({ current: initial })))
+const mockUseCallback = vi.hoisted(() => vi.fn((fn: unknown) => fn))
+
 vi.mock("react", () => ({
   default: {
     createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({
@@ -64,12 +80,22 @@ vi.mock("react", () => ({
       props: { ...((props as Record<string, unknown>) || {}), children },
     }),
     useMemo: mockUseMemo,
+    useState: mockUseState,
+    useEffect: mockUseEffect,
+    useRef: mockUseRef,
+    useCallback: mockUseCallback,
+    Component: MockComponent,
   },
   createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({
     type,
     props: { ...((props as Record<string, unknown>) || {}), children },
   }),
   useMemo: mockUseMemo,
+  useState: mockUseState,
+  useEffect: mockUseEffect,
+  useRef: mockUseRef,
+  useCallback: mockUseCallback,
+  Component: MockComponent,
 }))
 
 vi.mock("react/jsx-runtime", () => ({
@@ -101,21 +127,18 @@ vi.mock("@/components/organisms", () => ({
 
 vi.mock("lucide-react", () => ({
   Heart: () => ({ type: "svg", props: {} }),
+  ShoppingBag: () => ({ type: "svg", props: {} }),
+}))
+
+vi.mock("@/domains/recommendations", () => ({
+  useRecommendations: vi.fn(() => ({ data: [], loading: false, error: null })),
+}))
+
+vi.mock("@/domains/analytics", () => ({
+  track: vi.fn(),
 }))
 
 import WishlistPage from "../../app/[locale]/lista-desejos/page"
-
-/** Recursively collect all string content from a JSX tree. */
-function collectText(node: unknown): string {
-  if (node == null || typeof node === "boolean") return ""
-  if (typeof node === "string" || typeof node === "number") return String(node)
-  if (Array.isArray(node)) return node.map(collectText).join("")
-  if (typeof node === "object" && node !== null && "props" in node) {
-    const props = (node as { props?: { children?: unknown } }).props
-    return collectText(props?.children)
-  }
-  return ""
-}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -125,16 +148,17 @@ beforeEach(() => {
 describe("WishlistPage", () => {
   it("renders empty state when wishlist is empty", () => {
     mockUseWishlistStore.mockImplementation((selector?: unknown) => {
-      const state = { items: [] as string[] }
+      const state = { items: [] as string[], _hydrated: true }
       return typeof selector === "function" ? (selector as (s: typeof state) => unknown)(state) : state
     })
     mockUseProducts.mockReturnValue({ data: null, loading: false, error: null })
     mockUseMemo.mockReturnValue([])
 
-    const tree = WishlistPage()
-    const text = collectText(tree)
+    const tree = WishlistPage() as { type?: { name?: string } }
 
-    expect(text).toContain("Nenhum item")
+    // JSX returns an element referencing the EmptyWishlist component function
+    expect(tree?.type).toBeDefined()
+    expect(typeof tree?.type === "function" ? tree.type.name : tree?.type).toBe("EmptyWishlist")
   })
 
   it("renders product grid when wishlist has items", () => {
@@ -144,7 +168,7 @@ describe("WishlistPage", () => {
     ]
 
     mockUseWishlistStore.mockImplementation((selector?: unknown) => {
-      const state = { items: ["prod-1", "prod-2"] }
+      const state = { items: ["prod-1", "prod-2"], _hydrated: true }
       return typeof selector === "function" ? (selector as (s: typeof state) => unknown)(state) : state
     })
     mockUseProducts.mockReturnValue({

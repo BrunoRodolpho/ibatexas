@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useShippingEstimate } from '@/domains/shipping'
+import { formatBRL } from '@/lib/format'
 import { Button, TextField, Text } from '../atoms'
 
 export const ShippingEstimate = () => {
@@ -31,13 +32,6 @@ export const ShippingEstimate = () => {
   const handleCalculate = () => {
     // Input is already updating the query via the hook
     // This could trigger additional validation if needed
-  }
-
-  const formatCurrency = (amount: number): string => {
-    return amount.toLocaleString('pt-BR', {
-      style: 'currency',
-      currency: 'BRL',
-    })
   }
 
   return (
@@ -89,18 +83,18 @@ export const ShippingEstimate = () => {
                     <Text className="font-medium">
                       {option.service === 'PAC' ? t('shop.shipping.pac') : t('shop.shipping.sedex')}
                     </Text>
-                    <Text variant="small" className="text-smoke-400">
+                    <Text variant="small" className="text-[var(--color-text-secondary)]">
                       {option.estimatedDays} {t('shop.shipping.business_days')}
                     </Text>
                   </div>
                   <Text className="font-bold text-charcoal-900">
-                    {formatCurrency(option.price / 100)}
+                    {formatBRL(option.price)}
                   </Text>
                 </div>
               ))}
             </div>
             
-            <Text variant="xs" className="text-smoke-400">
+            <Text variant="xs" className="text-[var(--color-text-secondary)]">
               ✓ {t('shop.shipping.info')} • {t('shop.shipping.origin')}
             </Text>
           </div>

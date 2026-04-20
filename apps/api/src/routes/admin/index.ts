@@ -26,6 +26,10 @@ import { reviewRoutes } from "./reviews.js";
 import { tableRoutes } from "./tables.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 import { analyticsRoutes } from "./analytics.js";
+import { scheduleRoutes } from "./schedule.js";
+import { adminPaymentRoutes } from "./payments.js";
+import { adminOrderActionRoutes } from "./order-actions.js";
+import { adminBannerRoutes } from "./banner.js";
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Support comma-separated list of valid API keys for rotation
@@ -33,6 +37,15 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     .split(",")
     .map((k) => k.trim())
     .filter((k) => k.length > 0);
+
+  for (const key of ADMIN_API_KEYS) {
+    if (key.length < 32) {
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("ADMIN_API_KEY entries must be at least 32 characters");
+      }
+      server.log.warn("ADMIN_API_KEY entry shorter than 32 chars — insecure");
+    }
+  }
 
   // DOM-001: Auth guard — accept EITHER x-admin-key header OR valid staff JWT cookie.
   // The staff JWT path runs optionalAuth first (populates request.staffId/staffRole),
@@ -92,4 +105,8 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(tableRoutes);
   await server.register(deliveryZoneRoutes);
   await server.register(analyticsRoutes);
+  await server.register(scheduleRoutes);
+  await server.register(adminPaymentRoutes);
+  await server.register(adminOrderActionRoutes);
+  await server.register(adminBannerRoutes);
 }

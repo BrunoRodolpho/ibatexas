@@ -3,8 +3,8 @@
 // so notification stubs can send real WhatsApp messages.
 
 import { setWhatsAppSender } from "@ibatexas/tools";
-import { sendText } from "./client.js";
 import logger from "../lib/logger.js";
+import { sendText } from "./client.js";
 
 export function initWhatsAppSender(): void {
   if (!process.env.TWILIO_WHATSAPP_NUMBER) {

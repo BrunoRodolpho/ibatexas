@@ -1,0 +1,44 @@
+{
+  "name": "returning-customer-cart",
+  "description": "Returning customer greets then adds a single-variant item",
+  "channel": "whatsapp",
+  "customerId": "cust-returning",
+  "isNewCustomer": false,
+  "mealPeriod": "lunch",
+  "turns": [
+    {
+      "input": "Oi",
+      "expectedEvents": ["GREETING"],
+      "expectedState": "browsing",
+      "assertPromptContains": ["ALMOÇO"],
+      "assertTools": ["search_products", "estimate_delivery"]
+    },
+    {
+      "input": "Quero linguiça",
+      "expectedEvents": ["ADD_ITEM"],
+      "expectedState": "ordering.awaiting_next",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-linguica", "name": "Linguiça 4un", "priceInCentavos": 3800, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-002",
+        "items": [
+          { "productId": "prod-linguica", "variantId": "var-linguica", "name": "Linguiça 4un", "category": "meat", "quantity": 1, "priceInCentavos": 3800 }
+        ],
+        "totalInCentavos": 3800
+      },
+      "assertContext": {
+        "cartId": "cart-002",
+        "items.length": 1,
+        "pendingProduct": "linguica"
+      },
+      "assertPromptContains": ["Farofa", "Refri"],
+      "assertTools": ["search_products", "get_also_added"]
+    }
+  ]
+}

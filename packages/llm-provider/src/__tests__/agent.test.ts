@@ -14,6 +14,10 @@ import { Channel, type AgentContext, type StreamChunk } from "@ibatexas/types"
 
 const mockExecuteTool = vi.hoisted(() => vi.fn())
 const mockStream = vi.hoisted(() => vi.fn())
+const mockLoadMachineState = vi.hoisted(() => vi.fn())
+const mockPersistMachineState = vi.hoisted(() => vi.fn())
+const mockGetRedisClient = vi.hoisted(() => vi.fn())
+const mockLoadSchedule = vi.hoisted(() => vi.fn())
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -31,6 +35,25 @@ vi.mock("@anthropic-ai/sdk", () => {
     })),
   }
 })
+
+vi.mock("../machine/persistence.js", () => ({
+  loadMachineState: mockLoadMachineState,
+  persistMachineState: mockPersistMachineState,
+}))
+
+vi.mock("@ibatexas/tools", async (importOriginal) => {
+  const orig = (await importOriginal()) as Record<string, unknown>
+  return {
+    ...orig,
+    getRedisClient: mockGetRedisClient,
+    loadSchedule: mockLoadSchedule,
+  }
+})
+
+vi.mock("../router.js", () => ({
+  routeMessage: vi.fn().mockReturnValue([]),
+  extractCustomerName: vi.fn().mockReturnValue(null),
+}))
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -84,6 +107,17 @@ describe("runAgent", () => {
     // Reset the singleton Anthropic client so each test gets a fresh mock instance
     const { _resetClient } = await import("../agent.js")
     _resetClient()
+
+    // Default mocks for new dependencies
+    mockLoadMachineState.mockResolvedValue(null)
+    mockPersistMachineState.mockResolvedValue(undefined)
+    mockLoadSchedule.mockResolvedValue(undefined)
+    mockGetRedisClient.mockResolvedValue({
+      get: vi.fn().mockResolvedValue("0"),
+      set: vi.fn().mockResolvedValue("OK"),
+      incrBy: vi.fn().mockResolvedValue(0),
+      expire: vi.fn().mockResolvedValue(true),
+    })
   })
 
   it("simple text response — yields text_delta chunks and done", async () => {
@@ -148,7 +182,7 @@ describe("runAgent", () => {
     const chunks = await collectChunks("tem costela?", [], baseContext)
 
     expect(mockExecuteTool).toHaveBeenCalledOnce()
-    expect(mockExecuteTool).toHaveBeenCalledWith("search_products", { query: "costela" }, baseContext)
+    expect(mockExecuteTool).toHaveBeenCalledWith("search_products", { query: "costela" }, baseContext, toolUseId)
 
     const toolStart = chunks.find((c) => c.type === "tool_start")
     const toolResult = chunks.find((c) => c.type === "tool_result")

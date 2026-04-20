@@ -9,6 +9,12 @@
 // - buildPersonalizedQuery: allergen exclusion filters, favorite category boost
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
+import {
+  getRecommendations,
+  buildPersonalizedQuery,
+} from "../get-recommendations.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -36,15 +42,6 @@ vi.mock("../../redis/key.js", () => ({
 vi.mock("../query-products-by-ids.js", () => ({
   queryProductsByIds: mockQueryProductsByIds,
 }))
-
-// -- Imports ──────────────────────────────────────────────────────────────────
-
-import { Channel } from "@ibatexas/types"
-import type { AgentContext } from "@ibatexas/types"
-import {
-  getRecommendations,
-  buildPersonalizedQuery,
-} from "../get-recommendations.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
 

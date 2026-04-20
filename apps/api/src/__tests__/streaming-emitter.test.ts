@@ -1,6 +1,7 @@
 // Unit tests for streaming/emitter.ts — pure in-memory SSE bridge
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import type { StreamChunk } from "@ibatexas/types"
 import {
   createStream,
   pushChunk,
@@ -8,7 +9,6 @@ import {
   isStreamActive,
   cleanupStream,
 } from "../streaming/emitter.js"
-import type { StreamChunk } from "@ibatexas/types"
 
 beforeEach(() => {
   vi.useFakeTimers()

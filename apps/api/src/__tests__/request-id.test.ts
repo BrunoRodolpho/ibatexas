@@ -8,6 +8,8 @@
 //   5. Sentry scope is tagged with the request ID
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import { genRequestId, registerRequestId } from "../plugins/request-id.js";
 
 // ── Hoisted Sentry mock ─────────────────────────────────────────────────────
 
@@ -17,11 +19,6 @@ const mockGetCurrentScope = vi.hoisted(() => vi.fn(() => ({ setTag: mockSetTag }
 vi.mock("@sentry/node", () => ({
   getCurrentScope: mockGetCurrentScope,
 }));
-
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import { genRequestId, registerRequestId } from "../plugins/request-id.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

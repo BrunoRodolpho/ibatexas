@@ -1,21 +1,29 @@
-// ibx auth — OTP/auth debugging utilities.
+// ibx auth — OTP/auth debugging utilities + Medusa admin user management.
 // Flush rate-limit and brute-force keys so you can retry during development.
 
+import path from "node:path"
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
-import { rk, getRedis, closeRedis, scanDelete } from "../lib/redis.js"
+import { execa } from "execa"
+import { ROOT } from "../utils/root.js"
+import {
+  rk,
+  getRedis,
+  closeRedis,
+  flushExactKey,
+  flushGlobPattern,
+  printFlushSummary,
+  scanKeysForPattern,
+  type RedisClient,
+} from "../lib/redis.js"
 
-// ── Types ───────────────────────────────────────────────────────────────────
-
-type RedisClient = Awaited<ReturnType<typeof getRedis>>
+// ── Flush helpers ───────────────────────────────────────────────────────────
 
 interface FlushPattern {
   label: string
   pattern: string
 }
-
-// ── Flush helpers ───────────────────────────────────────────────────────────
 
 function buildFlushPatterns(phoneHash: string | undefined): FlushPattern[] {
   if (phoneHash) {
@@ -27,59 +35,8 @@ function buildFlushPatterns(phoneHash: string | undefined): FlushPattern[] {
   return [
     { label: "rate-limit", pattern: rk("otp:rate:*") },
     { label: "fail-count", pattern: rk("otp:fail:*") },
+    { label: "ip-rate-limit", pattern: rk("otp:ip:*") },
   ]
-}
-
-async function flushExactKey(redis: RedisClient, label: string, pattern: string, dryRun: boolean): Promise<number> {
-  const exists = await redis.exists(pattern)
-  if (!exists) {
-    console.log(chalk.gray(`  · ${label}: not set`))
-    return 0
-  }
-  if (dryRun) {
-    console.log(chalk.yellow(`  [dry-run] would delete ${label}: ${pattern}`))
-  } else {
-    await redis.del(pattern)
-    console.log(chalk.green(`  ✓ deleted ${label}: ${pattern}`))
-  }
-  return 1
-}
-
-async function flushGlobPattern(redis: RedisClient, label: string, pattern: string, dryRun: boolean): Promise<number> {
-  if (dryRun) {
-    let cursor = 0
-    let count = 0
-    do {
-      const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 200 })
-      cursor = result.cursor
-      count += result.keys.length
-    } while (cursor !== 0)
-    if (count > 0) {
-      console.log(chalk.yellow(`  [dry-run] would delete ${count} ${label} key(s): ${pattern}`))
-    } else {
-      console.log(chalk.gray(`  · no ${label} keys found`))
-    }
-    return count
-  }
-
-  const deleted = await scanDelete(redis, pattern)
-  if (deleted > 0) {
-    console.log(chalk.green(`  ✓ deleted ${deleted} ${label} key(s)`))
-  } else {
-    console.log(chalk.gray(`  · no ${label} keys found`))
-  }
-  return deleted
-}
-
-function printFlushSummary(totalDeleted: number, dryRun: boolean): void {
-  console.log()
-  if (totalDeleted === 0) {
-    console.log(chalk.gray("  Nothing to flush — all clear.\n"))
-  } else if (dryRun) {
-    console.log(chalk.yellow(`  [dry-run] ${totalDeleted} key(s) would be deleted. Run without --dry-run to apply.\n`))
-  } else {
-    console.log(chalk.green(`  ✓ Flushed ${totalDeleted} key(s). You can retry OTP now.\n`))
-  }
 }
 
 // ── Status helpers ──────────────────────────────────────────────────────────
@@ -99,17 +56,6 @@ async function showStatusForHash(redis: RedisClient, phoneHash: string): Promise
   console.log(`  Send attempts:   ${rateCount ?? "0"}/3${rateReset}`)
   console.log(`  Failed verifies: ${failCount ?? "0"}/5${failReset}`)
   console.log()
-}
-
-async function scanKeysForPattern(redis: RedisClient, pattern: string): Promise<string[]> {
-  let cursor = 0
-  const keys: string[] = []
-  do {
-    const result = await redis.scan(cursor, { MATCH: pattern, COUNT: 200 })
-    cursor = result.cursor
-    keys.push(...result.keys)
-  } while (cursor !== 0)
-  return keys
 }
 
 function collectUniqueHashes(keys: string[]): Set<string> {
@@ -161,7 +107,7 @@ async function showStatusAll(redis: RedisClient): Promise<void> {
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 export function registerAuthCommands(group: Command): void {
-  group.description("Auth — OTP rate-limit and brute-force key management")
+  group.description("Auth — OTP rate-limit, brute-force keys, and admin user management")
 
   // ─── auth flush ──────────────────────────────────────────────────────────
   group
@@ -215,6 +161,91 @@ export function registerAuthCommands(group: Command): void {
         process.exit(1)
       } finally {
         await closeRedis()
+      }
+    })
+
+  // ─── auth create-staff ──────────────────────────────────────────────────
+  group
+    .command("create-staff")
+    .description("Register a staff member for admin panel login")
+    .requiredOption("--phone <phone>", "Phone in E.164 format (e.g. +5511999999999 or +15125551234)")
+    .requiredOption("--name <name>", "Staff member name")
+    .option("--role <role>", "OWNER | MANAGER | ATTENDANT", "OWNER")
+    .action(async (opts: { phone: string; name: string; role: string }) => {
+      const { phone, name, role } = opts
+      const validRoles = ["OWNER", "MANAGER", "ATTENDANT"]
+
+      if (!phone.startsWith("+") || phone.replace(/\D/g, "").length < 10) {
+        console.error(chalk.red("\n  Invalid phone. Use E.164 format: +5511999999999 or +15125551234\n"))
+        process.exit(1)
+      }
+
+      const upperRole = role.toUpperCase()
+      if (!validRoles.includes(upperRole)) {
+        console.error(chalk.red(`\n  Invalid role: ${role}. Must be one of: ${validRoles.join(", ")}\n`))
+        process.exit(1)
+      }
+
+      const spinner = ora({ text: `Creating staff: ${name} (${phone})`, indent: 2 }).start()
+
+      try {
+        const { prisma } = await import("@ibatexas/domain")
+
+        const existing = await prisma.staff.findUnique({ where: { phone } })
+        if (existing) {
+          spinner.warn(chalk.yellow(`Staff already exists: ${existing.name} (${existing.role})`))
+          if (!existing.active) {
+            await prisma.staff.update({ where: { phone }, data: { active: true } })
+            console.log(chalk.green("  Reactivated.\n"))
+          } else {
+            console.log(chalk.gray("  No changes needed.\n"))
+          }
+          return
+        }
+
+        await prisma.staff.create({
+          data: { phone, name, role: upperRole as "OWNER" | "MANAGER" | "ATTENDANT" },
+        })
+
+        spinner.succeed(chalk.green(`Staff created: ${name} (${upperRole})`))
+        console.log(chalk.gray(`\n  Phone: ${phone}`))
+        console.log(chalk.gray(`  They can now log in at http://localhost:3002/admin\n`))
+      } catch (err) {
+        spinner.fail(chalk.red(`Failed: ${err}`))
+        process.exit(1)
+      }
+    })
+
+  // ─── auth create-admin ──────────────────────────────────────────────────
+  group
+    .command("create-admin")
+    .description("Create a Medusa admin user (from .env or --email/--password)")
+    .option("--email <email>", "Admin email (overrides MEDUSA_ADMIN_EMAIL)")
+    .option("--password <password>", "Admin password (overrides MEDUSA_ADMIN_PASSWORD)")
+    .action(async (opts: { email?: string; password?: string }) => {
+      const email = opts.email ?? process.env.MEDUSA_ADMIN_EMAIL
+      const password = opts.password ?? process.env.MEDUSA_ADMIN_PASSWORD
+
+      if (!email || !password) {
+        console.error(chalk.red("\n  Missing credentials.\n"))
+        console.error(chalk.gray("  Set MEDUSA_ADMIN_EMAIL and MEDUSA_ADMIN_PASSWORD in .env"))
+        console.error(chalk.gray("  Or pass --email and --password flags.\n"))
+        process.exit(1)
+      }
+
+      const spinner = ora({ text: `Creating admin user: ${email}`, indent: 2 }).start()
+
+      try {
+        await execa(
+          "npx",
+          ["medusa", "user", "--email", email, "--password", password],
+          { cwd: path.join(ROOT, "apps/commerce") },
+        )
+        spinner.succeed(chalk.green(`Admin user created (${email})`))
+        console.log(chalk.gray(`\n  Login at http://localhost:9000/app\n`))
+      } catch {
+        spinner.warn(chalk.yellow(`Admin user may already exist (${email})`))
+        console.log(chalk.gray(`\n  Try logging in at http://localhost:9000/app\n`))
       }
     })
 }

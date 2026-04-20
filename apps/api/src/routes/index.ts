@@ -12,6 +12,10 @@ import { reservationRoutes } from "./reservations.js";
 import { analyticsRoutes } from "./analytics.js";
 import { recommendationRoutes } from "./recommendations.js";
 import { meRoutes } from "./me.js";
+import { customerOrderRoutes } from "./customer-orders.js";
+import { orderActionRoutes } from "./order-actions.js";
+import { scheduleStatusRoutes } from "./schedule-status.js";
+import { bannerRoutes } from "./banner.js";
 
 export async function registerRoutes(server: FastifyInstance): Promise<void> {
   // Webhooks must be registered before JSON body parser middlewares
@@ -29,4 +33,8 @@ export async function registerRoutes(server: FastifyInstance): Promise<void> {
   await server.register(analyticsRoutes);
   await server.register(recommendationRoutes);
   await server.register(meRoutes);
+  await server.register(customerOrderRoutes);
+  await server.register(orderActionRoutes);
+  await server.register(scheduleStatusRoutes);
+  await server.register(bannerRoutes);
 }

@@ -30,14 +30,14 @@ function TextField({ ref, className, label, error, helperText, required, id, ...
           error
             ? 'border-red-500 focus:border-red-500'
             : 'border-smoke-200 focus:border-charcoal-900',
-          'disabled:bg-transparent disabled:cursor-not-allowed placeholder:text-smoke-300',
+          'disabled:bg-transparent disabled:cursor-not-allowed placeholder:text-[var(--color-text-disabled)]',
           className
         )}
         required={required}
         {...props}
       />
       {error && <span className="text-sm text-accent-red">{error}</span>}
-      {helperText && !error && <span className="text-sm text-smoke-400">{helperText}</span>}
+      {helperText && !error && <span className="text-sm text-[var(--color-text-secondary)]">{helperText}</span>}
     </div>
   )
 }

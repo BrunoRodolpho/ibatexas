@@ -1,5 +1,6 @@
 import React from 'react'
 import { Card, Heading, Text, Badge } from '../atoms'
+import { formatRating } from '@/lib/format'
 
 interface ReviewCardProps {
   readonly id: string
@@ -46,7 +47,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({
 
           <div className="mb-2">
             <Text variant="small" textColor="secondary">
-              {stars} • {rating.toFixed(1)}
+              {stars} • {formatRating(rating)}
             </Text>
           </div>
 

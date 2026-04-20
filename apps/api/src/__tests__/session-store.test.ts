@@ -1,6 +1,7 @@
 // Unit tests for session/store.ts — mocked Redis
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { loadSession, appendMessages } from "../session/store.js"
 
 // ── Mock Redis client ─────────────────────────────────────────────────────────
 
@@ -20,8 +21,6 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: vi.fn(async () => mockRedis),
   rk: (key: string) => `ibatexas:${key}`,
 }))
-
-import { loadSession, appendMessages } from "../session/store.js"
 
 beforeEach(() => {
   vi.clearAllMocks()

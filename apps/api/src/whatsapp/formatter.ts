@@ -10,6 +10,29 @@ export interface AgentWhatsAppResponse {
   toolsUsed: string[];
   inputTokens?: number;
   outputTokens?: number;
+  pixData?: { pixCopyPaste?: string; pixQrCode?: string; pixExpiresAt?: string; orderId?: string };
+  statusMessages?: string[];
+}
+
+// ── Emoji enforcement ─────────────────────────────────────────────────────────
+
+// Unicode emoji regex — covers common emoji ranges (emoticons, symbols, flags)
+// eslint-disable-next-line no-misleading-character-class -- intentional combined Unicode ranges for emoji matching
+const EMOJI_RE = /[\u{1F300}-\u{1F9FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1FA00}-\u{1FAFF}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu;
+
+/**
+ * Enforce max 1 emoji per message for WhatsApp.
+ * Keeps the FIRST emoji found and strips all subsequent ones.
+ * Cleans up any resulting double-spaces.
+ */
+function limitEmojis(text: string, max = 1): string {
+  let count = 0;
+  return text
+    .replace(EMOJI_RE, (match) => {
+      count++;
+      return count <= max ? match : "";
+    })
+    .replace(/ {2,}/g, " ");
 }
 
 // Timeout for agent response collection
@@ -30,6 +53,8 @@ export async function collectAgentResponse(
   const toolsUsed: string[] = [];
   let inputTokens: number | undefined;
   let outputTokens: number | undefined;
+  let pixData: AgentWhatsAppResponse["pixData"];
+  let statusMessages: string[] | undefined;
 
   // AbortSignal-based timeout guard: break out after 60s if the LLM provider hangs
   const ac = new AbortController();
@@ -47,9 +72,21 @@ export async function collectAgentResponse(
         case "tool_start":
           toolsUsed.push(chunk.toolName);
           break;
+        case "pix_data":
+          pixData = {
+            pixCopyPaste: chunk.pixCopyPaste,
+            pixQrCode: chunk.pixQrCode,
+            pixExpiresAt: chunk.pixExpiresAt,
+            orderId: chunk.orderId,
+          };
+          break;
         case "done":
           inputTokens = chunk.inputTokens;
           outputTokens = chunk.outputTokens;
+          break;
+        case "status":
+          statusMessages ??= [];
+          statusMessages.push(chunk.message);
           break;
         case "error":
           throw new Error(chunk.message);
@@ -66,9 +103,11 @@ export async function collectAgentResponse(
   }
 
   return {
-    text: textParts.join(""),
+    text: limitEmojis(textParts.join("")),
     toolsUsed,
     inputTokens,
     outputTokens,
+    pixData,
+    statusMessages,
   };
 }

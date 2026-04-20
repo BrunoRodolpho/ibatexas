@@ -53,6 +53,33 @@ resource "aws_cloudwatch_log_group" "admin" {
 locals {
   account_id = data.aws_caller_identity.current.account_id
 
+  # Per-service secret injection — only inject what each service actually reads
+  service_secrets = {
+    api = [
+      "JWT_SECRET",
+      "DATABASE_URL",
+      "ANTHROPIC_API_KEY",
+      "STRIPE_SECRET_KEY",
+      "STRIPE_WEBHOOK_SECRET",
+      "TWILIO_AUTH_TOKEN",
+      "TWILIO_ACCOUNT_SID",
+      "TWILIO_VERIFY_SID",
+      "MEDUSA_ADMIN_EMAIL",
+      "MEDUSA_ADMIN_PASSWORD",
+      "TYPESENSE_API_KEY",
+      "REDIS_URL",
+      "NATS_URL",
+      "CORS_ORIGIN",
+      "SENTRY_DSN",
+    ]
+    web = [
+      "SENTRY_DSN",
+    ]
+    admin = [
+      "SENTRY_DSN",
+    ]
+  }
+
   services = {
     api = {
       port             = 3001
@@ -115,7 +142,7 @@ resource "aws_ecs_task_definition" "this" {
       }
 
       secrets = [
-        for secret_name in local.secret_names : {
+        for secret_name in local.service_secrets[each.key] : {
           name      = secret_name
           valueFrom = aws_secretsmanager_secret.this[secret_name].arn
         }
@@ -124,7 +151,9 @@ resource "aws_ecs_task_definition" "this" {
       environment = concat([
         {
           name  = "NODE_ENV"
-          value = var.environment == "production" ? "production" : "development"
+          # Always "production" — Docker images are built with --prod (no devDependencies).
+          # Use APP_ENV (below) to distinguish dev/staging/production environments.
+          value = "production"
         },
         {
           name  = "PORT"
@@ -179,12 +208,13 @@ resource "aws_ecs_service" "this" {
     container_port   = each.value.port
   }
 
+  # Give containers time to boot before ALB health checks start failing
+  health_check_grace_period_seconds = 60
+
   deployment_circuit_breaker {
     enable   = true
     rollback = true
   }
-
-  depends_on = [aws_lb_listener.https]
 
   tags = {
     Environment = var.environment

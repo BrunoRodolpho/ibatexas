@@ -8,6 +8,8 @@
 // - Guard receives the correct resource ID and customer ID
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import type { AgentContext } from "@ibatexas/types"
+import { withOrderOwnership, withReservationOwnership } from "../with-ownership.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -18,11 +20,6 @@ vi.mock("../ownership.js", () => ({
   assertOrderOwnership: mockAssertOrderOwnership,
   assertReservationOwnership: mockAssertReservationOwnership,
 }))
-
-// ── Imports ────────────────────────────────────────────────────────────────────
-
-import { withOrderOwnership, withReservationOwnership } from "../with-ownership.js"
-import type { AgentContext } from "@ibatexas/types"
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 

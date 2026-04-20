@@ -2,6 +2,8 @@
 // POST /api/webhooks/whatsapp — Twilio incoming message webhook
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import { whatsappWebhookRoutes } from "../routes/whatsapp-webhook.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -25,8 +27,6 @@ const mockCollectAgentResponse = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
 const mockMatchShortcut = vi.hoisted(() => vi.fn());
 const mockBuildHelpText = vi.hoisted(() => vi.fn());
-const mockHandleStateMachine = vi.hoisted(() => vi.fn());
-const mockTransitionTo = vi.hoisted(() => vi.fn());
 const mockLoadSession = vi.hoisted(() => vi.fn());
 const mockAppendMessages = vi.hoisted(() => vi.fn());
 
@@ -45,7 +45,7 @@ vi.mock("@ibatexas/nats-client", () => ({
 }));
 
 vi.mock("@ibatexas/llm-provider", () => ({
-  runAgent: mockRunAgent,
+  runOrchestrator: mockRunAgent,
 }));
 
 vi.mock("../session/store.js", () => ({
@@ -64,6 +64,11 @@ vi.mock("../whatsapp/session.js", () => ({
   tryDebounce: mockTryDebounce,
   hasOptedIn: mockHasOptedIn,
   markOptedIn: mockMarkOptedIn,
+  storeLastLocation: vi.fn().mockResolvedValue(undefined),
+  getLastLocation: vi.fn().mockResolvedValue(null),
+  isMessageDuplicate: vi.fn().mockResolvedValue(false),
+  setWelcomeCredit: vi.fn().mockResolvedValue(undefined),
+  getAndConsumeWelcomeCredit: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../whatsapp/formatter.js", () => ({
@@ -72,22 +77,30 @@ vi.mock("../whatsapp/formatter.js", () => ({
 
 vi.mock("../whatsapp/client.js", () => ({
   sendText: mockSendText,
+  sendMedia: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../whatsapp/shortcuts.js", () => ({
   matchShortcut: mockMatchShortcut,
   buildHelpText: mockBuildHelpText,
+  buildWelcomeText: vi.fn().mockReturnValue("Bem-vindo!"),
 }));
 
-vi.mock("../whatsapp/state-machine.js", () => ({
-  handleStateMachine: mockHandleStateMachine,
-  transitionTo: mockTransitionTo,
+
+vi.mock("../jobs/hesitation-nudge.js", () => ({
+  scheduleHesitationNudge: vi.fn().mockResolvedValue(undefined),
+  markCustomerReplied: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../jobs/pix-expiry-monitor.js", () => ({
+  schedulePixExpiryMonitor: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../whatsapp/constants.js", () => ({
+  LGPD_OPTIN_MESSAGE: "Mensagem LGPD mock",
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import { whatsappWebhookRoutes } from "../routes/whatsapp-webhook.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });
@@ -383,6 +396,9 @@ describe("checkWebhookRateLimit (via POST /api/webhooks/whatsapp)", () => {
     });
     mockGetRedisClient.mockResolvedValue(mockRedis);
     mockAtomicIncr.mockResolvedValue(21); // over 20
+    mockNormalizePhone.mockReturnValue("+5511999999999");
+    mockHashPhone.mockReturnValue("abc123");
+    mockSendText.mockResolvedValue(undefined);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -433,7 +449,6 @@ describe("buildUserMessage", () => {
     mockTryDebounce.mockResolvedValue(true);
     mockAcquireAgentLock.mockResolvedValue(true);
     mockMatchShortcut.mockReturnValue(null);
-    mockHandleStateMachine.mockResolvedValue(null);
     mockLoadSession.mockResolvedValue([]);
     mockBuildWhatsAppContext.mockReturnValue({});
     mockCollectAgentResponse.mockResolvedValue({ text: "Resposta", toolsUsed: [] });
@@ -460,6 +475,7 @@ describe("buildUserMessage", () => {
           expect.objectContaining({ role: "user", content: "Quero costela" }),
         ]),
         true,
+        expect.objectContaining({ customerId: "cus-123", channel: "whatsapp" }),
       );
     }, { timeout: 500 });
   });

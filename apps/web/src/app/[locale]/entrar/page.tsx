@@ -2,9 +2,11 @@
 
 import { useState, useRef, useEffect, useCallback } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
+import { useTranslations } from "next-intl"
 import { useSessionStore } from '@/domains/session'
 import { getApiBase } from "@/lib/api"
 import { Heading, Text, Button } from "@/components/atoms"
+import { useUIStore } from "@/domains/ui"
 import { Smartphone } from "lucide-react"
 
 type Step = "phone" | "code"
@@ -30,10 +32,12 @@ function formatPhone(value: string, countryCode: string): string {
 }
 
 export default function EntrarPage() {
+  const t = useTranslations()
   const router = useRouter()
   const searchParams = useSearchParams()
   const nextPath = searchParams.get("next") ?? "/"
   const { login } = useSessionStore()
+  const addToast = useUIStore((s) => s.addToast)
 
   const [step, setStep] = useState<Step>("phone")
   const [phone, setPhone] = useState("")
@@ -97,6 +101,7 @@ export default function EntrarPage() {
         }
         const data = (await res.json()) as { id: string; phone: string; name: string | null; email: string | null }
         login(data.id)
+        addToast(data.name ? t('auth.welcome_back_name', { name: data.name.split(' ')[0] }) : t('auth.welcome_back'), 'success')
         router.push(nextPath)
       } catch (err) {
         setError(err instanceof Error ? err.message : "Código inválido.")
@@ -153,8 +158,11 @@ export default function EntrarPage() {
   }
 
   return (
-    <div className="min-h-screen bg-smoke-100 flex items-center justify-center px-4 py-12">
-      <div className="w-full max-w-sm">
+    <div className="min-h-screen bg-smoke-100 flex items-center justify-center px-4 py-16 relative">
+      {/* Atmospheric warm glow behind card */}
+      <div className="absolute inset-0 warm-glow pointer-events-none" />
+
+      <div className="relative w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">
           <span className="font-display text-2xl font-bold tracking-wide text-charcoal-900">
@@ -162,7 +170,7 @@ export default function EntrarPage() {
           </span>
         </div>
 
-        <div className="bg-smoke-50 rounded-sm border border-smoke-200 p-8 shadow-sm">
+        <div className="bg-smoke-50 rounded-sm border border-smoke-200/40 p-8 shadow-elevated">
           {step === "phone" ? (
             <>
               {/* ── Step 1: Phone Input ────────────────────────────── */}
@@ -181,10 +189,10 @@ export default function EntrarPage() {
 
               <form onSubmit={handleSendOtp} className="space-y-4">
                 <div>
-                  <label htmlFor="phone-input" className="block text-xs font-medium uppercase tracking-editorial text-smoke-400 mb-1.5">
+                  <label htmlFor="phone-input" className="block text-xs font-medium text-[var(--color-text-secondary)] mb-1.5">
                     Celular
                   </label>
-                  <div className="flex items-center border border-smoke-200 rounded-sm overflow-hidden focus-within:border-charcoal-900 transition-colors duration-300">
+                  <div className="flex items-center border border-smoke-200/60 shadow-xs rounded-sm overflow-hidden focus-within:border-charcoal-900 focus-within:shadow-card transition-[border-color,box-shadow] duration-[200ms] ease-luxury">
                     <select
                       value={countryCode}
                       onChange={(e) => {
@@ -220,7 +228,7 @@ export default function EntrarPage() {
                   className="w-full"
                   size="lg"
                 >
-                  Enviar código
+                  {t("auth.send_code")}
                 </Button>
               </form>
             </>
@@ -248,7 +256,7 @@ export default function EntrarPage() {
                       value={otp[position]}
                       onChange={(e) => handleOTPChange(position, e.target.value)}
                       onKeyDown={(e) => handleOTPKeyDown(position, e)}
-                      className="w-11 h-12 border border-smoke-200 rounded-sm text-center text-lg font-semibold text-charcoal-900 focus:border-charcoal-900 focus:outline-none transition-colors duration-300"
+                      className="w-12 h-14 border border-smoke-200/60 shadow-xs rounded-sm text-center text-lg font-semibold text-charcoal-900 focus:border-charcoal-900 focus:shadow-card focus:outline-none transition-[border-color,box-shadow] duration-[200ms] ease-luxury"
                       aria-label={`Dígito ${position + 1}`}
                     />
                   ))}
@@ -258,7 +266,7 @@ export default function EntrarPage() {
 
                 {loading && (
                   <div className="flex justify-center">
-                    <div className="w-5 h-5 border-2 border-smoke-200 border-t-charcoal-900 rounded-full animate-spin" />
+                    <div className="w-5 h-5 border-2 border-brand-200 border-t-brand-500 rounded-full animate-spin" />
                   </div>
                 )}
 
@@ -269,18 +277,18 @@ export default function EntrarPage() {
                     setOtp(["", "", "", "", "", ""])
                     setError(null)
                   }}
-                  className="block mx-auto text-xs text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+                  className="block mx-auto text-xs text-smoke-400 hover:text-charcoal-900 transition-colors duration-[200ms] ease-luxury"
                 >
-                  ← Alterar número
+                  {t("auth.change_number")}
                 </button>
 
                 <button
                   type="button"
                   onClick={() => handleSendOtp()}
-                  className="block mx-auto text-xs text-brand-500 hover:text-brand-600 transition-colors duration-300"
+                  className="block mx-auto text-xs text-brand-500 hover:text-brand-600 transition-colors duration-[200ms] ease-luxury"
                   disabled={loading}
                 >
-                  Reenviar código
+                  {t("auth.resend_code")}
                 </button>
               </div>
             </>

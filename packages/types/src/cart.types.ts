@@ -21,6 +21,38 @@ export const CancelOrderInputSchema = z.object({
 
 export type CancelOrderInput = z.infer<typeof CancelOrderInputSchema>
 
+// cancel_item (individual item cancellation)
+export const CancelItemInputSchema = z.object({
+  orderId: z.string().describe("ID do pedido"),
+  itemTitle: z.string().describe("Nome do item a cancelar"),
+})
+
+export type CancelItemInput = z.infer<typeof CancelItemInputSchema>
+
+// amend_order
+export const AmendOrderInputSchema = z.object({
+  orderId: z.string().describe("ID do pedido"),
+  action: z.enum(["add", "remove", "update_qty", "change_payment"]).describe("Ação: add (adicionar item), remove (remover item), update_qty (alterar quantidade), change_payment (trocar forma de pagamento)"),
+  variantId: z.string().optional().describe("ID da variante (obrigatório para add)"),
+  itemTitle: z.string().optional().describe("Nome do item (para remove/update_qty)"),
+  quantity: z.number().int().min(1).optional().describe("Quantidade (para add e update_qty)"),
+  paymentMethod: z.enum(["pix", "card", "cash"]).optional().describe("Novo método de pagamento (obrigatório para change_payment)"),
+})
+
+export type AmendOrderInput = z.infer<typeof AmendOrderInputSchema>
+
+export interface AmendOrderResult {
+  success: boolean
+  message: string
+  needsEscalation?: boolean
+  /** New PIX copia-e-cola code (set when amendment changed total on a PIX order) */
+  newPixQrCodeText?: string
+  /** New PIX QR code SVG URL */
+  newPixQrCodeUrl?: string
+  /** Stripe PaymentIntent client secret (set when payment method changed to card) */
+  stripeClientSecret?: string | null
+}
+
 // check_order_status
 export const CheckOrderStatusInputSchema = z.object({
   orderId: z.string().describe("ID do pedido"),
@@ -79,6 +111,11 @@ export const ReorderInputSchema = z.object({
 
 export type ReorderInput = z.infer<typeof ReorderInputSchema>
 
+// get_or_create_cart
+export const GetOrCreateCartInputSchema = z.strictObject({})
+
+export type GetOrCreateCartInput = z.infer<typeof GetOrCreateCartInputSchema>
+
 // apply_coupon
 export const ApplyCouponInputSchema = z.object({
   cartId: z.string(),
@@ -91,3 +128,10 @@ export type ApplyCouponInput = z.infer<typeof ApplyCouponInputSchema>
 export const GetOrderHistoryInputSchema = z.strictObject({})
 
 export type GetOrderHistoryInput = z.infer<typeof GetOrderHistoryInputSchema>
+
+// regenerate_pix
+export const RegeneratePixInputSchema = z.object({
+  orderId: z.string().describe("ID do pedido"),
+})
+
+export type RegeneratePixInput = z.infer<typeof RegeneratePixInputSchema>

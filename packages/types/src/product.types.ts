@@ -52,6 +52,8 @@ export interface ProductDTO {
   status?: ProductStatus
   inStock?: boolean // false when admin marks item unavailable (metadata.inStock = false)
   preparationTimeMinutes?: number
+  amendPonrMinutes?: number // PONR: minutes after order placement during which this item can be amended
+  cancelPonrMinutes?: number // PONR: minutes after order placement during which this item can be cancelled
   rating?: number // rolling average
   reviewCount?: number
   servings?: number // how many persons a portion serves
@@ -67,6 +69,8 @@ export interface ProductDTO {
   pairingTip?: string // harmonização suggestion per product
   /** Channel visibility — "all" | "whatsapp" | "web" | "staff". Default: "all" */
   visibility?: string
+  /** Whether this product is available right now (based on meal period). Injected by search when availableNow: true. */
+  isAvailableNow?: boolean
   createdAt: string // ISO 8601
   updatedAt: string // ISO 8601
 }

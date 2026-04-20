@@ -2,6 +2,7 @@
 // Verifies Redis cleanup logic when a product is deleted
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -38,6 +39,20 @@ vi.mock("@ibatexas/domain", () => ({
     recordOrderItems: mockRecordOrderItems,
     getById: vi.fn().mockResolvedValue(null),
   }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(),
+  }),
+  createOrderCommandService: () => ({
+    create: vi.fn(),
+    reconcileStatus: vi.fn().mockResolvedValue({ success: true }),
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn(),
+  }),
+  createLoyaltyService: () => ({
+    addStamp: vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
+  }),
+  ConcurrencyError: class ConcurrencyError extends Error {},
 }));
 
 vi.mock("@sentry/node", () => ({
@@ -47,10 +62,6 @@ vi.mock("@sentry/node", () => ({
 vi.mock("../../jobs/review-prompt.js", () => ({
   scheduleReviewPrompt: vi.fn().mockResolvedValue(undefined),
 }));
-
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

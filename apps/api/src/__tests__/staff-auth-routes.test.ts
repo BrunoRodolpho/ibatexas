@@ -2,7 +2,15 @@
 // POST /api/auth/staff/send-otp, POST /api/auth/staff/verify-otp
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import sensible from "@fastify/sensible";
+import cookie from "@fastify/cookie";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { authRoutes } from "../routes/auth.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -62,17 +70,6 @@ vi.mock("../middleware/auth.js", () => ({
     done();
   },
 }));
-
-// ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
-import sensible from "@fastify/sensible";
-import cookie from "@fastify/cookie";
-import { authRoutes } from "../routes/auth.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });

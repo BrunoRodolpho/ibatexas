@@ -3,6 +3,11 @@
 // Tests call the exported checkAbandonedCarts() processor directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  checkAbandonedCarts,
+  startAbandonedCartChecker,
+  stopAbandonedCartChecker,
+} from "../jobs/abandoned-cart-checker.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -41,14 +46,6 @@ vi.mock("@sentry/node", () => ({
   withScope: vi.fn((cb: (scope: unknown) => void) => cb({ setTag: vi.fn(), setContext: vi.fn() })),
   captureException: vi.fn(),
 }));
-
-// ── Import source after mocks ───────────────────────────────────────────────
-
-import {
-  checkAbandonedCarts,
-  startAbandonedCartChecker,
-  stopAbandonedCartChecker,
-} from "../jobs/abandoned-cart-checker.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

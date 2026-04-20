@@ -32,11 +32,35 @@ vi.mock("@ibatexas/domain", () => ({
     listAll: vi.fn(async () => []),
   }),
   createReviewService: vi.fn(),
+  createScheduleService: () => ({
+    getSchedule: vi.fn(async () => ({ days: {} })),
+    updateSchedule: vi.fn(async () => ({})),
+  }),
+  createOrderCommandService: () => ({
+    create: vi.fn(),
+    reconcileStatus: vi.fn(async () => ({ success: true })),
+  }),
+  createOrderQueryService: () => ({
+    list: vi.fn(async () => ({ orders: [], count: 0 })),
+    getById: vi.fn(async () => null),
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn(),
+    transitionStatus: vi.fn(async () => ({ id: "pay_01", version: 1 })),
+  }),
+  createPaymentQueryService: () => ({
+    listByOrderId: vi.fn(async () => []),
+    getActiveByOrderId: vi.fn(async () => null),
+  }),
   prisma: {
     review: {
       findMany: mockReviewFindMany,
       count: mockReviewCount,
     },
+    reservation: { findMany: vi.fn(async () => []), count: vi.fn(async () => 0) },
+    customerOrderItem: { findMany: vi.fn(async () => []) },
+    conversationMessage: { count: vi.fn(async () => 0) },
+    orderProjection: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null), count: vi.fn(async () => 0) },
   },
 }))
 
@@ -81,7 +105,8 @@ function makeReviewRow(overrides: Partial<{
 async function buildTestServer() {
   process.env.ADMIN_API_KEY = "test-admin-key"
   process.env.MEDUSA_ADMIN_URL = "http://localhost:9000"
-  process.env.MEDUSA_API_KEY = "test-medusa-key"
+  process.env.MEDUSA_ADMIN_EMAIL = "test@example.com"
+  process.env.MEDUSA_ADMIN_PASSWORD = "test-password"
 
   const { adminRoutes } = await import("../routes/admin/index.js")
 
@@ -145,7 +170,7 @@ describe("GET /api/admin/reviews — returns reviews list", () => {
     expect(review.orderId).toBe("order_01")
     expect(review.productId).toBe("prod_01")
     expect(review.customerId).toBe("cust_01")
-    expect(review.customerPhone).toBe("+5511999990001")
+    expect(review.customerPhone).toBe("****0001")
     expect(review.rating).toBe(5)
     expect(review.comment).toBe("Ótimo churrasco!")
     expect(review.channel).toBe("whatsapp")

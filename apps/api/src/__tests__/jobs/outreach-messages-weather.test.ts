@@ -12,7 +12,7 @@ describe("buildOutreachMessage — weather priority", () => {
     expect(type).toBe("rainy_day");
     expect(message).toContain("Maria");
     expect(message).toContain("Costela");
-    expect(message).toContain("chuva");
+    expect(message).toContain("defumado");
   });
 
   it("weatherCondition='rain' → rainy_day regardless of day (Monday)", () => {
@@ -29,7 +29,7 @@ describe("buildOutreachMessage — weather priority", () => {
     const { type, message } = buildOutreachMessage("Carlos", "Alcatra", 9, 5, "hot");
     expect(type).toBe("hot_day");
     expect(message).toContain("Carlos");
-    expect(message).toContain("Calorzao");
+    expect(message).toContain("calor");
   });
 
   it("weatherCondition='hot' → hot_day regardless of day (Monday)", () => {

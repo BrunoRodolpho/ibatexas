@@ -14,6 +14,7 @@ import { registerRateLimit } from "./plugins/rate-limit.js";
 import { genRequestId, registerRequestId } from "./plugins/request-id.js";
 import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
+import { requireSecret } from "./utils/require-secret.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   // Request/connection timeouts prevent slowloris; trustProxy for reverse proxy (ALB, nginx)
@@ -50,12 +51,9 @@ export async function buildServer(): Promise<FastifyInstance> {
   await server.register(fastifyCookie);
 
   // JWT — reads from `token` cookie automatically when cookie is set
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret && process.env.NODE_ENV !== "test") {
-    throw new Error("JWT_SECRET env var is required");
-  }
+  const jwtSecret = requireSecret("JWT_SECRET");
   await server.register(fastifyJwt, {
-    secret: jwtSecret ?? "test-secret-do-not-use-in-production",
+    secret: jwtSecret,
     cookie: { cookieName: "token", signed: false },
   });
 

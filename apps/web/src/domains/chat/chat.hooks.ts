@@ -47,6 +47,8 @@ export function useChat() {
   const updateLastMessage = useChatStore((s) => s.updateLastMessage)
   const setLoading = useChatStore((s) => s.setLoading)
   const setError = useChatStore((s) => s.setError)
+  const setSessionSecret = useChatStore((s) => s.setSessionSecret)
+  const setSessionToken = useChatStore((s) => s.setSessionToken)
   const sessionId = useSessionStore((s) => s.sessionId)
 
   const sendMessage = async (content: string) => {
@@ -60,10 +62,24 @@ export function useChat() {
     setError(undefined)
 
     try {
-      await apiFetch("/api/chat/messages", {
-        method: "POST",
-        body: JSON.stringify({ sessionId, message: content, channel: "web" }),
-      })
+      // Build ownership headers from previously stored secrets/tokens
+      const { sessionSecret, sessionToken } = useChatStore.getState()
+      const headers: Record<string, string> = {}
+      if (sessionSecret) headers["x-session-secret"] = sessionSecret
+      if (sessionToken) headers["x-session-token"] = sessionToken
+
+      const res = await apiFetch<{ messageId: string; sessionSecret?: string; sessionToken?: string }>(
+        "/api/chat/messages",
+        {
+          method: "POST",
+          body: JSON.stringify({ sessionId, message: content, channel: "web" }),
+          headers,
+        },
+      )
+
+      // Persist ownership credentials for subsequent requests
+      if (res.sessionSecret) setSessionSecret(res.sessionSecret)
+      if (res.sessionToken) setSessionToken(res.sessionToken)
 
       addMessage(buildAssistantPlaceholder())
 

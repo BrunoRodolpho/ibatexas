@@ -326,7 +326,8 @@ flowchart LR
 |---------|-------|---------------|
 | Auth (middleware) | `apps/api/src/middleware/auth.ts` | `requireAuth()` |
 | Auth (OTP + JWT) | `apps/api/src/routes/auth.ts` | `sendOtp`, `verifyOtp` |
-| Payments | `apps/api/src/routes/stripe-webhook.ts` | webhook handler |
+| Payments (backend) | `apps/api/src/routes/stripe-webhook.ts` | webhook handler |
+| Payments (frontend) | `apps/web/src/app/[locale]/checkout/_components/CardPaymentForm.tsx` | embedded Stripe PaymentElement |
 | Cart operations | `packages/tools/src/cart/` | `add-to-cart.ts` |
 | Checkout | `packages/tools/src/cart/create-checkout.ts` | `createCheckout()` |
 | Product search | `packages/tools/src/search/search-products.ts` | `searchProducts()` |

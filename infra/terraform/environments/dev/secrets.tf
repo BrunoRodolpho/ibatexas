@@ -6,7 +6,6 @@ locals {
   secret_names = [
     "JWT_SECRET",
     "DATABASE_URL",
-    "DIRECT_DATABASE_URL",
     "SENTRY_DSN",
     "ANTHROPIC_API_KEY",
     "STRIPE_SECRET_KEY",
@@ -16,12 +15,9 @@ locals {
     "TWILIO_VERIFY_SID",
     "NATS_URL",
     "REDIS_URL",
-    "MEDUSA_ADMIN_API_KEY",
-    "MEDUSA_API_KEY",
-    "MEDUSA_PUBLISHABLE_KEY",
+    "MEDUSA_ADMIN_EMAIL",
+    "MEDUSA_ADMIN_PASSWORD",
     "TYPESENSE_API_KEY",
-    "OPENAI_API_KEY",
-    "COOKIE_SECRET",
     "CORS_ORIGIN",
   ]
 }

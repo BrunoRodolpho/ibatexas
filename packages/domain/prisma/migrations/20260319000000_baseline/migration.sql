@@ -96,6 +96,7 @@ CREATE TABLE "ibx_domain"."customers" (
     "phone" TEXT NOT NULL,
     "name" TEXT,
     "email" TEXT,
+    "cpf" VARCHAR(14),
     "medusa_id" TEXT,
     "source" TEXT,
     "first_contact_at" TIMESTAMP(3),
@@ -253,14 +254,3 @@ ALTER TABLE "ibx_domain"."customer_preferences" ADD CONSTRAINT "customer_prefere
 
 -- AddForeignKey
 ALTER TABLE "ibx_domain"."customer_order_items" ADD CONSTRAINT "customer_order_items_customer_id_fkey" FOREIGN KEY ("customer_id") REFERENCES "ibx_domain"."customers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
-┌─────────────────────────────────────────────────────────┐
-│  Update available 5.22.0 -> 7.5.0                       │
-│                                                         │
-│  This is a major update - please follow the guide at    │
-│  https://pris.ly/d/major-version-upgrade                │
-│                                                         │
-│  Run the following to update                            │
-│    npm i --save-dev prisma@latest                       │
-│    npm i @prisma/client@latest                          │
-└─────────────────────────────────────────────────────────┘

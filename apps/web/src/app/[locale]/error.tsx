@@ -2,6 +2,7 @@
 
 import { useEffect } from "react"
 import { useTranslations } from "next-intl"
+import { Button, Heading, Text } from "@/components/atoms"
 
 // Never expose raw error.message to users; log for Sentry capture instead
 export default function ErrorPage({
@@ -19,18 +20,15 @@ export default function ErrorPage({
 
   return (
     <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-4 text-center">
-      <h2 className="text-2xl font-bold text-accent-red">
+      <Heading as="h2" variant="h2" textColor="danger">
         {t("error.title", { fallback: "Algo deu errado" })}
-      </h2>
-      <p className="max-w-md text-sm text-smoke-400">
+      </Heading>
+      <Text variant="small" textColor="muted" className="max-w-md">
         {t("error.generic", { fallback: "Ocorreu um erro inesperado. Tente novamente." })}
-      </p>
-      <button
-        onClick={reset}
-        className="rounded-sm bg-charcoal-900 px-6 py-2 text-sm font-medium text-smoke-50 hover:bg-charcoal-800 transition-all duration-500"
-      >
+      </Text>
+      <Button variant="primary" size="md" onClick={reset}>
         {t("error.retry", { fallback: "Tentar novamente" })}
-      </button>
+      </Button>
     </div>
   )
 }

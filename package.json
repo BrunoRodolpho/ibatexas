@@ -32,22 +32,52 @@
   "packageManager": "pnpm@10.32.1",
   "pnpm": {
     "overrideNotes": {
-      "hono, @hono/node-server, effect": "prisma security — remove when prisma >= 7.6 fixes upstream",
-      "multer": "medusa transitive fix — remove when medusa upgrades multer",
-      "fast-xml-parser": "aws-sdk/xml-builder security — remove when @aws-sdk updates",
-      "@posthog/core": "posthog transitive fix — remove when posthog-js ships fixed version",
-      "minimatch, rollup, glob": "vitest/vite toolchain — review on vite 6 upgrade"
+      "minimatch, rollup, glob": "vitest/vite toolchain — review on vite 6 upgrade",
+      "express>path-to-regexp": "medusa>express transitive fix — GHSA-37ch-88jc-xwx2 ReDoS. Scoped (not global) because @medusajs/framework declares path-to-regexp ^8.2.0 and uses the v6+ named-export API; forcing 0.1.13 globally crashes commerce at startup with 'pathToRegexp is not a function'. next@16 also declares 6.3.0 and would be silently downgraded. Remove when medusa drops express 4.",
+      "lodash": "medusa/prisma transitive fix — GHSA-r5fr-rjxr-66jc code injection via _.template",
+      "picomatch": "eslint-config-next/vitest transitive fix — GHSA-c2c7-rcm5-vvqj ReDoS",
+      "@types/react, @types/react-dom": "medusa pulls React 18 types — force single version to fix JSX portability errors",
+      "vite@7": "vitest>vite v7 transitive fix — GHSA-v2wj-q39q-566r (server.fs.deny bypass) + GHSA-p9ff-h696-f583 (WebSocket file read). Scoped to v7 so medusa's vite v5 is untouched. Remove when vitest pulls vite >= 7.3.2.",
+      "@rushstack/node-core-library>ajv": "@medusajs/cli>...>@rushstack/node-core-library>ajv transitive fix — GHSA-2g4f-4pwh-qvx6 ReDoS via $data option. Scoped (not global) because @eslint/eslintrc uses ajv v6 API and breaks if forced to v8 ('NOT SUPPORTED: option missingRefs' / 'Cannot set defaultMeta'). Remove when rushstack updates.",
+      "esbuild": "@medusajs/framework>vite v5>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS issue. Remove when medusa upgrades vite to v6+ (vite 6.4.2+ already pulls esbuild >=0.25).",
+      "fast-jwt": "apps/api>@fastify/jwt transitive fix — GHSA-rp9m-7r4c-75qg cache confusion (token claim mixup). Patched in 6.2.0+. Remove when @fastify/jwt pulls fast-jwt >=6.2.0.",
+      "protobufjs": "apps/api>@sentry/node transitive fix — GHSA-xq3m-2v4x-88gg arbitrary code execution. Patched in 7.5.5+.",
+      "fastify": "apps/api direct dep fix — GHSA-247c-9743-5963 body schema validation bypass via leading-space Content-Type. Patched in 5.8.5+.",
+      "next": "apps/admin + apps/web direct dep fix — GHSA-q4gf-8mx6-v5v3 DoS via Server Components. Patched in 16.2.3+."
     },
     "overrides": {
-      "hono": "4.12.8",
-      "@hono/node-server": "1.19.11",
-      "effect": "3.21.0",
-      "multer": "2.1.1",
-      "fast-xml-parser": "5.5.8",
-      "@posthog/core": "1.24.1",
       "minimatch": "10.2.4",
       "rollup": "4.59.0",
-      "glob": "13.0.6"
+      "glob": "13.0.6",
+      "express>path-to-regexp": "0.1.13",
+      "lodash": "4.18.1",
+      "picomatch@<3": "2.3.2",
+      "picomatch@>=4": "4.0.4",
+      "@types/react": "19.2.14",
+      "@types/react-dom": "19.2.3",
+      "vite@7": "7.3.2",
+      "@rushstack/node-core-library>ajv": "8.18.0",
+      "esbuild": "0.25.0",
+      "fast-jwt": ">=6.2.0",
+      "protobufjs": ">=7.5.5",
+      "fastify": ">=5.8.5",
+      "next": ">=16.2.3"
+    },
+    "auditConfig": {
+      "ignoreCves": [
+        "CVE-2026-34950",
+        "CVE-2026-35042"
+      ],
+      "ignoreGhsas": [
+        "GHSA-gwhv-j974-6fxm",
+        "GHSA-qpfv-44f3-qqx6"
+      ],
+      "ignoreCveNotes": {
+        "CVE-2026-35042": "fast-jwt <=6.1.0 GHSA-hm7r-c7qw-ghp6 — accepts unknown `crit` header extensions (RFC 7515 violation). No upstream patch released yet. Mitigation: we never set or trust `crit` headers in our JWT flow (Twilio Verify OTP only). Re-check when nearform/fast-jwt ships a fix.",
+        "GHSA-4w7w-66w2-5vf9": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). vite <=6.4.1 path traversal in optimized deps .map handling. Pulled by @medusajs/framework which has a hard peer dep on `vite ^5.4.21`, so we cannot override to 6.4.2+ without breaking medusa's admin-vite-plugin. Dev-server-only vuln, not exploitable in production builds. Stays as a moderate in audit output (below the --audit-level=high CI threshold). Remove when medusa upgrades to vite v6+.",
+        "GHSA-gwhv-j974-6fxm": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). @mikro-orm/core SQL injection. Pulled exclusively by @medusajs/deps@2.13.5 which pins @mikro-orm/core to 6.4.16. Cannot override to a patched 6.6.x line because @medusajs/utils was built against MikroORM 6.4's EventManager (subscribers is an Array with .some()); 6.6+ switched subscribers to a Set, so registerInternalServiceEventSubscriber crashes on the first service bootstrap. Mitigation: nothing in this repo executes user-controlled queries through MikroORM — Medusa is the only consumer and all its query paths are parameterized. Re-check when Medusa upgrades to MikroORM 6.6+ or 7.x.",
+        "GHSA-qpfv-44f3-qqx6": "Documentation only — same situation and mitigation as GHSA-gwhv-j974-6fxm. Second SQL injection advisory against the same @mikro-orm/core 6.4.x line pulled via @medusajs/deps@2.13.5. Paired tracking — remove both together when Medusa bumps MikroORM."
+      }
     },
     "onlyBuiltDependencies": [
       "@prisma/client",

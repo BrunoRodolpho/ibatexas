@@ -7,7 +7,7 @@ import { Button, LinkButton, Badge, Text } from '../atoms'
 import { QuantitySelector } from './QuantitySelector'
 import NextImage from 'next/image'
 import { Star, Users, Scale } from 'lucide-react'
-import { formatBRL } from '@/lib/format'
+import { formatBRL, formatRating } from '@/lib/format'
 import { tagToBadgeVariant } from '@/domains/product'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
 import { useCartStore } from '@/domains/cart'
@@ -129,8 +129,8 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
           {product.rating && product.rating > 0 && (
             <div className="flex items-center gap-1 mt-1">
               <Star className="w-3 h-3 fill-brand-500 text-brand-500" />
-              <span className="text-xs text-smoke-400">
-                {product.rating.toFixed(1)}
+              <span className="text-xs text-[var(--color-text-secondary)]">
+                {formatRating(product.rating)}
                 {product.reviewCount ? ` (${product.reviewCount})` : ''}
               </span>
             </div>
@@ -138,7 +138,7 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
 
           {/* Serving / weight info */}
           {(product.servings || product.weight) && (
-            <div className="flex items-center gap-2 mt-1.5 text-[11px] text-smoke-400">
+            <div className="flex items-center gap-2 mt-1.5 text-xs text-[var(--color-text-secondary)]">
               {product.servings && (
                 <span className="inline-flex items-center gap-0.5">
                   <Users className="w-3 h-3" />
@@ -157,7 +157,7 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
 
           {/* Description snippet */}
           {product.description && (
-            <p className="text-xs text-smoke-400 mt-2 line-clamp-2">
+            <p className="text-xs text-[var(--color-text-secondary)] mt-2 line-clamp-2">
               {product.description}
             </p>
           )}

@@ -8,6 +8,7 @@
 // - No time slots for date → empty array + pt-BR message
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { checkTableAvailability } from "../check-availability.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -53,10 +54,6 @@ vi.mock("@ibatexas/domain", () => ({
     },
   }),
 }))
-
-// ── Imports ────────────────────────────────────────────────────────────────────
-
-import { checkTableAvailability } from "../check-availability.js"
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 

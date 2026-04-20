@@ -223,7 +223,7 @@ export type TimeSlotGroupByOutputType = {
   _max: TimeSlotMaxAggregateOutputType | null
 }
 
-type GetTimeSlotGroupByPayload<T extends TimeSlotGroupByArgs> = Prisma.PrismaPromise<
+export type GetTimeSlotGroupByPayload<T extends TimeSlotGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<TimeSlotGroupByOutputType, T['by']> &
       {

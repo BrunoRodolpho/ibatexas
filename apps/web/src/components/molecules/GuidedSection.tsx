@@ -6,6 +6,7 @@ import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 import { TrendingUp, ChevronLeft, ChevronRight } from 'lucide-react'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL } from '@/lib/format'
 import { useQuickCartActions } from '@/domains/cart/useQuickCartActions'
 import { CartActionButton } from './CartActionButton'
 import type { ProductDTO } from '@ibatexas/types'
@@ -32,10 +33,7 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
   const product = featured[currentIndex]
   if (!product) return null
 
-  const priceFormatted = (product.price / 100).toLocaleString('pt-BR', {
-    style: 'currency',
-    currency: 'BRL',
-  })
+  const priceFormatted = formatBRL(product.price)
   const displayImage = product.imageUrl || product.images?.[0] || null
   const isAdded = addedIds.has(product.id)
   const cartQty = getCartQuantity(product.id)
@@ -53,9 +51,15 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
         <p className="text-sm text-smoke-500 mb-3">{subtitle}</p>
       )}
 
-      {/* Single-card carousel */}
+      {/* Single-card carousel.
+          - Whole card is clickable via the Link's `after:absolute after:inset-0`
+            pseudo-element — same proven pattern as ProductCardVertical. The
+            link element itself wraps the title, and the pseudo-element creates
+            an invisible click overlay that fills the entire card.
+          - Arrow buttons sit above the click overlay via z-20.
+          - Arrows wrap around (modulo) so the carousel loops infinitely. */}
       <div className="relative mt-auto">
-        <div className="surface-card rounded-card overflow-hidden group">
+        <div className="group relative surface-card rounded-card overflow-hidden">
           <div className="flex flex-col">
             {/* Image */}
             <div className="relative w-full aspect-video flex-shrink-0 overflow-hidden bg-smoke-100">
@@ -81,13 +85,16 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
 
             {/* Content */}
             <div className="flex-1 p-4 flex flex-col justify-center">
-              <h3 className="font-display text-display-2xs font-semibold text-charcoal-900 tracking-display mb-1">
-                <Link href={`/loja/produto/${product.id}`}>
+              <h3 className="font-display text-display-2xs font-semibold text-charcoal-900 tracking-display mb-1 group-hover:text-charcoal-700 transition-micro">
+                <Link
+                  href={`/loja/produto/${product.id}`}
+                  className="after:absolute after:inset-0 after:content-['']"
+                >
                   {product.title}
                 </Link>
               </h3>
               {product.description && (
-                <p className="text-sm text-smoke-500 mb-3 font-display italic line-clamp-2">
+                <p className="text-sm text-smoke-500 mb-3 italic line-clamp-2">
                   {product.description}
                 </p>
               )}
@@ -116,21 +123,19 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
           </div>
         </div>
 
-        {/* Navigation arrows */}
+        {/* Navigation arrows — wrap-around (modulo), no clamping, no disabled state */}
         {featured.length > 1 && (
           <>
             <button
-              onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
-              disabled={currentIndex === 0}
-              className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm shadow-md flex items-center justify-center text-charcoal-900 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white transition-all"
+              onClick={() => setCurrentIndex((i) => (i - 1 + featured.length) % featured.length)}
+              className="absolute left-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm shadow-md flex items-center justify-center text-charcoal-900 hover:bg-white active:scale-95 transition-all focus-brand"
               aria-label={t('common.previous')}
             >
               <ChevronLeft className="w-4 h-4" strokeWidth={2} />
             </button>
             <button
-              onClick={() => setCurrentIndex((i) => Math.min(featured.length - 1, i + 1))}
-              disabled={currentIndex === featured.length - 1}
-              className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm shadow-md flex items-center justify-center text-charcoal-900 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white transition-all"
+              onClick={() => setCurrentIndex((i) => (i + 1) % featured.length)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-white/90 backdrop-blur-sm shadow-md flex items-center justify-center text-charcoal-900 hover:bg-white active:scale-95 transition-all focus-brand"
               aria-label={t('common.next')}
             >
               <ChevronRight className="w-4 h-4" strokeWidth={2} />
@@ -141,7 +146,7 @@ export function GuidedSection({ title, subtitle, products, onAddToCart }: Guided
 
       {/* Dot indicators */}
       {featured.length > 1 && (
-        <div className="flex items-center justify-center gap-1.5 mt-3">
+        <div className="flex items-center justify-center gap-2 mt-3">
           {featured.map((p, i) => (
             <button
               key={`dot-${p.id}`}

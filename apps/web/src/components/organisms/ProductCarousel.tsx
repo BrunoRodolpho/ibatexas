@@ -151,8 +151,10 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
       images={product.images}
       price={product.price}
       variantCount={product.variants?.length}
+      variants={product.variants}
       rating={product.rating}
       tags={product.tags}
+      categoryHandle={product.categoryHandle}
     />
   )
 
@@ -163,7 +165,7 @@ export const ProductCarousel = ({ products, isLoading }: ProductCarouselProps) =
           {['s1', 's2', 's3', 's4', 's5', 's6'].map((id) => (
             <div
               key={id}
-              className="flex-shrink-0 w-[630px] aspect-[16/10] rounded-sm skeleton"
+              className="flex-shrink-0 w-[min(630px,92vw)] aspect-[16/10] rounded-sm skeleton"
             />
           ))}
         </div>

@@ -6,17 +6,18 @@
 // POST /api/auth/logout      — revoke JWT, delete refresh token, clear cookies
 // GET  /api/auth/me          — return current customer from JWT
 
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import twilio from "twilio";
-import { createHash, randomUUID } from "node:crypto";
 import { createCustomerService, createStaffService } from "@ibatexas/domain";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { requireAuth, optionalAuth } from "../middleware/auth.js";
 
 // ── Twilio client ─────────────────────────────────────────────────────────────
 
+// Customer Twilio account
 function twilioClient(): ReturnType<typeof twilio> {
   const sid = process.env.TWILIO_ACCOUNT_SID;
   const auth = process.env.TWILIO_AUTH_TOKEN;
@@ -34,6 +35,28 @@ function otpChannel(): "sms" | "whatsapp" {
   const ch = process.env.TWILIO_OTP_CHANNEL ?? "sms";
   if (ch !== "sms" && ch !== "whatsapp") {
     throw new Error(`TWILIO_OTP_CHANNEL must be "sms" or "whatsapp", got "${ch}"`);
+  }
+  return ch;
+}
+
+// Staff/Admin Twilio account — falls back to customer account if not set
+function staffTwilioClient(): ReturnType<typeof twilio> {
+  const sid = process.env.TWILIO_STAFF_ACCOUNT_SID ?? process.env.TWILIO_ACCOUNT_SID;
+  const auth = process.env.TWILIO_STAFF_AUTH_TOKEN ?? process.env.TWILIO_AUTH_TOKEN;
+  if (!sid || !auth) throw new Error("TWILIO_STAFF_ACCOUNT_SID / TWILIO_STAFF_AUTH_TOKEN (or TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN) not set");
+  return twilio(sid, auth);
+}
+
+function staffVerifySid(): string {
+  const sid = process.env.TWILIO_STAFF_VERIFY_SID ?? process.env.TWILIO_VERIFY_SID;
+  if (!sid) throw new Error("TWILIO_STAFF_VERIFY_SID (or TWILIO_VERIFY_SID) not set");
+  return sid;
+}
+
+function staffOtpChannel(): "sms" | "whatsapp" {
+  const ch = process.env.TWILIO_STAFF_OTP_CHANNEL ?? process.env.TWILIO_OTP_CHANNEL ?? "sms";
+  if (ch !== "sms" && ch !== "whatsapp") {
+    throw new Error(`TWILIO_STAFF_OTP_CHANNEL must be "sms" or "whatsapp", got "${ch}"`);
   }
   return ch;
 }
@@ -108,6 +131,24 @@ async function verifyTwilioOtp(phone: string, code: string): Promise<VerifyOtpRe
   try {
     const verification = await twilioClient().verify.v2
       .services(verifySid())
+      .verificationChecks.create({ to: phone, code });
+    return { status: verification.status };
+  } catch (err: unknown) {
+    return { status: "error", twilioError: err as { code?: number; status?: number; message?: string } };
+  }
+}
+
+// Staff OTP — uses separate Twilio account when TWILIO_STAFF_* vars are set
+async function sendStaffTwilioOtp(phone: string): Promise<void> {
+  await staffTwilioClient().verify.v2
+    .services(staffVerifySid())
+    .verifications.create({ to: phone, channel: staffOtpChannel() });
+}
+
+async function verifyStaffTwilioOtp(phone: string, code: string): Promise<VerifyOtpResult> {
+  try {
+    const verification = await staffTwilioClient().verify.v2
+      .services(staffVerifySid())
       .verificationChecks.create({ to: phone, code });
     return { status: verification.status };
   } catch (err: unknown) {
@@ -275,108 +316,117 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       const hash = phoneHash(phone);
       const ip = request.ip;
 
-      // IP rate limit on verify-otp to prevent phone-spray attacks
-      const ipLimit = await checkIpRateLimit(ip);
-      if (ipLimit.exceeded) {
-        server.log.warn({ ip, action: "verify_otp_ip_rate_limited", count: ipLimit.count }, "OTP verify IP rate limited");
-        return reply.code(429).send({
-          statusCode: 429,
-          error: "Too Many Requests",
-          message: "Muitas tentativas deste endereço. Aguarde 1 hora.",
-        });
-      }
-
-      // Block brute-force: reject after 5 failed attempts per phone per hour
-      const blocked = await checkBruteForce(hash);
-      if (blocked) {
-        server.log.warn(
-          { action: "otp_brute_force_blocked", phone_hash: hash, ip },
-          "OTP verify blocked — too many failures",
-        );
-        return reply.code(429).send({
-          statusCode: 429,
-          error: "Too Many Requests",
-          message: "Muitas tentativas. Aguarde 1 hora.",
-        });
-      }
-
-      const verification = await verifyTwilioOtp(phone, code);
-
-      if (verification.twilioError) {
-        server.log.error({ phone_hash: hash, ip, action: "verify_otp_error", err: verification.twilioError });
-
-        // 20404 = no pending verification for this phone (expired or never sent)
-        if (verification.twilioError.code === 20404) {
-          return reply.code(400).send({
-            statusCode: 400,
-            error: "Bad Request",
-            message: "Código expirado ou não encontrado. Solicite um novo código.",
+      try {
+        // IP rate limit on verify-otp to prevent phone-spray attacks
+        const ipLimit = await checkIpRateLimit(ip);
+        if (ipLimit.exceeded) {
+          server.log.warn({ ip, action: "verify_otp_ip_rate_limited", count: ipLimit.count }, "OTP verify IP rate limited");
+          return reply.code(429).send({
+            statusCode: 429,
+            error: "Too Many Requests",
+            message: "Muitas tentativas deste endereço. Aguarde 1 hora.",
           });
         }
 
-        return reply.code(502).send({
-          statusCode: 502,
-          error: "Bad Gateway",
-          message: "Erro ao verificar código. Tente novamente.",
-        });
-      }
-
-      if (verification.status !== "approved") {
-        const failCount = await recordVerifyFailure(hash);
-        server.log.info(
-          { phone_hash: hash, ip, action: "verify_otp", success: false, attempt_count: failCount },
-          "OTP verification failed",
-        );
-        if (failCount >= 5) {
+        // Block brute-force: reject after 5 failed attempts per phone per hour
+        const blocked = await checkBruteForce(hash);
+        if (blocked) {
           server.log.warn(
-            { action: "otp_abuse_suspected", phone_hash: hash, ip },
-            "Possible OTP abuse detected",
+            { action: "otp_brute_force_blocked", phone_hash: hash, ip },
+            "OTP verify blocked — too many failures",
           );
+          return reply.code(429).send({
+            statusCode: 429,
+            error: "Too Many Requests",
+            message: "Muitas tentativas. Aguarde 1 hora.",
+          });
         }
-        return reply.code(400).send({
-          statusCode: 400,
-          error: "Bad Request",
-          message: "Código inválido ou expirado.",
+
+        const verification = await verifyTwilioOtp(phone, code);
+
+        if (verification.twilioError) {
+          server.log.error({ phone_hash: hash, ip, action: "verify_otp_error", err: verification.twilioError });
+
+          // 20404 = no pending verification for this phone (expired or never sent)
+          if (verification.twilioError.code === 20404) {
+            return reply.code(400).send({
+              statusCode: 400,
+              error: "Bad Request",
+              message: "Código expirado ou não encontrado. Solicite um novo código.",
+            });
+          }
+
+          return reply.code(502).send({
+            statusCode: 502,
+            error: "Bad Gateway",
+            message: "Erro ao verificar código. Tente novamente.",
+          });
+        }
+
+        if (verification.status !== "approved") {
+          const failCount = await recordVerifyFailure(hash);
+          server.log.info(
+            { phone_hash: hash, ip, action: "verify_otp", success: false, attempt_count: failCount },
+            "OTP verification failed",
+          );
+          if (failCount >= 5) {
+            server.log.warn(
+              { action: "otp_abuse_suspected", phone_hash: hash, ip },
+              "Possible OTP abuse detected",
+            );
+          }
+          return reply.code(400).send({
+            statusCode: 400,
+            error: "Bad Request",
+            message: "Código inválido ou expirado.",
+          });
+        }
+
+        // Clear failure counter on success
+        await clearVerifyFailures(hash);
+
+        // Upsert customer via domain service
+        const customerSvc = createCustomerService();
+        const customer = await customerSvc.upsertFromPhone(phone, name ?? undefined);
+
+        server.log.info(
+          { phone_hash: hash, ip, action: "verify_otp", success: true, customer_id: customer.id },
+          "OTP verified — customer authenticated",
+        );
+
+        // Issue JWT + refresh token
+        const token = issueJwtToken(server, customer.id);
+        const refreshToken = await issueRefreshToken(customer.id);
+        return reply
+          .setCookie("token", token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            path: "/",
+            maxAge: 4 * 60 * 60, // 4h — matches JWT expiry
+          })
+          .setCookie("refresh_token", refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            path: "/api/auth/refresh",
+            maxAge: REFRESH_TTL_SECONDS,
+          })
+          .code(200)
+          .send({
+            id: customer.id,
+            phone: customer.phone,
+            name: customer.name,
+            email: customer.email,
+          });
+      } catch (err) {
+        server.log.error({ phone_hash: hash, ip, action: "verify_otp", err }, "Unexpected error during OTP verification");
+        return reply.code(500).send({
+          statusCode: 500,
+          error: "Internal Server Error",
+          message: "Erro interno ao verificar código. Tente novamente.",
         });
       }
-
-      // Clear failure counter on success
-      await clearVerifyFailures(hash);
-
-      // Upsert customer via domain service
-      const customerSvc = createCustomerService();
-      const customer = await customerSvc.upsertFromPhone(phone, name ?? undefined);
-
-      server.log.info(
-        { phone_hash: hash, ip, action: "verify_otp", success: true, customer_id: customer.id },
-        "OTP verified — customer authenticated",
-      );
-
-      // Issue JWT + refresh token
-      const token = issueJwtToken(server, customer.id);
-      const refreshToken = await issueRefreshToken(customer.id);
-      return reply
-        .setCookie("token", token, {
-          httpOnly: true,
-          secure: true,
-          sameSite: "lax",
-          path: "/",
-          maxAge: 4 * 60 * 60, // 4h — matches JWT expiry
-        })
-        .setCookie("refresh_token", refreshToken, {
-          httpOnly: true,
-          secure: true,
-          sameSite: "lax",
-          path: "/api/auth/refresh",
-          maxAge: REFRESH_TTL_SECONDS,
-        })
-        .code(200)
-        .send({
-          id: customer.id,
-          phone: customer.phone,
-          name: customer.name,
-          email: customer.email,
-        });
     },
   );
 
@@ -475,14 +525,14 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       return reply
         .setCookie("token", newJwt, {
           httpOnly: true,
-          secure: true,
+          secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
           path: "/",
           maxAge: 4 * 60 * 60,
         })
         .setCookie("refresh_token", newRefreshToken, {
           httpOnly: true,
-          secure: true,
+          secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
           path: "/api/auth/refresh",
           maxAge: REFRESH_TTL_SECONDS,
@@ -584,7 +634,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       }
 
       try {
-        await sendTwilioOtp(phone);
+        await sendStaffTwilioOtp(phone);
       } catch (err) {
         server.log.error({ phone_hash: hash, ip, action: "staff_send_otp_error", err }, "Twilio error");
         return reply.code(502).send({
@@ -658,7 +708,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
-      const verification = await verifyTwilioOtp(phone, code);
+      const verification = await verifyStaffTwilioOtp(phone, code);
 
       if (verification.twilioError) {
         server.log.error({ phone_hash: hash, ip, action: "staff_verify_otp_error", err: verification.twilioError });
@@ -702,9 +752,9 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       // Issue staff JWT (no refresh token for staff — shorter-lived sessions)
       const token = issueStaffJwtToken(server, staff.id, staff.role);
       return reply
-        .setCookie("token", token, {
+        .setCookie("staff_token", token, {
           httpOnly: true,
-          secure: true,
+          secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
           path: "/",
           maxAge: 8 * 60 * 60, // 8h — matches staff JWT expiry

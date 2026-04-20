@@ -108,16 +108,9 @@ export const SERVICES: Record<string, ServiceDef> = {
   },
 }
 
-/** Services started by `ibx dev` with no argument */
-export const DEFAULT_SERVICES = ["commerce"]
-
 /** Resolve a service key (or "all") into a list of ServiceDefs */
 export function resolveServices(key: string | undefined): ServiceDef[] {
-  if (!key || key === "default") {
-    return DEFAULT_SERVICES.map((k) => SERVICES[k]).filter(Boolean)
-  }
-
-  if (key === "all") {
+  if (!key || key === "default" || key === "all") {
     return Object.values(SERVICES).filter((s) => s.available)
   }
 

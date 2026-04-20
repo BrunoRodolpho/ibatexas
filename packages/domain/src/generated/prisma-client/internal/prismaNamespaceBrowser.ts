@@ -62,7 +62,19 @@ export const ModelName = {
   Address: 'Address',
   CustomerPreferences: 'CustomerPreferences',
   CustomerOrderItem: 'CustomerOrderItem',
-  DeliveryZone: 'DeliveryZone'
+  OrderProjection: 'OrderProjection',
+  OrderStatusHistory: 'OrderStatusHistory',
+  OrderEventLog: 'OrderEventLog',
+  Payment: 'Payment',
+  PaymentStatusHistory: 'PaymentStatusHistory',
+  OrderNote: 'OrderNote',
+  LoyaltyAccount: 'LoyaltyAccount',
+  Conversation: 'Conversation',
+  ConversationMessage: 'ConversationMessage',
+  DeliveryZone: 'DeliveryZone',
+  WeeklySchedule: 'WeeklySchedule',
+  Holiday: 'Holiday',
+  ScheduleOverride: 'ScheduleOverride'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -111,6 +123,7 @@ export type TimeSlotScalarFieldEnum = (typeof TimeSlotScalarFieldEnum)[keyof typ
 
 export const ReservationScalarFieldEnum = {
   id: 'id',
+  displayId: 'displayId',
   customerId: 'customerId',
   partySize: 'partySize',
   status: 'status',
@@ -182,6 +195,7 @@ export const CustomerScalarFieldEnum = {
   phone: 'phone',
   name: 'name',
   email: 'email',
+  cpf: 'cpf',
   medusaId: 'medusaId',
   source: 'source',
   firstContactAt: 'firstContactAt',
@@ -234,6 +248,152 @@ export const CustomerOrderItemScalarFieldEnum = {
 export type CustomerOrderItemScalarFieldEnum = (typeof CustomerOrderItemScalarFieldEnum)[keyof typeof CustomerOrderItemScalarFieldEnum]
 
 
+export const OrderProjectionScalarFieldEnum = {
+  id: 'id',
+  displayId: 'displayId',
+  customerId: 'customerId',
+  customerEmail: 'customerEmail',
+  customerName: 'customerName',
+  customerPhone: 'customerPhone',
+  fulfillmentStatus: 'fulfillmentStatus',
+  paymentStatus: 'paymentStatus',
+  totalInCentavos: 'totalInCentavos',
+  subtotalInCentavos: 'subtotalInCentavos',
+  shippingInCentavos: 'shippingInCentavos',
+  itemCount: 'itemCount',
+  itemsJson: 'itemsJson',
+  itemsSchemaVersion: 'itemsSchemaVersion',
+  shippingAddressJson: 'shippingAddressJson',
+  deliveryType: 'deliveryType',
+  paymentMethod: 'paymentMethod',
+  tipInCentavos: 'tipInCentavos',
+  version: 'version',
+  medusaCreatedAt: 'medusaCreatedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
+  currentPaymentId: 'currentPaymentId'
+} as const
+
+export type OrderProjectionScalarFieldEnum = (typeof OrderProjectionScalarFieldEnum)[keyof typeof OrderProjectionScalarFieldEnum]
+
+
+export const OrderStatusHistoryScalarFieldEnum = {
+  id: 'id',
+  orderId: 'orderId',
+  fromStatus: 'fromStatus',
+  toStatus: 'toStatus',
+  actor: 'actor',
+  actorId: 'actorId',
+  reason: 'reason',
+  version: 'version',
+  backfillBatchId: 'backfillBatchId',
+  createdAt: 'createdAt'
+} as const
+
+export type OrderStatusHistoryScalarFieldEnum = (typeof OrderStatusHistoryScalarFieldEnum)[keyof typeof OrderStatusHistoryScalarFieldEnum]
+
+
+export const OrderEventLogScalarFieldEnum = {
+  id: 'id',
+  orderId: 'orderId',
+  eventType: 'eventType',
+  idempotencyKey: 'idempotencyKey',
+  payload: 'payload',
+  timestamp: 'timestamp',
+  createdAt: 'createdAt'
+} as const
+
+export type OrderEventLogScalarFieldEnum = (typeof OrderEventLogScalarFieldEnum)[keyof typeof OrderEventLogScalarFieldEnum]
+
+
+export const PaymentScalarFieldEnum = {
+  id: 'id',
+  orderId: 'orderId',
+  method: 'method',
+  status: 'status',
+  amountInCentavos: 'amountInCentavos',
+  stripePaymentIntentId: 'stripePaymentIntentId',
+  pixExpiresAt: 'pixExpiresAt',
+  refundedAmountCentavos: 'refundedAmountCentavos',
+  regenerationCount: 'regenerationCount',
+  idempotencyKey: 'idempotencyKey',
+  lastStripeEventTs: 'lastStripeEventTs',
+  version: 'version',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type PaymentScalarFieldEnum = (typeof PaymentScalarFieldEnum)[keyof typeof PaymentScalarFieldEnum]
+
+
+export const PaymentStatusHistoryScalarFieldEnum = {
+  id: 'id',
+  paymentId: 'paymentId',
+  fromStatus: 'fromStatus',
+  toStatus: 'toStatus',
+  actor: 'actor',
+  actorId: 'actorId',
+  reason: 'reason',
+  version: 'version',
+  createdAt: 'createdAt'
+} as const
+
+export type PaymentStatusHistoryScalarFieldEnum = (typeof PaymentStatusHistoryScalarFieldEnum)[keyof typeof PaymentStatusHistoryScalarFieldEnum]
+
+
+export const OrderNoteScalarFieldEnum = {
+  id: 'id',
+  orderId: 'orderId',
+  author: 'author',
+  authorId: 'authorId',
+  content: 'content',
+  isInternal: 'isInternal',
+  createdAt: 'createdAt'
+} as const
+
+export type OrderNoteScalarFieldEnum = (typeof OrderNoteScalarFieldEnum)[keyof typeof OrderNoteScalarFieldEnum]
+
+
+export const LoyaltyAccountScalarFieldEnum = {
+  id: 'id',
+  customerId: 'customerId',
+  stamps: 'stamps',
+  totalEarned: 'totalEarned',
+  redeemed: 'redeemed',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type LoyaltyAccountScalarFieldEnum = (typeof LoyaltyAccountScalarFieldEnum)[keyof typeof LoyaltyAccountScalarFieldEnum]
+
+
+export const ConversationScalarFieldEnum = {
+  id: 'id',
+  sessionId: 'sessionId',
+  customerId: 'customerId',
+  channel: 'channel',
+  startedAt: 'startedAt',
+  endedAt: 'endedAt',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type ConversationScalarFieldEnum = (typeof ConversationScalarFieldEnum)[keyof typeof ConversationScalarFieldEnum]
+
+
+export const ConversationMessageScalarFieldEnum = {
+  id: 'id',
+  conversationId: 'conversationId',
+  role: 'role',
+  content: 'content',
+  metadata: 'metadata',
+  sentAt: 'sentAt',
+  createdAt: 'createdAt'
+} as const
+
+export type ConversationMessageScalarFieldEnum = (typeof ConversationMessageScalarFieldEnum)[keyof typeof ConversationMessageScalarFieldEnum]
+
+
 export const DeliveryZoneScalarFieldEnum = {
   id: 'id',
   name: 'name',
@@ -241,11 +401,56 @@ export const DeliveryZoneScalarFieldEnum = {
   feeInCentavos: 'feeInCentavos',
   estimatedMinutes: 'estimatedMinutes',
   active: 'active',
+  centerLat: 'centerLat',
+  centerLng: 'centerLng',
+  radiusKm: 'radiusKm',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 } as const
 
 export type DeliveryZoneScalarFieldEnum = (typeof DeliveryZoneScalarFieldEnum)[keyof typeof DeliveryZoneScalarFieldEnum]
+
+
+export const WeeklyScheduleScalarFieldEnum = {
+  id: 'id',
+  dayOfWeek: 'dayOfWeek',
+  isOpen: 'isOpen',
+  lunchStart: 'lunchStart',
+  lunchEnd: 'lunchEnd',
+  dinnerStart: 'dinnerStart',
+  dinnerEnd: 'dinnerEnd',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type WeeklyScheduleScalarFieldEnum = (typeof WeeklyScheduleScalarFieldEnum)[keyof typeof WeeklyScheduleScalarFieldEnum]
+
+
+export const HolidayScalarFieldEnum = {
+  id: 'id',
+  date: 'date',
+  label: 'label',
+  allDay: 'allDay',
+  startTime: 'startTime',
+  endTime: 'endTime',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type HolidayScalarFieldEnum = (typeof HolidayScalarFieldEnum)[keyof typeof HolidayScalarFieldEnum]
+
+
+export const ScheduleOverrideScalarFieldEnum = {
+  id: 'id',
+  date: 'date',
+  isOpen: 'isOpen',
+  blocks: 'blocks',
+  note: 'note',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type ScheduleOverrideScalarFieldEnum = (typeof ScheduleOverrideScalarFieldEnum)[keyof typeof ScheduleOverrideScalarFieldEnum]
 
 
 export const SortOrder = {
@@ -261,6 +466,14 @@ export const JsonNullValueInput = {
 } as const
 
 export type JsonNullValueInput = (typeof JsonNullValueInput)[keyof typeof JsonNullValueInput]
+
+
+export const NullableJsonNullValueInput = {
+  DbNull: DbNull,
+  JsonNull: JsonNull
+} as const
+
+export type NullableJsonNullValueInput = (typeof NullableJsonNullValueInput)[keyof typeof NullableJsonNullValueInput]
 
 
 export const QueryMode = {

@@ -100,19 +100,19 @@ export function ChatWidget() {
           <div className="flex items-center justify-between border-b border-smoke-200 bg-smoke-50 px-4 py-3 md:rounded-t-lg">
             <div className="flex items-center gap-2.5">
               <div className="h-7 w-7 rounded-md bg-charcoal-900 flex items-center justify-center">
-                <span className="text-white text-[10px] font-semibold">IA</span>
+                <span className="text-white text-micro font-semibold">IA</span>
               </div>
               <div>
                 <h2 className="text-sm font-semibold text-charcoal-900">{t("chat.title")}</h2>
                 <div className="flex items-center gap-1 mt-0.5">
                   <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  <span className="text-[10px] text-smoke-400">Online</span>
+                  <span className="text-micro text-[var(--color-text-secondary)]">Online</span>
                 </div>
               </div>
             </div>
             <button
               onClick={() => setChat(false)}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
               aria-label="Fechar chat"
             >
               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -125,7 +125,7 @@ export function ChatWidget() {
           <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-smoke-100">
             {messages.length === 0 && (
               <div className="flex flex-col items-center justify-center h-full gap-3 py-8">
-                <p className="text-center text-[13px] text-smoke-400 measure-narrow">
+                <p className="text-center text-[13px] text-[var(--color-text-secondary)] measure-narrow">
                   {t("chat.placeholder")}
                 </p>
               </div>
@@ -174,7 +174,7 @@ export function ChatWidget() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={t("chat.placeholder")}
-                className="flex-1 bg-transparent text-[13px] text-charcoal-900 placeholder:text-smoke-400 focus:outline-none"
+                className="flex-1 bg-transparent text-[13px] text-charcoal-900 placeholder:text-[var(--color-text-disabled)] focus:outline-none"
                 disabled={isLoading}
               />
               <button

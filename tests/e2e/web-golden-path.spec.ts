@@ -36,12 +36,12 @@ test.describe("Web Golden Path", () => {
     }
 
     // 4. Click on the first product result
-    const productLink = page.locator('a[href*="/products/"]').first();
+    const productLink = page.locator('a[href*="/loja/produto/"]').first();
     await expect(productLink).toBeVisible({ timeout: 10_000 });
     await productLink.click();
 
     // 5. Product detail page should load
-    await expect(page).toHaveURL(/\/products\/.+/);
+    await expect(page).toHaveURL(/\/loja\/produto\/.+/);
     await expect(page.locator("body")).not.toContainText("Unhandled Runtime Error");
 
     // 6. Find and click "Add to cart" button
@@ -85,11 +85,11 @@ test.describe("Web Golden Path", () => {
     // Go to store listing first, then click into a product
     await page.goto("/loja");
 
-    const productLink = page.locator('a[href*="/products/"]').first();
+    const productLink = page.locator('a[href*="/loja/produto/"]').first();
     // If products are seeded, a product link should be visible
     if (await productLink.isVisible({ timeout: 5_000 }).catch(() => false)) {
       await productLink.click();
-      await expect(page).toHaveURL(/\/products\/.+/);
+      await expect(page).toHaveURL(/\/loja\/produto\/.+/);
       await expect(page.locator("body")).not.toContainText("Unhandled Runtime Error");
     }
   });

@@ -6,7 +6,8 @@
 // - medusaAdminFetch: correct admin token header, JSON parse, error status
 // - Both: timeout signal, custom options passthrough
 
-import { describe, it, expect, beforeEach, vi } from "vitest"
+import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest"
+import { medusaStoreFetch, medusaAdminFetch } from "../_shared.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -16,9 +17,11 @@ const mockFetch = vi.hoisted(() => vi.fn())
 
 vi.stubGlobal("fetch", mockFetch)
 
-// ── Imports ──────────────────────────────────────────────────────────────────
-
-import { medusaStoreFetch, medusaAdminFetch } from "../_shared.js"
+// Admin auth is resolved via /auth/user/emailpass at runtime; these env vars
+// satisfy the client's guard. The publishable key is resolved from the admin
+// API on first store call — see the priming beforeAll below.
+process.env.MEDUSA_ADMIN_EMAIL = "test@example.com"
+process.env.MEDUSA_ADMIN_PASSWORD = "test-password"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -40,9 +43,41 @@ function makeErrorResponse(status: number, text: string) {
   }
 }
 
+// Build a fake JWT whose payload has an `exp` far in the future so the
+// admin-token cache never triggers a refresh during tests.
+function makeFakeJwt(expSecondsFromNow = 3600): string {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url")
+  const payload = Buffer.from(
+    JSON.stringify({ exp: Math.floor(Date.now() / 1000) + expSecondsFromNow }),
+  ).toString("base64url")
+  return `${header}.${payload}.sig`
+}
+
+function makeAuthResponse() {
+  return makeOkResponse({ token: makeFakeJwt() })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("medusaStoreFetch", () => {
+  // Prime the module-level admin-token and publishable-key caches once up
+  // front so individual tests can use simple mockResolvedValue(...) without
+  // having to handle the intermediate /auth/user/emailpass and
+  // /admin/api-keys calls. Caches persist for the process lifetime.
+  beforeAll(async () => {
+    mockFetch.mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("/auth/user/emailpass")) {
+        return Promise.resolve(makeAuthResponse())
+      }
+      if (typeof url === "string" && url.includes("/admin/api-keys")) {
+        return Promise.resolve(makeOkResponse({ api_keys: [{ token: "pk_resolved" }] }))
+      }
+      return Promise.resolve(makeOkResponse({}))
+    })
+    await medusaStoreFetch("/store/__prime__")
+    mockFetch.mockReset()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -129,24 +164,52 @@ describe("medusaStoreFetch", () => {
 describe("medusaAdminFetch", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Default: any fetch returns a fresh auth token. Individual tests override
+    // with mockResolvedValueOnce for the actual admin endpoint response.
+    // The token cache is module-level so the auth call happens at most once
+    // across the whole describe block after the first cache miss.
+    mockFetch.mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("/auth/user/emailpass")) {
+        return Promise.resolve(makeAuthResponse())
+      }
+      return Promise.resolve(makeOkResponse({}))
+    })
   })
+
+  // Call index of the admin endpoint fetch (0 if auth was cached from a prior
+  // test, 1 if this test triggered a fresh auth call first).
+  function adminCallIndex(): number {
+    const idx = mockFetch.mock.calls.findIndex(
+      ([u]) => typeof u === "string" && !u.includes("/auth/user/emailpass"),
+    )
+    return idx >= 0 ? idx : 0
+  }
 
   it("sends correct admin access token header", async () => {
     const responseBody = { order: { id: "order_01" } }
-    mockFetch.mockResolvedValue(makeOkResponse(responseBody))
+    mockFetch.mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("/auth/user/emailpass")) {
+        return Promise.resolve(makeAuthResponse())
+      }
+      return Promise.resolve(makeOkResponse(responseBody))
+    })
 
     await medusaAdminFetch("/admin/orders/order_01")
 
-    expect(mockFetch).toHaveBeenCalledOnce()
-    const [url, opts] = mockFetch.mock.calls[0]
+    const [url, opts] = mockFetch.mock.calls[adminCallIndex()]
     expect(url).toContain("/admin/orders/order_01")
-    expect(opts.headers["x-medusa-access-token"]).toBeDefined()
+    expect(opts.headers["Authorization"]).toMatch(/^Bearer /)
     expect(opts.headers["Content-Type"]).toBe("application/json")
   })
 
   it("returns parsed JSON on success", async () => {
     const responseBody = { order: { id: "order_01", status: "pending" } }
-    mockFetch.mockResolvedValue(makeOkResponse(responseBody))
+    mockFetch.mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("/auth/user/emailpass")) {
+        return Promise.resolve(makeAuthResponse())
+      }
+      return Promise.resolve(makeOkResponse(responseBody))
+    })
 
     const result = await medusaAdminFetch("/admin/orders/order_01")
 
@@ -154,35 +217,41 @@ describe("medusaAdminFetch", () => {
   })
 
   it("throws on non-ok response with status code and body", async () => {
-    mockFetch.mockResolvedValue(makeErrorResponse(403, "Forbidden"))
+    mockFetch.mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("/auth/user/emailpass")) {
+        return Promise.resolve(makeAuthResponse())
+      }
+      return Promise.resolve(makeErrorResponse(403, "Forbidden"))
+    })
 
     await expect(medusaAdminFetch("/admin/orders/order_01")).rejects.toThrow("Medusa 403")
   })
 
   it("throws on 500 error", async () => {
-    mockFetch.mockResolvedValue(makeErrorResponse(500, "Server Error"))
+    mockFetch.mockImplementation((url: string) => {
+      if (typeof url === "string" && url.includes("/auth/user/emailpass")) {
+        return Promise.resolve(makeAuthResponse())
+      }
+      return Promise.resolve(makeErrorResponse(500, "Server Error"))
+    })
 
     await expect(medusaAdminFetch("/admin/orders/order_01")).rejects.toThrow("Medusa 500")
   })
 
   it("passes custom method and body", async () => {
-    mockFetch.mockResolvedValue(makeOkResponse({}))
-
     await medusaAdminFetch("/admin/orders/order_01/cancel", {
       method: "POST",
       body: JSON.stringify({}),
     })
 
-    const [, opts] = mockFetch.mock.calls[0]
+    const [, opts] = mockFetch.mock.calls[adminCallIndex()]
     expect(opts.method).toBe("POST")
   })
 
   it("includes a timeout signal by default", async () => {
-    mockFetch.mockResolvedValue(makeOkResponse({}))
-
     await medusaAdminFetch("/admin/orders")
 
-    const [, opts] = mockFetch.mock.calls[0]
+    const [, opts] = mockFetch.mock.calls[adminCallIndex()]
     expect(opts.signal).toBeDefined()
   })
 })

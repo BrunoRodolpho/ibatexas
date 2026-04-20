@@ -16,6 +16,7 @@ import type {
   IStoreModuleService,
 } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { indexProductsBatch, type MedusaProductInput } from "@ibatexas/tools"
 import { CATEGORIES, SEED_PRODUCTS } from "./seed-data"
 
 export default async function seed({ container }: ExecArgs) {
@@ -110,6 +111,8 @@ export default async function seed({ container }: ExecArgs) {
 
   // Track variant → price for linking after creation
   const variantPrices: { variantId: string; amount: number }[] = []
+  // Track created product IDs for the post-link reindex pass
+  const createdProductIds: string[] = []
 
   for (const product of SEED_PRODUCTS) {
     const categoryId = categoryMap.get(product.categoryHandle)
@@ -147,6 +150,7 @@ export default async function seed({ container }: ExecArgs) {
     ])
 
     const createdProduct = created[0]
+    createdProductIds.push(createdProduct.id)
 
     // Link product → sales channel via Remote Link
     await remoteLink.create([
@@ -189,6 +193,33 @@ export default async function seed({ container }: ExecArgs) {
   }
 
   console.log(`  ✓ ${variantPrices.length} prices linked`)
+
+  // ── 4. Reindex all seeded products with linked prices ────────────────────
+  //
+  // The product.created and pricing.price.created subscribers ran too early
+  // during the create/link phases: at product.created no prices existed, and
+  // at pricing.price.created no variant↔price_set link existed yet (the link
+  // is created separately via remoteLink with no event). Without this pass,
+  // Typesense ends up with every variant at price=0. Reindexing here, after
+  // all links exist, pulls the full graph from remote query and writes the
+  // correct prices.
+  console.log("  Reindexing products with linked prices...")
+  const query = container.resolve(ContainerRegistrationKeys.QUERY)
+  const { data: fullProducts } = await query.graph({
+    entity: "product",
+    fields: [
+      "*",
+      "variants.*",
+      "variants.price_set.*",
+      "variants.price_set.prices.*",
+      "tags.*",
+      "categories.*",
+      "images.*",
+    ],
+    filters: { id: createdProductIds },
+  })
+  await indexProductsBatch(fullProducts as unknown as MedusaProductInput[])
+  console.log(`  ✓ ${fullProducts.length} products reindexed with prices`)
 
   console.log("\n✅ Seed complete!")
   console.log(`   Store      : ${store.name}`)

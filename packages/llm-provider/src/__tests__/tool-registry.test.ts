@@ -3,7 +3,6 @@
 import { describe, it, expect, vi } from "vitest"
 
 // ── Mock all tool implementations ─────────────────────────────────────────────
-
 vi.mock("@ibatexas/tools", () => {
   const makeTool = (name: string) => ({
     name,
@@ -31,6 +30,8 @@ vi.mock("@ibatexas/tools", () => {
     joinWaitlist: vi.fn(async () => ({ waitlistId: "wl_01" })),
     JoinWaitlistTool: makeTool("join_waitlist"),
     // Cart tools
+    getOrCreateCart: vi.fn(async () => ({ cartId: "cart_01", items: [], totalInCentavos: 0 })),
+    GetOrCreateCartTool: makeTool("get_or_create_cart"),
     getCart: vi.fn(async () => ({ cart: null })),
     GetCartTool: makeTool("get_cart"),
     addToCart: vi.fn(async () => ({ success: true })),
@@ -47,10 +48,19 @@ vi.mock("@ibatexas/tools", () => {
     GetOrderHistoryTool: makeTool("get_order_history"),
     checkOrderStatus: vi.fn(async () => ({ status: "pending" })),
     CheckOrderStatusTool: makeTool("check_order_status"),
+    checkPaymentStatus: vi.fn(async () => ({ status: "pending" })),
+    CheckPaymentStatusTool: makeTool("check_payment_status"),
     cancelOrder: vi.fn(async () => ({ success: true })),
     CancelOrderTool: makeTool("cancel_order"),
+    amendOrder: vi.fn(async () => ({ success: true })),
+    AmendOrderTool: makeTool("amend_order"),
     reorder: vi.fn(async () => ({ cartId: "cart_01" })),
     ReorderTool: makeTool("reorder"),
+    regeneratePix: vi.fn(async () => ({ success: true, pixCopyPaste: "00020126" })),
+    RegeneratePixTool: makeTool("regenerate_pix"),
+    setPixDetails: vi.fn(async () => ({ valid: true, event: { type: "PIX_DETAILS_COLLECTED", payload: {} }, errors: [], missing: [], message: "" })),
+    SetPixDetailsTool: makeTool("set_pix_details"),
+    SetPixDetailsInputSchema: { parse: vi.fn((x: unknown) => x) },
     // Intelligence tools
     getCustomerProfile: vi.fn(async () => ({})),
     GetCustomerProfileTool: makeTool("get_customer_profile"),
@@ -83,9 +93,9 @@ vi.mock("@ibatexas/tools", () => {
   }
 })
 
-import { executeTool, TOOL_DEFINITIONS } from "../tool-registry.js"
 import { Channel, type AgentContext } from "@ibatexas/types"
 import { createReservation, cancelReservation, getMyReservations } from "@ibatexas/tools"
+import { executeTool, executeToolDirect, TOOL_DEFINITIONS } from "../tool-registry.js"
 
 const ctx: AgentContext = {
   channel: Channel.WhatsApp,
@@ -97,8 +107,8 @@ const ctx: AgentContext = {
 // ── TOOL_DEFINITIONS ──────────────────────────────────────────────────────────
 
 describe("TOOL_DEFINITIONS", () => {
-  it("has 30 registered tools", () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(30)
+  it("has 35 registered tools", () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(35)
   })
 
   it("uses input_schema (snake_case) for Anthropic API", () => {
@@ -154,15 +164,18 @@ describe("executeTool", () => {
 // ── withCustomerId ────────────────────────────────────────────────────────────
 
 describe("withCustomerId injection", () => {
+  // MUTATING tools return intents via executeTool (Zero-Trust LLM).
+  // Use executeToolDirect to test withCustomerId — the kernel execution path.
+
   it("injects customerId from context when absent in input", async () => {
-    await executeTool("create_reservation", { timeSlotId: "slot_01", partySize: 4 }, ctx)
+    await executeToolDirect("create_reservation", { timeSlotId: "slot_01", partySize: 4 }, ctx)
     expect(createReservation).toHaveBeenCalledWith(
       expect.objectContaining({ customerId: "cust_01" }),
     )
   })
 
   it("overrides LLM-supplied customerId with session context", async () => {
-    await executeTool(
+    await executeToolDirect(
       "create_reservation",
       { customerId: "other_cust", timeSlotId: "slot_01", partySize: 4 },
       ctx,
@@ -173,7 +186,7 @@ describe("withCustomerId injection", () => {
   })
 
   it("injects customerId for cancel_reservation", async () => {
-    await executeTool("cancel_reservation", { reservationId: "res_01" }, ctx)
+    await executeToolDirect("cancel_reservation", { reservationId: "res_01" }, ctx)
     expect(cancelReservation).toHaveBeenCalledWith(
       expect.objectContaining({ customerId: "cust_01", reservationId: "res_01" }),
     )
@@ -195,7 +208,7 @@ describe("withCustomerId injection", () => {
 
     for (const { name, input, mock } of reservationTools) {
       vi.clearAllMocks()
-      await executeTool(name, input, ctx)
+      await executeToolDirect(name, input, ctx)
       expect(mock).toHaveBeenCalledWith(
         expect.objectContaining({ customerId: "cust_01" }),
       )
@@ -205,10 +218,18 @@ describe("withCustomerId injection", () => {
     }
   })
 
+  it("returns intent for MUTATING tools via executeTool", async () => {
+    const result = await executeTool("create_reservation", { timeSlotId: "slot_01", partySize: 2 }, ctx)
+    expect(result).toEqual({
+      kind: "intent",
+      intent: { toolName: "create_reservation", input: { timeSlotId: "slot_01", partySize: 2 }, toolUseId: "" },
+    })
+  })
+
   it("throws when ctx.customerId is missing for auth-required tools", async () => {
     const guestCtx: AgentContext = { ...ctx, customerId: undefined }
     await expect(
-      executeTool("create_reservation", { timeSlotId: "slot_01", partySize: 2 }, guestCtx),
+      executeToolDirect("create_reservation", { timeSlotId: "slot_01", partySize: 2 }, guestCtx),
     ).rejects.toThrow("Autenticação necessária")
   })
 })

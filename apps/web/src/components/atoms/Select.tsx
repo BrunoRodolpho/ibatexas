@@ -31,7 +31,7 @@ export function Select({ ref, className, options, error, errorMessage, placehold
           : clsx(
               'w-full px-0 py-2 border-0 border-b text-sm',
               errorClass,
-              'disabled:bg-transparent disabled:text-smoke-400 disabled:cursor-not-allowed'
+              'disabled:bg-transparent disabled:text-[var(--color-text-disabled)] disabled:cursor-not-allowed'
             ),
         className
       )}

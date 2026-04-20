@@ -1,7 +1,11 @@
 'use client'
 
-import { ShoppingCart, DollarSign, TrendingUp, ShoppingBag, UserPlus, MessageCircle, Percent, MessageSquare } from 'lucide-react'
+import { ShoppingCart, DollarSign, TrendingUp, ShoppingBag, UserPlus, MessageCircle, Percent, MessageSquare, BarChart2 } from 'lucide-react'
 import { StatCard } from '../atoms/StatCard'
+import { PageHeader } from '../atoms/PageHeader'
+import { PageShell } from '../layouts/PageShell'
+import { EmptyState } from '../atoms/EmptyState'
+import { PAGE_TITLES, EMPTY_STATES } from '../constants/admin-labels'
 
 function formatBRL(centavos: number) {
   return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
@@ -28,11 +32,12 @@ export function AdminAnalisesPage({
   loading,
 }: Readonly<AdminAnalisesPageProps>) {
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-charcoal-900">Análises</h1>
-        <p className="mt-1 text-sm text-smoke-400">Métricas do dia</p>
-      </div>
+    <PageShell>
+      <PageHeader icon={BarChart2} title={PAGE_TITLES.analytics} subtitle={PAGE_TITLES.analyticsSubtitle} />
+
+      {!loading && !metrics && (
+        <EmptyState icon={BarChart2} title={EMPTY_STATES.analytics} />
+      )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 xl:grid-cols-8">
         <StatCard
@@ -92,6 +97,6 @@ export function AdminAnalisesPage({
           isLoading={loading}
         />
       </div>
-    </div>
+    </PageShell>
   )
 }

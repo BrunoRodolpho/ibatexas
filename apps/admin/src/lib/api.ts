@@ -1,20 +1,19 @@
 /**
  * API client for the admin app.
+ *
+ * All requests are routed through /api/proxy which adds the x-admin-key
+ * header server-side, keeping the secret out of the browser bundle.
  */
-export { getApiBase, MEDUSA_ADMIN_URL } from '@ibatexas/tools/api'
+export { MEDUSA_ADMIN_URL } from '@ibatexas/tools/api'
 
-import { getApiBase } from '@ibatexas/tools/api'
+const API_BASE = "/api/proxy"
 
-const API_BASE = getApiBase()
-
-// Include x-admin-key header in all admin API calls
 export const apiFetch = async (endpoint: string, options?: RequestInit) => {
   const url = `${API_BASE}${endpoint}`
   const response = await fetch(url, {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      'x-admin-key': process.env.NEXT_PUBLIC_ADMIN_API_KEY ?? '',
       ...options?.headers,
     },
     ...options,

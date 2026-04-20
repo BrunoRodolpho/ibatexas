@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
+import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { config as loadEnv } from "dotenv"
-import { Command, type Help } from "commander"
+import { Command, Help } from "commander"
 import { registerSvcCommands }  from "./commands/svc.js"
 import { registerDevCommands }  from "./commands/dev.js"
 import { registerApiCommands }  from "./commands/api.js"
@@ -21,15 +22,22 @@ import { registerMatrixCommands } from "./commands/matrix.js"
 import { registerSimulateCommands } from "./commands/simulate.js"
 import { registerTunnelCommands } from "./commands/tunnel.js"
 import { registerAuthCommands } from "./commands/auth.js"
+import { registerRateCommands } from "./commands/rate.js"
 import { registerBootstrapCommands } from "./commands/bootstrap.js"
 import { registerDepsCommands } from "./commands/deps.js"
 import { registerInfraCommands } from "./commands/infra.js"
+import { registerStripeCommands } from "./commands/stripe.js"
+import { registerChatCommands } from "./commands/chat.js"
+import { registerDlqCommands } from "./commands/dlq.js"
+import { registerOrdersCommands } from "./commands/orders.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
 // index.ts lives at packages/cli/src/ → parent is packages/cli/
 // dist/index.js lives at packages/cli/dist/ → parent is packages/cli/
-const __filename = fileURLToPath(import.meta.url)
+// Use realpathSync to resolve npm link symlinks — otherwise ROOT points to
+// /opt/homebrew/lib/node_modules instead of the monorepo root.
+const __filename = fs.realpathSync(fileURLToPath(import.meta.url))
 const CLI_DIR = path.resolve(path.dirname(__filename), "..")
 const ROOT = path.resolve(CLI_DIR, "../../")
 loadEnv({ path: path.join(CLI_DIR, ".env"), override: false })
@@ -53,12 +61,12 @@ function buildHelpText(): string {
     {
       title: "SDLC",
       commands: [
-        { usage: "dev [service]",          desc: "Start dev environment — commerce (default) | api | web | admin | all" },
-        { usage: "dev start [service]",    desc: "Explicit start alias (use --no-docker to skip containers)" },
-        { usage: "dev stop [service]",     desc: "Stop service(s) — omit to stop all + docker compose stop (-f to force-kill ports)" },
-        { usage: "dev restart [service]",  desc: "Kill + respawn service(s) without touching Docker" },
-        { usage: "dev build [filter]",     desc: "Build packages" },
-        { usage: "dev test [filter]",      desc: "Run tests" },
+        { usage: "dev [services...]",         desc: "Start dev stack in TUI — 4 core services by default, 'all' includes tunnel + stripe" },
+        { usage: "dev start [services...]",   desc: "Explicit start alias (--with-tunnel, --with-stripe, --no-tui)" },
+        { usage: "dev stop [service]",        desc: "Stop service(s) — omit to stop all + Docker (-f to force-kill ports)" },
+        { usage: "dev restart [service]",     desc: "Restart service(s) in-place" },
+        { usage: "dev build [filter]",        desc: "Build packages" },
+        { usage: "dev test [filter]",         desc: "Run tests" },
       ],
     },
     {
@@ -166,6 +174,24 @@ function buildHelpText(): string {
       commands: [
         { usage: "auth flush [hash]",      desc: "Delete OTP rate-limit & fail keys (all or by phone hash)" },
         { usage: "auth status [hash]",     desc: "Show current OTP rate-limit and fail counters" },
+        { usage: "auth create-admin",      desc: "Create Medusa admin user (from .env or --email/--password)" },
+        { usage: "auth create-staff",     desc: "Register staff member for admin login (--phone, --name, --role)" },
+      ],
+    },
+    {
+      title: "Rate Limits",
+      commands: [
+        { usage: "rate flush [id]",        desc: "Delete rate-limit keys (--wa, --tokens, --dry-run)" },
+        { usage: "rate status [id]",       desc: "Show active rate-limit counters and TTLs" },
+      ],
+    },
+    {
+      title: "Chat",
+      commands: [
+        { usage: "chat list",              desc: "List active Redis sessions" },
+        { usage: "chat dump <sessionId>",  desc: "Pretty-print conversation (--source, --json)" },
+        { usage: "chat clean [sessionId]", desc: "Delete conversation data (--dry-run)" },
+        { usage: "chat scenarios",         desc: "Run E2E conversation test scenarios (--filter, --list)" },
       ],
     },
     {
@@ -189,7 +215,9 @@ function buildHelpText(): string {
         { usage: "infra init",       desc: "Create S3 state bucket + DynamoDB lock table (idempotent)" },
         { usage: "infra plan",       desc: "Run terraform plan (with state safety check)" },
         { usage: "infra apply",      desc: "Run terraform apply and display key outputs" },
-        { usage: "infra secrets",    desc: "Populate Secrets Manager entries (interactive, --from-env for CI)" },
+        { usage: "infra secrets",    desc: "Populate Secrets Manager entries (interactive, --from-env for CI, --only to filter)" },
+        { usage: "infra secrets:export", desc: "Export MANUAL_SECRETS from .env to infra/secrets.env" },
+        { usage: "infra secrets:push",   desc: "Push infra/secrets.env to AWS Secrets Manager" },
         { usage: "infra github",     desc: "Set GitHub repo secrets for CI/CD (detects repo)" },
         { usage: "infra status",     desc: "Deployment health dashboard (--json)" },
         { usage: "infra checklist",  desc: "Full deployment checklist with completion status" },
@@ -198,6 +226,16 @@ function buildHelpText(): string {
         { usage: "infra logs [svc]", desc: "Tail ECS CloudWatch logs" },
         { usage: "infra deploy",     desc: "Push to dev/main + health check (--watch, --timeout)" },
         { usage: "infra doctor",     desc: "Deep infrastructure diagnostics" },
+      ],
+    },
+    {
+      title: "Payments",
+      commands: [
+        { usage: "stripe status",          desc: "Validate Stripe keys + check CLI installation" },
+        { usage: "stripe listen",          desc: "Forward Stripe webhooks to local API (port 3001)" },
+        { usage: "stripe trigger [event]", desc: "Fire a test webhook event (default: payment_intent.succeeded)" },
+        { usage: "stripe complete",        desc: "Force-complete orphaned PIX/card carts (--cart <id> | --all) — dev rescue" },
+        { usage: "stripe flush [id]",      desc: "Clear webhook idempotency keys (--dry-run)" },
       ],
     },
     {
@@ -243,7 +281,12 @@ program
   .description("IbateXas developer CLI")
   .version("0.0.1")
   .configureHelp({
-    formatHelp: (_cmd: Command, _helper: Help): string => {
+    formatHelp: (cmd: Command, helper: Help): string => {
+      // Only use the custom grouped layout for the root command;
+      // subcommands (db, dev, svc…) get Commander's default help.
+      if (cmd.parent) {
+        return Help.prototype.formatHelp.call(helper, cmd, helper)
+      }
       return [
         "",
         `  \x1b[1mibx\x1b[0m v0.0.1 — IbateXas developer CLI`,
@@ -271,8 +314,13 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "simulate", register: registerSimulateCommands },
   { name: "doctor",   register: registerDoctorCommands },
   { name: "auth",     register: registerAuthCommands },
+  { name: "rate",     register: registerRateCommands, description: "Rate limits — message, token, and API rate-limit management" },
+  { name: "chat",     register: registerChatCommands, description: "Chat — conversation management and testing" },
   { name: "deps",     register: registerDepsCommands },
   { name: "infra",    register: registerInfraCommands, description: "Infrastructure — deployment and AWS" },
+  { name: "stripe",  register: registerStripeCommands, description: "Stripe — payments and webhook testing" },
+  { name: "dlq",     register: registerDlqCommands,     description: "Dead Letter Queue — inspect, replay, and purge failed events" },
+  { name: "orders",  register: registerOrdersCommands,  description: "Orders — projection management and debugging" },
 ]
 
 for (const { name, register, description } of groupedCommands) {

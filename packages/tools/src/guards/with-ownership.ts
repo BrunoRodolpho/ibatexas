@@ -3,8 +3,8 @@
 // Extracts the repeated SEC-002 boilerplate (assertOrderOwnership / assertReservationOwnership)
 // into higher-order functions that wrap existing tool handlers.
 
-import { assertOrderOwnership, assertReservationOwnership } from "./ownership.js";
 import type { AgentContext } from "@ibatexas/types";
+import { assertOrderOwnership, assertReservationOwnership } from "./ownership.js";
 
 type OrderToolHandler<T, R> = (input: T, ctx: AgentContext) => Promise<R>;
 type ReservationToolHandler<T, R> = (input: T) => Promise<R>;

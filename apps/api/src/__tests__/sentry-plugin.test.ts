@@ -2,6 +2,7 @@
 // Verifies Sentry.init is called when SENTRY_DSN is set and skipped otherwise.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { registerSentry } from "../plugins/sentry.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -14,10 +15,6 @@ vi.mock("@sentry/node", () => ({
   init: mockSentryInit,
   captureException: mockCaptureException,
 }));
-
-// ── Import source after mocks ───────────────────────────────────────────────
-
-import { registerSentry } from "../plugins/sentry.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

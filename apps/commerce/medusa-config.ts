@@ -1,4 +1,4 @@
-import { defineConfig } from "@medusajs/utils";
+import { defineConfig, Modules } from "@medusajs/utils";
 
 export default defineConfig({
   projectConfig: {
@@ -13,4 +13,22 @@ export default defineConfig({
       authCors: process.env.AUTH_CORS!,
     },
   },
+  modules: [
+    {
+      resolve: "@medusajs/medusa/payment",
+      options: {
+        providers: [
+          {
+            resolve: "@medusajs/payment-stripe",
+            id: "stripe",
+            options: {
+              apiKey: process.env.STRIPE_SECRET_KEY!,
+              capture: true, // PIX requires automatic capture (not manual)
+              paymentMethodTypes: ["card", "pix"], // Enable PIX for BRL
+            },
+          },
+        ],
+      },
+    },
+  ],
 });

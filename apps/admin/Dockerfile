@@ -21,7 +21,7 @@ COPY apps/admin/ apps/admin/
 
 # Build with standalone output
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm --filter @ibatexas/admin run build
+RUN pnpm --filter @ibatexas/admin... run build
 
 # ── Stage 2: production ─────────────────────────────────────────────────────
 FROM node:22-alpine AS production

@@ -5,4 +5,4 @@
  * before the AI agent responds for the first time.
  */
 export const LGPD_OPTIN_MESSAGE =
-  "Olá! Bem-vindo ao IbateXas. Ao continuar nossa conversa, você concorda com nossa política de privacidade e o uso dos seus dados para processamento de pedidos e comunicação. Para mais detalhes, acesse nosso site em /privacidade. Como posso ajudar?";
+  "Oi! Sou do IbateXas 🍖 Pra te atender aqui, uso seus dados só pro pedido e pra te avisar quando tiver pronto. Política completa: ibatexas.com.br/privacidade";

@@ -32,33 +32,33 @@ export function buildOutreachMessage(
   if (weatherCondition === "rain") {
     return {
       type: "rainy_day",
-      message: `Dia de chuva, ${name}! Que tal pedir ${product} sem sair de casa? Responda 'sim' 🌧️`,
+      message: `Dia perfeito pra ficar em casa com um ${product} defumado, ${name}. Quer que eu monte seu pedido? 🌧️`,
     };
   }
 
   if (weatherCondition === "hot") {
     return {
       type: "hot_day",
-      message: `Calorzao hoje, ${name}! Que tal uma salada ou cerveja gelada? Responda 'sim' 🍺`,
+      message: `${name}, esse calor pede uma IPA gelada com uns defumados. Quer ver o cardápio de hoje? 🍺`,
     };
   }
 
   if (dayOfWeek === 4 || dayOfWeek === 5) {
     return {
       type: "friday_habit",
-      message: `Sexta chegando, ${name}! Quer o de sempre? Responda 'sim' pra ${product} 😉`,
+      message: `Sexta, ${name}! O de sempre — ${product}? Responda 'sim' e cuido do resto 😉`,
     };
   }
 
   if (dayOfWeek === 1) {
     return {
       type: "new_week",
-      message: `Bom dia ${name}! Comecando a semana bem com ${product}? Responda 'sim' 🔥`,
+      message: `Bom dia, ${name}! Semana nova, merece um ${product} pra começar bem. Quer pedir? 🔥`,
     };
   }
 
   return {
     type: "dormant_reorder",
-    message: `Oi ${name}! Faz ${daysSinceLastOrder} dias desde seu ultimo pedido. Quer que eu prepare ${product} de novo? Responda 'sim' e cuido do resto! 🥩`,
+    message: `Oi ${name}! Sentimos sua falta por aqui. Seu ${product} favorito tá te esperando — quer que eu monte o pedido? 🥩`,
   };
 }

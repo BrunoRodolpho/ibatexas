@@ -1,6 +1,6 @@
 # Project State
 
-> Last updated: 2026-03-23
+> Last updated: 2026-03-31
 
 ---
 
@@ -11,7 +11,7 @@
 | Auth (Twilio OTP + JWT + refresh) | WORKS | `apps/api/src/routes/auth.ts` — real Twilio calls, rate limiting, JWT revocation via Redis |
 | Browse catalog + Typesense search | WORKS | `apps/api/src/routes/catalog.ts` + `packages/tools/src/search/search-products.ts` |
 | Add to cart (Medusa) | WORKS | `apps/api/src/routes/cart.ts` + Redis active cart tracking |
-| Card checkout (Stripe) | WORKS | `apps/api/src/routes/stripe-webhook.ts` — signature verify, idempotency, 4 event handlers |
+| Card checkout (Stripe) | WORKS | `apps/api/src/routes/stripe-webhook.ts` — signature verify, idempotency, 4 event handlers. Frontend: `CardPaymentForm.tsx` — embedded Stripe PaymentElement + 3DS redirect handling |
 | Cash checkout | WORKS | `packages/tools/src/cart/create-checkout.ts` — completes order, publishes `order.placed` |
 | Order tracking (IDOR-safe) | WORKS | `apps/api/src/routes/cart.ts` — ownership check on order retrieval |
 | Reservations (customer) | WORKS | `apps/api/src/routes/reservations.ts` — availability, create, modify, cancel, waitlist |
@@ -42,6 +42,14 @@
 | Agent: intelligence tools | WORKS | 5 tools activated in system prompt (recommendations, ordered-together, also-added, profile, preferences) |
 | Swagger/OpenAPI docs | WORKS | `@fastify/swagger` + `@fastify/swagger-ui` at `/docs` |
 | Order refund/dispute handling | WORKS | Cart-intelligence subscribers handle `order.refunded` and `order.disputed` events |
+| Conversation persistence (CDC) | WORKS | `appendMessages()` → NATS → `conversation-archiver` → Postgres. Redis is hot path, Postgres is durable archive |
+| `ibx chat` CLI commands | WORKS | `ibx chat list/dump/clean/scenarios` — conversation management and E2E test runner |
+| Zero-Trust LLM architecture | WORKS | Tool classification (READ_ONLY vs MUTATING), intent bridge, state-gate, ownership-based locks |
+| Post-order sub-states | WORKS | `post_order.cancelling`, `post_order.amending`, `post_order.regenerating_pix` — kernel-controlled |
+| Admin auth middleware | WORKS | `apps/admin/src/middleware.ts` — staff_token cookie check, proxy path allowlist |
+| Cart ownership (IDOR prevention) | WORKS | `apps/api/src/routes/cart.ts` — Redis `cart:owner:{cartId}` mapping |
+| Guest session secrets | WORKS | `apps/api/src/routes/chat.ts` — UUID session secret on first POST, required on subsequent |
+| Fail-closed security | WORKS | JWT revocation + SSE ownership return 503 when Redis is unreachable (not fail-open) |
 
 ---
 
@@ -56,6 +64,36 @@
 ## What's Broken / Missing
 
 Nothing blocking launch.
+
+---
+
+## Recent Architecture Changes (2026-03-31)
+
+### Red Team Audit → Blue Team Remediation → Final Alignment
+
+**P0 fixes applied:**
+- Tool dispatch state-gate: LLM cannot call tools outside allowed set for current state
+- Post-LLM event injection whitelist: only `PIX_DETAILS_COLLECTED` and `SET_NAME` allowed
+- Admin proxy auth: middleware + path allowlist (was unauthenticated)
+- Welcome credit atomic GETDEL (was non-atomic GET + DEL race)
+- Cart creation lock (was TOCTOU double-create race)
+
+**P1 fixes applied:**
+- Ownership-based Redis locks with Lua conditional release (WhatsApp + Web)
+- Web chat lock heartbeat (was missing — 30s fixed TTL)
+- SSE stream + JWT revocation fail closed on Redis failure
+- Machine snapshot persistence retry (was swallow-all-errors)
+- Module-level schedule race condition eliminated (threaded through params)
+- Session rotation atomic Lua script (was TOCTOU race)
+- Cash payment now goes through confirmation step
+- Metrics counters use atomicIncr() (was non-atomic INCR + EXPIRE)
+
+**Final Alignment (Zero-Trust LLM):**
+- Tool classification: 15 READ_ONLY + 19 MUTATING
+- Intent bridge: `executeTool()` returns intent for mutating tools
+- post_order refactored to compound state with cancelling/amending/regenerating_pix sub-states
+- Prompts rewritten: no executive "CHAME" language, zero-authority preamble
+- STATE_TOOLS updated: LLM only gets read-only tools in all states
 
 ---
 
@@ -75,7 +113,7 @@ All 13 pre-launch items from [TODO-BACKLOG.md](backlog/TODO-BACKLOG.md) Steps 1-
 |-----------|----------|---------|
 | apps/api | 72%+ (45+ tests) | STRONG — auth, cart, webhooks, jobs, LGPD endpoints, opt-in |
 | packages/tools | 83%+ (49+ tests) | STRONG — all tools including new check_inventory, get_nutritional_info, handoff_to_human |
-| packages/llm-provider | 100% (4 tests) | STRONG — agent + tool registry |
+| packages/llm-provider | 100% (4 + 11 scenario tests) | STRONG — agent + tool registry + 11 conversation scenario integration tests |
 | packages/nats-client | 100% (2 tests) | STRONG |
 | apps/web | ~12% (20+ tests) | IMPROVED — consent store, CookieConsentBanner, privacy/terms pages |
 | packages/domain | 3% (1 test) | WEAK — Prisma services untested |
@@ -83,6 +121,7 @@ All 13 pre-launch items from [TODO-BACKLOG.md](backlog/TODO-BACKLOG.md) Steps 1-
 | apps/admin | 0% | NONE |
 | packages/ui | 0% | NONE |
 | E2E (Playwright) | 3 specs | MINIMAL — smoke + golden paths only |
+| Conversation scenarios | 11 fixtures | STRONG — router → machine → synthesizer pipeline (happy path, variants, PIX, objections, cart recovery) |
 
 ---
 
@@ -164,3 +203,4 @@ Test what handles **money, auth, and user data** first. Everything else follows.
 | `PIX_EXPIRY_MINUTES` | apps/api | PIX payment timeout (default: 30) |
 | `STAFF_NOTIFICATION_PHONE` | apps/api | Staff WhatsApp for handoff notifications |
 | `LOG_LEVEL` | apps/api | Pino log level (default: "info") |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | apps/web | Stripe publishable key for embedded card payment form |

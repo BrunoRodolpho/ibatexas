@@ -3,6 +3,11 @@
 // Tests call the exported pollReviewPrompts() processor directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  pollReviewPrompts,
+  startReviewPromptPoller,
+  stopReviewPromptPoller,
+} from "../jobs/review-prompt-poller.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -31,14 +36,6 @@ vi.mock("../jobs/queue.js", () => ({
     close: vi.fn(),
   })),
 }));
-
-// ── Import source after mocks ───────────────────────────────────────────────
-
-import {
-  pollReviewPrompts,
-  startReviewPromptPoller,
-  stopReviewPromptPoller,
-} from "../jobs/review-prompt-poller.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

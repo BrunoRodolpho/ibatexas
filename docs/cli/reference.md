@@ -27,41 +27,35 @@ ibx --help
 ### SDLC — `ibx dev`
 
 ```bash
-ibx dev                    # start Docker infra + Medusa (default)
-ibx dev commerce           # same as above, explicit
-ibx dev web                # start only the Next.js web app
-ibx dev api                # start only the Fastify API
-ibx dev admin              # start only the Next.js admin panel
-ibx dev all                # start all available services (commerce + api + web + admin)
-ibx dev --skip-docker      # skip docker compose (infra already running)
-ibx dev --no-wait          # start without polling health endpoints
+ibx dev start                    # start 4 core services (TUI)
+ibx dev start all                # full stack: 4 services + ngrok + Stripe
+ibx dev start --with-tunnel      # also start ngrok tunnel
+ibx dev start --with-stripe      # also start Stripe webhook listener
+ibx dev start --no-tui           # plain log output
+ibx dev start commerce api       # only named services + dependencies
+ibx dev start --skip-docker      # skip docker compose (infra running)
 
-ibx dev start              # explicit alias for ibx dev
-ibx dev start web          # explicit alias for ibx dev web
+ibx dev stop                     # stop all + Docker
+ibx dev stop web                 # stop one service
+ibx dev stop -f                  # force-kill ports
 
-ibx dev stop               # stop all processes + docker compose down
-ibx dev stop web           # stop only the web process (keeps Docker up)
-ibx dev stop api           # stop only the API process (keeps Docker up)
-ibx dev stop admin         # stop only the admin process (keeps Docker up)
+ibx dev restart                  # restart all app services
+ibx dev restart api              # restart one service
 
-ibx dev restart            # kill + respawn all services (no Docker restart)
-ibx dev restart web        # kill + respawn only the web process
-ibx dev restart api        # kill + respawn only the API process
-ibx dev restart admin      # kill + respawn only the admin process
-
-ibx dev build              # build all packages (turbo build)
-ibx dev build @ibatexas/cli  # build a specific package
-ibx dev test               # run all tests (turbo test)
-ibx dev test @ibatexas/cli   # run tests for a specific package
+ibx dev build                    # build all packages (turbo build)
+ibx dev build @ibatexas/cli      # build a specific package
+ibx dev test                     # run all tests (turbo test)
+ibx dev test @ibatexas/cli       # run tests for a specific package
 ```
 
-`ibx dev` runs 4 steps:
-1. `docker compose up -d --wait` — starts Postgres 5433, Redis 6379, Typesense 8108, NATS 4222
-2. Health checks — verifies all 4 services respond
-3. Starts `medusa develop` for `apps/commerce`
-4. Polls `http://localhost:9000/health` until `OK`
+`ibx dev start` launches [process-compose](https://github.com/F1bonacc1/process-compose), which orchestrates:
+1. Docker infrastructure (Postgres 5433, Redis 6379, Typesense 8108, NATS 4222)
+2. Commerce (Medusa) — waits for Docker healthy
+3. API — waits for Commerce healthy
+4. Web + Admin — wait for Docker healthy
+5. (optional) ngrok tunnel + Stripe listener — wait for API healthy
 
-After startup, a summary box shows all running services with addresses.
+After startup, the TUI shows all processes with per-service logs. Press Ctrl+C for graceful shutdown.
 
 ### Services — `ibx svc`
 
@@ -107,11 +101,13 @@ ibx api chat "cardápio do almoço" --channel web  # specify channel (web | what
 ```bash
 ibx db migrate             # run pending Medusa migrations (Medusa must NOT be running)
 ibx db migrate:domain      # run Prisma migrations for ibx_domain schema
+ibx db migrate:domain --name add_order_event_log  # create a named migration
 ibx db seed                # seed products into Medusa (Medusa must be running)
 ibx db seed:domain         # seed domain tables (DeliveryZone, Table, TimeSlot)
 ibx db seed:homepage       # seed customers + reviews for homepage sections (Medusa must be running)
 ibx db seed:delivery       # seed delivery zones, customer addresses, and dietary preferences
 ibx db seed:orders         # seed order history + reservations (Medusa must be running)
+ibx db seed:order-projections  # backfill OrderProjection from Medusa orders (idempotent)
 ibx db clean               # ⚠️  delete all domain data (keeps schema + Medusa products)
 ibx db clean --all         # also delete Medusa products + Typesense index
 ibx db clean --force       # skip confirmation prompt
@@ -122,12 +118,34 @@ ibx db reindex --fresh     # drop + recreate Typesense collection, then reindex
 ibx db status              # show migration status for both Medusa and domain schemas
 ```
 
+### Dead Letter Queue — `ibx dlq`
+
+```bash
+ibx dlq list               # show DLQ sizes for all known event types
+ibx dlq peek <event>       # show most recent DLQ entries without consuming
+ibx dlq peek <event> -n 10 # show 10 entries
+ibx dlq replay <event>     # re-publish DLQ entries back to NATS (oldest first)
+ibx dlq replay <event> -n 5       # replay at most 5 entries
+ibx dlq replay <event> --dry-run  # print what would be replayed without publishing
+ibx dlq purge <event>      # ⚠️  delete all DLQ entries for an event (interactive confirmation)
+```
+
+Known DLQ event keys: `order.status_changed`, `order.placed`, `notification.send`, `support.handoff_requested`, `conversation.message.appended`.
+
+### Orders — `ibx orders`
+
+```bash
+ibx orders inspect <orderId>              # show projection state + event log for an order
+ibx orders rebuild --order-id <id>        # rebuild projection from event log (replay events)
+ibx orders rebuild --order-id <id> --dry-run  # preview what would change without writing
+```
+
 ### Config — `ibx env`
 
 ```bash
 ibx env check              # verify required vars are set (Step 1 by default)
 ibx env check --step 2     # check up to Step 2 vars (ANTHROPIC_API_KEY, OPENAI_API_KEY)
-ibx env check --step 4     # check up to Step 4 vars (+ MEDUSA_PUBLISHABLE_KEY)
+ibx env check --step 4     # check up to Step 4 vars (+ MEDUSA_ADMIN_EMAIL/PASSWORD)
 ibx env show               # show all vars, secrets masked
 ibx env show --reveal      # show full values (be careful!)
 ibx env gen                # generate a 32-byte base64 secret
@@ -377,6 +395,48 @@ Starts an ngrok tunnel and prints:
 
 Use this for testing WhatsApp webhooks locally. Requires `ngrok` (`brew install ngrok`).
 
+> **Recommended:** Use `ibx dev start --with-tunnel` to integrate the tunnel into the dev TUI. `ibx tunnel` still works standalone.
+
+### Chat — `ibx chat`
+
+```bash
+# List active sessions
+ibx chat list                      # show active Redis conversation sessions (sessionId, messages, TTL, channel)
+ibx chat list --limit 50           # show up to 50 sessions (default: 20)
+
+# Dump conversation transcript
+ibx chat dump <sessionId>          # pretty-print from Redis (color-coded: user=cyan, bot=green, system=gray)
+ibx chat dump <sessionId> --source postgres   # load from durable Postgres archive (includes real timestamps)
+ibx chat dump <sessionId> --json   # raw JSON array (for piping to jq)
+
+# Clean conversation data
+ibx chat clean                     # ⚠️  delete ALL conversation data (Redis + Postgres)
+ibx chat clean <sessionId>         # delete a specific session's data
+ibx chat clean --dry-run           # count what would be deleted without actually deleting
+
+# Run conversation E2E scenario tests
+ibx chat scenarios                 # run all scenario fixtures via vitest
+ibx chat scenarios --list          # list available scenario fixture files with descriptions
+ibx chat scenarios --filter "pix"  # filter tests by name pattern
+```
+
+`ibx chat list` scans Redis for `session:*` keys and shows each session's message count, TTL, and detected channel (WhatsApp vs web).
+
+`ibx chat dump` supports two sources:
+- **Redis** (default): reads the live session list (`LRANGE`), sequential messages only
+- **Postgres** (`--source postgres`): reads the durable archive, includes real timestamps and metadata
+
+`ibx chat clean` deletes both Redis keys (`session:{id}`, `wa:machine:{id}`) and Postgres rows. If `@ibatexas/domain` is not available (e.g., no DB connection), Postgres cleanup is skipped with a warning.
+
+`ibx chat scenarios` is a thin wrapper around `pnpm vitest run` targeting the scenario runner test suite. 11 JSON fixture files exercise the full router → machine → synthesizer pipeline.
+
+### Rate Limits — `ibx rate`
+
+```bash
+ibx rate flush [id]                # delete rate-limit keys (--wa, --tokens, --dry-run)
+ibx rate status [id]               # show active rate-limit counters and TTLs
+```
+
 ### Dependencies — `ibx deps`
 
 ```bash
@@ -402,7 +462,7 @@ against installed versions. Highlights when upstream upgrades could unblock over
 ```bash
 # Bootstrap (fresh AWS account → ready for terraform)
 ibx infra init                         # create S3 state bucket + DynamoDB lock table (idempotent)
-ibx infra init --region us-east-1      # override default region (sa-east-1)
+ibx infra init --region sa-east-1      # override default region (us-east-1)
 
 # Terraform operations
 ibx infra plan                         # terraform plan with state safety check
@@ -415,7 +475,14 @@ ibx infra apply --env staging          # target a different environment
 ibx infra secrets                      # interactive prompt for 17 Secrets Manager entries
 ibx infra secrets --force              # re-prompt even for populated secrets
 ibx infra secrets --from-env           # non-interactive: read from environment variables (CI)
+ibx infra secrets --only DATABASE_URL  # process a single secret
+ibx infra secrets --only DATABASE_URL,JWT_SECRET --force  # update specific secrets
 ibx infra secrets --env staging        # target a different environment
+ibx infra secrets:export               # export MANUAL_SECRETS from .env to infra/secrets.env
+ibx infra secrets:export --file .env.production  # export from a different .env file
+ibx infra secrets:push                 # push infra/secrets.env to AWS Secrets Manager
+ibx infra secrets:push --force         # re-push even for populated secrets
+ibx infra secrets:push --only DATABASE_URL  # push a single secret from the file
 
 # GitHub CI/CD secrets
 ibx infra github                       # set repo secrets (OIDC role ARN, DB URLs, SONAR_TOKEN)
@@ -443,6 +510,12 @@ Verifies AWS account identity and region before creating resources. Idempotent �
 `ibx infra secrets` validates each secret (URL format, key prefixes, minimum length) and runs
 cross-validation after all inputs (e.g., DATABASE_URL vs DIRECT_DATABASE_URL host mismatch).
 
+`ibx infra secrets:export` reads the local `.env` file and extracts only the 17 MANUAL_SECRETS
+into `infra/secrets.env` (grouped by category). Missing keys are commented out with a warning.
+
+`ibx infra secrets:push` reads `infra/secrets.env` and pushes the values to AWS Secrets Manager
+using the existing `--from-env` pipeline. Supports `--force` and `--only` flags.
+
 `ibx infra status` shows a deployment health confidence summary (HEALTHY / PARTIALLY HEALTHY / NOT READY)
 plus grouped checks for AWS, Terraform, ECS services, image freshness, secret staleness, and GitHub secrets.
 
@@ -451,15 +524,56 @@ GitHub Actions → ECR images → ECS services → application startup → secre
 
 For the full deployment guide, see [docs/setup/deployment.md](../setup/deployment.md).
 
+### Payments — `ibx stripe`
+
+```bash
+ibx stripe status                      # validate all 3 Stripe keys (sk_, whsec_, pk_) + CLI check
+ibx stripe listen                      # forward Stripe webhooks to localhost:3001/api/webhooks/stripe
+ibx stripe listen -p 3002              # forward to a different port
+ibx stripe trigger                     # fire payment_intent.succeeded test event
+ibx stripe trigger charge.refunded     # fire a specific event type
+ibx stripe flush                       # clear all webhook idempotency keys from Redis
+ibx stripe flush evt_abc123            # clear a specific event's idempotency key
+ibx stripe flush --dry-run             # show what would be deleted
+```
+
+`ibx stripe listen` wraps the Stripe CLI to forward webhook events to the local API.
+It requires `stripe` CLI (`brew install stripe/stripe-cli/stripe`) and `stripe login`.
+
+> **Recommended:** Use `ibx dev start --with-stripe` to integrate Stripe forwarding into the dev TUI. `ibx stripe listen` still works standalone.
+
+Test card numbers (Stripe sandbox):
+
+| Card | Scenario |
+|------|----------|
+| `4242 4242 4242 4242` | Successful payment |
+| `4000 0000 0000 3220` | 3D Secure required |
+| `4000 0000 0000 9995` | Payment declined |
+| `4000 0000 0000 0077` | Charge succeeds, then dispute |
+
+Use any future expiry, any 3-digit CVC, any billing ZIP.
+
 ### Auth — `ibx auth`
 
 ```bash
 ibx auth flush [phoneHash]   # clear OTP rate-limit and brute-force keys for a phone
 ibx auth status [phoneHash]  # show OTP send count and failure count for a phone
+ibx auth create-admin        # create Medusa admin user from MEDUSA_ADMIN_EMAIL + MEDUSA_ADMIN_PASSWORD in .env
+ibx auth create-admin --email admin@ibatexas.com.br --password MyPass123  # override env vars
+ibx auth create-staff --phone "+5511999999999" --name "Ana"               # register staff (defaults to OWNER)
+ibx auth create-staff --phone "+15125551234" --name "Thais" --role MANAGER  # US phone, explicit role
 ```
 
 Useful for debugging OTP issues during development. The `phoneHash` is the first 12
 characters of the SHA-256 hash of the E.164 phone number.
+
+`ibx auth create-admin` creates a Medusa admin user for the dashboard at http://localhost:9000/app.
+It reads credentials from `MEDUSA_ADMIN_EMAIL` and `MEDUSA_ADMIN_PASSWORD` in `.env`, or accepts
+`--email` and `--password` flags. Safe to re-run — warns if the user already exists.
+
+`ibx auth create-staff` registers a staff member for the admin panel at http://localhost:3002/admin.
+Phone must be in E.164 format (`+55...` for BR, `+1...` for US). Roles: `OWNER`, `MANAGER`, `ATTENDANT`
+(default: `OWNER`). Safe to re-run — if the phone already exists, it reactivates the account if inactive.
 
 ### VCS — `ibx git`
 

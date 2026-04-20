@@ -16,7 +16,9 @@
   },
   "dependencies": {
     "@ibatexas/domain": "workspace:*",
+    "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/tools": "workspace:*",
+    "@ibatexas/types": "workspace:*",
     "@inquirer/prompts": "^7.10.1",
     "chalk": "^5.6.2",
     "commander": "^13.1.0",

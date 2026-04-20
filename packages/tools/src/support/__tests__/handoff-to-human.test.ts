@@ -5,6 +5,7 @@
 //   2. Returns success with estimated wait time
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { handoffToHuman } from "../handoff-to-human.js";
 
 // ── Mock NATS client ────────────────────────────────────────────────────────
 
@@ -17,8 +18,6 @@ vi.mock("@ibatexas/nats-client", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
 });
-
-import { handoffToHuman } from "../handoff-to-human.js";
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 

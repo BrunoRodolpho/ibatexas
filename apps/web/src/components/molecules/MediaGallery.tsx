@@ -193,7 +193,7 @@ function ChevronRight() {
 
 function PlayIcon() {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" className="text-smoke-400">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" className="text-[var(--color-text-secondary)]">
       <path d="M8 5v14l11-7z" />
     </svg>
   )

@@ -10,9 +10,10 @@ Monorepo: Next.js storefront, Fastify API, WhatsApp channel, Claude AI agent (25
 
 ```bash
 pnpm install
-cp .env.example .env  # fill in required keys (see .env.example for comments)
-pnpm --filter @ibatexas/cli build && npm link packages/cli  # build + link CLI
-ibx dev               # starts everything
+cp .env.example .env                                        # fill in required keys (see .env.example)
+pnpm --filter @ibatexas/cli build && npm link packages/cli   # build + link CLI
+brew install f1bonacc1/tap/process-compose                   # process orchestrator
+ibx dev start                                                # starts everything in TUI
 ```
 
 > First time or fresh database? Run `ibx bootstrap` — see [pre-requisites](docs/setup/pre-requisites.md) for details.
@@ -60,7 +61,7 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | Events | NATS Core — domain events, analytics pipeline |
 | Analytics | PostHog (client-side) + sendBeacon → NATS (server-side) |
 | Payments | Stripe (card + PIX) |
-| Cloud | AWS sa-east-1 (ECS Fargate, RDS, CloudFront) |
+| Cloud | AWS us-east-1 (ECS Fargate, RDS, CloudFront) |
 
 ---
 

@@ -1,0 +1,57 @@
+{
+  "name": "cart-desync-recovery",
+  "description": "Cart update fails on first attempt → item_unavailable state → customer retries successfully",
+  "channel": "whatsapp",
+  "customerId": "cust-011",
+  "isNewCustomer": false,
+  "mealPeriod": "lunch",
+  "turns": [
+    {
+      "input": "Quero frango defumado",
+      "expectedEvents": ["ADD_ITEM"],
+      "expectedState": "ordering.item_unavailable",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-frango", "name": "Frango Defumado", "priceInCentavos": 5200, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": false,
+        "cartId": "",
+        "items": [],
+        "totalInCentavos": 0,
+        "error": "Item indisponível no momento"
+      },
+      "assertContext": {
+        "lastError": "not_null"
+      },
+      "assertTools": ["search_products"]
+    },
+    {
+      "input": "Quero frango",
+      "expectedEvents": ["ADD_ITEM"],
+      "expectedState": "ordering.awaiting_next",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-frango", "name": "Frango Defumado", "priceInCentavos": 5200, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-011",
+        "items": [
+          { "productId": "prod-frango", "variantId": "var-frango", "name": "Frango Defumado", "category": "meat", "quantity": 1, "priceInCentavos": 5200 }
+        ],
+        "totalInCentavos": 5200
+      },
+      "assertContext": {
+        "cartId": "cart-011",
+        "items.length": 1
+      }
+    }
+  ]
+}

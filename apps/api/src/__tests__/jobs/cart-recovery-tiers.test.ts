@@ -2,6 +2,8 @@
 // Verifies tier progression, cooldown enforcement, and active:carts retention.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
+import { checkAbandonedCarts, stopAbandonedCartChecker } from "../../jobs/abandoned-cart-checker.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -47,6 +49,20 @@ vi.mock("@ibatexas/domain", () => ({
     recordOrderItems: vi.fn(),
     getById: vi.fn().mockResolvedValue({ phone: "+5511999999999" }),
   }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(),
+  }),
+  createOrderCommandService: () => ({
+    create: vi.fn(),
+    reconcileStatus: vi.fn().mockResolvedValue({ success: true }),
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn(),
+  }),
+  createLoyaltyService: () => ({
+    addStamp: vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
+  }),
+  ConcurrencyError: class ConcurrencyError extends Error {},
 }));
 
 vi.mock("../../jobs/queue.js", () => ({
@@ -59,11 +75,6 @@ vi.mock("../../jobs/queue.js", () => ({
     close: vi.fn(),
   })),
 }));
-
-// ── Import after mocks ─────────────────────────────────────────────────────
-
-import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
-import { checkAbandonedCarts, stopAbandonedCartChecker } from "../../jobs/abandoned-cart-checker.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 

@@ -1,14 +1,16 @@
+import { Container } from '@/components/atoms'
+
 export default function SearchLoading() {
   return (
     <div className="min-h-screen bg-smoke-50">
       {/* Search bar skeleton */}
-      <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-3">
-        <div className="max-w-[1200px] mx-auto">
+      <div className="sticky top-[var(--header-height)] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 py-3">
+        <Container>
           <div className="h-10 w-full rounded-sm skeleton" />
-        </div>
+        </Container>
       </div>
 
-      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16 lg:py-20">
+      <Container className="py-16 lg:py-24">
         {/* Header skeleton */}
         <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4">
           <div className="h-8 w-48 rounded-sm skeleton" />
@@ -23,7 +25,7 @@ export default function SearchLoading() {
         </div>
 
         {/* Product grid skeleton */}
-        <div className="pt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-8 lg:gap-y-10">
+        <div className="pt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-6 lg:gap-y-8">
           {Array.from({ length: 8 }, (_, i) => `skel-product-${i}`).map((id) => (
             <div key={id}>
               <div className="aspect-[4/5] rounded-card skeleton" />
@@ -35,7 +37,7 @@ export default function SearchLoading() {
             </div>
           ))}
         </div>
-      </div>
+      </Container>
     </div>
   )
 }

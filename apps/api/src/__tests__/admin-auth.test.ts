@@ -27,6 +27,33 @@ vi.mock("@ibatexas/domain", () => ({
   createDeliveryZoneService: () => ({
     listAll: vi.fn(async () => []),
   }),
+  createScheduleService: () => ({
+    getSchedule: vi.fn(async () => ({ days: {} })),
+    updateSchedule: vi.fn(async () => ({})),
+  }),
+  createOrderCommandService: () => ({
+    create: vi.fn(),
+    reconcileStatus: vi.fn(async () => ({ success: true })),
+  }),
+  createOrderQueryService: () => ({
+    list: vi.fn(async () => ({ orders: [], count: 0 })),
+    getById: vi.fn(async () => null),
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn(),
+    transitionStatus: vi.fn(async () => ({ id: "pay_01", version: 1 })),
+  }),
+  createPaymentQueryService: () => ({
+    listByOrderId: vi.fn(async () => []),
+    getActiveByOrderId: vi.fn(async () => null),
+  }),
+  prisma: {
+    reservation: { findMany: vi.fn(async () => []), count: vi.fn(async () => 0) },
+    review: { findMany: vi.fn(async () => []), count: vi.fn(async () => 0) },
+    customerOrderItem: { findMany: vi.fn(async () => []) },
+    conversationMessage: { count: vi.fn(async () => 0) },
+    orderProjection: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null), count: vi.fn(async () => 0) },
+  },
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -46,7 +73,8 @@ describe("admin auth guard", () => {
   beforeAll(async () => {
     process.env.ADMIN_API_KEY = "test-admin-key-12345"
     process.env.MEDUSA_ADMIN_URL = "http://localhost:9000"
-    process.env.MEDUSA_API_KEY = "test-medusa-key"
+    process.env.MEDUSA_ADMIN_EMAIL = "test@example.com"
+    process.env.MEDUSA_ADMIN_PASSWORD = "test-password"
 
     const { adminRoutes } = await import("../routes/admin/index.js")
 

@@ -8,19 +8,34 @@
 // - Correct query params (customer_id, limit)
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { getOrderHistory } from "../get-order-history.js"
+import { makeCtx, makeGuestCtx, ordersListResponse, makeOrder } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
 const mockMedusaAdminFetch = vi.hoisted(() => vi.fn())
+const mockGetById = vi.hoisted(() => vi.fn().mockResolvedValue({ id: "cus_01", medusaId: null }))
+const mockHGetAll = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
 vi.mock("../_shared.js", () => ({
   medusaAdminFetch: mockMedusaAdminFetch,
 }))
 
-// ── Imports ──────────────────────────────────────────────────────────────────
+vi.mock("@ibatexas/domain", () => ({
+  createCustomerService: () => ({
+    getById: mockGetById,
+  }),
+}))
 
-import { getOrderHistory } from "../get-order-history.js"
-import { makeCtx, makeGuestCtx, ordersListResponse, makeOrder } from "./fixtures/medusa.js"
+vi.mock("../../redis/client.js", () => ({
+  getRedisClient: vi.fn().mockResolvedValue({
+    hGetAll: mockHGetAll,
+  }),
+}))
+
+vi.mock("../../redis/key.js", () => ({
+  rk: vi.fn((key: string) => `ibx:${key}`),
+}))
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -47,11 +62,11 @@ describe("getOrderHistory", () => {
     await expect(getOrderHistory(INPUT, guestCtx)).rejects.toThrow("hist\u00f3rico de pedidos")
   })
 
-  it("calls admin endpoint with customer_id and limit", async () => {
+  it("calls admin endpoint with metadata customerId and limit", async () => {
     await getOrderHistory(INPUT, CTX)
 
     expect(mockMedusaAdminFetch).toHaveBeenCalledWith(
-      `/admin/orders?customer_id=${CTX.customerId}&limit=20`,
+      `/admin/orders?metadata[customerId]=${CTX.customerId}&limit=20`,
     )
   })
 
@@ -59,9 +74,10 @@ describe("getOrderHistory", () => {
     const expected = ordersListResponse()
     mockMedusaAdminFetch.mockResolvedValue(expected)
 
-    const result = await getOrderHistory(INPUT, CTX)
+    const result = await getOrderHistory(INPUT, CTX) as { orders: unknown[]; count: number }
 
-    expect(result).toEqual(expected)
+    expect(result.orders).toEqual(expected.orders)
+    expect(result.count).toBe(expected.count)
   })
 
   it("returns empty list when customer has no orders", async () => {
@@ -90,7 +106,7 @@ describe("getOrderHistory", () => {
     await getOrderHistory(INPUT, ctxOther)
 
     expect(mockMedusaAdminFetch).toHaveBeenCalledWith(
-      "/admin/orders?customer_id=cus_42&limit=20",
+      "/admin/orders?metadata[customerId]=cus_42&limit=20",
     )
   })
 

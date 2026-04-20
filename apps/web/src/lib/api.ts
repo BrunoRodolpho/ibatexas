@@ -37,15 +37,15 @@ export async function apiFetch<T = unknown>(
 
   try {
     const opts: ApiFetchOptions<T> = options ?? {}
-    const { schema, ...fetchOptions } = opts
+    const { schema, headers: callerHeaders, ...fetchOptions } = opts
 
     const response = await fetch(url, {
       credentials: 'include',
+      ...fetchOptions,
       headers: {
         "Content-Type": "application/json",
-        ...fetchOptions.headers,
+        ...callerHeaders,
       },
-      ...fetchOptions,
       signal: fetchOptions.signal ?? timeoutController?.signal,
     })
 

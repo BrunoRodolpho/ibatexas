@@ -2,6 +2,7 @@
 // Tests the flow: createStream → pushChunk → getStream → replay buffer → cleanupStream
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import type { StreamChunk } from "@ibatexas/types"
 import {
   createStream,
   pushChunk,
@@ -9,7 +10,6 @@ import {
   isStreamActive,
   cleanupStream,
 } from "../streaming/emitter.js"
-import type { StreamChunk } from "@ibatexas/types"
 
 describe("Streaming emitter lifecycle integration", () => {
   beforeEach(() => {

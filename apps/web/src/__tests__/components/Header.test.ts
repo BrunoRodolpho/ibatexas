@@ -78,6 +78,14 @@ vi.mock("lucide-react", () => ({
   Heart: () => ({ type: "svg", props: {} }),
 }))
 
+const MockComponent = vi.hoisted(() =>
+  class {
+    props: unknown
+    constructor(props: unknown) { this.props = props }
+    render(): unknown { return null }
+  }
+)
+
 vi.mock("react", () => ({
   default: {
     createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({
@@ -87,6 +95,7 @@ vi.mock("react", () => ({
     useState: mockUseState,
     useRef: mockUseRef,
     useEffect: mockUseEffect,
+    Component: MockComponent,
   },
   createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({
     type,
@@ -95,6 +104,7 @@ vi.mock("react", () => ({
   useState: mockUseState,
   useRef: mockUseRef,
   useEffect: mockUseEffect,
+  Component: MockComponent,
 }))
 
 import { Header } from "../../components/Header"

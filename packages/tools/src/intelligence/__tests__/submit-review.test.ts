@@ -10,6 +10,9 @@
 // - pt-BR messages in output
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel } from "@ibatexas/types"
+import type { AgentContext } from "@ibatexas/types"
+import { submitReview } from "../submit-review.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -58,12 +61,6 @@ vi.mock("../../typesense/client.js", () => ({
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }))
-
-// -- Imports ──────────────────────────────────────────────────────────────────
-
-import { Channel } from "@ibatexas/types"
-import type { AgentContext } from "@ibatexas/types"
-import { submitReview } from "../submit-review.js"
 
 // -- Fixtures ─────────────────────────────────────────────────────────────────
 

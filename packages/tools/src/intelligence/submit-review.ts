@@ -4,8 +4,8 @@
 
 import { SubmitReviewInputSchema, NonRetryableError, type SubmitReviewInput, type AgentContext } from "@ibatexas/types";
 import { createCustomerService } from "@ibatexas/domain";
-import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
 
 export async function submitReview(
   input: SubmitReviewInput,

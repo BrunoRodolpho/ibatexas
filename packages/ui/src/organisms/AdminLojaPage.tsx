@@ -2,10 +2,23 @@
 
 import type { ComponentType, ReactNode } from 'react'
 import { createColumnHelper } from '@tanstack/react-table'
-import { ExternalLink, Package, Layers } from 'lucide-react'
+import { ExternalLink, Package, Layers, ShoppingBag } from 'lucide-react'
 import { DataTable } from '../atoms/DataTable'
 import { Switch } from '../atoms/Switch'
+import { PageHeader } from '../atoms/PageHeader'
+import { ErrorBanner } from '../atoms/ErrorBanner'
+import { PageShell } from '../layouts/PageShell'
+import { FilterBar } from '../molecules/FilterBar'
 import type { AdminProductRow, AdminProductDetail } from '@ibatexas/types'
+import {
+  STOCK_LABELS,
+  PRODUCT_COLUMN_HEADERS,
+  PAGE_TITLES,
+  ACTION_LABELS,
+  SEARCH_PLACEHOLDERS,
+  EMPTY_STATES,
+  MISC_LABELS,
+} from '../constants/admin-labels'
 
 const col = createColumnHelper<AdminProductRow>()
 
@@ -21,9 +34,9 @@ function renderShopImage(
 ) {
   if (!url) return <div className="h-10 w-10 rounded-sm bg-smoke-100" />
   if (ImageComponent) {
-    return <ImageComponent src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
+    return <ImageComponent src={url} alt="" className="h-10 w-10 rounded-sm object-cover" width={40} height={40} unoptimized />
   }
-  return <img src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} />
+  return <img src={url} alt="" className="h-10 w-10 rounded-sm object-cover" width={40} height={40} />
 }
 
 function renderStockSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
@@ -32,7 +45,7 @@ function renderStockSwitch(product: AdminProductRow, onToggle: (p: AdminProductR
       checked={product.inStock}
       onChange={() => onToggle(product)}
       size="sm"
-      label={product.inStock ? 'Em estoque' : 'Sem estoque'}
+      label={product.inStock ? STOCK_LABELS.inStock : STOCK_LABELS.outOfStock}
     />
   )
 }
@@ -55,7 +68,7 @@ function renderDetailImage(
   if (!imageUrl) {
     return (
       <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-sm bg-smoke-100">
-        <Package className="h-6 w-6 text-smoke-300" />
+        <Package className="h-6 w-6 text-[var(--color-text-muted)]" />
       </div>
     )
   }
@@ -64,7 +77,7 @@ function renderDetailImage(
       <ImageComponent
         src={imageUrl}
         alt={title}
-        className="h-14 w-14 shrink-0 rounded-lg object-cover"
+        className="h-14 w-14 shrink-0 rounded-sm object-cover"
         width={56}
         height={56}
         unoptimized
@@ -75,7 +88,7 @@ function renderDetailImage(
     <img
       src={imageUrl}
       alt={title}
-      className="h-14 w-14 shrink-0 rounded-lg object-cover"
+      className="h-14 w-14 shrink-0 rounded-sm object-cover"
       width={56}
       height={56}
     />
@@ -90,16 +103,16 @@ function renderShopActions(productId: string, onSelect: (id: string) => void, me
         className="flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800 font-medium"
       >
         <Layers className="h-3 w-3" />
-        Variantes
+        {ACTION_LABELS.variants}
       </button>
       <a
         href={`${medusaAdminUrl}/app/products/${productId}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="flex items-center gap-1 text-xs text-smoke-400 hover:text-charcoal-800"
+        className="flex items-center gap-1 text-xs text-[var(--color-text-secondary)] hover:text-charcoal-800"
         onClick={(e) => e.stopPropagation()}
       >
-        Editar
+        {ACTION_LABELS.edit}
         <ExternalLink className="h-3 w-3" />
       </a>
     </div>
@@ -122,6 +135,8 @@ export interface AdminLojaPageProps {
   SheetComponent: ComponentType<{ isOpen: boolean; title: string; children: ReactNode; onClose: () => void; footer?: ReactNode }>
   ImageComponent?: // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ComponentType<any>
+  onSuccess?: (msg: string) => void
+  onError?: (msg: string) => void
 }
 
 export function AdminLojaPage({
@@ -146,18 +161,18 @@ export function AdminLojaPage({
       enableSorting: false,
       cell: (i) => renderShopImage(i.getValue() as string | null, ImageComponent),
     }),
-    col.accessor('title', { header: 'Nome' }),
-    col.accessor('category', { header: 'Categoria' }),
+    col.accessor('title', { header: PRODUCT_COLUMN_HEADERS.name }),
+    col.accessor('category', { header: PRODUCT_COLUMN_HEADERS.category }),
     col.accessor('variantCount', {
-      header: 'Variantes',
-      cell: (i) => `${i.getValue()} tamanho(s)`,
+      header: PRODUCT_COLUMN_HEADERS.variants,
+      cell: (i) => MISC_LABELS.sizeCount(i.getValue() as number),
     }),
     col.accessor('inStock', {
-      header: 'Estoque',
+      header: PRODUCT_COLUMN_HEADERS.stock,
       cell: (i) => renderStockSwitch(i.row.original, onToggleStock),
     }),
     col.accessor('status', {
-      header: 'Status',
+      header: PRODUCT_COLUMN_HEADERS.status,
       cell: (i) => renderStatusSwitch(i.row.original, onToggleStatus),
     }),
     col.display({
@@ -168,44 +183,46 @@ export function AdminLojaPage({
   ]
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-charcoal-900">Loja</h1>
-        <a
-          href={`${medusaAdminUrl}/app/products/create`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
-        >
-          + Adicionar produto
-          <ExternalLink className="h-3.5 w-3.5" />
-        </a>
-      </div>
+    <PageShell>
+      <PageHeader
+        icon={ShoppingBag}
+        title={PAGE_TITLES.shop}
+        subtitle={PAGE_TITLES.shopSubtitle}
+        action={
+          <a
+            href={`${medusaAdminUrl}/app/products/create`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 rounded-sm bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+          >
+            {ACTION_LABELS.addProduct}
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        }
+      />
 
-      <div className="flex flex-wrap items-center gap-3">
+      <FilterBar>
         <SearchInputComponent
           onSearch={onSearch}
-          placeholder="Buscar produtos..."
+          placeholder={SEARCH_PLACEHOLDERS.products}
         />
-      </div>
+      </FilterBar>
 
       {error && (
-        <div className="rounded-lg bg-accent-red/10 p-4 text-sm text-accent-red">
-          Erro: {error.message}
-        </div>
+        <ErrorBanner message={`${MISC_LABELS.errorPrefix} ${error.message}`} />
       )}
 
       <DataTable
         data={data}
         columns={columns}
         isLoading={loading}
-        emptyMessage="Nenhum produto encontrado"
+        emptyMessage={EMPTY_STATES.products}
         pageSize={25}
       />
 
       <SheetComponent
         isOpen={!!selectedId}
-        title={productDetail?.title ?? 'Variantes'}
+        title={productDetail?.title ?? ACTION_LABELS.variants}
         onClose={() => onSelectId(null)}
         footer={
           selectedId ? (
@@ -215,7 +232,7 @@ export function AdminLojaPage({
               rel="noopener noreferrer"
               className="flex items-center justify-center gap-1.5 w-full rounded-sm border border-smoke-200 px-4 py-2 text-sm font-medium text-charcoal-700 hover:bg-smoke-100"
             >
-              Editar no Medusa
+              {ACTION_LABELS.editInMedusa}
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
           ) : undefined
@@ -234,51 +251,37 @@ export function AdminLojaPage({
               {renderDetailImage(productDetail.imageUrl, productDetail.title, ImageComponent)}
               <div className="min-w-0">
                 <p className="font-semibold text-charcoal-900">{productDetail.title}</p>
-                <p className="text-xs text-smoke-400">{productDetail.category}</p>
+                <p className="text-xs text-[var(--color-text-secondary)]">{productDetail.category}</p>
                 {productDetail.description && (
-                  <p className="mt-1 text-xs text-smoke-300 line-clamp-2">{productDetail.description}</p>
+                  <p className="mt-1 text-xs text-[var(--color-text-muted)] line-clamp-2">{productDetail.description}</p>
                 )}
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-sm border border-smoke-200">
-              <table className="w-full text-sm">
-                <thead className="bg-smoke-100">
-                  <tr>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">Tamanho</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">SKU</th>
-                    <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">Preço</th>
-                    <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">Estoque</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-smoke-100">
-                  {productDetail.variants.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="px-3 py-4 text-center text-smoke-300">
-                        Nenhuma variante cadastrada
-                      </td>
-                    </tr>
-                  ) : (
-                    productDetail.variants.map((v) => (
-                      <tr key={v.id} className="hover:bg-smoke-100">
-                        <td className="px-3 py-2.5 font-medium text-charcoal-800">{v.title}</td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-smoke-300">{v.sku ?? '\u2014'}</td>
-                        <td className="px-3 py-2.5 text-right text-charcoal-700">{formatBRL(v.price)}</td>
-                        <td className="px-3 py-2.5 text-right">
-                          {v.manageInventory ? (
-                            <span className={v.inventoryQuantity > 0 ? 'text-green-700' : 'text-red-600'}>
-                              {v.inventoryQuantity}
-                            </span>
-                          ) : (
-                            <span className="text-smoke-300">{'\u221E'}</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+            {productDetail.variants.length === 0 ? (
+              <p className="text-sm text-[var(--color-text-muted)] text-center py-4">{EMPTY_STATES.variants}</p>
+            ) : (
+              <div className="space-y-1.5">
+                {productDetail.variants.map((v) => (
+                  <div key={v.id} className="flex items-center justify-between rounded-sm border border-smoke-200 px-3 py-2.5 hover:bg-smoke-50 transition-colors">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-charcoal-900">{v.title}</p>
+                      {v.sku && <p className="text-[11px] font-mono text-[var(--color-text-muted)]">{v.sku}</p>}
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <span className="text-sm font-medium text-charcoal-800 tabular-nums">{formatBRL(v.price)}</span>
+                      {v.manageInventory ? (
+                        <span className={`text-xs font-medium tabular-nums ${v.inventoryQuantity > 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                          {v.inventoryQuantity} un.
+                        </span>
+                      ) : (
+                        <span className="text-xs text-[var(--color-text-muted)]">{'\u221E'}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {productDetail.tags.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
@@ -292,6 +295,6 @@ export function AdminLojaPage({
           </div>
         )}
       </SheetComponent>
-    </div>
+    </PageShell>
   )
 }

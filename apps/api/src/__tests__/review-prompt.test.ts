@@ -2,6 +2,7 @@
 // Mocks Redis to verify scheduling logic without network
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -14,10 +15,6 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
 }));
-
-// ── Import source after mocks ───────────────────────────────────────────────
-
-import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

@@ -1,6 +1,7 @@
 // Unit tests for staff high-value cart alert in cart.abandoned subscriber
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -25,12 +26,16 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
 
+const mockAtomicIncr = vi.hoisted(() => vi.fn().mockResolvedValue(1));
+
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
   PROFILE_TTL_SECONDS: 604800,
   getWhatsAppSender: mockGetWhatsAppSender,
   medusaStore: mockMedusaStore,
+  reaisToCentavos: (amount: number) => Math.round(amount * 100),
+  atomicIncr: mockAtomicIncr,
 }));
 
 vi.mock("@ibatexas/domain", () => ({
@@ -41,6 +46,17 @@ vi.mock("@ibatexas/domain", () => ({
   createLoyaltyService: () => ({
     addStamp: vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
   }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(),
+  }),
+  createOrderCommandService: () => ({
+    create: vi.fn(),
+    reconcileStatus: vi.fn().mockResolvedValue({ success: true }),
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn(),
+  }),
+  ConcurrencyError: class ConcurrencyError extends Error {},
 }));
 
 vi.mock("@sentry/node", () => ({
@@ -67,10 +83,6 @@ vi.mock("../../session/store.js", () => ({
 vi.mock("../../whatsapp/session.js", () => ({
   hashPhone: vi.fn((phone: string) => `hash_${phone}`),
 }));
-
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { startCartIntelligenceSubscribers } from "../../subscribers/cart-intelligence.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -130,12 +142,10 @@ describe("cart.abandoned — staff high-value cart alert", () => {
   it("sends alert to STAFF_ALERT_PHONE when cart total > R$200 (20000 centavos)", async () => {
     process.env.STAFF_ALERT_PHONE = "+5519900000099";
 
-    const mockRedis = createMockRedis({
-      // First get: nudge key (no previous tier), incr for alert counter
-      incr: vi.fn().mockResolvedValue(1),
-    });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 25000 } }); // R$250
+    mockAtomicIncr.mockResolvedValue(1);
+    mockMedusaStore.mockResolvedValue({ cart: { total: 250 } }); // R$250 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -152,9 +162,10 @@ describe("cart.abandoned — staff high-value cart alert", () => {
   it("does NOT send alert when cart total is exactly R$200 (threshold is >20000)", async () => {
     process.env.STAFF_ALERT_PHONE = "+5519900000099";
 
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 20000 } }); // exactly R$200
+    mockAtomicIncr.mockResolvedValue(1);
+    mockMedusaStore.mockResolvedValue({ cart: { total: 200 } }); // exactly R$200 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -167,9 +178,10 @@ describe("cart.abandoned — staff high-value cart alert", () => {
   it("does NOT send alert when cart total < R$200", async () => {
     process.env.STAFF_ALERT_PHONE = "+5519900000099";
 
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 15000 } }); // R$150
+    mockAtomicIncr.mockResolvedValue(1);
+    mockMedusaStore.mockResolvedValue({ cart: { total: 150 } }); // R$150 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -182,12 +194,11 @@ describe("cart.abandoned — staff high-value cart alert", () => {
   it("suppresses the 11th alert in the same hour (rate limit = 10)", async () => {
     process.env.STAFF_ALERT_PHONE = "+5519900000099";
 
-    const mockRedis = createMockRedis({
-      // incr returns 11 — over rate limit
-      incr: vi.fn().mockResolvedValue(11),
-    });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 50000 } });
+    // atomicIncr returns 11 — over rate limit
+    mockAtomicIncr.mockResolvedValue(11);
+    mockMedusaStore.mockResolvedValue({ cart: { total: 500 } }); // R$500 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -200,11 +211,10 @@ describe("cart.abandoned — staff high-value cart alert", () => {
   it("sends the 10th alert (boundary: rate limit allows up to 10)", async () => {
     process.env.STAFF_ALERT_PHONE = "+5519900000099";
 
-    const mockRedis = createMockRedis({
-      incr: vi.fn().mockResolvedValue(10),
-    });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 30000 } });
+    mockAtomicIncr.mockResolvedValue(10);
+    mockMedusaStore.mockResolvedValue({ cart: { total: 300 } }); // R$300 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -216,9 +226,9 @@ describe("cart.abandoned — staff high-value cart alert", () => {
 
   it("skips silently when STAFF_ALERT_PHONE is not set", async () => {
     // STAFF_ALERT_PHONE not set (deleted in beforeEach)
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMedusaStore.mockResolvedValue({ cart: { total: 50000 } });
+    mockMedusaStore.mockResolvedValue({ cart: { total: 500 } }); // R$500 (reais)
 
     await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
 
@@ -232,7 +242,7 @@ describe("cart.abandoned — staff high-value cart alert", () => {
   it("does NOT block cart abandonment flow when staff alert throws", async () => {
     process.env.STAFF_ALERT_PHONE = "+5519900000099";
 
-    const mockRedis = createMockRedis({ incr: vi.fn().mockResolvedValue(1) });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
     // medusaStore throws — staff alert path fails
     mockMedusaStore.mockRejectedValue(new Error("Medusa unavailable"));

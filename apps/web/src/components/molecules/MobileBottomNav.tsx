@@ -29,12 +29,12 @@ export function MobileBottomNav() {
             <Link
               key={href}
               href={resolvedHref}
-              className={`flex flex-col items-center justify-center flex-1 py-2 transition-colors duration-500 ease-luxury ${
-                isActive ? 'text-brand-500' : 'text-smoke-400'
+              className={`flex flex-col items-center justify-center flex-1 py-2 transition-micro ${
+                isActive ? 'text-brand-500' : 'text-[var(--color-text-secondary)]'
               }`}
             >
               <Icon className="h-[22px] w-[22px]" strokeWidth={1.5} />
-              <span className="mt-0.5 text-[10px] font-medium uppercase tracking-editorial">
+              <span className="mt-0.5 text-micro font-medium uppercase tracking-editorial">
                 {t(resolvedLabel)}
               </span>
             </Link>

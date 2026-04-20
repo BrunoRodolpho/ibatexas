@@ -8,9 +8,9 @@ import { createReservationService, createCustomerService } from "@ibatexas/domai
 import { getRedisClient, rk, sendReservationReminder } from "@ibatexas/tools"
 import * as Sentry from "@sentry/node"
 import { ReservationStatus, type ReservationDTO } from "@ibatexas/types"
-import { createQueue, createWorker, type Job } from "./queue.js"
 import type { Queue, Worker } from "bullmq"
 import type { FastifyBaseLogger } from "fastify"
+import { createQueue, createWorker, type Job } from "./queue.js"
 
 const REMINDER_TTL_SECONDS = 24 * 60 * 60 // 24h — prevents re-sending on restart
 const REPEAT_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
@@ -49,6 +49,7 @@ export async function sendReminders(log?: FastifyBaseLogger | null): Promise<voi
         // Build a minimal DTO for the notification function
         const dto = {
           id: reservation.id,
+          displayId: (reservation as unknown as { displayId?: number }).displayId ?? 0,
           customerId: reservation.customerId,
           partySize: reservation.partySize,
           status: ReservationStatus.CONFIRMED,

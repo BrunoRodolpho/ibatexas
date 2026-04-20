@@ -3,7 +3,6 @@
 import { describe, it, expect } from "vitest"
 import {
   SERVICES,
-  DEFAULT_SERVICES,
   resolveServices,
 } from "../services.js"
 
@@ -76,32 +75,19 @@ describe("SERVICES registry", () => {
   })
 })
 
-// ── DEFAULT_SERVICES ─────────────────────────────────────────────────────────
-
-describe("DEFAULT_SERVICES", () => {
-  it("is a non-empty array", () => {
-    expect(DEFAULT_SERVICES.length).toBeGreaterThan(0)
-  })
-
-  it("all entries are valid service keys", () => {
-    for (const key of DEFAULT_SERVICES) {
-      expect(SERVICES[key], `"${key}" is not a valid service key`).toBeDefined()
-    }
-  })
-})
-
 // ── resolveServices ──────────────────────────────────────────────────────────
 
 describe("resolveServices", () => {
-  it("returns default services when key is undefined", () => {
+  it("returns all available services when key is undefined", () => {
     const result = resolveServices(undefined)
-    expect(result).toHaveLength(DEFAULT_SERVICES.length)
-    expect(result[0].key).toBe(DEFAULT_SERVICES[0])
+    const available = Object.values(SERVICES).filter((s) => s.available)
+    expect(result).toHaveLength(available.length)
   })
 
-  it('returns default services when key is "default"', () => {
+  it('returns all available services when key is "default"', () => {
     const result = resolveServices("default")
-    expect(result).toHaveLength(DEFAULT_SERVICES.length)
+    const available = Object.values(SERVICES).filter((s) => s.available)
+    expect(result).toHaveLength(available.length)
   })
 
   it('returns all available services when key is "all"', () => {

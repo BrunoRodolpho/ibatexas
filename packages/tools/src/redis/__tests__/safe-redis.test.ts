@@ -2,6 +2,8 @@
 // Validates circuit breaker integration with Redis operations.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { safeRedis } from "../safe-redis.js";
+import { resetCircuitBreaker, getCircuitBreaker, CircuitOpenError } from "../circuit-breaker.js";
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 
@@ -10,11 +12,6 @@ const mockGetRedisClient = vi.hoisted(() => vi.fn());
 vi.mock("../client.js", () => ({
   getRedisClient: mockGetRedisClient,
 }));
-
-// ── Imports after mocks ─────────────────────────────────────────────────────
-
-import { safeRedis } from "../safe-redis.js";
-import { resetCircuitBreaker, getCircuitBreaker, CircuitOpenError } from "../circuit-breaker.js";
 
 describe("safeRedis", () => {
   beforeEach(() => {

@@ -1,0 +1,52 @@
+{
+  "name": "delivery-time-estimate",
+  "description": "Add item then request delivery with CEP → in-zone → fee and ETA in confirming prompt",
+  "channel": "whatsapp",
+  "customerId": "cust-003",
+  "isNewCustomer": false,
+  "mealPeriod": "lunch",
+  "turns": [
+    {
+      "input": "Quero pulled pork retirada pix",
+      "expectedEvents": ["ADD_ITEM", "SET_FULFILLMENT", "SET_PAYMENT", "CHECKOUT_START"],
+      "expectedState": "checkout.confirming",
+      "injectSearchResult": {
+        "found": true,
+        "products": [
+          { "variantId": "var-pp", "name": "Pulled Pork", "priceInCentavos": 4800, "category": "meat" }
+        ],
+        "alternatives": []
+      },
+      "injectCartResult": {
+        "success": true,
+        "cartId": "cart-003",
+        "items": [
+          { "productId": "prod-pp", "variantId": "var-pp", "name": "Pulled Pork", "category": "meat", "quantity": 1, "priceInCentavos": 4800 }
+        ],
+        "totalInCentavos": 4800
+      },
+      "assertContext": {
+        "fulfillment": "pickup",
+        "cartId": "cart-003"
+      }
+    },
+    {
+      "input": "Entrega CEP 12345-678",
+      "expectedEvents": ["SET_FULFILLMENT"],
+      "expectedState": "checkout.confirming",
+      "injectDeliveryResult": {
+        "inZone": true,
+        "feeInCentavos": 800,
+        "etaMinutes": 35
+      },
+      "assertContext": {
+        "fulfillment": "delivery",
+        "deliveryCep": "12345-678",
+        "deliveryFeeInCentavos": 800,
+        "deliveryEtaMinutes": 35
+      },
+      "assertPromptContains": ["R$8,00", "12345-678", "PIX", "Confirma"],
+      "assertTools": []
+    }
+  ]
+}

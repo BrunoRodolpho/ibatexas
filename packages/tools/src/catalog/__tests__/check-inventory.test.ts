@@ -5,6 +5,7 @@
 //   2. Returns available=false when stock = 0
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { checkInventory } from "../check-inventory.js";
 
 // ── Mock Medusa admin client ─────────────────────────────────────────────────
 
@@ -17,8 +18,6 @@ vi.mock("../../medusa/client.js", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
 });
-
-import { checkInventory } from "../check-inventory.js";
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 

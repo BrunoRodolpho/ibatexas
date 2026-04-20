@@ -5,12 +5,22 @@
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getWhatsAppSender } from "@ibatexas/tools";
 import type { FastifyBaseLogger } from "fastify";
+import { pushToDlq } from "./dlq.js";
+import { isNewEvent } from "./dedup.js";
 
 export async function startHandoffSubscriber(
   log?: FastifyBaseLogger,
 ): Promise<void> {
   await subscribeNatsEvent("support.handoff_requested", async (payload) => {
     const { sessionId, reason } = payload as { sessionId: string; reason?: string };
+
+    // Idempotency guard — prevent duplicate staff alerts on NATS redelivery
+    try {
+      if (!(await isNewEvent(`handoff:${sessionId}`))) {
+        log?.info({ session_id: sessionId }, "[handoff-subscriber] duplicate — skipping");
+        return;
+      }
+    } catch { /* dedup failure is non-fatal — continue processing */ }
 
     log?.info(
       { session_id: sessionId, reason },
@@ -46,6 +56,7 @@ export async function startHandoffSubscriber(
         { session_id: sessionId, error: String(err) },
         "[handoff-subscriber] Failed to send WhatsApp notification",
       );
+      await pushToDlq("support.handoff_requested", payload as Record<string, unknown>, err, log);
     }
   });
 }

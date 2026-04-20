@@ -12,6 +12,8 @@ import {
   MapPin,
   Star,
   BarChart2,
+  Clock,
+  Type,
 } from 'lucide-react'
 import { AdminSidebarBase, type AdminSidebarNavGroup } from '@ibatexas/ui'
 
@@ -29,9 +31,11 @@ const groups: AdminSidebarNavGroup[] = [
     items: [
       { key: 'pedidos', label: 'Pedidos', href: '/admin/pedidos', icon: ClipboardList },
       { key: 'reservas', label: 'Reservas', href: '/admin/reservas', icon: CalendarDays },
+      { key: 'horarios', label: 'Horários', href: '/admin/horarios', icon: Clock },
       { key: 'zonas', label: 'Zonas de Entrega', href: '/admin/zonas', icon: MapPin },
       { key: 'avaliacoes', label: 'Avaliações', href: '/admin/avaliacoes', icon: Star },
       { key: 'analises', label: 'Análises', href: '/admin/analises', icon: BarChart2 },
+      { key: 'banner', label: 'Banner', href: '/admin/banner', icon: Type },
     ],
   },
 ]

@@ -19,6 +19,7 @@ test-results/
 .env
 .env.local
 .env.*.local
+secrets.env
 
 # Terraform state — managed remotely
 *.tfstate

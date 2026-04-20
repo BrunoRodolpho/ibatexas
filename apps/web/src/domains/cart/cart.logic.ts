@@ -136,3 +136,18 @@ export function hasMerchandise(items: ReadonlyArray<Pick<CartItem, 'productType'
 export function hasFood(items: ReadonlyArray<Pick<CartItem, 'productType'>>): boolean {
   return classifyItems(items).hasFood
 }
+
+/** True when cart has items that require the kitchen to be open (food only, not frozen). */
+export function hasKitchenOnlyFood(items: ReadonlyArray<Pick<CartItem, 'productType'>>): boolean {
+  return items.some((i) => i.productType === "food")
+}
+
+/** Return only items that require the kitchen (productType === "food"). */
+export function getKitchenItems<T extends Pick<CartItem, 'productType'>>(items: ReadonlyArray<T>): T[] {
+  return items.filter((i) => i.productType === "food")
+}
+
+/** Return only always-available items (frozen + merchandise). */
+export function getAvailableItems<T extends Pick<CartItem, 'productType'>>(items: ReadonlyArray<T>): T[] {
+  return items.filter((i) => i.productType !== "food")
+}

@@ -2,6 +2,7 @@
 // Mocks fetch, Redis, and Sentry.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { fetchWeatherCondition } from "../../jobs/weather-helper.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
@@ -22,10 +23,6 @@ vi.mock("@sentry/node", () => ({
   }),
   captureException: mockSentryCapture,
 }));
-
-// ── Import source after mocks ───────────────────────────────────────────────
-
-import { fetchWeatherCondition } from "../../jobs/weather-helper.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

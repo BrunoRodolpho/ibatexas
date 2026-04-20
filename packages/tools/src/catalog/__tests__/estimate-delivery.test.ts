@@ -6,6 +6,7 @@
 //   3. ViaCEP timeout gracefully degrades (returns fallback response)
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { estimateDelivery } from "../estimate-delivery.js";
 
 // ── Mock domain service ──────────────────────────────────────────────────────
 
@@ -25,8 +26,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   globalThis.fetch = mockFetch as unknown as typeof fetch;
 });
-
-import { estimateDelivery } from "../estimate-delivery.js";
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 

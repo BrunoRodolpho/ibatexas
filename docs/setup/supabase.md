@@ -78,5 +78,6 @@ Should show all migrations applied for the domain schema.
 ## Notes
 
 - **Local dev** still uses docker-compose Postgres on port 5433 — no Supabase account needed.
+- **ECS Fargate + IPv6**: The direct Supabase host (`db.<ref>.supabase.co`) resolves to IPv6 only. ECS Fargate doesn't support IPv6 outbound by default, so you **must** use the pooler URL (`aws-0-sa-east-1.pooler.supabase.com:6543`) for `DATABASE_URL` in ECS. Using the direct host will cause `ENETUNREACH` errors.
 - **RLS (Row-Level Security)** is disabled on `ibx_domain` tables — the API server is the only client and handles authorization in application code.
 - Supabase free tier allows 500 MB storage and 2 GB bandwidth. Upgrade to Pro for production workloads.

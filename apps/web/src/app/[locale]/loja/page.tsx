@@ -1,18 +1,44 @@
 'use client'
 
+import { useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { useProducts } from '@/domains/product'
+import { useCartStore } from '@/domains/cart'
+import { useUIStore } from '@/domains/ui'
 import { ProductGrid } from '@/components/organisms'
-import { Text } from '@/components/atoms'
+import { ProductGridSkeleton } from '@/components/molecules/ProductGridSkeleton'
+import { Container, Text } from '@/components/atoms'
 import { Link } from '@/i18n/navigation'
+import { JsonLd } from '@/components/atoms'
+import { track } from '@/domains/analytics'
 
 export default function ShopPage() {
   const t = useTranslations()
   const { data, loading, error } = useProducts({ limit: 12, productType: 'merchandise' })
+  const addItem = useCartStore((s) => s.addItem)
+  const triggerUpsell = useUIStore((s) => s.triggerUpsell)
+  const addToast = useUIStore((s) => s.addToast)
+
+  // Standardized add-to-cart for the shop landing — toast + upsell trigger.
+  // Was missing entirely; the featured cards used to do nothing on click.
+  const handleAddToCart = useCallback(
+    (productId: string) => {
+      const product = data?.items?.find((p) => p.id === productId)
+      if (!product) return
+      const defaultVariant = product.variants?.[0]
+      addItem(product, 1, undefined, defaultVariant)
+      track('add_to_cart', { productId, source: 'shop_featured' })
+      addToast(t('toast.added_to_cart'), 'cart')
+      if (product.categoryHandle) {
+        triggerUpsell(product.categoryHandle)
+      }
+    },
+    [data?.items, addItem, addToast, t, triggerUpsell],
+  )
 
   if (error) {
     return (
-      <div className="text-center py-20">
+      <div className="text-center py-12 lg:py-16">
         <Text variant="body" className="text-accent-red">
           {t('common.error')}: {error.message}
         </Text>
@@ -22,28 +48,34 @@ export default function ShopPage() {
 
   return (
     <div>
+      <JsonLd
+        data={{
+          '@context': 'https://schema.org',
+          '@type': 'WebPage',
+          name: 'Loja IbateXas',
+          url: 'https://ibatexas.com.br/loja',
+          description: 'Loja online da IbateXas — churrasco defumado artesanal em Ibaté, SP',
+          isPartOf: {
+            '@type': 'WebSite',
+            name: 'IbateXas',
+            url: 'https://ibatexas.com.br',
+          },
+        }}
+      />
       {/* ── Featured section: editorial grid ───────────────────── */}
       <section className="bg-smoke-50">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-8 lg:py-12">
-          <div className="flex items-end justify-between mb-8">
-            <h2 className="font-display text-display-sm font-semibold text-charcoal-900 tracking-display">
+        <Container className="py-8 lg:py-12">
+          {/* Removed the "Ver todos os Produtos →" link — it pointed back to
+              /loja itself, which is the page the user is already on. */}
+          <div className="mb-8">
+            <h2 className="font-display text-display-sm font-bold text-charcoal-900 tracking-display">
               {t('shop.featured')}
             </h2>
-            <Link
-              href="/loja"
-              className="text-xs font-medium uppercase tracking-editorial text-smoke-400 hover:text-charcoal-900 transition-colors duration-500 ease-luxury"
-            >
-              {t('shop.view_all')} →
-            </Link>
           </div>
 
           {(() => {
             if (loading) {
-              return (
-                <div className="text-center py-16">
-                  <Text className="text-smoke-400">{t('common.loading')}</Text>
-                </div>
-              )
+              return <ProductGridSkeleton columns={4} />
             }
             if (data?.items?.length) {
               return (
@@ -51,12 +83,13 @@ export default function ShopPage() {
                   products={data.items}
                   columns={4}
                   featured
+                  onAddToCart={handleAddToCart}
                   getProductHref={(product) => `/loja/produto/${product.id}`}
                 />
               )
             }
             return (
-              <div className="py-20 text-center">
+              <div className="py-12 lg:py-16 text-center">
                 <p className="font-display text-2xl text-smoke-300 tracking-display">
                   Em breve
                 </p>
@@ -66,21 +99,21 @@ export default function ShopPage() {
               </div>
             )
           })()}
-        </div>
+        </Container>
       </section>
 
       {/* ── Categories: minimal stacked layout ─────────────────── */}
       <section className="bg-smoke-100">
-        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 py-10 lg:py-12">
+        <Container className="py-8 lg:py-12">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-smoke-200">
-            <Link href="/loja/camisetas" className="group bg-smoke-100 p-8 lg:p-12 transition-colors duration-500 ease-luxury hover:bg-smoke-50">
+            <Link href="/loja/camisetas" className="group bg-smoke-100 p-8 lg:p-12 transition-micro hover:bg-smoke-50">
               <div className="flex items-center gap-4 mb-4">
-                <svg className="w-5 h-5 text-smoke-400 group-hover:text-brand-600 transition-colors duration-500 ease-luxury" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-smoke-400 group-hover:text-brand-600 transition-micro" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                 </svg>
-                <div className="h-px flex-1 bg-smoke-200 group-hover:bg-smoke-300 transition-colors duration-500" />
+                <div className="h-px flex-1 bg-smoke-200 group-hover:bg-smoke-300 transition-micro" />
               </div>
-              <h3 className="font-display text-xl font-semibold text-charcoal-900 mb-2 group-hover:text-brand-700 transition-colors duration-500 ease-luxury">
+              <h3 className="font-display text-xl font-semibold text-charcoal-900 mb-2 group-hover:text-brand-700 transition-micro">
                 {t('shop.categories.camisetas')}
               </h3>
               <p className="text-sm text-smoke-400 leading-relaxed">
@@ -88,14 +121,14 @@ export default function ShopPage() {
               </p>
             </Link>
 
-            <Link href="/loja/acessorios" className="group bg-smoke-100 p-8 lg:p-12 transition-colors duration-500 ease-luxury hover:bg-smoke-50">
+            <Link href="/loja/acessorios" className="group bg-smoke-100 p-8 lg:p-12 transition-micro hover:bg-smoke-50">
               <div className="flex items-center gap-4 mb-4">
-                <svg className="w-5 h-5 text-smoke-400 group-hover:text-brand-600 transition-colors duration-500 ease-luxury" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-smoke-400 group-hover:text-brand-600 transition-micro" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 3l-6 6m0 0V4m0 5h5M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
                 </svg>
-                <div className="h-px flex-1 bg-smoke-200 group-hover:bg-smoke-300 transition-colors duration-500" />
+                <div className="h-px flex-1 bg-smoke-200 group-hover:bg-smoke-300 transition-micro" />
               </div>
-              <h3 className="font-display text-xl font-semibold text-charcoal-900 mb-2 group-hover:text-brand-700 transition-colors duration-500 ease-luxury">
+              <h3 className="font-display text-xl font-semibold text-charcoal-900 mb-2 group-hover:text-brand-700 transition-micro">
                 {t('shop.categories.acessorios')}
               </h3>
               <p className="text-sm text-smoke-400 leading-relaxed">
@@ -103,14 +136,14 @@ export default function ShopPage() {
               </p>
             </Link>
 
-            <Link href="/loja/kits" className="group bg-smoke-100 p-8 lg:p-12 transition-colors duration-500 ease-luxury hover:bg-smoke-50">
+            <Link href="/loja/kits" className="group bg-smoke-100 p-8 lg:p-12 transition-micro hover:bg-smoke-50">
               <div className="flex items-center gap-4 mb-4">
-                <svg className="w-5 h-5 text-smoke-400 group-hover:text-brand-600 transition-colors duration-500 ease-luxury" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-smoke-400 group-hover:text-brand-600 transition-micro" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7" />
                 </svg>
-                <div className="h-px flex-1 bg-smoke-200 group-hover:bg-smoke-300 transition-colors duration-500" />
+                <div className="h-px flex-1 bg-smoke-200 group-hover:bg-smoke-300 transition-micro" />
               </div>
-              <h3 className="font-display text-xl font-semibold text-charcoal-900 mb-2 group-hover:text-brand-700 transition-colors duration-500 ease-luxury">
+              <h3 className="font-display text-xl font-semibold text-charcoal-900 mb-2 group-hover:text-brand-700 transition-micro">
                 {t('shop.categories.kits')}
               </h3>
               <p className="text-sm text-smoke-400 leading-relaxed">
@@ -118,7 +151,7 @@ export default function ShopPage() {
               </p>
             </Link>
           </div>
-        </div>
+        </Container>
       </section>
     </div>
   )

@@ -2,7 +2,14 @@
 // GET /api/products, GET /api/products/:id, GET /api/categories
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import Fastify from "fastify";
+import {
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import sensible from "@fastify/sensible";
 import { Channel, AvailabilityWindow, ProductType, type ProductDTO } from "@ibatexas/types";
+import { catalogRoutes } from "../routes/catalog.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -33,14 +40,6 @@ vi.mock("../middleware/auth.js", () => ({
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
-
-import Fastify from "fastify";
-import {
-  serializerCompiler,
-  validatorCompiler,
-} from "fastify-type-provider-zod";
-import sensible from "@fastify/sensible";
-import { catalogRoutes } from "../routes/catalog.js";
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });

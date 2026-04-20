@@ -41,6 +41,7 @@ export async function appendMessages(
   sessionId: string,
   messages: AgentMessage[],
   isAuthenticated = false,
+  meta?: { customerId?: string; channel?: "whatsapp" | "web" },
 ): Promise<void> {
   const redis = await getRedisClient();
   const key = sessionKey(sessionId);
@@ -54,4 +55,21 @@ export async function appendMessages(
   pipeline.lTrim(key, -MAX_HISTORY, -1);
   pipeline.expire(key, ttl);
   await pipeline.exec();
+
+  // CDC: publish NATS event for durable Postgres archival (best-effort)
+  try {
+    const natsModule = await import("@ibatexas/nats-client")
+    void natsModule.publishNatsEvent("conversation.message.appended", {
+      sessionId,
+      customerId: meta?.customerId ?? null,
+      channel: meta?.channel ?? (isAuthenticated ? "whatsapp" : "web"),
+      messages: messages.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+        sentAt: new Date().toISOString(),
+      })),
+    })
+  } catch {
+    // Non-critical — Redis is the hot path, Postgres archival is best-effort
+  }
 }

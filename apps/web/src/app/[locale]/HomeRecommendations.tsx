@@ -1,15 +1,17 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { useRecommendations } from '@/domains/recommendations'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
-import { track } from '@/domains/analytics'
-import { Heading } from '@/components/atoms'
+import { track, trackOnceVisible } from '@/domains/analytics'
+import { Heading, Container } from '@/components/atoms'
 import NextImage from 'next/image'
 import { Link } from '@/i18n/navigation'
 import { Plus, Sparkles } from 'lucide-react'
 import { BLUR_PLACEHOLDER } from '@/lib/constants'
+import { formatBRL } from '@/lib/format'
 import type { RecommendedProduct } from '@/domains/recommendations'
 import { AvailabilityWindow, ProductType } from '@ibatexas/types'
 import type { ProductDTO } from '@ibatexas/types'
@@ -24,6 +26,17 @@ export function HomeRecommendations() {
   const { data: recommendations, loading } = useRecommendations(6)
   const addItem = useCartStore((s) => s.addItem)
   const { addToast } = useUIStore()
+  const sectionRef = useRef<HTMLElement>(null)
+
+  // Fire impression event once when the section first enters the viewport.
+  // Without this the `homepage_recs_clicked` CTR has no denominator.
+  useEffect(() => {
+    if (!sectionRef.current || loading || recommendations.length === 0) return
+    return trackOnceVisible(sectionRef.current, 'homepage_recs_viewed', {
+      count: recommendations.length,
+      productIds: recommendations.map((r) => r.id),
+    })
+  }, [loading, recommendations])
 
   if (loading || recommendations.length === 0) return null
 
@@ -49,8 +62,8 @@ export function HomeRecommendations() {
   }
 
   return (
-    <section className="bg-smoke-50 border-t border-smoke-200/30">
-      <div className="mx-auto max-w-[1280px] px-6 lg:px-8 py-16 lg:py-24">
+    <section ref={sectionRef} className="bg-smoke-50 border-t border-smoke-200/30">
+      <Container size="xl" className="py-16 lg:py-24">
         {/* Section header */}
         <div className="flex items-center gap-2 mb-8">
           <Sparkles className="w-5 h-5 text-brand-500" strokeWidth={2} />
@@ -62,10 +75,7 @@ export function HomeRecommendations() {
         {/* Horizontal scrollable cards */}
         <div className="flex gap-3 overflow-x-auto scrollbar-hide snap-x snap-mandatory pb-2 -mx-4 px-4">
           {recommendations.map((product) => {
-            const priceFormatted = (product.price / 100).toLocaleString('pt-BR', {
-              style: 'currency',
-              currency: 'BRL',
-            })
+            const priceFormatted = formatBRL(product.price)
 
             return (
               <div key={product.id} className="flex-shrink-0 snap-start w-[172px] sm:w-[192px] group">
@@ -113,7 +123,7 @@ export function HomeRecommendations() {
                       </Link>
                     </h3>
                     {product.reason && (
-                      <p className="text-[10px] text-smoke-400 mt-1 truncate">{product.reason}</p>
+                      <p className="text-micro text-smoke-400 mt-1 truncate">{product.reason}</p>
                     )}
                     <p className="mt-1.5 text-sm font-semibold tabular-nums text-charcoal-900">
                       {priceFormatted}
@@ -124,7 +134,7 @@ export function HomeRecommendations() {
             )
           })}
         </div>
-      </div>
+      </Container>
     </section>
   )
 }

@@ -61,6 +61,7 @@ The catalog covers two distinct product types — food and merchandise — both 
 | Coupon | code, discountType: percent / fixed, value, minOrderValue, expiresAt |
 | Invoice | nfeId, url, issuedAt (via Focus NFe API) |
 | OrderStatus | received → confirmed → in_preparation → ready → out_for_delivery → delivered / cancelled |
+| OrderType | delivery / pickup / dine_in |
 
 ### Rules
 
@@ -171,6 +172,51 @@ The catalog covers two distinct product types — food and merchandise — both 
 
 ---
 
+## 5b. Conversation
+
+**Owner:** Custom — CDC from Redis to Postgres via NATS
+**Hot path:** Redis (`session:{sessionId}` list, 24-48h TTL)
+**Durable archive:** Postgres (`conversations` + `conversation_messages` tables)
+
+### Architecture
+
+```
+[WhatsApp/Web] → appendMessages() → Redis LIST (hot, fast)
+                                   ↘ NATS "conversation.message.appended"
+                                        ↘ conversation-archiver subscriber
+                                            ↘ Postgres (durable archive)
+```
+
+Redis is the **hot path** — the LLM reads from it on every turn. Postgres archival is best-effort via NATS CDC (Change Data Capture). If NATS or the archiver is down, the agent works normally — conversations just aren't archived until recovery.
+
+### Entities
+
+| Entity | Key fields |
+|---|---|
+| Conversation | id, sessionId (unique), customerId (nullable FK), channel: whatsapp/web, startedAt, endedAt |
+| ConversationMessage | id, conversationId, role: user/assistant/system, content, metadata (JSON), sentAt |
+
+### Rules
+
+- `appendMessages()` in the session store publishes a NATS event after writing to Redis
+- The `conversation-archiver` subscriber upserts Conversation + appends messages (idempotent for NATS redelivery)
+- Customer FK uses `SetNull` on delete (preserves analytics data for LGPD compliance)
+- `ibx chat list` queries Redis directly; `ibx chat dump --source postgres` queries the archive
+- Cascade delete on ConversationMessage when Conversation is deleted
+
+### NATS Event
+
+| Event | Publisher | Metadata |
+|---|---|---|
+| `conversation.message.appended` | `appendMessages()` in session store | `{ sessionId, customerId, channel, messages[{role, content, sentAt}] }` |
+
+### Out of scope
+
+- Real-time conversation streaming to admin panel — Phase 2
+- JetStream guaranteed delivery — post-launch (EVT-001)
+
+---
+
 ## 6. Intelligence
 
 **Owner:** Custom (`packages/domain` types, Redis for profiles, NATS for events, Postgres for reviews)
@@ -225,6 +271,45 @@ Same Commerce entities (Cart, Order, Payment) shared with the restaurant. Produc
 
 - Agent-driven merchandise ordering — Phase 2
 - WhatsApp shop browsing — Phase 2
+
+---
+
+## 7b. Billing
+
+**Owner:** Custom (`packages/domain` — Payment, PaymentStatusHistory models + command/query services)
+
+The Billing context owns the full payment lifecycle independently from order fulfillment. Each Payment row represents one payment attempt; retry/regeneration creates a new row. Coordinated with Commerce via NATS events and a `currentPaymentId` pointer on OrderProjection.
+
+### Entities
+
+| Entity | Key fields |
+|---|---|
+| Payment | id, orderId, method (pix/card/cash), status (PaymentStatus enum), amountInCentavos, stripePaymentIntentId?, pixExpiresAt?, regenerationCount, idempotencyKey?, version |
+| PaymentStatusHistory | id, paymentId, fromStatus, toStatus, actor, actorId?, reason?, version, createdAt |
+
+### Rules
+
+- **One active (non-terminal) payment per order** — enforced by application guard + partial unique index
+- Terminal statuses (per-attempt): `refunded`, `canceled`, `waived`, `payment_failed`, `payment_expired` — retry creates a NEW Payment row
+- `switching_method` is a transitional state that blocks webhook processing during atomic method switches
+- PIX expiry transitions payment to `payment_expired` — does NOT cancel the order (decoupled)
+- Cash flow: `awaiting_payment` → `cash_pending` → `paid` (admin/driver confirms receipt)
+- Stripe is authoritative for PI lifecycle; reconciliation guards: idempotency, terminal state, out-of-order events, ownership validation
+- All transitions require validated forward-only matrix (`canTransitionPayment()`)
+- Optimistic concurrency via `version` field on Payment
+
+### NATS Events
+
+| Event | Publisher | Metadata |
+|---|---|---|
+| `payment.status_changed` | PaymentCommandService | `{ orderId, paymentId, previousStatus, newStatus, method, version, stripeEventId?, timestamp }` |
+| `payment.method_changed` | Payment switch endpoint | `{ orderId, paymentId, previousMethod, newMethod, timestamp }` |
+
+### Out of scope
+
+- Multi-provider support (Mercado Pago, Boleto) — Phase 2
+- Split payments for dine-in groups — Phase 2
+- Full event sourcing with projection rebuild — Phase 3
 
 ---
 

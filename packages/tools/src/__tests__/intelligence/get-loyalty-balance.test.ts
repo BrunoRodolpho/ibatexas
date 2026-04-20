@@ -7,6 +7,8 @@
 // - stampsNeeded=0 returns reward message
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { Channel, type AgentContext } from "@ibatexas/types"
+import { getLoyaltyBalance } from "../../intelligence/get-loyalty-balance.js"
 
 // ── Hoisted mocks ─────────────────────────────────────────────────────────────
 
@@ -20,16 +22,11 @@ vi.mock("@ibatexas/domain", () => ({
   }),
 }))
 
-// ── Import after mocks ────────────────────────────────────────────────────────
-
-import { getLoyaltyBalance } from "../../intelligence/get-loyalty-balance.js"
-import type { AgentContext } from "@ibatexas/types"
-
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 function makeCtx(overrides: Partial<AgentContext> = {}): AgentContext {
   return {
-    channel: "whatsapp",
+    channel: Channel.WhatsApp,
     sessionId: "sess_test",
     customerId: "cust_test",
     userType: "customer",

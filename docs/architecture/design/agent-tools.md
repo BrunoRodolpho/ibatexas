@@ -11,6 +11,46 @@ The agent interacts with the Restaurant and Intelligence contexts through typed 
 
 ---
 
+## Tool Access Control (Zero-Trust LLM Model)
+
+Tools are classified into two categories enforced by `TOOL_CLASSIFICATION` in `packages/llm-provider/src/machine/types.ts`:
+
+**READ_ONLY tools** (executed by LLM via `executeTool()`):
+- `search_products`, `get_product_details`, `estimate_delivery`, `check_inventory`, `get_nutritional_info`
+- `check_table_availability`, `get_my_reservations`
+- `get_cart`, `get_order_history`, `check_order_status`
+- `get_customer_profile`, `get_recommendations`, `get_also_added`, `get_ordered_together`
+- `get_loyalty_balance`
+
+**MUTATING tools** (kernel-only via `executeToolDirect()` — LLM receives `{ kind: "intent" }` instead of execution):
+- Cart: `get_or_create_cart`, `add_to_cart`, `update_cart`, `remove_from_cart`, `apply_coupon`, `create_checkout`, `reorder`
+- Orders: `cancel_order`, `amend_order`, `regenerate_pix`
+- Reservations: `create_reservation`, `modify_reservation`, `cancel_reservation`, `join_waitlist`
+- Intelligence: `update_preferences`, `submit_review`, `schedule_follow_up`
+- Support: `handoff_to_human`
+- PIX: `set_pix_details`
+
+**LLM-accessible tools by state** (read-only only):
+- `idle` / `first_contact`: `get_customer_profile`, `search_products`
+- `browsing`: `search_products`, `get_product_details`, `check_inventory`, `get_nutritional_info`, `estimate_delivery`
+- `ordering.*`: `search_products`, `get_also_added`, `get_ordered_together`
+- `checkout.collecting_pix_details`: `set_pix_details` (extraction tool — validates user-provided data)
+- `checkout.*` (other): (none)
+- `post_order.*`: `get_loyalty_balance`, `check_order_status`, `search_products`
+- `reservation`: `check_table_availability`, `get_my_reservations`
+- `support`: (none — was `handoff_to_human`, now kernel-controlled)
+- `loyalty_check`: `get_loyalty_balance`
+- `reorder`: `get_order_history`, `search_products`
+- `objection`: `schedule_follow_up`
+- `fallback`: `search_products`, `get_customer_profile`, `estimate_delivery`
+
+**Three-layer defense:**
+1. Prompt layer: LLM instructed it has zero authority; no "CHAME" directives for mutating tools
+2. API layer: `executeTool()` returns intent marker for MUTATING tools; state-gate blocks tools not in allowed set
+3. Machine layer: Guarded transitions (`canCancelOrder`, `canAmendOrder`, `hasOrderId`) prevent invalid operations
+
+---
+
 ## Catalog Tools
 
 All catalog tools are available to `guest`.
@@ -160,6 +200,46 @@ List past orders for the authenticated customer.
 | **Auth** | customer |
 | **Input** | `limit?: number`, `offset?: number` |
 | **Output** | `{ orders: { orderId, date, items[], total, status, deliveryType }[] }` |
+
+### `change_delivery_address`
+Update shipping address on a delivery order.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `orderId: string`, `addressId: string` |
+| **Output** | `{ success: boolean, message: string }` |
+| **Notes** | Validates PONR (point of no return) and order type — only valid for `delivery` orders before `in_delivery` status |
+
+### `switch_order_type`
+Switch between delivery, pickup, and dine-in for an existing order.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `orderId: string`, `newType: 'delivery' \| 'pickup' \| 'dine_in'`, `addressId?: string` |
+| **Output** | `{ success: boolean, message: string }` |
+| **Notes** | Handles cash method restrictions — cash is not available for delivery in some zones. Validates PONR. |
+
+### `add_order_note`
+Add an observation or special instruction to an order.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `orderId: string`, `content: string` (max 500 chars) |
+| **Output** | `{ success: boolean, noteId: string, message: string }` |
+| **Notes** | WhatsApp channel only. Note is stored as customer-visible (`isInternal: false`). |
+
+### `check_payment_status`
+Query the current payment status for an order. READ_ONLY tool — no mutations.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `orderId: string` |
+| **Output** | `{ hasPayment, paymentId, method, status, statusLabel, amountInCentavos, pixExpiresAt?, isTerminal, canRetry, canRegenPix, canSwitchMethod, attemptCount }` |
+| **Notes** | Returns full eligibility flags for retry/regen/switch. Uses PaymentQueryService. |
 
 ---
 
