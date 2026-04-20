@@ -11,7 +11,7 @@
 | Auth (Twilio OTP + JWT + refresh) | WORKS | `apps/api/src/routes/auth.ts` — real Twilio calls, rate limiting, JWT revocation via Redis |
 | Browse catalog + Typesense search | WORKS | `apps/api/src/routes/catalog.ts` + `packages/tools/src/search/search-products.ts` |
 | Add to cart (Medusa) | WORKS | `apps/api/src/routes/cart.ts` + Redis active cart tracking |
-| Card checkout (Stripe) | WORKS | `apps/api/src/routes/stripe-webhook.ts` — signature verify, idempotency, 4 event handlers |
+| Card checkout (Stripe) | WORKS | `apps/api/src/routes/stripe-webhook.ts` — signature verify, idempotency, 4 event handlers. Frontend: `CardPaymentForm.tsx` — embedded Stripe PaymentElement + 3DS redirect handling |
 | Cash checkout | WORKS | `packages/tools/src/cart/create-checkout.ts` — completes order, publishes `order.placed` |
 | Order tracking (IDOR-safe) | WORKS | `apps/api/src/routes/cart.ts` — ownership check on order retrieval |
 | Reservations (customer) | WORKS | `apps/api/src/routes/reservations.ts` — availability, create, modify, cancel, waitlist |
@@ -203,3 +203,4 @@ Test what handles **money, auth, and user data** first. Everything else follows.
 | `PIX_EXPIRY_MINUTES` | apps/api | PIX payment timeout (default: 30) |
 | `STAFF_NOTIFICATION_PHONE` | apps/api | Staff WhatsApp for handoff notifications |
 | `LOG_LEVEL` | apps/api | Pino log level (default: "info") |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | apps/web | Stripe publishable key for embedded card payment form |

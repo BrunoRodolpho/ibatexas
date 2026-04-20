@@ -115,6 +115,14 @@ flowchart TD
 |-------|---------|------------|
 | `reorder_completed` | User re-orders from last order card | `orderId`, `itemCount` |
 
+### Order Tracking Events
+
+| Event | Trigger | Properties |
+|-------|---------|------------|
+| `order_status_viewed` | Customer views order tracking page | `orderId`, `status` |
+| `order_timeline_viewed` | Customer views order detail page with status timeline | `orderId`, `status` |
+| `order_history_viewed` | Customer views order list (past orders) | `itemCount` |
+
 ### Wishlist Events
 
 | Event | Trigger | Properties |
@@ -139,6 +147,19 @@ flowchart TD
 | `checkout_completed` | Payment success (guarded, fires once) | `orderId`, `orderTotal`, `itemCount`, `paymentMethod`, `currency` (BRL), `ibx_session_id` |
 | `checkout_error` | Payment failure | `step`, `errorType`, `errorMessage`, `paymentMethod` |
 | `checkout_abandoned` | Page unload before completion (supplementary) | `step`, `cartTotal` |
+
+> **Card payments:** `checkout_completed` fires after `stripe.confirmPayment()` succeeds (inline) or on the 3DS redirect return page. The `paymentMethod` property distinguishes card from PIX/cash.
+
+### Payment Lifecycle Events
+
+| Event | Trigger | Properties |
+|-------|---------|------------|
+| `payment_retry_initiated` | Customer clicks "Retry payment" on order tracking page | `orderId`, `paymentId`, `method`, `previousStatus` |
+| `payment_method_switched` | Customer switches payment method (e.g. PIX → cash) | `orderId`, `paymentId`, `previousMethod`, `newMethod` |
+| `pix_regenerated` | Customer regenerates expired PIX QR code | `orderId`, `paymentId`, `attemptCount` |
+| `order_note_added` | Customer or admin adds a note to an order | `orderId`, `author` (customer/admin), `contentLength` |
+| `order_amended` | Customer amends an order (add/remove/qty change) | `orderId`, `action` (add/remove/update_qty), `itemTitle` |
+| `order_canceled_by_customer` | Customer cancels their order | `orderId`, `fulfillmentStatus`, `paymentStatus`, `minutesSinceCreation` |
 
 ---
 
@@ -299,6 +320,19 @@ flowchart TD
 
 **Note:** Conversation archival events flow through NATS to the `conversation-archiver` subscriber (Postgres persistence), NOT through PostHog. These are infrastructure events for durable storage, not analytics events.
 
+### NATS Analytics Events
+
+Web analytics events are published to NATS subject `analytics.event` (full: `ibatexas.analytics.event`) for downstream consumers (e.g., PostHog ingestion pipeline).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `eventType` | string | The analytics event name (e.g., `add_to_cart`, `checkout_completed`) |
+| `properties` | object | Sanitized event properties from the client |
+| `timestamp` | string (ISO) | Server-side timestamp |
+| `ip` | string | Client IP (for geo/rate-limiting) |
+
+Source: `apps/api/src/routes/analytics.ts` — best-effort, fire-and-forget publish.
+
 ### Agent Performance Events
 
 | Event | Trigger | Key Properties |
@@ -309,6 +343,9 @@ flowchart TD
 | `wa_follow_up_converted` | Order placed within follow-up window | `customerId`, `orderId` |
 | `loyalty_stamp_earned` | Customer earns a loyalty stamp on order | `customerId`, `stamps` |
 | `loyalty_reward_redeemed` | Customer redeems a loyalty reward | `customerId`, `rewardType` |
+| `kitchen_closed_checkout_blocked` | User arrives at checkout with food items while kitchen is closed | `kitchenItemCount` |
+| `kitchen_closed_items_removed` | User clicks "remove unavailable items" to clear food from cart | `count` |
+| `kitchen_closed_banner_viewed` | Kitchen-closed warning banner shown in cart drawer or checkout | `source` (`cart_drawer` or `checkout`), `kitchenItemCount` |
 
 ### PostHog Dashboard Specs — Acquisition & Outreach
 

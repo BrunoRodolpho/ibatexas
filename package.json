@@ -33,7 +33,6 @@
   "pnpm": {
     "overrideNotes": {
       "minimatch, rollup, glob": "vitest/vite toolchain — review on vite 6 upgrade",
-      "@mikro-orm/core": "medusa transitive fix — GHSA-gwhv-j974-6fxm / GHSA-qpfv-44f3-qqx6 SQL injection",
       "express>path-to-regexp": "medusa>express transitive fix — GHSA-37ch-88jc-xwx2 ReDoS. Scoped (not global) because @medusajs/framework declares path-to-regexp ^8.2.0 and uses the v6+ named-export API; forcing 0.1.13 globally crashes commerce at startup with 'pathToRegexp is not a function'. next@16 also declares 6.3.0 and would be silently downgraded. Remove when medusa drops express 4.",
       "lodash": "medusa/prisma transitive fix — GHSA-r5fr-rjxr-66jc code injection via _.template",
       "picomatch": "eslint-config-next/vitest transitive fix — GHSA-c2c7-rcm5-vvqj ReDoS",
@@ -46,7 +45,6 @@
       "minimatch": "10.2.4",
       "rollup": "4.59.0",
       "glob": "13.0.6",
-      "@mikro-orm/core": "6.6.10",
       "express>path-to-regexp": "0.1.13",
       "lodash": "4.18.1",
       "picomatch@<3": "2.3.2",
@@ -64,7 +62,9 @@
       ],
       "ignoreCveNotes": {
         "CVE-2026-35042": "fast-jwt <=6.1.0 GHSA-hm7r-c7qw-ghp6 — accepts unknown `crit` header extensions (RFC 7515 violation). No upstream patch released yet. Mitigation: we never set or trust `crit` headers in our JWT flow (Twilio Verify OTP only). Re-check when nearform/fast-jwt ships a fix.",
-        "GHSA-4w7w-66w2-5vf9": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). vite <=6.4.1 path traversal in optimized deps .map handling. Pulled by @medusajs/framework which has a hard peer dep on `vite ^5.4.21`, so we cannot override to 6.4.2+ without breaking medusa's admin-vite-plugin. Dev-server-only vuln, not exploitable in production builds. Stays as a moderate in audit output (below the --audit-level=high CI threshold). Remove when medusa upgrades to vite v6+."
+        "GHSA-4w7w-66w2-5vf9": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). vite <=6.4.1 path traversal in optimized deps .map handling. Pulled by @medusajs/framework which has a hard peer dep on `vite ^5.4.21`, so we cannot override to 6.4.2+ without breaking medusa's admin-vite-plugin. Dev-server-only vuln, not exploitable in production builds. Stays as a moderate in audit output (below the --audit-level=high CI threshold). Remove when medusa upgrades to vite v6+.",
+        "GHSA-gwhv-j974-6fxm": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). @mikro-orm/core SQL injection. Pulled exclusively by @medusajs/deps@2.13.5 which pins @mikro-orm/core to 6.4.16. Cannot override to a patched 6.6.x line because @medusajs/utils was built against MikroORM 6.4's EventManager (subscribers is an Array with .some()); 6.6+ switched subscribers to a Set, so registerInternalServiceEventSubscriber crashes on the first service bootstrap. Mitigation: nothing in this repo executes user-controlled queries through MikroORM — Medusa is the only consumer and all its query paths are parameterized. Re-check when Medusa upgrades to MikroORM 6.6+ or 7.x.",
+        "GHSA-qpfv-44f3-qqx6": "Documentation only — same situation and mitigation as GHSA-gwhv-j974-6fxm. Second SQL injection advisory against the same @mikro-orm/core 6.4.x line pulled via @medusajs/deps@2.13.5. Paired tracking — remove both together when Medusa bumps MikroORM."
       }
     },
     "onlyBuiltDependencies": [

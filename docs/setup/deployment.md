@@ -243,15 +243,18 @@ Secrets are injected per-service (not all secrets to all services):
 
 | Secret | API | Web | Admin |
 |--------|:---:|:---:|:-----:|
+| ADMIN_API_KEY | **Required** | - | **Required** |
 | JWT_SECRET | **Required** | - | - |
 | DATABASE_URL | **Required** | - | - |
 | ANTHROPIC_API_KEY | **Required** | - | - |
 | STRIPE_SECRET_KEY | **Required** | - | - |
 | STRIPE_WEBHOOK_SECRET | **Required** | - | - |
+| NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY | - | **Required** | - |
 | TWILIO_AUTH_TOKEN | **Required** | - | - |
 | TWILIO_ACCOUNT_SID | **Required** | - | - |
 | TWILIO_VERIFY_SID | **Required** | - | - |
-| MEDUSA_API_KEY | **Required** | - | - |
+| MEDUSA_ADMIN_EMAIL | **Required** | - | - |
+| MEDUSA_ADMIN_PASSWORD | **Required** | - | - |
 | TYPESENSE_API_KEY | Optional | - | - |
 | REDIS_URL | **Required** | - | - |
 | NATS_URL | **Required** | - | - |
@@ -290,7 +293,7 @@ ibx infra deploy --watch   # Or push + monitor in one command
 
 | Service | Secret(s) | Where to get it |
 |---------|-----------|----------------|
-| Stripe | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | [stripe.com/dashboard](https://stripe.com/dashboard) |
+| Stripe | `STRIPE_SECRET_KEY` (`sk_*`, backend — full API access), `STRIPE_WEBHOOK_SECRET` (`whsec_*`, backend — webhook signature verification), `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (`pk_*`, frontend — card form) | [stripe.com/dashboard](https://stripe.com/dashboard) → API keys / Webhooks |
 | Twilio | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_VERIFY_SID` | [twilio.com/console](https://twilio.com/console) |
 | Anthropic | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) |
 | Sentry | `SENTRY_DSN` | [sentry.io](https://sentry.io) — optional, set to `"disabled"` to skip |
@@ -395,6 +398,13 @@ aws ecs wait services-stable --cluster ibatexas-dev \
 > ```bash
 > pnpm --filter @ibatexas/domain exec prisma migrate deploy
 > ```
+>
+> For local dev, if migration history is out of sync (drift detected), use `prisma db push` instead:
+> ```bash
+> DATABASE_URL="postgresql://ibatexas:ibatexas@localhost:5433/ibatexas" pnpm --filter @ibatexas/domain exec prisma db push
+> ```
+>
+> This creates any missing tables (OrderProjection, OrderStatusHistory, OrderEventLog) without resetting existing data.
 
 ---
 
@@ -421,6 +431,12 @@ ECR keeps the last 25 images (lifecycle policy), so previous images are always a
 ---
 
 ## Common Failure Modes
+
+### Admin panel returns 503 "Service unavailable"
+
+**Cause**: `ADMIN_API_KEY` is empty or not set. The API admin auth guard returns 503 when no API keys are configured and no staff JWT is present. The admin Next.js app proxies all `/api/admin/*` requests through its own API route, forwarding the `x-admin-key` header — if the key is empty on either side, every admin request fails.
+
+**Fix**: Generate a key (`openssl rand -base64 32`) and set the same value in `ADMIN_API_KEY` (API secret) and the admin app's `ADMIN_API_KEY` env var. Redeploy both services.
 
 ### First deploy gets stuck in health check loop
 

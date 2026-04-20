@@ -61,6 +61,7 @@ The catalog covers two distinct product types — food and merchandise — both 
 | Coupon | code, discountType: percent / fixed, value, minOrderValue, expiresAt |
 | Invoice | nfeId, url, issuedAt (via Focus NFe API) |
 | OrderStatus | received → confirmed → in_preparation → ready → out_for_delivery → delivered / cancelled |
+| OrderType | delivery / pickup / dine_in |
 
 ### Rules
 
@@ -270,6 +271,45 @@ Same Commerce entities (Cart, Order, Payment) shared with the restaurant. Produc
 
 - Agent-driven merchandise ordering — Phase 2
 - WhatsApp shop browsing — Phase 2
+
+---
+
+## 7b. Billing
+
+**Owner:** Custom (`packages/domain` — Payment, PaymentStatusHistory models + command/query services)
+
+The Billing context owns the full payment lifecycle independently from order fulfillment. Each Payment row represents one payment attempt; retry/regeneration creates a new row. Coordinated with Commerce via NATS events and a `currentPaymentId` pointer on OrderProjection.
+
+### Entities
+
+| Entity | Key fields |
+|---|---|
+| Payment | id, orderId, method (pix/card/cash), status (PaymentStatus enum), amountInCentavos, stripePaymentIntentId?, pixExpiresAt?, regenerationCount, idempotencyKey?, version |
+| PaymentStatusHistory | id, paymentId, fromStatus, toStatus, actor, actorId?, reason?, version, createdAt |
+
+### Rules
+
+- **One active (non-terminal) payment per order** — enforced by application guard + partial unique index
+- Terminal statuses (per-attempt): `refunded`, `canceled`, `waived`, `payment_failed`, `payment_expired` — retry creates a NEW Payment row
+- `switching_method` is a transitional state that blocks webhook processing during atomic method switches
+- PIX expiry transitions payment to `payment_expired` — does NOT cancel the order (decoupled)
+- Cash flow: `awaiting_payment` → `cash_pending` → `paid` (admin/driver confirms receipt)
+- Stripe is authoritative for PI lifecycle; reconciliation guards: idempotency, terminal state, out-of-order events, ownership validation
+- All transitions require validated forward-only matrix (`canTransitionPayment()`)
+- Optimistic concurrency via `version` field on Payment
+
+### NATS Events
+
+| Event | Publisher | Metadata |
+|---|---|---|
+| `payment.status_changed` | PaymentCommandService | `{ orderId, paymentId, previousStatus, newStatus, method, version, stripeEventId?, timestamp }` |
+| `payment.method_changed` | Payment switch endpoint | `{ orderId, paymentId, previousMethod, newMethod, timestamp }` |
+
+### Out of scope
+
+- Multi-provider support (Mercado Pago, Boleto) — Phase 2
+- Split payments for dine-in groups — Phase 2
+- Full event sourcing with projection rebuild — Phase 3
 
 ---
 
