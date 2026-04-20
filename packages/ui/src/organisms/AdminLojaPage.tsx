@@ -2,14 +2,17 @@
 
 import type { ComponentType, ReactNode } from 'react'
 import { createColumnHelper } from '@tanstack/react-table'
-import { ExternalLink, Package, Layers } from 'lucide-react'
+import { ExternalLink, Package, Layers, ShoppingBag } from 'lucide-react'
 import { DataTable } from '../atoms/DataTable'
 import { Switch } from '../atoms/Switch'
+import { PageHeader } from '../atoms/PageHeader'
+import { ErrorBanner } from '../atoms/ErrorBanner'
+import { PageShell } from '../layouts/PageShell'
+import { FilterBar } from '../molecules/FilterBar'
 import type { AdminProductRow, AdminProductDetail } from '@ibatexas/types'
 import {
   STOCK_LABELS,
   PRODUCT_COLUMN_HEADERS,
-  VARIANT_COLUMN_HEADERS,
   PAGE_TITLES,
   ACTION_LABELS,
   SEARCH_PLACEHOLDERS,
@@ -31,9 +34,9 @@ function renderShopImage(
 ) {
   if (!url) return <div className="h-10 w-10 rounded-sm bg-smoke-100" />
   if (ImageComponent) {
-    return <ImageComponent src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} unoptimized />
+    return <ImageComponent src={url} alt="" className="h-10 w-10 rounded-sm object-cover" width={40} height={40} unoptimized />
   }
-  return <img src={url} alt="" className="h-10 w-10 rounded-md object-cover" width={40} height={40} />
+  return <img src={url} alt="" className="h-10 w-10 rounded-sm object-cover" width={40} height={40} />
 }
 
 function renderStockSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
@@ -74,7 +77,7 @@ function renderDetailImage(
       <ImageComponent
         src={imageUrl}
         alt={title}
-        className="h-14 w-14 shrink-0 rounded-lg object-cover"
+        className="h-14 w-14 shrink-0 rounded-sm object-cover"
         width={56}
         height={56}
         unoptimized
@@ -85,7 +88,7 @@ function renderDetailImage(
     <img
       src={imageUrl}
       alt={title}
-      className="h-14 w-14 shrink-0 rounded-lg object-cover"
+      className="h-14 w-14 shrink-0 rounded-sm object-cover"
       width={56}
       height={56}
     />
@@ -180,31 +183,33 @@ export function AdminLojaPage({
   ]
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-charcoal-900">{PAGE_TITLES.shop}</h1>
-        <a
-          href={`${medusaAdminUrl}/app/products/create`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
-        >
-          {ACTION_LABELS.addProduct}
-          <ExternalLink className="h-3.5 w-3.5" />
-        </a>
-      </div>
+    <PageShell>
+      <PageHeader
+        icon={ShoppingBag}
+        title={PAGE_TITLES.shop}
+        subtitle={PAGE_TITLES.shopSubtitle}
+        action={
+          <a
+            href={`${medusaAdminUrl}/app/products/create`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 rounded-sm bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+          >
+            {ACTION_LABELS.addProduct}
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        }
+      />
 
-      <div className="flex flex-wrap items-center gap-3">
+      <FilterBar>
         <SearchInputComponent
           onSearch={onSearch}
           placeholder={SEARCH_PLACEHOLDERS.products}
         />
-      </div>
+      </FilterBar>
 
       {error && (
-        <div className="rounded-lg bg-accent-red/10 p-4 text-sm text-accent-red">
-          {MISC_LABELS.errorPrefix} {error.message}
-        </div>
+        <ErrorBanner message={`${MISC_LABELS.errorPrefix} ${error.message}`} />
       )}
 
       <DataTable
@@ -253,44 +258,30 @@ export function AdminLojaPage({
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-sm border border-smoke-200">
-              <table className="w-full text-sm">
-                <thead className="bg-smoke-100">
-                  <tr>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">{VARIANT_COLUMN_HEADERS.size}</th>
-                    <th scope="col" className="px-3 py-2 text-left font-medium text-charcoal-700">{VARIANT_COLUMN_HEADERS.sku}</th>
-                    <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">{VARIANT_COLUMN_HEADERS.price}</th>
-                    <th scope="col" className="px-3 py-2 text-right font-medium text-charcoal-700">{VARIANT_COLUMN_HEADERS.stock}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-smoke-100">
-                  {productDetail.variants.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="px-3 py-4 text-center text-[var(--color-text-muted)]">
-                        {EMPTY_STATES.variants}
-                      </td>
-                    </tr>
-                  ) : (
-                    productDetail.variants.map((v) => (
-                      <tr key={v.id} className="hover:bg-smoke-100">
-                        <td className="px-3 py-2.5 font-medium text-charcoal-800">{v.title}</td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-[var(--color-text-muted)]">{v.sku ?? '\u2014'}</td>
-                        <td className="px-3 py-2.5 text-right text-charcoal-700">{formatBRL(v.price)}</td>
-                        <td className="px-3 py-2.5 text-right">
-                          {v.manageInventory ? (
-                            <span className={v.inventoryQuantity > 0 ? 'text-green-700' : 'text-red-600'}>
-                              {v.inventoryQuantity}
-                            </span>
-                          ) : (
-                            <span className="text-[var(--color-text-muted)]">{'\u221E'}</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+            {productDetail.variants.length === 0 ? (
+              <p className="text-sm text-[var(--color-text-muted)] text-center py-4">{EMPTY_STATES.variants}</p>
+            ) : (
+              <div className="space-y-1.5">
+                {productDetail.variants.map((v) => (
+                  <div key={v.id} className="flex items-center justify-between rounded-sm border border-smoke-200 px-3 py-2.5 hover:bg-smoke-50 transition-colors">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-charcoal-900">{v.title}</p>
+                      {v.sku && <p className="text-[11px] font-mono text-[var(--color-text-muted)]">{v.sku}</p>}
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <span className="text-sm font-medium text-charcoal-800 tabular-nums">{formatBRL(v.price)}</span>
+                      {v.manageInventory ? (
+                        <span className={`text-xs font-medium tabular-nums ${v.inventoryQuantity > 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                          {v.inventoryQuantity} un.
+                        </span>
+                      ) : (
+                        <span className="text-xs text-[var(--color-text-muted)]">{'\u221E'}</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {productDetail.tags.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
@@ -304,6 +295,6 @@ export function AdminLojaPage({
           </div>
         )}
       </SheetComponent>
-    </div>
+    </PageShell>
   )
 }

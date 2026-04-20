@@ -18,6 +18,8 @@ export interface AdminOrdersFilters {
   status?: string
   payment_status?: string
   fulfillment_status?: string
+  date_from?: string
+  date_to?: string
   limit?: number
   offset?: number
 }
@@ -89,14 +91,25 @@ export function buildAdminHooks(
   >('/api/admin/orders', {
     buildParams: (filters) => {
       const params = new URLSearchParams()
-      if (filters.status) params.set('status', filters.status)
+      if (filters.status) params.set('fulfillment_status', filters.status)
       if (filters.payment_status) params.set('payment_status', filters.payment_status)
       if (filters.fulfillment_status) params.set('fulfillment_status', filters.fulfillment_status)
+      if (filters.date_from) params.set('date_from', filters.date_from)
+      if (filters.date_to) params.set('date_to', filters.date_to)
       params.set('limit', String(filters.limit ?? 20))
       params.set('offset', String(filters.offset ?? 0))
       return params
     },
-    select: (res) => ({ data: res.orders.map(mapMedusaOrderToSummary), count: res.count }),
+    select: (res) => ({
+      data: res.orders.map((o) => {
+        const summary = mapMedusaOrderToSummary(o)
+        // Prefer currentPayment.status over legacy payment_status
+        const cp = (o as unknown as Record<string, unknown>).currentPayment as { status?: string } | null | undefined
+        if (cp?.status) summary.paymentStatus = cp.status
+        return summary
+      }),
+      count: res.count,
+    }),
     initialData: [],
   })
 

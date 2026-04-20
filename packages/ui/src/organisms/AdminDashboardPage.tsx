@@ -5,12 +5,15 @@ import {
   DollarSign,
   CalendarDays,
   AlertTriangle,
-  ExternalLink,
+  LayoutDashboard,
 } from 'lucide-react'
 import { createColumnHelper } from '@tanstack/react-table'
 import { StatCard } from '../atoms/StatCard'
 import { DataTable } from '../atoms/DataTable'
 import { Badge } from '../atoms/Badge'
+import { PageHeader } from '../atoms/PageHeader'
+import { SectionHeader } from '../atoms/SectionHeader'
+import { PageShell } from '../layouts/PageShell'
 import type { AdminDashboardMetrics, OrderSummary } from '@ibatexas/types'
 import {
   ORDER_COLUMN_HEADERS,
@@ -57,6 +60,7 @@ export interface AdminDashboardPageProps {
   orders: OrderSummary[]
   ordersLoading: boolean
   medusaAdminUrl: string
+  onOrderClick?: (order: OrderSummary) => void
 }
 
 export function AdminDashboardPage({
@@ -64,14 +68,11 @@ export function AdminDashboardPage({
   metricsLoading,
   orders,
   ordersLoading,
-  medusaAdminUrl,
+  onOrderClick,
 }: Readonly<AdminDashboardPageProps>) {
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold text-charcoal-900">{PAGE_TITLES.dashboard}</h1>
-        <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{PAGE_TITLES.dashboardSubtitle}</p>
-      </div>
+    <PageShell>
+      <PageHeader icon={LayoutDashboard} title={PAGE_TITLES.dashboard} subtitle={PAGE_TITLES.dashboardSubtitle} />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard
@@ -106,25 +107,24 @@ export function AdminDashboardPage({
       </div>
 
       <div>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-medium text-charcoal-900">{DASHBOARD_STAT_LABELS.recentOrders}</h2>
-          <a
-            href={`${medusaAdminUrl}/app/orders`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs font-medium text-[var(--color-text-secondary)] hover:text-charcoal-700"
-          >
-            {ACTION_LABELS.viewAll}
-            <ExternalLink className="h-3 w-3" />
-          </a>
+        <div className="mb-3">
+          <SectionHeader
+            title={DASHBOARD_STAT_LABELS.recentOrders}
+            action={
+              <a href="/admin/pedidos" className="flex items-center gap-1 text-xs font-medium text-[var(--color-text-secondary)] hover:text-charcoal-700">
+                {ACTION_LABELS.viewAll}
+              </a>
+            }
+          />
         </div>
         <DataTable
           data={orders}
           columns={columns}
           isLoading={ordersLoading}
           emptyMessage={EMPTY_STATES.ordersToday}
+          onRowClick={onOrderClick}
         />
       </div>
-    </div>
+    </PageShell>
   )
 }
