@@ -5,11 +5,6 @@
 resource "aws_route53_zone" "this" {
   name = var.domain_name
 
-  # Prevent accidental destroy of the prod DNS zone (registrar NS would need resetting).
-  lifecycle {
-    prevent_destroy = true
-  }
-
   tags = {
     Environment = var.environment
   }

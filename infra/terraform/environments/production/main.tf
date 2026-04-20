@@ -15,7 +15,7 @@ terraform {
   # Remote state
   backend "s3" {
     bucket         = "ibatexas-terraform-state"
-    key            = "production/terraform.tfstate"
+    key            = "dev/terraform.tfstate"
     region         = "us-east-1"
     dynamodb_table = "ibatexas-terraform-locks"
     encrypt        = true
