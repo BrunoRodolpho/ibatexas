@@ -2,10 +2,11 @@
 // Follows the createXxxService() factory pattern (see delivery-zone.service.ts).
 
 import { prisma } from "../client.js"
-import type { DaySchedule, HolidayEntry, RestaurantSchedule } from "@ibatexas/types"
+import type { Prisma } from "../generated/prisma-client/client.js"
+import type { DaySchedule, HolidayEntry, ScheduleOverrideEntry, TimeBlock, RestaurantSchedule } from "@ibatexas/types"
 
 // Re-export types for consumers that import from domain
-export type { DaySchedule, HolidayEntry, RestaurantSchedule }
+export type { DaySchedule, HolidayEntry, ScheduleOverrideEntry, TimeBlock, RestaurantSchedule }
 
 // ── Day names for reference ──────────────────────────────────────────────────
 
@@ -49,20 +50,35 @@ export function createScheduleService() {
         id: r.id,
         date: r.date.toISOString().split("T")[0]!,
         label: r.label,
+        allDay: r.allDay,
+        startTime: r.startTime,
+        endTime: r.endTime,
       }))
     },
 
-    async addHoliday(data: { date: string; label: string }): Promise<HolidayEntry> {
+    async addHoliday(data: {
+      date: string;
+      label: string;
+      allDay?: boolean;
+      startTime?: string | null;
+      endTime?: string | null;
+    }): Promise<HolidayEntry> {
       const row = await prisma.holiday.create({
         data: {
           date: new Date(data.date + "T12:00:00Z"), // noon UTC to avoid date shift
           label: data.label,
+          allDay: data.allDay ?? true,
+          startTime: data.allDay === false ? (data.startTime ?? null) : null,
+          endTime: data.allDay === false ? (data.endTime ?? null) : null,
         },
       })
       return {
         id: row.id,
         date: row.date.toISOString().split("T")[0]!,
         label: row.label,
+        allDay: row.allDay,
+        startTime: row.startTime,
+        endTime: row.endTime,
       }
     },
 
@@ -70,12 +86,60 @@ export function createScheduleService() {
       await prisma.holiday.delete({ where: { id } })
     },
 
+    // ── Overrides ──────────────────────────────────────────────────────
+
+    async listOverrides(month?: string): Promise<ScheduleOverrideEntry[]> {
+      const where: Record<string, unknown> = {}
+      if (month) {
+        // month = "YYYY-MM"
+        const start = new Date(`${month}-01T00:00:00Z`)
+        const end = new Date(start)
+        end.setUTCMonth(end.getUTCMonth() + 1)
+        where.date = { gte: start, lt: end }
+      }
+      const rows = await prisma.scheduleOverride.findMany({ where, orderBy: { date: "asc" } })
+      return rows.map((r) => ({
+        id: r.id,
+        date: r.date.toISOString().split("T")[0]!,
+        isOpen: r.isOpen,
+        blocks: (r.blocks as unknown as TimeBlock[]) ?? [],
+        note: r.note,
+      }))
+    },
+
+    async upsertOverride(
+      date: string,
+      data: { isOpen: boolean; blocks: TimeBlock[]; note?: string | null },
+    ): Promise<ScheduleOverrideEntry> {
+      const dateObj = new Date(date + "T12:00:00Z")
+      const row = await prisma.scheduleOverride.upsert({
+        where: { date: dateObj },
+        create: { date: dateObj, isOpen: data.isOpen, blocks: data.blocks as unknown as Prisma.InputJsonValue, note: data.note ?? null },
+        update: { isOpen: data.isOpen, blocks: data.blocks as unknown as Prisma.InputJsonValue, note: data.note ?? null },
+      })
+      return {
+        id: row.id,
+        date: row.date.toISOString().split("T")[0]!,
+        isOpen: row.isOpen,
+        blocks: (row.blocks as unknown as TimeBlock[]) ?? [],
+        note: row.note,
+      }
+    },
+
+    async removeOverride(date: string): Promise<void> {
+      const dateObj = new Date(date + "T12:00:00Z")
+      await prisma.scheduleOverride.delete({ where: { date: dateObj } }).catch(() => {
+        // Ignore if not found
+      })
+    },
+
     async getFullSchedule(): Promise<RestaurantSchedule> {
-      const [days, holidays] = await Promise.all([
+      const [days, holidays, overrides] = await Promise.all([
         this.getWeeklySchedule(),
         this.listHolidays(),
+        this.listOverrides(),
       ])
-      return { days, holidays }
+      return { days, holidays, overrides }
     },
 
     /**

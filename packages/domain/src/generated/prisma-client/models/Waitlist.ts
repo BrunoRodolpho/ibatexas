@@ -214,7 +214,7 @@ export type WaitlistGroupByOutputType = {
   _max: WaitlistMaxAggregateOutputType | null
 }
 
-type GetWaitlistGroupByPayload<T extends WaitlistGroupByArgs> = Prisma.PrismaPromise<
+export type GetWaitlistGroupByPayload<T extends WaitlistGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<WaitlistGroupByOutputType, T['by']> &
       {
@@ -241,6 +241,7 @@ export type WaitlistWhereInput = {
   createdAt?: Prisma.DateTimeFilter<"Waitlist"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Waitlist"> | Date | string
   timeSlotId?: Prisma.StringFilter<"Waitlist"> | string
+  customer?: Prisma.XOR<Prisma.CustomerScalarRelationFilter, Prisma.CustomerWhereInput>
   timeSlot?: Prisma.XOR<Prisma.TimeSlotScalarRelationFilter, Prisma.TimeSlotWhereInput>
 }
 
@@ -253,6 +254,7 @@ export type WaitlistOrderByWithRelationInput = {
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   timeSlotId?: Prisma.SortOrder
+  customer?: Prisma.CustomerOrderByWithRelationInput
   timeSlot?: Prisma.TimeSlotOrderByWithRelationInput
 }
 
@@ -269,6 +271,7 @@ export type WaitlistWhereUniqueInput = Prisma.AtLeast<{
   createdAt?: Prisma.DateTimeFilter<"Waitlist"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Waitlist"> | Date | string
   timeSlotId?: Prisma.StringFilter<"Waitlist"> | string
+  customer?: Prisma.XOR<Prisma.CustomerScalarRelationFilter, Prisma.CustomerWhereInput>
   timeSlot?: Prisma.XOR<Prisma.TimeSlotScalarRelationFilter, Prisma.TimeSlotWhereInput>
 }, "id" | "customerId_timeSlotId">
 
@@ -304,12 +307,12 @@ export type WaitlistScalarWhereWithAggregatesInput = {
 
 export type WaitlistCreateInput = {
   id?: string
-  customerId: string
   partySize: number
   notifiedAt?: Date | string | null
   expiresAt: Date | string
   createdAt?: Date | string
   updatedAt?: Date | string
+  customer: Prisma.CustomerCreateNestedOneWithoutWaitlistsInput
   timeSlot: Prisma.TimeSlotCreateNestedOneWithoutWaitlistInput
 }
 
@@ -326,12 +329,12 @@ export type WaitlistUncheckedCreateInput = {
 
 export type WaitlistUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  customerId?: Prisma.StringFieldUpdateOperationsInput | string
   partySize?: Prisma.IntFieldUpdateOperationsInput | number
   notifiedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   expiresAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  customer?: Prisma.CustomerUpdateOneRequiredWithoutWaitlistsNestedInput
   timeSlot?: Prisma.TimeSlotUpdateOneRequiredWithoutWaitlistNestedInput
 }
 
@@ -359,7 +362,6 @@ export type WaitlistCreateManyInput = {
 
 export type WaitlistUpdateManyMutationInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  customerId?: Prisma.StringFieldUpdateOperationsInput | string
   partySize?: Prisma.IntFieldUpdateOperationsInput | number
   notifiedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   expiresAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
@@ -476,14 +478,56 @@ export type WaitlistUncheckedUpdateManyWithoutTimeSlotNestedInput = {
   deleteMany?: Prisma.WaitlistScalarWhereInput | Prisma.WaitlistScalarWhereInput[]
 }
 
+export type WaitlistCreateNestedManyWithoutCustomerInput = {
+  create?: Prisma.XOR<Prisma.WaitlistCreateWithoutCustomerInput, Prisma.WaitlistUncheckedCreateWithoutCustomerInput> | Prisma.WaitlistCreateWithoutCustomerInput[] | Prisma.WaitlistUncheckedCreateWithoutCustomerInput[]
+  connectOrCreate?: Prisma.WaitlistCreateOrConnectWithoutCustomerInput | Prisma.WaitlistCreateOrConnectWithoutCustomerInput[]
+  createMany?: Prisma.WaitlistCreateManyCustomerInputEnvelope
+  connect?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+}
+
+export type WaitlistUncheckedCreateNestedManyWithoutCustomerInput = {
+  create?: Prisma.XOR<Prisma.WaitlistCreateWithoutCustomerInput, Prisma.WaitlistUncheckedCreateWithoutCustomerInput> | Prisma.WaitlistCreateWithoutCustomerInput[] | Prisma.WaitlistUncheckedCreateWithoutCustomerInput[]
+  connectOrCreate?: Prisma.WaitlistCreateOrConnectWithoutCustomerInput | Prisma.WaitlistCreateOrConnectWithoutCustomerInput[]
+  createMany?: Prisma.WaitlistCreateManyCustomerInputEnvelope
+  connect?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+}
+
+export type WaitlistUpdateManyWithoutCustomerNestedInput = {
+  create?: Prisma.XOR<Prisma.WaitlistCreateWithoutCustomerInput, Prisma.WaitlistUncheckedCreateWithoutCustomerInput> | Prisma.WaitlistCreateWithoutCustomerInput[] | Prisma.WaitlistUncheckedCreateWithoutCustomerInput[]
+  connectOrCreate?: Prisma.WaitlistCreateOrConnectWithoutCustomerInput | Prisma.WaitlistCreateOrConnectWithoutCustomerInput[]
+  upsert?: Prisma.WaitlistUpsertWithWhereUniqueWithoutCustomerInput | Prisma.WaitlistUpsertWithWhereUniqueWithoutCustomerInput[]
+  createMany?: Prisma.WaitlistCreateManyCustomerInputEnvelope
+  set?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+  disconnect?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+  delete?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+  connect?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+  update?: Prisma.WaitlistUpdateWithWhereUniqueWithoutCustomerInput | Prisma.WaitlistUpdateWithWhereUniqueWithoutCustomerInput[]
+  updateMany?: Prisma.WaitlistUpdateManyWithWhereWithoutCustomerInput | Prisma.WaitlistUpdateManyWithWhereWithoutCustomerInput[]
+  deleteMany?: Prisma.WaitlistScalarWhereInput | Prisma.WaitlistScalarWhereInput[]
+}
+
+export type WaitlistUncheckedUpdateManyWithoutCustomerNestedInput = {
+  create?: Prisma.XOR<Prisma.WaitlistCreateWithoutCustomerInput, Prisma.WaitlistUncheckedCreateWithoutCustomerInput> | Prisma.WaitlistCreateWithoutCustomerInput[] | Prisma.WaitlistUncheckedCreateWithoutCustomerInput[]
+  connectOrCreate?: Prisma.WaitlistCreateOrConnectWithoutCustomerInput | Prisma.WaitlistCreateOrConnectWithoutCustomerInput[]
+  upsert?: Prisma.WaitlistUpsertWithWhereUniqueWithoutCustomerInput | Prisma.WaitlistUpsertWithWhereUniqueWithoutCustomerInput[]
+  createMany?: Prisma.WaitlistCreateManyCustomerInputEnvelope
+  set?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+  disconnect?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+  delete?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+  connect?: Prisma.WaitlistWhereUniqueInput | Prisma.WaitlistWhereUniqueInput[]
+  update?: Prisma.WaitlistUpdateWithWhereUniqueWithoutCustomerInput | Prisma.WaitlistUpdateWithWhereUniqueWithoutCustomerInput[]
+  updateMany?: Prisma.WaitlistUpdateManyWithWhereWithoutCustomerInput | Prisma.WaitlistUpdateManyWithWhereWithoutCustomerInput[]
+  deleteMany?: Prisma.WaitlistScalarWhereInput | Prisma.WaitlistScalarWhereInput[]
+}
+
 export type WaitlistCreateWithoutTimeSlotInput = {
   id?: string
-  customerId: string
   partySize: number
   notifiedAt?: Date | string | null
   expiresAt: Date | string
   createdAt?: Date | string
   updatedAt?: Date | string
+  customer: Prisma.CustomerCreateNestedOneWithoutWaitlistsInput
 }
 
 export type WaitlistUncheckedCreateWithoutTimeSlotInput = {
@@ -536,6 +580,52 @@ export type WaitlistScalarWhereInput = {
   timeSlotId?: Prisma.StringFilter<"Waitlist"> | string
 }
 
+export type WaitlistCreateWithoutCustomerInput = {
+  id?: string
+  partySize: number
+  notifiedAt?: Date | string | null
+  expiresAt: Date | string
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  timeSlot: Prisma.TimeSlotCreateNestedOneWithoutWaitlistInput
+}
+
+export type WaitlistUncheckedCreateWithoutCustomerInput = {
+  id?: string
+  partySize: number
+  notifiedAt?: Date | string | null
+  expiresAt: Date | string
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  timeSlotId: string
+}
+
+export type WaitlistCreateOrConnectWithoutCustomerInput = {
+  where: Prisma.WaitlistWhereUniqueInput
+  create: Prisma.XOR<Prisma.WaitlistCreateWithoutCustomerInput, Prisma.WaitlistUncheckedCreateWithoutCustomerInput>
+}
+
+export type WaitlistCreateManyCustomerInputEnvelope = {
+  data: Prisma.WaitlistCreateManyCustomerInput | Prisma.WaitlistCreateManyCustomerInput[]
+  skipDuplicates?: boolean
+}
+
+export type WaitlistUpsertWithWhereUniqueWithoutCustomerInput = {
+  where: Prisma.WaitlistWhereUniqueInput
+  update: Prisma.XOR<Prisma.WaitlistUpdateWithoutCustomerInput, Prisma.WaitlistUncheckedUpdateWithoutCustomerInput>
+  create: Prisma.XOR<Prisma.WaitlistCreateWithoutCustomerInput, Prisma.WaitlistUncheckedCreateWithoutCustomerInput>
+}
+
+export type WaitlistUpdateWithWhereUniqueWithoutCustomerInput = {
+  where: Prisma.WaitlistWhereUniqueInput
+  data: Prisma.XOR<Prisma.WaitlistUpdateWithoutCustomerInput, Prisma.WaitlistUncheckedUpdateWithoutCustomerInput>
+}
+
+export type WaitlistUpdateManyWithWhereWithoutCustomerInput = {
+  where: Prisma.WaitlistScalarWhereInput
+  data: Prisma.XOR<Prisma.WaitlistUpdateManyMutationInput, Prisma.WaitlistUncheckedUpdateManyWithoutCustomerInput>
+}
+
 export type WaitlistCreateManyTimeSlotInput = {
   id?: string
   customerId: string
@@ -548,12 +638,12 @@ export type WaitlistCreateManyTimeSlotInput = {
 
 export type WaitlistUpdateWithoutTimeSlotInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  customerId?: Prisma.StringFieldUpdateOperationsInput | string
   partySize?: Prisma.IntFieldUpdateOperationsInput | number
   notifiedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   expiresAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  customer?: Prisma.CustomerUpdateOneRequiredWithoutWaitlistsNestedInput
 }
 
 export type WaitlistUncheckedUpdateWithoutTimeSlotInput = {
@@ -576,6 +666,46 @@ export type WaitlistUncheckedUpdateManyWithoutTimeSlotInput = {
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
 
+export type WaitlistCreateManyCustomerInput = {
+  id?: string
+  partySize: number
+  notifiedAt?: Date | string | null
+  expiresAt: Date | string
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  timeSlotId: string
+}
+
+export type WaitlistUpdateWithoutCustomerInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  partySize?: Prisma.IntFieldUpdateOperationsInput | number
+  notifiedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  expiresAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  timeSlot?: Prisma.TimeSlotUpdateOneRequiredWithoutWaitlistNestedInput
+}
+
+export type WaitlistUncheckedUpdateWithoutCustomerInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  partySize?: Prisma.IntFieldUpdateOperationsInput | number
+  notifiedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  expiresAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  timeSlotId?: Prisma.StringFieldUpdateOperationsInput | string
+}
+
+export type WaitlistUncheckedUpdateManyWithoutCustomerInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  partySize?: Prisma.IntFieldUpdateOperationsInput | number
+  notifiedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  expiresAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  timeSlotId?: Prisma.StringFieldUpdateOperationsInput | string
+}
+
 
 
 export type WaitlistSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -587,6 +717,7 @@ export type WaitlistSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs
   createdAt?: boolean
   updatedAt?: boolean
   timeSlotId?: boolean
+  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
   timeSlot?: boolean | Prisma.TimeSlotDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["waitlist"]>
 
@@ -599,6 +730,7 @@ export type WaitlistSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exte
   createdAt?: boolean
   updatedAt?: boolean
   timeSlotId?: boolean
+  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
   timeSlot?: boolean | Prisma.TimeSlotDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["waitlist"]>
 
@@ -611,6 +743,7 @@ export type WaitlistSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exte
   createdAt?: boolean
   updatedAt?: boolean
   timeSlotId?: boolean
+  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
   timeSlot?: boolean | Prisma.TimeSlotDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["waitlist"]>
 
@@ -627,18 +760,22 @@ export type WaitlistSelectScalar = {
 
 export type WaitlistOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "customerId" | "partySize" | "notifiedAt" | "expiresAt" | "createdAt" | "updatedAt" | "timeSlotId", ExtArgs["result"]["waitlist"]>
 export type WaitlistInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
   timeSlot?: boolean | Prisma.TimeSlotDefaultArgs<ExtArgs>
 }
 export type WaitlistIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
   timeSlot?: boolean | Prisma.TimeSlotDefaultArgs<ExtArgs>
 }
 export type WaitlistIncludeUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
   timeSlot?: boolean | Prisma.TimeSlotDefaultArgs<ExtArgs>
 }
 
 export type $WaitlistPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "Waitlist"
   objects: {
+    customer: Prisma.$CustomerPayload<ExtArgs>
     timeSlot: Prisma.$TimeSlotPayload<ExtArgs>
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
@@ -1044,6 +1181,7 @@ readonly fields: WaitlistFieldRefs;
  */
 export interface Prisma__WaitlistClient<T, Null = never, ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
   readonly [Symbol.toStringTag]: "PrismaPromise"
+  customer<T extends Prisma.CustomerDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.CustomerDefaultArgs<ExtArgs>>): Prisma.Prisma__CustomerClient<runtime.Types.Result.GetResult<Prisma.$CustomerPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
   timeSlot<T extends Prisma.TimeSlotDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.TimeSlotDefaultArgs<ExtArgs>>): Prisma.Prisma__TimeSlotClient<runtime.Types.Result.GetResult<Prisma.$TimeSlotPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.

@@ -104,6 +104,49 @@ export {
   type StaffVerifyOtpInput,
 } from "./staff.types.js"
 
+// Order status
+export {
+  OrderFulfillmentStatus,
+  canTransition,
+  getNextStatus,
+  ORDER_STATUS_LABELS_PT,
+} from "./order-status.js"
+
+// Order events (typed NATS event contracts)
+export type {
+  OrderEventItem,
+  OrderActor,
+  OrderPlacedEvent,
+  OrderStatusChangedEvent,
+  OrderCanceledEvent,
+  OrderRefundedEvent,
+  OrderDisputedEvent,
+  OrderPaymentFailedEvent,
+  PaymentStatusChangedEvent,
+  PaymentMethodChangedEvent,
+  OrderAmendChange,
+  OrderAmendedEvent,
+  OrderNoteAddedEvent,
+  NotificationSendEvent,
+} from "./order-events.js"
+
+// Payment status
+export {
+  PaymentStatus,
+  PaymentMethod,
+  TERMINAL_PAYMENT_STATUSES,
+  type TerminalPaymentStatus,
+  isTerminalPaymentStatus,
+  canTransitionPayment,
+  PAYMENT_STATUS_LABELS_PT,
+} from "./payment-status.js"
+
+// Order type
+export {
+  OrderType,
+  ORDER_TYPE_LABELS_PT,
+} from "./order-type.js"
+
 // Tool types (catalog + support)
 export {
   CheckInventoryInputSchema,
@@ -124,6 +167,8 @@ export {
 export type {
   DaySchedule,
   HolidayEntry,
+  TimeBlock,
+  ScheduleOverrideEntry,
   RestaurantSchedule,
 } from "./schedule.types.js"
 
@@ -158,3 +203,17 @@ export {
   type JoinWaitlistInput,
   type JoinWaitlistOutput,
 } from "./reservation.types.js"
+
+// Format helpers
+export { formatOrderId } from "./format.js"
+
+// Payment method switch matrix
+export { canSwitchPaymentMethod } from "./payment-method-matrix.js"
+
+// Order action validator
+export {
+  canPerformAction,
+  type CustomerAction,
+  type ActionContext,
+  type ActionResult,
+} from "./order-action-validator.js"

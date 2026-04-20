@@ -43,6 +43,50 @@ enum StaffRole {
   @@schema("ibx_domain")
 }
 
+/// Payment lifecycle status — mirrors the const in @ibatexas/types.
+/// Terminal per-attempt: refunded, canceled, waived, payment_failed, payment_expired.
+/// Retry/regeneration creates a NEW Payment row; the old one stays terminal.
+enum PaymentStatus {
+  awaiting_payment
+  payment_pending
+  payment_expired
+  payment_failed
+  cash_pending
+  paid
+  switching_method
+  partially_refunded
+  refunded
+  disputed
+  canceled   @map("pay_canceled") // disambiguate from OrderFulfillmentStatus.canceled
+  waived
+
+  @@schema("ibx_domain")
+}
+
+/// Order fulfillment lifecycle status — mirrors the const in @ibatexas/types.
+/// Kept in sync via compile-time test (order-status-enum-sync.test.ts).
+enum OrderFulfillmentStatus {
+  pending
+  confirmed
+  preparing
+  ready
+  in_delivery
+  delivered
+  canceled
+
+  @@schema("ibx_domain")
+}
+
+/// Actor who triggered an order state transition.
+enum OrderActor {
+  admin
+  system
+  system_backfill
+  customer
+
+  @@schema("ibx_domain")
+}
+
 // ─── Models ───────────────────────────────────────────────────────────────────
 
 /// Physical table in the restaurant.
@@ -90,6 +134,7 @@ model TimeSlot {
 /// AUDIT-FIX: DL-F08 — Added FK relation from customerId to Customer.
 model Reservation {
   id              String            @id @default(cuid())
+  displayId       Int               @default(autoincrement()) @map("display_id")
   customerId      String            @map("customer_id")
   partySize       Int               @map("party_size")
   status          ReservationStatus @default(pending)
@@ -107,7 +152,7 @@ model Reservation {
   updatedAt       DateTime          @updatedAt @map("updated_at")
 
   // AUDIT-FIX: DL-F08 — FK relation to Customer for referential integrity
-  customer   Customer @relation(fields: [customerId], references: [id])
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
   // AUDIT-FIX: DL-F02 — Changed onDelete from Cascade to Restrict to prevent
   // silent deletion of reservations when a TimeSlot is removed.
@@ -145,6 +190,8 @@ model Waitlist {
   expiresAt  DateTime  @map("expires_at")
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   // AUDIT-FIX: DL-F02 — Changed onDelete from Cascade to Restrict to prevent
   // silent deletion of waitlist entries when a TimeSlot is removed.
@@ -219,13 +266,15 @@ model Customer {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  addresses      Address[]
-  preferences    CustomerPreferences?
-  reviews        Review[]
-  orderItems     CustomerOrderItem[]
-  reservations   Reservation[]           // AUDIT-FIX: DL-F08 — inverse relation
-  loyaltyAccount LoyaltyAccount?
-  conversations  Conversation[]
+  addresses        Address[]
+  preferences      CustomerPreferences?
+  reviews          Review[]
+  orderItems       CustomerOrderItem[]
+  orderProjections OrderProjection[]
+  reservations     Reservation[]           // AUDIT-FIX: DL-F08 — inverse relation
+  waitlists        Waitlist[]
+  loyaltyAccount   LoyaltyAccount?
+  conversations    Conversation[]
 
   @@index([phone])
   @@map("customers")
@@ -292,6 +341,162 @@ model CustomerOrderItem {
   @@schema("ibx_domain")
 }
 
+// ─── Order Projection ────────────────────────────────────────────────────────
+
+/// Projection (read model) of a Medusa order. Source of truth for fulfillment status.
+/// Populated by order.placed + order.status_changed NATS subscribers.
+/// Medusa is the write-side commerce backend; this table is the read-side authority.
+model OrderProjection {
+  id                  String                 @id                                // = Medusa order ID
+  displayId           Int                    @map("display_id")
+  customerId          String?                @map("customer_id")               // domain Customer.id
+  customerEmail       String?                @map("customer_email")
+  customerName        String?                @map("customer_name")
+  customerPhone       String?                @map("customer_phone")
+  fulfillmentStatus   OrderFulfillmentStatus @default(pending) @map("fulfillment_status")
+  paymentStatus       String?                @map("payment_status")
+  totalInCentavos     Int                    @default(0) @map("total_in_centavos")
+  subtotalInCentavos  Int                    @default(0) @map("subtotal_in_centavos")
+  shippingInCentavos  Int                    @default(0) @map("shipping_in_centavos")
+  itemCount           Int                    @default(0) @map("item_count")
+  itemsJson           Json?                  @map("items_json")                // OrderEventItem[]
+  itemsSchemaVersion  Int                    @default(1) @map("items_schema_version")
+  shippingAddressJson Json?                  @map("shipping_address_json")
+  deliveryType        String?                @map("delivery_type")             // "delivery" | "pickup" | "dine_in"
+  paymentMethod       String?                @map("payment_method")            // "cash" | "pix" | "card"
+  tipInCentavos       Int                    @default(0) @map("tip_in_centavos")
+  version             Int                    @default(1)                        // optimistic concurrency
+  medusaCreatedAt     DateTime               @map("medusa_created_at")
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+
+  currentPaymentId    String?              @map("current_payment_id")
+
+  customer      Customer?            @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  statusHistory OrderStatusHistory[]
+  payments      Payment[]
+  notes         OrderNote[]
+
+  @@index([customerId])
+  @@index([fulfillmentStatus])
+  @@index([displayId])
+  @@index([medusaCreatedAt])
+  @@index([fulfillmentStatus, medusaCreatedAt(sort: Desc)])
+  @@map("order_projections")
+  @@schema("ibx_domain")
+}
+
+/// Append-only audit log of order fulfillment status transitions.
+/// Each row represents one validated transition, with actor tracking.
+model OrderStatusHistory {
+  id              String                 @id @default(cuid())
+  orderId         String                 @map("order_id")
+  fromStatus      OrderFulfillmentStatus @map("from_status")
+  toStatus        OrderFulfillmentStatus @map("to_status")
+  actor           OrderActor             @default(system)
+  actorId         String?                @map("actor_id")        // staff.id or customer.id
+  reason          String?                                         // e.g. cancellation reason
+  version         Int                                             // projection version AFTER this transition
+  backfillBatchId String?                @map("backfill_batch_id") // set only by system_backfill
+  createdAt       DateTime               @default(now()) @map("created_at")
+
+  order OrderProjection @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@index([createdAt])
+  @@map("order_status_history")
+  @@schema("ibx_domain")
+}
+
+/// Append-only, immutable event log for ALL order domain events.
+/// Observability + replay + debugging layer. Never mutated after insert.
+model OrderEventLog {
+  id              String   @id @default(cuid())
+  orderId         String   @map("order_id")
+  eventType       String   @map("event_type")
+  idempotencyKey  String   @unique @map("idempotency_key")
+  payload         Json
+  timestamp       DateTime @map("timestamp")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([orderId, createdAt])
+  @@index([orderId, eventType])
+  @@index([eventType, timestamp])
+  @@map("order_event_log")
+  @@schema("ibx_domain")
+}
+
+// ─── Billing (Payment Lifecycle) ──────────────────────────────────────
+
+/// Payment record for an order. ONE active (non-terminal) payment per order,
+/// enforced by partial unique index in migration SQL.
+/// Historical attempts are kept with terminal status for audit trail.
+/// Retry/regeneration creates a new row; old one stays terminal.
+model Payment {
+  id                     String        @id @default(cuid())
+  orderId                String        @map("order_id")
+  method                 String        // "pix" | "card" | "cash"
+  status                 PaymentStatus @default(awaiting_payment)
+  amountInCentavos       Int           @map("amount_in_centavos")
+  stripePaymentIntentId  String?       @unique @map("stripe_payment_intent_id")
+  pixExpiresAt           DateTime?     @map("pix_expires_at")
+  refundedAmountCentavos Int           @default(0) @map("refunded_amount_centavos")
+  regenerationCount      Int           @default(0) @map("regeneration_count")
+  idempotencyKey         String?       @unique @map("idempotency_key")
+  lastStripeEventTs      DateTime?     @map("last_stripe_event_ts")
+  version                Int           @default(1)
+  createdAt              DateTime      @default(now()) @map("created_at")
+  updatedAt              DateTime      @updatedAt @map("updated_at")
+
+  order         OrderProjection        @relation(fields: [orderId], references: [id])
+  statusHistory PaymentStatusHistory[]
+
+  @@index([orderId])
+  @@index([status])
+  @@index([orderId, status])
+  @@map("payments")
+  @@schema("ibx_domain")
+}
+
+/// Append-only audit log of payment status transitions.
+/// Mirrors OrderStatusHistory pattern for full observability.
+model PaymentStatusHistory {
+  id         String        @id @default(cuid())
+  paymentId  String        @map("payment_id")
+  fromStatus PaymentStatus @map("from_status")
+  toStatus   PaymentStatus @map("to_status")
+  actor      OrderActor    @default(system)
+  actorId    String?       @map("actor_id")
+  reason     String?
+  version    Int
+  createdAt  DateTime      @default(now()) @map("created_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, createdAt])
+  @@map("payment_status_history")
+  @@schema("ibx_domain")
+}
+
+// ─── Order Notes ─────────────────────────────────────────────────────
+
+/// Customer special instructions + admin/kitchen notes on an order.
+model OrderNote {
+  id         String     @id @default(cuid())
+  orderId    String     @map("order_id")
+  author     OrderActor
+  authorId   String?    @map("author_id")
+  content    String     @db.VarChar(500)
+  isInternal Boolean    @default(false) @map("is_internal")
+  createdAt  DateTime   @default(now()) @map("created_at")
+
+  order OrderProjection @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_notes")
+  @@schema("ibx_domain")
+}
+
 // ─── Loyalty ──────────────────────────────────────────────────────────────────
 
 /// Punch-card loyalty account for a customer.
@@ -301,7 +506,7 @@ model CustomerOrderItem {
 model LoyaltyAccount {
   id          String   @id @default(cuid())
   customerId  String   @unique @map("customer_id")
-  customer    Customer @relation(fields: [customerId], references: [id])
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
   stamps      Int      @default(0)
   totalEarned Int      @default(0) @map("total_earned")
   redeemed    Int      @default(0)
@@ -406,9 +611,27 @@ model Holiday {
   id        String   @id @default(cuid())
   date      DateTime @unique @db.Date
   label     String   @db.VarChar(100)
+  allDay    Boolean  @default(true) @map("all_day")
+  startTime String?  @map("start_time") @db.VarChar(5) /// "HH:MM" — only when allDay=false
+  endTime   String?  @map("end_time") @db.VarChar(5)   /// "HH:MM" — only when allDay=false
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("holidays")
+  @@schema("ibx_domain")
+}
+
+/// Per-date schedule override. When present, this day uses custom hours
+/// instead of the WeeklySchedule template. Holidays take precedence over overrides.
+model ScheduleOverride {
+  id        String   @id @default(cuid())
+  date      DateTime @unique @db.Date
+  isOpen    Boolean  @default(true) @map("is_open")
+  blocks    Json     @default("[]") /// Array of { label: string, start: string, end: string }
+  note      String?  @db.VarChar(200)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("schedule_overrides")
   @@schema("ibx_domain")
 }

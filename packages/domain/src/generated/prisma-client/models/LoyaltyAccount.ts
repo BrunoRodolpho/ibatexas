@@ -217,7 +217,7 @@ export type LoyaltyAccountGroupByOutputType = {
   _max: LoyaltyAccountMaxAggregateOutputType | null
 }
 
-type GetLoyaltyAccountGroupByPayload<T extends LoyaltyAccountGroupByArgs> = Prisma.PrismaPromise<
+export type GetLoyaltyAccountGroupByPayload<T extends LoyaltyAccountGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<LoyaltyAccountGroupByOutputType, T['by']> &
       {

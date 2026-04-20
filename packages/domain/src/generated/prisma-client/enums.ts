@@ -40,6 +40,47 @@ export const StaffRole = {
 export type StaffRole = (typeof StaffRole)[keyof typeof StaffRole]
 
 
+export const PaymentStatus = {
+  awaiting_payment: 'awaiting_payment',
+  payment_pending: 'payment_pending',
+  payment_expired: 'payment_expired',
+  payment_failed: 'payment_failed',
+  cash_pending: 'cash_pending',
+  paid: 'paid',
+  switching_method: 'switching_method',
+  partially_refunded: 'partially_refunded',
+  refunded: 'refunded',
+  disputed: 'disputed',
+  canceled: 'canceled',
+  waived: 'waived'
+} as const
+
+export type PaymentStatus = (typeof PaymentStatus)[keyof typeof PaymentStatus]
+
+
+export const OrderFulfillmentStatus = {
+  pending: 'pending',
+  confirmed: 'confirmed',
+  preparing: 'preparing',
+  ready: 'ready',
+  in_delivery: 'in_delivery',
+  delivered: 'delivered',
+  canceled: 'canceled'
+} as const
+
+export type OrderFulfillmentStatus = (typeof OrderFulfillmentStatus)[keyof typeof OrderFulfillmentStatus]
+
+
+export const OrderActor = {
+  admin: 'admin',
+  system: 'system',
+  system_backfill: 'system_backfill',
+  customer: 'customer'
+} as const
+
+export type OrderActor = (typeof OrderActor)[keyof typeof OrderActor]
+
+
 export const ConversationChannel = {
   whatsapp: 'whatsapp',
   web: 'web'

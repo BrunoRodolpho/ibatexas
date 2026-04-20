@@ -64,6 +64,7 @@ export interface TableDTO {
 
 export interface ReservationDTO {
   id: string
+  displayId: number
   customerId: string
   partySize: number
   status: ReservationStatus
