@@ -7,7 +7,11 @@ const ALLOWED_PREFIXES = ["/api/admin/", "/api/auth/staff/"];
 
 async function proxyRequest(request: NextRequest, params: { path: string[] }): Promise<NextResponse> {
   const path = params.path.join("/");
-  const targetPath = `/api/${path}`;
+  // Admin hooks pass endpoints like "/api/admin/orders" (already prefixed with
+  // "api/"), while the login form passes "auth/staff/send-otp" (bare). Normalize
+  // so we don't end up with "/api/api/admin/orders" which would fail the
+  // ALLOWED_PREFIXES check below.
+  const targetPath = path.startsWith("api/") ? `/${path}` : `/api/${path}`;
 
   // SEC: Only allow proxying to admin API paths
   if (!ALLOWED_PREFIXES.some((prefix) => targetPath.startsWith(prefix))) {
@@ -37,7 +41,13 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }): P
   };
 
   if (request.method !== "GET" && request.method !== "HEAD") {
-    init.body = await request.text();
+    const bodyText = await request.text();
+    if (bodyText.length > 0) {
+      init.body = bodyText;
+    } else {
+      // No body — strip content-type to avoid Fastify JSON parse error on ""
+      headers.delete("content-type");
+    }
   }
 
   const upstream = await fetch(url.toString(), init);
@@ -46,6 +56,12 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }): P
   const upstreamContentType = upstream.headers.get("content-type");
   if (upstreamContentType) {
     responseHeaders.set("content-type", upstreamContentType);
+  }
+
+  // Forward Set-Cookie headers so the staff JWT reaches the browser
+  const setCookies = upstream.headers.getSetCookie?.() ?? [];
+  for (const cookie of setCookies) {
+    responseHeaders.append("set-cookie", cookie);
   }
 
   return new NextResponse(upstream.body, {
