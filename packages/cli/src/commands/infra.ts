@@ -326,6 +326,107 @@ const CHECKS: InfraCheckDef[] = [
   },
 ]
 
+async function scaleEcsService(env: string, service: string, desired: number): Promise<{ ok: boolean; detail: string }> {
+  const cluster = `ibatexas-${env}`
+  const svcName = `ibatexas-${env}-${service}`
+  const res = await awsCommand([
+    "ecs", "update-service",
+    "--cluster", cluster,
+    "--service", svcName,
+    "--desired-count", String(desired),
+    "--region", DEFAULT_REGION,
+    "--output", "json",
+  ])
+  if (res.exitCode !== 0) return { ok: false, detail: "update-service failed (service missing or auth error)" }
+  return { ok: true, detail: `desiredCount=${desired}` }
+}
+
+function parseServiceList(only: string | undefined): readonly string[] {
+  if (!only) return VALID_SERVICES
+  const requested = only.split(",").map(s => s.trim()).filter(Boolean)
+  const invalid = requested.filter(s => !VALID_SERVICES.includes(s as typeof VALID_SERVICES[number]))
+  if (invalid.length > 0) {
+    throw new Error(`Unknown service(s): ${invalid.join(", ")}. Valid: ${VALID_SERVICES.join(", ")}`)
+  }
+  return requested
+}
+
+async function runIdle(opts: { env?: string; only?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  💤  Idling ECS services in ${env}\n`))
+
+  let services: readonly string[]
+  try {
+    services = parseServiceList(opts.only)
+  } catch (err) {
+    console.log(chalk.red(`  ✗ ${(err as Error).message}`))
+    process.exit(1)
+  }
+
+  let failed = 0
+  for (const svc of services) {
+    const spinner = ora(`Scaling ${svc} to 0...`).start()
+    const result = await scaleEcsService(env, svc, 0)
+    if (result.ok) {
+      spinner.succeed(chalk.green(`${svc} → 0`))
+    } else {
+      spinner.fail(chalk.red(`${svc}: ${result.detail}`))
+      failed++
+    }
+  }
+
+  console.log("")
+  if (failed === 0) {
+    console.log(chalk.green(`  ✅  All ${services.length} services idled.`))
+    console.log(chalk.gray(`      Fargate + task public IPs stop billing within ~2 min.`))
+    console.log(chalk.gray(`      Resume with: ibx infra resume`))
+  } else {
+    console.log(chalk.yellow(`  ⚠️  ${services.length - failed}/${services.length} scaled down, ${failed} failed.`))
+  }
+  console.log("")
+}
+
+async function runResume(opts: { env?: string; count?: string; only?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  const desired = Number.parseInt(opts.count ?? "1", 10)
+  if (!Number.isFinite(desired) || desired < 1) {
+    console.log(chalk.red(`  ✗ --count must be a positive integer`))
+    process.exit(1)
+  }
+
+  console.log(chalk.bold.blue(`\n  ▶️   Resuming ECS services in ${env} (count=${desired})\n`))
+
+  let services: readonly string[]
+  try {
+    services = parseServiceList(opts.only)
+  } catch (err) {
+    console.log(chalk.red(`  ✗ ${(err as Error).message}`))
+    process.exit(1)
+  }
+
+  let failed = 0
+  for (const svc of services) {
+    const spinner = ora(`Scaling ${svc} to ${desired}...`).start()
+    const result = await scaleEcsService(env, svc, desired)
+    if (result.ok) {
+      spinner.succeed(chalk.green(`${svc} → ${desired}`))
+    } else {
+      spinner.fail(chalk.red(`${svc}: ${result.detail}`))
+      failed++
+    }
+  }
+
+  console.log("")
+  if (failed === 0) {
+    console.log(chalk.green(`  ✅  All ${services.length} services resuming.`))
+    console.log(chalk.gray(`      Tasks take ~2 min to become healthy.`))
+    console.log(chalk.gray(`      Check status with: ibx infra status`))
+  } else {
+    console.log(chalk.yellow(`  ⚠️  ${services.length - failed}/${services.length} scaled up, ${failed} failed.`))
+  }
+  console.log("")
+}
+
 async function checkEcsService(env: string, service: string): Promise<CheckResult> {
   const cluster = `ibatexas-${env}`
   const svcName = `ibatexas-${env}-${service}`
@@ -1405,4 +1506,19 @@ export function registerInfraCommands(infra: Command) {
     .command("explain")
     .description("Diagnose why a deploy is failing (follows dependency chain)")
     .action(runExplain)
+
+  infra
+    .command("idle")
+    .description("Scale all ECS services to 0 (stop paying for Fargate + public IPs)")
+    .option("--env <name>", "Environment name", "dev")
+    .option("--only <services>", "Comma-separated services (default: all)")
+    .action(runIdle)
+
+  infra
+    .command("resume")
+    .description("Scale ECS services back up from idle")
+    .option("--env <name>", "Environment name", "dev")
+    .option("--count <n>", "Desired count per service", "1")
+    .option("--only <services>", "Comma-separated services (default: all)")
+    .action(runResume)
 }
