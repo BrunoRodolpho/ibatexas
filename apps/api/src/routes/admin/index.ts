@@ -27,6 +27,9 @@ import { tableRoutes } from "./tables.js";
 import { deliveryZoneRoutes } from "./delivery-zones.js";
 import { analyticsRoutes } from "./analytics.js";
 import { scheduleRoutes } from "./schedule.js";
+import { adminPaymentRoutes } from "./payments.js";
+import { adminOrderActionRoutes } from "./order-actions.js";
+import { adminBannerRoutes } from "./banner.js";
 
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Support comma-separated list of valid API keys for rotation
@@ -103,4 +106,7 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
   await server.register(deliveryZoneRoutes);
   await server.register(analyticsRoutes);
   await server.register(scheduleRoutes);
+  await server.register(adminPaymentRoutes);
+  await server.register(adminOrderActionRoutes);
+  await server.register(adminBannerRoutes);
 }

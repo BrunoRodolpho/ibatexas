@@ -6,6 +6,7 @@ import { buildServer } from "./server.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
+import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
 import logger from "./lib/logger.js";
@@ -76,6 +77,7 @@ const start = async (): Promise<void> => {
       await startCartIntelligenceSubscribers(server.log);
       await startHandoffSubscriber(server.log);
       await startConversationArchiver(server.log);
+      await startPaymentLifecycleSubscriber(server.log);
 
       // Start all BullMQ background workers
       registerWorkers(server.log);

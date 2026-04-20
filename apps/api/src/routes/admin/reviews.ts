@@ -72,7 +72,9 @@ export async function reviewRoutes(server: FastifyInstance): Promise<void> {
           orderId: r.orderId,
           productId: r.productId,
           customerId: r.customerId,
-          customerPhone: r.customer?.phone ?? null,
+          customerPhone: r.customer?.phone
+            ? `****${r.customer.phone.slice(-4)}`
+            : null,
           rating: r.rating,
           comment: r.comment,
           channel: r.channel,

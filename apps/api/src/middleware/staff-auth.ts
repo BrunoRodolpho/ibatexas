@@ -54,3 +54,22 @@ export function requireManager(
   }
   done();
 }
+
+/**
+ * Role gate for mutation routes that are also reachable via API key.
+ * - If a staff JWT is present: enforces OWNER or MANAGER role (blocks ATTENDANT).
+ * - If no staff JWT (API key path): passes through — outer hook already validated the key.
+ */
+export function requireManagerRole(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  done: DoneCallback,
+): void {
+  if (request.staffId && !["OWNER", "MANAGER"].includes(request.staffRole ?? "")) {
+    void reply
+      .code(403)
+      .send({ statusCode: 403, error: "Forbidden", message: "Acesso restrito a gerentes." });
+    return;
+  }
+  done();
+}

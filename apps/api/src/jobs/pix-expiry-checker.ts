@@ -1,10 +1,18 @@
-// PIX expiry checker
+// PIX expiry checker — Payment-aware version.
+//
 // Runs every 5 minutes via BullMQ repeatable job.
-// Queries Medusa for pending orders older than PIX_EXPIRY_MINUTES (default 30).
-// For each expired PIX order: cancels via Medusa admin and publishes "payment.pix_expired".
+// Queries the Payment table for `payment_pending` PIX payments past their pixExpiresAt.
+// For each: acquires distributed lock, transitions to `payment_expired`,
+// cancels the Stripe PaymentIntent, and publishes `payment.status_changed`.
+//
+// INVARIANT: This job NEVER cancels orders. It only transitions payment status.
+// Order cleanup is handled by the separate stale-order-checker job.
 
-import { medusaAdmin, MedusaRequestError, cancelStalePaymentIntent } from "@ibatexas/tools";
+import { cancelStalePaymentIntent } from "@ibatexas/tools";
+import { withLock } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { createPaymentCommandService, prisma } from "@ibatexas/domain";
+import { PaymentStatus, type PaymentStatusChangedEvent } from "@ibatexas/types";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
@@ -12,91 +20,119 @@ import { createQueue, createWorker, type Job } from "./queue.js";
 
 const REPEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-interface MedusaOrderListResponse {
-  orders?: Array<{
-    id: string;
-    status: string;
-    created_at: string;
-    metadata?: Record<string, string>;
-  }>;
-}
-
 let queue: Queue | null = null;
 let worker: Worker | null = null;
 let logger: FastifyBaseLogger | null = null;
 
-function getPixExpiryMs(): number {
-  const minutes = Number(process.env.PIX_EXPIRY_MINUTES) || 30;
-  return minutes * 60 * 1000;
-}
-
 /** Core job logic — exported for direct testing. */
 export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<void> {
   const effectiveLogger = log ?? logger;
-  const expiryMs = getPixExpiryMs();
-  const cutoffDate = new Date(Date.now() - expiryMs).toISOString();
+  const paymentSvc = createPaymentCommandService(effectiveLogger ?? undefined);
   let expiredCount = 0;
 
   try {
-    // Query Medusa for pending orders created before the cutoff
-    const data = (await medusaAdmin(
-      `/admin/orders?status=pending&created_at[lt]=${encodeURIComponent(cutoffDate)}&limit=50`,
-    )) as MedusaOrderListResponse;
+    // Query Payment rows: PIX method, payment_pending, pixExpiresAt in the past
+    const expiredPayments = await prisma.payment.findMany({
+      where: {
+        method: "pix",
+        status: "payment_pending",
+        pixExpiresAt: { lt: new Date() },
+      },
+      select: {
+        id: true,
+        orderId: true,
+        stripePaymentIntentId: true,
+        version: true,
+      },
+      take: 50,
+    });
 
-    const orders = data.orders ?? [];
-
-    for (const order of orders) {
+    for (const payment of expiredPayments) {
       try {
-        // Don't cancel orders with scheduled pickup — PIX can be regenerated
-        if (order.metadata?.["scheduledPickup"] === "true") {
-          // Just cancel the Stripe PI (prevent stale QR usage) but keep the Medusa order
-          const piId = order.metadata?.["stripePaymentIntentId"];
-          if (piId) {
-            await cancelStalePaymentIntent(piId);
+        // Acquire distributed lock on this payment
+        const result = await withLock(`payment:${payment.id}`, async () => {
+          // Transition payment → payment_expired
+          const transition = await paymentSvc.transitionStatus(payment.id, {
+            newStatus: PaymentStatus.PAYMENT_EXPIRED,
+            actor: "system",
+            reason: "PIX expirado",
+            expectedVersion: payment.version,
+          });
+
+          // Cancel the Stripe PaymentIntent to prevent late PIX scans
+          if (payment.stripePaymentIntentId) {
+            try {
+              await cancelStalePaymentIntent(payment.stripePaymentIntentId);
+            } catch (piErr) {
+              // PI may already be canceled or in a non-cancelable state — log and continue
+              effectiveLogger?.warn(
+                { paymentId: payment.id, piId: payment.stripePaymentIntentId, error: String(piErr) },
+                "[pix-expiry] Failed to cancel Stripe PI — continuing",
+              );
+            }
           }
-          effectiveLogger?.info({ order_id: order.id }, "Skipped cancel for scheduled-pickup order (PIX expired but order preserved)");
-          continue; // skip order cancellation
+
+          // Publish payment.status_changed event
+          await publishNatsEvent("payment.status_changed", {
+            eventType: "payment.status_changed",
+            orderId: payment.orderId,
+            paymentId: payment.id,
+            previousStatus: transition.previousStatus,
+            newStatus: transition.newStatus,
+            method: "pix",
+            version: transition.version,
+            timestamp: new Date().toISOString(),
+          } satisfies PaymentStatusChangedEvent & { eventType: string });
+
+          return true;
+        }, 10);
+
+        if (result === null) {
+          // Lock not acquired — another process is handling this payment
+          effectiveLogger?.info(
+            { paymentId: payment.id },
+            "[pix-expiry] Lock not acquired — skipping (will retry next run)",
+          );
+          continue;
         }
-
-        // Cancel the expired order via Medusa
-        await medusaAdmin(`/admin/orders/${order.id}/cancel`, { method: "POST" });
-
-        // Cancel the Stripe PaymentIntent to prevent late PIX scans
-        const piId = order.metadata?.["stripePaymentIntentId"];
-        if (piId) {
-          await cancelStalePaymentIntent(piId);
-        }
-
-        await publishNatsEvent("payment.pix_expired", {
-          eventType: "payment.pix_expired",
-          orderId: order.id,
-          customerId: order.metadata?.["customerId"],
-          createdAt: order.created_at,
-        });
 
         expiredCount++;
-        effectiveLogger?.info({ order_id: order.id }, "[pix-expiry] Order cancelled — PIX expired");
+        effectiveLogger?.info(
+          { paymentId: payment.id, orderId: payment.orderId },
+          "[pix-expiry] Payment expired — order preserved for retry/method switch",
+        );
       } catch (err) {
+        // InvalidPaymentTransitionError means it was already transitioned — safe to skip
+        if ((err as Error).name === "InvalidPaymentTransitionError") {
+          effectiveLogger?.info(
+            { paymentId: payment.id },
+            "[pix-expiry] Payment already transitioned — skipping",
+          );
+          continue;
+        }
+        // PaymentConcurrencyError means version changed — will retry next run
+        if ((err as Error).name === "PaymentConcurrencyError") {
+          effectiveLogger?.info(
+            { paymentId: payment.id },
+            "[pix-expiry] Concurrency conflict — will retry next run",
+          );
+          continue;
+        }
+
         effectiveLogger?.error(
-          { order_id: order.id, error: String(err) },
-          "[pix-expiry] Error processing expired order",
+          { paymentId: payment.id, error: String(err) },
+          "[pix-expiry] Error processing expired payment",
         );
         Sentry.withScope((scope) => {
           scope.setTag("job", "pix-expiry-checker");
           scope.setTag("source", "background-job");
-          scope.setContext("order", { orderId: order.id });
+          scope.setContext("payment", { paymentId: payment.id, orderId: payment.orderId });
           Sentry.captureException(err);
         });
       }
     }
   } catch (err) {
-    if (err instanceof MedusaRequestError && err.statusCode === 401) {
-      effectiveLogger?.error(
-        "[pix-expiry] Medusa returned 401 Unauthorized — check MEDUSA_API_KEY is set and valid",
-      );
-    } else {
-      effectiveLogger?.error({ error: String(err) }, "[pix-expiry] Error querying pending orders");
-    }
+    effectiveLogger?.error({ error: String(err) }, "[pix-expiry] Error querying expired payments");
     Sentry.withScope((scope) => {
       scope.setTag("job", "pix-expiry-checker");
       scope.setTag("source", "background-job");

@@ -400,14 +400,14 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         return reply
           .setCookie("token", token, {
             httpOnly: true,
-            secure: true,
+            secure: process.env.NODE_ENV === "production",
             sameSite: "lax",
             path: "/",
             maxAge: 4 * 60 * 60, // 4h — matches JWT expiry
           })
           .setCookie("refresh_token", refreshToken, {
             httpOnly: true,
-            secure: true,
+            secure: process.env.NODE_ENV === "production",
             sameSite: "lax",
             path: "/api/auth/refresh",
             maxAge: REFRESH_TTL_SECONDS,
@@ -525,14 +525,14 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       return reply
         .setCookie("token", newJwt, {
           httpOnly: true,
-          secure: true,
+          secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
           path: "/",
           maxAge: 4 * 60 * 60,
         })
         .setCookie("refresh_token", newRefreshToken, {
           httpOnly: true,
-          secure: true,
+          secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
           path: "/api/auth/refresh",
           maxAge: REFRESH_TTL_SECONDS,
@@ -752,9 +752,9 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       // Issue staff JWT (no refresh token for staff — shorter-lived sessions)
       const token = issueStaffJwtToken(server, staff.id, staff.role);
       return reply
-        .setCookie("token", token, {
+        .setCookie("staff_token", token, {
           httpOnly: true,
-          secure: true,
+          secure: process.env.NODE_ENV === "production",
           sameSite: "lax",
           path: "/",
           maxAge: 8 * 60 * 60, // 8h — matches staff JWT expiry

@@ -36,7 +36,7 @@ describe("matchShortcut", () => {
   // ── Cart shortcuts ────────────────────────────────────────────────────────
 
   describe("cart shortcuts", () => {
-    it.each(["carrinho", "ver carrinho", "meu carrinho", "pedido", "meu pedido"])(
+    it.each(["carrinho", "ver carrinho", "meu carrinho"])(
       "matches '%s' as cart",
       (input) => {
         expect(matchShortcut(input)).toEqual({ type: "cart" });
@@ -45,6 +45,14 @@ describe("matchShortcut", () => {
 
     it("matches 'CARRINHO' case-insensitive", () => {
       expect(matchShortcut("CARRINHO")).toEqual({ type: "cart" });
+    });
+
+    it("returns null for 'pedido' — falls through to LLM for order status routing", () => {
+      expect(matchShortcut("pedido")).toBeNull();
+    });
+
+    it("returns null for 'meu pedido' — falls through to LLM for order status routing", () => {
+      expect(matchShortcut("meu pedido")).toBeNull();
     });
   });
 

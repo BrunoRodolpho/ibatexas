@@ -11,19 +11,24 @@
 //   ibatexas.review.submitted        → update review analytics (avg rating, review count per product)
 //   ibatexas.cart.item_added         → cart analytics (popular products, cart composition tracking)
 //   ibatexas.order.payment_failed    → logs payment failure for observability
-//   ibatexas.notification.send       → stub: logs notification intent (delivery TBD)
+//   ibatexas.order.status_changed    → sends WhatsApp notification on status transitions
+//   ibatexas.notification.send       → delivers WhatsApp notification to customer
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender, reaisToCentavos, atomicIncr } from "@ibatexas/tools";
 import * as Sentry from "@sentry/node";
-import { createCustomerService, createLoyaltyService } from "@ibatexas/domain";
+import { createCustomerService, createLoyaltyService, createOrderCommandService, createOrderEventLogService, createPaymentCommandService, ConcurrencyError } from "@ibatexas/domain";
+import { formatOrderId, type OrderPlacedEvent, type OrderStatusChangedEvent, type OrderFulfillmentStatus } from "@ibatexas/types";
 import type { FastifyBaseLogger } from "fastify";
+import { pushToDlq } from "./dlq.js";
+import { isNewEvent } from "./dedup.js";
+import { withCorrelation } from "../lib/logger.js";
 import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
 import { buildCartRecoveryMessage } from "../jobs/cart-recovery-messages.js";
 import { loadSession } from "../session/store.js";
+import { ITEMS_SCHEMA_VERSION } from "@ibatexas/domain";
 
 const RECENTLY_VIEWED_MAX = 20;
-const NATS_DEDUP_TTL = 604_800; // 7 days — matches Stripe webhook window
 
 // ── Sorted set pruning limits (internal tuning knobs) ───────────────────────
 const COPURCHASE_MAX_ENTRIES = 50;     // per-product copurchase sorted set
@@ -42,17 +47,6 @@ interface CartNudgeState {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-/**
- * NATS idempotency guard — prevents duplicate processing on redelivery.
- * Returns true if this event has NOT been processed yet (safe to proceed).
- * Returns false if already processed (skip handler).
- */
-async function isNewEvent(eventKey: string): Promise<boolean> {
-  const redis = await getRedisClient();
-  // SET NX with TTL — only succeeds if key doesn't exist
-  const result = await redis.set(rk(`nats:processed:${eventKey}`), "1", { EX: NATS_DEDUP_TTL, NX: true });
-  return result === "OK";
-}
 
 async function updateCopurchaseScores(productIds: string[]): Promise<void> {
   if (productIds.length < 2) return;
@@ -112,6 +106,8 @@ async function resetProfileTtl(customerId: string): Promise<void> {
 export async function startCartIntelligenceSubscribers(
   log?: FastifyBaseLogger,
 ): Promise<void> {
+  const eventLog = createOrderEventLogService(log);
+
   // ── cart.abandoned ─────────────────────────────────────────────────────────
   await subscribeNatsEvent("cart.abandoned", async (payload) => {
     const { cartId, sessionId, customerId, phone, itemNames: payloadItemNames, customerName: payloadCustomerName } = payload as {
@@ -270,6 +266,14 @@ export async function startCartIntelligenceSubscribers(
       "[cart-intelligence] order.placed — updating intelligence",
     );
 
+    void eventLog.append({
+      orderId,
+      eventType: "order.placed",
+      discriminator: orderId,
+      payload: payload as Record<string, unknown>,
+      timestamp: (payload as { timestamp?: string }).timestamp ?? new Date().toISOString(),
+    });
+
     try {
       // 1. Bulk-insert CustomerOrderItem rows via CustomerService
       const customerSvc = createCustomerService();
@@ -352,6 +356,112 @@ export async function startCartIntelligenceSubscribers(
         log?.warn({ customer_id: customerId, error: String(loyaltyErr) }, "[cart-intelligence] loyalty stamp failed — order not affected");
       }
 
+      // 8. Staff WhatsApp alert for new order — must NOT block main flow
+      try {
+        const staffPhone = process.env.STAFF_ALERT_PHONE;
+        if (staffPhone) {
+          const { sendText } = await import("../whatsapp/client.js");
+          const totalRaw = (payload as { total?: number }).total;
+          const totalCentavos = typeof totalRaw === "number" ? totalRaw : 0;
+          const valorFormatado = (totalCentavos / 100).toFixed(2).replace(".", ",");
+          const itemCount = items.length;
+          await sendText(
+            `whatsapp:${staffPhone}`,
+            `🔔 *Novo pedido!*\nCliente: ${(payload as { customerName?: string }).customerName ?? "N/A"}\nItens: ${itemCount}\nTotal: R$${valorFormatado}`,
+          );
+          log?.info({ order_id: orderId }, "[cart-intelligence] staff new-order alert sent");
+        }
+      } catch (alertErr) {
+        log?.warn({ order_id: orderId, error: String(alertErr) }, "[cart-intelligence] staff new-order alert failed");
+      }
+
+      // 9. Customer order-received WhatsApp notification
+      try {
+        const displayId = (payload as { displayId?: number }).displayId ?? 0;
+        if (displayId > 0 && customerId) {
+          const { buildOrderReceivedMessage } = await import("../notifications/order-messages.js");
+          const { publishNatsEvent: publish } = await import("@ibatexas/nats-client");
+          await publish("notification.send", {
+            type: "order_received",
+            customerId,
+            channel: "whatsapp",
+            body: buildOrderReceivedMessage(displayId),
+          });
+          log?.info({ order_id: orderId, display_id: displayId }, "[cart-intelligence] order.placed — customer notification dispatched");
+        }
+      } catch (notifErr) {
+        log?.warn({ order_id: orderId, error: String(notifErr) }, "[cart-intelligence] order.placed — customer notification failed");
+      }
+
+      // 10. Create order projection — failure must NOT block order processing
+      try {
+        const orderPayload = payload as Partial<OrderPlacedEvent>;
+        const commandSvc = createOrderCommandService();
+        await commandSvc.create({
+          id: orderId,
+          displayId: orderPayload.displayId ?? 0,
+          customerId: customerId,
+          customerEmail: orderPayload.customerEmail ?? null,
+          customerName: orderPayload.customerName ?? null,
+          customerPhone: orderPayload.customerPhone ?? null,
+          fulfillmentStatus: "pending",
+          paymentStatus: orderPayload.paymentStatus ?? "pending",
+          totalInCentavos: orderPayload.totalInCentavos ?? items.reduce((s, i) => s + (i.priceInCentavos ?? 0) * (i.quantity ?? 1), 0),
+          subtotalInCentavos: orderPayload.subtotalInCentavos ?? 0,
+          shippingInCentavos: orderPayload.shippingInCentavos ?? 0,
+          itemCount: items.length,
+          itemsJson: items.map((i) => ({
+            productId: i.productId,
+            variantId: i.variantId,
+            title: (i as { title?: string }).title ?? "",
+            quantity: i.quantity ?? 1,
+            priceInCentavos: i.priceInCentavos ?? 0,
+          })),
+          itemsSchemaVersion: ITEMS_SCHEMA_VERSION,
+          shippingAddressJson: orderPayload.shippingAddress ?? null,
+          deliveryType: orderPayload.deliveryType ?? null,
+          paymentMethod: orderPayload.paymentMethod ?? null,
+          tipInCentavos: orderPayload.tipInCentavos ?? 0,
+          medusaCreatedAt: new Date(),
+        });
+        log?.info({ order_id: orderId }, "[cart-intelligence] order projection created");
+      } catch (projErr) {
+        // Duplicate key = projection already exists (e.g. reprocessed event) — safe to ignore
+        // P2002 is Prisma's code for unique constraint violation
+        const isPrismaUniqueViolation = typeof projErr === "object" && projErr !== null && "code" in projErr && (projErr as { code: string }).code === "P2002";
+        if (isPrismaUniqueViolation) {
+          log?.info({ order_id: orderId }, "[cart-intelligence] order projection already exists — skipping");
+        } else {
+          log?.warn({ order_id: orderId, error: String(projErr) }, "[cart-intelligence] order projection creation failed — order not affected");
+        }
+      }
+
+      // 11. Create Payment row — failure must NOT block order processing
+      try {
+        const orderPayload = payload as Partial<OrderPlacedEvent>;
+        const method = (orderPayload.paymentMethod ?? "pix") as "pix" | "card" | "cash";
+        const totalInCentavos = orderPayload.totalInCentavos ?? items.reduce((s, i) => s + (i.priceInCentavos ?? 0) * (i.quantity ?? 1), 0);
+
+        const paymentCmdSvc = createPaymentCommandService(log ?? undefined);
+        await paymentCmdSvc.create({
+          orderId,
+          method,
+          amountInCentavos: totalInCentavos,
+          stripePaymentIntentId: orderPayload.stripePaymentIntentId ?? undefined,
+        });
+        log?.info({ order_id: orderId, method }, "[cart-intelligence] payment row created");
+      } catch (payErr) {
+        // ActivePaymentExistsError or unique constraint = already created — safe to ignore
+        const isExpected =
+          (payErr as Error).name === "ActivePaymentExistsError" ||
+          (typeof payErr === "object" && payErr !== null && "code" in payErr && (payErr as { code: string }).code === "P2002");
+        if (isExpected) {
+          log?.info({ order_id: orderId }, "[cart-intelligence] payment row already exists — skipping");
+        } else {
+          log?.warn({ order_id: orderId, error: String(payErr) }, "[cart-intelligence] payment row creation failed — order not affected");
+        }
+      }
+
       log?.info({ customer_id: customerId }, "[cart-intelligence] order.placed handled");
     } catch (err) {
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] order.placed handler error");
@@ -370,6 +480,14 @@ export async function startCartIntelligenceSubscribers(
       { order_id: orderId, stripe_pi: stripePaymentIntentId, error: lastPaymentError },
       "[cart-intelligence] order.payment_failed — payment failure recorded",
     );
+
+    void eventLog.append({
+      orderId,
+      eventType: "order.payment_failed",
+      discriminator: stripePaymentIntentId ?? orderId,
+      payload: payload as Record<string, unknown>,
+      timestamp: new Date().toISOString(),
+    });
   });
 
   // ── product.viewed ─────────────────────────────────────────────────────────
@@ -451,6 +569,98 @@ export async function startCartIntelligenceSubscribers(
     }
   });
 
+  // ── order.status_changed ─────────────────────────────────────────────────
+  await subscribeNatsEvent("order.status_changed", async (payload) => {
+    const { orderId, displayId, previousStatus, newStatus, customerId, version: eventVersion, correlationId } =
+      payload as unknown as OrderStatusChangedEvent & { correlationId?: string };
+
+    const hLog = correlationId ? withCorrelation(log ?? null, correlationId) : log;
+
+    hLog?.info(
+      { order_id: orderId, display_id: displayId, from: previousStatus, to: newStatus, version: eventVersion },
+      "[cart-intelligence] order.status_changed received",
+    );
+
+    void eventLog.append({
+      orderId,
+      eventType: "order.status_changed",
+      discriminator: String(eventVersion),
+      payload: payload as unknown as Record<string, unknown>,
+      timestamp: (payload as unknown as OrderStatusChangedEvent).timestamp ?? new Date().toISOString(),
+    });
+
+    // 1. Reconcile projection (safety net — PATCH handler updates projection first)
+    try {
+      const commandSvc = createOrderCommandService(hLog ?? undefined);
+      const result = await commandSvc.reconcileStatus(orderId, {
+        newStatus: newStatus as OrderFulfillmentStatus,
+        eventVersion,
+        actor: "system",
+      });
+      if (result) {
+        hLog?.info({ order_id: orderId, version: result.version }, "[cart-intelligence] projection reconciled from event");
+      } else {
+        hLog?.info({ order_id: orderId }, "[cart-intelligence] projection already up-to-date — reconcile skipped");
+      }
+    } catch (reconcileErr) {
+      if (reconcileErr instanceof ConcurrencyError) {
+        // Expected: PATCH handler already updated — safe to ignore
+        hLog?.info({ order_id: orderId }, "[cart-intelligence] projection reconcile skipped (concurrency — already updated)");
+      } else {
+        hLog?.warn({ order_id: orderId, error: String(reconcileErr) }, "[cart-intelligence] projection reconcile failed");
+        await pushToDlq("order.status_changed", payload as Record<string, unknown>, reconcileErr, hLog);
+      }
+    }
+
+    // 2. Send WhatsApp notification for customer-facing transitions
+    const notifiableStatuses = ["confirmed", "preparing", "ready", "in_delivery", "delivered", "canceled"];
+    if (!notifiableStatuses.includes(newStatus) || !customerId) {
+      hLog?.info({ newStatus, customerId }, "[cart-intelligence] order.status_changed — skipping notification (non-notifiable or no customerId)");
+      return;
+    }
+
+    try {
+      const { buildOrderStatusMessage } = await import("../notifications/order-messages.js");
+      const message = buildOrderStatusMessage(displayId, newStatus);
+      if (!message) return;
+
+      const { publishNatsEvent: publish } = await import("@ibatexas/nats-client");
+      await publish("notification.send", {
+        type: `order_${newStatus}`,
+        customerId,
+        channel: "whatsapp",
+        body: message,
+      });
+
+      hLog?.info({ order_id: orderId, newStatus }, "[cart-intelligence] order.status_changed — notification queued");
+    } catch (err) {
+      hLog?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.status_changed handler error");
+      Sentry.withScope((scope) => {
+        scope.setTag("subscriber", "order.status_changed");
+        scope.setContext("order", { orderId, displayId, newStatus });
+        Sentry.captureException(err);
+      });
+    }
+
+    // 3. Staff alert on all transitions
+    try {
+      const staffPhone = process.env.STAFF_ALERT_PHONE;
+      if (staffPhone) {
+        const { ORDER_STATUS_LABELS_PT } = await import("@ibatexas/types");
+        const fromLabel = ORDER_STATUS_LABELS_PT[previousStatus as OrderFulfillmentStatus] ?? previousStatus;
+        const toLabel = ORDER_STATUS_LABELS_PT[newStatus as OrderFulfillmentStatus] ?? newStatus;
+        const { sendText } = await import("../whatsapp/client.js");
+        await sendText(
+          `whatsapp:${staffPhone}`,
+          `📋 Pedido ${formatOrderId(displayId)}: ${fromLabel} → ${toLabel}`,
+        );
+        hLog?.info({ order_id: orderId, newStatus }, "[cart-intelligence] staff transition alert sent");
+      }
+    } catch (staffErr) {
+      hLog?.warn({ order_id: orderId, error: String(staffErr) }, "[cart-intelligence] staff transition alert failed");
+    }
+  });
+
   // ── notification.send ────────────────────────────────────────────────────
   await subscribeNatsEvent("notification.send", async (payload) => {
     const { type, sessionId, customerId, cartId, channel, message: msgBody, body } = payload as {
@@ -462,6 +672,14 @@ export async function startCartIntelligenceSubscribers(
       message?: string;
       body?: string;
     };
+
+    // Idempotency guard — prevent duplicate WhatsApp messages on NATS redelivery
+    const eventKey = `notification:${customerId || sessionId}:${type}`;
+    if (!(await isNewEvent(eventKey))) {
+      log?.info({ event_key: eventKey }, "[cart-intelligence] notification.send duplicate — skipping");
+      return;
+    }
+
     log?.info(
       { notification_type: type, session_id: sessionId, cart_id: cartId, channel },
       "[cart-intelligence] notification.send — processing notification",
@@ -493,11 +711,7 @@ export async function startCartIntelligenceSubscribers(
       }
     } catch (err) {
       log?.error({ customerId, type, error: String(err) }, "[cart-intelligence] notification.send delivery error");
-      Sentry.withScope((scope) => {
-        scope.setTag("subscriber", "notification.send");
-        scope.setContext("notification", { customerId, type });
-        Sentry.captureException(err);
-      });
+      await pushToDlq("notification.send", payload as Record<string, unknown>, err, log);
     }
   });
 
@@ -624,6 +838,14 @@ export async function startCartIntelligenceSubscribers(
       return;
     }
 
+    void eventLog.append({
+      orderId,
+      eventType: "order.refunded",
+      discriminator: chargeId,
+      payload: payload as Record<string, unknown>,
+      timestamp: new Date().toISOString(),
+    });
+
     try {
       // Look up customerId from the order via Medusa
       const { medusaAdmin } = await import("@ibatexas/tools");
@@ -666,6 +888,14 @@ export async function startCartIntelligenceSubscribers(
       log?.info({ dispute_id: disputeId }, "[cart-intelligence] order.disputed duplicate — skipping");
       return;
     }
+
+    void eventLog.append({
+      orderId: orderId ?? "unknown",
+      eventType: "order.disputed",
+      discriminator: disputeId,
+      payload: payload as Record<string, unknown>,
+      timestamp: new Date().toISOString(),
+    });
 
     try {
       // Alert staff directly — notification.send requires customerId, but disputes are staff-only
@@ -719,6 +949,14 @@ export async function startCartIntelligenceSubscribers(
       log?.info({ order_id: orderId }, "[cart-intelligence] order.canceled duplicate — skipping");
       return;
     }
+
+    void eventLog.append({
+      orderId,
+      eventType: "order.canceled",
+      discriminator: orderId,
+      payload: payload as Record<string, unknown>,
+      timestamp: new Date().toISOString(),
+    });
 
     try {
       const { medusaAdmin } = await import("@ibatexas/tools");

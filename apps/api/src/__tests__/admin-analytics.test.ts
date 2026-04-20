@@ -57,7 +57,8 @@ vi.mock("@ibatexas/nats-client", () => ({
 async function buildTestServer() {
   process.env.ADMIN_API_KEY = "test-admin-key"
   process.env.MEDUSA_ADMIN_URL = "http://localhost:9000"
-  process.env.MEDUSA_API_KEY = "test-medusa-key"
+  process.env.MEDUSA_ADMIN_EMAIL = "test@example.com"
+  process.env.MEDUSA_ADMIN_PASSWORD = "test-password"
 
   const { adminRoutes } = await import("../routes/admin/index.js")
 

@@ -36,16 +36,16 @@ export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
             (sum: number, o) => sum + (o.total ?? 0),
             0,
           );
-        } catch {
-          // Medusa not running in test mode — return zeros
+        } catch (err) {
+          server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
         }
 
         let activeReservations = 0
         try {
           const reservationSvc = createReservationService()
           activeReservations = await reservationSvc.countActive()
-        } catch {
-          // domain DB not yet migrated — return 0
+        } catch (err) {
+          server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
         }
 
         return reply.send({
