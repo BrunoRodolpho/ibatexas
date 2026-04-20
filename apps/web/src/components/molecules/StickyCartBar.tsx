@@ -18,7 +18,6 @@ import { formatBRL } from '@/lib/format'
 export function StickyCartBar() {
   const t = useTranslations()
   const pathname = usePathname()
-  const items = useCartStore((s) => s.items)
   const getTotal = useCartStore((s) => s.getTotal)
   const getItemCount = useCartStore((s) => s.getItemCount)
   const openCartDrawer = useUIStore((s) => s.openCartDrawer)

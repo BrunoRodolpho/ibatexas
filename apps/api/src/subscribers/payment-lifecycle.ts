@@ -11,7 +11,6 @@
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { publishNatsEvent } from "@ibatexas/nats-client";
-import { getRedisClient, rk } from "@ibatexas/tools";
 import {
   createOrderCommandService,
   createOrderQueryService,

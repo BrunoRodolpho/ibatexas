@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { OrderFulfillmentStatus, type OrderStatusChangedEvent } from "@ibatexas/types";
+import { OrderFulfillmentStatus } from "@ibatexas/types";
 import { reaisToCentavos, getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
@@ -17,8 +17,8 @@ import {
 function isTableMissing(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2021";
 }
-import { medusaAdmin } from "./_shared.js";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { medusaAdmin } from "./_shared.js";
 
 const OrdersAdminQuery = z.object({
   status: z.string().optional(),

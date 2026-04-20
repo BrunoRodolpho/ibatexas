@@ -21,7 +21,7 @@ import {
   PaymentStatus,
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
-import { requireStaff, requireManager, requireManagerRole } from "../../middleware/staff-auth.js";
+import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js";
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 

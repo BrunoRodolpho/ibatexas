@@ -20,13 +20,13 @@ import * as Sentry from "@sentry/node";
 import { createCustomerService, createLoyaltyService, createOrderCommandService, createOrderEventLogService, createPaymentCommandService, ConcurrencyError } from "@ibatexas/domain";
 import { formatOrderId, type OrderPlacedEvent, type OrderStatusChangedEvent, type OrderFulfillmentStatus } from "@ibatexas/types";
 import type { FastifyBaseLogger } from "fastify";
-import { pushToDlq } from "./dlq.js";
-import { isNewEvent } from "./dedup.js";
+import { ITEMS_SCHEMA_VERSION } from "@ibatexas/domain";
 import { withCorrelation } from "../lib/logger.js";
 import { scheduleReviewPrompt } from "../jobs/review-prompt.js";
 import { buildCartRecoveryMessage } from "../jobs/cart-recovery-messages.js";
 import { loadSession } from "../session/store.js";
-import { ITEMS_SCHEMA_VERSION } from "@ibatexas/domain";
+import { isNewEvent } from "./dedup.js";
+import { pushToDlq } from "./dlq.js";
 
 const RECENTLY_VIEWED_MAX = 20;
 

@@ -2,9 +2,9 @@
 
 import { GetOrderHistoryInputSchema, NonRetryableError, type GetOrderHistoryInput, type AgentContext } from "@ibatexas/types";
 import { createCustomerService } from "@ibatexas/domain";
-import { medusaAdminFetch } from "./_shared.js";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
+import { medusaAdminFetch } from "./_shared.js";
 
 export async function getOrderHistory(
   input: GetOrderHistoryInput,

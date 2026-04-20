@@ -625,7 +625,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
               });
             }
           }
-        } catch {}
+        } catch {
+          // note persistence is best-effort
+        }
       }
 
       return reply.send(result);

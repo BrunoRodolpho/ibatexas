@@ -15,7 +15,7 @@ import { track, getSessionId } from '@/domains/analytics'
 import { Heading, Text, Button, Checkbox, ErrorBoundary, Container, ScrollReveal } from "@/components/atoms"
 import { KitchenClosedBanner } from "@/components/molecules/KitchenClosedBanner"
 import Image from "next/image"
-import { CheckCircle, Flame, Lock, ShieldCheck } from "lucide-react"
+import { Flame, Lock, ShieldCheck } from "lucide-react"
 import { useOrderHistory } from "@/domains/cart/useOrderHistory"
 import InlineCardInput from "./_components/InlineCardInput"
 
@@ -95,6 +95,7 @@ function CheckoutForm() {
   const [pixEmail, setPixEmail] = useState("")
   const [pixCpf, setPixCpf] = useState("")
   const [pixCpfMasked, setPixCpfMasked] = useState(false)
+  const [deliveryError, setDeliveryError] = useState<string | null>(null)
   const pixDetailsFetched = useRef(false)
 
   const subtotal = getTotal()
@@ -180,6 +181,14 @@ function CheckoutForm() {
       .catch(() => { /* non-critical */ })
   }, [paymentMethod]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-switch from cash when entering shipping mode
+  const isShippingFlag = deliveryType === 'delivery' && deliveryEstimate?.isLocalZone === false
+  useEffect(() => {
+    if (isShippingFlag && paymentMethod === 'cash') {
+      setPaymentMethod('pix')
+    }
+  }, [isShippingFlag, paymentMethod])
+
   if (items.length === 0 && stage === "checkout") {
     return (
       <div className="min-h-screen bg-smoke-50 flex items-center justify-center px-4">
@@ -195,15 +204,7 @@ function CheckoutForm() {
   const hasFoodItems = items.some(i => i.productType === 'food')
   const hasFrozenItems = items.some(i => i.productType === 'frozen')
   const isMerchandiseOnly = items.length > 0 && items.every(i => i.productType === 'merchandise')
-  const isShipping = deliveryType === 'delivery' && deliveryEstimate?.isLocalZone === false
-  const [deliveryError, setDeliveryError] = useState<string | null>(null)
-
-  // Auto-switch from cash when entering shipping mode
-  useEffect(() => {
-    if (isShipping && paymentMethod === 'cash') {
-      setPaymentMethod('pix')
-    }
-  }, [isShipping, paymentMethod])
+  const isShipping = isShippingFlag
 
   async function fetchDeliveryEstimate(cepValue: string) {
     if (cepValue.replaceAll(/\D/g, "").length !== 8) return
