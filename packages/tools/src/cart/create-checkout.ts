@@ -14,9 +14,9 @@ import { reaisToCentavos } from "../medusa/client.js";
 import { loadSchedule } from "../cache/schedule-cache.js";
 import { getAndConsumeWelcomeCredit } from "../intelligence/welcome-credit.js";
 import { getMealPeriodFromSchedule } from "../schedule/schedule-helpers.js";
-import { medusaStoreFetch } from "./_shared.js";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
+import { medusaStoreFetch } from "./_shared.js";
 
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;

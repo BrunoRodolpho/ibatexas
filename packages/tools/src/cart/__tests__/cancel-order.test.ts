@@ -11,9 +11,9 @@
 // - Cancel when order not found / ownership invalid → returns not found
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { NonRetryableError } from "@ibatexas/types"
 import { cancelOrder } from "../cancel-order.js"
 import { makeCtx, makeGuestCtx, orderResponse } from "./fixtures/medusa.js"
-import { NonRetryableError } from "@ibatexas/types"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 

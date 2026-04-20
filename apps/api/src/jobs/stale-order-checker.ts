@@ -25,7 +25,6 @@ import {
 import {
   OrderFulfillmentStatus,
   PaymentStatus,
-  type OrderCanceledEvent,
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import * as Sentry from "@sentry/node";

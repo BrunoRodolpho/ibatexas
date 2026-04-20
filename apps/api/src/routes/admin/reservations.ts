@@ -2,8 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createReservationService, prisma } from "@ibatexas/domain";
-import { requireManagerRole } from "../../middleware/staff-auth.js";
 import type { ReservationDTO } from "@ibatexas/types";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
 
 /** Map a ReservationDTO + customer data into the admin-friendly shape the UI expects. */
 function toAdminReservation(

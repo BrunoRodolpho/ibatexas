@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { medusaAdmin } from "./_shared.js";
-import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { getRedisClient, rk } from "@ibatexas/tools";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { medusaAdmin } from "./_shared.js";
 
 const ProductsAdminQuery = z.object({
   q: z.string().optional(),

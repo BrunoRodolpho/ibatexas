@@ -186,6 +186,7 @@ export function useAdminOrderDetail(orderId: string | null) {
   const refetch = useCallback(() => setRefreshKey((k) => k + 1), [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset when orderId clears
     if (!orderId) { setOrder(null); setError(null); return }
     setLoading(true)
     setError(null)

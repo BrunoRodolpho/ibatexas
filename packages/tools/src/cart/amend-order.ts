@@ -10,8 +10,8 @@ import { AmendOrderInputSchema, NonRetryableError, canPerformAction, type AmendO
 import { createOrderService, createOrderQueryService, createPaymentQueryService, createPaymentCommandService } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdmin } from "../medusa/client.js";
-import { cancelStalePaymentIntent, getStripe } from "./_stripe-helpers.js";
 import { withLock } from "../redis/distributed-lock.js";
+import { cancelStalePaymentIntent, getStripe } from "./_stripe-helpers.js";
 
 /**
  * After a successful amendment, cancel the old Stripe PI and create a new one
@@ -308,8 +308,6 @@ export async function amendOrder(
     if (!activePayment) {
       const oldPiId = order.metadata?.["stripePaymentIntentId"] as string | undefined;
       if (oldPiId) await cancelStalePaymentIntent(oldPiId);
-      // Create Payment row with new method
-      const newStatus = parsed.paymentMethod === "cash" ? "cash_pending" : "payment_pending";
       return { success: true, message: `Pagamento alterado para ${parsed.paymentMethod === "cash" ? "dinheiro" : parsed.paymentMethod === "pix" ? "PIX" : "cartão"}.` };
     }
 

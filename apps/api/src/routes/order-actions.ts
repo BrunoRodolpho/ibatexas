@@ -29,7 +29,6 @@ import {
   canPerformAction,
   canTransitionPayment,
   isTerminalPaymentStatus,
-  type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import { getEffectivePonr } from "@ibatexas/domain";
 import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from "@ibatexas/tools";

@@ -47,7 +47,6 @@ function formatDate(iso: string): string {
 
 type OrderFilter = 'all' | 'active' | 'completed' | 'canceled'
 
-const TERMINAL_STATUSES = ['delivered', 'canceled', 'completed']
 const ACTIVE_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'in_delivery']
 
 function getFulfillmentBadgeStyle(status: string): string {
@@ -76,7 +75,7 @@ function FulfillmentBadge({ status, t }: { readonly status: string; readonly t: 
   )
 }
 
-function PendingOrderCard({ order, t }: { readonly order: OrderSummaryWithPayment; readonly t: ReturnType<typeof useTranslations<'order'>> }) {
+function PendingOrderCard({ order }: { readonly order: OrderSummaryWithPayment }) {
   return (
     <div className="rounded-sm border border-brand-200 bg-brand-50/30 p-5">
       <div className="flex items-start justify-between gap-4">
@@ -191,7 +190,7 @@ export default function AccountOrdersPage() {
     const signal = { cancelled: false }
     fetchOrders(signal)
     return () => { signal.cancelled = true }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [customerId])
 
   useEffect(() => {
@@ -202,7 +201,7 @@ export default function AccountOrdersPage() {
     if (!hasPending) return
     const interval = setInterval(() => { fetchOrders() }, 15_000)
     return () => clearInterval(interval)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [orders])
 
   if (!customerId) {
@@ -328,7 +327,7 @@ export default function AccountOrdersPage() {
               className="block transition-colors duration-200 rounded-sm hover:ring-1 hover:ring-brand-200"
             >
               {order.status === 'pending' && !order.displayId
-                ? <PendingOrderCard order={order} t={to} />
+                ? <PendingOrderCard order={order} />
                 : <OrderCard order={order} t={to} />}
             </Link>
           ))}

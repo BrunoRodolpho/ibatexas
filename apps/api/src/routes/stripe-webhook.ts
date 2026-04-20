@@ -21,11 +21,6 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
   formatOrderId,
   PaymentStatus,
-  type OrderPlacedEvent,
-  type OrderRefundedEvent,
-  type OrderDisputedEvent,
-  type OrderCanceledEvent,
-  type OrderPaymentFailedEvent,
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import { markPixPaid } from "../jobs/pix-expiry-monitor.js";
