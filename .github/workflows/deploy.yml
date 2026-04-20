@@ -22,6 +22,7 @@ jobs:
   # 1. Build + push Docker images to ECR
   # ---------------------------------------------------------------------------
   build:
+    if: vars.PRODUCTION_ENABLED == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -61,6 +62,7 @@ jobs:
   # 2. Run Prisma migrations against production DB (via direct connection)
   # ---------------------------------------------------------------------------
   migrate:
+    if: vars.PRODUCTION_ENABLED == 'true'
     needs: build
     runs-on: ubuntu-latest
     environment: production
@@ -85,6 +87,7 @@ jobs:
   # 3. Deploy ECS services
   # ---------------------------------------------------------------------------
   deploy:
+    if: vars.PRODUCTION_ENABLED == 'true'
     needs: [build, migrate]
     runs-on: ubuntu-latest
     environment: production
@@ -155,6 +158,7 @@ jobs:
   # 4. Post-deploy health checks
   # ---------------------------------------------------------------------------
   health-check:
+    if: vars.PRODUCTION_ENABLED == 'true'
     needs: deploy
     runs-on: ubuntu-latest
     steps:
