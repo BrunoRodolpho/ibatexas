@@ -4,7 +4,7 @@
 
 resource "aws_cloudwatch_log_group" "typesense" {
   name              = "/ecs/ibatexas/${var.environment}/typesense"
-  retention_in_days = 14
+  retention_in_days = 7
 
   tags = {
     Environment = var.environment

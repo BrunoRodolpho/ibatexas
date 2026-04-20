@@ -23,7 +23,7 @@ resource "aws_ecs_cluster" "this" {
 
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/ibatexas/${var.environment}/api"
-  retention_in_days = 30
+  retention_in_days = 7
 
   tags = {
     Environment = var.environment
@@ -32,7 +32,7 @@ resource "aws_cloudwatch_log_group" "api" {
 
 resource "aws_cloudwatch_log_group" "web" {
   name              = "/ecs/ibatexas/${var.environment}/web"
-  retention_in_days = 30
+  retention_in_days = 7
 
   tags = {
     Environment = var.environment
@@ -41,7 +41,7 @@ resource "aws_cloudwatch_log_group" "web" {
 
 resource "aws_cloudwatch_log_group" "admin" {
   name              = "/ecs/ibatexas/${var.environment}/admin"
-  retention_in_days = 30
+  retention_in_days = 7
 
   tags = {
     Environment = var.environment
