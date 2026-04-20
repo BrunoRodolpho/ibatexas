@@ -146,7 +146,7 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
       <div className="group relative surface-card rounded-card overflow-hidden">
         <div className="flex flex-col sm:flex-row">
           {/* Image side */}
-          <div className="relative w-full sm:w-48 h-48 sm:h-auto flex-shrink-0 overflow-hidden bg-smoke-100">
+          <div className="relative w-full sm:w-56 h-48 sm:h-auto flex-shrink-0 overflow-hidden bg-smoke-100">
             {displayImage ? (
               <>
                 <NextImage
@@ -168,17 +168,17 @@ export function PitmasterPick({ product, onAddToCart, cartQuantity = 0, onUpdate
           </div>
 
           {/* Content side */}
-          <div className="flex-1 p-5 sm:p-6 flex flex-col justify-center">
+          <div className="flex-1 p-6 sm:p-8 flex flex-col justify-center">
             {/* Label */}
             <div className="flex items-center gap-2 mb-3">
               <ChefHat className="w-4 h-4 text-brand-500" strokeWidth={2} />
-              <span className="text-[10px] uppercase tracking-editorial text-brand-500 font-semibold">
+              <span className="text-micro uppercase tracking-editorial text-brand-500 font-semibold">
                 {t('pitmaster_pick.label')}
               </span>
             </div>
 
             {/* Product info */}
-            <h3 className="font-display text-display-2xs font-semibold text-charcoal-900 tracking-display mb-1 group-hover:text-charcoal-700 transition-colors duration-500">
+            <h3 className="font-display text-display-xs font-semibold text-charcoal-900 tracking-display mb-1 group-hover:text-charcoal-700 transition-micro">
               <Link
                 href={`/loja/produto/${product.id}`}
                 className="after:absolute after:inset-0 after:content-['']"

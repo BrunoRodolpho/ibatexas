@@ -149,7 +149,7 @@ export default function WishlistPage() {
           {/* Sort selector — native <select> for simplicity. Replaceable with
               a styled dropdown later if needed. */}
           <label className="flex items-center gap-2 text-xs uppercase tracking-editorial text-smoke-500">
-            <span>Ordenar</span>
+            <span>{t("common.sort")}</span>
             <select
               value={sort}
               onChange={(e) => setSort(e.target.value as SortOption)}
@@ -170,7 +170,7 @@ export default function WishlistPage() {
             disabled={loading || wishlistProducts.length === 0}
           >
             <ShoppingBag className="w-4 h-4" strokeWidth={1.75} />
-            Adicionar todos
+            {t("wishlist.add_all")}
           </Button>
         </div>
       </div>
@@ -220,13 +220,13 @@ function EmptyWishlist() {
       <div className="mt-12 flex flex-col items-center justify-center gap-4 text-center">
         <Heart className="w-12 h-12 text-smoke-200" strokeWidth={1.5} />
         <p className="text-lg text-smoke-400">
-          Nenhum item na sua lista de desejos
+          {t("wishlist.empty_title")}
         </p>
         <p className="text-sm text-smoke-500 max-w-md">
-          Toque no coração de qualquer produto para guardá-lo aqui.
+          {t("wishlist.empty_description")}
         </p>
         <Link
-          href="/loja"
+          href="/search"
           className="mt-2 text-sm font-medium text-charcoal-700 hover:text-charcoal-900 transition-colors duration-300"
         >
           {t('cart.continue_shopping')} →
@@ -238,7 +238,7 @@ function EmptyWishlist() {
       {!loading && recommendations.length > 0 && (
         <div className="mt-16">
           <p className="text-xs font-semibold uppercase tracking-editorial text-smoke-500 mb-4">
-            Talvez você goste
+            {t("wishlist.suggestions")}
           </p>
           <div className="flex gap-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory -mx-4 px-4">
             {recommendations.map((rec) => (

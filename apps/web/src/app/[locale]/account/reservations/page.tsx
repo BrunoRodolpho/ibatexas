@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation"
 import { useSessionStore } from '@/domains/session'
 import { useReservationStore } from '@/domains/reservation'
 import { Heading, Text, Button, Card } from "@/components/atoms"
-import { CalendarDays, Users, Sparkles, Check, Clock } from "lucide-react"
+import { CalendarDays, Users, Sparkles, Check, Clock, Flame } from "lucide-react"
 import type { ReservationDTO } from "@ibatexas/types"
 
 import { DatePicker } from "./_components/DatePicker"
@@ -49,12 +49,12 @@ function StepProgress({ currentStep }: { readonly currentStep: string }) {
             {/* Dot + label */}
             <div className="flex flex-col items-center">
               <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-colors duration-500 ${dotColor}`}
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-micro ${dotColor}`}
               >
                 {isCompleted ? <Check className="w-3.5 h-3.5" /> : i + 1}
               </div>
               <span
-                className={`mt-1.5 text-[10px] uppercase tracking-editorial font-medium ${
+                className={`mt-1.5 text-micro uppercase tracking-editorial font-medium ${
                   isActive ? 'text-charcoal-900' : 'text-smoke-400'
                 }`}
               >
@@ -293,15 +293,19 @@ export default function ReservationsPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
 
-      {/* Header with back link */}
+      {/* Header with back link + brand punctuation */}
       <div className="mb-6">
         <Link
           href="/account"
-          className="text-sm text-smoke-400 hover:text-charcoal-900 transition-colors duration-300"
+          className="text-sm text-smoke-400 hover:text-charcoal-900 transition-micro"
         >
           ← {t("account.title")}
         </Link>
-        <Heading as="h1" variant="h1" className="text-charcoal-900 mt-2">
+        <div className="flex items-center gap-3 mt-3 mb-2">
+          <Flame className="w-4 h-4 text-brand-500 flex-shrink-0" strokeWidth={1.5} />
+          <div className="h-px flex-1 bg-smoke-200/60" />
+        </div>
+        <Heading as="h1" variant="h1" className="text-charcoal-900">
           {t("reservations.title")}
         </Heading>
       </div>
@@ -324,7 +328,7 @@ export default function ReservationsPage() {
         {hasReservations && (
           <div className="mb-6">
             <Heading as="h2" variant="h2" className="text-charcoal-900">
-              Nova reserva
+              {t("reservations.new")}
             </Heading>
           </div>
         )}
@@ -339,12 +343,12 @@ export default function ReservationsPage() {
               onClick={() => setStep("date-party")}
               className="text-sm text-brand-500 hover:text-brand-600 transition-colors duration-300"
             >
-              ← Voltar
+              {t("common.back")}
             </button>
             <span className="text-smoke-300">·</span>
             <Text variant="small" textColor="muted">
-              {step === "timeslot" && "Escolher horário"}
-              {step === "requests" && "Solicitações especiais"}
+              {step === "timeslot" && t("reservations.time")}
+              {step === "requests" && t("reservations.special_requests")}
             </Text>
           </div>
         )}
@@ -357,7 +361,7 @@ export default function ReservationsPage() {
                 <CalendarDays className="w-4 h-4 text-charcoal-900" strokeWidth={1.5} />
               </div>
               <Heading as="h2" variant="h3" className="text-charcoal-900">
-                {hasReservations ? "Escolha a data" : "Nova reserva"}
+                {hasReservations ? t("reservations.choose_date") : t("reservations.new")}
               </Heading>
             </div>
 
@@ -372,7 +376,7 @@ export default function ReservationsPage() {
               className="mt-8 w-full"
               size="lg"
             >
-              Ver horários disponíveis →
+              {t("reservations.view_slots")}
             </Button>
           </Card>
         )}
@@ -431,7 +435,7 @@ export default function ReservationsPage() {
                 <Sparkles className="w-4 h-4 text-charcoal-900" strokeWidth={1.5} />
               </div>
               <Heading as="h2" variant="h3" className="text-charcoal-900">
-                Solicitações especiais
+                {t("reservations.special_requests")}
               </Heading>
             </div>
 
@@ -450,7 +454,7 @@ export default function ReservationsPage() {
                 className="flex-1"
                 size="lg"
               >
-                Voltar
+                {t("common.back")}
               </Button>
               <Button
                 onClick={submitReservation}
@@ -458,7 +462,7 @@ export default function ReservationsPage() {
                 className="flex-1"
                 size="lg"
               >
-                {creating ? "Confirmando…" : "Confirmar reserva ✓"}
+                {creating ? t("reservations.confirming") : t("reservations.confirm")}
               </Button>
             </div>
           </Card>

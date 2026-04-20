@@ -15,6 +15,8 @@
     "@ibatexas/types": "workspace:*",
     "@ibatexas/ui": "workspace:*",
     "@sentry/nextjs": "^10.45.0",
+    "@stripe/react-stripe-js": "^6.1.0",
+    "@stripe/stripe-js": "^9.1.0",
     "@tanstack/react-virtual": "^3.13.23",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

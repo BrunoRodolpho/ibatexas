@@ -250,6 +250,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
       return
     }
 
+    const isFirstItem = cartItems.length === 0
     setIsAdding(true)
     try {
       addToCart(product, quantity, undefined, selectedVariant)
@@ -259,7 +260,11 @@ export default function PDPContent({ productId }: PDPContentProps) {
         quantity,
         source: 'pdp',
       })
-      addToast(t('toast.added_to_cart'), 'cart')
+      if (isFirstItem) {
+        addToast(t('toast.first_item_added'), 'success')
+      } else {
+        addToast(t('toast.added_to_cart'), 'cart')
+      }
       openCartDrawer?.()
     } catch (err) {
       console.error('Failed to add to cart:', err)
@@ -303,7 +308,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
       {/* Canonical `default` rhythm so the PDP top breathes the same as
           /loja and the homepage sections. Was relying on the breadcrumb's
           `mb-6` for top space, which felt abrupt after the loja list. */}
-      <Container size="xl" className="py-16 lg:py-24">
+      <Container size="xl" className="py-8 lg:py-12">
         {/* ── Breadcrumb ───────────────────────────────────────────────── */}
         <nav className="mb-6 flex items-center gap-1.5 text-xs text-smoke-400" aria-label="Breadcrumb">
           <Link href="/" className="hover:text-charcoal-900 transition-colors duration-300">{t('common.home')}</Link>
@@ -480,7 +485,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
                     { name: 'Ana P.', stars: 5, comment: 'Embalagem impecável, chegou quentinha. Sabor incrível.' },
                     { name: 'Roberto S.', stars: 4, comment: 'Muito bom, porção generosa. Recomendo!' },
                   ].map((review) => (
-                    <div key={review.name} className="border border-smoke-200 rounded-sm p-3">
+                    <div key={review.name} className="shadow-card border border-smoke-200/40 rounded-sm p-3">
                       <div className="flex items-center gap-2 mb-1">
                         <div className="flex">
                           <span className="text-brand-500 text-xs">{'★'.repeat(review.stars)}</span>
@@ -523,7 +528,7 @@ export default function PDPContent({ productId }: PDPContentProps) {
                     style={{ width: `${Math.min((product.smokeHours / 24) * 100, 100)}%` }}
                   />
                 </div>
-                <span className="text-[11px] text-smoke-400 tabular-nums">{product.smokeHours}h</span>
+                <span className="text-xs text-smoke-400 tabular-nums">{product.smokeHours}h</span>
               </div>
             </div>
           ) : (
@@ -591,11 +596,11 @@ export default function PDPContent({ productId }: PDPContentProps) {
           stacked sections pushed reviews + hydration way below the fold. */}
       {unifiedSuggestions.length > 0 && (
         <div ref={crossSellRef}>
-          <Container size="xl" className="py-16 lg:py-24">
+          <Container size="xl" className="py-8 lg:py-12">
             <div className="mb-8">
               <div className="h-px w-16 bg-brand-500 mb-6" />
               <Heading as="h2" variant="h2" className="font-display text-display-sm text-charcoal-900">
-                {t('product.you_might_also_like')}
+                {t('product.cross_sell_title')}
               </Heading>
             </div>
 

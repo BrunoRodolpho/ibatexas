@@ -147,7 +147,7 @@ export function UpsellToast() {
 
           {/* Product info */}
           <div className="flex-1 min-w-0">
-            <p className="text-[11px] text-[var(--color-text-secondary)] font-medium">{t('upsell.also_add')}</p>
+            <p className="text-xs text-[var(--color-text-secondary)] font-medium">{t('upsell.also_add')}</p>
             <p className="text-sm font-semibold text-charcoal-900 truncate">{upsellProduct.title}</p>
             <p className="text-xs tabular-nums text-smoke-500">{priceFormatted}</p>
           </div>

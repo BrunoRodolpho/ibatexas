@@ -1,5 +1,6 @@
 "use client"
 
+import { useTranslations } from "next-intl"
 import { Button, Card } from "@/components/atoms"
 import { Users, MapPin } from "lucide-react"
 import type { ReservationDTO } from "@ibatexas/types"
@@ -11,20 +12,13 @@ interface Props {
   readonly onModify: (reservation: ReservationDTO) => void
 }
 
-const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  pending: { label: "Aguardando confirmação", color: "bg-yellow-100 text-yellow-800" },
-  confirmed: { label: "Confirmada", color: "bg-green-100 text-green-800" },
-  seated: { label: "Em andamento", color: "bg-blue-100 text-blue-800" },
-  completed: { label: "Concluída", color: "bg-smoke-100 text-smoke-500" },
-  cancelled: { label: "Cancelada", color: "bg-red-100 text-red-700" },
-  no_show: { label: "Não compareceu", color: "bg-red-100 text-red-700" },
-}
-
-const LOCATION_LABELS: Record<string, string> = {
-  indoor: "Salão interno",
-  outdoor: "Área externa",
-  bar: "Bar",
-  terrace: "Terraço",
+const STATUS_COLORS: Record<string, string> = {
+  pending: "bg-yellow-100 text-yellow-800",
+  confirmed: "bg-green-100 text-green-800",
+  seated: "bg-blue-100 text-blue-800",
+  completed: "bg-smoke-100 text-smoke-500",
+  cancelled: "bg-red-100 text-red-700",
+  no_show: "bg-red-100 text-red-700",
 }
 
 function formatDateBR(dateStr: string): string {
@@ -36,6 +30,24 @@ function formatDateBR(dateStr: string): string {
 }
 
 export function MyReservations({ reservations, loading, onCancel, onModify }: Props) {
+  const t = useTranslations()
+
+  const STATUS_LABELS: Record<string, { label: string; color: string }> = {
+    pending: { label: t("reservations.status_pending"), color: STATUS_COLORS.pending },
+    confirmed: { label: t("reservations.status_confirmed"), color: STATUS_COLORS.confirmed },
+    seated: { label: t("reservations.status_seated"), color: STATUS_COLORS.seated },
+    completed: { label: t("reservations.status_completed"), color: STATUS_COLORS.completed },
+    cancelled: { label: t("reservations.status_cancelled"), color: STATUS_COLORS.cancelled },
+    no_show: { label: t("reservations.status_no_show"), color: STATUS_COLORS.no_show },
+  }
+
+  const LOCATION_LABELS: Record<string, string> = {
+    indoor: t("reservations.location_indoor"),
+    outdoor: t("reservations.location_outdoor"),
+    bar: t("reservations.location_bar"),
+    terrace: t("reservations.location_terrace"),
+  }
+
   if (loading) {
     return (
       <div className="space-y-3">
@@ -49,7 +61,7 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
   if (reservations.length === 0) {
     return (
       <div className="py-8 text-center text-smoke-400">
-        <p>Você ainda não tem reservas.</p>
+        <p>{t("reservations.empty")}</p>
       </div>
     )
   }
@@ -99,14 +111,14 @@ export function MyReservations({ reservations, loading, onCancel, onModify }: Pr
                     size="sm"
                     onClick={() => onModify(r)}
                   >
-                    Modificar
+                    {t("common.modify")}
                   </Button>
                   <Button
                     variant="danger"
                     size="sm"
                     onClick={() => onCancel(r.id)}
                   >
-                    Cancelar
+                    {t("reservations.cancel")}
                   </Button>
                 </div>
               )}

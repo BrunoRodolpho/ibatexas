@@ -19,7 +19,7 @@ export default function HomeCTA() {
 
   return (
     <div className="mt-8 flex flex-row items-center justify-center lg:justify-start gap-5">
-      <LinkButton href="/search" variant="brand" size="lg">
+      <LinkButton href="/search" variant="brand" size="md">
         {t('home.cta_button_menu')}
       </LinkButton>
       <button

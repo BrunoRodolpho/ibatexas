@@ -71,7 +71,7 @@ describe("Analytics Layer", () => {
     mockGetPostHogClient.mockReturnValue(null)
 
     // Set NODE_ENV to development so isDev = true → console.log fires
-    process.env.NODE_ENV = "development"
+    vi.stubEnv("NODE_ENV", "development")
 
     // Force re-import to reset module state (sessionId, isDev, etc.)
     vi.resetModules()
@@ -82,7 +82,7 @@ describe("Analytics Layer", () => {
   })
 
   afterEach(() => {
-    process.env.NODE_ENV = "test"
+    vi.stubEnv("NODE_ENV", "test")
     teardownBrowserGlobals()
   })
 
@@ -208,8 +208,8 @@ describe("Analytics Layer", () => {
         (c: unknown[]) => c[0] === "add_to_cart",
       )
       expect(addToCartCall).toBeDefined()
-      expect(addToCartCall[1].productId).toBe("prod_01")
-      expect(addToCartCall[1].ibx_session_id).toBeDefined()
+      expect(addToCartCall![1].productId).toBe("prod_01")
+      expect(addToCartCall![1].ibx_session_id).toBeDefined()
     })
 
     it("does not throw when PostHog client is null", () => {
@@ -235,6 +235,12 @@ describe("Analytics Layer", () => {
   // ── Scroll depth ──────────────────────────────────────────────────────────
 
   describe("trackScrollDepth()", () => {
+    // Helper to call scroll handler — avoids TS narrowing scrollHandler to `never`
+    // after vi.stubGlobal calls in the same block
+    function fireScroll(handler: (() => void) | null) {
+      handler?.()
+    }
+
     it("fires pdp_scroll_depth at 25/50/75/100% thresholds", () => {
       const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {})
       sessionStore.set("ibx_session_started", "1")
@@ -260,19 +266,19 @@ describe("Analytics Layer", () => {
 
       // 25%: 0+800=800, 800/3200=25%
       vi.stubGlobal("scrollY", 0)
-      scrollHandler?.()
+      fireScroll(scrollHandler)
 
       // 50%: 800+800=1600, 1600/3200=50%
       vi.stubGlobal("scrollY", 800)
-      scrollHandler?.()
+      fireScroll(scrollHandler)
 
       // 75%: 1600+800=2400, 2400/3200=75%
       vi.stubGlobal("scrollY", 1600)
-      scrollHandler?.()
+      fireScroll(scrollHandler)
 
       // 100%: 2400+800=3200, 3200/3200=100%
       vi.stubGlobal("scrollY", 2400)
-      scrollHandler?.()
+      fireScroll(scrollHandler)
 
       const scrollCalls = consoleSpy.mock.calls.filter(
         (c) => c[0] === "[analytics]" && c[1] === "pdp_scroll_depth",
@@ -312,9 +318,9 @@ describe("Analytics Layer", () => {
 
       // Scroll to 50% multiple times
       vi.stubGlobal("scrollY", 800)
-      scrollHandler?.()
-      scrollHandler?.()
-      scrollHandler?.()
+      fireScroll(scrollHandler)
+      fireScroll(scrollHandler)
+      fireScroll(scrollHandler)
 
       const scrollCalls = consoleSpy.mock.calls.filter(
         (c) => c[0] === "[analytics]" && c[1] === "pdp_scroll_depth" && c[2].depth === 50,

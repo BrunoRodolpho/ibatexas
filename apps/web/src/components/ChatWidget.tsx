@@ -100,13 +100,13 @@ export function ChatWidget() {
           <div className="flex items-center justify-between border-b border-smoke-200 bg-smoke-50 px-4 py-3 md:rounded-t-lg">
             <div className="flex items-center gap-2.5">
               <div className="h-7 w-7 rounded-md bg-charcoal-900 flex items-center justify-center">
-                <span className="text-white text-[10px] font-semibold">IA</span>
+                <span className="text-white text-micro font-semibold">IA</span>
               </div>
               <div>
                 <h2 className="text-sm font-semibold text-charcoal-900">{t("chat.title")}</h2>
                 <div className="flex items-center gap-1 mt-0.5">
                   <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                  <span className="text-[10px] text-[var(--color-text-secondary)]">Online</span>
+                  <span className="text-micro text-[var(--color-text-secondary)]">Online</span>
                 </div>
               </div>
             </div>

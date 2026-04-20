@@ -13,7 +13,7 @@ export function StoryBlock({ compact = false }: { readonly compact?: boolean }) 
   if (compact) {
     return (
       <div className="relative overflow-hidden">
-        <div className="py-10 sm:py-14">
+        <div className="py-6 sm:py-8">
           <div className="max-w-lg mx-auto text-center relative z-10">
             {/* Flame icon */}
             <div className="flex justify-center mb-4">
@@ -63,7 +63,7 @@ export function StoryBlock({ compact = false }: { readonly compact?: boolean }) 
           {/* Decorative divider */}
           <div className="mt-6 flex items-center justify-center gap-3">
             <div className="h-px w-8 bg-smoke-600" />
-            <span className="text-[10px] uppercase tracking-editorial text-smoke-500 font-medium">
+            <span className="text-micro uppercase tracking-editorial text-smoke-500 font-medium">
               {t('story.tagline')}
             </span>
             <div className="h-px w-8 bg-smoke-600" />

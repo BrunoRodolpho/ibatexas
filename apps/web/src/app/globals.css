@@ -92,6 +92,9 @@
   --height-btn-md: 2.75rem;  /* 44px — default, WCAG tap target */
   --height-btn-lg: 3.25rem;  /* 52px — primary CTAs */
 
+  /* ── Layout ─────────────────────────────────────────────────────── */
+  --header-height: 56px;
+
   /* ── Border Radius ─────────────────────────────────────────────── */
   --radius-card: 10px;
 
@@ -117,6 +120,9 @@
 
   /* ── Transition (heavy, expensive feel) ────────────────────────── */
   --ease-luxury: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-micro: 200ms;     /* hover, focus, toggle */
+  --duration-standard: 400ms;  /* panel open, drawer slide */
+  --duration-narrative: 800ms; /* scroll reveal, page entry */
   --duration-800: 800ms;
   --duration-1000: 1000ms;
 
@@ -136,9 +142,10 @@
   --animate-slide-in-bottom: slide-in-bottom 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   --animate-pulse-once: pulse-once 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   --animate-cart-bounce: cart-bounce 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  --animate-steam: steam-rise 3s ease-out infinite;
-  --animate-add-success: add-success 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  /* steam-rise retained for animation shorthand back-compat (unused) */
+  --animate-add-success: add-success 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   --animate-fade-up: fade-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --animate-smoke-reveal: smoke-reveal 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   --animate-heart-pop: heart-pop 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
   --animate-shake: shake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97);
 
@@ -238,6 +245,23 @@
     from { transform: scaleX(1); transform-origin: left; }
     to { transform: scaleX(0); transform-origin: left; }
   }
+  /* Smoke-reveal — content emerges from warm blur, as if smoke clears.
+     Signature IbateXas animation: blur dissolve + subtle scale + lift. */
+  @keyframes smoke-reveal {
+    0% {
+      opacity: 0;
+      filter: blur(6px);
+      transform: translateY(16px) scale(0.97);
+    }
+    50% {
+      filter: blur(2px);
+    }
+    100% {
+      opacity: 1;
+      filter: blur(0);
+      transform: translateY(0) scale(1);
+    }
+  }
   /* Wishlist heart toggle: scale up with overshoot, then settle. */
   @keyframes heart-pop {
     0%   { transform: scale(1); }
@@ -257,12 +281,12 @@
 
   body {
     font-family: var(--font-inter, system-ui, sans-serif);
-    color: #1A1614;
-    background-color: #FAFAF9;
+    color: var(--color-text-primary);
+    background-color: var(--color-surface);
   }
 
   :focus-visible {
-    outline: 2px solid #1A1614;
+    outline: 2px solid var(--color-text-primary);
     outline-offset: 2px;
     border-radius: 2px;
   }
@@ -273,8 +297,8 @@
 
   /* Luxury selection */
   ::selection {
-    background-color: #FFE4CC;
-    color: #3D1800;
+    background-color: var(--color-brand-100);
+    color: var(--color-brand-900);
   }
 
   /* Dark mode overrides — activated by .dark class on <html> */
@@ -334,27 +358,26 @@
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-smoke-50;
   }
 
-  /* Steam effect — CSS-only rising wisps */
-  .steam-effect {
+  /* Warm hover glow — subtle brand warmth on image hover (replaces steam effect) */
+  .warm-hover-glow {
     position: relative;
-    overflow: visible;
   }
-  .steam-effect::after {
+  .warm-hover-glow::after {
     content: '';
     position: absolute;
-    top: -8px;
-    left: 20%;
-    right: 20%;
-    height: 40px;
+    inset: 0;
     pointer-events: none;
-    background: radial-gradient(ellipse at center, rgba(255,255,255,0.3) 0%, transparent 70%);
-    animation: steam-rise 3s ease-out infinite;
-    z-index: 3;
+    background: linear-gradient(to top, rgba(232,93,4,0.05) 0%, transparent 60%);
+    opacity: 0;
+    transition: opacity 400ms cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 2;
+  }
+  .group:hover .warm-hover-glow::after {
+    opacity: 1;
   }
   @media (prefers-reduced-motion: reduce) {
-    .steam-effect::after {
-      animation: none;
-      display: none;
+    .warm-hover-glow::after {
+      transition: none;
     }
   }
 }
@@ -363,9 +386,9 @@
   .skeleton {
     background: linear-gradient(
       90deg,
-      #F5F3F0 25%,
-      #FAFAF9 50%,
-      #F5F3F0 75%
+      var(--color-smoke-100) 25%,
+      var(--color-brand-50) 50%,
+      var(--color-smoke-100) 75%
     );
     background-size: 200% 100%;
     animation: shimmer 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
@@ -386,8 +409,20 @@
 
   /* Premium transition shorthand — one class for standard interactive transitions */
   .transition-premium {
-    transition-property: all;
+    transition-property: color, background-color, border-color, box-shadow, transform, opacity;
     transition-duration: 500ms;
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* Tempo-mapped transitions — fast for micro-interactions, slow for narrative */
+  .transition-micro {
+    transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+    transition-duration: var(--duration-micro);
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .transition-narrative {
+    transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+    transition-duration: var(--duration-narrative);
     transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
   }
 
@@ -451,10 +486,20 @@
     .animate-slide-in-bottom,
     .animate-pulse-once,
     .animate-cart-bounce,
-    .animate-fade-up {
+    .animate-fade-up,
+    .animate-heart-pop,
+    .animate-shake,
+    .animate-add-success,
+    .animate-bounce-y {
       animation: none;
       opacity: 1;
       transform: none;
+    }
+    .animate-spin {
+      animation: none;
+    }
+    .animate-pulse {
+      animation: none;
     }
   }
 }

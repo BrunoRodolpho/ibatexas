@@ -4,6 +4,9 @@ import type { ProductDTO, ProductVariant } from '@ibatexas/types'
 import {
   resolveVariant, resolveCartItemId, buildCartItem, migrateCartState,
   getCartType as getCartTypePure, hasMerchandise as hasMerchandisePure, hasFood as hasFoodPure,
+  hasKitchenOnlyFood as hasKitchenOnlyFoodPure,
+  getKitchenItems as getKitchenItemsPure,
+  getAvailableItems as getAvailableItemsPure,
 } from './cart.logic'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || ''
@@ -75,6 +78,9 @@ interface CartState {
   getCartType: () => "food" | "merchandise" | "mixed" | "empty"
   hasMerchandise: () => boolean
   hasFood: () => boolean
+  hasKitchenOnlyFood: () => boolean
+  getKitchenItems: () => CartItem[]
+  getAvailableItems: () => CartItem[]
 }
 
 export const useCartStore = create<CartState>()(
@@ -166,6 +172,9 @@ export const useCartStore = create<CartState>()(
       getCartType: () => getCartTypePure(get().items),
       hasMerchandise: () => hasMerchandisePure(get().items),
       hasFood: () => hasFoodPure(get().items),
+      hasKitchenOnlyFood: () => hasKitchenOnlyFoodPure(get().items),
+      getKitchenItems: () => getKitchenItemsPure(get().items),
+      getAvailableItems: () => getAvailableItemsPure(get().items),
     }),
     {
       name: 'cart_v1',

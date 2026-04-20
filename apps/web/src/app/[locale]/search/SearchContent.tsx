@@ -32,6 +32,8 @@ export default function SearchContent() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const initializedRef = useRef(false)
   const loadMoreRef = useRef<HTMLDivElement>(null)
+  const filterTriggerRef = useRef<HTMLButtonElement>(null)
+  const filterPanelRef = useRef<HTMLDivElement>(null)
 
   // Disable browser scroll restoration on reload — always start at top
   useEffect(() => {
@@ -49,6 +51,27 @@ export default function SearchContent() {
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [isMobileFilterOpen])
+
+  // Focus management: move focus into the panel on open, return to trigger on close
+  const prevFilterOpenRef = useRef(false)
+  useEffect(() => {
+    if (isMobileFilterOpen && !prevFilterOpenRef.current) {
+      // Panel just opened — focus the first interactive element inside
+      requestAnimationFrame(() => {
+        const panel = filterPanelRef.current
+        if (panel) {
+          const firstFocusable = panel.querySelector<HTMLElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          )
+          firstFocusable?.focus()
+        }
+      })
+    } else if (!isMobileFilterOpen && prevFilterOpenRef.current) {
+      // Panel just closed — return focus to the trigger button
+      filterTriggerRef.current?.focus()
+    }
+    prevFilterOpenRef.current = isMobileFilterOpen
   }, [isMobileFilterOpen])
 
   const { selectedFilters, setFilters, resetFilters } = useUIStore()
@@ -282,7 +305,7 @@ export default function SearchContent() {
   return (
     <div className="min-h-[60vh] bg-smoke-50">
       {/* ── Category row + filter trigger — sticky below header ── */}
-      <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200">
+      <div className="sticky top-[var(--header-height)] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200">
         <Container padding="none" className="relative">
           <div className="flex items-center gap-1 px-5 sm:px-6 lg:px-8 py-2">
             <div className="flex-1 overflow-hidden">
@@ -294,6 +317,7 @@ export default function SearchContent() {
               />
             </div>
             <button
+              ref={filterTriggerRef}
               onClick={() => setIsMobileFilterOpen((prev) => !prev)}
               className={`relative flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-full border transition-colors ${
                 hasNonCategoryFilters || isMobileFilterOpen
@@ -301,6 +325,8 @@ export default function SearchContent() {
                   : 'border-smoke-200 text-smoke-400 hover:text-charcoal-900 hover:border-smoke-300'
               }`}
               aria-label={t('search.filter')}
+              aria-expanded={isMobileFilterOpen}
+              aria-controls="filter-panel"
             >
               {isMobileFilterOpen ? (
                 <X className="w-3.5 h-3.5" strokeWidth={2} />
@@ -323,10 +349,17 @@ export default function SearchContent() {
                 aria-hidden="true"
               />
               {/* Unified single-row filter panel */}
-              <div className="absolute top-full left-0 right-0 z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-5 sm:px-6 lg:px-8 py-2.5 animate-fade-up">
+              <div
+                ref={filterPanelRef}
+                id="filter-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-label={t('search.filter_panel_label')}
+                className="absolute top-full left-0 right-0 z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-5 sm:px-6 lg:px-8 py-2.5 animate-fade-up"
+              >
                 <div className="flex flex-wrap items-center gap-1.5">
                   {/* Tags label + pills */}
-                  <span className="text-[10px] font-medium uppercase tracking-editorial text-smoke-400 mr-0.5">
+                  <span className="text-micro font-medium uppercase tracking-editorial text-smoke-400 mr-0.5">
                     {t('search.tags')}
                   </span>
                   {TAGS.map((tag) => {
@@ -350,7 +383,7 @@ export default function SearchContent() {
                   <div className="w-px h-4 bg-smoke-300 mx-1 hidden sm:block" />
 
                   {/* Sort label + pills */}
-                  <span className="text-[10px] font-medium uppercase tracking-editorial text-smoke-400 mr-0.5">
+                  <span className="text-micro font-medium uppercase tracking-editorial text-smoke-400 mr-0.5">
                     {t('search.sort_label')}
                   </span>
                   {SORT_OPTIONS.map((opt) => {
@@ -376,7 +409,7 @@ export default function SearchContent() {
                       <div className="w-px h-4 bg-smoke-300 mx-1 hidden sm:block" />
                       <button
                         onClick={handleClearFiltersOnly}
-                        className="flex items-center gap-0.5 rounded-full border border-brand-200 text-brand-500 px-2 py-0.5 text-[11px] font-medium hover:bg-brand-50 transition-colors"
+                        className="flex items-center gap-0.5 rounded-full border border-brand-200 text-brand-500 px-2 py-0.5 text-xs font-medium hover:bg-brand-50 transition-colors"
                       >
                         <X className="w-3 h-3" />
                         Limpar Filtros
@@ -390,7 +423,7 @@ export default function SearchContent() {
         </Container>
       </div>
 
-      <Container className="py-16 lg:py-24">
+      <Container className="py-8 lg:py-12">
         {/* ══════════════════════════════════════════════════════════
             BROWSE MODE — discovery-first layout
             ══════════════════════════════════════════════════════════ */}
@@ -448,8 +481,8 @@ export default function SearchContent() {
         )}
         {!isZeroState && !isLoading && (
           <div className="flex items-center justify-between mt-2 mb-8">
-            <p className="text-base font-medium text-smoke-500">
-              {allProducts.length} {allProducts.length === 1 ? 'produto' : 'produtos'}
+            <p className="text-base font-medium text-smoke-500" role="status" aria-live="polite">
+              {totalFound} {totalFound === 1 ? 'produto' : 'produtos'}
               {searchQuery && ` para "${searchQuery}"`}
             </p>
             {hasActiveFilters && (
@@ -497,7 +530,7 @@ export default function SearchContent() {
               {/* Load More sentinel + skeleton */}
               {hasMore && (
                 <div ref={loadMoreRef} className="pt-6 pb-4">
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8 gap-y-6">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-6 lg:gap-y-8">
                     {['skel-a', 'skel-b', 'skel-c', 'skel-d'].map((id) => (
                       <div key={id} className="overflow-hidden rounded-card animate-pulse">
                         <div className="aspect-[4/3] rounded-card bg-smoke-200" />

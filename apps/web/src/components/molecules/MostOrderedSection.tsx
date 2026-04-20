@@ -87,7 +87,7 @@ export function MostOrderedSection({ products, onAddToCart }: MostOrderedSection
 
             {/* Content */}
             <div className="flex-1 p-4 flex flex-col justify-center">
-              <h3 className="font-display text-display-2xs font-semibold text-charcoal-900 tracking-display mb-1 group-hover:text-charcoal-700 transition-colors duration-500">
+              <h3 className="font-display text-display-2xs font-semibold text-charcoal-900 tracking-display mb-1 group-hover:text-charcoal-700 transition-micro">
                 <Link
                   href={`/loja/produto/${product.id}`}
                   className="after:absolute after:inset-0 after:content-['']"

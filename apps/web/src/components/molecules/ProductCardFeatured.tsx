@@ -150,7 +150,7 @@ export const ProductCardFeatured = ({
 
           {/* Details — right side on desktop, below on mobile */}
           <div className="md:col-span-2 p-5 md:p-8 flex flex-col justify-center">
-            <h3 className="font-display text-display-xs md:text-display-sm tracking-display text-charcoal-900 leading-snug group-hover:text-charcoal-700 transition-colors duration-500 ease-luxury">
+            <h3 className="font-display text-display-xs md:text-display-sm tracking-display text-charcoal-900 leading-snug group-hover:text-charcoal-700 transition-micro">
               <Link href={linkHref} className="after:absolute after:inset-0 after:content-['']" onClick={handleCardClick}>
                 {title}
               </Link>

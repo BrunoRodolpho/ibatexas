@@ -83,6 +83,8 @@ export function HeroVideo({ src, poster, className = '' }: HeroVideoProps) {
         alt=""
         aria-hidden
         fill
+        sizes="(min-width: 1024px) 52vw, 100vw"
+        priority
         className="object-contain object-left brightness-[0.98] sepia-[0.03]"
       />
 

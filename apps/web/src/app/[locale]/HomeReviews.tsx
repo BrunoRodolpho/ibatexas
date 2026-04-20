@@ -160,7 +160,7 @@ export function HomeReviews() {
       <Container size="xl" className="py-16 lg:py-24">
         {/* Section header — small caps eyebrow, then headline */}
         <div className="mb-10 lg:mb-14">
-          <p className="text-[11px] font-semibold uppercase tracking-editorial text-brand-600">
+          <p className="text-xs font-semibold uppercase tracking-editorial text-brand-600">
             {t('reviews_section.subtitle')}
           </p>
           <h2 className="mt-2 font-display text-display-xs sm:text-display-sm font-semibold text-charcoal-900 tracking-display max-w-[640px]">
@@ -253,13 +253,13 @@ export function HomeReviews() {
                     </p>
                     <Link
                       href={`/loja/produto/${review.productId}`}
-                      className="text-[11px] uppercase tracking-editorial text-smoke-500 hover:text-brand-600 transition-colors"
+                      className="text-xs uppercase tracking-editorial text-smoke-500 hover:text-brand-600 transition-colors"
                     >
                       {review.productTitle}
                     </Link>
                   </div>
                   {review.createdAt && (
-                    <span className="text-[11px] text-smoke-500 tabular-nums whitespace-nowrap">
+                    <span className="text-xs text-smoke-500 tabular-nums whitespace-nowrap">
                       {formatReviewDate(review.createdAt)}
                     </span>
                   )}

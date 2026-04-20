@@ -33,7 +33,7 @@ export const QuantitySelector: React.FC<QuantitySelectorProps> = ({
 
   // xs: dense (cart drawer rows). sm: comfortable. md: default. lg: PDP.
   const sizeMap = {
-    xs: { container: 'h-7', btn: 'w-7 h-7 text-sm', count: 'w-7 text-[11px]' },
+    xs: { container: 'h-7', btn: 'w-7 h-7 text-sm', count: 'w-7 text-xs' },
     sm: { container: 'h-9', btn: 'w-9 h-9 text-base', count: 'w-9 text-xs' },
     md: { container: 'h-11', btn: 'w-11 h-11 text-base', count: 'w-12 text-sm' },
     lg: { container: 'h-12', btn: 'w-12 h-12 text-lg', count: 'w-14 text-base' },

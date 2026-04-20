@@ -4,7 +4,7 @@ export default function SearchLoading() {
   return (
     <div className="min-h-screen bg-smoke-50">
       {/* Search bar skeleton */}
-      <div className="sticky top-[56px] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 py-3">
+      <div className="sticky top-[var(--header-height)] z-20 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 py-3">
         <Container>
           <div className="h-10 w-full rounded-sm skeleton" />
         </Container>
@@ -25,7 +25,7 @@ export default function SearchLoading() {
         </div>
 
         {/* Product grid skeleton */}
-        <div className="pt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-8 lg:gap-y-10">
+        <div className="pt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-6 lg:gap-y-8">
           {Array.from({ length: 8 }, (_, i) => `skel-product-${i}`).map((id) => (
             <div key={id}>
               <div className="aspect-[4/5] rounded-card skeleton" />

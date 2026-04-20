@@ -18,6 +18,7 @@ import { formatBRL } from '@/lib/format'
 export function StickyCartBar() {
   const t = useTranslations()
   const pathname = usePathname()
+  const items = useCartStore((s) => s.items)
   const getTotal = useCartStore((s) => s.getTotal)
   const getItemCount = useCartStore((s) => s.getItemCount)
   const openCartDrawer = useUIStore((s) => s.openCartDrawer)
@@ -112,7 +113,7 @@ export function StickyCartBar() {
           <div className="flex items-center gap-3">
             <div className="relative">
               <ShoppingBag className="w-5 h-5" strokeWidth={1.5} />
-              <span className="absolute -top-1.5 -right-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-brand-500 px-1 text-[10px] font-bold text-white">
+              <span className="absolute -top-1.5 -right-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-brand-500 px-1 text-micro font-bold text-white">
                 {itemCount}
               </span>
             </div>
@@ -121,18 +122,18 @@ export function StickyCartBar() {
                 {t('sticky_cart.items', { count: itemCount })}
               </span>
               {subtotal < FREE_DELIVERY_THRESHOLD ? (
-                <span className="text-[10px] text-smoke-400">
+                <span className="text-micro text-smoke-400">
                   {t('sticky_cart.free_delivery_progress', {
                     remaining: formatBRL(FREE_DELIVERY_THRESHOLD - subtotal),
                   })}
                 </span>
               ) : (
-                <span className="text-[10px] text-brand-400 flex items-center gap-0.5">
+                <span className="text-micro text-brand-400 flex items-center gap-0.5">
                   <Check className="w-3 h-3" strokeWidth={2.5} />
                   {t('sticky_cart.free_delivery_reached')}
                 </span>
               )}
-              <span className="text-[10px] text-smoke-400 flex items-center gap-0.5">
+              <span className="text-micro text-smoke-400 flex items-center gap-0.5">
                 <Clock className="w-3 h-3" strokeWidth={1.5} />
                 {estimatedMinutes
                   ? t('sticky_cart.estimated_delivery', { minutes: estimatedMinutes })

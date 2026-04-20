@@ -114,9 +114,9 @@ export const CarouselCard = ({
           </div>
         )}
 
-        {/* Tag pill — moved to top-center to make room for the wishlist heart */}
+        {/* Tag pill — top-left, frosted glass (matches Badge component style) */}
         {tags?.includes('popular') && (
-          <div className="absolute top-[5%] left-1/2 -translate-x-1/2 z-10 bg-brand-500/90 backdrop-blur-sm text-white px-[5%] py-[2%] text-[clamp(7px,2vw,9px)] font-semibold uppercase tracking-editorial rounded-sm">
+          <div className="absolute top-[5%] left-[4%] z-10 bg-white/70 backdrop-blur-sm text-charcoal-900 ring-1 ring-smoke-200/50 px-[4%] py-[2%] text-[clamp(7px,2vw,9px)] font-medium uppercase tracking-editorial rounded-sm">
             Popular
           </div>
         )}

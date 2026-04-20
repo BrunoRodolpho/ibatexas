@@ -10,7 +10,7 @@ interface ScrollRevealProps {
   /** How much of the element must be visible (0–1) */
   readonly threshold?: number
   /** Animation variant */
-  readonly animation?: 'fade-up' | 'scale-up' | 'slide-left' | 'slide-right' | 'zoom'
+  readonly animation?: 'fade-up' | 'scale-up' | 'slide-left' | 'slide-right' | 'zoom' | 'smoke-reveal'
 }
 
 /**
@@ -56,7 +56,9 @@ export function ScrollReveal({
     return () => observer.disconnect()
   }, [delay, threshold])
 
-  const baseStyle = 'transition-all duration-1000 ease-[cubic-bezier(0.16,1,0.3,1)]'
+  const baseStyle = 'transition-all ease-[cubic-bezier(0.16,1,0.3,1)]'
+  // Smoke-reveal uses a longer duration (1.2s) for a deliberate, atmospheric entrance
+  const durationClass = animation === 'smoke-reveal' ? 'duration-[1200ms]' : 'duration-1000'
 
   const animationStyles: Record<string, { hidden: string; visible: string }> = {
     'fade-up': {
@@ -79,6 +81,10 @@ export function ScrollReveal({
       hidden: 'opacity-0 scale-75',
       visible: 'opacity-100 scale-100',
     },
+    'smoke-reveal': {
+      hidden: 'opacity-0 blur-sm scale-[0.97] translate-y-6',
+      visible: 'opacity-100 blur-0 scale-100 translate-y-0',
+    },
   }
 
   const style = animationStyles[animation] || animationStyles['fade-up']
@@ -86,7 +92,7 @@ export function ScrollReveal({
   return (
     <div
       ref={ref}
-      className={`${baseStyle} ${isVisible ? style.visible : style.hidden} ${className}`}
+      className={`${baseStyle} ${durationClass} ${isVisible ? style.visible : style.hidden} ${className}`}
     >
       {children}
     </div>

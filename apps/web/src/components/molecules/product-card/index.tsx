@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import { formatBRL } from '@/lib/format'
 import { track } from '@/domains/analytics'
 import { useUIStore } from '@/domains/ui'
+import { useCartStore } from '@/domains/cart'
 
 import { ProductCardVertical } from './ProductCardVertical'
 import { ProductCardHorizontal } from './ProductCardHorizontal'
@@ -62,11 +63,15 @@ export const ProductCard = ({
   const handleQuickAdd = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
+    const isFirstItem = useCartStore.getState().items.length === 0
     track('quick_add_clicked', { productId: id, source: 'listing' })
     try {
       await Promise.resolve(onAddToCart?.())
       setIsAdded(true)
-      setTimeout(() => setIsAdded(false), 2000)
+      setTimeout(() => setIsAdded(false), 2500)
+      if (isFirstItem) {
+        addToast(t('toast.first_item_added'), 'success')
+      }
     } catch (err) {
       track('quick_add_failed', {
         productId: id,

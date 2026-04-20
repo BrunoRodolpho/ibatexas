@@ -43,12 +43,13 @@ const nextConfig = {
             value: [
               "default-src 'self'",
               // unsafe-eval only needed in dev for Next.js hot-reload
-              `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""} ${posthogHost} https://*.posthog.com`,
+              `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""} ${posthogHost} https://*.posthog.com https://js.stripe.com`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com https://*.cloudinary.com https://qr.stripe.com",
-              `connect-src 'self' ${posthogHost} https://*.posthog.com ${apiUrl}${isDev ? ' http://*:3001' : ''}`,
+              `connect-src 'self' ${posthogHost} https://*.posthog.com ${apiUrl}${isDev ? ' http://*:3001' : ''} https://api.stripe.com`,
               "font-src 'self' https://fonts.gstatic.com",
               "media-src 'self'",
+              "frame-src 'self' https://js.stripe.com",
               "frame-ancestors 'none'",
             ].join("; "),
           },

@@ -30,13 +30,13 @@ export default function ShopLayoutContent({ children }: ShopLayoutContentProps) 
   return (
     <div className="min-h-screen bg-smoke-50">
       {/* Header with category navigation — sticky below header */}
-      <div className="sticky top-[56px] z-10 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200">
+      <div className="sticky top-[var(--header-height)] z-10 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200">
         <Container>
           {/* Category Filter Bar — typographic, no pills */}
           <div className="flex gap-6 pt-3 pb-3 overflow-x-auto scrollbar-hide">
             <Link href={"/loja"}>
               <span
-                className={`text-xs font-medium uppercase tracking-editorial transition-colors duration-500 ease-luxury cursor-pointer ${
+                className={`text-xs font-medium uppercase tracking-editorial transition-micro cursor-pointer ${
                   pathname === "/loja"
                     ? "text-charcoal-900 border-b border-charcoal-900 pb-0.5"
                     : "text-smoke-400 hover:text-charcoal-900"
@@ -48,7 +48,7 @@ export default function ShopLayoutContent({ children }: ShopLayoutContentProps) 
             {categories.map((category) => (
               <Link key={category.handle} href={`/loja/${category.handle}`}>
                 <span
-                  className={`text-xs font-medium uppercase tracking-editorial transition-colors duration-500 ease-luxury cursor-pointer ${
+                  className={`text-xs font-medium uppercase tracking-editorial transition-micro cursor-pointer ${
                     pathname === `/loja/${category.handle}`
                       ? "text-charcoal-900 border-b border-charcoal-900 pb-0.5"
                       : "text-smoke-400 hover:text-charcoal-900"

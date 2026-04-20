@@ -140,8 +140,8 @@ export const Sheet: React.FC<SheetProps> = ({
           position === 'bottom'
             ? 'bottom-0 left-0 right-0 max-h-[85vh] rounded-t-card animate-slide-in-bottom'
             : 'top-0 bottom-0 w-[90vw] max-w-sm h-full',
-          position === 'right' && 'right-0 animate-slide-in-right',
-          position === 'left' && 'left-0 animate-slide-in-left',
+          position === 'right' && 'right-0 left-auto animate-slide-in-right',
+          position === 'left' && 'left-0 right-auto animate-slide-in-left',
         )}
         aria-labelledby="sheet-title"
       >

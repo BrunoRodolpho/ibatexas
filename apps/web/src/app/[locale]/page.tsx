@@ -5,8 +5,9 @@ import HomeCarousel from './HomeCarousel'
 import HomeCTA from './HomeCTA'
 import { HomeFavorites } from './HomeFavorites'
 import { ReorderCard } from '@/components/molecules/ReorderCard'
-import { FirstVisitBanner } from '@/components/molecules/FirstVisitBanner'
 import { StoryBlock } from '@/components/molecules/StoryBlock'
+import { HomeBanner } from './HomeBanner'
+import { WAVE_FILL } from '@/components/molecules/wave-paths'
 
 import { PersonalizationReviews, PersonalizationRecommendations, PersonalizationRecentlyViewed } from './PersonalizationIslands'
 
@@ -38,7 +39,7 @@ export default async function Home() {
       <section className="relative bg-smoke-50 overflow-hidden" data-hero>
 
         {/* Video — positioned as backdrop on the left (desktop only) */}
-        <div className="hidden lg:block absolute top-4 bottom-0 left-[2%] w-[52%] pointer-events-none">
+        <div className="hidden lg:block absolute top-4 bottom-0 left-[2.5%] w-[52%] pointer-events-none">
           <HeroVideo
             src="/videos/pitmaster-hero.mp4"
             poster="/videos/pitmaster-hero-placeholder.png"
@@ -53,7 +54,7 @@ export default async function Home() {
             Mobile: tighter top padding so the video lands above the fold and
             sits flush against the headline (was py-32 = 8rem top, way too
             much white space before the brand even appears). */}
-        <Container size="xl" className="relative pt-12 pb-16 lg:pt-32 lg:pb-40 lg:min-h-[420px] lg:flex lg:items-start">
+        <Container size="xl" className="relative pt-3 pb-2 lg:pt-8 lg:pb-6 lg:min-h-[420px] lg:flex lg:items-start">
 
           {/* Mobile — video fills full width, bleeds past container padding.
               `-mb-4` pulls the headline up so it kisses the video edge,
@@ -67,7 +68,7 @@ export default async function Home() {
           </div>
 
           {/* Text — centered on desktop, overlaps video edge */}
-          <div className="text-center lg:text-left lg:ml-[46%] lg:max-w-[600px] animate-reveal">
+          <div className="text-center lg:text-left lg:ml-[52.5%] lg:max-w-[600px] animate-reveal">
             <Heading as="h1" className="font-display text-display-md sm:text-display-lg lg:text-display-xl font-bold text-brand-500 leading-[1.02] tracking-display">
               {t('home.hero_title')}
             </Heading>
@@ -97,23 +98,36 @@ export default async function Home() {
                  → CLOSING CTA
           ────────────────────────────────────────────────────────────── */}
 
+      {/* ── Curved banner (admin-configurable, Amorino-style) ── */}
+      <div className="relative z-10 pt-0 pb-0">
+        <HomeBanner />
+      </div>
+
       {/* ── Personal nudges (only render for the right audience) ── */}
-      <Container size="xl" className="pt-6 pb-2">
-        <FirstVisitBanner />
-      </Container>
       <ReorderCard />
 
       {/* ═══════════════════════════════════════════════════════════════
           SECTION 2 — Bold statement + infinite product carousel
           ═══════════════════════════════════════════════════════════════ */}
       {/* ── Brand highlight — bold orange statement ──────────────── */}
-      <section className="relative bg-brand-500 overflow-hidden">
+      <section className="relative bg-brand-500 overflow-hidden -mt-3 sm:-mt-5 lg:-mt-7">
+        {/* Curved top edge — same symmetric wave the text banner follows */}
+        <div className="absolute top-0 left-0 w-full overflow-hidden leading-[0]">
+          <svg
+            viewBox="0 0 1440 80"
+            preserveAspectRatio="none"
+            className="block w-full h-[30px] sm:h-[50px] lg:h-[70px]"
+          >
+            <path d={WAVE_FILL} fill="var(--color-smoke-50, #FAF8F5)" />
+          </svg>
+        </div>
+
         {/* Subtle radial glow */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_rgba(255,255,255,0.15)_0%,_transparent_70%)] pointer-events-none" />
         {/* Diagonal texture lines */}
         <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: 'repeating-linear-gradient(135deg, white 0px, white 1px, transparent 1px, transparent 12px)' }} />
 
-        <Container size="xl" className="relative py-24 lg:py-32 text-center">
+        <Container size="xl" className="relative pt-32 pb-24 lg:pt-40 lg:pb-32 text-center">
           {/* Reveal sequence — 4-step rhythm 0/150/300/450ms (Phase 4.C6).
               Was 100/300/600/900 — too slow, last element took 1.4s to appear. */}
           {/* Decorative top */}
@@ -167,12 +181,13 @@ export default async function Home() {
         {/* Canonical `loose` rhythm (py-24 lg:py-32) — matches the orange brand
             section above. Was pt-10 lg:pt-14 pb-24 lg:pb-32, an asymmetric
             one-off that made this section read as smaller than its neighbors. */}
-        <Container size="xl" className="py-24 lg:py-32">
+        <Container size="xl" className="pt-12 pb-24 lg:pt-16 lg:pb-32">
           {/* Story / process / stats — uses the standardized 0/150/300/450
               rhythm. Process steps tighten to 50ms-per-step so all four are
               within the 450ms cap. */}
-          {/* Brand narrative */}
-          <ScrollReveal animation="fade-up" delay={0}>
+          {/* Brand narrative — smoke-reveal: content emerges from blur,
+              as if smoke clears to reveal the story. Signature IbateXas. */}
+          <ScrollReveal animation="smoke-reveal" delay={0}>
             <StoryBlock compact />
           </ScrollReveal>
 
@@ -180,7 +195,7 @@ export default async function Home() {
           <ScrollReveal animation="fade-up" delay={150}>
             <div className="flex items-center justify-center gap-4 my-6 lg:my-8">
               <div className="h-px flex-1 bg-smoke-600/30" />
-              <span className="text-[10px] uppercase tracking-editorial text-smoke-500 font-medium">
+              <span className="text-micro uppercase tracking-editorial text-smoke-500 font-medium">
                 {t('home.process_title')}
               </span>
               <div className="h-px flex-1 bg-smoke-600/30" />
@@ -207,10 +222,10 @@ export default async function Home() {
           </div>
 
           {/* Stats — integrated into same dark section */}
-          <div className="mt-24 lg:mt-32 pt-16 lg:pt-24 border-t border-smoke-600/20">
+          <div className="mt-12 lg:mt-16 pt-8 lg:pt-12 border-t border-smoke-600/20">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-8 sm:gap-4">
               {stats.map((stat, i) => (
-                <ScrollReveal key={`stat-${stat.label}`} animation="scale-up" delay={i * 150}>
+                <ScrollReveal key={`stat-${stat.label}`} animation="smoke-reveal" delay={i * 150}>
                   <div className="flex flex-col items-center text-center">
                     <span className="font-display text-display-sm sm:text-display-md font-bold text-white tabular-nums">{stat.value}</span>
                     <span className="mt-3 text-sm tracking-editorial text-smoke-300/70">{stat.label}</span>
@@ -237,7 +252,7 @@ export default async function Home() {
         <Container size="xl" className="py-32 lg:py-40">
           <div className="max-w-xl mx-auto text-center">
             {/* Closing CTA — 3 elements in the 0/150/300 rhythm. */}
-            <ScrollReveal animation="scale-up" delay={0}>
+            <ScrollReveal animation="smoke-reveal" delay={0}>
               <Heading as="h2" className="font-display text-display-sm sm:text-display-md font-semibold text-charcoal-900 leading-tight tracking-display">
                 {t('home.cta_title')}
               </Heading>

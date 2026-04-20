@@ -123,7 +123,7 @@ export function HomeRecommendations() {
                       </Link>
                     </h3>
                     {product.reason && (
-                      <p className="text-[10px] text-smoke-400 mt-1 truncate">{product.reason}</p>
+                      <p className="text-micro text-smoke-400 mt-1 truncate">{product.reason}</p>
                     )}
                     <p className="mt-1.5 text-sm font-semibold tabular-nums text-charcoal-900">
                       {priceFormatted}

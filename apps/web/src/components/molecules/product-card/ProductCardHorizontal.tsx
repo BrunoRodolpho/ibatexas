@@ -40,7 +40,7 @@ export function ProductCardHorizontal({
 
   return (
     <div className="group relative">
-      <div className="surface-card rounded-card overflow-hidden transition-all duration-500 ease-luxury group-hover:shadow-card-hover">
+      <div className="surface-card rounded-card overflow-hidden transition-premium group-hover:shadow-card-hover">
         <div className="flex flex-row">
           {/* Square thumbnail */}
           <div className="relative w-28 h-28 flex-shrink-0 overflow-hidden bg-smoke-100">

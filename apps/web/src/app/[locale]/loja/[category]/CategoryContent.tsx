@@ -72,7 +72,7 @@ export default function CategoryContent({ category }: CategoryContentProps) {
   // is stable. The grid area swaps between skeleton, real grid, and empty
   // state — only that area changes during loading.
   return (
-    <Container className="py-16 lg:py-24">
+    <Container className="py-8 lg:py-12">
       <div className="text-center mb-12">
         <Heading variant="h1" className="text-charcoal-900 mb-4">
           {t(categoryKey)}
