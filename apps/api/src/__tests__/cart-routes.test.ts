@@ -20,12 +20,44 @@ const mockRk = vi.hoisted(() => vi.fn());
 const mockMedusaStore = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 
+const MockMedusaRequestError = vi.hoisted(() =>
+  class extends Error {
+    statusCode: number;
+    constructor(statusCode: number, message: string) {
+      super(message);
+      this.statusCode = statusCode;
+    }
+  }
+);
+
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
   estimateDelivery: vi.fn(async () => ({ success: true })),
   createCheckout: vi.fn(async () => ({ success: true })),
   reaisToCentavos: (amount: number) => Math.round(amount * 100),
+  MedusaRequestError: MockMedusaRequestError,
+  cancelStalePaymentIntent: vi.fn().mockResolvedValue(undefined),
+  loadSchedule: vi.fn().mockResolvedValue({ days: {} }),
+  getMealPeriodFromSchedule: vi.fn().mockReturnValue("lunch"),
+}));
+
+vi.mock("@ibatexas/domain", () => ({
+  createCustomerService: () => ({
+    getById: vi.fn().mockResolvedValue(null),
+  }),
+  createPaymentQueryService: () => ({
+    getActiveByOrderId: vi.fn().mockResolvedValue(null),
+  }),
+  prisma: {
+    orderProjection: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+  },
+}));
+
+vi.mock("@ibatexas/nats-client", () => ({
+  publishNatsEvent: vi.fn(),
 }));
 
 vi.mock("../routes/admin/_shared.js", () => ({
@@ -508,15 +540,17 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
     expect(body.order.id).toBe("order_02");
   });
 
-  it("returns 401 when not authenticated", async () => {
+  it("returns 404 when order not found (unauthenticated)", async () => {
+    // Route uses optionalAuth to support stripe-return polling for PIX orders
+    mockMedusaAdmin.mockResolvedValue({ order: undefined });
     const app = await buildTestServer();
     const res = await app.inject({
       method: "GET",
-      url: "/api/cart/orders/order_01",
+      url: "/api/cart/orders/order_not_found",
       // No x-customer-id header
     });
 
-    expect(res.statusCode).toBe(401);
+    expect(res.statusCode).toBe(404);
   });
 });
 

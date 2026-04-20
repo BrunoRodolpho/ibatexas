@@ -48,6 +48,8 @@ vi.mock("@ibatexas/tools", () => {
     GetOrderHistoryTool: makeTool("get_order_history"),
     checkOrderStatus: vi.fn(async () => ({ status: "pending" })),
     CheckOrderStatusTool: makeTool("check_order_status"),
+    checkPaymentStatus: vi.fn(async () => ({ status: "pending" })),
+    CheckPaymentStatusTool: makeTool("check_payment_status"),
     cancelOrder: vi.fn(async () => ({ success: true })),
     CancelOrderTool: makeTool("cancel_order"),
     amendOrder: vi.fn(async () => ({ success: true })),
@@ -105,8 +107,8 @@ const ctx: AgentContext = {
 // ── TOOL_DEFINITIONS ──────────────────────────────────────────────────────────
 
 describe("TOOL_DEFINITIONS", () => {
-  it("has 34 registered tools", () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(34)
+  it("has 35 registered tools", () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(35)
   })
 
   it("uses input_schema (snake_case) for Anthropic API", () => {

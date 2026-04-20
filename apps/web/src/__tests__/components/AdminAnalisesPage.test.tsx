@@ -28,6 +28,7 @@ vi.mock("lucide-react", () => ({
   Percent: "Percent",
   TrendingDown: "TrendingDown",
   Minus: "Minus",
+  BarChart2: "BarChart2",
 }))
 
 import { AdminAnalisesPage } from "../../../../../packages/ui/src/organisms/AdminAnalisesPage"

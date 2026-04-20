@@ -12,6 +12,7 @@ const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
+const mockCapturePayment = vi.hoisted(() => vi.fn());
 
 vi.mock("stripe", () => ({
   default: class MockStripe {
@@ -23,10 +24,36 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
   medusaAdmin: mockMedusaAdmin,
+  medusaStore: vi.fn(),
+  withLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+}));
+
+vi.mock("@ibatexas/domain", () => ({
+  createOrderService: () => ({
+    markPaid: vi.fn().mockResolvedValue({ success: true }),
+    cancel: vi.fn().mockResolvedValue({ success: true }),
+    capturePayment: mockCapturePayment,
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn().mockResolvedValue({ id: "pay_01", version: 1 }),
+    transitionStatus: vi.fn().mockResolvedValue({ id: "pay_01", version: 1 }),
+    reconcileFromWebhook: vi.fn().mockResolvedValue({ id: "pay_01", version: 2 }),
+  }),
+  createPaymentQueryService: () => ({
+    getActiveByOrderId: vi.fn().mockResolvedValue(null),
+    getByStripePaymentIntentId: vi.fn().mockResolvedValue(null),
+  }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(),
+  }),
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
+}));
+
+vi.mock("../jobs/pix-expiry-monitor.js", () => ({
+  markPixPaid: vi.fn().mockResolvedValue(undefined),
 }));
 
 async function buildTestServer() {
@@ -227,17 +254,20 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
 
-    mockMedusaAdmin.mockResolvedValueOnce({
-      order: {
-        status: "pending",
-        customer_id: "cus_01",
-        items: [
-          { variant_id: "var_01", quantity: 2, unit_price: 89, title: "Costela", product_id: "prod_01" },
-        ],
-      },
+    mockCapturePayment.mockResolvedValueOnce({
+      customerId: "cus_01",
+      displayId: 42,
+      customerEmail: "a@b.com",
+      customerName: "Test",
+      customerPhone: "+5511",
+      totalInCentavos: 17800,
+      subtotalInCentavos: 15800,
+      shippingInCentavos: 2000,
+      items: [{ productId: "prod_01", variantId: "var_01", quantity: 2, priceInCentavos: 8900, title: "Costela" }],
+      paymentMethod: "pix",
+      deliveryType: "pickup",
+      tipInCentavos: 0,
     });
-    mockMedusaAdmin.mockResolvedValueOnce({}); // capture-payment
-    mockMedusaAdmin.mockResolvedValueOnce({}); // update metadata
     mockPublishNatsEvent.mockResolvedValue(undefined);
 
     const app = await buildTestServer();
@@ -252,19 +282,11 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
     });
 
     expect(res.statusCode).toBe(200);
-
-    // Fetch order
-    expect(mockMedusaAdmin).toHaveBeenCalledWith(
-      expect.stringContaining("/admin/orders/order_01"),
+    expect(mockCapturePayment).toHaveBeenCalledWith(
+      "order_01",
+      "pi_test_123",
+      expect.anything(),
     );
-
-    // Capture payment
-    expect(mockMedusaAdmin).toHaveBeenCalledWith(
-      expect.stringContaining("/admin/orders/order_01/capture-payment"),
-      expect.objectContaining({ method: "POST" }),
-    );
-
-    // Publish order.placed event
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
       "order.placed",
       expect.objectContaining({
@@ -290,13 +312,8 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
 
-    mockMedusaAdmin.mockResolvedValueOnce({
-      order: {
-        status: "completed",
-        customer_id: "cus_01",
-        items: [],
-      },
-    });
+    // Service returns null → already processed, no new order publishing
+    mockCapturePayment.mockResolvedValueOnce(null);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -310,9 +327,10 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
     });
 
     expect(res.statusCode).toBe(200);
-    // Only 1 call to fetch order — no capture-payment call
-    expect(mockMedusaAdmin).toHaveBeenCalledTimes(1);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+      "order.placed",
+      expect.anything(),
+    );
   });
 
   it("skips when stripePaymentIntentId already set in order metadata", async () => {
@@ -322,14 +340,8 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
 
-    mockMedusaAdmin.mockResolvedValueOnce({
-      order: {
-        status: "pending",
-        customer_id: "cus_01",
-        metadata: { stripePaymentIntentId: "pi_already_set" },
-        items: [],
-      },
-    });
+    // Service returns null → pi already linked
+    mockCapturePayment.mockResolvedValueOnce(null);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -343,8 +355,10 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(mockMedusaAdmin).toHaveBeenCalledTimes(1);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+      "order.placed",
+      expect.anything(),
+    );
   });
 
   it("warns and returns 200 when medusaOrderId is missing", async () => {
@@ -750,8 +764,8 @@ describe("POST /api/webhooks/stripe — processing error", () => {
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
     mockGetRedisClient.mockResolvedValue(mockRedis);
 
-    // Medusa fetch throws
-    mockMedusaAdmin.mockRejectedValue(new Error("Medusa down"));
+    // capturePayment service throws
+    mockCapturePayment.mockRejectedValue(new Error("Medusa down"));
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -768,9 +782,10 @@ describe("POST /api/webhooks/stripe — processing error", () => {
     const body = res.json();
     expect(body.error).toContain("Internal processing error");
 
-    // Idempotency key should be removed so retry can succeed
-    expect(mockRedis.del).toHaveBeenCalledWith(
+    // Idempotency key TTL should be shortened so retry can succeed after 5min
+    expect(mockRedis.expire).toHaveBeenCalledWith(
       expect.stringContaining("evt_test_123"),
+      expect.any(Number),
     );
   });
 });

@@ -39,6 +39,20 @@ vi.mock("@ibatexas/domain", () => ({
     recordOrderItems: mockRecordOrderItems,
     getById: vi.fn().mockResolvedValue(null),
   }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(),
+  }),
+  createOrderCommandService: () => ({
+    create: vi.fn(),
+    reconcileStatus: vi.fn().mockResolvedValue({ success: true }),
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn(),
+  }),
+  createLoyaltyService: () => ({
+    addStamp: vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
+  }),
+  ConcurrencyError: class ConcurrencyError extends Error {},
 }));
 
 vi.mock("@sentry/node", () => ({
