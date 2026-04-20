@@ -10,16 +10,12 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.6"
-    }
   }
 
   # Remote state
   backend "s3" {
     bucket         = "ibatexas-terraform-state"
-    key            = "dev/terraform.tfstate"
+    key            = "production/terraform.tfstate"
     region         = "us-east-1"
     dynamodb_table = "ibatexas-terraform-locks"
     encrypt        = true

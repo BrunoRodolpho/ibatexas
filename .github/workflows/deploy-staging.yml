@@ -10,7 +10,6 @@ concurrency:
 
 env:
   AWS_REGION: us-east-1
-  ECS_CLUSTER: ibatexas-dev
   ENVIRONMENT: dev
 
 permissions:
@@ -53,12 +52,12 @@ jobs:
           push: true
           tags: |
             ${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:${{ steps.meta.outputs.tag }}
-            ${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:dev-latest
+            ${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # ---------------------------------------------------------------------------
-  # 2. Run Prisma migrations against staging DB
+  # 2. Run Prisma migrations against the dev DB (Supabase session pooler)
   # ---------------------------------------------------------------------------
   migrate:
     needs: build
@@ -81,69 +80,100 @@ jobs:
           DATABASE_URL: ${{ secrets.STAGING_DIRECT_DATABASE_URL }}
 
   # ---------------------------------------------------------------------------
-  # 3. Deploy ECS services (auto — no approval gate)
+  # 3. Deploy to the dev EC2 host via SSM Run Command
+  #    Replaces the ECS Fargate rolling update with a single `docker compose
+  #    pull && up -d` on the single-VM dev stack.
   # ---------------------------------------------------------------------------
   deploy:
     needs: [build, migrate]
     runs-on: ubuntu-latest
-    strategy:
-      max-parallel: 1
-      matrix:
-        service: [api, web, admin]
     steps:
       - uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2
-        id: ecr
-
-      - name: Get current task definition
-        id: current-td
+      - name: Find dev host instance
+        id: host
         run: |
-          TD=$(aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" \
-            --services "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}" \
-            --query 'services[0].taskDefinition' \
+          ID=$(aws ec2 describe-instances \
+            --filters \
+              "Name=tag:Role,Values=ibatexas-${{ env.ENVIRONMENT }}-host" \
+              "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
             --output text)
-          echo "arn=$TD" >> "$GITHUB_OUTPUT"
+          if [ -z "$ID" ] || [ "$ID" = "None" ]; then
+            echo "::error::no running instance found with tag Role=ibatexas-${{ env.ENVIRONMENT }}-host"
+            exit 1
+          fi
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
 
-      - name: Download task definition
+      - name: Trigger deploy on host
+        id: send
         run: |
-          aws ecs describe-task-definition \
-            --task-definition "${{ steps.current-td.outputs.arn }}" \
-            --query 'taskDefinition' \
-            | jq 'del(.taskDefinitionArn,.revision,.status,.registeredAt,.registeredBy,.requiresAttributes,.compatibilities)' \
-            > task-def.json
-
-      - name: Update image in task definition
-        run: |
-          IMAGE="${{ steps.ecr.outputs.registry }}/ibatexas-${{ matrix.service }}:${{ github.sha }}"
-          jq --arg img "$IMAGE" \
-            '.containerDefinitions[0].image = $img' \
-            task-def.json > updated-task-def.json
-
-      - name: Register new task definition
-        id: register-td
-        run: |
-          NEW_TD_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://updated-task-def.json \
-            --query 'taskDefinition.taskDefinitionArn' \
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${{ steps.host.outputs.id }}" \
+            --document-name AWS-RunShellScript \
+            --parameters '{"commands":["/usr/local/bin/ibatexas-deploy"]}' \
+            --timeout-seconds 900 \
+            --comment "GitHub Actions deploy ${{ github.sha }}" \
+            --query 'Command.CommandId' \
             --output text)
-          echo "arn=$NEW_TD_ARN" >> "$GITHUB_OUTPUT"
+          echo "cmd_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "Deploy command sent: $CMD_ID"
 
-      - name: Update ECS service
+      - name: Wait for deploy to finish
         run: |
-          aws ecs update-service \
-            --cluster "$ECS_CLUSTER" \
-            --service "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}" \
-            --task-definition "${{ steps.register-td.outputs.arn }}" \
-            --force-new-deployment
+          CMD_ID="${{ steps.send.outputs.cmd_id }}"
+          INSTANCE_ID="${{ steps.host.outputs.id }}"
+          for i in $(seq 1 60); do
+            sleep 15
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' --output text 2>/dev/null || echo "InProgress")
+            echo "[$i/60] status: $STATUS"
+            case "$STATUS" in
+              Success)
+                aws ssm get-command-invocation \
+                  --command-id "$CMD_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardOutputContent' --output text
+                exit 0 ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::deploy failed with status $STATUS"
+                aws ssm get-command-invocation \
+                  --command-id "$CMD_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardErrorContent' --output text
+                exit 1 ;;
+            esac
+          done
+          echo "::error::timed out waiting for deploy after 15 minutes"
+          exit 1
 
-      - name: Wait for service stability
+  # ---------------------------------------------------------------------------
+  # 4. Health check — poll HTTPS endpoints until they respond 2xx/3xx
+  # ---------------------------------------------------------------------------
+  health-check:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for container warm-up
+        run: sleep 60
+
+      - name: Probe all public URLs
         run: |
-          aws ecs wait services-stable \
-            --cluster "$ECS_CLUSTER" \
-            --services "ibatexas-${{ env.ENVIRONMENT }}-${{ matrix.service }}"
-        timeout-minutes: 10
+          URLS=(
+            "https://ibatexas.com.br/"
+            "https://api.ibatexas.com.br/health"
+            "https://admin.ibatexas.com.br/"
+          )
+          for url in "${URLS[@]}"; do
+            echo "Checking $url"
+            if ! curl -fsS --retry 5 --retry-delay 15 --max-time 30 -o /dev/null "$url"; then
+              echo "::error::$url did not return a 2xx/3xx response"
+              exit 1
+            fi
+            echo "  ✓ $url"
+          done

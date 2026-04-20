@@ -145,6 +145,191 @@ function secretPath(env: string, name: string): string {
   return `${SECRET_PATH_PREFIX}/${env}/${name}`
 }
 
+function ssmParamPath(env: string, name: string): string {
+  return `/${SECRET_PATH_PREFIX}/${env}/${name}`
+}
+
+// ── Secrets backend ───────────────────────────────────────────────────────────
+// Dev runs on a single EC2 + Docker Compose, reading secrets from SSM Parameter
+// Store (free). Production uses the heavier Fargate stack with Secrets Manager
+// (ECS has first-class Secrets Manager integration). CLI commands respect per-
+// env defaults here; user can override via SECRETS_BACKEND env var.
+
+type SecretsBackend = "ssm" | "secretsmanager"
+
+const DEFAULT_SECRETS_BACKEND: Record<string, SecretsBackend> = {
+  dev: "ssm",
+  staging: "secretsmanager",
+  production: "secretsmanager",
+}
+
+function secretsBackend(env: string): SecretsBackend {
+  const override = process.env.SECRETS_BACKEND as SecretsBackend | undefined
+  if (override === "ssm" || override === "secretsmanager") return override
+  return DEFAULT_SECRETS_BACKEND[env] ?? "secretsmanager"
+}
+
+/** Read a secret's current value, trying both stores (SSM first for dev). */
+async function readSecret(env: string, name: string): Promise<string | null> {
+  const backend = secretsBackend(env)
+  const order: SecretsBackend[] = backend === "ssm"
+    ? ["ssm", "secretsmanager"]
+    : ["secretsmanager", "ssm"]
+
+  for (const b of order) {
+    if (b === "ssm") {
+      const res = await awsCommand([
+        "ssm", "get-parameter",
+        "--name", ssmParamPath(env, name),
+        "--with-decryption",
+        "--region", DEFAULT_REGION,
+        "--output", "json",
+      ])
+      if (res.exitCode === 0) {
+        try {
+          const data = JSON.parse(res.stdout)
+          const value = data.Parameter?.Value as string | undefined
+          if (value && value !== "__placeholder__") return value
+        } catch { /* fall through */ }
+      }
+    } else {
+      const res = await awsCommand([
+        "secretsmanager", "get-secret-value",
+        "--secret-id", secretPath(env, name),
+        "--region", DEFAULT_REGION,
+        "--output", "json",
+      ])
+      if (res.exitCode === 0) {
+        try {
+          const data = JSON.parse(res.stdout)
+          if (data.SecretString?.trim()) return data.SecretString as string
+        } catch { /* fall through */ }
+      }
+    }
+  }
+  return null
+}
+
+/** Write a secret to the env's configured backend. */
+async function writeSecret(env: string, name: string, value: string): Promise<boolean> {
+  const backend = secretsBackend(env)
+
+  if (backend === "ssm") {
+    const res = await awsCommand([
+      "ssm", "put-parameter",
+      "--name", ssmParamPath(env, name),
+      "--value", value,
+      "--type", "SecureString",
+      "--overwrite",
+      "--region", DEFAULT_REGION,
+    ])
+    return res.exitCode === 0
+  }
+
+  const res = await awsCommand([
+    "secretsmanager", "put-secret-value",
+    "--secret-id", secretPath(env, name),
+    "--secret-string", value,
+    "--region", DEFAULT_REGION,
+  ])
+  return res.exitCode === 0
+}
+
+// ── EC2 host helpers ──────────────────────────────────────────────────────────
+// The new dev env is a single EC2 instance tagged Role=ibatexas-<env>-host.
+// SSM Run Command is the deploy channel; SSM Session Manager is the shell.
+
+async function findHostInstance(env: string): Promise<{ id: string; state: string } | null> {
+  const res = await awsCommand([
+    "ec2", "describe-instances",
+    "--filters",
+    `Name=tag:Role,Values=ibatexas-${env}-host`,
+    "Name=instance-state-name,Values=pending,running,stopping,stopped",
+    "--region", DEFAULT_REGION,
+    "--query", "Reservations[0].Instances[0].[InstanceId,State.Name]",
+    "--output", "text",
+  ])
+  if (res.exitCode !== 0 || !res.stdout.trim() || res.stdout.trim() === "None") return null
+  const [id, state] = res.stdout.trim().split(/\s+/)
+  if (!id || id === "None") return null
+  return { id, state }
+}
+
+async function setInstancePower(env: string, action: "start" | "stop"): Promise<{ ok: boolean; detail: string }> {
+  const instance = await findHostInstance(env)
+  if (!instance) return { ok: false, detail: "no instance found (terraform apply first)" }
+
+  const cmd = action === "start" ? "start-instances" : "stop-instances"
+  const res = await awsCommand([
+    "ec2", cmd,
+    "--instance-ids", instance.id,
+    "--region", DEFAULT_REGION,
+    "--output", "json",
+  ])
+  if (res.exitCode !== 0) return { ok: false, detail: `${cmd} failed` }
+  return { ok: true, detail: `${instance.id} ${action === "start" ? "starting" : "stopping"}` }
+}
+
+/** Run a shell command on the dev instance via SSM Run Command. Returns stdout. */
+async function runOnInstance(env: string, commandText: string, timeoutSec = 600): Promise<{ ok: boolean; output: string }> {
+  const instance = await findHostInstance(env)
+  if (!instance) return { ok: false, output: "no instance found" }
+  if (instance.state !== "running") return { ok: false, output: `instance state: ${instance.state}` }
+
+  const send = await awsCommand([
+    "ssm", "send-command",
+    "--instance-ids", instance.id,
+    "--document-name", "AWS-RunShellScript",
+    "--parameters", JSON.stringify({ commands: [commandText] }),
+    "--timeout-seconds", String(timeoutSec),
+    "--region", DEFAULT_REGION,
+    "--query", "Command.CommandId",
+    "--output", "text",
+  ])
+  if (send.exitCode !== 0) return { ok: false, output: "send-command failed" }
+  const commandId = send.stdout.trim()
+
+  // Poll for completion.
+  const deadline = Date.now() + timeoutSec * 1000
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 3000))
+    const invoke = await awsCommand([
+      "ssm", "get-command-invocation",
+      "--command-id", commandId,
+      "--instance-id", instance.id,
+      "--region", DEFAULT_REGION,
+      "--output", "json",
+    ])
+    if (invoke.exitCode !== 0) continue
+    try {
+      const data = JSON.parse(invoke.stdout)
+      const status = data.Status as string
+      if (status === "Success") {
+        return { ok: true, output: (data.StandardOutputContent as string) ?? "" }
+      }
+      if (["Failed", "Cancelled", "TimedOut"].includes(status)) {
+        const stdout = (data.StandardOutputContent as string) ?? ""
+        const stderr = (data.StandardErrorContent as string) ?? ""
+        return { ok: false, output: `[${status}]\n${stdout}\n${stderr}` }
+      }
+    } catch { /* keep polling */ }
+  }
+  return { ok: false, output: "ssm command timed out waiting for result" }
+}
+
+async function httpProbe(url: string): Promise<{ ok: boolean; status: number | null; detail: string }> {
+  const { execa } = await import("execa")
+  try {
+    const res = await execa("curl", ["-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10", url])
+    const code = Number.parseInt(res.stdout.trim(), 10)
+    if (!Number.isFinite(code)) return { ok: false, status: null, detail: "curl returned non-numeric status" }
+    const ok = code >= 200 && code < 400
+    return { ok, status: code, detail: `HTTP ${code}` }
+  } catch (err) {
+    return { ok: false, status: null, detail: `curl failed: ${String(err).slice(0, 80)}` }
+  }
+}
+
 // ── Check System ──────────────────────────────────────────────────────────────
 
 type CheckSeverity = "blocking" | "degraded" | "informational"
@@ -157,7 +342,7 @@ interface CheckResult {
 
 interface InfraCheckDef {
   id: string
-  group: "aws" | "terraform" | "ecs" | "secrets" | "github"
+  group: "aws" | "terraform" | "host" | "secrets" | "github"
   label: string
   severity: CheckSeverity
   run: (env: string) => Promise<CheckResult>
@@ -235,47 +420,71 @@ const CHECKS: InfraCheckDef[] = [
         : { status: "error", detail: "run terraform init first" }
     },
   },
+  // ── Host (EC2) ────────────────────────────────────────────────
   {
-    id: "terraform.acm",
-    group: "terraform",
-    label: "ACM Certificate",
-    severity: "degraded",
-    run: async () => {
-      const res = await awsCommand(["acm", "list-certificates", "--region", DEFAULT_REGION, "--output", "json"])
-      if (res.exitCode !== 0) return { status: "skip", detail: "could not query ACM" }
-      try {
-        const data = JSON.parse(res.stdout)
-        const cert = data.CertificateSummaryList?.find((c: { DomainName: string }) => c.DomainName === "ibatexas.com.br" || c.DomainName === "*.ibatexas.com.br")
-        if (!cert) return { status: "error", detail: "no certificate found for ibatexas.com.br" }
-        return cert.Status === "ISSUED"
-          ? { status: "ok", detail: `ISSUED (${cert.DomainName})` }
-          : { status: "warn", detail: `${cert.Status} (${cert.DomainName})` }
-      } catch {
-        return { status: "skip", detail: "could not parse ACM response" }
-      }
+    id: "host.instance",
+    group: "host",
+    label: "EC2 Host Instance",
+    severity: "blocking",
+    run: async (env) => {
+      const instance = await findHostInstance(env)
+      if (!instance) return { status: "error", detail: "no instance with tag Role=ibatexas-<env>-host found" }
+      if (instance.state === "running") return { status: "ok", detail: `${instance.id} running` }
+      if (instance.state === "stopped") return { status: "warn", detail: `${instance.id} stopped — run 'ibx infra resume'` }
+      return { status: "warn", detail: `${instance.id} ${instance.state}` }
     },
   },
-  // ── ECS ───────────────────────────────────────────────────────
   {
-    id: "ecs.api",
-    group: "ecs",
-    label: "ECS — api",
-    severity: "blocking",
-    run: async (env) => checkEcsService(env, "api"),
-  },
-  {
-    id: "ecs.web",
-    group: "ecs",
-    label: "ECS — web",
-    severity: "blocking",
-    run: async (env) => checkEcsService(env, "web"),
-  },
-  {
-    id: "ecs.admin",
-    group: "ecs",
-    label: "ECS — admin",
+    id: "host.ssm",
+    group: "host",
+    label: "SSM Agent Reachable",
     severity: "degraded",
-    run: async (env) => checkEcsService(env, "admin"),
+    run: async (env) => {
+      const instance = await findHostInstance(env)
+      if (!instance || instance.state !== "running") return { status: "skip", detail: "instance not running" }
+      const res = await awsCommand([
+        "ssm", "describe-instance-information",
+        "--filters", `Key=InstanceIds,Values=${instance.id}`,
+        "--region", DEFAULT_REGION,
+        "--query", "InstanceInformationList[0].PingStatus",
+        "--output", "text",
+      ])
+      if (res.exitCode !== 0) return { status: "error", detail: "ssm describe-instance-information failed" }
+      const status = res.stdout.trim()
+      return status === "Online"
+        ? { status: "ok", detail: "agent Online" }
+        : { status: "error", detail: `agent ${status || "unknown"}` }
+    },
+  },
+  {
+    id: "host.https.web",
+    group: "host",
+    label: "HTTPS — web (ibatexas.com.br)",
+    severity: "blocking",
+    run: async (_env) => {
+      const probe = await httpProbe("https://ibatexas.com.br/")
+      return probe.ok ? { status: "ok", detail: probe.detail } : { status: "error", detail: probe.detail }
+    },
+  },
+  {
+    id: "host.https.api",
+    group: "host",
+    label: "HTTPS — api (api.ibatexas.com.br/health)",
+    severity: "blocking",
+    run: async (_env) => {
+      const probe = await httpProbe("https://api.ibatexas.com.br/health")
+      return probe.ok ? { status: "ok", detail: probe.detail } : { status: "error", detail: probe.detail }
+    },
+  },
+  {
+    id: "host.https.admin",
+    group: "host",
+    label: "HTTPS — admin (admin.ibatexas.com.br)",
+    severity: "degraded",
+    run: async (_env) => {
+      const probe = await httpProbe("https://admin.ibatexas.com.br/")
+      return probe.ok ? { status: "ok", detail: probe.detail } : { status: "error", detail: probe.detail }
+    },
   },
   // ── Secrets ───────────────────────────────────────────────────
   {
@@ -284,23 +493,18 @@ const CHECKS: InfraCheckDef[] = [
     label: "Secrets Populated",
     severity: "blocking",
     run: async (env) => {
+      const backend = secretsBackend(env)
       const results = await Promise.all(
         ALL_SECRETS.map(async (name) => {
-          const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
-          if (res.exitCode === 0) {
-            try {
-              const data = JSON.parse(res.stdout)
-              if (data.SecretString?.trim()) return { name, ok: true }
-            } catch { /* fall through */ }
-          }
-          return { name, ok: false }
+          const value = await readSecret(env, name)
+          return { name, ok: value !== null }
         }),
       )
       const populated = results.filter(r => r.ok).length
       const missing = results.filter(r => !r.ok).map(r => r.name)
-      if (missing.length === 0) return { status: "ok", detail: `${populated}/${ALL_SECRETS.length} populated` }
-      if (populated === 0) return { status: "error", detail: `0/${ALL_SECRETS.length} — none set` }
-      return { status: "warn", detail: `${populated}/${ALL_SECRETS.length} — missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` +${missing.length - 3} more` : ""}` }
+      if (missing.length === 0) return { status: "ok", detail: `${populated}/${ALL_SECRETS.length} populated (${backend})` }
+      if (populated === 0) return { status: "error", detail: `0/${ALL_SECRETS.length} — none set (${backend})` }
+      return { status: "warn", detail: `${populated}/${ALL_SECRETS.length} — missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` +${missing.length - 3} more` : ""} (${backend})` }
     },
   },
   // ── GitHub ────────────────────────────────────────────────────
@@ -326,123 +530,54 @@ const CHECKS: InfraCheckDef[] = [
   },
 ]
 
-async function scaleEcsService(env: string, service: string, desired: number): Promise<{ ok: boolean; detail: string }> {
-  const cluster = `ibatexas-${env}`
-  const svcName = `ibatexas-${env}-${service}`
-  const res = await awsCommand([
-    "ecs", "update-service",
-    "--cluster", cluster,
-    "--service", svcName,
-    "--desired-count", String(desired),
-    "--region", DEFAULT_REGION,
-    "--output", "json",
-  ])
-  if (res.exitCode !== 0) return { ok: false, detail: "update-service failed (service missing or auth error)" }
-  return { ok: true, detail: `desiredCount=${desired}` }
-}
-
-function parseServiceList(only: string | undefined): readonly string[] {
-  if (!only) return VALID_SERVICES
-  const requested = only.split(",").map(s => s.trim()).filter(Boolean)
-  const invalid = requested.filter(s => !VALID_SERVICES.includes(s as typeof VALID_SERVICES[number]))
-  if (invalid.length > 0) {
-    throw new Error(`Unknown service(s): ${invalid.join(", ")}. Valid: ${VALID_SERVICES.join(", ")}`)
-  }
-  return requested
-}
-
 async function runIdle(opts: { env?: string; only?: string }): Promise<void> {
   const env = opts.env ?? "dev"
-  console.log(chalk.bold.blue(`\n  💤  Idling ECS services in ${env}\n`))
+  console.log(chalk.bold.blue(`\n  💤  Idling dev host (EC2 stop) — ${env}\n`))
 
-  let services: readonly string[]
-  try {
-    services = parseServiceList(opts.only)
-  } catch (err) {
-    console.log(chalk.red(`  ✗ ${(err as Error).message}`))
-    process.exit(1)
+  if (opts.only) {
+    console.log(chalk.yellow(`  ⚠  --only is a no-op on the single-VM setup — stopping all services together.\n`))
   }
 
-  let failed = 0
-  for (const svc of services) {
-    const spinner = ora(`Scaling ${svc} to 0...`).start()
-    const result = await scaleEcsService(env, svc, 0)
-    if (result.ok) {
-      spinner.succeed(chalk.green(`${svc} → 0`))
-    } else {
-      spinner.fail(chalk.red(`${svc}: ${result.detail}`))
-      failed++
-    }
-  }
-
-  console.log("")
-  if (failed === 0) {
-    console.log(chalk.green(`  ✅  All ${services.length} services idled.`))
-    console.log(chalk.gray(`      Fargate + task public IPs stop billing within ~2 min.`))
+  const spinner = ora("Stopping EC2 instance...").start()
+  const result = await setInstancePower(env, "stop")
+  if (result.ok) {
+    spinner.succeed(chalk.green(result.detail))
+    console.log("")
+    console.log(chalk.green(`  ✅  Instance stopping.`))
+    console.log(chalk.gray(`      EC2 compute billing pauses within ~1 min.`))
+    console.log(chalk.gray(`      EBS volume + EIP continue billing (~$6/mo floor).`))
     console.log(chalk.gray(`      Resume with: ibx infra resume`))
   } else {
-    console.log(chalk.yellow(`  ⚠️  ${services.length - failed}/${services.length} scaled down, ${failed} failed.`))
+    spinner.fail(chalk.red(result.detail))
+    process.exit(1)
   }
   console.log("")
 }
 
 async function runResume(opts: { env?: string; count?: string; only?: string }): Promise<void> {
   const env = opts.env ?? "dev"
-  const desired = Number.parseInt(opts.count ?? "1", 10)
-  if (!Number.isFinite(desired) || desired < 1) {
-    console.log(chalk.red(`  ✗ --count must be a positive integer`))
+
+  if (opts.count) {
+    console.log(chalk.yellow(`  ⚠  --count is a no-op on the single-VM setup.\n`))
+  }
+  if (opts.only) {
+    console.log(chalk.yellow(`  ⚠  --only is a no-op on the single-VM setup.\n`))
+  }
+
+  console.log(chalk.bold.blue(`\n  ▶️   Resuming dev host (EC2 start) — ${env}\n`))
+
+  const spinner = ora("Starting EC2 instance...").start()
+  const result = await setInstancePower(env, "start")
+  if (!result.ok) {
+    spinner.fail(chalk.red(result.detail))
     process.exit(1)
   }
-
-  console.log(chalk.bold.blue(`\n  ▶️   Resuming ECS services in ${env} (count=${desired})\n`))
-
-  let services: readonly string[]
-  try {
-    services = parseServiceList(opts.only)
-  } catch (err) {
-    console.log(chalk.red(`  ✗ ${(err as Error).message}`))
-    process.exit(1)
-  }
-
-  let failed = 0
-  for (const svc of services) {
-    const spinner = ora(`Scaling ${svc} to ${desired}...`).start()
-    const result = await scaleEcsService(env, svc, desired)
-    if (result.ok) {
-      spinner.succeed(chalk.green(`${svc} → ${desired}`))
-    } else {
-      spinner.fail(chalk.red(`${svc}: ${result.detail}`))
-      failed++
-    }
-  }
+  spinner.succeed(chalk.green(result.detail))
 
   console.log("")
-  if (failed === 0) {
-    console.log(chalk.green(`  ✅  All ${services.length} services resuming.`))
-    console.log(chalk.gray(`      Tasks take ~2 min to become healthy.`))
-    console.log(chalk.gray(`      Check status with: ibx infra status`))
-  } else {
-    console.log(chalk.yellow(`  ⚠️  ${services.length - failed}/${services.length} scaled up, ${failed} failed.`))
-  }
+  console.log(chalk.gray("  Cold boot takes ~3-5 min (instance start + Docker pull + container warm-up)."))
+  console.log(chalk.gray("  Watch readiness with: ibx infra status"))
   console.log("")
-}
-
-async function checkEcsService(env: string, service: string): Promise<CheckResult> {
-  const cluster = `ibatexas-${env}`
-  const svcName = `ibatexas-${env}-${service}`
-  const res = await awsCommand(["ecs", "describe-services", "--cluster", cluster, "--services", svcName, "--region", DEFAULT_REGION, "--output", "json"])
-  if (res.exitCode !== 0) return { status: "error", detail: "cluster or service not found" }
-  try {
-    const data = JSON.parse(res.stdout)
-    const svc = data.services?.[0]
-    if (!svc) return { status: "error", detail: "service not found" }
-    const desired = svc.desiredCount ?? 0
-    const running = svc.runningCount ?? 0
-    if (running >= desired && desired > 0) return { status: "ok", detail: `${running}/${desired} running` }
-    return { status: "error", detail: `${running}/${desired} running` }
-  } catch {
-    return { status: "error", detail: "could not parse response" }
-  }
 }
 
 async function runAllChecks(env: string): Promise<InfraCheckResult[]> {
@@ -730,21 +865,17 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
   let invalid = 0
   const populatedValues: Record<string, string> = {}
 
-  // Pre-fetch all secrets in parallel to avoid sequential AWS calls
+  const backend = secretsBackend(env)
+  console.log(chalk.gray(`  Backend: ${backend} (override with SECRETS_BACKEND env var)\n`))
+
+  // Pre-fetch all secrets in parallel (tries both stores, SSM first for dev).
   const existingSecrets = new Map<string, string>()
   if (!opts.force) {
     const spinner = ora("  Checking existing secrets…").start()
     const checks = await Promise.all(
       targetSecrets.map(async (name) => {
-        const id = secretPath(env, name)
-        const check = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", id, "--region", DEFAULT_REGION, "--output", "json"])
-        if (check.exitCode === 0) {
-          try {
-            const data = JSON.parse(check.stdout)
-            if (data.SecretString?.trim()) return { name, value: data.SecretString as string }
-          } catch { /* not set */ }
-        }
-        return { name, value: null }
+        const value = await readSecret(env, name)
+        return { name, value }
       }),
     )
     for (const { name, value } of checks) {
@@ -754,8 +885,6 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
   }
 
   for (const name of targetSecrets) {
-    const id = secretPath(env, name)
-
     // Check if already set (from parallel pre-fetch)
     if (!opts.force && existingSecrets.has(name)) {
       console.log(chalk.green(`  ✓ ${name.padEnd(28)} (already set)`))
@@ -778,8 +907,8 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
         invalid++
         continue
       }
-      const res = await awsCommand(["secretsmanager", "put-secret-value", "--secret-id", id, "--secret-string", envValue, "--region", DEFAULT_REGION])
-      if (res.exitCode === 0) {
+      const ok = await writeSecret(env, name, envValue)
+      if (ok) {
         console.log(chalk.green(`  ✓ ${name.padEnd(28)} (populated from env)`))
         populated++
         populatedValues[name] = envValue
@@ -811,8 +940,8 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
         continue
       }
 
-      const res = await awsCommand(["secretsmanager", "put-secret-value", "--secret-id", id, "--secret-string", value, "--region", DEFAULT_REGION])
-      if (res.exitCode === 0) {
+      const ok = await writeSecret(env, name, value)
+      if (ok) {
         console.log(chalk.green(`  ✓ ${name.padEnd(28)} (populated)`))
         populated++
         populatedValues[name] = value
@@ -1094,7 +1223,6 @@ async function runDestroy(opts: { env?: string }) {
 // ── Subcommand: logs ──────────────────────────────────────────────────────────
 
 async function runLogs(service: string | undefined, opts: { lines?: string; env?: string }) {
-  const { execa } = await import("execa")
   const env = opts.env ?? getEnvironment()
   const svc = service ?? "api"
 
@@ -1107,19 +1235,26 @@ async function runLogs(service: string | undefined, opts: { lines?: string; env?
   console.log(chalk.bold.blue(`\n  📜  Logs — ${svc}\n`))
   envBanner(env)
 
-  const logGroup = `/ecs/ibatexas/${env}/${svc}`
-  const _lines = opts.lines ?? "50"
+  const lines = opts.lines ?? "200"
+  const spinner = ora(`Fetching last ${lines} lines from ibatexas-${svc} via SSM...`).start()
 
-  try {
-    await execa("aws", ["logs", "tail", logGroup, "--follow", "--since", "1h", "--format", "short", "--region", DEFAULT_REGION], { stdio: "inherit" })
-  } catch (err) {
-    const error = err as { exitCode?: number }
-    if (error.exitCode === 255) {
-      console.error(chalk.red(`  Log group not found: ${logGroup}`))
-      console.error(chalk.gray("  Has the service been deployed at least once?"))
-    }
-    process.exit(error.exitCode ?? 1)
+  const cmd = `docker logs --tail ${Number.parseInt(lines, 10) || 200} ibatexas-${svc} 2>&1 || echo '[container ibatexas-${svc} not found — is it running?]'`
+  const result = await runOnInstance(env, cmd, 60)
+
+  if (!result.ok) {
+    spinner.fail(chalk.red("SSM command failed"))
+    console.error(chalk.gray(result.output))
+    console.error("")
+    console.error(chalk.yellow("  Troubleshooting:"))
+    console.error(chalk.gray("   • `ibx infra status` — is the instance running?"))
+    console.error(chalk.gray("   • `aws ssm start-session --target <id>` — shell in and check `docker compose ps`"))
+    process.exit(1)
   }
+
+  spinner.stop()
+  console.log(result.output)
+  console.log("")
+  console.log(chalk.gray(`  Tip: for live tail, SSH via SSM: aws ssm start-session --target <instance-id> --region ${DEFAULT_REGION}`))
 }
 
 // ── Subcommand: deploy ────────────────────────────────────────────────────────
@@ -1153,27 +1288,30 @@ async function runDeploy(opts: { target?: string; watch?: boolean; timeout?: str
     return
   }
 
-  // [2] Wait for ECS stability
-  step(++stepNum, TOTAL, "Waiting for ECS services to stabilize…")
+  // [2] Poll HTTPS health endpoints until all three are 2xx/3xx
+  step(++stepNum, TOTAL, "Waiting for HTTPS health endpoints…")
   const start = Date.now()
   let stable = false
+  const healthUrls = [
+    "https://ibatexas.com.br/",
+    "https://api.ibatexas.com.br/health",
+    "https://admin.ibatexas.com.br/",
+  ]
   while (Date.now() - start < timeout) {
     await new Promise(r => setTimeout(r, 30_000))
     const elapsed = Math.round((Date.now() - start) / 1000)
     const spinner = ora({ text: `checking (${elapsed}s elapsed)…`, indent: 4 }).start()
 
-    let allStable = true
-    for (const svc of ["api", "web", "admin"]) {
-      const result = await checkEcsService(env, svc)
-      if (result.status !== "ok") { allStable = false; break }
-    }
+    const probes = await Promise.all(healthUrls.map(u => httpProbe(u)))
+    const allOk = probes.every(p => p.ok)
 
-    if (allStable) {
-      spinner.succeed(chalk.green("ECS services stable"))
+    if (allOk) {
+      spinner.succeed(chalk.green("all HTTPS endpoints returning 2xx/3xx"))
       stable = true
       break
     }
-    spinner.info(chalk.gray(`not yet stable (${elapsed}s)`))
+    const fail = probes.map((p, i) => `${healthUrls[i]}: ${p.detail}`).filter((_, i) => !probes[i].ok).join(", ")
+    spinner.info(chalk.gray(`not yet ready (${elapsed}s) — ${fail}`))
   }
 
   if (!stable) {
@@ -1334,23 +1472,36 @@ async function runExplain() {
     findings.push({ step: stepNum, label: "ECR Images", ok: false, detail: "missing images", cause: "Build step may have failed — check GitHub Actions" })
   }
 
-  // 3. Check ECS services
+  // 3. Check EC2 host instance
   stepNum++
-  let ecsOk = true
-  for (const svc of ["api", "web", "admin"]) {
-    const result = await checkEcsService(env, svc)
-    if (result.status !== "ok") { ecsOk = false; break }
-  }
-  if (ecsOk) {
-    findings.push({ step: stepNum, label: "ECS Services", ok: true, detail: "all services running" })
+  const instance = await findHostInstance(env)
+  if (instance && instance.state === "running") {
+    findings.push({ step: stepNum, label: "EC2 Host", ok: true, detail: `${instance.id} running` })
+  } else if (instance) {
+    findings.push({ step: stepNum, label: "EC2 Host", ok: false, detail: `${instance.id} ${instance.state}`, cause: instance.state === "stopped" ? "run 'ibx infra resume'" : "instance not ready" })
   } else {
-    findings.push({ step: stepNum, label: "ECS Services", ok: false, detail: "service(s) not running" })
+    findings.push({ step: stepNum, label: "EC2 Host", ok: false, detail: "no instance with Role tag found", cause: "run 'terraform apply' first" })
   }
 
-  // 4. Check ECS events for crash reasons
+  // 4. HTTPS health probes
   stepNum++
-  const cluster = `ibatexas-${env}`
-  const eventsRes = await awsCommand(["ecs", "describe-services", "--cluster", cluster, "--services", `ibatexas-${env}-api`, "--region", DEFAULT_REGION, "--output", "json"])
+  const healthProbes = await Promise.all([
+    httpProbe("https://ibatexas.com.br/"),
+    httpProbe("https://api.ibatexas.com.br/health"),
+    httpProbe("https://admin.ibatexas.com.br/"),
+  ])
+  const labels = ["web", "api", "admin"]
+  const allHealthy = healthProbes.every(p => p.ok)
+  if (allHealthy) {
+    findings.push({ step: stepNum, label: "HTTPS Endpoints", ok: true, detail: "all 3 hosts reachable" })
+  } else {
+    const failing = healthProbes.map((p, i) => p.ok ? null : `${labels[i]}: ${p.detail}`).filter(Boolean).join(", ")
+    findings.push({ step: stepNum, label: "HTTPS Endpoints", ok: false, detail: failing || "unreachable", cause: "check docker compose logs via `ibx infra logs <svc>`" })
+  }
+
+  // 5. Legacy placeholder to keep variable scoping — removed event check path
+  stepNum++
+  const eventsRes = { exitCode: 1, stdout: "" }
   if (eventsRes.exitCode === 0) {
     try {
       const data = JSON.parse(eventsRes.stdout)
@@ -1366,17 +1517,12 @@ async function runExplain() {
     }
   }
 
-  // 5. Check secrets
+  // 6. Check secrets (tries both backends per env)
   stepNum++
   const secretResults = await Promise.all(
     MANUAL_SECRETS.map(async (name) => {
-      const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
-      if (res.exitCode !== 0) return name
-      try {
-        const data = JSON.parse(res.stdout)
-        if (!data.SecretString?.trim()) return name
-      } catch { return name }
-      return null
+      const value = await readSecret(env, name)
+      return value === null ? name : null
     }),
   )
   const missingSecrets = secretResults.filter((n): n is string => n !== null)
@@ -1484,7 +1630,7 @@ export function registerInfraCommands(infra: Command) {
 
   infra
     .command("logs [service]")
-    .description("Tail ECS CloudWatch logs")
+    .description("Tail docker logs on the dev host via SSM Run Command")
     .option("--lines <n>", "Number of lines", "50")
     .option("--env <name>", "Environment name")
     .action(runLogs)
@@ -1509,14 +1655,14 @@ export function registerInfraCommands(infra: Command) {
 
   infra
     .command("idle")
-    .description("Scale all ECS services to 0 (stop paying for Fargate + public IPs)")
+    .description("Stop the dev EC2 host (pauses compute billing; EBS + EIP still charged)")
     .option("--env <name>", "Environment name", "dev")
     .option("--only <services>", "Comma-separated services (default: all)")
     .action(runIdle)
 
   infra
     .command("resume")
-    .description("Scale ECS services back up from idle")
+    .description("Start the dev EC2 host (~3-5 min to become healthy)")
     .option("--env <name>", "Environment name", "dev")
     .option("--count <n>", "Desired count per service", "1")
     .option("--only <services>", "Comma-separated services (default: all)")

@@ -1,97 +1,50 @@
 # -----------------------------------------------------------------------------
-# Security Groups — ALB + ECS
+# Security Group — single SG for the EC2 host
 # -----------------------------------------------------------------------------
 
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-
-  filter {
-    name   = "default-for-az"
-    values = ["true"]
-  }
-}
-
-# --- ALB Security Group ---
-
-resource "aws_security_group" "alb" {
-  name        = "ibatexas-${var.environment}-alb"
-  description = "Allow HTTP/HTTPS inbound to ALB"
+resource "aws_security_group" "host" {
+  name        = "ibatexas-${var.environment}-host"
+  description = "Allow HTTP/HTTPS from internet; optional SSH for debugging"
   vpc_id      = data.aws_vpc.default.id
 
   tags = {
-    Name        = "ibatexas-${var.environment}-alb"
+    Name        = "ibatexas-${var.environment}-host"
     Environment = var.environment
   }
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_http" {
-  security_group_id = aws_security_group.alb.id
+resource "aws_vpc_security_group_ingress_rule" "host_http" {
+  security_group_id = aws_security_group.host.id
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 80
   to_port           = 80
   ip_protocol       = "tcp"
+  description       = "HTTP (redirected to HTTPS by Caddy + Let's Encrypt challenge)"
 }
 
-resource "aws_vpc_security_group_ingress_rule" "alb_https" {
-  security_group_id = aws_security_group.alb.id
+resource "aws_vpc_security_group_ingress_rule" "host_https" {
+  security_group_id = aws_security_group.host.id
   cidr_ipv4         = "0.0.0.0/0"
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
+  description       = "HTTPS"
 }
 
-resource "aws_vpc_security_group_egress_rule" "alb_all" {
-  security_group_id = aws_security_group.alb.id
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
+# Optional SSH ingress — only created if var.ssh_cidr is non-empty.
+# Prefer SSM Session Manager: `aws ssm start-session --target <instance-id>`.
+resource "aws_vpc_security_group_ingress_rule" "host_ssh" {
+  count             = var.ssh_cidr == "" ? 0 : 1
+  security_group_id = aws_security_group.host.id
+  cidr_ipv4         = var.ssh_cidr
+  from_port         = 22
+  to_port           = 22
+  ip_protocol       = "tcp"
+  description       = "SSH (debug only)"
 }
 
-# --- ECS Security Group ---
-
-resource "aws_security_group" "ecs" {
-  name        = "ibatexas-${var.environment}-ecs"
-  description = "Allow inbound from ALB only on container ports"
-  vpc_id      = data.aws_vpc.default.id
-
-  tags = {
-    Name        = "ibatexas-${var.environment}-ecs"
-    Environment = var.environment
-  }
-}
-
-resource "aws_vpc_security_group_ingress_rule" "ecs_from_alb_3000" {
-  security_group_id            = aws_security_group.ecs.id
-  referenced_security_group_id = aws_security_group.alb.id
-  from_port                    = 3000
-  to_port                      = 3000
-  ip_protocol                  = "tcp"
-}
-
-resource "aws_vpc_security_group_ingress_rule" "ecs_from_alb_3001" {
-  security_group_id            = aws_security_group.ecs.id
-  referenced_security_group_id = aws_security_group.alb.id
-  from_port                    = 3001
-  to_port                      = 3001
-  ip_protocol                  = "tcp"
-}
-
-resource "aws_vpc_security_group_ingress_rule" "ecs_from_alb_3002" {
-  security_group_id            = aws_security_group.ecs.id
-  referenced_security_group_id = aws_security_group.alb.id
-  from_port                    = 3002
-  to_port                      = 3002
-  ip_protocol                  = "tcp"
-}
-
-resource "aws_vpc_security_group_egress_rule" "ecs_all" {
-  security_group_id = aws_security_group.ecs.id
+resource "aws_vpc_security_group_egress_rule" "host_all" {
+  security_group_id = aws_security_group.host.id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }

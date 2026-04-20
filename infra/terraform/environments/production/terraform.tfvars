@@ -1,0 +1,7 @@
+environment     = "production"
+region          = "us-east-1"
+domain_name     = "ibatexas.com.br"
+api_image_tag   = "latest"
+web_image_tag   = "latest"
+admin_image_tag = "latest"
+github_repo     = "BrunoRodolpho/ibatexas"
