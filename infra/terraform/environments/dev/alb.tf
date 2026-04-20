@@ -70,10 +70,11 @@ resource "aws_lb_target_group" "admin" {
   target_type          = "ip"
   deregistration_delay = 30
 
+  # Next.js admin returns 307 redirecting "/" → "/admin"; accept 200-399 as healthy.
   health_check {
     path                = "/"
     protocol            = "HTTP"
-    matcher             = "200"
+    matcher             = "200-399"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 2
