@@ -80,6 +80,12 @@ resource "aws_ecs_service" "typesense" {
   desired_count   = 1
   launch_type     = "FARGATE"
 
+  # Typesense holds an EFS LOCK file — a second instance can't mount the same
+  # data dir. Force ECS to stop the old task before starting the new one
+  # (accepts ~30-60s downtime during rollout).
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
+
   network_configuration {
     subnets          = data.aws_subnets.default.ids
     security_groups  = [aws_security_group.typesense.id]
