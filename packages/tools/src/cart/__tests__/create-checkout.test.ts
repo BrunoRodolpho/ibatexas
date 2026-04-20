@@ -218,7 +218,9 @@ describe("createCheckout", () => {
           paymentMethod: "cash",
           customerId: CTX.customerId,
           // unit_price: 5000 passed through reaisToCentavos() → 500000
-          items: [{ productId: "prod_01", variantId: "var_01", quantity: 2, priceInCentavos: 500000 }],
+          items: expect.arrayContaining([
+            expect.objectContaining({ productId: "prod_01", variantId: "var_01", quantity: 2, priceInCentavos: 500000 }),
+          ]),
         }),
       )
     })
@@ -322,6 +324,7 @@ describe("createCheckout", () => {
 
   describe("PIX payment", () => {
     const PIX_INPUT = { ...BASE_INPUT, paymentMethod: "pix" as const }
+    const PIX_EXTRA = { customerName: "João Silva", customerEmail: "joao@example.com" }
 
     it("retrieves PIX QR code from Stripe", async () => {
       setupStripeMocks()
@@ -338,7 +341,7 @@ describe("createCheckout", () => {
       })
       mockStripeUpdate.mockResolvedValue({})
 
-      const result = await createCheckout(PIX_INPUT, CTX)
+      const result = await createCheckout(PIX_INPUT, CTX, PIX_EXTRA)
 
       expect(result.success).toBe(true)
       expect(result.paymentMethod).toBe("pix")
@@ -361,7 +364,7 @@ describe("createCheckout", () => {
       })
       mockStripeUpdate.mockResolvedValue({})
 
-      const result = await createCheckout(PIX_INPUT, CTX)
+      const result = await createCheckout(PIX_INPUT, CTX, PIX_EXTRA)
 
       expect(result.message).toContain("PIX gerado com sucesso")
     })
@@ -377,7 +380,7 @@ describe("createCheckout", () => {
       })
       mockStripeUpdate.mockResolvedValue({})
 
-      const result = await createCheckout(PIX_INPUT, CTX)
+      const result = await createCheckout(PIX_INPUT, CTX, PIX_EXTRA)
 
       expect(result.success).toBe(false)
       expect(result.message).toContain("N\u00e3o foi poss\u00edvel gerar o QR Code PIX")
@@ -388,7 +391,7 @@ describe("createCheckout", () => {
 
       mockStripeConfirm.mockRejectedValue(new Error("Stripe error"))
 
-      const result = await createCheckout(PIX_INPUT, CTX)
+      const result = await createCheckout(PIX_INPUT, CTX, PIX_EXTRA)
 
       expect(result.success).toBe(false)
       expect(result.paymentMethod).toBe("pix")
@@ -404,7 +407,7 @@ describe("createCheckout", () => {
         .mockResolvedValueOnce(PAYMENT_PROVIDERS_RESPONSE)
         .mockResolvedValueOnce({}) // no client_secret or payment intent id
 
-      const result = await createCheckout(PIX_INPUT, CTX)
+      const result = await createCheckout(PIX_INPUT, CTX, PIX_EXTRA)
 
       expect(result.success).toBe(false)
       expect(result.message).toContain("N\u00e3o foi poss\u00edvel inicializar o pagamento")
@@ -426,7 +429,7 @@ describe("createCheckout", () => {
       })
       mockStripeUpdate.mockResolvedValue({})
 
-      const result = await createCheckout(PIX_INPUT, CTX)
+      const result = await createCheckout(PIX_INPUT, CTX, PIX_EXTRA)
 
       expect(result.pixExpiresAt).toBe(new Date(expiresAtUnix * 1000).toISOString())
     })

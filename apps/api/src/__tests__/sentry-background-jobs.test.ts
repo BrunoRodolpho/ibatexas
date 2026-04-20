@@ -171,6 +171,8 @@ describe("Sentry reporting in background jobs", () => {
   describe("outbox-retry", () => {
     it("reports per-event re-publish errors to Sentry", async () => {
       mockRedis.lRange.mockResolvedValue(['{"eventType":"order.placed"}']);
+      mockRedis.set.mockResolvedValue("OK"); // lock acquired
+      (mockRedis as Record<string, unknown>)["eval"] = vi.fn().mockResolvedValue(1); // lock released
       mockPublishNatsEvent.mockRejectedValue(new Error("NATS down"));
 
       await processOutbox(createMockLogger());

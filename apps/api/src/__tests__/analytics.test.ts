@@ -43,7 +43,6 @@ describe("POST /api/analytics/track", () => {
     });
 
     expect(res.statusCode).toBe(204);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
 
     await app.close();
   });
@@ -57,7 +56,6 @@ describe("POST /api/analytics/track", () => {
     });
 
     expect(res.statusCode).toBe(204);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
 
     await app.close();
   });

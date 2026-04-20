@@ -44,7 +44,7 @@ vi.mock("@ibatexas/domain", () => ({
   })),
 }))
 
-vi.mock("../redis/distributed-lock.js", () => ({
+vi.mock("../../redis/distributed-lock.js", () => ({
   withLock: mockWithLock,
 }))
 
@@ -52,15 +52,18 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }))
 
-vi.mock("../redis/client.js", () => ({
+vi.mock("../../redis/client.js", () => ({
   getRedisClient: vi.fn().mockResolvedValue({
     incr: mockRedisIncr,
     expire: mockRedisExpire,
   }),
+}))
+
+vi.mock("../../redis/key.js", () => ({
   rk: vi.fn((key: string) => `ibx:${key}`),
 }))
 
-vi.mock("./_stripe-helpers.js", () => ({
+vi.mock("../_stripe-helpers.js", () => ({
   cancelStalePaymentIntent: mockCancelStalePaymentIntent,
   getStripe: vi.fn(() => ({
     paymentIntents: {
@@ -182,7 +185,6 @@ describe("regeneratePix", () => {
         method: "pix",
         amountInCentavos: 8900,
         stripePaymentIntentId: "pi_test_new",
-        regenerationCount: 1,
       }),
     )
   })

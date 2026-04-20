@@ -42,6 +42,20 @@ vi.mock("@ibatexas/domain", () => ({
     recordOrderItems: mockRecordOrderItems,
     getById: vi.fn().mockResolvedValue(null),
   }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(),
+  }),
+  createOrderCommandService: () => ({
+    create: vi.fn(),
+    reconcileStatus: vi.fn().mockResolvedValue({ success: true }),
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn(),
+  }),
+  createLoyaltyService: () => ({
+    addStamp: vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
+  }),
+  ConcurrencyError: class ConcurrencyError extends Error {},
 }));
 
 vi.mock("../jobs/review-prompt.js", () => ({
@@ -621,7 +635,7 @@ describe("startCartIntelligenceSubscribers", () => {
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("order.canceled", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("review.submitted", expect.any(Function));
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith("cart.item_added", expect.any(Function));
-    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(20);
+    expect(mockSubscribeNatsEvent).toHaveBeenCalledTimes(21);
   });
 });
 

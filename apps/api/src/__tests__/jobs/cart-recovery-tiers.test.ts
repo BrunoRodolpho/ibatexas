@@ -49,6 +49,20 @@ vi.mock("@ibatexas/domain", () => ({
     recordOrderItems: vi.fn(),
     getById: vi.fn().mockResolvedValue({ phone: "+5511999999999" }),
   }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(),
+  }),
+  createOrderCommandService: () => ({
+    create: vi.fn(),
+    reconcileStatus: vi.fn().mockResolvedValue({ success: true }),
+  }),
+  createPaymentCommandService: () => ({
+    create: vi.fn(),
+  }),
+  createLoyaltyService: () => ({
+    addStamp: vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
+  }),
+  ConcurrencyError: class ConcurrencyError extends Error {},
 }));
 
 vi.mock("../../jobs/queue.js", () => ({
