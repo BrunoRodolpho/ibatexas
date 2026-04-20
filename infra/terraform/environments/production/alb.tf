@@ -9,6 +9,11 @@ resource "aws_lb" "this" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = data.aws_subnets.default.ids
 
+  # Prevent accidental destroy of the prod ALB.
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = {
     Environment = var.environment
   }

@@ -45,7 +45,7 @@ resource "aws_iam_role" "github_deploy" {
   }
 }
 
-# --- Deploy policy: ECR push + SSM Run Command on the dev host ---
+# --- Deploy policy: ECR push + ECS deploy + IAM PassRole ---
 
 data "aws_iam_policy_document" "github_deploy" {
   statement {
@@ -68,37 +68,26 @@ data "aws_iam_policy_document" "github_deploy" {
     resources = [for r in aws_ecr_repository.this : r.arn]
   }
 
-  # Find the dev host by tag (instance id isn't stable across recreations).
   statement {
-    sid = "EC2DescribeInstances"
+    sid = "ECSDescribeAndDeploy"
     actions = [
-      "ec2:DescribeInstances",
+      "ecs:DescribeServices",
+      "ecs:DescribeTaskDefinition",
+      "ecs:RegisterTaskDefinition",
+      "ecs:UpdateService",
+      "ecs:DescribeTasks",
+      "ecs:ListTasks",
     ]
-    resources = ["*"]
+    resources = ["*"] # ECS doesn't support resource-level for describe/register
   }
 
-  # Trigger the deploy script on the instance via SSM Run Command.
   statement {
-    sid = "SSMSendCommand"
-    actions = [
-      "ssm:SendCommand",
-    ]
+    sid     = "PassRole"
+    actions = ["iam:PassRole"]
     resources = [
-      # AWS-RunShellScript is a managed document.
-      "arn:aws:ssm:${var.region}::document/AWS-RunShellScript",
-      # Any instance tagged Role=ibatexas-<env>-host.
-      "arn:aws:ec2:${var.region}:${data.aws_caller_identity.current.account_id}:instance/*",
+      aws_iam_role.ecs_execution.arn,
+      aws_iam_role.ecs_task.arn,
     ]
-  }
-
-  statement {
-    sid = "SSMGetCommandInvocation"
-    actions = [
-      "ssm:GetCommandInvocation",
-      "ssm:ListCommandInvocations",
-      "ssm:ListCommands",
-    ]
-    resources = ["*"]
   }
 }
 
