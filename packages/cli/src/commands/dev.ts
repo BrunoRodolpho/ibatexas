@@ -234,6 +234,8 @@ async function pcRestart(serviceKey: string | undefined): Promise<void> {
 
 // ── Force stop (port-based kill) ─────────────────────────────────────────────
 
+const PROCESS_COMPOSE_PORT = 8080
+
 async function forceStop(serviceKey: string | undefined, stopAll: boolean): Promise<void> {
   const { SERVICES } = await import("../services.js")
   let targets: (typeof SERVICES)[string][]
@@ -242,6 +244,8 @@ async function forceStop(serviceKey: string | undefined, stopAll: boolean): Prom
   else targets = []
 
   const ports = targets.map((s) => s.port)
+  // Also kill process-compose's own HTTP server on stop-all
+  if (stopAll) ports.push(PROCESS_COMPOSE_PORT)
   console.log(chalk.bold.yellow(`\n  Force-killing processes on ports: ${ports.join(", ")}\n`))
 
   for (const port of ports) {
@@ -257,14 +261,13 @@ async function forceStop(serviceKey: string | undefined, stopAll: boolean): Prom
 
 function forceKillPort(port: number): void {
   const pids = getPortPids(port)
-  for (const pid of pids) {
-    try { process.kill(pid, "SIGKILL") } catch { /* already gone */ }
+  if (pids.length === 0) {
+    console.log(chalk.gray(`    · Port ${port}: clear`))
+    return
   }
-  if (pids.length > 0) {
-    console.log(chalk.green(`    ✓ Port ${port}: killed ${pids.length} process(es)`))
-  } else {
-    console.log(chalk.gray(`    · Port ${port}: nothing running`))
-  }
+  // Kill via shell so the signal reaches all processes (including children)
+  execaSync("sh", ["-c", `lsof -ti :${port} | xargs kill -9 2>/dev/null`], { reject: false })
+  console.log(chalk.green(`    ✓ Port ${port}: killed ${pids.length} process(es)`))
 }
 
 // ── Docker stop ──────────────────────────────────────────────────────────────

@@ -13,6 +13,7 @@ const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 
 const baseReservation: ReservationDTO = {
   id: "res_01",
+  displayId: 1,
   customerId: "cust_01",
   partySize: 4,
   status: ReservationStatus.CONFIRMED,

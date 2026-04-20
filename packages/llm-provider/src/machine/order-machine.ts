@@ -35,6 +35,8 @@ type InternalEvent =
   | { type: "AMEND_ORDER_RESULT"; success: boolean; message: string }
   | { type: "REGENERATE_PIX" }  // kernel sends this when LLM proposes regenerate_pix tool
   | { type: "PIX_REGENERATED"; success: boolean; pixCopyPaste?: string; pixQrCode?: string }
+  // Payment lifecycle (fed by orchestrator during active session)
+  | { type: "PAYMENT_STATUS_CHANGED"; paymentId: string; paymentStatus: string; method?: string; pixExpiresAt?: string | null }
   // Post-checkout PIX cache event (machine-controlled side effect)
   | { type: "CACHE_PIX_DETAILS" }
 
@@ -95,6 +97,13 @@ export const orderMachine = setup({
     canCancelOrder: ({ context }) => !!context.orderId && context.lastAction !== "cancelled",
     canAmendOrder: ({ context }) => !!context.orderId && context.lastAction !== "cancelled",
     hasOrderId: ({ context }) => !!context.orderId,
+    // Payment guards
+    canRetryPayment: ({ context }) => ["payment_failed", "payment_expired"].includes(context.paymentStatus ?? ""),
+    canSwitchPayment: ({ context }) => {
+      const terminal = ["paid", "refunded", "canceled", "waived"]
+      return !!context.paymentId && !terminal.includes(context.paymentStatus ?? "")
+    },
+    isPaymentExpired: ({ context }) => context.paymentStatus === "payment_expired",
   },
   actions: {
     // ── Context mutations ───────────────────────────────────────────────────
@@ -194,6 +203,10 @@ export const orderMachine = setup({
         orderCreatedAt: new Date().toISOString(),
         lastError: null,
         pendingProduct: null, // Item was ordered — no longer pending
+        // Payment lifecycle fields (populated if checkout result includes them)
+        paymentId: (data?.paymentId as string) ?? null,
+        paymentStatus: (data?.paymentStatus as string) ?? null,
+        pixExpiresAt: (data?.pixExpiresAt as string) ?? null,
       }
     }),
 
@@ -305,6 +318,15 @@ export const orderMachine = setup({
       }
     }),
 
+    storePaymentStatus: assign(({ event }) => {
+      if (event.type !== "PAYMENT_STATUS_CHANGED") return {}
+      return {
+        paymentId: event.paymentId,
+        paymentStatus: event.paymentStatus,
+        pixExpiresAt: event.pixExpiresAt ?? null,
+      }
+    }),
+
     storePixRegenResult: assign(({ event }) => {
       if (event.type !== "PIX_REGENERATED") return {}
       if (!event.success) return { lastError: "Erro ao regenerar PIX." }
@@ -361,6 +383,9 @@ export const orderMachine = setup({
         CANCEL_ORDER: {
           // Safe in idle — nothing to lose
           actions: ["clearCart", "markCancelled"],
+        },
+        ASK_ORDER_STATUS: {
+          // Stay in idle — LLM uses check_order_status + get_order_history (read-only)
         },
         UNKNOWN_INPUT: "fallback",
         // Slots can be set from idle (e.g., fast-path messages)
@@ -436,6 +461,9 @@ export const orderMachine = setup({
         ASK_LOYALTY: "loyalty_check",
         RESERVE_TABLE: "reservation",
         OBJECTION: { target: "objection", actions: ["setObjectionSubtype", "setMomentumCooling"] },
+        ASK_ORDER_STATUS: {
+          // Stay in browsing — LLM uses check_order_status + get_order_history (read-only)
+        },
         CANCEL_ORDER: {
           target: "idle",
           actions: ["clearCart", "markCancelled"],
@@ -957,6 +985,10 @@ export const orderMachine = setup({
             },
             ADD_ITEM: {
               actions: ["setPendingProduct"],
+            },
+            // Payment lifecycle — update context when payment status changes mid-session
+            PAYMENT_STATUS_CHANGED: {
+              actions: "storePaymentStatus",
             },
             UNKNOWN_INPUT: {
               // Stay — synthesizer prompts if customer needs more

@@ -48,11 +48,15 @@ export type OrderEvent =
   | ({ type: "UNKNOWN_INPUT"; raw: string } & WithConfidence)
   | ({ type: "SET_PIX_DETAILS"; email: string; taxId: string; fullName?: string } & WithConfidence)
   | ({ type: "PIX_DETAILS_COLLECTED"; payload: { name?: string; email?: string; cpf?: string } } & WithConfidence)
+  // Payment lifecycle events (fed by orchestrator / webhooks during active session)
+  | ({ type: "PAYMENT_STATUS_CHANGED"; paymentId: string; paymentStatus: string; method?: string; pixExpiresAt?: string | null } & WithConfidence)
+  | ({ type: "PAYMENT_RETRY_RESULT"; success: boolean; message: string; pixCopyPaste?: string; pixQrCode?: string } & WithConfidence)
 
 /** Events that tools may inject post-LLM response */
 export const ALLOWED_POST_LLM_EVENTS = new Set([
   "PIX_DETAILS_COLLECTED",
   "SET_NAME",
+  "PAYMENT_STATUS_CHANGED",
 ]) as ReadonlySet<string>
 
 // ── Cart item (mirror of Medusa line item) ──────────────────────────────────
@@ -140,6 +144,16 @@ export interface OrderContext {
 
   // Fallback misunderstanding counter (reset on entry to non-fallback states)
   fallbackCount: number
+
+  // Active order context (populated from OrderProjection on session init)
+  activeOrderId: string | null
+  activeOrderDisplayId: number | null
+  activeOrderStatus: string | null
+
+  // Payment lifecycle (populated from Payment table after checkout / on session init)
+  paymentId: string | null
+  paymentStatus: string | null  // PaymentStatus enum value
+  pixExpiresAt: string | null   // ISO 8601 — for countdown display
 }
 
 // ── Synthesized prompt (output of prompt synthesizer) ───────────────────────
@@ -360,6 +374,7 @@ export const TOOL_CLASSIFICATION = {
     "get_also_added",
     "get_ordered_together",
     "get_loyalty_balance",
+    "check_payment_status",
   ]),
 
   MUTATING: new Set([
@@ -371,6 +386,7 @@ export const TOOL_CLASSIFICATION = {
     "create_checkout",
     "cancel_order",
     "amend_order",
+    "add_order_note",
     "reorder",
     "create_reservation",
     "modify_reservation",
@@ -444,5 +460,11 @@ export function createDefaultContext(
     momentum: "high",
     lastObjectionSubtype: null,
     fallbackCount: 0,
+    activeOrderId: null,
+    activeOrderDisplayId: null,
+    activeOrderStatus: null,
+    paymentId: null,
+    paymentStatus: null,
+    pixExpiresAt: null,
   }
 }

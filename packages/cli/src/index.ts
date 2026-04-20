@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { config as loadEnv } from "dotenv"
-import { Command, type Help } from "commander"
+import { Command, Help } from "commander"
 import { registerSvcCommands }  from "./commands/svc.js"
 import { registerDevCommands }  from "./commands/dev.js"
 import { registerApiCommands }  from "./commands/api.js"
@@ -28,6 +28,8 @@ import { registerDepsCommands } from "./commands/deps.js"
 import { registerInfraCommands } from "./commands/infra.js"
 import { registerStripeCommands } from "./commands/stripe.js"
 import { registerChatCommands } from "./commands/chat.js"
+import { registerDlqCommands } from "./commands/dlq.js"
+import { registerOrdersCommands } from "./commands/orders.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
@@ -232,6 +234,7 @@ function buildHelpText(): string {
         { usage: "stripe status",          desc: "Validate Stripe keys + check CLI installation" },
         { usage: "stripe listen",          desc: "Forward Stripe webhooks to local API (port 3001)" },
         { usage: "stripe trigger [event]", desc: "Fire a test webhook event (default: payment_intent.succeeded)" },
+        { usage: "stripe complete",        desc: "Force-complete orphaned PIX/card carts (--cart <id> | --all) — dev rescue" },
         { usage: "stripe flush [id]",      desc: "Clear webhook idempotency keys (--dry-run)" },
       ],
     },
@@ -278,7 +281,12 @@ program
   .description("IbateXas developer CLI")
   .version("0.0.1")
   .configureHelp({
-    formatHelp: (_cmd: Command, _helper: Help): string => {
+    formatHelp: (cmd: Command, helper: Help): string => {
+      // Only use the custom grouped layout for the root command;
+      // subcommands (db, dev, svc…) get Commander's default help.
+      if (cmd.parent) {
+        return Help.prototype.formatHelp.call(helper, cmd, helper)
+      }
       return [
         "",
         `  \x1b[1mibx\x1b[0m v0.0.1 — IbateXas developer CLI`,
@@ -311,6 +319,8 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "deps",     register: registerDepsCommands },
   { name: "infra",    register: registerInfraCommands, description: "Infrastructure — deployment and AWS" },
   { name: "stripe",  register: registerStripeCommands, description: "Stripe — payments and webhook testing" },
+  { name: "dlq",     register: registerDlqCommands,     description: "Dead Letter Queue — inspect, replay, and purge failed events" },
+  { name: "orders",  register: registerOrdersCommands,  description: "Orders — projection management and debugging" },
 ]
 
 for (const { name, register, description } of groupedCommands) {
