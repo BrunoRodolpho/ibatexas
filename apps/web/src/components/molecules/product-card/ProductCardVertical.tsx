@@ -55,7 +55,7 @@ function PortionScale({
   if (!servings && !weight) return null
 
   return (
-    <div className="mt-1 flex items-center gap-2 text-[11px] text-[var(--color-text-secondary)]">
+    <div className="mt-1 flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
       {servings && (
         <span className="inline-flex items-center gap-0.5">
           <Users className="w-3 h-3" />
@@ -112,7 +112,7 @@ function AvailabilityLabel({
 }>) {
   if (availabilityWindow !== 'ALMOCO' && availabilityWindow !== 'JANTAR') return null
   return (
-    <p className="mt-1 text-[11px] text-amber-600 font-medium">
+    <p className="mt-1 text-xs text-amber-600 font-medium">
       {availabilityWindow === 'ALMOCO' ? t('product.available_almoco_short') : t('product.available_jantar_short')}
     </p>
   )
@@ -171,9 +171,9 @@ export function ProductCardVertical({
 
   return (
     <div className="group relative h-full">
-      <div className="surface-card rounded-card overflow-hidden transition-all duration-500 ease-luxury group-hover:shadow-card-hover group-hover:-translate-y-1 h-full flex flex-col">
+      <div className="surface-card rounded-card overflow-hidden transition-premium group-hover:shadow-card-hover group-hover:-translate-y-0.5 h-full flex flex-col">
         {/* Image -- 4:3 portrait, editorial food ratio */}
-        <div className="relative aspect-[4/3] overflow-hidden bg-smoke-100">
+        <div className="relative aspect-[4/3] overflow-hidden bg-smoke-100 warm-hover-glow">
           <ProductImage
             displayImage={computed.displayImage}
             title={data.title}
@@ -196,7 +196,7 @@ export function ProductCardVertical({
 
           {/* Scarcity indicator */}
           {data.stockCount != null && data.stockCount > 0 && data.stockCount <= 5 && (
-            <div className="absolute top-12 right-2 z-10 bg-accent-red/90 text-white text-[10px] font-semibold px-2 py-0.5 rounded-sm">
+            <div className="absolute top-12 right-2 z-10 bg-accent-red/90 text-white text-micro font-semibold px-2 py-0.5 rounded-sm">
               {t('scarcity', { count: data.stockCount })}
             </div>
           )}
@@ -204,7 +204,7 @@ export function ProductCardVertical({
 
         {/* Details -- below image */}
         <div className="pt-3 pb-3 px-3 flex-1 flex flex-col min-h-[160px]">
-          <h3 className="font-display text-display-2xs tracking-display text-charcoal-900 leading-snug line-clamp-2 group-hover:text-charcoal-700 transition-colors duration-500 ease-luxury">
+          <h3 className="font-display text-display-2xs tracking-display text-charcoal-900 leading-snug line-clamp-2 group-hover:text-charcoal-700 transition-micro">
             <Link href={computed.linkHref} className="after:absolute after:inset-0 after:content-['']" onClick={handlers.handleCardClick}>
               {data.title}
             </Link>
@@ -248,7 +248,7 @@ export function ProductCardVertical({
             t={t}
           />
           {data.isBundle && data.bundleServings && data.bundleServings > 1 && (
-            <p className="text-[11px] text-[var(--color-text-secondary)]">
+            <p className="text-xs text-[var(--color-text-secondary)]">
               {t('product.per_person_short', { price: formatBRL(Math.round(data.price / data.bundleServings)) })}
             </p>
           )}

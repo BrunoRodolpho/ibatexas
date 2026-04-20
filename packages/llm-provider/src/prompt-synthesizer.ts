@@ -81,9 +81,9 @@ export function formatMissingSlots(ctx: OrderContext): string {
 // Lookup happens in declaration order; first match wins.
 
 const STATE_TOOLS: Array<[pattern: string, tools: string[]]> = [
-  ["idle", ["get_customer_profile", "search_products"]],
+  ["idle", ["get_customer_profile", "search_products", "check_order_status", "get_order_history"]],
   ["first_contact", ["get_customer_profile", "search_products"]],
-  ["browsing", ["search_products", "get_product_details", "check_inventory", "get_nutritional_info", "estimate_delivery"]],
+  ["browsing", ["search_products", "get_product_details", "check_inventory", "get_nutritional_info", "estimate_delivery", "check_order_status", "get_order_history"]],
   ["ordering.", ["search_products", "get_also_added", "get_ordered_together"]],
   ["checkout.collecting_pix_details", ["set_pix_details"]],
   ["checkout.reviewing_pix_details", []],
@@ -91,13 +91,13 @@ const STATE_TOOLS: Array<[pattern: string, tools: string[]]> = [
   ["post_order.cancelling", []],
   ["post_order.amending", []],
   ["post_order.regenerating_pix", []],
-  ["post_order.", ["get_loyalty_balance", "check_order_status", "search_products"]],
+  ["post_order.", ["get_loyalty_balance", "check_order_status", "check_payment_status", "search_products"]],
   ["reservation", ["check_table_availability", "get_my_reservations"]],
   ["support", ["handoff_to_human"]],
   ["loyalty_check", ["get_loyalty_balance"]],
   ["reorder", ["get_order_history", "search_products"]],
   ["objection", ["schedule_follow_up"]],
-  ["fallback", ["search_products", "get_customer_profile", "estimate_delivery"]],
+  ["fallback", ["search_products", "get_customer_profile", "estimate_delivery", "check_order_status", "get_order_history"]],
 ]
 
 function resolveTools(stateValue: string, ctx?: OrderContext): string[] {
@@ -234,9 +234,24 @@ function formatOrderConfirmation(ctx: OrderContext, schedule?: RestaurantSchedul
     prompt += "\nNUNCA diga 'Bom apetite' — o pagamento PIX ainda não foi confirmado. Diga que o pedido será confirmado automaticamente assim que o PIX for pago."
   }
   prompt += "\nApresente TODAS essas informações ao cliente de forma organizada."
-  prompt += "\n\nAções disponíveis pós-pedido:\n- Status: consulte check_order_status (mostra tempo RESTANTE real)\n- Cancelar: se o cliente quiser cancelar, confirme a intenção. O sistema processará o cancelamento.\n- Adicionar item: confirme o que o cliente quer adicionar. O sistema processará a alteração.\n- Fidelidade: consulte get_loyalty_balance\n- Trocar pagamento: confirme a nova forma de pagamento. O sistema processará a troca.\n- Novo PIX: se o cliente pedir novo código PIX, confirme. O sistema gerará um novo QR.\nSempre mostre o resumo completo do pedido após qualquer alteração."
+  // Payment status context (from decoupled Payment table)
+  if (ctx.paymentStatus) {
+    prompt += `\n\nStatus do pagamento: ${ctx.paymentStatus}.`
+    if (ctx.paymentStatus === "payment_expired") {
+      prompt += " O pagamento PIX expirou. Ofereça gerar novo PIX ou trocar forma de pagamento."
+    } else if (ctx.paymentStatus === "payment_failed") {
+      prompt += " O pagamento falhou. Ofereça tentar novamente ou trocar forma de pagamento."
+    } else if (ctx.paymentStatus === "paid") {
+      prompt += " Pagamento confirmado."
+    } else if (ctx.paymentStatus === "cash_pending") {
+      prompt += " Pagamento em dinheiro — será confirmado na entrega/retirada."
+    }
+  }
+
+  prompt += "\n\nAções disponíveis pós-pedido:\n- Status: consulte check_order_status (mostra tempo RESTANTE real)\n- Pagamento: consulte check_payment_status para ver status atual do pagamento\n- Cancelar: se o cliente quiser cancelar, confirme a intenção. O sistema processará o cancelamento.\n- Adicionar item: confirme o que o cliente quer adicionar. O sistema processará a alteração.\n- Fidelidade: consulte get_loyalty_balance\n- Trocar pagamento: confirme a nova forma de pagamento. O sistema processará a troca.\n- Novo PIX: se o PIX expirou, confirme. O sistema gerará um novo QR (limite: 3/hora, 5/pedido).\nSempre mostre o resumo completo do pedido após qualquer alteração."
   if (orderId) {
     prompt += `\nSe o cliente disser "novo pix", "mandar pix de novo", ou pedir novo código: use regenerate_pix com o orderId "${orderId}".`
+    prompt += `\nSe o cliente perguntar sobre pagamento: use check_payment_status com orderId="${orderId}".`
   }
   prompt += "\nIMPORTANTE: NUNCA diga 'confirmado', 'cancelado' ou 'alterado' antes do sistema processar. Diga \"Vou verificar...\" e aguarde. Só apresente o resultado DEPOIS que o sistema confirmar."
 
@@ -258,6 +273,10 @@ const STATE_PROMPTS: Record<string, PromptTemplate> = {
     }
     if (ctx.mealPeriod === "closed") {
       return "Restaurante fechado. Almoço 11h-15h, jantar 18h-23h. Se perguntarem, congelados disponíveis (Costela R$72/R$135, Pulled Pork R$42, Molho BBQ R$24). NÃO aceite pedidos frescos para outro horário. Seja breve."
+    }
+    if (ctx.activeOrderId) {
+      const nameGreeting = ctx.customerName ? ` Nome: ${ctx.customerName}.` : ""
+      return `Cliente RECORRENTE com pedido ativo (#${ctx.activeOrderDisplayId ?? "?"}, status: ${ctx.activeOrderStatus ?? "em andamento"}).${nameGreeting} Cumprimente e pergunte se quer acompanhar o pedido ou pedir algo novo. Use check_order_status com orderId="${ctx.activeOrderId}" se pedir status.`
     }
     if (!ctx.isNewCustomer) {
       const nameGreeting = ctx.customerName ? ` Nome do cliente: ${ctx.customerName}.` : ""
@@ -486,8 +505,15 @@ Se o cliente já informou um dos dois, pergunte só o que falta.`
       return `Pedido ${orderRef} confirmado.\n${summary}\n${fulfillmentLabel}\n\nCliente quer adicionar "${ctx.pendingProduct}". Confirme a intenção com o cliente. O sistema processará a alteração no pedido.`
     }
 
-    // Full confirmation with explicit tool instructions (formatOrderConfirmation
-    // now includes tool usage directives — works for both first display and subsequent turns)
+    // Payment status alert for expired/failed (customer may need to retry)
+    if (ctx.paymentStatus === "payment_expired") {
+      return formatOrderConfirmation(ctx, schedule) + "\n\nATENÇÃO: O PIX expirou. Pergunte se o cliente quer gerar novo PIX ou trocar forma de pagamento."
+    }
+    if (ctx.paymentStatus === "payment_failed") {
+      return formatOrderConfirmation(ctx, schedule) + "\n\nATENÇÃO: O pagamento falhou. Pergunte se o cliente quer tentar novamente ou trocar forma de pagamento."
+    }
+
+    // Full confirmation with explicit tool instructions
     return formatOrderConfirmation(ctx, schedule)
   },
 

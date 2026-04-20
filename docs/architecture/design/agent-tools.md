@@ -201,6 +201,46 @@ List past orders for the authenticated customer.
 | **Input** | `limit?: number`, `offset?: number` |
 | **Output** | `{ orders: { orderId, date, items[], total, status, deliveryType }[] }` |
 
+### `change_delivery_address`
+Update shipping address on a delivery order.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `orderId: string`, `addressId: string` |
+| **Output** | `{ success: boolean, message: string }` |
+| **Notes** | Validates PONR (point of no return) and order type — only valid for `delivery` orders before `in_delivery` status |
+
+### `switch_order_type`
+Switch between delivery, pickup, and dine-in for an existing order.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `orderId: string`, `newType: 'delivery' \| 'pickup' \| 'dine_in'`, `addressId?: string` |
+| **Output** | `{ success: boolean, message: string }` |
+| **Notes** | Handles cash method restrictions — cash is not available for delivery in some zones. Validates PONR. |
+
+### `add_order_note`
+Add an observation or special instruction to an order.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `orderId: string`, `content: string` (max 500 chars) |
+| **Output** | `{ success: boolean, noteId: string, message: string }` |
+| **Notes** | WhatsApp channel only. Note is stored as customer-visible (`isInternal: false`). |
+
+### `check_payment_status`
+Query the current payment status for an order. READ_ONLY tool — no mutations.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `orderId: string` |
+| **Output** | `{ hasPayment, paymentId, method, status, statusLabel, amountInCentavos, pixExpiresAt?, isTerminal, canRetry, canRegenPix, canSwitchMethod, attemptCount }` |
+| **Notes** | Returns full eligibility flags for retry/regen/switch. Uses PaymentQueryService. |
+
 ---
 
 ## Reservation Tools

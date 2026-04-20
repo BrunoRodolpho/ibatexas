@@ -109,14 +109,25 @@ const ENV_VARS: EnvVar[] = [
     example: "sk-...",
   },
 
-  // ── Medusa store ─────────────────────────────────────────────────────────
+  // ── Medusa admin (powers server-side admin + store auth) ────────────────
+  // Admin API calls use a Bearer JWT obtained via /auth/user/emailpass with
+  // these credentials; the store publishable key is auto-resolved at runtime
+  // from /admin/api-keys — see packages/tools/src/medusa/client.ts.
   {
-    key: "MEDUSA_PUBLISHABLE_KEY",
-    desc: "Medusa store publishable API key (Step 4 — catalog routes)",
+    key: "MEDUSA_ADMIN_EMAIL",
+    desc: "Medusa admin dashboard login email (Step 4 — catalog/admin routes)",
     phase: 1,
     step: 4,
     secret: false,
-    example: "pk_...",
+    example: "admin@ibatexas.com.br",
+  },
+  {
+    key: "MEDUSA_ADMIN_PASSWORD",
+    desc: "Medusa admin dashboard login password (Step 4 — catalog/admin routes)",
+    phase: 1,
+    step: 4,
+    secret: true,
+    example: "min 8 chars",
   },
 
   // ── Auth ────────────────────────────────────────────────────────────────────

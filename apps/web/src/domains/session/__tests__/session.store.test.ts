@@ -21,7 +21,7 @@ vi.mock('@ibatexas/tools/api', () => ({
   getApiBase: mockGetApiBase,
 }))
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest'
 
 // Stub window to prevent module-level auto-init
 const originalWindow = globalThis.window

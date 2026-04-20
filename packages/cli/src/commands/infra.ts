@@ -29,9 +29,10 @@ const ALL_SECRETS = [
   "TWILIO_VERIFY_SID",
   "NATS_URL",
   "REDIS_URL",
-  "MEDUSA_API_KEY",
   "TYPESENSE_API_KEY",
   "CORS_ORIGIN",
+  "MEDUSA_ADMIN_EMAIL",
+  "MEDUSA_ADMIN_PASSWORD",
 ]
 
 const MANUAL_SECRETS = ALL_SECRETS.filter(s => !AUTO_POPULATED_SECRETS.includes(s))
@@ -47,7 +48,7 @@ const GITHUB_SECRETS = [
 const SENSITIVE_SECRETS = new Set([
   "JWT_SECRET", "DATABASE_URL", "ANTHROPIC_API_KEY",
   "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "TWILIO_AUTH_TOKEN",
-  "MEDUSA_API_KEY", "TYPESENSE_API_KEY",
+  "TYPESENSE_API_KEY", "MEDUSA_ADMIN_PASSWORD",
 ])
 
 // ── Secret Validators ─────────────────────────────────────────────────────────
@@ -746,7 +747,7 @@ const SECRET_CATEGORIES: { label: string; keys: string[] }[] = [
   { label: "AI", keys: ["ANTHROPIC_API_KEY"] },
   { label: "Payments", keys: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"] },
   { label: "WhatsApp (Twilio)", keys: ["TWILIO_AUTH_TOKEN", "TWILIO_ACCOUNT_SID", "TWILIO_VERIFY_SID"] },
-  { label: "Medusa Commerce", keys: ["MEDUSA_API_KEY"] },
+  { label: "Medusa Commerce", keys: ["MEDUSA_ADMIN_EMAIL", "MEDUSA_ADMIN_PASSWORD"] },
   { label: "Search", keys: ["TYPESENSE_API_KEY"] },
   { label: "Web", keys: ["CORS_ORIGIN"] },
 ]

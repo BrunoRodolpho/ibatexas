@@ -61,10 +61,14 @@ async function runSeed() {
   }
 }
 
-async function runMigrateDomain() {
+async function runMigrateDomain(opts: { name?: string } = {}) {
   const spinner = ora("Running domain (Prisma) migrations…").start()
   try {
-    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:migrate"], {
+    const args = ["--filter", "@ibatexas/domain", "db:migrate"]
+    if (opts.name) {
+      args.push("--", "--name", opts.name)
+    }
+    await execa("pnpm", args, {
       cwd: ROOT,
       stdio: "inherit",
     })
@@ -160,7 +164,7 @@ async function runReset(force = false) {
 
   step("Dropping database…")
   await runPsql(
-    [...psqlBase, "postgres", "-c", `DROP DATABASE IF EXISTS "${dbName}"`],
+    [...psqlBase, "postgres", "-c", `DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`],
     pgEnv
   )
 
@@ -169,6 +173,26 @@ async function runReset(force = false) {
     [...psqlBase, "postgres", "-c", `CREATE DATABASE "${dbName}"`],
     pgEnv
   )
+
+  // Helper: run a step, warn and continue on failure instead of crashing
+  const warnings: string[] = []
+  async function tryStep(label: string, fn: () => Promise<void>) {
+    step(label)
+    try {
+      await fn()
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err)
+      const isConnectivity = /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|fetch failed|Connection refused/i.test(msg)
+      if (isConnectivity) {
+        console.log(chalk.yellow(`    ⚠  Skipped (service not reachable). Run this step manually later.`))
+      } else {
+        console.log(chalk.yellow(`    ⚠  Failed: ${msg}`))
+      }
+      warnings.push(label)
+    }
+  }
+
+  // ── Critical steps (must succeed) ──────────────────────────────────────
 
   step("Running Medusa migrations…")
   await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:migrate"], {
@@ -196,35 +220,57 @@ async function runReset(force = false) {
     { cwd: `${ROOT}/apps/commerce`, stdio: "inherit" }
   )
 
-  step("Seeding Medusa products…")
-  await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:seed"], {
-    cwd: ROOT,
-    stdio: "inherit",
+  // ── Seed steps (warn and continue on failure) ──────────────────────────
+
+  await tryStep("Seeding Medusa products…", async () => {
+    await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:seed"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
   })
 
-  step("Seeding domain tables…")
-  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:tables"], {
-    cwd: ROOT,
-    stdio: "inherit",
+  await tryStep("Seeding domain tables…", async () => {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:tables"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
   })
 
-  step("Seeding homepage data (customers + reviews)…")
-  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:homepage"], {
-    cwd: ROOT,
-    stdio: "inherit",
+  await tryStep("Seeding homepage data (customers + reviews)…", async () => {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:homepage"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
   })
 
-  step("Seeding delivery data (zones + addresses + preferences)…")
-  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:delivery"], {
-    cwd: ROOT,
-    stdio: "inherit",
+  await tryStep("Seeding delivery data (zones + addresses + preferences)…", async () => {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:delivery"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
   })
 
-  step("Seeding order history + reservations…")
-  await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:orders"], {
-    cwd: ROOT,
-    stdio: "inherit",
+  await tryStep("Seeding order history + reservations…", async () => {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:seed:orders"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
   })
+
+  // Belt-and-braces reindex: the Medusa seed now reindexes products with
+  // linked prices itself, but a fresh Typesense collection here guarantees
+  // we never carry stale docs across resets regardless of what the seed did.
+  await tryStep("Reindexing Typesense…", async () => {
+    await runReindex(true)
+  })
+
+  if (warnings.length > 0) {
+    console.log(chalk.yellow(`\n  ⚠  ${warnings.length} step(s) skipped:`))
+    for (const w of warnings) {
+      console.log(chalk.yellow(`     • ${w}`))
+    }
+    console.log(chalk.yellow(`     Re-run individually after starting the required services.\n`))
+  }
 
   console.log(chalk.green("\n  ✅  Database reset and reseed complete\n"))
 }
@@ -499,6 +545,247 @@ async function runStatus() {
   console.log()
 }
 
+// ── Order Projection Backfill ─────────────────────────────────────────────────
+
+async function runBackfillOrderProjections() {
+  const spinner = ora("Backfilling order projections from Medusa…").start()
+  let backfilled = 0
+  let skipped = 0
+  const batchId = `backfill-${Date.now()}`
+
+  try {
+    const { prisma } = await import("@ibatexas/domain")
+    const { toOrderProjectionData } = await import("@ibatexas/domain")
+    const PAGE_SIZE = 50
+    let offset = 0
+    let hasMore = true
+
+    while (hasMore) {
+      const qs = new URLSearchParams({
+        limit: String(PAGE_SIZE),
+        offset: String(offset),
+        fields: "id,display_id,email,total,subtotal,shipping_total,status,payment_status,fulfillment_status,created_at,metadata",
+        expand: "items,customer,shipping_address",
+      })
+
+      const medusaUrl = getMedusaUrl()
+      const token = await getAdminToken()
+      const res = await fetch(`${medusaUrl}/admin/orders?${qs}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+
+      if (!res.ok) {
+        throw new Error(`Medusa API returned ${res.status}: ${await res.text()}`)
+      }
+
+      const data = await res.json() as { orders: Array<Record<string, unknown>>; count: number }
+      const orders = data.orders ?? []
+
+      if (orders.length === 0) {
+        hasMore = false
+        break
+      }
+
+      for (const rawOrder of orders) {
+        try {
+          const projData = toOrderProjectionData(
+            rawOrder as unknown as Parameters<typeof toOrderProjectionData>[0],
+            { pricesInCentavos: false }, // Medusa returns reais
+          )
+
+          // Upsert — skip if version > 1 (already has real transitions)
+          const existing = await prisma.orderProjection.findUnique({
+            where: { id: projData.id },
+            select: { version: true },
+          })
+
+          if (existing && existing.version > 1) {
+            skipped++
+            continue
+          }
+
+          await prisma.orderProjection.upsert({
+            where: { id: projData.id },
+            create: {
+              ...projData,
+              fulfillmentStatus: projData.fulfillmentStatus as "pending" | "confirmed" | "preparing" | "ready" | "in_delivery" | "delivered" | "canceled",
+              itemsJson: projData.itemsJson as unknown as object,
+              shippingAddressJson: projData.shippingAddressJson ?? undefined,
+              version: 1,
+            },
+            update: {}, // no-op if exists with version 1
+          })
+
+          // Create initial status history entry (only if projection was just created)
+          if (!existing) {
+            const status = projData.fulfillmentStatus as "pending" | "confirmed" | "preparing" | "ready" | "in_delivery" | "delivered" | "canceled"
+            await prisma.orderStatusHistory.create({
+              data: {
+                orderId: projData.id,
+                fromStatus: status,
+                toStatus: status,
+                actor: "system_backfill",
+                reason: "Historical backfill",
+                version: 1,
+                backfillBatchId: batchId,
+              },
+            })
+          }
+
+          backfilled++
+        } catch (orderErr) {
+          // Skip individual order errors (e.g. duplicate key race)
+          if (!String(orderErr).includes("Unique constraint")) {
+            spinner.warn(`Order ${(rawOrder as { id?: string }).id}: ${String(orderErr)}`)
+          }
+          skipped++
+        }
+      }
+
+      spinner.text = `Backfilling order projections… (${backfilled} created, ${skipped} skipped, offset ${offset})`
+      offset += PAGE_SIZE
+
+      if (orders.length < PAGE_SIZE) {
+        hasMore = false
+      }
+    }
+
+    await prisma.$disconnect()
+    spinner.succeed(`Order projections backfilled: ${backfilled} created, ${skipped} skipped (batch: ${batchId})`)
+  } catch (err) {
+    spinner.fail(`Backfill failed: ${(err as Error).message}`)
+    process.exitCode = 1
+  }
+}
+
+// ── Payment Backfill ────────────────────────────────────────────────────────
+
+/**
+ * Maps legacy Medusa payment_status strings to PaymentStatus enum values.
+ * Medusa uses: "captured", "awaiting", "not_paid", "requires_action", "canceled", "refunded"
+ */
+function mapLegacyPaymentStatus(medusaStatus: string | null | undefined): string {
+  switch (medusaStatus) {
+    case "captured": return "paid"
+    case "awaiting": return "awaiting_payment"
+    case "not_paid": return "awaiting_payment"
+    case "requires_action": return "payment_pending"
+    case "canceled": return "canceled"
+    case "refunded": return "refunded"
+    default: return "awaiting_payment"
+  }
+}
+
+async function runBackfillPayments() {
+  const spinner = ora("Backfilling payment rows from order projections…").start()
+  let created = 0
+  let skipped = 0
+
+  try {
+    const { prisma } = await import("@ibatexas/domain")
+    const PAGE_SIZE = 50
+    let offset = 0
+    let hasMore = true
+
+    while (hasMore) {
+      const orders = await prisma.orderProjection.findMany({
+        where: { currentPaymentId: null },
+        select: {
+          id: true,
+          paymentStatus: true,
+          paymentMethod: true,
+          totalInCentavos: true,
+        },
+        take: PAGE_SIZE,
+        skip: offset,
+        orderBy: { createdAt: "asc" },
+      })
+
+      if (orders.length === 0) {
+        hasMore = false
+        break
+      }
+
+      for (const order of orders) {
+        try {
+          const method = (order.paymentMethod ?? "pix") as "pix" | "card" | "cash"
+          const mappedStatus = mapLegacyPaymentStatus(order.paymentStatus)
+
+          // Determine initial status based on method (same as PaymentCommandService.create)
+          const initialStatus = method === "cash" ? "cash_pending" : "awaiting_payment"
+
+          // Create Payment row in a transaction
+          await prisma.$transaction(async (tx) => {
+            // Double-check no active payment exists (race guard)
+            const existing = await tx.payment.findFirst({
+              where: {
+                orderId: order.id,
+                status: {
+                  notIn: ["refunded", "canceled", "waived", "payment_failed", "payment_expired"],
+                },
+              },
+              select: { id: true },
+            })
+
+            if (existing) {
+              skipped++
+              return
+            }
+
+            const payment = await tx.payment.create({
+              data: {
+                orderId: order.id,
+                method,
+                status: mappedStatus as "awaiting_payment" | "payment_pending" | "paid" | "cash_pending" | "canceled" | "refunded",
+                amountInCentavos: order.totalInCentavos,
+                version: 1,
+              },
+            })
+
+            // Record initial history
+            await tx.paymentStatusHistory.create({
+              data: {
+                paymentId: payment.id,
+                fromStatus: initialStatus as "awaiting_payment" | "cash_pending",
+                toStatus: mappedStatus as "awaiting_payment" | "payment_pending" | "paid" | "cash_pending" | "canceled" | "refunded",
+                actor: "system_backfill",
+                reason: "Historical backfill from OrderProjection",
+                version: 1,
+              },
+            })
+
+            // Link payment to order
+            await tx.orderProjection.update({
+              where: { id: order.id },
+              data: { currentPaymentId: payment.id },
+            })
+
+            created++
+          })
+        } catch (orderErr) {
+          if (!String(orderErr).includes("Unique constraint")) {
+            spinner.warn(`Order ${order.id}: ${String(orderErr)}`)
+          }
+          skipped++
+        }
+      }
+
+      spinner.text = `Backfilling payments… (${created} created, ${skipped} skipped, offset ${offset})`
+      offset += PAGE_SIZE
+
+      if (orders.length < PAGE_SIZE) {
+        hasMore = false
+      }
+    }
+
+    await prisma.$disconnect()
+    spinner.succeed(`Payment rows backfilled: ${created} created, ${skipped} skipped`)
+  } catch (err) {
+    spinner.fail(`Payment backfill failed: ${(err as Error).message}`)
+    process.exitCode = 1
+  }
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 export function registerDbCommands(program: Command) {
@@ -512,7 +799,8 @@ export function registerDbCommands(program: Command) {
 
   db.command("migrate:domain")
     .description("Run pending Prisma (domain) migrations — Table, TimeSlot, Reservation, etc.")
-    .action(runMigrateDomain)
+    .option("--name <name>", "Migration name (e.g. add_order_event_log)")
+    .action((opts: { name?: string }) => runMigrateDomain(opts))
 
   db.command("seed")
     .description("Run the Medusa seed file (Medusa must be running)")
@@ -534,6 +822,14 @@ export function registerDbCommands(program: Command) {
     .description("Seed order history + reservations for intelligence features (Medusa must be running)")
     .action(runSeedOrders)
 
+  db.command("seed:order-projections")
+    .description("Backfill order projections from Medusa orders (idempotent, safe to re-run)")
+    .action(runBackfillOrderProjections)
+
+  db.command("seed:payment-projections")
+    .description("Backfill payment rows from order projections (idempotent, safe to re-run)")
+    .action(runBackfillPayments)
+
   db.command("clean")
     .description("⚠️  Delete all domain data (--all to also clean Medusa + Typesense)")
     .option("-f, --force", "Skip the confirmation prompt")
@@ -554,5 +850,5 @@ export function registerDbCommands(program: Command) {
     .description("Show migration status for Medusa and domain (Prisma) schemas")
     .action(runStatus)
 
-  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runSeedDelivery, runSeedOrders, runClean, runReset, runReindex }
+  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runSeedDelivery, runSeedOrders, runBackfillOrderProjections, runClean, runReset, runReindex }
 }

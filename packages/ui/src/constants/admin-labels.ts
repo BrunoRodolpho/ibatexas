@@ -14,10 +14,34 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   confirmed: 'confirmado',
   preparing: 'preparando',
   ready: 'pronto',
+  in_delivery: 'em entrega',
   delivered: 'entregue',
   canceled: 'cancelado',
   completed: 'concluído',
   requires_action: 'ação necessária',
+}
+
+export const PAYMENT_STATUS_LABELS: Record<string, string> = {
+  // New canonical payment statuses (from PaymentStatus enum)
+  awaiting_payment: 'aguardando pagamento',
+  payment_pending: 'pagamento pendente',
+  payment_expired: 'pagamento expirado',
+  payment_failed: 'pagamento falhou',
+  cash_pending: 'dinheiro (pendente)',
+  paid: 'pago',
+  switching_method: 'trocando pagamento',
+  partially_refunded: 'reembolso parcial',
+  refunded: 'reembolsado',
+  disputed: 'em disputa',
+  canceled: 'cancelado',
+  waived: 'isento',
+  // Legacy Medusa statuses (backward compat during transition)
+  captured: 'pago',
+  pending: 'pendente',
+  cash_on_delivery: 'dinheiro',
+  cancelado: 'cancelado',
+  requires_action: 'aç��o necessária',
+  not_paid: 'não pago',
 }
 
 // ---------------------------------------------------------------------------
@@ -62,8 +86,17 @@ export const ORDER_STATUS_FILTERS = [
   { id: 'confirmed', label: 'Confirmado' },
   { id: 'preparing', label: 'Preparando' },
   { id: 'ready', label: 'Pronto' },
+  { id: 'in_delivery', label: 'Em Entrega' },
   { id: 'delivered', label: 'Entregue' },
   { id: 'canceled', label: 'Cancelado' },
+] as const
+
+export const ORDER_DATE_FILTERS = [
+  { id: '', label: 'Todas' },
+  { id: 'hoje', label: 'Hoje' },
+  { id: 'semana', label: 'Esta Semana' },
+  { id: 'fds', label: 'Fim de Semana' },
+  { id: 'mes', label: 'Este Mes' },
 ] as const
 
 export const RESERVATION_STATUS_FILTERS = [
@@ -101,8 +134,16 @@ export const ORDER_COLUMN_HEADERS = {
   orderId: '#',
 } as const
 
+export const RESERVATION_DATE_FILTERS = [
+  { id: '', label: 'Todas' },
+  { id: 'hoje', label: 'Hoje' },
+  { id: 'semana', label: 'Esta Semana' },
+  { id: 'fds', label: 'Fim de Semana' },
+  { id: 'mes', label: 'Este Mes' },
+] as const
+
 export const RESERVATION_COLUMN_HEADERS = {
-  id: 'ID',
+  id: 'Reserva #',
   customer: 'Cliente',
   partySize: 'Pessoas',
   dateTime: 'Data/Hora',
@@ -147,6 +188,18 @@ export const PAGE_TITLES = {
   reviews: 'Avaliações',
   dashboard: 'Dashboard',
   dashboardSubtitle: 'Visão geral do dia',
+  analytics: 'Análises',
+  analyticsSubtitle: 'Métricas do dia',
+  hours: 'Horários de Funcionamento',
+  hoursSubtitle: 'Horários regulares, feriados e exceções',
+  zones: 'Zonas de Entrega',
+  zonesSubtitle: 'Gerenciar áreas e taxas de entrega',
+  reservationsSubtitle: 'Gerenciamento de reservas',
+  menuSubtitle: 'Produtos do cardápio',
+  shopSubtitle: 'Produtos da loja',
+  reviewsSubtitle: 'Avaliações de clientes',
+  banner: 'Banner',
+  bannerSubtitle: 'Texto do banner curvado na homepage',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -174,8 +227,16 @@ export const ACTION_LABELS = {
   next: 'Próximo',
   checkin: 'Check-in',
   complete: 'Completar',
+  cancelReservation: 'Cancelar',
   viewAll: 'Ver todos',
   variants: 'Variantes',
+  confirmOrder: 'Confirmar',
+  startPreparing: 'Preparar',
+  markReady: 'Pronto',
+  sendDelivery: 'Enviar',
+  markDelivered: 'Entregue',
+  cancelOrder: 'Cancelar',
+  advanceStatus: 'Avançar',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -197,6 +258,11 @@ export const EMPTY_STATES = {
   products: 'Nenhum produto encontrado',
   reviews: 'Nenhuma avaliação encontrada',
   variants: 'Nenhuma variante cadastrada',
+  analytics: 'Sem dados disponíveis.',
+  hours: 'Nenhum feriado ou exceção cadastrado.',
+  hoursFiltered: 'Nenhum item encontrado para o filtro selecionado.',
+  zones: 'Nenhuma zona de entrega cadastrada.',
+  zonesFiltered: 'Nenhuma zona encontrada para o filtro selecionado.',
 } as const
 
 // ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ type TableRow = {
 }
 
 type ReservationWithRelations = {
-  id: string; customerId: string; partySize: number; status: string;
+  id: string; displayId: number; customerId: string; partySize: number; status: string;
   specialRequests: SpecialRequest[] | null; timeSlot: TimeSlotRow;
   tables: Array<{ reservationId: string; tableId: string; table: TableRow }>;
   confirmedAt: Date | null; checkedInAt: Date | null; cancelledAt: Date | null;
@@ -47,6 +47,7 @@ function toDTO(r: ReservationWithRelations): ReservationDTO {
 
   return {
     id: r.id,
+    displayId: r.displayId,
     customerId: r.customerId,
     partySize: r.partySize,
     status: r.status as ReservationStatus,

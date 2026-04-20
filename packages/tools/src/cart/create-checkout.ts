@@ -8,13 +8,15 @@
 // never by client polling alone to avoid stuck-pending orders.
 
 import Stripe from "stripe";
-import { CreateCheckoutInputSchema, NonRetryableError, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
+import { CreateCheckoutInputSchema, NonRetryableError, formatOrderId, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { reaisToCentavos } from "../medusa/client.js";
 import { loadSchedule } from "../cache/schedule-cache.js";
 import { getAndConsumeWelcomeCredit } from "../intelligence/welcome-credit.js";
 import { getMealPeriodFromSchedule } from "../schedule/schedule-helpers.js";
 import { medusaStoreFetch } from "./_shared.js";
+import { getRedisClient } from "../redis/client.js";
+import { rk } from "../redis/key.js";
 
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -54,6 +56,7 @@ async function confirmPixAndGetQrCode(
   paymentIntentId: string,
   customer: PixCustomerInfo,
   cartId: string,
+  customerId?: string,
 ): Promise<CreateCheckoutOutput> {
   try {
     const stripe = getStripe();
@@ -114,6 +117,22 @@ async function confirmPixAndGetQrCode(
       });
     } catch (err) {
       console.warn("[create_checkout] Failed to set cartId metadata on PI:", (err as Error).message);
+    }
+
+    // Track pending checkout so /account/orders can show it before webhook fires
+    if (customerId) {
+      try {
+        const redis = await getRedisClient();
+        await redis.hSet(rk(`customer:pending-orders:${customerId}`), paymentIntentId, JSON.stringify({
+          paymentIntentId,
+          cartId,
+          paymentMethod: "pix",
+          createdAt: new Date().toISOString(),
+        }));
+        await redis.expire(rk(`customer:pending-orders:${customerId}`), 86400 * 7); // 7 days
+      } catch {
+        // Non-critical
+      }
     }
 
     return {
@@ -181,6 +200,8 @@ export async function createCheckout(
   if (tipInCentavos) metadata["tipInCentavos"] = String(tipInCentavos);
   if (deliveryCep) metadata["deliveryCep"] = deliveryCep;
   if (ctx.customerId) metadata["customerId"] = ctx.customerId;
+  metadata["deliveryType"] = deliveryCep ? "delivery" : "pickup";
+  metadata["paymentMethod"] = paymentMethod;
 
   // Mark scheduled-pickup orders: pickup (no deliveryCep) + restaurant currently closed
   // These orders are preserved when PIX expires so the customer can regenerate payment at pickup
@@ -208,9 +229,10 @@ export async function createCheckout(
       payment_collection?: { id: string };
       items?: Array<{
         variant_id: string;
+        title?: string;
         quantity: number;
         unit_price: number;
-        variant?: { product_id?: string };
+        variant?: { product_id?: string; title?: string };
       }>;
     };
   };
@@ -292,6 +314,7 @@ export async function createCheckout(
     const cartItems = (cartForPC.cart?.items ?? []).map((item) => ({
       productId: item.variant?.product_id ?? "",
       variantId: item.variant_id,
+      title: item.title ?? item.variant?.title ?? "",
       quantity: item.quantity,
       priceInCentavos: reaisToCentavos(item.unit_price),
     }));
@@ -300,17 +323,39 @@ export async function createCheckout(
     const completedData = await medusaStoreFetch(`/store/carts/${cartId}/complete`, {
       method: "POST",
       body: JSON.stringify({}),
-    }) as { type?: string; order?: { id: string } };
+    }) as { type?: string; order?: { id: string; display_id?: number; total?: number; subtotal?: number; shipping_total?: number } };
 
-    const orderId = completedData.order?.id;
-    if (orderId) {
+    const rawOrderId = completedData.order?.id;
+    const orderId = completedData.order?.display_id
+      ? formatOrderId(completedData.order.display_id)
+      : rawOrderId;
+
+    if (rawOrderId) {
       void publishNatsEvent("order.placed", {
         eventType: "order.placed",
-        orderId,
+        orderId: rawOrderId,
+        displayId: completedData.order?.display_id ?? 0,
         paymentMethod: "cash",
+        paymentStatus: "cash_pending",
         customerId: ctx.customerId,
+        customerEmail: null,
+        customerName: null,
+        customerPhone: null,
+        totalInCentavos: reaisToCentavos(completedData.order?.total ?? 0),
+        subtotalInCentavos: reaisToCentavos(completedData.order?.subtotal ?? 0),
+        shippingInCentavos: reaisToCentavos(completedData.order?.shipping_total ?? 0),
+        deliveryType: metadata["deliveryType"] ?? "pickup",
+        tipInCentavos: tipInCentavos ?? 0,
         items: cartItems,
       }).catch((err) => console.error("[create_checkout] NATS publish error:", (err as Error).message));
+    }
+
+    // Untrack completed cart
+    try {
+      const redis = await getRedisClient();
+      await redis.hDel(rk("active:carts"), cartId);
+    } catch {
+      // Non-critical — TTL will expire
     }
 
     return {
@@ -318,7 +363,7 @@ export async function createCheckout(
       paymentMethod: "cash",
       orderId,
       message: orderId
-        ? `Pedido realizado com sucesso (#${orderId})! Pagamento em dinheiro na entrega.`
+        ? `Pedido realizado com sucesso (${orderId})! Pagamento em dinheiro na entrega.`
         : "Pedido realizado! Pagamento em dinheiro na entrega.",
     };
   }
@@ -334,6 +379,21 @@ export async function createCheckout(
   }
 
   if (paymentMethod === "card") {
+    // Track pending checkout so /account/orders can show it before webhook fires
+    if (ctx.customerId && paymentIntentId) {
+      try {
+        const redis = await getRedisClient();
+        await redis.hSet(rk(`customer:pending-orders:${ctx.customerId}`), paymentIntentId, JSON.stringify({
+          paymentIntentId,
+          cartId,
+          paymentMethod: "card",
+          createdAt: new Date().toISOString(),
+        }));
+        await redis.expire(rk(`customer:pending-orders:${ctx.customerId}`), 86400 * 7);
+      } catch {
+        // Non-critical
+      }
+    }
     return {
       success: true,
       paymentMethod: "card",
@@ -345,11 +405,18 @@ export async function createCheckout(
 
   // PIX — confirm with PIX payment method and retrieve QR code
   if (paymentMethod === "pix" && paymentIntentId) {
+    if (!extra?.customerName && !extra?.customerEmail) {
+      return {
+        success: false,
+        paymentMethod: "pix",
+        message: "Nome e email são obrigatórios para pagamento PIX.",
+      };
+    }
     return confirmPixAndGetQrCode(paymentIntentId, {
       name: extra?.customerName,
       email: extra?.customerEmail,
       taxId: extra?.customerTaxId,
-    }, cartId);
+    }, cartId, ctx.customerId);
   }
 
   return {

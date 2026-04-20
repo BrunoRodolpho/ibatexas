@@ -166,6 +166,7 @@ stateDiagram-v2
         po_idle --> cancelling : CANCEL_ORDER [canCancelOrder]
         po_idle --> amending : AMEND_ORDER [canAmendOrder]
         po_idle --> regenerating_pix : REGENERATE_PIX [hasOrderId]
+        po_idle --> po_idle : PAYMENT_STATUS_CHANGED [storePaymentStatus]
         cancelling --> po_idle : CANCEL_ORDER_RESULT
         amending --> po_idle : AMEND_ORDER_RESULT
         regenerating_pix --> po_idle : PIX_REGENERATED
@@ -306,7 +307,7 @@ Cart and checkout tools are invoked exclusively by machine actions. They are **n
 | `checkout.confirming` | `apply_coupon` |
 | `checkout.selecting_payment` | — |
 | `checkout.order_placed` | `check_order_status` |
-| `post_order` | `check_order_status`, `get_loyalty_balance`, `search_products` |
+| `post_order` | `check_order_status`, `check_payment_status`, `get_loyalty_balance`, `search_products` |
 | `reorder` | `get_order_history`, `search_products` |
 | `reservation` | `check_table_availability`, `get_my_reservations` |
 | `loyalty_check` | `get_customer_profile` |

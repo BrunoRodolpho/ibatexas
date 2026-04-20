@@ -193,7 +193,7 @@ export type CustomerGroupByOutputType = {
   _max: CustomerMaxAggregateOutputType | null
 }
 
-type GetCustomerGroupByPayload<T extends CustomerGroupByArgs> = Prisma.PrismaPromise<
+export type GetCustomerGroupByPayload<T extends CustomerGroupByArgs> = Prisma.PrismaPromise<
   Array<
     Prisma.PickEnumerable<CustomerGroupByOutputType, T['by']> &
       {
@@ -226,7 +226,9 @@ export type CustomerWhereInput = {
   preferences?: Prisma.XOR<Prisma.CustomerPreferencesNullableScalarRelationFilter, Prisma.CustomerPreferencesWhereInput> | null
   reviews?: Prisma.ReviewListRelationFilter
   orderItems?: Prisma.CustomerOrderItemListRelationFilter
+  orderProjections?: Prisma.OrderProjectionListRelationFilter
   reservations?: Prisma.ReservationListRelationFilter
+  waitlists?: Prisma.WaitlistListRelationFilter
   loyaltyAccount?: Prisma.XOR<Prisma.LoyaltyAccountNullableScalarRelationFilter, Prisma.LoyaltyAccountWhereInput> | null
   conversations?: Prisma.ConversationListRelationFilter
 }
@@ -246,7 +248,9 @@ export type CustomerOrderByWithRelationInput = {
   preferences?: Prisma.CustomerPreferencesOrderByWithRelationInput
   reviews?: Prisma.ReviewOrderByRelationAggregateInput
   orderItems?: Prisma.CustomerOrderItemOrderByRelationAggregateInput
+  orderProjections?: Prisma.OrderProjectionOrderByRelationAggregateInput
   reservations?: Prisma.ReservationOrderByRelationAggregateInput
+  waitlists?: Prisma.WaitlistOrderByRelationAggregateInput
   loyaltyAccount?: Prisma.LoyaltyAccountOrderByWithRelationInput
   conversations?: Prisma.ConversationOrderByRelationAggregateInput
 }
@@ -269,7 +273,9 @@ export type CustomerWhereUniqueInput = Prisma.AtLeast<{
   preferences?: Prisma.XOR<Prisma.CustomerPreferencesNullableScalarRelationFilter, Prisma.CustomerPreferencesWhereInput> | null
   reviews?: Prisma.ReviewListRelationFilter
   orderItems?: Prisma.CustomerOrderItemListRelationFilter
+  orderProjections?: Prisma.OrderProjectionListRelationFilter
   reservations?: Prisma.ReservationListRelationFilter
+  waitlists?: Prisma.WaitlistListRelationFilter
   loyaltyAccount?: Prisma.XOR<Prisma.LoyaltyAccountNullableScalarRelationFilter, Prisma.LoyaltyAccountWhereInput> | null
   conversations?: Prisma.ConversationListRelationFilter
 }, "id" | "phone" | "medusaId">
@@ -321,7 +327,9 @@ export type CustomerCreateInput = {
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
@@ -341,7 +349,9 @@ export type CustomerUncheckedCreateInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
@@ -361,7 +371,9 @@ export type CustomerUpdateInput = {
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
@@ -381,7 +393,9 @@ export type CustomerUncheckedUpdateInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
@@ -488,6 +502,20 @@ export type CustomerUpdateOneRequiredWithoutReservationsNestedInput = {
   update?: Prisma.XOR<Prisma.XOR<Prisma.CustomerUpdateToOneWithWhereWithoutReservationsInput, Prisma.CustomerUpdateWithoutReservationsInput>, Prisma.CustomerUncheckedUpdateWithoutReservationsInput>
 }
 
+export type CustomerCreateNestedOneWithoutWaitlistsInput = {
+  create?: Prisma.XOR<Prisma.CustomerCreateWithoutWaitlistsInput, Prisma.CustomerUncheckedCreateWithoutWaitlistsInput>
+  connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutWaitlistsInput
+  connect?: Prisma.CustomerWhereUniqueInput
+}
+
+export type CustomerUpdateOneRequiredWithoutWaitlistsNestedInput = {
+  create?: Prisma.XOR<Prisma.CustomerCreateWithoutWaitlistsInput, Prisma.CustomerUncheckedCreateWithoutWaitlistsInput>
+  connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutWaitlistsInput
+  upsert?: Prisma.CustomerUpsertWithoutWaitlistsInput
+  connect?: Prisma.CustomerWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.CustomerUpdateToOneWithWhereWithoutWaitlistsInput, Prisma.CustomerUpdateWithoutWaitlistsInput>, Prisma.CustomerUncheckedUpdateWithoutWaitlistsInput>
+}
+
 export type CustomerCreateNestedOneWithoutReviewsInput = {
   create?: Prisma.XOR<Prisma.CustomerCreateWithoutReviewsInput, Prisma.CustomerUncheckedCreateWithoutReviewsInput>
   connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutReviewsInput
@@ -548,6 +576,22 @@ export type CustomerUpdateOneWithoutOrderItemsNestedInput = {
   update?: Prisma.XOR<Prisma.XOR<Prisma.CustomerUpdateToOneWithWhereWithoutOrderItemsInput, Prisma.CustomerUpdateWithoutOrderItemsInput>, Prisma.CustomerUncheckedUpdateWithoutOrderItemsInput>
 }
 
+export type CustomerCreateNestedOneWithoutOrderProjectionsInput = {
+  create?: Prisma.XOR<Prisma.CustomerCreateWithoutOrderProjectionsInput, Prisma.CustomerUncheckedCreateWithoutOrderProjectionsInput>
+  connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutOrderProjectionsInput
+  connect?: Prisma.CustomerWhereUniqueInput
+}
+
+export type CustomerUpdateOneWithoutOrderProjectionsNestedInput = {
+  create?: Prisma.XOR<Prisma.CustomerCreateWithoutOrderProjectionsInput, Prisma.CustomerUncheckedCreateWithoutOrderProjectionsInput>
+  connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutOrderProjectionsInput
+  upsert?: Prisma.CustomerUpsertWithoutOrderProjectionsInput
+  disconnect?: Prisma.CustomerWhereInput | boolean
+  delete?: Prisma.CustomerWhereInput | boolean
+  connect?: Prisma.CustomerWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.CustomerUpdateToOneWithWhereWithoutOrderProjectionsInput, Prisma.CustomerUpdateWithoutOrderProjectionsInput>, Prisma.CustomerUncheckedUpdateWithoutOrderProjectionsInput>
+}
+
 export type CustomerCreateNestedOneWithoutLoyaltyAccountInput = {
   create?: Prisma.XOR<Prisma.CustomerCreateWithoutLoyaltyAccountInput, Prisma.CustomerUncheckedCreateWithoutLoyaltyAccountInput>
   connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutLoyaltyAccountInput
@@ -593,6 +637,8 @@ export type CustomerCreateWithoutReservationsInput = {
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
@@ -612,6 +658,8 @@ export type CustomerUncheckedCreateWithoutReservationsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
@@ -647,6 +695,8 @@ export type CustomerUpdateWithoutReservationsInput = {
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
@@ -666,6 +716,108 @@ export type CustomerUncheckedUpdateWithoutReservationsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
+}
+
+export type CustomerCreateWithoutWaitlistsInput = {
+  id?: string
+  phone: string
+  name?: string | null
+  email?: string | null
+  cpf?: string | null
+  medusaId?: string | null
+  source?: string | null
+  firstContactAt?: Date | string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
+  preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
+  reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
+  orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
+  reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
+}
+
+export type CustomerUncheckedCreateWithoutWaitlistsInput = {
+  id?: string
+  phone: string
+  name?: string | null
+  email?: string | null
+  cpf?: string | null
+  medusaId?: string | null
+  source?: string | null
+  firstContactAt?: Date | string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
+  preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
+  reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
+  orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
+  reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
+}
+
+export type CustomerCreateOrConnectWithoutWaitlistsInput = {
+  where: Prisma.CustomerWhereUniqueInput
+  create: Prisma.XOR<Prisma.CustomerCreateWithoutWaitlistsInput, Prisma.CustomerUncheckedCreateWithoutWaitlistsInput>
+}
+
+export type CustomerUpsertWithoutWaitlistsInput = {
+  update: Prisma.XOR<Prisma.CustomerUpdateWithoutWaitlistsInput, Prisma.CustomerUncheckedUpdateWithoutWaitlistsInput>
+  create: Prisma.XOR<Prisma.CustomerCreateWithoutWaitlistsInput, Prisma.CustomerUncheckedCreateWithoutWaitlistsInput>
+  where?: Prisma.CustomerWhereInput
+}
+
+export type CustomerUpdateToOneWithWhereWithoutWaitlistsInput = {
+  where?: Prisma.CustomerWhereInput
+  data: Prisma.XOR<Prisma.CustomerUpdateWithoutWaitlistsInput, Prisma.CustomerUncheckedUpdateWithoutWaitlistsInput>
+}
+
+export type CustomerUpdateWithoutWaitlistsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
+  preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
+  reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
+  orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
+  reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
+}
+
+export type CustomerUncheckedUpdateWithoutWaitlistsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
+  preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
+  reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
+  orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
+  reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
@@ -684,7 +836,9 @@ export type CustomerCreateWithoutReviewsInput = {
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
@@ -703,7 +857,9 @@ export type CustomerUncheckedCreateWithoutReviewsInput = {
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
@@ -738,7 +894,9 @@ export type CustomerUpdateWithoutReviewsInput = {
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
@@ -757,7 +915,9 @@ export type CustomerUncheckedUpdateWithoutReviewsInput = {
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
@@ -776,7 +936,9 @@ export type CustomerCreateWithoutAddressesInput = {
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
@@ -795,7 +957,9 @@ export type CustomerUncheckedCreateWithoutAddressesInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
@@ -830,7 +994,9 @@ export type CustomerUpdateWithoutAddressesInput = {
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
@@ -849,7 +1015,9 @@ export type CustomerUncheckedUpdateWithoutAddressesInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
@@ -868,7 +1036,9 @@ export type CustomerCreateWithoutPreferencesInput = {
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
@@ -887,7 +1057,9 @@ export type CustomerUncheckedCreateWithoutPreferencesInput = {
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
@@ -922,7 +1094,9 @@ export type CustomerUpdateWithoutPreferencesInput = {
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
@@ -941,7 +1115,9 @@ export type CustomerUncheckedUpdateWithoutPreferencesInput = {
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
@@ -960,7 +1136,9 @@ export type CustomerCreateWithoutOrderItemsInput = {
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
@@ -979,7 +1157,9 @@ export type CustomerUncheckedCreateWithoutOrderItemsInput = {
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
@@ -1014,7 +1194,9 @@ export type CustomerUpdateWithoutOrderItemsInput = {
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
@@ -1033,7 +1215,109 @@ export type CustomerUncheckedUpdateWithoutOrderItemsInput = {
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
+}
+
+export type CustomerCreateWithoutOrderProjectionsInput = {
+  id?: string
+  phone: string
+  name?: string | null
+  email?: string | null
+  cpf?: string | null
+  medusaId?: string | null
+  source?: string | null
+  firstContactAt?: Date | string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
+  preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
+  reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
+  orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
+}
+
+export type CustomerUncheckedCreateWithoutOrderProjectionsInput = {
+  id?: string
+  phone: string
+  name?: string | null
+  email?: string | null
+  cpf?: string | null
+  medusaId?: string | null
+  source?: string | null
+  firstContactAt?: Date | string | null
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
+  preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
+  reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
+  orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
+  conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
+}
+
+export type CustomerCreateOrConnectWithoutOrderProjectionsInput = {
+  where: Prisma.CustomerWhereUniqueInput
+  create: Prisma.XOR<Prisma.CustomerCreateWithoutOrderProjectionsInput, Prisma.CustomerUncheckedCreateWithoutOrderProjectionsInput>
+}
+
+export type CustomerUpsertWithoutOrderProjectionsInput = {
+  update: Prisma.XOR<Prisma.CustomerUpdateWithoutOrderProjectionsInput, Prisma.CustomerUncheckedUpdateWithoutOrderProjectionsInput>
+  create: Prisma.XOR<Prisma.CustomerCreateWithoutOrderProjectionsInput, Prisma.CustomerUncheckedCreateWithoutOrderProjectionsInput>
+  where?: Prisma.CustomerWhereInput
+}
+
+export type CustomerUpdateToOneWithWhereWithoutOrderProjectionsInput = {
+  where?: Prisma.CustomerWhereInput
+  data: Prisma.XOR<Prisma.CustomerUpdateWithoutOrderProjectionsInput, Prisma.CustomerUncheckedUpdateWithoutOrderProjectionsInput>
+}
+
+export type CustomerUpdateWithoutOrderProjectionsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
+  preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
+  reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
+  orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
+  loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
+  conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
+}
+
+export type CustomerUncheckedUpdateWithoutOrderProjectionsInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  phone?: Prisma.StringFieldUpdateOperationsInput | string
+  name?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  email?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  cpf?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
+  preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
+  reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
+  orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
@@ -1053,7 +1337,9 @@ export type CustomerCreateWithoutLoyaltyAccountInput = {
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
   conversations?: Prisma.ConversationCreateNestedManyWithoutCustomerInput
 }
 
@@ -1072,7 +1358,9 @@ export type CustomerUncheckedCreateWithoutLoyaltyAccountInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
   conversations?: Prisma.ConversationUncheckedCreateNestedManyWithoutCustomerInput
 }
 
@@ -1107,7 +1395,9 @@ export type CustomerUpdateWithoutLoyaltyAccountInput = {
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUpdateManyWithoutCustomerNestedInput
 }
 
@@ -1126,7 +1416,9 @@ export type CustomerUncheckedUpdateWithoutLoyaltyAccountInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
   conversations?: Prisma.ConversationUncheckedUpdateManyWithoutCustomerNestedInput
 }
 
@@ -1145,7 +1437,9 @@ export type CustomerCreateWithoutConversationsInput = {
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountCreateNestedOneWithoutCustomerInput
 }
 
@@ -1164,7 +1458,9 @@ export type CustomerUncheckedCreateWithoutConversationsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
   reviews?: Prisma.ReviewUncheckedCreateNestedManyWithoutCustomerInput
   orderItems?: Prisma.CustomerOrderItemUncheckedCreateNestedManyWithoutCustomerInput
+  orderProjections?: Prisma.OrderProjectionUncheckedCreateNestedManyWithoutCustomerInput
   reservations?: Prisma.ReservationUncheckedCreateNestedManyWithoutCustomerInput
+  waitlists?: Prisma.WaitlistUncheckedCreateNestedManyWithoutCustomerInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedCreateNestedOneWithoutCustomerInput
 }
 
@@ -1199,7 +1495,9 @@ export type CustomerUpdateWithoutConversationsInput = {
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUpdateOneWithoutCustomerNestedInput
 }
 
@@ -1218,7 +1516,9 @@ export type CustomerUncheckedUpdateWithoutConversationsInput = {
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
   reviews?: Prisma.ReviewUncheckedUpdateManyWithoutCustomerNestedInput
   orderItems?: Prisma.CustomerOrderItemUncheckedUpdateManyWithoutCustomerNestedInput
+  orderProjections?: Prisma.OrderProjectionUncheckedUpdateManyWithoutCustomerNestedInput
   reservations?: Prisma.ReservationUncheckedUpdateManyWithoutCustomerNestedInput
+  waitlists?: Prisma.WaitlistUncheckedUpdateManyWithoutCustomerNestedInput
   loyaltyAccount?: Prisma.LoyaltyAccountUncheckedUpdateOneWithoutCustomerNestedInput
 }
 
@@ -1231,7 +1531,9 @@ export type CustomerCountOutputType = {
   addresses: number
   reviews: number
   orderItems: number
+  orderProjections: number
   reservations: number
+  waitlists: number
   conversations: number
 }
 
@@ -1239,7 +1541,9 @@ export type CustomerCountOutputTypeSelect<ExtArgs extends runtime.Types.Extensio
   addresses?: boolean | CustomerCountOutputTypeCountAddressesArgs
   reviews?: boolean | CustomerCountOutputTypeCountReviewsArgs
   orderItems?: boolean | CustomerCountOutputTypeCountOrderItemsArgs
+  orderProjections?: boolean | CustomerCountOutputTypeCountOrderProjectionsArgs
   reservations?: boolean | CustomerCountOutputTypeCountReservationsArgs
+  waitlists?: boolean | CustomerCountOutputTypeCountWaitlistsArgs
   conversations?: boolean | CustomerCountOutputTypeCountConversationsArgs
 }
 
@@ -1277,8 +1581,22 @@ export type CustomerCountOutputTypeCountOrderItemsArgs<ExtArgs extends runtime.T
 /**
  * CustomerCountOutputType without action
  */
+export type CustomerCountOutputTypeCountOrderProjectionsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.OrderProjectionWhereInput
+}
+
+/**
+ * CustomerCountOutputType without action
+ */
 export type CustomerCountOutputTypeCountReservationsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   where?: Prisma.ReservationWhereInput
+}
+
+/**
+ * CustomerCountOutputType without action
+ */
+export type CustomerCountOutputTypeCountWaitlistsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  where?: Prisma.WaitlistWhereInput
 }
 
 /**
@@ -1304,7 +1622,9 @@ export type CustomerSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs
   preferences?: boolean | Prisma.Customer$preferencesArgs<ExtArgs>
   reviews?: boolean | Prisma.Customer$reviewsArgs<ExtArgs>
   orderItems?: boolean | Prisma.Customer$orderItemsArgs<ExtArgs>
+  orderProjections?: boolean | Prisma.Customer$orderProjectionsArgs<ExtArgs>
   reservations?: boolean | Prisma.Customer$reservationsArgs<ExtArgs>
+  waitlists?: boolean | Prisma.Customer$waitlistsArgs<ExtArgs>
   loyaltyAccount?: boolean | Prisma.Customer$loyaltyAccountArgs<ExtArgs>
   conversations?: boolean | Prisma.Customer$conversationsArgs<ExtArgs>
   _count?: boolean | Prisma.CustomerCountOutputTypeDefaultArgs<ExtArgs>
@@ -1355,7 +1675,9 @@ export type CustomerInclude<ExtArgs extends runtime.Types.Extensions.InternalArg
   preferences?: boolean | Prisma.Customer$preferencesArgs<ExtArgs>
   reviews?: boolean | Prisma.Customer$reviewsArgs<ExtArgs>
   orderItems?: boolean | Prisma.Customer$orderItemsArgs<ExtArgs>
+  orderProjections?: boolean | Prisma.Customer$orderProjectionsArgs<ExtArgs>
   reservations?: boolean | Prisma.Customer$reservationsArgs<ExtArgs>
+  waitlists?: boolean | Prisma.Customer$waitlistsArgs<ExtArgs>
   loyaltyAccount?: boolean | Prisma.Customer$loyaltyAccountArgs<ExtArgs>
   conversations?: boolean | Prisma.Customer$conversationsArgs<ExtArgs>
   _count?: boolean | Prisma.CustomerCountOutputTypeDefaultArgs<ExtArgs>
@@ -1370,7 +1692,9 @@ export type $CustomerPayload<ExtArgs extends runtime.Types.Extensions.InternalAr
     preferences: Prisma.$CustomerPreferencesPayload<ExtArgs> | null
     reviews: Prisma.$ReviewPayload<ExtArgs>[]
     orderItems: Prisma.$CustomerOrderItemPayload<ExtArgs>[]
+    orderProjections: Prisma.$OrderProjectionPayload<ExtArgs>[]
     reservations: Prisma.$ReservationPayload<ExtArgs>[]
+    waitlists: Prisma.$WaitlistPayload<ExtArgs>[]
     loyaltyAccount: Prisma.$LoyaltyAccountPayload<ExtArgs> | null
     conversations: Prisma.$ConversationPayload<ExtArgs>[]
   }
@@ -1789,7 +2113,9 @@ export interface Prisma__CustomerClient<T, Null = never, ExtArgs extends runtime
   preferences<T extends Prisma.Customer$preferencesArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$preferencesArgs<ExtArgs>>): Prisma.Prisma__CustomerPreferencesClient<runtime.Types.Result.GetResult<Prisma.$CustomerPreferencesPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   reviews<T extends Prisma.Customer$reviewsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$reviewsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ReviewPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   orderItems<T extends Prisma.Customer$orderItemsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$orderItemsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$CustomerOrderItemPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  orderProjections<T extends Prisma.Customer$orderProjectionsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$orderProjectionsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$OrderProjectionPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   reservations<T extends Prisma.Customer$reservationsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$reservationsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ReservationPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  waitlists<T extends Prisma.Customer$waitlistsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$waitlistsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$WaitlistPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   loyaltyAccount<T extends Prisma.Customer$loyaltyAccountArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$loyaltyAccountArgs<ExtArgs>>): Prisma.Prisma__LoyaltyAccountClient<runtime.Types.Result.GetResult<Prisma.$LoyaltyAccountPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   conversations<T extends Prisma.Customer$conversationsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.Customer$conversationsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$ConversationPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   /**
@@ -2315,6 +2641,30 @@ export type Customer$orderItemsArgs<ExtArgs extends runtime.Types.Extensions.Int
 }
 
 /**
+ * Customer.orderProjections
+ */
+export type Customer$orderProjectionsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the OrderProjection
+   */
+  select?: Prisma.OrderProjectionSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the OrderProjection
+   */
+  omit?: Prisma.OrderProjectionOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.OrderProjectionInclude<ExtArgs> | null
+  where?: Prisma.OrderProjectionWhereInput
+  orderBy?: Prisma.OrderProjectionOrderByWithRelationInput | Prisma.OrderProjectionOrderByWithRelationInput[]
+  cursor?: Prisma.OrderProjectionWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.OrderProjectionScalarFieldEnum | Prisma.OrderProjectionScalarFieldEnum[]
+}
+
+/**
  * Customer.reservations
  */
 export type Customer$reservationsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -2336,6 +2686,30 @@ export type Customer$reservationsArgs<ExtArgs extends runtime.Types.Extensions.I
   take?: number
   skip?: number
   distinct?: Prisma.ReservationScalarFieldEnum | Prisma.ReservationScalarFieldEnum[]
+}
+
+/**
+ * Customer.waitlists
+ */
+export type Customer$waitlistsArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the Waitlist
+   */
+  select?: Prisma.WaitlistSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the Waitlist
+   */
+  omit?: Prisma.WaitlistOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.WaitlistInclude<ExtArgs> | null
+  where?: Prisma.WaitlistWhereInput
+  orderBy?: Prisma.WaitlistOrderByWithRelationInput | Prisma.WaitlistOrderByWithRelationInput[]
+  cursor?: Prisma.WaitlistWhereUniqueInput
+  take?: number
+  skip?: number
+  distinct?: Prisma.WaitlistScalarFieldEnum | Prisma.WaitlistScalarFieldEnum[]
 }
 
 /**

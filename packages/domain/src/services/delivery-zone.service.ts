@@ -52,7 +52,15 @@ export function createDeliveryZoneService() {
       const zones = await prisma.deliveryZone.findMany({ where: { active: true } })
       return (
         zones.find((z) =>
-          z.cepPrefixes.some((p) => p === prefix5 || fullCep.startsWith(p)),
+          z.cepPrefixes.some((p) => {
+            // Exact match (both full CEP or both prefix)
+            if (p === fullCep || p === prefix5) return true
+            // Stored prefix matches start of queried full CEP
+            if (p.length === 5 && fullCep.startsWith(p)) return true
+            // Stored full CEP matches start of queried prefix (shouldn't happen but safe)
+            if (p.length === 8 && p.startsWith(prefix5)) return true
+            return false
+          }),
         ) ?? null
       )
     },

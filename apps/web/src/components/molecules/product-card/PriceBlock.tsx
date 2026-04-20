@@ -25,14 +25,14 @@ export function PriceBlock({
   return (
     <div className="mt-auto pt-2 flex items-baseline gap-1.5">
       {hasMultipleVariants && (
-        <span className="text-[10px] text-[var(--color-text-secondary)]">{t('product.from_price')}</span>
+        <span className="text-micro text-[var(--color-text-secondary)]">{t('product.from_price')}</span>
       )}
       {hasDiscount && compareAtPrice && (
         <span className="text-xs text-[var(--color-text-muted)] line-through">
           {formatBRL(compareAtPrice)}
         </span>
       )}
-      <span className="text-lg font-semibold tracking-tight text-charcoal-900 tabular-nums">
+      <span className="text-price">
         {priceFormatted}
       </span>
       {hasDiscount && discountPercent > 0 && price < 15000 && (

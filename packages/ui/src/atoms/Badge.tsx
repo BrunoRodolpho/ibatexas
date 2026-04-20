@@ -7,24 +7,24 @@ const badgeVariants = cva('inline-flex items-center px-2 py-0.5 rounded-sm text-
   variants: {
     variant: {
       // ── 3-tier badge hierarchy ────────────────────────────
-      // Tier 1: Hero (dark inverted — highest status)
+      // Tier 1: Hero (frosted glass — subtle, premium feel)
       default: 'bg-smoke-100 text-smoke-600',
-      hero: 'bg-charcoal-900 text-smoke-50',
+      hero: 'bg-white/70 backdrop-blur-sm text-charcoal-900 ring-1 ring-smoke-200/50',
       // Tier 2: Feature (brand-tinted — promotional)
-      feature: 'bg-brand-100 text-brand-700',
+      feature: 'bg-brand-50/80 backdrop-blur-sm text-brand-700 ring-1 ring-brand-200/40',
       // Tier 3: Informational (neutral — dietary, metadata)
       info: 'bg-smoke-100 text-smoke-600',
 
       // ── Semantic mappings (map to tiers) ──────────────────
       // Hero tier
-      popular: 'bg-charcoal-900 text-smoke-50',
-      chef_choice: 'bg-charcoal-900 text-smoke-50',
-      edicao_limitada: 'bg-charcoal-900 text-smoke-50',
+      popular: 'bg-white/70 backdrop-blur-sm text-charcoal-900 ring-1 ring-smoke-200/50',
+      chef_choice: 'bg-white/70 backdrop-blur-sm text-charcoal-900 ring-1 ring-smoke-200/50',
+      edicao_limitada: 'bg-white/70 backdrop-blur-sm text-charcoal-900 ring-1 ring-smoke-200/50',
       // Feature tier
-      novo: 'bg-brand-100 text-brand-700',
-      exclusivo: 'bg-brand-100 text-brand-700',
-      kit: 'bg-brand-100 text-brand-700',
-      primary: 'bg-brand-100 text-brand-700',
+      novo: 'bg-brand-50/80 backdrop-blur-sm text-brand-700 ring-1 ring-brand-200/40',
+      exclusivo: 'bg-brand-50/80 backdrop-blur-sm text-brand-700 ring-1 ring-brand-200/40',
+      kit: 'bg-brand-50/80 backdrop-blur-sm text-brand-700 ring-1 ring-brand-200/40',
+      primary: 'bg-brand-50/80 backdrop-blur-sm text-brand-700 ring-1 ring-brand-200/40',
       // Informational tier
       vegetariano: 'bg-smoke-100 text-smoke-600',
       vegan: 'bg-smoke-100 text-smoke-600',

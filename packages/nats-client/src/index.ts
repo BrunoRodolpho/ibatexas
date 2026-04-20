@@ -74,7 +74,15 @@ export async function getNatsConnection(): Promise<NatsConnection> {
 }
 
 // Critical events that require outbox durability
-const OUTBOX_EVENTS = new Set(["order.placed", "reservation.created"])
+const OUTBOX_EVENTS = new Set([
+  "order.placed",
+  "reservation.created",
+  "order.status_changed",
+  "order.refunded",
+  "order.disputed",
+  "order.canceled",
+  "order.payment_failed",
+])
 
 // Optional Redis outbox writer (injected by apps/api at startup)
 let _outboxWriter: OutboxWriter | null = null
@@ -108,7 +116,7 @@ export function outboxKey(envPrefix: string, eventName: string): string {
  * For critical events (order.placed, reservation.created), writes to Redis outbox
  * before NATS publish and removes after success.
  */
-export async function publishNatsEvent(event: string, payload: Record<string, unknown>): Promise<void> {
+export async function publishNatsEvent<T extends Record<string, unknown> = Record<string, unknown>>(event: string, payload: T): Promise<void> {
   const data = JSON.stringify(payload)
   const isCritical = OUTBOX_EVENTS.has(event)
   const envPrefix = process.env.APP_ENV ?? "development"

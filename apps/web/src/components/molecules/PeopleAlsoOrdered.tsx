@@ -129,7 +129,7 @@ export function PeopleAlsoOrdered({ allProducts, onAddToCart }: PeopleAlsoOrdere
                   {product.rating && product.rating >= 4 && product.reviewCount && product.reviewCount >= 10 && (
                     <div className="flex items-center gap-0.5 mt-0.5">
                       <Star className="w-3 h-3 fill-brand-500 text-brand-500" />
-                      <span className="text-[11px] text-charcoal-900 font-medium tabular-nums">{formatRating(product.rating)}</span>
+                      <span className="text-xs text-charcoal-900 font-medium tabular-nums">{formatRating(product.rating)}</span>
                     </div>
                   )}
                   <p className="mt-0.5 text-sm font-semibold tabular-nums text-charcoal-900">

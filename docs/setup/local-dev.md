@@ -47,13 +47,20 @@ cp .env.example .env
 | `TWILIO_VERIFY_SID` | Twilio → Verify → create service → Service SID |
 | `JWT_SECRET` | `openssl rand -base64 32` |
 | `COOKIE_SECRET` | `openssl rand -base64 32` |
+| `ADMIN_API_KEY` | `openssl rand -base64 32` — must match in API and admin app |
 | `APP_ENV` | `development` (default, no action needed) |
+
+**Optional (Stripe card payments):**
+
+| Variable | Where to get it |
+|----------|----------------|
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | [Stripe Dashboard](https://dashboard.stripe.com) → API keys → Publishable key (`pk_test_...` or `pk_live_...`) |
 
 **Optional (PostHog analytics):**
 
 | Variable | Where to get it |
 |----------|----------------|
-| `NEXT_PUBLIC_POSTHOG_KEY` | [PostHog](https://posthog.com) → Project Settings → Project API Key |
+| `NEXT_PUBLIC_POSTHOG_KEY` | [PostHog](https://posthog.com) ��� Project Settings → Project API Key |
 | `NEXT_PUBLIC_POSTHOG_HOST` | `https://app.posthog.com` (default) or your self-hosted URL |
 
 > `DATABASE_URL`, `REDIS_URL`, `TYPESENSE_API_KEY`, and `NATS_URL` are pre-filled in `.env.example` for local Docker. Do not change the port from 5433 — local macOS Postgres occupies 5432.
@@ -192,6 +199,19 @@ pnpm --filter @ibatexas/cli test --coverage
 
 ---
 
+## Rebuilding Shared Packages
+
+After editing `packages/types/`, `packages/tools/`, or `packages/domain/`:
+
+```bash
+# Rebuild all shared packages (respects dependency order)
+npx turbo build --filter=@ibatexas/types --filter=@ibatexas/tools --filter=@ibatexas/domain --filter=@ibatexas/cli --force
+```
+
+The build order is: `types` → `tools` → `domain` → `cli` (each depends on the previous). Turbo handles this automatically.
+
+> **When to rebuild:** Any time you change types, add a Prisma model, or modify shared utilities. The API and admin app import from the compiled `dist/` of these packages — stale `dist/` causes `ERR_MODULE_NOT_FOUND` or type errors at runtime.
+
 ## Rebuilding the CLI
 
 After editing `packages/cli/src/**`:
@@ -238,3 +258,4 @@ See [plugins.md](plugins.md) for full documentation.
 | `process-compose: command not found` | `brew install f1bonacc1/tap/process-compose` |
 | TUI not rendering | Try `ibx dev start --no-tui` for plain output |
 | `Port XXXX already in use` | Ghost process — run `ibx dev stop -f` to force-kill, then retry |
+| Admin panel returns 503 on all pages | `ADMIN_API_KEY` is empty or mismatched — generate with `openssl rand -base64 32` and set the same value in both `ADMIN_API_KEY` and `NEXT_PUBLIC_ADMIN_API_KEY` in `.env` |

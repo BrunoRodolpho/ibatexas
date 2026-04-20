@@ -10,15 +10,18 @@
 export type AnalyticsEvent =
   // ── Storefront ─────────────────────────────────────────────────
   | 'quick_add_clicked'
+  | 'quick_add_failed'
   | 'add_to_cart'
   | 'sticky_cta_used'
   | 'pdp_viewed'
   | 'product_card_clicked'
   | 'cross_sell_viewed'
   | 'cross_sell_added'
+  | 'pdp_cross_sell_added'
   // ── Cart ───────────────────────────────────────────────────────
   | 'cart_drawer_opened'
   | 'cart_abandonment_nudge'
+  | 'coupon_validation_failed'
   // ── Checkout ───────────────────────────────────────────────────
   | 'checkout_started'
   | 'checkout_step_completed'
@@ -42,8 +45,17 @@ export type AnalyticsEvent =
   | 'also_added_viewed'
   | 'also_added_cart'
   | 'homepage_recs_clicked'
+  | 'homepage_recs_viewed'
+  | 'home_carousel_viewed'
+  | 'search_results_viewed'
+  | 'cart_drawer_cross_sell_viewed'
+  | 'pdp_cross_sell_viewed'
   // ── Reorder ──────────────────────────────────────────────────
   | 'reorder_completed'
+  // ── Order Tracking ──────────────────────────────────────────────
+  | 'order_status_viewed'
+  | 'order_timeline_viewed'
+  | 'order_history_viewed'
   // ── Conversion UX ─────────────────────────────────────────────
   | 'upsell_toast_shown'
   | 'upsell_toast_added'
@@ -80,3 +92,14 @@ export type AnalyticsEvent =
   | 'wa_follow_up_converted'
   | 'loyalty_stamp_earned'
   | 'loyalty_reward_redeemed'
+  // ── Kitchen Closed ─────────────────────────────────────────────
+  | 'kitchen_closed_checkout_blocked'
+  | 'kitchen_closed_items_removed'
+  | 'kitchen_closed_banner_viewed'
+  // ── Payment Lifecycle ──────────────────────────────────────────
+  | 'payment_retry_initiated'
+  | 'payment_method_switched'
+  | 'pix_regenerated'
+  | 'order_note_added'
+  | 'order_amended'
+  | 'order_canceled_by_customer'

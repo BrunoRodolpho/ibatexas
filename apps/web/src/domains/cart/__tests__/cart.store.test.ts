@@ -54,7 +54,7 @@ function createVariant(overrides: Partial<ProductVariant> = {}): ProductVariant 
 function resetStore() {
   useCartStore.setState({
     items: [],
-    deliveryType: null,
+    deliveryType: 'delivery',
     couponCode: undefined,
     selectedAddress: undefined,
     selectedTimeSlot: undefined,
@@ -288,7 +288,7 @@ describe('clearCart', () => {
 
     const state = useCartStore.getState()
     expect(state.items).toEqual([])
-    expect(state.deliveryType).toBeNull()
+    expect(state.deliveryType).toBe('delivery')
     expect(state.couponCode).toBeUndefined()
     expect(state.selectedAddress).toBeUndefined()
     expect(state.selectedTimeSlot).toBeUndefined()

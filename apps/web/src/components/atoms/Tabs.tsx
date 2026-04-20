@@ -30,7 +30,7 @@ export function Tabs({ items, activeKey, onChange, className = '' }: TabsProps) 
           {item.label}
           {item.count !== undefined && (
             <span
-              className={`rounded-sm px-2 py-0.5 text-[10px] uppercase tracking-wider ${
+              className={`rounded-sm px-2 py-0.5 text-micro uppercase tracking-wider ${
                 activeKey === item.key
                   ? 'bg-charcoal-900 text-smoke-50'
                   : 'bg-smoke-100 text-[var(--color-text-secondary)]'

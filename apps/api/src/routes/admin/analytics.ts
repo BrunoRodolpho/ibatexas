@@ -60,8 +60,8 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
           0,
         );
         aov = ordersToday > 0 ? Math.round(revenueToday / ordersToday) : 0;
-      } catch {
-        // Medusa not running — return zeros
+      } catch (err) {
+        server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
       }
 
       // Active carts: count carts created today
@@ -71,8 +71,8 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
           `/admin/orders?status[]=pending&limit=1&offset=0&fields=id`,
         )) as Record<string, unknown>;
         activeCarts = (cartData.count as number) ?? 0;
-      } catch {
-        // Medusa not running — return zero
+      } catch (err) {
+        server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
       }
 
       // New customers in last 30 days
@@ -83,8 +83,8 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         newCustomers30d = await prisma.customer.count({
           where: { createdAt: { gte: thirtyDaysAgo } },
         });
-      } catch {
-        // DB not available — return zero
+      } catch (err) {
+        server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
       }
 
       // Weekly outreach count + WA conversion metrics from Redis
@@ -105,8 +105,8 @@ export async function analyticsRoutes(server: FastifyInstance): Promise<void> {
         const waOrders = waOrdersVal ? parseInt(waOrdersVal, 10) : 0;
         waConversionRate = conversations > 0 ? Math.round((waOrders / conversations) * 100) : 0;
         avgMessagesToCheckout = avgMsgsVal ? Math.round(parseFloat(avgMsgsVal)) : 0;
-      } catch {
-        // Redis not available — return zeros
+      } catch (err) {
+        server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
       }
 
       return reply.send({ ordersToday, revenueToday, aov, activeCarts, newCustomers30d, outreachWeekly, waConversionRate, avgMessagesToCheckout });

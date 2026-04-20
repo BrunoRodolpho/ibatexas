@@ -7,7 +7,7 @@ export default function PrivacidadePage() {
   const reset = useConsentStore((s) => s.reset)
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-12">
+    <div className="max-w-3xl mx-auto px-4 py-16 lg:py-24">
       <h1 className="font-display text-3xl font-bold text-charcoal-900 mb-8">
         Política de Privacidade
       </h1>

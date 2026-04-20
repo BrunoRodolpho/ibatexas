@@ -208,7 +208,7 @@ export const ProductGrid = ({
             removeItem={removeItem}
           />
         ) : (
-          <div className={`grid ${gridColsClass} gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8 gap-y-6 lg:gap-y-8`}>
+          <div className={`grid ${gridColsClass} gap-x-3 sm:gap-x-4 lg:gap-x-5 gap-y-6 lg:gap-y-8`}>
             {gridProducts.map((product, index) => {
               // Only stagger first 8 cards; subsequent cards (infinite scroll) appear instantly
               const baseIndex = showFeatured ? index + 1 : index
@@ -321,7 +321,7 @@ function VirtualizedGrid({
               }}
               className="pb-6 lg:pb-8"
             >
-              <div className={`grid ${gridColsClass} gap-x-5 sm:gap-x-6 md:gap-x-5 lg:gap-x-8`}>
+              <div className={`grid ${gridColsClass} gap-x-3 sm:gap-x-4 lg:gap-x-5`}>
                 {rowProducts.map((product, colIdx) => {
                   const flatIndex = startIdx + colIdx
                   const baseIndex = showFeatured ? flatIndex + 1 : flatIndex

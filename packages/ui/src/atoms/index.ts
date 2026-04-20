@@ -17,3 +17,10 @@ export { Tabs, type TabItem } from './Tabs'
 export { Card } from './Card'
 export { Skeleton } from './Skeleton'
 export { IconButton, iconButtonVariants, type IconButtonProps } from './IconButton'
+
+/* ── Admin page primitives ────────���───────────────────────────────── */
+export { PageHeader, type PageHeaderProps } from './PageHeader'
+export { SectionHeader, type SectionHeaderProps } from './SectionHeader'
+export { PageSkeleton, type PageSkeletonProps } from './PageSkeleton'
+export { EmptyState, type EmptyStateProps } from './EmptyState'
+export { ErrorBanner, type ErrorBannerProps } from './ErrorBanner'

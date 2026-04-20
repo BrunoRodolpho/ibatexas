@@ -147,3 +147,51 @@ Prevents TTL-less keys if process crashes between INCR and EXPIRE.
 Stripe and WhatsApp webhook routes use scoped content type parsers via
 `fastify.register()` with prefix encapsulation. They do NOT replace global parsers.
 
+### 11. Stripe Card Payment — Embedded PaymentElement
+
+**Decision:** Use Stripe's React PaymentElement (`@stripe/react-stripe-js`) for the web checkout card form instead of Stripe Checkout (hosted page) or a custom card input.
+
+**Why:**
+- PCI-DSS compliance is delegated to Stripe (card data never touches our servers)
+- PaymentElement supports 3D Secure / SCA natively
+- User stays on our site (no redirect to Stripe-hosted checkout)
+
+**Implementation:**
+- `CardPaymentForm.tsx` wraps `<Elements>` + `<PaymentElement>`, calls `stripe.confirmPayment()`
+- `CheckoutContent.tsx` has a `card_form` stage: backend returns `clientSecret` → form renders → success redirects to `/pedido/{pi_id}`
+- `stripe-return/page.tsx` handles 3DS redirect returns (reads `payment_intent` query param)
+- Backend (`create-checkout.ts`) returns `stripeClientSecret` for card payments — no changes needed
+
+**Env var:** `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (required in `apps/web`).
+
+### 12. Order/Billing Lifecycle Separation
+
+**Decision:** Decouple Order fulfillment and Payment into independent state machines coordinated by NATS events. Payment becomes its own bounded context ("Billing") with a dedicated `Payment` table, separate from `OrderProjection`.
+
+**Why:**
+- PIX expiry was canceling orders — losing the customer's cart. Now PIX expiry only transitions the payment to `payment_expired`; the order stays alive for retry/method switch.
+- Payment status was an untyped `String?` on `OrderProjection` with no transition validation, no audit trail, and no concurrency control.
+- Race condition between PIX expiry checker and Stripe webhook (both reading "pending", both proceeding) — now resolved via distributed lock on `paymentId`.
+- Web customers had no post-order actions (cancel, amend, retry, notes) — WhatsApp only.
+- Industry standard: Uber Eats, DoorDash, iFood, Toast POS all treat Order and Payment as independent state machines.
+
+**Key design choices:**
+- **One active payment per order** — enforced by partial unique index + application guard. Retry/regeneration creates a NEW Payment row; old one stays terminal for audit trail.
+- **Terminal per-attempt**: `payment_failed` and `payment_expired` are terminal for that Payment row. This keeps clean attempt history and makes analytics trivial (count Payment rows = attempt count).
+- **`switching_method` transitional state** — blocks webhook processing during atomic method switches. Prevents partial state corruption.
+- **Cash flow**: `awaiting_payment` → `cash_pending` → `paid` (admin/driver explicitly confirms). Separates "intent to pay cash" from "cash received".
+- **Optimistic concurrency** via `version` field + `PaymentConcurrencyError`. Distributed lock (`lock:payment:{paymentId}`) for contested operations (webhook vs expiry checker).
+- **CQRS**: `PaymentCommandService` (create, transition, reconcile) + `PaymentQueryService` (getById, getActive, listByOrder, getByStripePI).
+- **Forward-only transition matrix** in `@ibatexas/types` — `canTransitionPayment()` validates all transitions.
+- **Cross-context pointer**: `OrderProjection.currentPaymentId` points to the active Payment row, updated atomically on creation/switch.
+
+**NATS events:**
+- `payment.status_changed` — published on every transition (webhook reconciliation, expiry, retry, cancel)
+- `payment.method_changed` — published on payment method switch
+- Subscriber `payment-lifecycle.ts` auto-confirms orders on `paid`, cancels orders on `refunded`
+
+**Migration:**
+- Prisma schema adds `Payment`, `PaymentStatusHistory`, `OrderNote` models + `PaymentStatus` enum
+- Backfill creates Payment rows from existing `OrderProjection.paymentStatus`/`paymentMethod` using `system_backfill` actor
+- Legacy fields kept on `OrderProjection` during transition period
+

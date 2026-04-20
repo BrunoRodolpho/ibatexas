@@ -1,6 +1,7 @@
 // Auth middleware for Fastify.
-// Extracts the JWT from the `token` httpOnly cookie and attaches
-// request.customerId + request.userType so route handlers can access them.
+// Extracts the JWT from the `token` httpOnly cookie (customers/guests) or the
+// `staff_token` httpOnly cookie (staff) and attaches request.customerId /
+// request.staffId + request.userType so route handlers can access them.
 //
 // Usage:
 //   requireAuth  — throws 401 if no valid JWT
@@ -29,24 +30,30 @@ class RedisUnavailableError extends Error {
   }
 }
 
-async function extractAuth(request: FastifyRequest): Promise<void> {
+type JwtPayload = { sub: string; userType: string; jti?: string; role?: string };
+
+async function checkRevocation(jti: string | undefined): Promise<void> {
+  if (!jti) return;
   try {
-    // @fastify/jwt decorates server with jwtVerify — call it here
+    const redis = await getRedisClient();
+    const revoked = await redis.get(rk(`jwt:revoked:${jti}`));
+    if (revoked) throw new Error("token revoked");
+  } catch (err) {
+    if ((err as Error).message === "token revoked") throw err;
+    // SEC: Fail closed — if Redis is unreachable, reject the request
+    // to prevent revoked tokens from being accepted
+    throw new RedisUnavailableError();
+  }
+}
+
+async function extractAuth(request: FastifyRequest): Promise<void> {
+  // ── Customer / guest path: fastifyJwt reads the `token` httpOnly cookie ──
+  try {
     await (request as unknown as { jwtVerify: () => Promise<void> }).jwtVerify();
-    const payload = (request as unknown as { user: { sub: string; userType: string; jti?: string; role?: string } }).user;
+    const payload = (request as unknown as { user: JwtPayload }).user;
 
     // SEC-004: Check if the token has been revoked (e.g., after logout)
-    if (payload.jti) {
-      try {
-        const redis = await getRedisClient();
-        const revoked = await redis.get(rk(`jwt:revoked:${payload.jti}`));
-        if (revoked) return; // Treat revoked token as unauthenticated
-      } catch {
-        // SEC: Fail closed — if Redis is unreachable, reject the request
-        // to prevent revoked tokens from being accepted
-        throw new RedisUnavailableError();
-      }
-    }
+    await checkRevocation(payload.jti);
 
     request.userType = payload.userType as "guest" | "customer" | "staff";
 
@@ -57,10 +64,32 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
     } else {
       request.customerId = payload.sub;
     }
+    return;
   } catch (err) {
     // SEC: Redis failure must propagate — do not silently accept potentially revoked tokens
     if (err instanceof RedisUnavailableError) throw err;
-    // Invalid or missing JWT — caller decides whether to throw
+    // Invalid or missing `token` cookie — fall through to staff_token check
+  }
+
+  // ── Staff path: staff JWT lives in `staff_token` (separate from customer cookie) ──
+  const staffTokenRaw = request.cookies?.["staff_token"];
+  if (!staffTokenRaw) return;
+
+  try {
+    const jwtInstance = (request as unknown as { server: { jwt: { verify: (token: string) => JwtPayload } } }).server.jwt;
+    const payload = jwtInstance.verify(staffTokenRaw);
+
+    if (payload.userType !== "staff") return; // Unexpected — not a staff token
+
+    // SEC-004: Check revocation for staff token too
+    await checkRevocation(payload.jti);
+
+    request.userType = "staff";
+    request.staffId = payload.sub;
+    request.staffRole = payload.role as "OWNER" | "MANAGER" | "ATTENDANT";
+  } catch (err) {
+    if (err instanceof RedisUnavailableError) throw err;
+    // Invalid staff_token — treat as unauthenticated
   }
 }
 

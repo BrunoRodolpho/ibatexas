@@ -105,6 +105,82 @@ Customer (Twilio Verify + Medusa)
   │           ├── metadata: Json | null
   │           └── sentAt: Date
   │
+  ├── OrderProjection[] (Postgres — CQRS read model)
+  │     ├── id: string                         ← Medusa order ID (not cuid)
+  │     ├── displayId: number
+  │     ├── customerId: string | null
+  │     ├── customerEmail: string | null
+  │     ├── customerName: string | null
+  │     ├── customerPhone: string | null
+  │     ├── fulfillmentStatus: OrderFulfillmentStatus
+  │     ├── paymentStatus: string | null
+  │     ├── totalInCentavos: number
+  │     ├── subtotalInCentavos: number
+  │     ├── shippingInCentavos: number
+  │     ├── itemCount: number
+  │     ├── itemsJson: Json | null             ← OrderEventItem[], validated by itemsSchemaVersion
+  │     ├── itemsSchemaVersion: number         ← currently 1
+  │     ├── shippingAddressJson: Json | null
+  │     ├── version: number                    ← optimistic concurrency (incremented on each transition)
+  │     ├── medusaCreatedAt: Date
+  │     │
+  │     └── OrderStatusHistory[]
+  │           ├── id: string (cuid)
+  │           ├── orderId: string              ← FK to OrderProjection
+  │           ├── fromStatus: OrderFulfillmentStatus
+  │           ├── toStatus: OrderFulfillmentStatus
+  │           ├── actor: OrderActor            ← admin | system | system_backfill | customer
+  │           ├── actorId: string | null
+  │           ├── reason: string | null
+  │           ├── version: number              ← projection version AFTER this transition
+  │           ├── backfillBatchId: string | null  ← set only by system_backfill
+  │           └── createdAt: Date
+  │
+  ├── Payment[] (Postgres — Billing context, one active per order)
+  │     ├── id: string (cuid)
+  │     ├── orderId: string                    ← FK to OrderProjection
+  │     ├── method: "pix" | "card" | "cash"
+  │     ├── status: PaymentStatus              ← enum, validated transitions
+  │     ├── amountInCentavos: number
+  │     ├── stripePaymentIntentId: string | null (unique)
+  │     ├── pixExpiresAt: Date | null
+  │     ├── refundedAmountCentavos: number     ← default 0
+  │     ├── regenerationCount: number          ← default 0, max 5 per order
+  │     ├── idempotencyKey: string | null (unique)
+  │     ├── version: number                    ← optimistic concurrency
+  │     ├── lastStripeEventTs: Date | null     ← out-of-order event guard
+  │     ├── createdAt: Date
+  │     ├── updatedAt: Date
+  │     │
+  │     └── PaymentStatusHistory[]
+  │           ├── id: string (cuid)
+  │           ├── paymentId: string            ← FK to Payment
+  │           ├── fromStatus: PaymentStatus
+  │           ├── toStatus: PaymentStatus
+  │           ├── actor: OrderActor
+  │           ├── actorId: string | null
+  │           ├── reason: string | null        ← e.g. "stripe:evt_xxx" for webhooks
+  │           ├── version: number
+  │           └── createdAt: Date
+  │
+  ├── OrderNote[] (Postgres — customer/admin notes per order)
+  │     ├── id: string (cuid)
+  │     ├── orderId: string                    ← FK to OrderProjection
+  │     ├── author: OrderActor
+  │     ├── authorId: string | null
+  │     ├── content: string (max 500 chars)
+  │     ├── isInternal: Boolean (default false) — when true, note is only visible to staff (not returned in customer-facing API)
+  │     └── createdAt: Date
+  │
+  ├── OrderEventLog[] (Postgres — append-only, observability/replay layer)
+  │     ├── id: string (cuid)
+  │     ├── orderId: string                    ← FK to OrderProjection
+  │     ├── eventType: string                  ← e.g. "order.placed", "order.status_changed"
+  │     ├── idempotencyKey: string (unique)    ← composite: orderId:eventType:discriminator
+  │     ├── payload: Json                      ← full event payload, stored verbatim
+  │     ├── timestamp: Date                    ← event timestamp from source
+  │     └── createdAt: Date
+  │
   └── Review[] (Postgres)
         ├── id: string
         ├── orderId: string                    ← Medusa order id
@@ -150,10 +226,44 @@ interface SpecialRequest {
   notes?: string           // free text, e.g. "aniversário da Maria, 50 anos"
 }
 
+type OrderFulfillmentStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'preparing'
+  | 'ready'
+  | 'in_delivery'
+  | 'delivered'
+  | 'canceled'
+
+type OrderActor = 'admin' | 'system' | 'system_backfill' | 'customer'
+
+type PaymentStatus =
+  | 'awaiting_payment'      // order created, no payment initiated
+  | 'payment_pending'       // PI created, waiting (PIX QR shown, card processing)
+  | 'payment_expired'       // PIX QR expired — terminal per-attempt, retry = new row
+  | 'payment_failed'        // card declined — terminal per-attempt, retry = new row
+  | 'cash_pending'          // cash order, payment expected at delivery/counter
+  | 'paid'                  // confirmed/captured
+  | 'switching_method'      // transitional: old PI being canceled, new being created
+  | 'partially_refunded'    // partial refund issued
+  | 'refunded'              // full refund — terminal
+  | 'disputed'              // chargeback opened
+  | 'canceled'              // PI canceled — terminal
+  | 'waived'                // admin waived — terminal
+
+type PaymentMethod = 'pix' | 'card' | 'cash'
+
 type ConversationChannel = 'whatsapp' | 'web'
 
 type MessageRole = 'user' | 'assistant' | 'system'
 ```
+
+### OrderType
+| Value | Description |
+|-------|-------------|
+| `delivery` | Delivered to customer address |
+| `pickup` | Customer picks up at restaurant |
+| `dine_in` | Customer eats at restaurant |
 
 ---
 
@@ -246,6 +356,7 @@ interface BusinessEvent<T = Record<string, unknown>> {
 | `order.placed` | Commerce on order create | `{ orderId, items[], totalValue, paymentMethod, deliveryType }` |
 | `order.confirmed` | Commerce on status change | `{ orderId }` |
 | `order.cancelled` | Commerce on status change | `{ orderId, reason }` |
+| `order.status_changed` | Admin updates order fulfillment status | `{ orderId, displayId, previousStatus, newStatus, customerId, updatedBy: OrderActor, version, correlationId?, timestamp }` |
 | `order.delivered` | Commerce on status change | `{ orderId, deliveryMinutes }` |
 | `reservation.created` | Reservation on create | `{ reservationId, partySize, date, timeSlot, tableLocation }` |
 | `reservation.modified` | Reservation on update | `{ reservationId, changes }` |
@@ -261,7 +372,7 @@ interface BusinessEvent<T = Record<string, unknown>> {
 | `order.disputed` | Stripe webhook (`stripe-webhook.ts`) | `{ orderId, disputeId, amount, reason }` |
 | `order.canceled` | Stripe webhook (`stripe-webhook.ts`) | `{ orderId, stripePaymentIntentId, cancellationReason }` |
 | `cart.item_added` | agent `add_to_cart`, `reorder` | `{ cartId, productId, variantId, quantity, customerId }` |
-| `notification.send` | `cart-intelligence.ts` subscriber | `{ type: 'cart_abandoned', sessionId, customerId, cartSummary }` |
+| `notification.send` | `cart-intelligence.ts` subscriber | `{ type, customerId?, channel: 'whatsapp', body, targetType?: 'customer' \| 'staff' }` |
 | `review.prompt.schedule` | Medusa `order-delivered` subscriber | `{ orderId, deliveredAt }` — `customerId` resolved by consumer |
 | `review.prompt` | `review-prompt-poller.ts` job | `{ customerId, orderId }` |
 | `whatsapp.message.received` | WhatsApp webhook (telemetry) | `{ phoneHash, sessionId, hasMedia }` |
@@ -273,6 +384,8 @@ interface BusinessEvent<T = Record<string, unknown>> {
 - `notification.send` subscriber is stubbed — actual delivery not yet implemented
 - `whatsapp.message.*` and `web.{eventType}` are telemetry-only (no subscribers in Phase 1; future JetStream consumers in Phase 3)
 - `order.payment_failed`, `order.refunded`, `order.disputed`, `order.canceled` have no subscribers yet — future consumers will handle notifications and status updates
+- `order.status_changed` events MUST include `version` (projection version after transition). Typed contract: `OrderStatusChangedEvent` in `packages/types/src/order-events.ts`
+- `order.placed` events create an `OrderProjection` row via `cart-intelligence.ts` subscriber. Typed contract: `OrderPlacedEvent`
 
 ---
 
@@ -387,6 +500,7 @@ model Customer {
   preferences   CustomerPreferences?
   reviews       Review[]
   orderItems    CustomerOrderItem[]
+  orderProjections OrderProjection[]
   reservations  Reservation[]
   conversations Conversation[]
 }
@@ -488,6 +602,74 @@ model Conversation {
   @@index([channel])
   @@index([startedAt])
   @@map("conversations")
+}
+
+enum OrderFulfillmentStatus {
+  pending
+  confirmed
+  preparing
+  ready
+  in_delivery
+  delivered
+  canceled
+}
+
+enum OrderActor {
+  admin
+  system
+  system_backfill
+  customer
+}
+
+model OrderProjection {
+  id                  String                 @id               // = Medusa order ID
+  displayId           Int                    @map("display_id")
+  customerId          String?                @map("customer_id")
+  customerEmail       String?                @map("customer_email")
+  customerName        String?                @map("customer_name")
+  customerPhone       String?                @map("customer_phone")
+  fulfillmentStatus   OrderFulfillmentStatus @default(pending) @map("fulfillment_status")
+  paymentStatus       String?                @map("payment_status")
+  totalInCentavos     Int                    @default(0) @map("total_in_centavos")
+  subtotalInCentavos  Int                    @default(0) @map("subtotal_in_centavos")
+  shippingInCentavos  Int                    @default(0) @map("shipping_in_centavos")
+  itemCount           Int                    @default(0) @map("item_count")
+  itemsJson           Json?                  @map("items_json")
+  itemsSchemaVersion  Int                    @default(1) @map("items_schema_version")
+  shippingAddressJson Json?                  @map("shipping_address_json")
+  version             Int                    @default(1)       // optimistic concurrency
+  medusaCreatedAt     DateTime               @map("medusa_created_at")
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+
+  customer      Customer?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  statusHistory OrderStatusHistory[]
+
+  @@index([customerId])
+  @@index([fulfillmentStatus])
+  @@index([displayId])
+  @@index([medusaCreatedAt])
+  @@index([fulfillmentStatus, medusaCreatedAt(sort: Desc)])
+  @@map("order_projections")
+}
+
+model OrderStatusHistory {
+  id         String                 @id @default(cuid())
+  orderId    String                 @map("order_id")
+  fromStatus OrderFulfillmentStatus @map("from_status")
+  toStatus   OrderFulfillmentStatus @map("to_status")
+  actor      OrderActor             @default(system)
+  actorId    String?                @map("actor_id")
+  reason     String?
+  version    Int
+  backfillBatchId String?           @map("backfill_batch_id")
+  createdAt  DateTime               @default(now()) @map("created_at")
+
+  order OrderProjection @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@index([createdAt])
+  @@map("order_status_history")
 }
 
 model ConversationMessage {

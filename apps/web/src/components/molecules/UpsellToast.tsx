@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import NextImage from 'next/image'
 import { Plus, X } from 'lucide-react'
@@ -13,7 +13,14 @@ import { BLUR_PLACEHOLDER } from '@/lib/constants'
 import { formatBRL } from '@/lib/format'
 import type { ProductDTO } from '@ibatexas/types'
 
-const AUTO_DISMISS_MS = 6000
+// Was 6000, then 9000. Audit P1-3 bumped to 12s after cases where users on
+// slower connections missed the toast entirely. Bar pauses on hover / focus,
+// so dwelling readers are still in full control of dismissal.
+const AUTO_DISMISS_MS = 12000
+// Debounce window: collapses rapid triggerCategory changes (e.g. two
+// back-to-back adds) into a single cross-sell fetch so we don't flood the
+// backend while the cart is mid-update.
+const TRIGGER_DEBOUNCE_MS = 300
 
 /**
  * Post-add-to-cart upsell toast.
@@ -28,8 +35,10 @@ export function UpsellToast() {
   const dismissUpsell = useUIStore((s) => s.dismissUpsell)
   const addItem = useCartStore((s) => s.addItem)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [isPaused, setIsPaused] = useState(false)
 
-  // Fetch a cross-sell product when trigger fires
+  // Fetch a cross-sell product when trigger fires — debounced so a burst of
+  // add-to-cart actions results in a single fetch.
   useEffect(() => {
     if (!triggerCategory) return
 
@@ -40,33 +49,40 @@ export function UpsellToast() {
     }
 
     const controller = new AbortController()
-    apiFetch<{ items?: ProductDTO[]; products?: ProductDTO[] }>(
-      `/api/products?categoryHandle=${crossCategory}&limit=1`,
-      { signal: controller.signal },
-    )
-      .then((res) => {
-        const items = res.items ?? res.products ?? []
-        if (items.length > 0) {
-          const p = items[0]
-          setUpsellProduct({
-            productId: p.id,
-            title: p.title,
-            price: p.price,
-            imageUrl: p.imageUrl || p.images?.[0],
-          })
-          track('upsell_toast_shown', { productId: p.id, crossCategory })
-        } else {
-          dismissUpsell()
-        }
-      })
-      .catch(() => dismissUpsell())
+    const debounceTimer = setTimeout(() => {
+      apiFetch<{ items?: ProductDTO[]; products?: ProductDTO[] }>(
+        `/api/products?categoryHandle=${crossCategory}&limit=1`,
+        { signal: controller.signal },
+      )
+        .then((res) => {
+          const items = res.items ?? res.products ?? []
+          if (items.length > 0) {
+            const p = items[0]
+            setUpsellProduct({
+              productId: p.id,
+              title: p.title,
+              price: p.price,
+              imageUrl: p.imageUrl || p.images?.[0],
+            })
+            track('upsell_toast_shown', { productId: p.id, crossCategory })
+          } else {
+            dismissUpsell()
+          }
+        })
+        .catch(() => dismissUpsell())
+    }, TRIGGER_DEBOUNCE_MS)
 
-    return () => controller.abort()
+    return () => {
+      clearTimeout(debounceTimer)
+      controller.abort()
+    }
   }, [triggerCategory, setUpsellProduct, dismissUpsell])
 
-  // Auto-dismiss timer
+  // Auto-dismiss timer — pauses while hovered so the user has time to read.
+  // Resets the full duration when re-entering rather than tracking remaining time;
+  // simpler and the UX cost (an extra few seconds on hover-out) is fine here.
   useEffect(() => {
-    if (!upsellProduct) return
+    if (!upsellProduct || isPaused) return
     timerRef.current = setTimeout(() => {
       track('upsell_toast_dismissed', { productId: upsellProduct.productId, auto: true })
       dismissUpsell()
@@ -74,7 +90,7 @@ export function UpsellToast() {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
     }
-  }, [upsellProduct, dismissUpsell])
+  }, [upsellProduct, dismissUpsell, isPaused])
 
   if (!upsellProduct) return null
 
@@ -95,47 +111,82 @@ export function UpsellToast() {
   }
 
   return (
-    <div className="fixed bottom-[7.5rem] sm:bottom-20 left-4 right-4 sm:left-auto sm:right-6 sm:max-w-sm z-50 animate-fade-up">
-      <div className="surface-card rounded-card p-2.5 flex items-center gap-2.5 shadow-lg">
-        {/* Product thumbnail */}
-        {upsellProduct.imageUrl && (
-          <div className="relative w-9 h-9 rounded-sm overflow-hidden flex-shrink-0 bg-smoke-100">
-            <NextImage
-              src={upsellProduct.imageUrl}
-              alt={upsellProduct.title}
-              fill
-              sizes="36px"
-              placeholder="blur"
-              blurDataURL={BLUR_PLACEHOLDER}
-              className="object-cover"
-            />
-          </div>
-        )}
+    <div
+      className="fixed left-4 right-4 sm:left-auto sm:right-6 sm:max-w-sm z-50 animate-fade-up"
+      style={{
+        // Sits above the StickyCartBar (~4.5rem tall) + safe-area + gap, so
+        // it never collides with the sticky CTA on small phones. See
+        // audit P1-3.
+        bottom: 'calc(env(safe-area-inset-bottom) + 5.5rem)',
+      }}
+      onMouseEnter={() => setIsPaused(true)}
+      onMouseLeave={() => setIsPaused(false)}
+      onFocus={() => setIsPaused(true)}
+      onBlur={() => setIsPaused(false)}
+      role="region"
+      aria-label={t('upsell.also_add')}
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div className="surface-card rounded-card overflow-hidden shadow-lg">
+        <div className="p-3 flex items-center gap-3">
+          {/* Product thumbnail */}
+          {upsellProduct.imageUrl && (
+            <div className="relative w-9 h-9 rounded-sm overflow-hidden flex-shrink-0 bg-smoke-100">
+              <NextImage
+                src={upsellProduct.imageUrl}
+                alt={upsellProduct.title}
+                fill
+                sizes="36px"
+                placeholder="blur"
+                blurDataURL={BLUR_PLACEHOLDER}
+                className="object-cover"
+              />
+            </div>
+          )}
 
-        {/* Product info */}
-        <div className="flex-1 min-w-0">
-          <p className="text-[11px] text-[var(--color-text-secondary)] font-medium">{t('upsell.also_add')}</p>
-          <p className="text-sm font-semibold text-charcoal-900 truncate">{upsellProduct.title}</p>
-          <p className="text-xs tabular-nums text-smoke-500">{priceFormatted}</p>
+          {/* Product info */}
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-[var(--color-text-secondary)] font-medium">{t('upsell.also_add')}</p>
+            <p className="text-sm font-semibold text-charcoal-900 truncate">{upsellProduct.title}</p>
+            <p className="text-xs tabular-nums text-smoke-500">{priceFormatted}</p>
+          </div>
+
+          {/* Add button */}
+          <button
+            onClick={handleAdd}
+            className="flex-shrink-0 bg-brand-500 text-white h-7 px-2.5 rounded-sm flex items-center gap-1 text-xs font-medium hover:bg-brand-600 active:scale-95 transition-all duration-300 ease-luxury"
+          >
+            <Plus className="w-3.5 h-3.5" strokeWidth={2} />
+            {t('upsell.add')}
+          </button>
+
+          {/* Dismiss */}
+          <button
+            onClick={handleDismiss}
+            className="flex-shrink-0 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors"
+            aria-label={t('upsell.dismiss_suggestion')}
+          >
+            <X className="w-4 h-4" strokeWidth={2} />
+          </button>
         </div>
 
-        {/* Add button */}
-        <button
-          onClick={handleAdd}
-          className="flex-shrink-0 bg-brand-500 text-white h-7 px-2.5 rounded-sm flex items-center gap-1 text-xs font-medium hover:bg-brand-600 active:scale-95 transition-all duration-300 ease-luxury"
-        >
-          <Plus className="w-3.5 h-3.5" strokeWidth={2} />
-          {t('upsell.add')}
-        </button>
-
-        {/* Dismiss */}
-        <button
-          onClick={handleDismiss}
-          className="flex-shrink-0 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors"
-          aria-label="Fechar sugestão"
-        >
-          <X className="w-4 h-4" strokeWidth={2} />
-        </button>
+        {/*
+          Auto-dismiss progress bar. Animation duration matches AUTO_DISMISS_MS;
+          `animation-play-state` follows the hover-pause flag so the bar visibly
+          freezes when the user hovers, restoring perceived control.
+          Keyed on productId so the animation restarts on each new upsell.
+        */}
+        <div className="h-[2px] w-full bg-smoke-200 overflow-hidden">
+          <div
+            key={upsellProduct.productId}
+            className="h-full bg-brand-500"
+            style={{
+              animation: `upsell-progress ${AUTO_DISMISS_MS}ms linear forwards`,
+              animationPlayState: isPaused ? 'paused' : 'running',
+            }}
+          />
+        </div>
       </div>
     </div>
   )

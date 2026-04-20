@@ -81,6 +81,44 @@ export type CustomerPreferences = Prisma.CustomerPreferencesModel
  */
 export type CustomerOrderItem = Prisma.CustomerOrderItemModel
 /**
+ * Model OrderProjection
+ * Projection (read model) of a Medusa order. Source of truth for fulfillment status.
+ * Populated by order.placed + order.status_changed NATS subscribers.
+ * Medusa is the write-side commerce backend; this table is the read-side authority.
+ */
+export type OrderProjection = Prisma.OrderProjectionModel
+/**
+ * Model OrderStatusHistory
+ * Append-only audit log of order fulfillment status transitions.
+ * Each row represents one validated transition, with actor tracking.
+ */
+export type OrderStatusHistory = Prisma.OrderStatusHistoryModel
+/**
+ * Model OrderEventLog
+ * Append-only, immutable event log for ALL order domain events.
+ * Observability + replay + debugging layer. Never mutated after insert.
+ */
+export type OrderEventLog = Prisma.OrderEventLogModel
+/**
+ * Model Payment
+ * Payment record for an order. ONE active (non-terminal) payment per order,
+ * enforced by partial unique index in migration SQL.
+ * Historical attempts are kept with terminal status for audit trail.
+ * Retry/regeneration creates a new row; old one stays terminal.
+ */
+export type Payment = Prisma.PaymentModel
+/**
+ * Model PaymentStatusHistory
+ * Append-only audit log of payment status transitions.
+ * Mirrors OrderStatusHistory pattern for full observability.
+ */
+export type PaymentStatusHistory = Prisma.PaymentStatusHistoryModel
+/**
+ * Model OrderNote
+ * Customer special instructions + admin/kitchen notes on an order.
+ */
+export type OrderNote = Prisma.OrderNoteModel
+/**
  * Model LoyaltyAccount
  * Punch-card loyalty account for a customer.
  * stamps: current punch count (resets to 0 after reward).
@@ -114,3 +152,9 @@ export type WeeklySchedule = Prisma.WeeklyScheduleModel
  * 
  */
 export type Holiday = Prisma.HolidayModel
+/**
+ * Model ScheduleOverride
+ * Per-date schedule override. When present, this day uses custom hours
+ * instead of the WeeklySchedule template. Holidays take precedence over overrides.
+ */
+export type ScheduleOverride = Prisma.ScheduleOverrideModel

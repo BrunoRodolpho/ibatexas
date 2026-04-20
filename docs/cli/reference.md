@@ -101,11 +101,13 @@ ibx api chat "cardápio do almoço" --channel web  # specify channel (web | what
 ```bash
 ibx db migrate             # run pending Medusa migrations (Medusa must NOT be running)
 ibx db migrate:domain      # run Prisma migrations for ibx_domain schema
+ibx db migrate:domain --name add_order_event_log  # create a named migration
 ibx db seed                # seed products into Medusa (Medusa must be running)
 ibx db seed:domain         # seed domain tables (DeliveryZone, Table, TimeSlot)
 ibx db seed:homepage       # seed customers + reviews for homepage sections (Medusa must be running)
 ibx db seed:delivery       # seed delivery zones, customer addresses, and dietary preferences
 ibx db seed:orders         # seed order history + reservations (Medusa must be running)
+ibx db seed:order-projections  # backfill OrderProjection from Medusa orders (idempotent)
 ibx db clean               # ⚠️  delete all domain data (keeps schema + Medusa products)
 ibx db clean --all         # also delete Medusa products + Typesense index
 ibx db clean --force       # skip confirmation prompt
@@ -116,12 +118,34 @@ ibx db reindex --fresh     # drop + recreate Typesense collection, then reindex
 ibx db status              # show migration status for both Medusa and domain schemas
 ```
 
+### Dead Letter Queue — `ibx dlq`
+
+```bash
+ibx dlq list               # show DLQ sizes for all known event types
+ibx dlq peek <event>       # show most recent DLQ entries without consuming
+ibx dlq peek <event> -n 10 # show 10 entries
+ibx dlq replay <event>     # re-publish DLQ entries back to NATS (oldest first)
+ibx dlq replay <event> -n 5       # replay at most 5 entries
+ibx dlq replay <event> --dry-run  # print what would be replayed without publishing
+ibx dlq purge <event>      # ⚠️  delete all DLQ entries for an event (interactive confirmation)
+```
+
+Known DLQ event keys: `order.status_changed`, `order.placed`, `notification.send`, `support.handoff_requested`, `conversation.message.appended`.
+
+### Orders — `ibx orders`
+
+```bash
+ibx orders inspect <orderId>              # show projection state + event log for an order
+ibx orders rebuild --order-id <id>        # rebuild projection from event log (replay events)
+ibx orders rebuild --order-id <id> --dry-run  # preview what would change without writing
+```
+
 ### Config — `ibx env`
 
 ```bash
 ibx env check              # verify required vars are set (Step 1 by default)
 ibx env check --step 2     # check up to Step 2 vars (ANTHROPIC_API_KEY, OPENAI_API_KEY)
-ibx env check --step 4     # check up to Step 4 vars (+ MEDUSA_PUBLISHABLE_KEY)
+ibx env check --step 4     # check up to Step 4 vars (+ MEDUSA_ADMIN_EMAIL/PASSWORD)
 ibx env show               # show all vars, secrets masked
 ibx env show --reveal      # show full values (be careful!)
 ibx env gen                # generate a 32-byte base64 secret
@@ -503,7 +527,7 @@ For the full deployment guide, see [docs/setup/deployment.md](../setup/deploymen
 ### Payments — `ibx stripe`
 
 ```bash
-ibx stripe status                      # validate STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET + CLI check
+ibx stripe status                      # validate all 3 Stripe keys (sk_, whsec_, pk_) + CLI check
 ibx stripe listen                      # forward Stripe webhooks to localhost:3001/api/webhooks/stripe
 ibx stripe listen -p 3002              # forward to a different port
 ibx stripe trigger                     # fire payment_intent.succeeded test event

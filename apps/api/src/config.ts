@@ -11,10 +11,11 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3001),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
 
-  // Medusa
+  // Medusa — admin auth is JWT-over-emailpass using MEDUSA_ADMIN_EMAIL/PASSWORD;
+  // the publishable key is auto-resolved at runtime in packages/tools/src/medusa/client.ts.
   MEDUSA_URL: z.string().url().default("http://localhost:9000"),
-  MEDUSA_API_KEY: z.string().min(1, "MEDUSA_API_KEY is required"),
-  MEDUSA_PUBLISHABLE_KEY: z.string().default(""),
+  MEDUSA_ADMIN_EMAIL: z.string().min(1, "MEDUSA_ADMIN_EMAIL is required"),
+  MEDUSA_ADMIN_PASSWORD: z.string().min(1, "MEDUSA_ADMIN_PASSWORD is required"),
 
   // Admin
   ADMIN_API_KEY: z.string().min(1, "ADMIN_API_KEY is required"),

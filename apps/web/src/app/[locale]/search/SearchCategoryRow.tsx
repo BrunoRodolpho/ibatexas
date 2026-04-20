@@ -92,7 +92,7 @@ export function SearchCategoryRow({
                   : 'text-smoke-500 hover:text-charcoal-900 hover:bg-smoke-100 hover:-translate-y-0.5 hover:shadow-sm'
               }`}
             >
-              <Icon className={`w-4 h-4 transition-colors duration-500 ${isActive ? 'text-brand-400' : ''}`} strokeWidth={1.5} />
+              <Icon className={`w-4 h-4 transition-micro ${isActive ? 'text-brand-400' : ''}`} strokeWidth={1.5} />
               {cat.label}
             </button>
           )

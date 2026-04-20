@@ -9,6 +9,10 @@ interface FilterChipProps {
   readonly onToggle: (id: string) => void
   readonly removable?: boolean
   readonly onRemove?: (id: string) => void
+  /** Optional colored dot indicator (Tailwind bg class, e.g. "bg-amber-400") */
+  readonly dot?: string
+  /** Optional count badge shown after the label */
+  readonly count?: number
 }
 
 export function FilterChip({
@@ -18,6 +22,8 @@ export function FilterChip({
   onToggle,
   removable = false,
   onRemove,
+  dot,
+  count,
 }: FilterChipProps): React.JSX.Element {
   return (
     <button
@@ -29,7 +35,13 @@ export function FilterChip({
       }`}
       aria-pressed={selected}
     >
+      {dot && <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />}
       {label}
+      {typeof count === 'number' && count > 0 && (
+        <span className={`text-[10px] tabular-nums ${selected ? 'text-charcoal-500' : 'text-smoke-400'}`}>
+          {count}
+        </span>
+      )}
       {removable && selected && (
         <button
           onClick={(e) => {

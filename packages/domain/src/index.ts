@@ -24,6 +24,50 @@ export {
   DAY_NAMES,
 } from "./services/schedule.service.js"
 
+// Order projection services (CQRS)
+export {
+  createOrderCommandService,
+  type OrderCommandService,
+  ConcurrencyError,
+  ProjectionNotFoundError,
+  InvalidTransitionError,
+  MissingEventVersionError,
+} from "./services/order-command.service.js"
+export {
+  createOrderQueryService,
+  type OrderQueryService,
+} from "./services/order-query.service.js"
+export {
+  createOrderEventLogService,
+  type OrderEventLogService,
+  type AppendEventInput,
+  type OrderEventLogRow,
+} from "./services/order-event-log.service.js"
+
+// Payment projection services (CQRS)
+export {
+  createPaymentCommandService,
+  type PaymentCommandService,
+  PaymentConcurrencyError,
+  PaymentNotFoundError,
+  InvalidPaymentTransitionError,
+  ActivePaymentExistsError,
+} from "./services/payment-command.service.js"
+export {
+  createPaymentQueryService,
+  type PaymentQueryService,
+  type PaymentWithHistory,
+} from "./services/payment-query.service.js"
+
+// Medusa → domain mapper
+export {
+  toOrderProjectionData,
+  toOrderEventItems,
+  validateItemsSchema,
+  ITEMS_SCHEMA_VERSION,
+  type CreateOrderProjectionInput,
+} from "./mappers/medusa-order.mapper.js"
+
 // Re-export Prisma types so consumers don't need to import from @prisma/client directly
 export type {
   Table,
@@ -36,6 +80,12 @@ export type {
   Address,
   CustomerPreferences,
   CustomerOrderItem,
+  OrderProjection,
+  OrderStatusHistory,
+  OrderEventLog,
+  Payment,
+  PaymentStatusHistory,
+  OrderNote,
   DeliveryZone,
   Staff,
   LoyaltyAccount,
@@ -49,4 +99,10 @@ export type {
   WeeklySchedule,
   Holiday,
   Prisma,
+} from "./generated/prisma-client/client.js"
+
+export type {
+  OrderFulfillmentStatus as PrismaOrderFulfillmentStatus,
+  OrderActor as PrismaOrderActor,
+  PaymentStatus as PrismaPaymentStatus,
 } from "./generated/prisma-client/client.js"

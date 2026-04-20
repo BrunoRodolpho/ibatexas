@@ -49,6 +49,7 @@ export async function sendReminders(log?: FastifyBaseLogger | null): Promise<voi
         // Build a minimal DTO for the notification function
         const dto = {
           id: reservation.id,
+          displayId: (reservation as unknown as { displayId?: number }).displayId ?? 0,
           customerId: reservation.customerId,
           partySize: reservation.partySize,
           status: ReservationStatus.CONFIRMED,

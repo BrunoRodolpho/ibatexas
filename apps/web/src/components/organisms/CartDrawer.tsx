@@ -1,14 +1,18 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useCartStore } from '@/domains/cart'
+import { useCartStore, hasKitchenOnlyFood, getKitchenItems } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
+import { useKitchenStatus } from '@/domains/schedule'
 import { Sheet } from '../molecules/Modal'
 import { LinkButton, Text } from '../atoms'
+import { Link } from '@/i18n/navigation'
 import { QuantitySelector } from '../molecules/QuantitySelector'
-import { Trash2, Plus } from 'lucide-react'
+import { Trash2, Plus, ShoppingBag } from 'lucide-react'
 import NextImage from 'next/image'
-import { track } from '@/domains/analytics'
+import { track, trackOnceVisible } from '@/domains/analytics'
+import { useEffect, useRef } from 'react'
+import { KitchenClosedBanner } from '../molecules/KitchenClosedBanner'
 import { formatBRL } from '@/lib/format'
 import { useRecommendations, type RecommendedProduct } from '@/domains/recommendations'
 import type { ProductDTO } from '@ibatexas/types'
@@ -21,6 +25,10 @@ export function CartDrawer() {
   const { addToast } = useUIStore()
   const { items, removeItem, updateItem, addItem, getTotal, getItemCount } = useCartStore()
   const { data: recommendations } = useRecommendations(3)
+  const { data: kitchenStatus } = useKitchenStatus()
+  const isKitchenClosed = kitchenStatus?.mealPeriod === 'closed'
+  const cartHasKitchenFood = hasKitchenOnlyFood(items)
+  const kitchenItems = getKitchenItems(items)
 
   const itemCount = getItemCount()
   const subtotal = getTotal()
@@ -34,6 +42,28 @@ export function CartDrawer() {
   // Cross-sell: exclude items already in cart
   const cartProductIds = new Set(items.map((i) => i.productId))
   const crossSellItems = (recommendations ?? []).filter((r) => !cartProductIds.has(r.id)).slice(0, 3)
+
+  // Impression tracking for the drawer cross-sell scroller. Fires once per
+  // drawer open when the scroller actually has items to show — gives
+  // `cross_sell_added` from this surface a CTR denominator.
+  const crossSellRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!isOpen || !crossSellRef.current || crossSellItems.length === 0) return
+    return trackOnceVisible(crossSellRef.current, 'cart_drawer_cross_sell_viewed', {
+      count: crossSellItems.length,
+      productIds: crossSellItems.map((r) => r.id),
+    })
+  }, [isOpen, crossSellItems])
+
+  // Track kitchen-closed banner impression (once per drawer open)
+  const kitchenBannerTrackedRef = useRef(false)
+  useEffect(() => {
+    if (isOpen && isKitchenClosed && cartHasKitchenFood && !kitchenBannerTrackedRef.current) {
+      kitchenBannerTrackedRef.current = true
+      track('kitchen_closed_banner_viewed', { source: 'cart_drawer', kitchenItemCount: kitchenItems.length })
+    }
+    if (!isOpen) kitchenBannerTrackedRef.current = false
+  }, [isOpen, isKitchenClosed, cartHasKitchenFood, kitchenItems.length])
 
   const handleCrossSellAdd = (rec: RecommendedProduct) => {
     const minimalProduct = {
@@ -67,6 +97,15 @@ export function CartDrawer() {
               </Text>
             </div>
 
+            {/* Kitchen closed warning */}
+            {isKitchenClosed && cartHasKitchenFood && kitchenStatus?.nextOpenDay && (
+              <KitchenClosedBanner
+                nextOpenDay={kitchenStatus.nextOpenDay}
+                kitchenItems={kitchenItems}
+                compact
+              />
+            )}
+
             {/* Checkout CTA — goes directly to /checkout */}
             <LinkButton
               href="/checkout"
@@ -93,12 +132,18 @@ export function CartDrawer() {
       }
     >
       {items.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 gap-4">
-          <div className="w-16 h-px bg-smoke-200" />
-          <Text variant="body" textColor="muted" className="font-display text-lg text-center">
-            {t('empty')}
-          </Text>
-          <div className="w-16 h-px bg-smoke-200" />
+        <div className="flex flex-col items-center justify-center py-12 gap-6">
+          <div className="w-16 h-16 rounded-full bg-smoke-100 flex items-center justify-center">
+            <ShoppingBag className="w-7 h-7 text-smoke-300" strokeWidth={1.5} />
+          </div>
+          <div className="text-center">
+            <p className="font-display text-lg text-charcoal-900 tracking-display mb-1">
+              {t('empty')}
+            </p>
+            <p className="text-sm text-smoke-400">
+              {t('empty_subtitle')}
+            </p>
+          </div>
           <LinkButton
             href="/search"
             variant="brand"
@@ -107,6 +152,55 @@ export function CartDrawer() {
           >
             {t('explore_menu')}
           </LinkButton>
+
+          {/* Recommendations for empty cart — inspiration to start shopping */}
+          {crossSellItems.length > 0 && (
+            <>
+              <div className="h-px w-16 bg-smoke-200" />
+              <div className="w-full">
+                <p className="text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-3">
+                  {t('you_might_like')}
+                </p>
+                <div className="-mx-4 px-4 flex gap-3 overflow-x-auto scrollbar-hide snap-x snap-mandatory">
+                  {crossSellItems.map((rec) => (
+                    <div
+                      key={rec.id}
+                      className="snap-start flex-shrink-0 w-[148px] surface-card rounded-card overflow-hidden flex flex-col"
+                    >
+                      <div className="relative aspect-square bg-smoke-100">
+                        {rec.imageUrl && (
+                          <NextImage
+                            src={rec.imageUrl}
+                            alt={rec.title}
+                            fill
+                            sizes="148px"
+                            className="object-cover"
+                          />
+                        )}
+                      </div>
+                      <div className="p-2.5 flex flex-col flex-1">
+                        <p className="text-xs font-medium text-charcoal-900 leading-snug line-clamp-2 min-h-[2.25rem]">
+                          {rec.title}
+                        </p>
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-xs font-semibold text-charcoal-900 tabular-nums">
+                            {formatBRL(rec.price)}
+                          </span>
+                          <button
+                            onClick={() => handleCrossSellAdd(rec)}
+                            className="min-w-[44px] min-h-[44px] w-9 h-9 flex items-center justify-center rounded-full bg-brand-500 text-white hover:bg-brand-600 active:scale-95 transition-all duration-300 ease-luxury"
+                            aria-label={`${t('add_suggestion')} ${rec.title}`}
+                          >
+                            <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <div className="space-y-2">
@@ -117,85 +211,124 @@ export function CartDrawer() {
             return (
               <div
                 key={item.id}
-                className="flex gap-2 pb-2 border-b border-smoke-200 last:border-0 opacity-0 animate-slide-up"
+                className={`flex gap-3 pb-3 border-b border-smoke-200 last:border-0 opacity-0 animate-slide-up ${isKitchenClosed && item.productType === 'food' ? 'opacity-50' : ''}`}
                 style={{ animationDelay: `${index * 40}ms`, animationFillMode: 'forwards' }}
               >
-                {/* Thumbnail — compact 48px */}
-                {item.imageUrl && (
-                  <div className="w-12 h-12 flex-shrink-0 rounded-sm overflow-hidden bg-smoke-100">
-                    <NextImage
-                      src={item.imageUrl}
-                      alt={item.title}
-                      width={48}
-                      height={48}
-                      placeholder="blur"
-                      blurDataURL="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjEwIj48cmVjdCBmaWxsPSIjZThlNGUwIiB3aWR0aD0iOCIgaGVpZ2h0PSIxMCIvPjwvc3ZnPg=="
-                      className="object-cover w-full h-full"
-                    />
+                {/* Thumbnail — 64px, clickable to PDP */}
+                <Link
+                  href={`/loja/produto/${item.productId}`}
+                  onClick={closeCartDrawer}
+                  className="flex-shrink-0"
+                >
+                  <div className="w-16 h-16 rounded-sm overflow-hidden bg-smoke-100">
+                    {item.imageUrl ? (
+                      <NextImage
+                        src={item.imageUrl}
+                        alt={item.title}
+                        width={64}
+                        height={64}
+                        placeholder="blur"
+                        blurDataURL="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjEwIj48cmVjdCBmaWxsPSIjZThlNGUwIiB3aWR0aD0iOCIgaGVpZ2h0PSIxMCIvPjwvc3ZnPg=="
+                        className="object-cover w-full h-full"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <ShoppingBag className="w-5 h-5 text-smoke-300" strokeWidth={1.5} />
+                      </div>
+                    )}
                   </div>
-                )}
+                </Link>
 
-                {/* Details — compact: title+price on one row, quantity inline */}
+                {/* Details */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-1">
-                    <h4 className="text-xs font-medium text-charcoal-900 truncate">
-                      {item.title}
-                    </h4>
-                    <button
-                      onClick={() => removeItem(item.id)}
-                      className="min-w-[36px] min-h-[44px] -mt-2 flex items-center justify-center text-[var(--color-text-secondary)] hover:text-accent-red transition-colors duration-300"
-                      aria-label={t('remove_item', { title: item.title })}
+                    <Link
+                      href={`/loja/produto/${item.productId}`}
+                      onClick={closeCartDrawer}
+                      className="min-w-0"
                     >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                      <h4 className="text-xs font-medium text-charcoal-900 truncate hover:text-brand-600 transition-colors duration-300">
+                        {item.title}
+                      </h4>
+                    </Link>
+                    <span className="text-xs font-semibold text-charcoal-900 tabular-nums flex-shrink-0">
+                      {lineTotal}
+                    </span>
                   </div>
                   {item.variantTitle && (
-                    <p className="text-[11px] text-[var(--color-text-secondary)] -mt-0.5">{item.variantTitle}</p>
+                    <p className="text-xs text-[var(--color-text-secondary)]">{item.variantTitle}</p>
                   )}
-                  <div className="flex items-center justify-between mt-0.5">
+                  {isKitchenClosed && item.productType === 'food' && (
+                    <span className="inline-block text-micro font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-sm mt-0.5">
+                      {t('item_unavailable')}
+                    </span>
+                  )}
+                  <div className="flex items-center gap-1 mt-1">
+                    <button
+                      onClick={() => removeItem(item.id)}
+                      className="w-7 h-7 flex items-center justify-center rounded-sm border border-smoke-200 text-[var(--color-text-secondary)] hover:text-accent-red hover:border-accent-red/30 transition-colors duration-300"
+                      aria-label={t('remove_item', { title: item.title })}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                     <QuantitySelector
                       quantity={item.quantity}
                       onQuantityChange={(qty) => updateItem(item.id, { quantity: qty })}
                       min={1}
                       max={99}
-                      size="sm"
+                      size="xs"
                     />
-                    <span className="text-xs font-semibold text-charcoal-900 tabular-nums">
-                      {lineTotal}
-                    </span>
                   </div>
                 </div>
               </div>
             )
           })}
 
-          {/* Cross-sell suggestions — below items */}
+          {/*
+            Cross-sell — horizontal scroller of properly sized cards.
+            Was a vertical stack of 40×40 thumbnails, easy to miss. The new
+            layout gives each suggestion a real product card moment with
+            image, title, price, and a tappable + button.
+          */}
           {crossSellItems.length > 0 && (
-            <div className="pt-2 border-t border-smoke-200">
-              <p className="text-[11px] font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-3">
+            <div ref={crossSellRef} className="pt-4 mt-2 border-t border-smoke-200">
+              <p className="text-xs font-semibold uppercase tracking-editorial text-[var(--color-text-secondary)] mb-3">
                 {t('you_might_like')}
               </p>
-              <div className="space-y-2">
+              <div className="-mx-4 px-4 flex gap-3 overflow-x-auto scrollbar-hide snap-x snap-mandatory">
                 {crossSellItems.map((rec) => (
-                  <div key={rec.id} className="flex items-center gap-2.5">
-                    {rec.imageUrl && (
-                      <div className="w-10 h-10 flex-shrink-0 rounded-sm overflow-hidden bg-smoke-100">
-                        <NextImage src={rec.imageUrl} alt={rec.title} width={40} height={40} className="object-cover w-full h-full" />
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-medium text-charcoal-900 truncate">{rec.title}</p>
-                      <p className="text-xs text-[var(--color-text-secondary)] tabular-nums">
-                        {formatBRL(rec.price)}
-                      </p>
+                  <div
+                    key={rec.id}
+                    className="snap-start flex-shrink-0 w-[148px] surface-card rounded-card overflow-hidden flex flex-col"
+                  >
+                    <div className="relative aspect-square bg-smoke-100">
+                      {rec.imageUrl && (
+                        <NextImage
+                          src={rec.imageUrl}
+                          alt={rec.title}
+                          fill
+                          sizes="148px"
+                          className="object-cover"
+                        />
+                      )}
                     </div>
-                    <button
-                      onClick={() => handleCrossSellAdd(rec)}
-                      className="min-w-[32px] min-h-[32px] flex items-center justify-center rounded-sm border border-smoke-200 text-[var(--color-text-secondary)] hover:border-brand-500 hover:text-brand-600 transition-colors"
-                      aria-label={`${t('add_suggestion')} ${rec.title}`}
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="p-2.5 flex flex-col flex-1">
+                      <p className="text-xs font-medium text-charcoal-900 leading-snug line-clamp-2 min-h-[2.25rem]">
+                        {rec.title}
+                      </p>
+                      <div className="mt-2 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-charcoal-900 tabular-nums">
+                          {formatBRL(rec.price)}
+                        </span>
+                        <button
+                          onClick={() => handleCrossSellAdd(rec)}
+                          className="min-w-[44px] min-h-[44px] w-9 h-9 flex items-center justify-center rounded-full bg-brand-500 text-white hover:bg-brand-600 active:scale-95 transition-all duration-300 ease-luxury"
+                          aria-label={`${t('add_suggestion')} ${rec.title}`}
+                        >
+                          <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -52,7 +52,7 @@ If a command does not exist for what you need, add it to `packages/cli/` first, 
 | Enums | PascalCase | `ReservationStatus`, `ProductType` |
 | Product/category handles | kebab-case, ASCII only | `costela-bovina-defumada` |
 | CLI commands | lowercase | `dev`, `svc`, `api`, `db`, `intel` |
-| NATS events | `domain.action` | `cart.abandoned`, `order.placed` |
+| NATS events | `domain.action` | `cart.abandoned`, `order.placed`, `payment.status_changed`, `payment.method_changed` |
 
 **NATS specifics:**
 - Subjects use `ibatexas.{domain}.{action}` — pass short form to `publishNatsEvent()`, the client adds the prefix. Never pass the full prefixed form.

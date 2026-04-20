@@ -3,7 +3,10 @@
 import { createColumnHelper } from '@tanstack/react-table'
 import { Star } from 'lucide-react'
 import { DataTable } from '../atoms/DataTable'
+import { PageHeader } from '../atoms/PageHeader'
+import { PageShell } from '../layouts/PageShell'
 import { FilterChip } from '../molecules/FilterChip'
+import { FilterBar } from '../molecules/FilterBar'
 import {
   RATING_FILTERS as RATING_FILTER_OPTIONS,
   REVIEW_COLUMN_HEADERS,
@@ -91,10 +94,10 @@ export function AdminAvaliacoesPage({
   ]
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-charcoal-900">{PAGE_TITLES.reviews}</h1>
+    <PageShell>
+      <PageHeader icon={Star} title={PAGE_TITLES.reviews} subtitle={PAGE_TITLES.reviewsSubtitle} />
 
-      <div className="flex flex-wrap items-center gap-3">
+      <FilterBar>
         {RATING_FILTERS.map((f) => (
           <FilterChip
             key={f.id}
@@ -104,7 +107,7 @@ export function AdminAvaliacoesPage({
             onToggle={() => onRatingFilter(ratingFilter === f.id ? '' : f.id)}
           />
         ))}
-      </div>
+      </FilterBar>
 
       <DataTable
         data={reviews}
@@ -112,8 +115,8 @@ export function AdminAvaliacoesPage({
         isLoading={loading}
         emptyMessage={EMPTY_STATES.reviews}
         pageSize={20}
-        rowClassName={(r) => r.rating <= 2 ? 'bg-red-50' : undefined}
+        rowClassName={(r) => r.rating <= 2 ? 'bg-accent-red/5' : undefined}
       />
-    </div>
+    </PageShell>
   )
 }

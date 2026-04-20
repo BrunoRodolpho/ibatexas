@@ -138,7 +138,7 @@ export function QuickViewModal({ product, isOpen, onClose }: QuickViewModalProps
 
           {/* Serving / weight info */}
           {(product.servings || product.weight) && (
-            <div className="flex items-center gap-2 mt-1.5 text-[11px] text-[var(--color-text-secondary)]">
+            <div className="flex items-center gap-2 mt-1.5 text-xs text-[var(--color-text-secondary)]">
               {product.servings && (
                 <span className="inline-flex items-center gap-0.5">
                   <Users className="w-3 h-3" />

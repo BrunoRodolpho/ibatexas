@@ -12,6 +12,7 @@ import { startProactiveEngagement } from "./proactive-engagement.js";
 import { startFollowUpPoller } from "./follow-up-poller.js";
 import { startHesitationNudgeWorker } from "./hesitation-nudge.js";
 import { startPixExpiryMonitor } from "./pix-expiry-monitor.js";
+import { startStaleOrderChecker } from "./stale-order-checker.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -27,6 +28,7 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   startFollowUpPoller(log);
   startHesitationNudgeWorker();
   startPixExpiryMonitor();
+  startStaleOrderChecker(log);
 }
 
 /**
@@ -43,6 +45,7 @@ export async function shutdownWorkers(): Promise<void> {
   const { stopFollowUpPoller } = await import("./follow-up-poller.js");
   const { stopHesitationNudgeWorker } = await import("./hesitation-nudge.js");
   const { stopPixExpiryMonitor } = await import("./pix-expiry-monitor.js");
+  const { stopStaleOrderChecker } = await import("./stale-order-checker.js");
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -55,5 +58,6 @@ export async function shutdownWorkers(): Promise<void> {
     stopFollowUpPoller(),
     stopHesitationNudgeWorker(),
     stopPixExpiryMonitor(),
+    stopStaleOrderChecker(),
   ]);
 }

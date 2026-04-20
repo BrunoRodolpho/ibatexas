@@ -9,6 +9,7 @@ import { useWishlistStore } from '@/domains/wishlist'
 import { Heart } from 'lucide-react'
 import { useEffect, useRef, useState } from "react"
 import { track } from '@/domains/analytics'
+import { Container } from '@/components/atoms'
 
 export function Header() {
   const t = useTranslations()
@@ -21,7 +22,7 @@ export function Header() {
   // Nav link active state helper
   const isActive = (href: string) => {
     if (href === '/search') return pathname === '/search' || pathname.startsWith('/search')
-    if (href === '/loja') return pathname.startsWith('/loja')
+    if (href === '/loja') return pathname.startsWith('/loja') && !pathname.includes('/produto/')
     if (href === '/account/reservations') return pathname.startsWith('/account/reservations')
     return false
   }
@@ -46,10 +47,10 @@ export function Header() {
   }
 
   return (
-    <header className="sticky top-0 z-30 bg-smoke-50/95 backdrop-blur-sm">
+    <header className="sticky top-0 z-30 bg-smoke-50/95 backdrop-blur-sm shadow-xs">
       {/* ── Main nav bar — compact, refined ──────────────────── */}
-      <div className="border-b border-smoke-150">
-        <div className="mx-auto max-w-[1280px] px-6 lg:px-8">
+      <div className="border-b border-smoke-200/50">
+        <Container size="xl">
           <div className="flex h-11 items-center justify-between">
             {/* Logo */}
             <Link href="/" className="flex items-center">
@@ -70,7 +71,7 @@ export function Header() {
                   <Link
                     key={href}
                     href={href}
-                    className={`relative text-[11px] font-medium uppercase tracking-[0.08em] transition-colors duration-300 group/nav ${
+                    className={`relative text-xs font-medium uppercase tracking-[0.08em] transition-colors duration-[200ms] ease-luxury group/nav ${
                       active ? 'text-charcoal-900' : 'text-[var(--color-text-secondary)] hover:text-charcoal-700'
                     }`}
                   >
@@ -84,7 +85,7 @@ export function Header() {
               {userType === "staff" && (
                 <Link
                   href="/admin"
-                  className="text-[11px] font-medium uppercase tracking-[0.08em] text-charcoal-900"
+                  className="text-xs font-medium uppercase tracking-[0.08em] text-charcoal-900"
                 >
                   {t("nav.admin")}
                 </Link>
@@ -95,7 +96,7 @@ export function Header() {
             <div className="flex items-center">
               <Link
                 href="/search"
-                className="p-2 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-[200ms] ease-luxury"
                 aria-label={t("common.search")}
               >
                 <svg className="h-[15px] w-[15px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -105,7 +106,7 @@ export function Header() {
 
               <Link
                 href="/lista-desejos"
-                className="relative p-2 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
+                className="relative min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-[200ms] ease-luxury"
                 aria-label={t("wishlist.title")}
               >
                 <Heart className="h-[15px] w-[15px]" />
@@ -118,7 +119,7 @@ export function Header() {
 
               <button
                 onClick={handleCartClick}
-                className="relative p-2 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
+                className="relative min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-[200ms] ease-luxury"
                 aria-label={t("nav.cart")}
               >
                 <svg className="h-[15px] w-[15px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -126,7 +127,7 @@ export function Header() {
                 </svg>
                 {cartCount > 0 && (
                   <span
-                    className={`absolute right-0 top-0 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-charcoal-900 text-micro font-semibold text-white transition-transform ${
+                    className={`absolute right-2 top-2 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-charcoal-900 text-micro font-semibold text-white transition-transform ${
                       isBouncing ? 'animate-bounce-subtle' : ''
                     }`}
                   >
@@ -138,14 +139,14 @@ export function Header() {
               {userType === 'guest' ? (
                 <Link
                   href="/entrar"
-                  className="ml-1 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
+                  className="ml-1 min-h-[44px] flex items-center px-2 text-xs font-medium uppercase tracking-[0.08em] text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-[200ms] ease-luxury"
                 >
                   {t("nav.login")}
                 </Link>
               ) : (
                 <Link
                   href="/account"
-                  className="p-2 text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-300"
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--color-text-secondary)] hover:text-charcoal-900 transition-colors duration-[200ms] ease-luxury"
                   aria-label={t("nav.account")}
                 >
                   <svg className="h-[15px] w-[15px]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -155,7 +156,7 @@ export function Header() {
               )}
             </div>
           </div>
-        </div>
+        </Container>
       </div>
     </header>
   )

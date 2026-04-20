@@ -168,8 +168,8 @@ function LoginForm({ onSuccess }: { readonly onSuccess: () => void }) {
         return
       }
 
-      // Set admin-session cookie so middleware allows access
-      // The API sets the httpOnly "token" cookie, but the middleware checks "admin-session"
+      // Set admin-session as a client-readable indicator (JS can't read the httpOnly "staff_token" cookie)
+      // Middleware reads "staff_token" (set by the API via Set-Cookie); admin-session drives client-side auth state
       setCookie('admin-session', '1', 8 * 60 * 60) // 8h — matches staff JWT expiry
       // Signal cross-tab login
       localStorage.setItem('admin-session-sync', Date.now().toString())

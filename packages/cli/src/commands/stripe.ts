@@ -7,6 +7,7 @@ import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
 import { execa } from "execa"
+import { formatOrderId } from "@ibatexas/types"
 import {
   rk,
   getRedis,
@@ -64,13 +65,15 @@ export function registerStripeCommands(group: Command): void {
 
       const secretKey = validateKey("STRIPE_SECRET_KEY", process.env.STRIPE_SECRET_KEY, "sk_")
       const webhookSecret = validateKey("STRIPE_WEBHOOK_SECRET", process.env.STRIPE_WEBHOOK_SECRET, "whsec_")
+      const publishableKey = validateKey("NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY", process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY, "pk_")
       const cliInstalled = await checkStripeCli()
 
       const icon = (ok: boolean) => ok ? chalk.green("✓") : chalk.red("✗")
 
-      console.log(`  ${icon(secretKey.ok)} STRIPE_SECRET_KEY        ${chalk.gray(secretKey.detail)}`)
-      console.log(`  ${icon(webhookSecret.ok)} STRIPE_WEBHOOK_SECRET   ${chalk.gray(webhookSecret.detail)}`)
-      console.log(`  ${icon(cliInstalled)} Stripe CLI               ${chalk.gray(cliInstalled ? "installed" : "not found — brew install stripe/stripe-cli/stripe")}`)
+      console.log(`  ${icon(secretKey.ok)} STRIPE_SECRET_KEY                  ${chalk.gray(secretKey.detail)}`)
+      console.log(`  ${icon(webhookSecret.ok)} STRIPE_WEBHOOK_SECRET              ${chalk.gray(webhookSecret.detail)}`)
+      console.log(`  ${icon(publishableKey.ok)} NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ${chalk.gray(publishableKey.detail)}`)
+      console.log(`  ${icon(cliInstalled)} Stripe CLI                           ${chalk.gray(cliInstalled ? "installed" : "not found — brew install stripe/stripe-cli/stripe")}`)
 
       // Check for test vs live mode
       const key = process.env.STRIPE_SECRET_KEY
@@ -171,6 +174,105 @@ export function registerStripeCommands(group: Command): void {
         }
         process.exit(1)
       }
+    })
+
+  // ─── stripe complete ────────────────────────────────────────────────────
+  // Dev-only rescue: completes orphaned carts whose Stripe webhook never
+  // fired (no `stripe listen` running), forcing the Medusa order to be
+  // created so it shows up in /admin/pedidos and /account/orders.
+  group
+    .command("complete")
+    .description("Force-complete orphaned PIX/card carts (dev rescue when no webhook fired)")
+    .option("--cart <cartId>", "Complete a specific cart by ID")
+    .option("--all", "Complete every cart tracked in active:carts")
+    .action(async (opts: { cart?: string; all?: boolean }) => {
+      if (process.env.NODE_ENV === "production") {
+        console.error(chalk.red("\n  Refusing to run in production — this is a dev rescue tool.\n"))
+        process.exit(1)
+      }
+
+      if (!opts.cart && !opts.all) {
+        console.error(chalk.red("\n  Pass --cart <cartId> or --all.\n"))
+        process.exit(1)
+      }
+
+      const { medusaStore } = await import("@ibatexas/tools")
+
+      async function completeOne(cartId: string): Promise<{ ok: boolean; orderId?: string; error?: string }> {
+        try {
+          const data = await medusaStore(`/store/carts/${cartId}/complete`, {
+            method: "POST",
+            body: JSON.stringify({}),
+          }) as { type?: string; order?: { id: string; display_id?: number } }
+          const orderId = data.order?.display_id
+            ? formatOrderId(data.order.display_id)
+            : data.order?.id
+          if (orderId) {
+            // Untrack from active:carts so abandoned-cart checker stops polling
+            try {
+              const r = await getRedis()
+              await r.hDel(rk("active:carts"), cartId)
+            } catch {
+              // Redis unavailable — non-critical
+            }
+            return { ok: true, orderId }
+          }
+          return { ok: false, error: `no order in response (type=${data.type ?? "?"})` }
+        } catch (err) {
+          return { ok: false, error: (err as Error).message }
+        }
+      }
+
+      // Single cart mode
+      if (opts.cart) {
+        const spinner = ora({ text: `Completing cart ${opts.cart}…`, indent: 2 }).start()
+        const result = await completeOne(opts.cart)
+        if (result.ok) {
+          spinner.succeed(chalk.green(`Order created: ${result.orderId}`))
+        } else {
+          spinner.fail(chalk.red(`Failed: ${result.error}`))
+          process.exit(1)
+        }
+        await closeRedis()
+        return
+      }
+
+      // --all mode: scan active:carts hash
+      const spinner = ora("Scanning active:carts…").start()
+      let cartIds: string[] = []
+      try {
+        const r = await getRedis()
+        const entries = await r.hGetAll(rk("active:carts"))
+        cartIds = Object.keys(entries)
+      } catch (err) {
+        spinner.fail(chalk.red(`Redis error: ${(err as Error).message}`))
+        process.exit(1)
+      }
+
+      if (cartIds.length === 0) {
+        spinner.info(chalk.gray("No carts in active:carts — nothing to do."))
+        await closeRedis()
+        return
+      }
+
+      spinner.stop()
+      console.log(chalk.bold(`\n  Found ${cartIds.length} tracked cart(s). Completing each…\n`))
+
+      let succeeded = 0
+      let failed = 0
+      for (const cartId of cartIds) {
+        const result = await completeOne(cartId)
+        if (result.ok) {
+          succeeded++
+          console.log(`  ${chalk.green("✓")} ${cartId} → ${chalk.cyan(result.orderId)}`)
+        } else {
+          failed++
+          console.log(`  ${chalk.gray("·")} ${cartId} ${chalk.gray(`(${result.error})`)}`)
+        }
+      }
+
+      console.log(chalk.bold(`\n  Done. ${chalk.green(succeeded)} completed, ${chalk.gray(`${failed} skipped`)}.\n`))
+      await closeRedis()
     })
 
   // ─── stripe flush ───────────────────────────────────────────────────────

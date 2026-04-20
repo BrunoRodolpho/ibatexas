@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createTableService } from "@ibatexas/domain";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
 
 export async function tableRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
@@ -28,6 +29,7 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
   app.post(
     "/api/admin/tables",
     {
+      preHandler: requireManagerRole,
       schema: {
         tags: ["admin"],
         summary: "Criar ou atualizar mesa (admin)",
@@ -63,6 +65,7 @@ export async function tableRoutes(server: FastifyInstance): Promise<void> {
   app.post(
     "/api/admin/timeslots",
     {
+      preHandler: requireManagerRole,
       schema: {
         tags: ["admin"],
         summary: "Gerar horários para um intervalo de datas (admin)",

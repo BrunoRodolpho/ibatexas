@@ -44,7 +44,7 @@ export default async function LocaleLayout({
   const t = await getTranslations('common')
 
   return (
-    <html lang={locale}>
+    <html lang={locale} data-scroll-behavior="smooth">
         <body className={`${inter.variable} ${playfair.variable} font-sans flex min-h-screen flex-col bg-smoke-50 text-charcoal-900 antialiased`}>
         <JsonLd
           data={{

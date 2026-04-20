@@ -3,6 +3,7 @@
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
 import { useTranslations } from 'next-intl'
+import { usePathname } from 'next/navigation'
 import { ShoppingBag, Check, Clock, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { track } from '@/domains/analytics'
@@ -16,9 +17,12 @@ import { formatBRL } from '@/lib/format'
  */
 export function StickyCartBar() {
   const t = useTranslations()
+  const pathname = usePathname()
+  const items = useCartStore((s) => s.items)
   const getTotal = useCartStore((s) => s.getTotal)
   const getItemCount = useCartStore((s) => s.getItemCount)
   const openCartDrawer = useUIStore((s) => s.openCartDrawer)
+  const isCartDrawerOpen = useUIStore((s) => s.isCartDrawerOpen)
   const estimatedMinutes = useCartStore((s) => s.estimatedDeliveryMinutes)
 
   const itemCount = getItemCount()
@@ -29,6 +33,12 @@ export function StickyCartBar() {
   const [isBouncing, setIsBouncing] = useState(false)
   const [isDismissed, setIsDismissed] = useState(false)
   const prevCountRef = useRef(itemCount)
+
+  // Reset dismissal whenever the route changes — dismiss is per-page, not session-wide.
+  // Without this the user dismisses once and the bar appears gone "forever" until reload.
+  useEffect(() => {
+    setIsDismissed(false) // eslint-disable-line react-hooks/set-state-in-effect -- per-route dismissal reset
+  }, [pathname])
 
   useEffect(() => {
     if (itemCount > prevCountRef.current) {
@@ -43,7 +53,20 @@ export function StickyCartBar() {
     prevCountRef.current = itemCount
   }, [itemCount])
 
-  if (itemCount === 0 || isDismissed) return null
+  // Hide on routes where the page already owns the checkout CTA. The locale
+  // prefix (e.g. /pt-BR/cart) is stripped by next-intl, so a simple suffix
+  // match is enough — and we don't want to mis-hide on /cart-anything-else.
+  // PDP routes are matched by `/loja/produto/` which is a substring (the URL
+  // ends with the product id, not the literal segment).
+  const hideOnRoute =
+    pathname?.endsWith('/cart') ||
+    pathname?.endsWith('/checkout') ||
+    pathname?.includes('/loja/produto/')
+
+  // When the cart drawer is open, the bar is redundant — the drawer IS the
+  // cart. Without this hide, the bar peeks out at the bottom of the screen
+  // behind the drawer overlay.
+  if (hideOnRoute || isCartDrawerOpen || itemCount === 0 || isDismissed) return null
 
   const handleClick = () => {
     track('cart_drawer_opened', { source: 'sticky_bar' })
@@ -58,7 +81,10 @@ export function StickyCartBar() {
 
   return (
     <div
-      className="fixed bottom-14 sm:bottom-4 left-0 sm:left-1/2 sm:-translate-x-1/2 right-0 sm:right-auto z-40 sm:max-w-md w-full px-0 sm:px-0"
+      className="fixed left-0 sm:left-1/2 sm:-translate-x-1/2 right-0 sm:right-auto z-40 sm:max-w-md w-full px-0 sm:px-0"
+      style={{
+        bottom: 'calc(env(safe-area-inset-bottom) + 1rem)',
+      }}
     >
       {/* Dismiss button */}
       <button
@@ -87,27 +113,27 @@ export function StickyCartBar() {
           <div className="flex items-center gap-3">
             <div className="relative">
               <ShoppingBag className="w-5 h-5" strokeWidth={1.5} />
-              <span className="absolute -top-1.5 -right-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-brand-500 px-1 text-[10px] font-bold text-white">
+              <span className="absolute -top-1.5 -right-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-brand-500 px-1 text-micro font-bold text-white">
                 {itemCount}
               </span>
             </div>
             <div className="flex flex-col items-start">
               <span className="text-sm font-medium">
-                {itemCount} {itemCount === 1 ? 'item' : 'itens'}
+                {t('sticky_cart.items', { count: itemCount })}
               </span>
               {subtotal < FREE_DELIVERY_THRESHOLD ? (
-                <span className="text-[10px] text-smoke-400">
+                <span className="text-micro text-smoke-400">
                   {t('sticky_cart.free_delivery_progress', {
                     remaining: formatBRL(FREE_DELIVERY_THRESHOLD - subtotal),
                   })}
                 </span>
               ) : (
-                <span className="text-[10px] text-brand-400 flex items-center gap-0.5">
+                <span className="text-micro text-brand-400 flex items-center gap-0.5">
                   <Check className="w-3 h-3" strokeWidth={2.5} />
                   {t('sticky_cart.free_delivery_reached')}
                 </span>
               )}
-              <span className="text-[10px] text-smoke-400 flex items-center gap-0.5">
+              <span className="text-micro text-smoke-400 flex items-center gap-0.5">
                 <Clock className="w-3 h-3" strokeWidth={1.5} />
                 {estimatedMinutes
                   ? t('sticky_cart.estimated_delivery', { minutes: estimatedMinutes })

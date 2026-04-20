@@ -1,32 +1,10 @@
 // OrderService — centralizes order business logic (ownership, status, Medusa proxy).
 //
-// Accepts an optional medusaAdmin function for dependency injection.
-// When called from apps/api or packages/tools, inject the shared client from @ibatexas/tools.
-// Falls back to a built-in implementation when no client is injected (standalone usage).
+// Requires a medusaAdmin function via dependency injection — callers in
+// apps/api and packages/tools inject the shared client from @ibatexas/tools,
+// which handles Bearer-JWT auth via MEDUSA_ADMIN_EMAIL/PASSWORD.
 
 export type MedusaFetch = (path: string, options?: RequestInit) => Promise<unknown>
-
-// ── Default Medusa client (fallback when no injection) ───────────────────────
-
-const MEDUSA_URL = process.env.MEDUSA_URL ?? "http://localhost:9000"
-
-const defaultMedusaAdmin: MedusaFetch = async (path, options) => {
-  const apiKey = process.env.MEDUSA_API_KEY ?? ""
-  const res = await fetch(`${MEDUSA_URL}${path}`, {
-    ...options,
-    signal: options?.signal ?? AbortSignal.timeout(10_000),
-    headers: {
-      "Content-Type": "application/json",
-      "x-medusa-access-token": apiKey,
-      ...options?.headers,
-    },
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`Medusa admin ${res.status}: ${text}`)
-  }
-  return res.json()
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -38,6 +16,8 @@ export interface MedusaOrder {
   subtotal?: number
   shipping_total?: number
   customer_id?: string
+  email?: string
+  customer?: Record<string, unknown>
   metadata?: Record<string, string>
   items?: Array<{
     id: string
@@ -54,14 +34,15 @@ export interface MedusaOrder {
 export interface OrderItem {
   productId: string
   variantId: string
+  title: string
   quantity: number
   priceInCentavos: number
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
-export function createOrderService(medusaAdminFn?: MedusaFetch) {
-  const fetchAdmin = medusaAdminFn ?? defaultMedusaAdmin
+export function createOrderService(medusaAdminFn: MedusaFetch) {
+  const fetchAdmin = medusaAdminFn
 
   return {
     /**
@@ -216,8 +197,21 @@ export function createOrderService(medusaAdminFn?: MedusaFetch) {
       orderId: string,
       paymentIntentId: string,
       options?: { amountInCentavos?: number },
-    ): Promise<{ customerId: string | undefined; items: OrderItem[] } | null> {
-      const data = await fetchAdmin(`/admin/orders/${orderId}`) as { order: MedusaOrder }
+    ): Promise<{
+      customerId: string | undefined
+      items: OrderItem[]
+      displayId: number
+      customerEmail: string | undefined
+      customerName: string | undefined
+      customerPhone: string | undefined
+      totalInCentavos: number
+      subtotalInCentavos: number
+      shippingInCentavos: number
+      deliveryType: string | null
+      paymentMethod: string | null
+      tipInCentavos: number
+    } | null> {
+      const data = await fetchAdmin(`/admin/orders/${orderId}?expand=items,customer`) as { order: MedusaOrder }
       const order = data.order
 
       if (order.status !== "pending") return null
@@ -240,13 +234,27 @@ export function createOrderService(medusaAdminFn?: MedusaFetch) {
       const items: OrderItem[] = (order.items ?? []).map((item) => ({
         productId: item.product_id ?? item.variant_id,
         variantId: item.variant_id,
+        title: item.title ?? "",
         quantity: item.quantity,
         priceInCentavos: Math.round((item.unit_price ?? 0) * 100),
       }))
 
       const customerId = order.customer_id ?? order.metadata?.["customerId"]
 
-      return { customerId, items }
+      return {
+        customerId,
+        items,
+        displayId: order.display_id ?? 0,
+        customerEmail: order.email,
+        customerName: (order.customer as { first_name?: string })?.first_name,
+        customerPhone: order.metadata?.["customerPhone"],
+        totalInCentavos: Math.round((order.total ?? 0) * 100),
+        subtotalInCentavos: Math.round((order.subtotal ?? 0) * 100),
+        shippingInCentavos: Math.round((order.shipping_total ?? 0) * 100),
+        deliveryType: order.metadata?.["deliveryType"] ?? null,
+        paymentMethod: order.metadata?.["paymentMethod"] ?? null,
+        tipInCentavos: Number(order.metadata?.["tipInCentavos"]) || 0,
+      }
     },
   }
 }

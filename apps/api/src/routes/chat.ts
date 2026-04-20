@@ -180,6 +180,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
               channel: "web",
             });
           }
+          pushChunk(sessionId, { type: "done" });
         } catch (err) {
           server.log.error(err, "[chat] Agent error");
           pushChunk(sessionId, { type: "error", message: "Erro interno." });
@@ -212,6 +213,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { sessionId } = request.params;
 
+      // Hijack the reply so Fastify doesn't interfere with our raw SSE writes
+      reply.hijack();
+
+      // CORS headers must be set manually because reply.raw bypasses @fastify/cors
+      const origin = request.headers.origin;
+      if (origin) {
+        reply.raw.setHeader("Access-Control-Allow-Origin", origin);
+        reply.raw.setHeader("Access-Control-Allow-Credentials", "true");
+      }
+
       // Verify session ownership before allowing SSE connection
       try {
         const redis = await getRedisClient();
@@ -223,7 +234,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             `data: ${JSON.stringify({ type: "error", message: "Acesso negado." })}\n\n`,
           );
           reply.raw.end();
-          return reply;
+          return;
         }
       } catch (err) {
         server.log.warn({ sessionId, err }, "Redis session ownership check failed — failing closed");
@@ -232,9 +243,8 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           `data: ${JSON.stringify({ type: "error", message: "Erro temporario. Tente novamente." })}\n\n`,
         );
         reply.raw.end();
-        return reply;
+        return;
       }
-
       reply.raw.setHeader("Content-Type", "text/event-stream");
       reply.raw.setHeader("Cache-Control", "no-cache");
       reply.raw.setHeader("Connection", "keep-alive");
@@ -248,7 +258,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           `data: ${JSON.stringify({ type: "error", message: "Sessão não encontrada." })}\n\n`,
         );
         reply.raw.end();
-        return reply;
+        return;
       }
 
       // Replay buffered chunks for late clients
@@ -256,7 +266,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
         if (chunk.type === "done" || chunk.type === "error") {
           reply.raw.end();
-          return reply;
+          return;
         }
       }
 
@@ -276,8 +286,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       request.raw.on("close", () => {
         entry.emitter.off("chunk", onChunk);
       });
-
-      return reply;
     },
   );
 }

@@ -7,6 +7,7 @@
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { createConversationService } from "@ibatexas/domain";
 import type { FastifyBaseLogger } from "fastify";
+import { pushToDlq } from "./dlq.js";
 
 export async function startConversationArchiver(
   log?: FastifyBaseLogger,
@@ -42,6 +43,7 @@ export async function startConversationArchiver(
       );
     } catch (err) {
       log?.error(err, "[conversation-archiver] Failed to persist conversation messages");
+      await pushToDlq("conversation.message.appended", payload as Record<string, unknown>, err, log);
     }
   });
 

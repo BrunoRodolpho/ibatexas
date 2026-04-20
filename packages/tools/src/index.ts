@@ -28,13 +28,17 @@ export { applyCoupon, ApplyCouponTool } from "./cart/apply-coupon.js"
 export { createCheckout, CreateCheckoutTool } from "./cart/create-checkout.js"
 export { getOrderHistory, GetOrderHistoryTool } from "./cart/get-order-history.js"
 export { checkOrderStatus, CheckOrderStatusTool } from "./cart/check-order-status.js"
+export { checkPaymentStatus, CheckPaymentStatusTool } from "./cart/check-payment-status.js"
 export { cancelOrder, CancelOrderTool } from "./cart/cancel-order.js"
 export { amendOrder, AmendOrderTool } from "./cart/amend-order.js"
+export { changeDeliveryAddress } from "./cart/change-delivery-address.js"
+export { switchOrderType } from "./cart/switch-order-type.js"
 export { reorder, ReorderTool } from "./cart/reorder.js"
 export { regeneratePix, RegeneratePixTool } from "./cart/regenerate-pix.js"
 export { cancelStalePaymentIntent } from "./cart/_stripe-helpers.js"
 export { setPixDetails, SetPixDetailsTool, SetPixDetailsInputSchema } from "./cart/set-pix-details.js"
 export type { SetPixDetailsInput } from "./cart/set-pix-details.js"
+export { addOrderNote, AddOrderNoteTool } from "./cart/add-order-note.js"
 
 // ── Intelligence tools ─────────────────────────────────────────────────────────
 export { getCustomerProfile, GetCustomerProfileTool } from "./intelligence/get-customer-profile.js"
@@ -66,6 +70,7 @@ export {
   type CircuitBreakerOptions,
 } from "./redis/circuit-breaker.js"
 export { safeRedis } from "./redis/safe-redis.js"
+export { acquireLock, withLock, type LockHandle } from "./redis/distributed-lock.js"
 
 // ── Tracing ──────────────────────────────────────────────────────────────────
 export {
@@ -104,6 +109,13 @@ export {
   invalidateScheduleCache,
   loadSchedule,
 } from "./cache/schedule-cache.js"
+
+// ── Banner cache ──────────────────────────────────────────────────────────────
+export {
+  getBannerText,
+  setBannerText,
+  clearBannerText,
+} from "./cache/banner-cache.js"
 
 // ── Query cache ────────────────────────────────────────────────────────────────
 export {

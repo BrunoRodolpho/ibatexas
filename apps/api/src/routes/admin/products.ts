@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { medusaAdmin } from "./_shared.js";
+import { requireManagerRole } from "../../middleware/staff-auth.js";
+import { getRedisClient, rk } from "@ibatexas/tools";
 
 const ProductsAdminQuery = z.object({
   q: z.string().optional(),
@@ -98,6 +100,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
   app.patch(
     "/api/admin/products/:id",
     {
+      preHandler: [requireManagerRole],
       schema: {
         tags: ["admin"],
         summary: "Atualizar produto (admin)",
@@ -108,6 +111,17 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params;
       const body = request.body;
+      const requestId = request.headers["x-request-id"] as string | undefined;
+
+      // Idempotency guard via x-request-id (catches double-clicks)
+      if (requestId) {
+        const redis = await getRedisClient();
+        const dedupKey = rk(`product:update:dedup:${requestId}`);
+        const isNew = await redis.set(dedupKey, "1", { EX: 300, NX: true });
+        if (!isNew) {
+          return reply.code(409).send({ error: "Requisicao duplicada." });
+        }
+      }
 
       try {
         const data = await medusaAdmin(`/admin/products/${id}`, {

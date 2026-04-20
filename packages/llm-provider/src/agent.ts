@@ -163,6 +163,16 @@ export async function* runAgent(
     }
     // Pre-fill customer name if known
     if (profile.name) machineContext.customerName = profile.name
+    // Active order context for greeting awareness
+    if (profile.activeOrderId) {
+      machineContext.activeOrderId = profile.activeOrderId
+      machineContext.activeOrderDisplayId = profile.activeOrderDisplayId ?? null
+      machineContext.activeOrderStatus = profile.activeOrderStatus ?? null
+      // Payment lifecycle context from active order
+      machineContext.paymentId = profile.paymentId ?? null
+      machineContext.paymentStatus = profile.paymentStatus ?? null
+      machineContext.pixExpiresAt = profile.pixExpiresAt ?? null
+    }
 
     // Pre-fill PIX details for returning customers (name, email, CPF)
     const pixCache = await withTimeout(

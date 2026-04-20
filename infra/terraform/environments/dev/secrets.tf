@@ -15,7 +15,8 @@ locals {
     "TWILIO_VERIFY_SID",
     "NATS_URL",
     "REDIS_URL",
-    "MEDUSA_API_KEY",
+    "MEDUSA_ADMIN_EMAIL",
+    "MEDUSA_ADMIN_PASSWORD",
     "TYPESENSE_API_KEY",
     "CORS_ORIGIN",
   ]

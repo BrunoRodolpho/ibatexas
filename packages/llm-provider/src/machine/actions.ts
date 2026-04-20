@@ -17,7 +17,7 @@ import {
   rk,
 } from "@ibatexas/tools"
 import { Channel } from "@ibatexas/types"
-import { createCustomerService } from "@ibatexas/domain"
+import { createCustomerService, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain"
 import type { OrderContext, CartItem, ItemCategory } from "./types.js"
 
 // ── Helper: build tool context from machine context ──────────────────────────
@@ -484,6 +484,14 @@ export interface CustomerProfileResult {
   lastFulfillment?: "pickup" | "delivery"
   lastPaymentMethod?: "pix" | "card" | "cash"
   lastDeliveryCep?: string
+  // Active order (most recent non-terminal order from OrderProjection)
+  activeOrderId?: string | null
+  activeOrderDisplayId?: number | null
+  activeOrderStatus?: string | null
+  // Active payment for the active order (from Payment table)
+  paymentId?: string | null
+  paymentStatus?: string | null
+  pixExpiresAt?: string | null
 }
 
 export async function fetchCustomerProfile(
@@ -505,7 +513,7 @@ export async function fetchCustomerProfile(
     }
 
     const orderCount = result.orderCount ?? 0
-    return {
+    const profile: CustomerProfileResult = {
       isNewCustomer: orderCount === 0,
       orderCount,
       name: result.name,
@@ -513,6 +521,38 @@ export async function fetchCustomerProfile(
       lastPaymentMethod: result.lastPaymentMethod,
       lastDeliveryCep: result.lastDeliveryCep,
     }
+
+    // Check for active (non-terminal) orders — lightweight DB query (limit 1)
+    const terminalStatuses = new Set(["delivered", "canceled", "refunded"])
+    try {
+      const querySvc = createOrderQueryService()
+      const { orders } = await querySvc.listByCustomer(ctx.customerId!, { limit: 1 })
+      if (orders.length > 0) {
+        const latest = orders[0]!
+        if (!terminalStatuses.has(latest.fulfillmentStatus)) {
+          profile.activeOrderId = latest.id
+          profile.activeOrderDisplayId = latest.displayId
+          profile.activeOrderStatus = latest.fulfillmentStatus
+
+          // Fetch active payment for context awareness
+          try {
+            const paymentQuerySvc = createPaymentQueryService()
+            const activePayment = await paymentQuerySvc.getActiveByOrderId(latest.id)
+            if (activePayment) {
+              profile.paymentId = activePayment.id
+              profile.paymentStatus = activePayment.status
+              profile.pixExpiresAt = activePayment.pixExpiresAt?.toISOString() ?? null
+            }
+          } catch {
+            // Non-critical — payment context is advisory
+          }
+        }
+      }
+    } catch {
+      // Non-critical — greeting will fall back to generic returning-customer prompt
+    }
+
+    return profile
   } catch {
     return { isNewCustomer: true, orderCount: 0 }
   }

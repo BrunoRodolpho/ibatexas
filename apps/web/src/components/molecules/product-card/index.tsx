@@ -1,8 +1,11 @@
 'use client'
 
 import { useState, useCallback } from 'react'
+import { useTranslations } from 'next-intl'
 import { formatBRL } from '@/lib/format'
 import { track } from '@/domains/analytics'
+import { useUIStore } from '@/domains/ui'
+import { useCartStore } from '@/domains/cart'
 
 import { ProductCardVertical } from './ProductCardVertical'
 import { ProductCardHorizontal } from './ProductCardHorizontal'
@@ -40,25 +43,44 @@ export const ProductCard = ({
   variant = 'vertical',
 }: ProductCardProps) => {
   const [isAdded, setIsAdded] = useState(false)
+  const t = useTranslations()
+  const addToast = useUIStore((s) => s.addToast)
 
   // ── Pre-computed values ──────────────────────────────────────────
   const priceFormatted = formatBRL(price)
   const hasMultipleVariants = (variantCount ?? 0) > 1
   const displayImage = imageUrl || images?.[0] || null
-  const linkHref = href || `/products/${id}`
+  const linkHref = href || `/loja/produto/${id}`
   const priorityTag = resolvePriorityTag(tags)
   const { hasDiscount, discountPercent } = computeDiscount(price, compareAtPrice)
   const hoverImage = images && images.length >= 2 && images[1] !== displayImage ? images[1] : null
 
   // ── Event handlers ───────────────────────────────────────────────
-  const handleQuickAdd = useCallback((e: React.MouseEvent) => {
+  // Quick-add is async-safe: we await whatever onAddToCart returns (sync or
+  // promise) and only flash the success state if it resolves. A silent failure
+  // here (audit P0-1) would tell the user "added ✓" when the cart is still
+  // empty — classic conversion killer surfaced only at checkout.
+  const handleQuickAdd = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
+    const isFirstItem = useCartStore.getState().items.length === 0
     track('quick_add_clicked', { productId: id, source: 'listing' })
-    onAddToCart?.()
-    setIsAdded(true)
-    setTimeout(() => setIsAdded(false), 2000)
-  }, [id, onAddToCart])
+    try {
+      await Promise.resolve(onAddToCart?.())
+      setIsAdded(true)
+      setTimeout(() => setIsAdded(false), 2500)
+      if (isFirstItem) {
+        addToast(t('toast.first_item_added'), 'success')
+      }
+    } catch (err) {
+      track('quick_add_failed', {
+        productId: id,
+        source: 'listing',
+        reason: err instanceof Error ? err.message : 'unknown',
+      })
+      addToast(t('toast.add_to_cart_error'), 'error')
+    }
+  }, [id, onAddToCart, addToast, t])
 
   const handleIncrement = useCallback((e: React.MouseEvent) => {
     e.preventDefault()

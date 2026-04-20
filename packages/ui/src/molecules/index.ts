@@ -8,3 +8,6 @@ export { Modal, Sheet } from './Modal'
 
 /* ── Phase 3: SearchInput ──────────────────────────────────────────── */
 export { SearchInput } from './SearchInput'
+
+/* ── Admin filter layout ──────────────────────────────────────────── */
+export { FilterBar, type FilterBarProps } from './FilterBar'

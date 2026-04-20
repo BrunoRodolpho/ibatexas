@@ -1,9 +1,14 @@
 'use client'
 
+import { useCallback, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { useProducts } from '@/domains/product'
+import { useCartStore } from '@/domains/cart'
+import { useUIStore } from '@/domains/ui'
 import { ProductGrid } from '@/components/organisms'
-import { Heading, Text } from '@/components/atoms'
+import { ProductGridSkeleton } from '@/components/molecules/ProductGridSkeleton'
+import { Container, Heading, Text } from '@/components/atoms'
+import { track } from '@/domains/analytics'
 import { notFound } from 'next/navigation'
 
 const validCategories = new Set(['camisetas', 'acessorios', 'kits'])
@@ -14,6 +19,9 @@ interface CategoryContentProps {
 
 export default function CategoryContent({ category }: CategoryContentProps) {
   const t = useTranslations()
+  const addItem = useCartStore((s) => s.addItem)
+  const triggerUpsell = useUIStore((s) => s.triggerUpsell)
+  const addToast = useUIStore((s) => s.addToast)
 
   if (!validCategories.has(category)) {
     notFound()
@@ -25,7 +33,28 @@ export default function CategoryContent({ category }: CategoryContentProps) {
     categoryHandle: category,
   })
 
-  const filteredProducts = data?.items ?? []
+  // Memoized so the handleAddToCart useCallback dep array is stable across
+  // renders that don't actually change the product list.
+  const filteredProducts = useMemo(() => data?.items ?? [], [data?.items])
+
+  // Add-to-cart from a category card now matches the /search behavior:
+  // 1. add to cart, 2. toast confirmation, 3. trigger cross-sell upsell.
+  // Previously this handler was missing, so cards in /loja/[category] silently
+  // did nothing on click and never surfaced the upsell toast.
+  const handleAddToCart = useCallback(
+    (productId: string) => {
+      const product = filteredProducts.find((p) => p.id === productId)
+      if (!product) return
+      const defaultVariant = product.variants?.[0]
+      addItem(product, 1, undefined, defaultVariant)
+      track('add_to_cart', { productId, source: 'category_listing' })
+      addToast(t('toast.added_to_cart'), 'cart')
+      if (product.categoryHandle) {
+        triggerUpsell(product.categoryHandle)
+      }
+    },
+    [filteredProducts, addItem, addToast, t, triggerUpsell],
+  )
 
   if (error) {
     return (
@@ -39,9 +68,11 @@ export default function CategoryContent({ category }: CategoryContentProps) {
 
   const categoryKey = `shop.categories.${category}` as const
 
+  // Render the page chrome (header + description) at all times so the layout
+  // is stable. The grid area swaps between skeleton, real grid, and empty
+  // state — only that area changes during loading.
   return (
-    <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16 lg:py-20">
-      {/* Category Header */}
+    <Container className="py-8 lg:py-12">
       <div className="text-center mb-12">
         <Heading variant="h1" className="text-charcoal-900 mb-4">
           {t(categoryKey)}
@@ -51,19 +82,15 @@ export default function CategoryContent({ category }: CategoryContentProps) {
         </Text>
       </div>
 
-      {/* Products */}
       {(() => {
         if (loading) {
-          return (
-            <div className="text-center py-12">
-              <Text>{t('common.loading')}</Text>
-            </div>
-          )
+          return <ProductGridSkeleton columns={3} />
         }
         if (filteredProducts.length) {
           return (
             <ProductGrid
               products={filteredProducts}
+              onAddToCart={handleAddToCart}
               getProductHref={(product) => `/loja/produto/${product.id}`}
             />
           )
@@ -76,6 +103,6 @@ export default function CategoryContent({ category }: CategoryContentProps) {
           </div>
         )
       })()}
-    </div>
+    </Container>
   )
 }

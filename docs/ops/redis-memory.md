@@ -41,7 +41,19 @@ Example: `production:customer:profile:cust_123`
 | `review:prompt:{customerId}:{orderId}` | String | 24 h | Idempotency marker for review prompt scheduling | `apps/api/src/jobs/review-prompt.ts` |
 | `review:prompt:scheduled` | Sorted Set | 1 d | Due review prompts (score = fire timestamp), polled every 5 min | `apps/api/src/jobs/review-prompt.ts` |
 | `reminder:sent:{reservationId}` | String | 24 h | Reservation reminder idempotency guard (prevents re-sending on restart) | `apps/api/src/jobs/reservation-reminder.ts` |
-| `nats:processed:{eventKey}` | String | 7 d | NATS event idempotency guard (prevents duplicate subscriber processing) | `apps/api/src/subscribers/cart-intelligence.ts` |
+| `nats:processed:{eventKey}` | String | 7 d | NATS event idempotency guard (prevents duplicate subscriber processing). Shared via `isNewEvent()` in `dedup.ts`. | `apps/api/src/subscribers/dedup.ts` |
+| `dlq:{eventType}` | List | 7 d | Dead-letter queue for non-retryable subscriber failures. Each entry is the full event payload JSON + `_failedAt` + `_error`. Known event types: `order.status_changed`, `order.placed`, `notification.send`, `support.handoff_requested`, `conversation.message.appended`. Inspect with `ibx dlq list` / `ibx dlq peek <event>`. | `apps/api/src/subscribers/dlq.ts` |
+| `lock:outbox-retry` | String (UUID) | 55 s | Distributed lock for outbox retry job. Prevents concurrent retry runs. Released via Lua conditional `DEL`. | `apps/api/src/jobs/outbox-retry.ts` |
+| `order:status:dedup:{requestId}` | String | 300 s | Admin order PATCH request-ID dedup (catches double-clicks). | `apps/api/src/routes/admin/orders.ts` |
+| `product:update:dedup:{requestId}` | String | 300 s | Admin product PATCH request-ID dedup. | `apps/api/src/routes/admin/products.ts` |
+| `dz:{action}:dedup:{requestId}` | String | 300 s | Admin delivery zone mutation dedup (create/update/delete). | `apps/api/src/routes/admin/delivery-zones.ts` |
+| `lock:payment:{paymentId}` | String (UUID) | 10 s | Distributed lock for payment mutations (webhook, PIX expiry, retry, method switch). Released via Lua conditional `DEL`. | `packages/tools/src/redis/distributed-lock.ts` |
+| `pix:regen:rate:{customerId}` | Counter | 3600 s | PIX regeneration rate limit per customer (max 3/hr via INCR + EXPIRE) | `packages/tools/src/cart/regenerate-pix.ts` |
+| `rate:amend:{customerId}` | String (counter) | 600s | Rate limit for order amendments — max 5 per 10 minutes | — |
+| `rate:cancel:{customerId}` | String (counter) | 600s | Rate limit for order cancellations — max 5 per 10 minutes | — |
+| `stripe:circuit:{method}` | Counter | 300 s | Stripe circuit breaker per payment method (INCR on failure, open if >5 in window) | `packages/tools/src/cart/_stripe-helpers.ts` |
+| `retry:{paymentId}:{timestamp_bucket}` | String | 300 s | Payment retry idempotency guard | `apps/api/src/routes/orders.ts` |
+| `switch:{orderId}:{requestId}` | String | 300 s | Payment method switch idempotency guard | `apps/api/src/routes/orders.ts` |
 | `webhook:processed:{event.id}` | String | 7 d | Stripe webhook idempotency guard (prevents replay reprocessing) | `apps/api/src/routes/stripe-webhook.ts` |
 | `analytics:rate:{ip}` | String | 60 s | Analytics endpoint rate limit (max 100 events/min per IP) | `apps/api/src/routes/analytics.ts` |
 | `jwt:revoked:{jti}` | String | remaining JWT lifetime | JWT revocation marker (set on logout, checked on every authenticated request) | `apps/api/src/routes/auth.ts`, `apps/api/src/middleware/auth.ts` |

@@ -477,7 +477,7 @@ async function seedReservations() {
         customerId,
         partySize: template.partySize,
         status: template.status,
-        specialRequests: JSON.stringify(template.specialRequests),
+        specialRequests: template.specialRequests,
         timeSlotId: timeSlot.id,
         confirmedAt,
         checkedInAt,

@@ -34,8 +34,8 @@ const SHORTCUT_MAP: Record<string, ShortcutAction> = {
   carrinho: { type: "cart" },
   "ver carrinho": { type: "cart" },
   "meu carrinho": { type: "cart" },
-  pedido: { type: "cart" },
-  "meu pedido": { type: "cart" },
+  // "pedido" and "meu pedido" intentionally omitted — fall through to LLM
+  // so the agent can route to check_order_status vs cart as appropriate.
 
   // Reservation
   reserva: { type: "reservation" },

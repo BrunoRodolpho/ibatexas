@@ -1,101 +1,106 @@
 import React from 'react'
-import { Card, Text, IconButton } from '../atoms'
-import { Image } from '../atoms/Image'
+import { QuantitySelector } from './QuantitySelector'
+import { Link } from '@/i18n/navigation'
 import { formatBRL } from '@/lib/format'
+import { Trash2, ShoppingBag } from 'lucide-react'
+import { useTranslations } from 'next-intl'
+import NextImage from 'next/image'
 
 interface CartItemProps {
   readonly id: string
+  readonly productId: string
   readonly title: string
   readonly price: number
   readonly imageUrl?: string
   readonly quantity: number
   readonly specialInstructions?: string
   readonly variantTitle?: string
+  readonly productType?: 'food' | 'frozen' | 'merchandise'
+  readonly isKitchenClosed?: boolean
   readonly onQuantityChange: (quantity: number) => void
   readonly onRemove: () => void
 }
 
 export const CartItem: React.FC<CartItemProps> = ({
-  id: _id,
+  productId,
   title,
   price,
   imageUrl,
   quantity,
-  specialInstructions,
   variantTitle,
+  productType,
+  isKitchenClosed,
   onQuantityChange,
   onRemove,
 }) => {
-  const formattedPrice = formatBRL(price)
+  const t = useTranslations('cart')
   const lineTotal = formatBRL(price * quantity)
+  const isFoodUnavailable = isKitchenClosed && productType === 'food'
 
   return (
-    <Card className="p-4">
-      <div className="flex gap-4">
-        {imageUrl && (
-          <div className="w-20 h-20 flex-shrink-0">
-            <Image
+    <div className={`flex gap-3 py-3 border-b border-smoke-200 last:border-0 ${isFoodUnavailable ? 'opacity-50' : ''}`}>
+      {/* Thumbnail — 64px, clickable */}
+      <Link href={`/loja/produto/${productId}`} className="flex-shrink-0">
+        <div className="w-16 h-16 rounded-sm overflow-hidden bg-smoke-100">
+          {imageUrl ? (
+            <NextImage
               src={imageUrl}
               alt={title}
-              variant="thumbnail"
-              width={80}
-              height={80}
-              className="!h-20 !w-20 rounded-sm"
+              width={64}
+              height={64}
+              placeholder="blur"
+              blurDataURL="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjEwIj48cmVjdCBmaWxsPSIjZThlNGUwIiB3aWR0aD0iOCIgaGVpZ2h0PSIxMCIvPjwvc3ZnPg=="
+              className="object-cover w-full h-full"
             />
-          </div>
-        )}
-
-        <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-charcoal-900 truncate">{title}</h3>
-          {variantTitle && (
-            <Text variant="small" textColor="secondary" className="text-[var(--color-text-secondary)]">
-              {variantTitle}
-            </Text>
-          )}
-          <Text variant="small" textColor="secondary">
-            {formattedPrice} cada
-          </Text>
-
-          {specialInstructions && (
-            <p className="text-xs text-[var(--color-text-secondary)] mt-1 line-clamp-2">
-              {specialInstructions}
-            </p>
-          )}
-
-          <div className="flex items-center justify-between mt-3">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => onQuantityChange(Math.max(1, quantity - 1))}
-                className="w-6 h-6 flex items-center justify-center rounded-sm border border-smoke-200 text-charcoal-700 hover:bg-smoke-100"
-                aria-label="Diminuir quantidade"
-              >
-                −
-              </button>
-              <span className="w-8 text-center font-medium">{quantity}</span>
-              <button
-                onClick={() => onQuantityChange(quantity + 1)}
-                className="w-6 h-6 flex items-center justify-center rounded-sm border border-smoke-200 text-charcoal-700 hover:bg-smoke-100"
-                aria-label="Aumentar quantidade"
-              >
-                +
-              </button>
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <ShoppingBag className="w-5 h-5 text-smoke-300" strokeWidth={1.5} />
             </div>
+          )}
+        </div>
+      </Link>
 
-            <Text variant="body" className="font-semibold text-brand-600">
-              {lineTotal}
-            </Text>
-          </div>
+      {/* Details */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-start justify-between gap-2">
+          <Link href={`/loja/produto/${productId}`} className="min-w-0">
+            <h3 className="text-sm font-medium text-charcoal-900 truncate hover:text-brand-600 transition-colors duration-300">
+              {title}
+            </h3>
+          </Link>
+          <span className="text-sm font-semibold text-charcoal-900 tabular-nums flex-shrink-0">
+            {lineTotal}
+          </span>
         </div>
 
-        <IconButton
-          variant="tertiary"
-          size="md"
-          icon="×"
-          label="Remover do carrinho"
-          onClick={onRemove}
-          className="text-accent-red"
-        />
+        <div className="flex items-center gap-1.5">
+          {variantTitle && (
+            <p className="text-xs text-[var(--color-text-secondary)]">{variantTitle}</p>
+          )}
+          {isFoodUnavailable && (
+            <span className="text-micro font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-sm">
+              {t('item_unavailable')}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 mt-1">
+          <button
+            onClick={onRemove}
+            className="w-7 h-7 flex items-center justify-center rounded-sm border border-smoke-200 text-[var(--color-text-secondary)] hover:text-accent-red hover:border-accent-red/30 transition-colors duration-300"
+            aria-label={t('remove_item', { title })}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+          <QuantitySelector
+            quantity={quantity}
+            onQuantityChange={onQuantityChange}
+            min={1}
+            max={99}
+            size="xs"
+          />
+        </div>
       </div>
-    </Card>
+    </div>
   )
 }

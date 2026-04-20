@@ -65,7 +65,7 @@ export function TimeslotGrid({ slots, loading, error, onSelect }: Props) {
     <div className="space-y-6">
       {groups.map((group) => (
         <div key={group.label}>
-          <h4 className="mb-3 text-[10px] uppercase tracking-wider font-medium text-smoke-400">{group.label}</h4>
+          <h4 className="mb-3 text-micro uppercase tracking-wider font-medium text-smoke-400">{group.label}</h4>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {group.slots.map((slot) => (
               <button

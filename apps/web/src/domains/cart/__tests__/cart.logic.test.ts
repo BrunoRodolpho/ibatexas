@@ -7,6 +7,9 @@ import {
   getCartType,
   hasMerchandise,
   hasFood,
+  hasKitchenOnlyFood,
+  getKitchenItems,
+  getAvailableItems,
 } from '../cart.logic'
 
 // ── Typed test fixtures ──────────────────────────────────────────────────
@@ -198,5 +201,68 @@ describe('hasFood', () => {
 
   it('returns false for merchandise only', () => {
     expect(hasFood([{ productType: 'merchandise' }])).toBe(false)
+  })
+})
+
+// ── hasKitchenOnlyFood / getKitchenItems / getAvailableItems ────────
+
+describe('hasKitchenOnlyFood', () => {
+  it('returns true when food items present', () => {
+    expect(hasKitchenOnlyFood([{ productType: 'food' }])).toBe(true)
+  })
+
+  it('returns false for frozen-only cart', () => {
+    expect(hasKitchenOnlyFood([{ productType: 'frozen' }])).toBe(false)
+  })
+
+  it('returns false for merchandise-only cart', () => {
+    expect(hasKitchenOnlyFood([{ productType: 'merchandise' }])).toBe(false)
+  })
+
+  it('returns true for mixed cart with food', () => {
+    expect(hasKitchenOnlyFood([
+      { productType: 'food' },
+      { productType: 'merchandise' },
+      { productType: 'frozen' },
+    ])).toBe(true)
+  })
+
+  it('returns false for empty cart', () => {
+    expect(hasKitchenOnlyFood([])).toBe(false)
+  })
+})
+
+describe('getKitchenItems', () => {
+  it('returns only food items', () => {
+    const items = [
+      { productType: 'food' as const, id: '1' },
+      { productType: 'frozen' as const, id: '2' },
+      { productType: 'merchandise' as const, id: '3' },
+      { productType: 'food' as const, id: '4' },
+    ]
+    const result = getKitchenItems(items)
+    expect(result).toHaveLength(2)
+    expect(result.map((i) => i.id)).toEqual(['1', '4'])
+  })
+
+  it('returns empty array when no food items', () => {
+    expect(getKitchenItems([{ productType: 'frozen' as const, id: '1' }])).toEqual([])
+  })
+})
+
+describe('getAvailableItems', () => {
+  it('returns frozen + merchandise items', () => {
+    const items = [
+      { productType: 'food' as const, id: '1' },
+      { productType: 'frozen' as const, id: '2' },
+      { productType: 'merchandise' as const, id: '3' },
+    ]
+    const result = getAvailableItems(items)
+    expect(result).toHaveLength(2)
+    expect(result.map((i) => i.id)).toEqual(['2', '3'])
+  })
+
+  it('returns empty array when only food items', () => {
+    expect(getAvailableItems([{ productType: 'food' as const, id: '1' }])).toEqual([])
   })
 })
