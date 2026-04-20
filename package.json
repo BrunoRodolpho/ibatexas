@@ -39,7 +39,11 @@
       "@types/react, @types/react-dom": "medusa pulls React 18 types — force single version to fix JSX portability errors",
       "vite@7": "vitest>vite v7 transitive fix — GHSA-v2wj-q39q-566r (server.fs.deny bypass) + GHSA-p9ff-h696-f583 (WebSocket file read). Scoped to v7 so medusa's vite v5 is untouched. Remove when vitest pulls vite >= 7.3.2.",
       "@rushstack/node-core-library>ajv": "@medusajs/cli>...>@rushstack/node-core-library>ajv transitive fix — GHSA-2g4f-4pwh-qvx6 ReDoS via $data option. Scoped (not global) because @eslint/eslintrc uses ajv v6 API and breaks if forced to v8 ('NOT SUPPORTED: option missingRefs' / 'Cannot set defaultMeta'). Remove when rushstack updates.",
-      "esbuild": "@medusajs/framework>vite v5>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS issue. Remove when medusa upgrades vite to v6+ (vite 6.4.2+ already pulls esbuild >=0.25)."
+      "esbuild": "@medusajs/framework>vite v5>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS issue. Remove when medusa upgrades vite to v6+ (vite 6.4.2+ already pulls esbuild >=0.25).",
+      "fast-jwt": "apps/api>@fastify/jwt transitive fix — GHSA-rp9m-7r4c-75qg cache confusion (token claim mixup). Patched in 6.2.0+. Remove when @fastify/jwt pulls fast-jwt >=6.2.0.",
+      "protobufjs": "apps/api>@sentry/node transitive fix — GHSA-xq3m-2v4x-88gg arbitrary code execution. Patched in 7.5.5+.",
+      "fastify": "apps/api direct dep fix — GHSA-247c-9743-5963 body schema validation bypass via leading-space Content-Type. Patched in 5.8.5+.",
+      "next": "apps/admin + apps/web direct dep fix — GHSA-q4gf-8mx6-v5v3 DoS via Server Components. Patched in 16.2.3+."
     },
     "overrides": {
       "minimatch": "10.2.4",
@@ -53,12 +57,20 @@
       "@types/react-dom": "19.2.3",
       "vite@7": "7.3.2",
       "@rushstack/node-core-library>ajv": "8.18.0",
-      "esbuild": "0.25.0"
+      "esbuild": "0.25.0",
+      "fast-jwt": ">=6.2.0",
+      "protobufjs": ">=7.5.5",
+      "fastify": ">=5.8.5",
+      "next": ">=16.2.3"
     },
     "auditConfig": {
       "ignoreCves": [
         "CVE-2026-34950",
         "CVE-2026-35042"
+      ],
+      "ignoreGhsas": [
+        "GHSA-gwhv-j974-6fxm",
+        "GHSA-qpfv-44f3-qqx6"
       ],
       "ignoreCveNotes": {
         "CVE-2026-35042": "fast-jwt <=6.1.0 GHSA-hm7r-c7qw-ghp6 — accepts unknown `crit` header extensions (RFC 7515 violation). No upstream patch released yet. Mitigation: we never set or trust `crit` headers in our JWT flow (Twilio Verify OTP only). Re-check when nearform/fast-jwt ships a fix.",
