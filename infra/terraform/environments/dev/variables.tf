@@ -23,8 +23,8 @@ variable "github_repo" {
 
 variable "instance_type" {
   type        = string
-  description = "EC2 instance type — ARM Graviton for cost. t4g.small = 2 vCPU / 2 GB."
-  default     = "t4g.small"
+  description = "EC2 instance type. t3.small (x86) = 2 vCPU / 2 GB. App images are amd64 — switch to a t4g.* (ARM Graviton) only if CI builds multi-arch images."
+  default     = "t3.small"
 }
 
 variable "ebs_size_gb" {

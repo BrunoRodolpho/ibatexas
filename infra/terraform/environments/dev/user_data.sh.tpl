@@ -29,7 +29,13 @@ fi
 systemctl enable --now docker
 # Install compose v2 plugin (AL2023 repo ships standalone, not plugin).
 mkdir -p /usr/local/lib/docker/cli-plugins
-COMPOSE_URL="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-aarch64"
+ARCH=$(uname -m)
+case "$ARCH" in
+  aarch64|arm64) COMPOSE_ARCH="aarch64" ;;
+  x86_64)        COMPOSE_ARCH="x86_64" ;;
+  *)             echo "[bootstrap] unknown arch $ARCH"; exit 1 ;;
+esac
+COMPOSE_URL="https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$COMPOSE_ARCH"
 curl -fsSL "$COMPOSE_URL" -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 docker compose version
@@ -38,17 +44,10 @@ docker compose version
 mkdir -p /opt/ibatexas
 cd /opt/ibatexas
 
-# --- Write compose.yml (envsubst renders $${...} placeholders) ---
-cat > /opt/ibatexas/docker-compose.template.yml <<'COMPOSE_EOF'
+# --- Write compose.yml (already rendered by terraform templatefile) ---
+cat > /opt/ibatexas/docker-compose.yml <<'COMPOSE_EOF'
 ${compose_yml}
 COMPOSE_EOF
-
-export REGION='${region}'
-export ACCOUNT_ID='${account_id}'
-export DOMAIN='${domain}'
-envsubst '$REGION $ACCOUNT_ID $DOMAIN' \
-  < /opt/ibatexas/docker-compose.template.yml \
-  > /opt/ibatexas/docker-compose.yml
 
 # --- Write Caddyfile ---
 cat > /opt/ibatexas/Caddyfile <<'CADDY_EOF'

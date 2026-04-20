@@ -11,7 +11,9 @@ resource "aws_ecr_repository" "this" {
 
   name                 = each.value
   image_tag_mutability = "MUTABLE"
-  force_delete         = false
+  # Dev is ephemeral — force_delete lets `ibx destroy` wipe repos with images
+  # still in them. Prod keeps this false (see environments/production/ecr.tf).
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true

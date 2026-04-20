@@ -12,13 +12,20 @@ resource "aws_eip" "host" {
 }
 
 locals {
+  # Render compose.yml FIRST with region/account/domain substituted in.
+  rendered_compose = templatefile("${path.module}/compose.yml.tpl", {
+    region     = var.region
+    account_id = data.aws_caller_identity.current.account_id
+    domain     = var.domain_name
+  })
+
   user_data = templatefile("${path.module}/user_data.sh.tpl", {
     region       = var.region
     account_id   = data.aws_caller_identity.current.account_id
     environment  = var.environment
     domain       = var.domain_name
     ecr_registry = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com"
-    compose_yml  = file("${path.module}/compose.yml.tpl")
+    compose_yml  = local.rendered_compose
     caddyfile    = file("${path.module}/caddyfile.tpl")
     secret_names = jsonencode(local.secret_names)
   })

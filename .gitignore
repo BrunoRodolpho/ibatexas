@@ -54,3 +54,4 @@ apps/commerce/.medusa/types/query-entry-points.d.ts
 
 # Medusa admin file uploads
 apps/commerce/static/
+infra/terraform/environments/dev/tfplan

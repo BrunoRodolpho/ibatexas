@@ -19,7 +19,7 @@ resource "aws_vpc_security_group_ingress_rule" "host_http" {
   from_port         = 80
   to_port           = 80
   ip_protocol       = "tcp"
-  description       = "HTTP (redirected to HTTPS by Caddy + Let's Encrypt challenge)"
+  description       = "HTTP - Caddy redirect + ACME HTTP-01 challenge"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "host_https" {
