@@ -286,6 +286,15 @@ async function setInstancePower(env: string, action: "start" | "stop"): Promise<
   return { ok: true, detail: `${instance.id} ${action === "start" ? "starting" : "stopping"}` }
 }
 
+/** Upload a file to the dev instance via SSM (base64-encoded). Path must be absolute. */
+async function uploadToInstance(env: string, absPath: string, content: string, mode?: string): Promise<{ ok: boolean; output: string }> {
+  const b64 = Buffer.from(content, "utf8").toString("base64")
+  // Keep the payload chunked-safe by piping base64 through `base64 -d`.
+  const parts = [`mkdir -p "$(dirname ${absPath})"`, `echo '${b64}' | base64 -d > ${absPath}`]
+  if (mode) parts.push(`chmod ${mode} ${absPath}`)
+  return runOnInstance(env, parts.join(" && "))
+}
+
 /** Run a shell command on the dev instance via SSM Run Command. Returns stdout. */
 async function runOnInstance(env: string, commandText: string, timeoutSec = 600): Promise<{ ok: boolean; output: string }> {
   const instance = await findHostInstance(env)
@@ -568,6 +577,129 @@ async function runIdle(opts: { env?: string; only?: string }): Promise<void> {
     process.exit(1)
   }
   console.log("")
+}
+
+// ── Live-host sync + remote Medusa ops ────────────────────────────────────────
+// These commands patch the running EC2 host directly via SSM, without requiring
+// a full terraform apply (which destroys the instance). They stay in sync with
+// the templates under infra/terraform/environments/<env>/ — run `host:sync`
+// whenever compose.yml.tpl / user_data.sh.tpl change.
+
+function renderTemplate(tplPath: string, vars: Record<string, string>): string {
+  const raw = fs.readFileSync(tplPath, "utf8")
+  return raw.replace(/\$\{([a-z_]+)\}/g, (match, key) => {
+    return Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : match
+  })
+}
+
+async function resolveTerraformVars(env: string): Promise<{ region: string; account_id: string; domain: string; ecr_registry: string; environment: string }> {
+  const identity = await awsCommand(["sts", "get-caller-identity", "--query", "Account", "--output", "text"])
+  const accountId = identity.stdout.trim()
+  const domain = env === "production" ? "ibatexas.com.br" : "ibatexas.com.br"
+  return {
+    region: DEFAULT_REGION,
+    account_id: accountId,
+    domain,
+    ecr_registry: `${accountId}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com`,
+    environment: env,
+  }
+}
+
+async function runHostSync(opts: { env?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  🔄  Syncing compose.yml + deploy script to live ${env} host\n`))
+
+  const vars = await resolveTerraformVars(env)
+  const tplDir = infraDir(env)
+
+  // Render compose.yml.tpl — straight templatefile substitution.
+  const composeTpl = path.join(tplDir, "compose.yml.tpl")
+  const composeRendered = renderTemplate(composeTpl, vars)
+
+  // Render the ibatexas-deploy script by extracting it from user_data.sh.tpl.
+  // user_data embeds the deploy script inside a heredoc; we want just that script.
+  const userDataTpl = path.join(tplDir, "user_data.sh.tpl")
+  const userDataRaw = fs.readFileSync(userDataTpl, "utf8")
+  const match = userDataRaw.match(/cat > \/usr\/local\/bin\/ibatexas-deploy <<'DEPLOY_EOF'\n([\s\S]+?)\nDEPLOY_EOF/)
+  if (!match) {
+    console.error(chalk.red("  Could not extract ibatexas-deploy from user_data.sh.tpl"))
+    process.exit(1)
+  }
+  const deployRendered = match[1].replace(/\$\{([a-z_]+)\}/g, (m, k) => (vars as Record<string, string>)[k] ?? m)
+
+  const spin = ora("pushing docker-compose.yml").start()
+  let r = await uploadToInstance(env, "/opt/ibatexas/docker-compose.yml", composeRendered)
+  if (!r.ok) { spin.fail(chalk.red(r.output)); process.exit(1) }
+  spin.succeed("docker-compose.yml updated")
+
+  const spin2 = ora("pushing ibatexas-deploy").start()
+  r = await uploadToInstance(env, "/usr/local/bin/ibatexas-deploy", deployRendered, "0755")
+  if (!r.ok) { spin2.fail(chalk.red(r.output)); process.exit(1) }
+  spin2.succeed("ibatexas-deploy updated")
+
+  console.log(chalk.gray(`\n  Next step: ibx infra host:redeploy --env ${env}\n`))
+}
+
+async function runHostRedeploy(opts: { env?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  🚢  Running ibatexas-deploy on ${env} host via SSM\n`))
+  const spin = ora("deploying (pulls ECR images + docker compose up)").start()
+  const r = await runOnInstance(env, "/usr/local/bin/ibatexas-deploy 2>&1", 900)
+  if (!r.ok) {
+    spin.fail(chalk.red("deploy failed"))
+    console.error(chalk.red(r.output.slice(-4000)))
+    process.exit(1)
+  }
+  spin.succeed(chalk.green("deploy complete"))
+  console.log(chalk.gray(r.output.slice(-1500)))
+}
+
+async function runMedusaMigrate(opts: { env?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  🗃   Running Medusa migrations on ${env} host\n`))
+  const spin = ora("medusa db:migrate").start()
+  // Execute inside the running commerce container; uses the container's .env
+  // (which already has DATABASE_URL pointed at Supabase). Idempotent.
+  const cmd = `docker exec ibatexas-commerce sh -c "cd /app/apps/commerce && pnpm exec medusa db:migrate" 2>&1`
+  const r = await runOnInstance(env, cmd, 600)
+  if (!r.ok) { spin.fail(chalk.red("migration failed")); console.error(r.output.slice(-3000)); process.exit(1) }
+  spin.succeed(chalk.green("migrations applied"))
+  console.log(chalk.gray(r.output.slice(-1500)))
+}
+
+async function runMedusaSeed(opts: { env?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  🌱  Seeding Medusa on ${env} host (categories + products)\n`))
+  const spin = ora("medusa exec src/seed.ts").start()
+  const cmd = `docker exec ibatexas-commerce sh -c "cd /app/apps/commerce && pnpm exec medusa exec src/seed.ts" 2>&1`
+  const r = await runOnInstance(env, cmd, 600)
+  if (!r.ok) { spin.fail(chalk.red("seed failed")); console.error(r.output.slice(-3000)); process.exit(1) }
+  spin.succeed(chalk.green("seed complete"))
+  console.log(chalk.gray(r.output.slice(-1500)))
+}
+
+async function runMedusaCreateAdmin(opts: { env?: string; email?: string; password?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  👤  Creating Medusa admin user on ${env} host\n`))
+  // Creds default to the already-seeded SSM parameters.
+  // Reads them inside the container from /opt/ibatexas/.env so they never hit
+  // the SSM command log or this process's stdout.
+  const emailVar = opts.email ? `EMAIL=${JSON.stringify(opts.email)}` : `EMAIL=$(grep -E ^MEDUSA_ADMIN_EMAIL= /opt/ibatexas/.env | cut -d= -f2-)`
+  const pwVar = opts.password ? `PW=${JSON.stringify(opts.password)}` : `PW=$(grep -E ^MEDUSA_ADMIN_PASSWORD= /opt/ibatexas/.env | cut -d= -f2-)`
+  const cmd = [
+    emailVar, pwVar,
+    `[ -n "$EMAIL" ] && [ -n "$PW" ] || { echo "missing creds"; exit 1; }`,
+    `echo "email: $EMAIL"`,
+    `OUT=$(docker exec -e E="$EMAIL" -e P="$PW" ibatexas-commerce sh -c 'cd /app/apps/commerce && pnpm exec medusa user -e "$E" -p "$P"' 2>&1 || true)`,
+    `echo "$OUT" | tail -3`,
+    // Treat "already exists" as success — the command should be idempotent.
+    `echo "$OUT" | grep -qE 'already exists|created successfully' && exit 0 || { echo "$OUT"; exit 1; }`,
+  ].join("; ")
+  const spin = ora("medusa user").start()
+  const r = await runOnInstance(env, cmd, 180)
+  if (!r.ok) { spin.fail(chalk.red("create-admin failed")); console.error(r.output.slice(-2000)); process.exit(1) }
+  spin.succeed(chalk.green("admin user present"))
+  console.log(chalk.gray(r.output.slice(-800)))
 }
 
 async function runResume(opts: { env?: string; count?: string; only?: string }): Promise<void> {
@@ -1954,4 +2086,36 @@ export function registerInfraCommands(infra: Command) {
     .option("--count <n>", "Desired count per service", "1")
     .option("--only <services>", "Comma-separated services (default: all)")
     .action(runResume)
+
+  infra
+    .command("host:sync")
+    .description("Re-render compose.yml + ibatexas-deploy from templates and push to the live host (no EC2 replace)")
+    .option("--env <name>", "Environment name", "dev")
+    .action(runHostSync)
+
+  infra
+    .command("host:redeploy")
+    .description("Run /usr/local/bin/ibatexas-deploy on the live host via SSM (ECR pull + compose up)")
+    .option("--env <name>", "Environment name", "dev")
+    .action(runHostRedeploy)
+
+  infra
+    .command("medusa:migrate")
+    .description("Run `medusa db:migrate` inside the commerce container on the dev host")
+    .option("--env <name>", "Environment name", "dev")
+    .action(runMedusaMigrate)
+
+  infra
+    .command("medusa:seed")
+    .description("Run the Medusa seed script (categories + products) inside the commerce container")
+    .option("--env <name>", "Environment name", "dev")
+    .action(runMedusaSeed)
+
+  infra
+    .command("medusa:create-admin")
+    .description("Create the Medusa admin user (idempotent — uses SSM creds unless --email/--password given)")
+    .option("--env <name>", "Environment name", "dev")
+    .option("--email <email>", "Override email (defaults to MEDUSA_ADMIN_EMAIL from .env on the host)")
+    .option("--password <password>", "Override password (defaults to MEDUSA_ADMIN_PASSWORD from .env on the host)")
+    .action(runMedusaCreateAdmin)
 }

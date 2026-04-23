@@ -144,11 +144,33 @@ aws ecr get-login-password --region "$REGION" \
 echo "[deploy] refreshing secrets"
 /usr/local/bin/ibatexas-refresh-secrets
 
+# Clean up orphaned "<oldid>_<service>" containers from a previously
+# interrupted compose recreate. If one of those exists the next `up`
+# errors with "container name already in use" and leaves the stack
+# half-stopped, which is exactly how CD #24814704110 failed.
+echo "[deploy] sweeping stuck rename leftovers"
+for name in ibatexas-api ibatexas-web ibatexas-admin ibatexas-commerce; do
+  # Any container (running or stopped) using the service name but prefixed
+  # with a container-ID (pattern: <12-hex>_<name>) is a leftover.
+  docker ps -a --format '{{.ID}} {{.Names}}' \
+    | awk -v n="$name" '$2 ~ ("^[0-9a-f]{12}_"n"$") {print $1}' \
+    | xargs -r docker rm -f 2>/dev/null || true
+  # And stopped containers still holding the plain name (rename target was freed).
+  docker ps -a --filter "name=^/$name$" --filter status=exited --filter status=created --format '{{.ID}}' \
+    | xargs -r docker rm -f 2>/dev/null || true
+done
+
 echo "[deploy] pulling images"
 docker compose -f "$COMPOSE" pull
 
+# --pull always + --force-recreate guarantee :latest is actually applied even
+# when Docker thinks its local layer is already current (the flip side of
+# tag-based deploys is that "latest" can get sticky).
 echo "[deploy] starting services"
-docker compose -f "$COMPOSE" up -d --remove-orphans
+docker compose -f "$COMPOSE" up -d \
+  --remove-orphans \
+  --force-recreate \
+  --pull always
 
 echo "[deploy] pruning old images"
 docker image prune -f

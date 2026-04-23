@@ -67,6 +67,40 @@ ibx infra resume                    # start EC2 (~3-5 min warm-up)
 ibx infra deploy --watch            # push + wait for health
 ```
 
+### Patching the live host without replacing EC2
+
+Terraform bakes `compose.yml.tpl` and `user_data.sh.tpl` into EC2 user-data —
+changing them normally requires replacing the instance. For small fixes
+(env var, deploy-script tweak) push directly to the live host:
+
+```bash
+ibx infra host:sync --env dev          # re-render templates, upload via SSM
+ibx infra host:redeploy --env dev      # run /usr/local/bin/ibatexas-deploy (ECR pull + compose up)
+```
+
+The next `terraform apply` that replaces the instance will re-bake from the
+templates, so keep the templates and the live files in sync by always editing
+the template first and then running `host:sync`.
+
+### Medusa ops (on the dev host)
+
+Medusa's `db:migrate` hangs on GitHub-hosted runners (see
+[deploy-staging.yml](../../.github/workflows/deploy-staging.yml) comment
+around line 94). Until that's resolved, schema changes are a manual step:
+
+```bash
+ibx infra medusa:migrate --env dev          # medusa db:migrate inside the container
+ibx infra medusa:seed --env dev             # seed categories + products
+ibx infra medusa:create-admin --env dev     # idempotent — uses MEDUSA_ADMIN_* from .env
+```
+
+Admin login: `https://commerce.ibatexas.com.br/app` with the
+`MEDUSA_ADMIN_EMAIL` / `MEDUSA_ADMIN_PASSWORD` stored in SSM
+(`/ibatexas/dev/*`). After first login, create a Publishable API Key under
+**Settings → Publishable API Keys** and attach it to the default Sales
+Channel — the `medusaStore` client auto-resolves one on first call, so it
+usually just works.
+
 ### Secrets
 
 By default, `ibx infra secrets:*` writes to **SSM Parameter Store** for dev,
@@ -127,17 +161,25 @@ gh variable list
 ```
 Route53  ──►  Elastic IP  ──►  EC2 t4g.small (Spot, ARM)
                                     │
-                                    ├─ Caddy (80/443, auto Let's Encrypt)
-                                    ├─ web   :3000  (next.js storefront)
-                                    ├─ api   :3001  (fastify)
-                                    ├─ admin :3002  (next.js admin)
-                                    ├─ redis :6379
-                                    ├─ nats  :4222
+                                    ├─ Caddy    (80/443, auto Let's Encrypt)
+                                    ├─ web      :3000  (next.js storefront)
+                                    ├─ api      :3001  (fastify)
+                                    ├─ admin    :3002  (next.js admin)
+                                    ├─ commerce :9000  (Medusa v2)
+                                    ├─ redis    :6379
+                                    ├─ nats     :4222
                                     └─ typesense :8108
 ```
 
 All containers read `/opt/ibatexas/.env`, which is regenerated from SSM
 Parameter Store on each `ibatexas-deploy` run.
+
+> **Next.js and `HOSTNAME`:** `web` and `admin` must set `HOSTNAME=0.0.0.0`
+> in compose. Docker otherwise sets `HOSTNAME` to the container ID, which
+> makes the Next.js standalone server bind to the eth0 interface only —
+> Caddy-to-container traffic works, but the in-container healthcheck
+> (`wget localhost:3000/`) gets `ECONNREFUSED` and the container stays
+> unhealthy forever.
 
 ### CI/CD flow
 
@@ -186,6 +228,42 @@ docker logs ibatexas-caddy --tail 100
 ibx infra logs <service>           # tail 200 lines via SSM
 ibx infra status                   # EC2 + HTTPS checks
 ```
+
+### Deploy fails with "container name already in use"
+
+Symptom: `ibatexas-deploy` exits non-zero, GH Actions shows
+`The container name "/ibatexas-api" is already in use by container "<id>_ibatexas-api"`.
+
+Cause: a previous compose recreate was interrupted (OOM, SSM timeout, manual
+cancel). Compose's rename-then-recreate left a `<oldid>_<service>` leftover
+which now blocks the next `up`.
+
+Fix (automated — the hardened deploy script on the host already does this):
+
+```bash
+ibx infra host:redeploy --env dev   # sweeps leftovers, force-recreates, pulls always
+```
+
+If that's somehow not enough:
+
+```bash
+# SSM session into the host
+aws ssm start-session --target $(aws ec2 describe-instances \
+  --filters "Name=tag:Role,Values=ibatexas-dev-host" \
+  "Name=instance-state-name,Values=running" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)
+# then:
+docker rm -f ibatexas-api ibatexas-web ibatexas-admin ibatexas-commerce
+/usr/local/bin/ibatexas-deploy
+```
+
+### CD build fails with `node:22-alpine` Docker Hub 520
+
+The base image is pinned to `public.ecr.aws/docker/library/node:22-alpine`
+(AWS ECR Public mirror) to avoid Docker Hub rate limits / transient 520s.
+If you see the error, it's either a workflow that forgot to propagate the
+fix or a genuine ECR Public outage — re-run the workflow after 5 minutes
+before digging deeper.
 
 ### Spot interruption
 

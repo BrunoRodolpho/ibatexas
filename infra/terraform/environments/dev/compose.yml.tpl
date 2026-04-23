@@ -63,6 +63,12 @@ services:
       NODE_ENV: production
       APP_ENV: dev
       PORT: "3000"
+      # Next.js standalone reads HOSTNAME to pick the bind address. Docker sets
+      # HOSTNAME to the container ID by default, which makes the server bind to
+      # eth0 only (reachable from Caddy, NOT from `localhost` in the same
+      # container), so the in-container healthcheck `wget localhost:3000/` gets
+      # ECONNREFUSED and the container goes unhealthy.
+      HOSTNAME: "0.0.0.0"
     networks: [ibatexas]
     deploy:
       resources:
@@ -78,6 +84,7 @@ services:
       NODE_ENV: production
       APP_ENV: dev
       PORT: "3002"
+      HOSTNAME: "0.0.0.0"
     networks: [ibatexas]
     deploy:
       resources:

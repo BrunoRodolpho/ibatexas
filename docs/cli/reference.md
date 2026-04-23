@@ -502,6 +502,16 @@ ibx infra deploy --target main         # push to main (production)
 ibx infra deploy --watch               # push + poll status + health check
 ibx infra deploy --watch --timeout 20m # custom timeout for first deploy
 ibx infra destroy                      # ⚠  destroy all infrastructure (requires typing env name)
+
+# Live-host operations (patch EC2 without terraform replace)
+ibx infra host:sync                    # re-render compose + deploy script from templates, upload via SSM
+ibx infra host:redeploy                # run /usr/local/bin/ibatexas-deploy on the host (ECR pull + compose up)
+
+# Remote Medusa ops (run inside the commerce container on the dev host)
+ibx infra medusa:migrate               # medusa db:migrate (workaround for CI-hang)
+ibx infra medusa:seed                  # seed categories + products
+ibx infra medusa:create-admin          # idempotent — uses MEDUSA_ADMIN_* from /opt/ibatexas/.env
+ibx infra medusa:create-admin --email user@example.com --password <pw>  # override creds
 ```
 
 `ibx infra init` creates the S3 bucket for Terraform state and DynamoDB table for state locking.

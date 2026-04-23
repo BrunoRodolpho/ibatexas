@@ -2,7 +2,7 @@
 # Build from repo root: docker build -f apps/web/Dockerfile .
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────
-FROM node:22-alpine AS build
+FROM public.ecr.aws/docker/library/node:22-alpine AS build
 
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
 
@@ -44,7 +44,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @ibatexas/web... run build
 
 # ── Stage 2: production ─────────────────────────────────────────────────────
-FROM node:22-alpine AS production
+FROM public.ecr.aws/docker/library/node:22-alpine AS production
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

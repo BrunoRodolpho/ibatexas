@@ -12,7 +12,7 @@
 # constraint is memory, not disk.
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────
-FROM node:22-alpine AS build
+FROM public.ecr.aws/docker/library/node:22-alpine AS build
 
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
 
@@ -39,7 +39,7 @@ RUN pnpm --filter @ibatexas/tools... run build \
  && pnpm exec medusa build
 
 # ── Stage 2: production ─────────────────────────────────────────────────────
-FROM node:22-alpine AS production
+FROM public.ecr.aws/docker/library/node:22-alpine AS production
 
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
 
