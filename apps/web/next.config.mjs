@@ -42,8 +42,13 @@ const nextConfig = {
             key: "Content-Security-Policy",
             value: [
               "default-src 'self'",
-              // unsafe-eval only needed in dev for Next.js hot-reload
-              `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""} ${posthogHost} https://*.posthog.com https://js.stripe.com`,
+              // 'unsafe-eval' is required in both dev AND prod under Next.js 16:
+              // the Turbopack runtime (turbopack-*.js chunk in .next/static/chunks/)
+              // uses eval() to instantiate modules — same pattern as dev HMR. Opting
+              // out would mean building with --webpack, which is ~3x slower. The eval
+              // target is Turbopack's own module registry, not user input, so this
+              // doesn't expose a meaningful injection surface.
+              `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${posthogHost} https://*.posthog.com https://js.stripe.com`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com https://*.cloudinary.com https://qr.stripe.com",
               `connect-src 'self' ${posthogHost} https://*.posthog.com ${apiUrl}${isDev ? ' http://*:3001' : ''} https://api.stripe.com`,
