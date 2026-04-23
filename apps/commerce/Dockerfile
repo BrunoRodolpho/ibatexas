@@ -26,10 +26,11 @@ COPY packages/ packages/
 # Install all dependencies (need devDeps: @medusajs/cli, typescript, ts-node)
 RUN pnpm install --frozen-lockfile
 
-# Copy commerce source + config + static assets used by seed
+# Copy commerce source + config. Note: apps/commerce/static/ is gitignored
+# (it's a runtime-upload dir for Medusa's admin file uploads), so we don't
+# copy it here. We re-create an empty static/ at runtime below.
 COPY apps/commerce/src apps/commerce/src
 COPY apps/commerce/medusa-config.ts apps/commerce/
-COPY apps/commerce/static apps/commerce/static
 
 # Build workspace deps first (tools/types/nats-client), then Medusa itself.
 # `medusa build` outputs to apps/commerce/.medusa/server/.
@@ -58,7 +59,10 @@ RUN pnpm install --frozen-lockfile
 # Compiled Medusa server + admin SPA
 COPY --from=build /app/apps/commerce/.medusa apps/commerce/.medusa
 COPY --from=build /app/apps/commerce/medusa-config.ts apps/commerce/medusa-config.ts
-COPY --from=build /app/apps/commerce/static apps/commerce/static
+
+# Create empty static/ — Medusa's file-upload provider writes uploads here
+# at runtime; must exist (and be writable by appuser, handled below).
+RUN mkdir -p apps/commerce/static
 
 # Workspace package builds used by seed.ts (nats-client, tools, types)
 COPY --from=build /app/packages/tools/dist packages/tools/dist
