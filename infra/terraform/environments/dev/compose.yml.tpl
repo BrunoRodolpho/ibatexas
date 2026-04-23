@@ -67,7 +67,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 192M
 
   admin:
     image: ${account_id}.dkr.ecr.${region}.amazonaws.com/ibatexas-admin:latest
@@ -82,7 +82,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 192M
 
   commerce:
     image: ${account_id}.dkr.ecr.${region}.amazonaws.com/ibatexas-commerce:latest
@@ -97,13 +97,16 @@ services:
       # Splitting into `server` + `worker` is a future optimization when we
       # need to scale background jobs independently.
       MEDUSA_WORKER_MODE: shared
+      # Cap Node heap to just under the cgroup limit so V8 GCs aggressively
+      # instead of OOMing at boot when Medusa loads all modules.
+      NODE_OPTIONS: "--max-old-space-size=450"
     depends_on:
       - redis
     networks: [ibatexas]
     deploy:
       resources:
         limits:
-          memory: 384M
+          memory: 512M
 
   redis:
     image: redis:7-alpine
@@ -150,7 +153,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 384M
+          memory: 256M
 
 networks:
   ibatexas:
