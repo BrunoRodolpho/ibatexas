@@ -91,39 +91,13 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.STAGING_DIRECT_DATABASE_URL }}
 
-  # ---------------------------------------------------------------------------
-  # 2b. Run Medusa migrations against the dev DB (Supabase session pooler)
-  #     Uses STAGING_DIRECT_DATABASE_URL (port 5432 session mode) because
-  #     Medusa, like Prisma, relies on advisory locks that PgBouncer's
-  #     transaction mode doesn't support.
-  # ---------------------------------------------------------------------------
-  migrate-medusa:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Run Medusa migrations
-        run: pnpm --filter @ibatexas/commerce exec medusa db:migrate
-        env:
-          DATABASE_URL: ${{ secrets.STAGING_DIRECT_DATABASE_URL }}
-          # medusa-config.ts loads all of these at boot — db:migrate inherits
-          # the same config path, so placeholders must be non-empty.
-          JWT_SECRET: ci-migration-placeholder
-          COOKIE_SECRET: ci-migration-placeholder
-          STORE_CORS: http://localhost
-          ADMIN_CORS: http://localhost
-          AUTH_CORS: http://localhost
-          REDIS_URL: redis://localhost:6379
-          MEDUSA_WORKER_MODE: shared
-          STRIPE_SECRET_KEY: sk_test_ci_migration_placeholder
+  # Note: Medusa migrations are run manually from a workstation when schema
+  # changes land. `medusa db:migrate` hangs indefinitely in GitHub-hosted
+  # runners (observed 5+ min with no tables created) — hypothesis is DNS or
+  # network quirks between the runner and the Supabase pooler. Running the
+  # same command from a laptop with the same STAGING_DIRECT_DATABASE_URL
+  # completes in ~15s. Until we figure out the CI-specific difference, the
+  # explicit manual step is the contract.
 
   # ---------------------------------------------------------------------------
   # 3. Deploy to the dev EC2 host via SSM Run Command
@@ -131,7 +105,7 @@ jobs:
   #    pull && up -d` on the single-VM dev stack.
   # ---------------------------------------------------------------------------
   deploy:
-    needs: [build, migrate, migrate-medusa]
+    needs: [build, migrate]
     runs-on: ubuntu-latest
     steps:
       - uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4
