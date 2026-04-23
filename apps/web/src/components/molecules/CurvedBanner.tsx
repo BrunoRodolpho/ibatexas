@@ -19,6 +19,7 @@ const REPEAT_COUNT = 40
  */
 export function CurvedBanner({ text }: CurvedBannerProps) {
   const textPathRef = useRef<SVGTextPathElement>(null)
+  const measureRef = useRef<SVGTextElement>(null)
   const [prefersReduced, setPrefersReduced] = useState(false)
 
   useEffect(() => {
@@ -32,24 +33,27 @@ export function CurvedBanner({ text }: CurvedBannerProps) {
   useEffect(() => {
     if (prefersReduced) return
     const el = textPathRef.current
-    if (!el) return
+    const measureEl = measureRef.current
+    if (!el || !measureEl) return
 
     const svg = el.ownerSVGElement
     const pathEl = svg?.querySelector('#banner-curve') as SVGPathElement | null
-    const textEl = el.parentElement as SVGTextElement | null
-    if (!pathEl || !textEl) return
+    if (!pathEl) return
 
     let wrapPct = 0
     let offset = 0
     let raf = 0
 
-    // Wrap point = one text repetition as % of path length. All 40 reps are
-    // identical, so resetting at this exact value is visually seamless.
+    // Wrap point = one text repetition as % of path length. Measured from a
+    // flat hidden <text> (not the animated textPath): iOS Safari's
+    // getComputedTextLength() on a textPath-wrapping <text> drifts from the
+    // actual per-glyph advance, and dividing a 40-rep total by 40 compounds
+    // that drift into a visible snap at every loop.
     const recompute = () => {
       const pathLen = pathEl.getTotalLength()
-      const textLen = textEl.getComputedTextLength()
-      if (!pathLen || !textLen) return
-      wrapPct = (textLen / REPEAT_COUNT / pathLen) * 100
+      const repLen = measureEl.getComputedTextLength()
+      if (!pathLen || !repLen) return
+      wrapPct = (repLen / pathLen) * 100
       // If the new wrap is tighter than the current offset (e.g. webfont just
       // loaded and the advance width shrank), fold offset into the new cycle
       // so the next reset doesn't snap visibly.
@@ -59,8 +63,11 @@ export function CurvedBanner({ text }: CurvedBannerProps) {
     recompute()
     // Playfair italic usually resolves after mount on mobile — the initial
     // measurement is against the fallback serif, giving a wrong wrapPct and
-    // causing a visible jump at the reset point. Remeasure once fonts settle.
+    // causing a visible jump at the reset point. Remeasure once fonts settle,
+    // and once more after layout (iOS sometimes resolves fonts.ready before
+    // the text element reports a final length).
     void document.fonts?.ready?.then(recompute).catch(() => {})
+    const lateRecompute = globalThis.setTimeout(recompute, 500)
     globalThis.addEventListener('resize', recompute)
 
     const animate = () => {
@@ -75,6 +82,7 @@ export function CurvedBanner({ text }: CurvedBannerProps) {
 
     return () => {
       cancelAnimationFrame(raf)
+      globalThis.clearTimeout(lateRecompute)
       globalThis.removeEventListener('resize', recompute)
     }
   }, [prefersReduced])
@@ -90,6 +98,21 @@ export function CurvedBanner({ text }: CurvedBannerProps) {
         aria-hidden="true"
       >
         <path id="banner-curve" fill="transparent" d={WAVE_CURVE} />
+        {/* Hidden one-rep measurement — same font config as the animated
+            text so its measured length equals the exact wrap period. */}
+        <text
+          ref={measureRef}
+          x="0"
+          y="0"
+          fontSize="24"
+          fontStyle="italic"
+          fontWeight="400"
+          letterSpacing="0.08em"
+          style={{ fontFamily: 'var(--font-playfair), Georgia, serif', visibility: 'hidden' }}
+          aria-hidden="true"
+        >
+          {text + SEPARATOR}
+        </text>
         <text
           fill="var(--color-brand-500, #E85D04)"
           fillOpacity="0.6"
