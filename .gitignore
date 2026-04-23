@@ -49,6 +49,12 @@ pnpm-debug.log*
 .ibx-dev.pids
 .ibx/
 
+# Next.js auto-generated type refs — rewrites between `.next/dev/types`
+# (from `next dev`) and `.next/types` (from `next build`) so tracking
+# them just produces churn. Header in the file itself says "should not
+# be edited".
+apps/*/next-env.d.ts
+
 # Medusa auto-generated types
 apps/commerce/.medusa/types/query-entry-points.d.ts
 

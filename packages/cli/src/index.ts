@@ -32,7 +32,11 @@ import { registerDlqCommands } from "./commands/dlq.js"
 import { registerOrdersCommands } from "./commands/orders.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
-// Load CLI-specific config first, then root config (root config takes priority)
+// Env precedence: shell > root .env > cli .env. dotenv semantics: each
+// loadEnv() only fills in variables that aren't already set, so the shell
+// always wins — critical for prod overrides like
+// `DATABASE_URL=... ibx auth create-staff` pointing at Supabase instead of
+// the local docker-compose URL in .env.
 // index.ts lives at packages/cli/src/ → parent is packages/cli/
 // dist/index.js lives at packages/cli/dist/ → parent is packages/cli/
 // Use realpathSync to resolve npm link symlinks — otherwise ROOT points to
@@ -40,8 +44,8 @@ import { registerOrdersCommands } from "./commands/orders.js"
 const __filename = fs.realpathSync(fileURLToPath(import.meta.url))
 const CLI_DIR = path.resolve(path.dirname(__filename), "..")
 const ROOT = path.resolve(CLI_DIR, "../../")
+loadEnv({ path: path.join(ROOT, ".env"), override: false })
 loadEnv({ path: path.join(CLI_DIR, ".env"), override: false })
-loadEnv({ path: path.join(ROOT, ".env"), override: true })
 
 // ── Custom help formatter ─────────────────────────────────────────────────────
 
