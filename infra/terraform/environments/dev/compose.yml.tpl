@@ -24,6 +24,7 @@ services:
       - web
       - api
       - admin
+      - commerce
     networks: [ibatexas]
 
   api:
@@ -66,7 +67,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 384M
+          memory: 256M
 
   admin:
     image: ${account_id}.dkr.ecr.${region}.amazonaws.com/ibatexas-admin:latest
@@ -81,7 +82,28 @@ services:
     deploy:
       resources:
         limits:
-          memory: 320M
+          memory: 256M
+
+  commerce:
+    image: ${account_id}.dkr.ecr.${region}.amazonaws.com/ibatexas-commerce:latest
+    container_name: ibatexas-commerce
+    restart: unless-stopped
+    env_file: /opt/ibatexas/.env
+    environment:
+      NODE_ENV: production
+      APP_ENV: dev
+      PORT: "9000"
+      # shared = single process handles both HTTP and background workers.
+      # Splitting into `server` + `worker` is a future optimization when we
+      # need to scale background jobs independently.
+      MEDUSA_WORKER_MODE: shared
+    depends_on:
+      - redis
+    networks: [ibatexas]
+    deploy:
+      resources:
+        limits:
+          memory: 384M
 
   redis:
     image: redis:7-alpine

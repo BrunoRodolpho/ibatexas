@@ -100,14 +100,25 @@ done
   echo "DOMAIN=${domain}"
   echo "NEXT_PUBLIC_API_URL=https://api.${domain}"
   echo "NEXT_PUBLIC_APP_URL=https://${domain}"
-  echo "NEXT_PUBLIC_MEDUSA_BACKEND_URL=https://api.${domain}"
-  echo "MEDUSA_BACKEND_URL=https://api.${domain}"
-  echo "MEDUSA_URL=https://api.${domain}"
+  # Medusa v2 runs as its own service at commerce.<domain>. Previously these
+  # pointed at api.<domain>, which looped back into the Fastify API and
+  # produced 502s on /api/admin/products + cart routes.
+  echo "NEXT_PUBLIC_MEDUSA_BACKEND_URL=https://commerce.${domain}"
+  echo "MEDUSA_BACKEND_URL=https://commerce.${domain}"
+  echo "MEDUSA_URL=https://commerce.${domain}"
   echo "APP_BASE_URL=https://${domain}"
   echo "WEB_URL=https://${domain}"
-  # CORS_ORIGIN must include every browser origin that calls the API with
-  # credentials. Web and admin are both separate subdomains from the API.
+  # CORS_ORIGIN must include every browser origin that calls the Fastify API
+  # with credentials (web + admin subdomains).
   echo "CORS_ORIGIN=https://${domain},https://admin.${domain}"
+  # Medusa's own CORS allowlists — split by surface so cookie auth works.
+  # Medusa admin UI at commerce.<domain>/app calls its own origin, hence
+  # commerce.<domain> in ADMIN_CORS + AUTH_CORS.
+  echo "STORE_CORS=https://${domain}"
+  echo "ADMIN_CORS=https://commerce.${domain}"
+  echo "AUTH_CORS=https://${domain},https://commerce.${domain},https://admin.${domain}"
+  # shared = single-process HTTP + worker. Consumed by medusa-config.ts.
+  echo "MEDUSA_WORKER_MODE=shared"
   echo "APP_ENV=${environment}"
 } >> "$ENV_FILE.new"
 

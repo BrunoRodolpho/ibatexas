@@ -25,3 +25,9 @@ admin.{$DOMAIN} {
 	encode zstd gzip
 	reverse_proxy admin:3002
 }
+
+# commerce.<domain> → Medusa v2 backend (store/admin APIs + /app dashboard)
+commerce.{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy commerce:9000
+}
