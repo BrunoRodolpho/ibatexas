@@ -1089,7 +1089,7 @@ async function runSecretsPush(opts: { file?: string; env?: string; force?: boole
 
 // ── Subcommand: github ────────────────────────────────────────────────────────
 
-async function runGithub() {
+async function runGithub(opts: { force?: boolean } = {}) {
   const { execa } = await import("execa")
   const { confirm, password } = await import("@inquirer/prompts")
   const env = getEnvironment()
@@ -1114,6 +1114,35 @@ async function runGithub() {
   const proceed = await confirm({ message: `Setting secrets for: ${chalk.bold(repo)} — Continue?`, default: true })
   if (!proceed) { console.log(chalk.gray("    Cancelled")); return }
 
+  // Fetch existing secrets/variables so re-runs don't re-prompt for values
+  // already present on the repo. Pass --force to re-sync every key.
+  const existingSecrets = new Set<string>()
+  const existingVariables = new Set<string>()
+  try {
+    const { stdout } = await execa("gh", ["secret", "list", "--json", "name"])
+    for (const s of JSON.parse(stdout) as Array<{ name: string }>) existingSecrets.add(s.name)
+  } catch { /* fall through — treat all as missing */ }
+  try {
+    const { stdout } = await execa("gh", ["variable", "list", "--json", "name"])
+    for (const v of JSON.parse(stdout) as Array<{ name: string }>) existingVariables.add(v.name)
+  } catch { /* fall through */ }
+
+  // Local lookup order: .env (dev source of truth) → infra/secrets.env (SSM
+  // snapshot, populated by `ibx infra secrets:export`). Both are optional.
+  const envPath = path.resolve(ROOT, ".env")
+  const secretsEnvPath = path.resolve(ROOT, "infra/secrets.env")
+  const dotenv = await import("dotenv")
+  const fromDotEnv: Record<string, string> = fs.existsSync(envPath)
+    ? dotenv.parse(fs.readFileSync(envPath, "utf-8"))
+    : {}
+  const fromSecretsEnv: Record<string, string> = fs.existsSync(secretsEnvPath)
+    ? dotenv.parse(fs.readFileSync(secretsEnvPath, "utf-8"))
+    : {}
+  const resolveLocal = (name: string): string | undefined => {
+    const v = fromDotEnv[name]?.trim() || fromSecretsEnv[name]?.trim()
+    return v || undefined
+  }
+
   // [2] Get deploy role ARN from terraform output
   step(++stepNum, TOTAL, "Reading Terraform outputs…")
   const outputs = await terraformOutput(env)
@@ -1122,6 +1151,9 @@ async function runGithub() {
   // [3] Set core secrets (deploy role + database URLs + optional sonar)
   step(++stepNum, TOTAL, "Setting GitHub secrets…")
 
+  // AWS_DEPLOY_ROLE_ARN always refreshes from terraform (it's the source of
+  // truth and can rotate on infra changes). Still honor --force-skip via
+  // existingSecrets check only when terraform output is missing.
   if (roleArn) {
     const spinner = ora({ text: "AWS_DEPLOY_ROLE_ARN", indent: 4 }).start()
     try {
@@ -1130,23 +1162,36 @@ async function runGithub() {
     } catch {
       spinner.fail(chalk.red("AWS_DEPLOY_ROLE_ARN — failed to set"))
     }
-  } else {
+  } else if (!existingSecrets.has("AWS_DEPLOY_ROLE_ARN")) {
     console.log(chalk.yellow("    ⚠ AWS_DEPLOY_ROLE_ARN unavailable — terraform outputs not found"))
     console.log(chalk.gray("      Set manually: gh secret set AWS_DEPLOY_ROLE_ARN"))
+  } else {
+    console.log(chalk.gray("    ✓ AWS_DEPLOY_ROLE_ARN (already set, terraform output missing)"))
   }
 
   for (const name of ["DIRECT_DATABASE_URL", "STAGING_DIRECT_DATABASE_URL", "SONAR_TOKEN"]) {
     const isOptional = name === "SONAR_TOKEN"
-    let value: string
-    try {
-      value = await password({
-        message: `${name}${isOptional ? " (optional, press Enter to skip)" : ""}:`,
-      })
-    } catch {
-      break
+
+    if (existingSecrets.has(name) && !opts.force) {
+      console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
+      continue
     }
 
-    if (!value.trim()) {
+    // Try local files first; only prompt if truly unknown
+    let value = resolveLocal(name)
+    let source: "local" | "prompt" = "local"
+    if (!value) {
+      source = "prompt"
+      try {
+        value = (await password({
+          message: `${name}${isOptional ? " (optional, press Enter to skip)" : ""}:`,
+        })).trim() || undefined
+      } catch {
+        break
+      }
+    }
+
+    if (!value) {
       if (isOptional) {
         console.log(chalk.gray(`    ○ ${name} (skipped)`))
       } else {
@@ -1158,31 +1203,29 @@ async function runGithub() {
     const spinner = ora({ text: name, indent: 4 }).start()
     try {
       await execa("gh", ["secret", "set", name, "--body", value])
-      spinner.succeed(chalk.green(name))
+      spinner.succeed(chalk.green(source === "local" ? `${name} (from local)` : name))
     } catch {
       spinner.fail(chalk.red(`${name} — failed to set`))
     }
   }
 
-  // [4] Set NEXT_PUBLIC_* build-arg secrets + variables, preferring .env values
+  // [4] Set NEXT_PUBLIC_* build-arg secrets + variables, preferring local files
   step(++stepNum, TOTAL, "Setting build-arg secrets and variables…")
 
-  const envPath = path.resolve(ROOT, ".env")
-  const localEnv: Record<string, string> = fs.existsSync(envPath)
-    ? (await import("dotenv")).parse(fs.readFileSync(envPath, "utf-8"))
-    : {}
-  if (!fs.existsSync(envPath)) {
-    console.log(chalk.gray("    .env not found — will prompt for each value"))
-  }
-
   for (const name of BUILD_ARG_SECRETS) {
-    const fromEnv = localEnv[name]?.trim()
-    let value = fromEnv
+    if (existingSecrets.has(name) && !opts.force) {
+      console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
+      continue
+    }
+
+    let value = resolveLocal(name)
+    let source: "local" | "prompt" = "local"
     if (!value) {
+      source = "prompt"
       try {
         value = (await password({
-          message: `${name} (not in .env, press Enter to skip — feature disabled in build):`,
-        })).trim()
+          message: `${name} (not found locally, press Enter to skip — feature disabled in build):`,
+        })).trim() || undefined
       } catch {
         break
       }
@@ -1194,25 +1237,196 @@ async function runGithub() {
     const spinner = ora({ text: name, indent: 4 }).start()
     try {
       await execa("gh", ["secret", "set", name, "--body", value])
-      spinner.succeed(chalk.green(fromEnv ? `${name} (from .env)` : name))
+      spinner.succeed(chalk.green(source === "local" ? `${name} (from local)` : name))
     } catch {
       spinner.fail(chalk.red(`${name} — failed to set`))
     }
   }
 
   for (const [name, defaultValue] of Object.entries(BUILD_ARG_VARIABLES)) {
-    const fromEnv = localEnv[name]?.trim()
-    const value = fromEnv || defaultValue
+    if (existingVariables.has(name) && !opts.force) {
+      console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
+      continue
+    }
+    const fromLocal = resolveLocal(name)
+    const value = fromLocal || defaultValue
     const spinner = ora({ text: name, indent: 4 }).start()
     try {
       await execa("gh", ["variable", "set", name, "--body", value])
-      spinner.succeed(chalk.green(`${name} (${fromEnv ? "from .env" : "default"})`))
+      spinner.succeed(chalk.green(`${name} (${fromLocal ? "from local" : "default"})`))
     } catch {
       spinner.fail(chalk.red(`${name} — failed to set`))
     }
   }
 
   console.log(chalk.green.bold("\n  ✅  GitHub secrets configured!\n"))
+}
+
+// ── Subcommand: secrets:audit ─────────────────────────────────────────────────
+// Cross-check every store (AWS SSM / GitHub Secrets / GitHub Variables) against
+// the expected key sets, reading local .env + infra/secrets.env to flag which
+// gaps can be auto-fixed. `--fix` pushes locally-available values; anything
+// missing everywhere is reported for manual input.
+
+interface AuditRow {
+  readonly key: string
+  readonly store: "SSM" | "GH Secret" | "GH Variable"
+  readonly present: boolean
+  readonly optional: boolean
+  readonly localAvailable: boolean
+}
+
+async function runSecretsAudit(opts: { env?: string; fix?: boolean; json?: boolean }) {
+  const { execa } = await import("execa")
+  const env = opts.env ?? getEnvironment()
+
+  if (!opts.json) {
+    console.log(chalk.bold.blue("\n  🔍  Secrets Audit\n"))
+    envBanner(env)
+  }
+
+  // Query all three stores in parallel. Failures degrade to "empty set" so a
+  // missing `gh` auth or offline SSM still produces a readable report.
+  const [ssmRes, ghSecretsRes, ghVarsRes] = await Promise.all([
+    awsCommand([
+      "ssm", "get-parameters-by-path",
+      "--path", `/${SECRET_PATH_PREFIX}/${env}/`,
+      "--region", DEFAULT_REGION,
+      "--query", "Parameters[].Name",
+      "--output", "json",
+    ]),
+    execa("gh", ["secret", "list", "--json", "name"]).catch(() => ({ stdout: "[]" })),
+    execa("gh", ["variable", "list", "--json", "name"]).catch(() => ({ stdout: "[]" })),
+  ])
+
+  const ssmKeys = new Set<string>()
+  if (ssmRes.exitCode === 0) {
+    try {
+      const names = JSON.parse(ssmRes.stdout) as string[]
+      const prefix = `/${SECRET_PATH_PREFIX}/${env}/`
+      for (const full of names) ssmKeys.add(full.startsWith(prefix) ? full.slice(prefix.length) : full)
+    } catch { /* swallow — treat as empty */ }
+  }
+
+  const ghSecrets = new Set<string>()
+  try {
+    for (const s of JSON.parse(ghSecretsRes.stdout) as Array<{ name: string }>) ghSecrets.add(s.name)
+  } catch { /* swallow */ }
+
+  const ghVars = new Set<string>()
+  try {
+    for (const v of JSON.parse(ghVarsRes.stdout) as Array<{ name: string }>) ghVars.add(v.name)
+  } catch { /* swallow */ }
+
+  // Local lookup: .env (dev source of truth) → infra/secrets.env (SSM snapshot)
+  const envPath = path.resolve(ROOT, ".env")
+  const secretsEnvPath = path.resolve(ROOT, "infra/secrets.env")
+  const dotenv = await import("dotenv")
+  const fromDotEnv: Record<string, string> = fs.existsSync(envPath)
+    ? dotenv.parse(fs.readFileSync(envPath, "utf-8"))
+    : {}
+  const fromSecretsEnv: Record<string, string> = fs.existsSync(secretsEnvPath)
+    ? dotenv.parse(fs.readFileSync(secretsEnvPath, "utf-8"))
+    : {}
+  const resolveLocal = (k: string): string | undefined =>
+    (fromDotEnv[k]?.trim() || fromSecretsEnv[k]?.trim()) || undefined
+
+  // Expected sets — ground truth lives at the top of this file.
+  const ghSecretExpected: Array<[string, boolean]> = [
+    ["AWS_DEPLOY_ROLE_ARN", false],
+    ["DIRECT_DATABASE_URL", false],
+    ["STAGING_DIRECT_DATABASE_URL", false],
+    ["SONAR_TOKEN", true],
+    ...BUILD_ARG_SECRETS.map((k) => [k, true] as [string, boolean]),
+  ]
+
+  const rows: AuditRow[] = []
+  for (const k of MANUAL_SECRETS) {
+    rows.push({ key: k, store: "SSM", present: ssmKeys.has(k), optional: false, localAvailable: !!resolveLocal(k) })
+  }
+  for (const [k, optional] of ghSecretExpected) {
+    rows.push({ key: k, store: "GH Secret", present: ghSecrets.has(k), optional, localAvailable: !!resolveLocal(k) })
+  }
+  for (const k of Object.keys(BUILD_ARG_VARIABLES)) {
+    rows.push({ key: k, store: "GH Variable", present: ghVars.has(k), optional: false, localAvailable: !!resolveLocal(k) })
+  }
+
+  if (opts.json) {
+    console.log(JSON.stringify({ env, rows }, null, 2))
+    return
+  }
+
+  // Group by store for output
+  for (const store of ["SSM", "GH Secret", "GH Variable"] as const) {
+    const storeRows = rows.filter((r) => r.store === store)
+    console.log(chalk.bold(`\n  ${store}`))
+    for (const r of storeRows) {
+      const icon = r.present
+        ? chalk.green("✓")
+        : r.optional
+          ? chalk.gray("○")
+          : chalk.red("✗")
+      const hint = !r.present && r.localAvailable ? chalk.cyan(" (local available)") : ""
+      const opt = r.optional && !r.present ? chalk.gray(" optional") : ""
+      console.log(`    ${icon}  ${r.key}${hint}${opt}`)
+    }
+  }
+
+  const required = rows.filter((r) => !r.optional)
+  const missing = required.filter((r) => !r.present)
+  const fixable = missing.filter((r) => r.localAvailable)
+  const manual = missing.filter((r) => !r.localAvailable)
+
+  console.log("")
+  if (missing.length === 0) {
+    console.log(chalk.green.bold("  ✅  All required keys are present across every store.\n"))
+    return
+  }
+
+  console.log(
+    chalk.bold(
+      `  Summary: ${chalk.red(`${missing.length} missing`)} · ${chalk.cyan(`${fixable.length} fixable from local`)} · ${chalk.yellow(`${manual.length} need manual input`)}\n`,
+    ),
+  )
+
+  if (opts.fix && fixable.length > 0) {
+    console.log(chalk.bold.blue("  🔧  Applying fixes…\n"))
+    for (const r of fixable) {
+      const value = resolveLocal(r.key)!
+      const spinner = ora({ text: `${r.store}: ${r.key}`, indent: 4 }).start()
+      try {
+        if (r.store === "SSM") {
+          const res = await awsCommand([
+            "ssm", "put-parameter",
+            "--name", ssmParamPath(env, r.key),
+            "--value", value,
+            "--type", "SecureString",
+            "--overwrite",
+            "--region", DEFAULT_REGION,
+          ])
+          if (res.exitCode !== 0) throw new Error(`aws put-parameter exited ${res.exitCode}`)
+        } else if (r.store === "GH Secret") {
+          await execa("gh", ["secret", "set", r.key, "--body", value])
+        } else {
+          await execa("gh", ["variable", "set", r.key, "--body", value])
+        }
+        spinner.succeed(chalk.green(`${r.store}: ${r.key} (from local)`))
+      } catch (err) {
+        spinner.fail(chalk.red(`${r.store}: ${r.key} — ${(err as Error).message}`))
+      }
+    }
+    console.log("")
+  } else if (fixable.length > 0) {
+    console.log(chalk.gray(`  Re-run with --fix to auto-push ${fixable.length} key(s) available locally.\n`))
+  }
+
+  if (manual.length > 0) {
+    console.log(chalk.yellow.bold("  ⚠  Missing everywhere (no local value to auto-populate):\n"))
+    for (const r of manual) {
+      console.log(chalk.yellow(`    • ${r.store}: ${r.key}`))
+    }
+    console.log("")
+  }
 }
 
 // ── Subcommand: status ────────────────────────────────────────────────────────
@@ -1670,8 +1884,17 @@ export function registerInfraCommands(infra: Command) {
 
   infra
     .command("github")
-    .description("Set GitHub repo secrets for CI/CD (detects repo)")
+    .description("Set GitHub repo secrets for CI/CD (detects repo; skips keys already set)")
+    .option("--force", "Re-sync every key, even if already present on GitHub")
     .action(runGithub)
+
+  infra
+    .command("secrets:audit")
+    .description("Cross-check AWS SSM / GitHub / local .env; report gaps")
+    .option("--env <name>", "Environment name")
+    .option("--fix", "Auto-push missing keys that are available locally")
+    .option("--json", "Output machine-readable JSON")
+    .action(runSecretsAudit)
 
   infra
     .command("status")

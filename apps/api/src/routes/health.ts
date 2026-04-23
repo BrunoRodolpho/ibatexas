@@ -68,9 +68,15 @@ async function checkNats(): Promise<CheckResult> {
 
 async function checkTypesense(): Promise<CheckResult> {
   return withTimeout(async () => {
-    const host = process.env.TYPESENSE_HOST || "http://localhost:8108";
+    // Match packages/tools/src/typesense/client.ts: TYPESENSE_HOST is a bare
+    // hostname, protocol/port are separate env vars. The old fallback was a
+    // full URL, which silently broke once the compose wired in the correct
+    // hostname-only form.
+    const host = process.env.TYPESENSE_HOST || "localhost";
+    const port = process.env.TYPESENSE_PORT || "8108";
+    const protocol = process.env.TYPESENSE_PROTOCOL || "http";
     const apiKey = process.env.TYPESENSE_API_KEY || "";
-    const res = await fetch(`${host}/health`, {
+    const res = await fetch(`${protocol}://${host}:${port}/health`, {
       headers: { "X-TYPESENSE-API-KEY": apiKey },
       signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
     });

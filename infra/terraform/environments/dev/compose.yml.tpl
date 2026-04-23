@@ -37,7 +37,12 @@ services:
       PORT: "3001"
       TRUST_PROXY: "true"
       RESTAURANT_TIMEZONE: America/Sao_Paulo
-      TYPESENSE_HOST: http://typesense:8108
+      # typesense-js expects a bare hostname here (protocol + port are separate
+      # fields on the client). Passing a full URL makes DNS try to resolve
+      # "http" as a host — see packages/tools/src/typesense/client.ts.
+      TYPESENSE_HOST: typesense
+      TYPESENSE_PORT: "8108"
+      TYPESENSE_PROTOCOL: http
     depends_on:
       - redis
       - nats
