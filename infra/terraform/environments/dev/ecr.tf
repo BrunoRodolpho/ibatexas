@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 
 locals {
-  ecr_repos = ["ibatexas-api", "ibatexas-web", "ibatexas-admin"]
+  ecr_repos = ["ibatexas-api", "ibatexas-web", "ibatexas-admin", "ibatexas-commerce"]
 }
 
 resource "aws_ecr_repository" "this" {

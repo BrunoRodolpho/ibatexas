@@ -13,6 +13,7 @@ locals {
   # secret here, also update `ibx infra secrets:*` and the app config.
   secret_names = [
     "JWT_SECRET",
+    "COOKIE_SECRET",
     "DATABASE_URL",
     "SENTRY_DSN",
     "ANTHROPIC_API_KEY",

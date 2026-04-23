@@ -50,3 +50,12 @@ resource "aws_route53_record" "admin" {
   ttl     = 60
   records = [aws_eip.host.public_ip]
 }
+
+# commerce.ibatexas.com.br → EC2 host (Medusa backend + /app admin UI)
+resource "aws_route53_record" "commerce" {
+  zone_id = aws_route53_zone.this.zone_id
+  name    = "commerce.${var.domain_name}"
+  type    = "A"
+  ttl     = 60
+  records = [aws_eip.host.public_ip]
+}
