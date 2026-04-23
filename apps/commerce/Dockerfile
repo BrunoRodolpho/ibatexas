@@ -60,6 +60,12 @@ RUN pnpm install --frozen-lockfile
 COPY --from=build /app/apps/commerce/.medusa apps/commerce/.medusa
 COPY --from=build /app/apps/commerce/medusa-config.ts apps/commerce/medusa-config.ts
 
+# Medusa's admin loader resolves the SPA at $rootDirectory/public/admin/
+# where rootDirectory is the cwd when `medusa start` runs (= /app/apps/commerce).
+# `medusa build` puts the SPA at .medusa/server/public/admin/, so symlink
+# public -> .medusa/server/public to bridge the two conventions.
+RUN ln -sfn .medusa/server/public apps/commerce/public
+
 # Create empty static/ — Medusa's file-upload provider writes uploads here
 # at runtime; must exist (and be writable by appuser, handled below).
 RUN mkdir -p apps/commerce/static
