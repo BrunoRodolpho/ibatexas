@@ -587,9 +587,14 @@ async function runIdle(opts: { env?: string; only?: string }): Promise<void> {
 
 function renderTemplate(tplPath: string, vars: Record<string, string>): string {
   const raw = fs.readFileSync(tplPath, "utf8")
-  return raw.replace(/\$\{([a-z_]+)\}/g, (match, key) => {
-    return Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : match
-  })
+  // Mirror terraform's templatefile(): substitute ${var}, then collapse $${x}
+  // → ${x} (terraform's literal-dollar escape). The two-step order matters —
+  // we want the substitution to ignore the escaped form.
+  return raw
+    .replace(/(^|[^$])\$\{([a-z_]+)\}/g, (match, lead, key) => {
+      return Object.prototype.hasOwnProperty.call(vars, key) ? `${lead}${vars[key]}` : match
+    })
+    .replace(/\$\$\{/g, "${")
 }
 
 async function resolveTerraformVars(env: string): Promise<{ region: string; account_id: string; domain: string; ecr_registry: string; environment: string }> {
@@ -616,16 +621,28 @@ async function runHostSync(opts: { env?: string }): Promise<void> {
   const composeTpl = path.join(tplDir, "compose.yml.tpl")
   const composeRendered = renderTemplate(composeTpl, vars)
 
-  // Render the ibatexas-deploy script by extracting it from user_data.sh.tpl.
-  // user_data embeds the deploy script inside a heredoc; we want just that script.
+  // Render the ibatexas-deploy + ibatexas-refresh-secrets scripts by extracting
+  // them from user_data.sh.tpl. user_data embeds each one inside its own heredoc;
+  // here we pull just the body and apply the same ${...} substitutions we do for
+  // compose.yml. Terraform uses $${...} to emit a literal ${...} in bash, so we
+  // collapse that back to ${...} before shipping to the host.
   const userDataTpl = path.join(tplDir, "user_data.sh.tpl")
   const userDataRaw = fs.readFileSync(userDataTpl, "utf8")
-  const match = userDataRaw.match(/cat > \/usr\/local\/bin\/ibatexas-deploy <<'DEPLOY_EOF'\n([\s\S]+?)\nDEPLOY_EOF/)
-  if (!match) {
-    console.error(chalk.red("  Could not extract ibatexas-deploy from user_data.sh.tpl"))
-    process.exit(1)
+
+  function extractHeredoc(marker: string): string {
+    const re = new RegExp(`cat > (?:/[^\\s]+) <<'${marker}'\\n([\\s\\S]+?)\\n${marker}`)
+    const m = userDataRaw.match(re)
+    if (!m) {
+      console.error(chalk.red(`  Could not extract ${marker} body from user_data.sh.tpl`))
+      process.exit(1)
+    }
+    return m[1]
+      .replace(/\$\$\{/g, "${")
+      .replace(/\$\{([a-z_]+)\}/g, (raw, k) => (vars as Record<string, string>)[k] ?? raw)
   }
-  const deployRendered = match[1].replace(/\$\{([a-z_]+)\}/g, (m, k) => (vars as Record<string, string>)[k] ?? m)
+
+  const deployRendered = extractHeredoc("DEPLOY_EOF")
+  const refreshRendered = extractHeredoc("REFRESH_EOF")
 
   const spin = ora("pushing docker-compose.yml").start()
   let r = await uploadToInstance(env, "/opt/ibatexas/docker-compose.yml", composeRendered)
@@ -636,6 +653,11 @@ async function runHostSync(opts: { env?: string }): Promise<void> {
   r = await uploadToInstance(env, "/usr/local/bin/ibatexas-deploy", deployRendered, "0755")
   if (!r.ok) { spin2.fail(chalk.red(r.output)); process.exit(1) }
   spin2.succeed("ibatexas-deploy updated")
+
+  const spin3 = ora("pushing ibatexas-refresh-secrets").start()
+  r = await uploadToInstance(env, "/usr/local/bin/ibatexas-refresh-secrets", refreshRendered, "0755")
+  if (!r.ok) { spin3.fail(chalk.red(r.output)); process.exit(1) }
+  spin3.succeed("ibatexas-refresh-secrets updated")
 
   console.log(chalk.gray(`\n  Next step: ibx infra host:redeploy --env ${env}\n`))
 }

@@ -229,6 +229,30 @@ ibx infra logs <service>           # tail 200 lines via SSM
 ibx infra status                   # EC2 + HTTPS checks
 ```
 
+### API logs flood with `[Redis] Client error: WRONGPASS`
+
+Cause: Redis was booted with a password that doesn't match what the API
+sees in `REDIS_URL`. Usually one of two things:
+
+1. `REDIS_PASSWORD` in SSM got rotated but `REDIS_URL` in SSM wasn't updated,
+   and/or the Redis volume still has a process that was started with an
+   older password.
+2. The old compose didn't substitute `${REDIS_PASSWORD}`, so Redis's
+   requirepass was the literal string `${REDIS_PASSWORD}`.
+
+Fix: `ibatexas-refresh-secrets` now derives `REDIS_URL` from `REDIS_PASSWORD`
+on every deploy, so the two can't drift. After a password rotation, reset
+the Redis volume so the new value takes effect on boot:
+
+```bash
+ibx infra host:sync --env dev          # updates refresh-secrets on the host
+aws ssm start-session --target <id>
+docker compose -f /opt/ibatexas/docker-compose.yml stop redis
+docker compose -f /opt/ibatexas/docker-compose.yml rm -fsv redis
+docker volume rm ibatexas_redis_data
+/usr/local/bin/ibatexas-deploy
+```
+
 ### Deploy fails with "container name already in use"
 
 Symptom: `ibatexas-deploy` exits non-zero, GH Actions shows

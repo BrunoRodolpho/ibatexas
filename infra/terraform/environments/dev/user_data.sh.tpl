@@ -122,6 +122,21 @@ done
   echo "APP_ENV=${environment}"
 } >> "$ENV_FILE.new"
 
+# Derive REDIS_URL and NATS_URL from REDIS_PASSWORD so the URL and the
+# requirepass flag passed to `redis-server` (via ${REDIS_PASSWORD} in
+# docker-compose.yml) can never drift apart. Any prior REDIS_URL/NATS_URL
+# in SSM is superseded — rotating REDIS_PASSWORD is a single-value change.
+REDIS_PW=$(awk -F= '$1=="REDIS_PASSWORD"{sub(/^REDIS_PASSWORD=/,""); print; exit}' "$ENV_FILE.new")
+if [ -n "$REDIS_PW" ]; then
+  grep -v '^REDIS_URL=' "$ENV_FILE.new" > "$ENV_FILE.new.tmp" && mv "$ENV_FILE.new.tmp" "$ENV_FILE.new"
+  echo "REDIS_URL=redis://:$${REDIS_PW}@redis:6379" >> "$ENV_FILE.new"
+fi
+# NATS is un-auth'd on the private Docker network (single-VM dev); any NATS_URL
+# in SSM that points to a rotated credential would similarly drift. Overwrite
+# with the in-network form regardless.
+grep -v '^NATS_URL=' "$ENV_FILE.new" > "$ENV_FILE.new.tmp" && mv "$ENV_FILE.new.tmp" "$ENV_FILE.new"
+echo "NATS_URL=nats://nats:4222" >> "$ENV_FILE.new"
+
 mv "$ENV_FILE.new" "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 echo "[refresh-secrets] wrote $(wc -l < $ENV_FILE) lines to $ENV_FILE"
