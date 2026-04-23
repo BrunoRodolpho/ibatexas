@@ -91,11 +91,23 @@ while true; do
 done
 
 # Add auto-populated infra values that aren't in SSM.
+# NEXT_PUBLIC_* values are also baked into the client bundle at image-build
+# time (see .github/workflows/deploy-staging.yml build-args). Keeping them in
+# the runtime .env too ensures next.config.mjs generates a matching CSP
+# header at server boot — otherwise the CSP would fall back to localhost:3001
+# and block the real api.<domain> origin.
 {
   echo "DOMAIN=${domain}"
+  echo "NEXT_PUBLIC_API_URL=https://api.${domain}"
   echo "NEXT_PUBLIC_APP_URL=https://${domain}"
+  echo "NEXT_PUBLIC_MEDUSA_BACKEND_URL=https://api.${domain}"
   echo "MEDUSA_BACKEND_URL=https://api.${domain}"
   echo "MEDUSA_URL=https://api.${domain}"
+  echo "APP_BASE_URL=https://${domain}"
+  echo "WEB_URL=https://${domain}"
+  # CORS_ORIGIN must include every browser origin that calls the API with
+  # credentials. Web and admin are both separate subdomains from the API.
+  echo "CORS_ORIGIN=https://${domain},https://admin.${domain}"
   echo "APP_ENV=${environment}"
 } >> "$ENV_FILE.new"
 

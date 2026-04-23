@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useTranslations } from 'next-intl'
 import { useProducts } from '@/domains/product'
 import { useCartStore } from '@/domains/cart'
@@ -56,15 +56,11 @@ export default function CategoryContent({ category }: CategoryContentProps) {
     [filteredProducts, addItem, addToast, t, triggerUpsell],
   )
 
-  if (error) {
-    return (
-      <div className="text-center py-12">
-        <Text variant="body" className="text-accent-red">
-          {t('common.error')}: {error.message}
-        </Text>
-      </div>
-    )
-  }
+  // Log fetch failures for Sentry but fall through to the empty state — a
+  // transient API blip shouldn't blow up the whole category page.
+  useEffect(() => {
+    if (error) console.error('[CategoryContent] products fetch failed', { category, error })
+  }, [error, category])
 
   const categoryKey = `shop.categories.${category}` as const
 

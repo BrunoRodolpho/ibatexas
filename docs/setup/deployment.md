@@ -79,6 +79,49 @@ SECRETS_BACKEND=secretsmanager ibx infra secrets:push
 The EC2 host's IAM role grants read on both stores, so existing Secrets
 Manager entries keep working during the transition.
 
+### GitHub Actions secrets & variables
+
+`ibx infra github` pushes everything the CI workflows need. Two distinct
+categories:
+
+**Runtime (SSM/Secrets Manager)** — read by containers at start. Managed by
+`ibx infra secrets:push`.
+
+**Build-time (GitHub Secrets/Variables)** — read by `docker build` on the
+runner to inline `NEXT_PUBLIC_*` values into the web client bundle. Managed
+by `ibx infra github`.
+
+| Kind | Name | Where from | Required? |
+|------|------|------------|-----------|
+| Secret | `AWS_DEPLOY_ROLE_ARN` | Terraform output | ✅ required |
+| Secret | `DIRECT_DATABASE_URL` | Supabase direct URL (prod) | ✅ required |
+| Secret | `STAGING_DIRECT_DATABASE_URL` | Supabase direct URL (dev) | ✅ required |
+| Secret | `SONAR_TOKEN` | sonarcloud.io | optional |
+| Secret | `NEXT_PUBLIC_POSTHOG_KEY` | `.env` (auto-detected) | optional — analytics disabled if unset |
+| Secret | `NEXT_PUBLIC_SENTRY_DSN` | `.env` (auto-detected) | optional — client error reporting disabled if unset |
+| Secret | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | `.env` (auto-detected) | optional — Stripe checkout UI won't init if unset |
+| Variable | `NEXT_PUBLIC_POSTHOG_HOST` | `.env` or default `https://us.posthog.com` | ✅ required (default applied) |
+
+> **Why build-time?** Next.js inlines `NEXT_PUBLIC_*` env vars into the
+> client bundle during `next build`. They also end up baked into the CSP
+> header via [next.config.mjs](../../apps/web/next.config.mjs). If they're
+> missing at build time, the client falls back to localhost and CSP blocks
+> the real API origin.
+
+Manual alternatives if `ibx infra github` is unavailable:
+
+```bash
+# Secrets — stdin keeps the value out of shell history
+grep -E '^NEXT_PUBLIC_POSTHOG_KEY=' .env | sed 's/^[^=]*=//' | gh secret set NEXT_PUBLIC_POSTHOG_KEY
+
+# Variables — plaintext is fine
+gh variable set NEXT_PUBLIC_POSTHOG_HOST --body "https://us.posthog.com"
+
+# Verify
+gh secret list
+gh variable list
+```
+
 ### Host architecture
 
 ```

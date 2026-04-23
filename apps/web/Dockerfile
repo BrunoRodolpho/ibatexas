@@ -19,6 +19,26 @@ RUN pnpm install --frozen-lockfile
 # Copy the full web app source for next build
 COPY apps/web/ apps/web/
 
+# NEXT_PUBLIC_* vars are inlined into the client bundle at build time AND
+# baked into the server-rendered CSP header (see apps/web/next.config.mjs).
+# Missing values here produce a client bundle that hits fallbacks (localhost)
+# and a CSP that blocks the real API origin. Must be supplied by the CI
+# build-args — see .github/workflows/deploy-staging.yml.
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_MEDUSA_BACKEND_URL
+ARG NEXT_PUBLIC_POSTHOG_HOST
+ARG NEXT_PUBLIC_POSTHOG_KEY
+ARG NEXT_PUBLIC_SENTRY_DSN
+ARG NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
+    NEXT_PUBLIC_MEDUSA_BACKEND_URL=$NEXT_PUBLIC_MEDUSA_BACKEND_URL \
+    NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST \
+    NEXT_PUBLIC_POSTHOG_KEY=$NEXT_PUBLIC_POSTHOG_KEY \
+    NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN \
+    NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=$NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+
 # Build with standalone output
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @ibatexas/web... run build

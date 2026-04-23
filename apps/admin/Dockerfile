@@ -19,6 +19,14 @@ RUN pnpm install --frozen-lockfile
 # Copy the full admin app source for next build
 COPY apps/admin/ apps/admin/
 
+# NEXT_PUBLIC_* vars are inlined into the client bundle at build time AND
+# baked into the server-rendered CSP header (see apps/admin/next.config.mjs).
+# Must be supplied by the CI build-args.
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SENTRY_DSN
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
+
 # Build with standalone output
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @ibatexas/admin... run build

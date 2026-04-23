@@ -23,6 +23,8 @@ import { requireAuth } from "../middleware/auth.js"
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
+// .strict() rejects unknown keys with a 400 — customerId is derived from the
+// JWT (request.customerId via requireAuth), never trusted from the payload.
 const AvailabilityQuery = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data inválida — use YYYY-MM-DD"),
   partySize: z.coerce.number().int().min(1).max(20),
@@ -30,36 +32,36 @@ const AvailabilityQuery = z.object({
     .string()
     .regex(/^\d{2}:\d{2}$/)
     .optional(),
-})
+}).strict()
 
 const ReservationIdParams = z.object({
   id: z.string().min(1),
-})
+}).strict()
 
 const CreateReservationBody = z.object({
   timeSlotId: z.string().min(1),
   partySize: z.number().int().min(1).max(20),
   specialRequests: z.array(SpecialRequestSchema).optional().default([]),
-})
+}).strict()
 
 const ModifyReservationBody = z.object({
   newTimeSlotId: z.string().optional(),
   newPartySize: z.number().int().min(1).max(20).optional(),
   specialRequests: z.array(SpecialRequestSchema).optional(),
-})
+}).strict()
 
 const CancelReservationBody = z.object({
   reason: z.string().max(200).optional(),
-})
+}).strict()
 
 const MyReservationsQuery = z.object({
   status: z.nativeEnum(ReservationStatus).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional().default(10),
-})
+}).strict()
 
 const JoinWaitlistBody = z.object({
   partySize: z.number().int().min(1).max(20),
-})
+}).strict()
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 

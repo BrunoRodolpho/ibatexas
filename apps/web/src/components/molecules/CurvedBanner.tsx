@@ -39,25 +39,44 @@ export function CurvedBanner({ text }: CurvedBannerProps) {
     const textEl = el.parentElement as SVGTextElement | null
     if (!pathEl || !textEl) return
 
-    // Compute the wrap point: one text repetition as % of path length.
-    // After scrolling one unit the visual is identical (all reps are the same string).
-    const pathLen = pathEl.getTotalLength()
-    const textLen = textEl.getComputedTextLength()
-    const unitPx = textLen / REPEAT_COUNT
-    const wrapPct = (unitPx / pathLen) * 100
-
+    let wrapPct = 0
     let offset = 0
-    let raf: number
+    let raf = 0
 
-    const animate = () => {
-      offset -= 0.03
-      if (offset <= -wrapPct) offset += wrapPct
-      el.setAttribute('startOffset', `${offset}%`)
-      raf = requestAnimationFrame(animate)
+    // Wrap point = one text repetition as % of path length. All 40 reps are
+    // identical, so resetting at this exact value is visually seamless.
+    const recompute = () => {
+      const pathLen = pathEl.getTotalLength()
+      const textLen = textEl.getComputedTextLength()
+      if (!pathLen || !textLen) return
+      wrapPct = (textLen / REPEAT_COUNT / pathLen) * 100
+      // If the new wrap is tighter than the current offset (e.g. webfont just
+      // loaded and the advance width shrank), fold offset into the new cycle
+      // so the next reset doesn't snap visibly.
+      if (wrapPct > 0 && offset < -wrapPct) offset = offset % wrapPct
     }
 
+    recompute()
+    // Playfair italic usually resolves after mount on mobile — the initial
+    // measurement is against the fallback serif, giving a wrong wrapPct and
+    // causing a visible jump at the reset point. Remeasure once fonts settle.
+    void document.fonts?.ready?.then(recompute).catch(() => {})
+    globalThis.addEventListener('resize', recompute)
+
+    const animate = () => {
+      if (wrapPct > 0) {
+        offset -= 0.03
+        if (offset <= -wrapPct) offset += wrapPct
+        el.setAttribute('startOffset', `${offset}%`)
+      }
+      raf = requestAnimationFrame(animate)
+    }
     raf = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(raf)
+
+    return () => {
+      cancelAnimationFrame(raf)
+      globalThis.removeEventListener('resize', recompute)
+    }
   }, [prefersReduced])
 
   const repeated = Array.from({ length: REPEAT_COUNT }, () => text).join(SEPARATOR) + SEPARATOR

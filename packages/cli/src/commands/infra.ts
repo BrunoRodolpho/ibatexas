@@ -44,6 +44,21 @@ const GITHUB_SECRETS = [
   "SONAR_TOKEN",
 ]
 
+// NEXT_PUBLIC_* values are inlined into the web client bundle at docker build
+// time (see apps/web/Dockerfile ARGs + .github/workflows/deploy-staging.yml
+// build-args). They must exist as GitHub secrets for the build to pick them up.
+// Missing values produce a working build but disable the corresponding feature
+// on the client (analytics, error reporting, payments UI).
+const BUILD_ARG_SECRETS = [
+  "NEXT_PUBLIC_POSTHOG_KEY",
+  "NEXT_PUBLIC_SENTRY_DSN",
+  "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY",
+] as const
+
+const BUILD_ARG_VARIABLES: Record<string, string> = {
+  NEXT_PUBLIC_POSTHOG_HOST: "https://us.posthog.com",
+}
+
 /** Secrets that should use password-style prompt (masked input) */
 const SENSITIVE_SECRETS = new Set([
   "JWT_SECRET", "DATABASE_URL", "ANTHROPIC_API_KEY",
@@ -1081,7 +1096,7 @@ async function runGithub() {
   console.log(chalk.bold.blue("\n  🐙  GitHub Secrets\n"))
   envBanner(env)
 
-  const TOTAL = 3
+  const TOTAL = 4
   let stepNum = 0
 
   // [1] Verify gh CLI
@@ -1104,7 +1119,7 @@ async function runGithub() {
   const outputs = await terraformOutput(env)
   const roleArn = outputs?.github_deploy_role_arn?.value as string | undefined
 
-  // [3] Set secrets
+  // [3] Set core secrets (deploy role + database URLs + optional sonar)
   step(++stepNum, TOTAL, "Setting GitHub secrets…")
 
   if (roleArn) {
@@ -1144,6 +1159,54 @@ async function runGithub() {
     try {
       await execa("gh", ["secret", "set", name, "--body", value])
       spinner.succeed(chalk.green(name))
+    } catch {
+      spinner.fail(chalk.red(`${name} — failed to set`))
+    }
+  }
+
+  // [4] Set NEXT_PUBLIC_* build-arg secrets + variables, preferring .env values
+  step(++stepNum, TOTAL, "Setting build-arg secrets and variables…")
+
+  const envPath = path.resolve(ROOT, ".env")
+  const localEnv: Record<string, string> = fs.existsSync(envPath)
+    ? (await import("dotenv")).parse(fs.readFileSync(envPath, "utf-8"))
+    : {}
+  if (!fs.existsSync(envPath)) {
+    console.log(chalk.gray("    .env not found — will prompt for each value"))
+  }
+
+  for (const name of BUILD_ARG_SECRETS) {
+    const fromEnv = localEnv[name]?.trim()
+    let value = fromEnv
+    if (!value) {
+      try {
+        value = (await password({
+          message: `${name} (not in .env, press Enter to skip — feature disabled in build):`,
+        })).trim()
+      } catch {
+        break
+      }
+    }
+    if (!value) {
+      console.log(chalk.gray(`    ○ ${name} (skipped)`))
+      continue
+    }
+    const spinner = ora({ text: name, indent: 4 }).start()
+    try {
+      await execa("gh", ["secret", "set", name, "--body", value])
+      spinner.succeed(chalk.green(fromEnv ? `${name} (from .env)` : name))
+    } catch {
+      spinner.fail(chalk.red(`${name} — failed to set`))
+    }
+  }
+
+  for (const [name, defaultValue] of Object.entries(BUILD_ARG_VARIABLES)) {
+    const fromEnv = localEnv[name]?.trim()
+    const value = fromEnv || defaultValue
+    const spinner = ora({ text: name, indent: 4 }).start()
+    try {
+      await execa("gh", ["variable", "set", name, "--body", value])
+      spinner.succeed(chalk.green(`${name} (${fromEnv ? "from .env" : "default"})`))
     } catch {
       spinner.fail(chalk.red(`${name} — failed to set`))
     }

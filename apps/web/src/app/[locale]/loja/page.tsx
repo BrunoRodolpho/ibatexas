@@ -1,13 +1,13 @@
 'use client'
 
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useTranslations } from 'next-intl'
 import { useProducts } from '@/domains/product'
 import { useCartStore } from '@/domains/cart'
 import { useUIStore } from '@/domains/ui'
 import { ProductGrid } from '@/components/organisms'
 import { ProductGridSkeleton } from '@/components/molecules/ProductGridSkeleton'
-import { Container, Text } from '@/components/atoms'
+import { Container } from '@/components/atoms'
 import { Link } from '@/i18n/navigation'
 import { JsonLd } from '@/components/atoms'
 import { track } from '@/domains/analytics'
@@ -18,6 +18,12 @@ export default function ShopPage() {
   const addItem = useCartStore((s) => s.addItem)
   const triggerUpsell = useUIStore((s) => s.triggerUpsell)
   const addToast = useUIStore((s) => s.addToast)
+
+  // Log fetch failures for Sentry but fall through to the empty state — a
+  // transient API blip shouldn't blow up the whole shop landing.
+  useEffect(() => {
+    if (error) console.error('[ShopPage] products fetch failed', error)
+  }, [error])
 
   // Standardized add-to-cart for the shop landing — toast + upsell trigger.
   // Was missing entirely; the featured cards used to do nothing on click.
@@ -35,16 +41,6 @@ export default function ShopPage() {
     },
     [data?.items, addItem, addToast, t, triggerUpsell],
   )
-
-  if (error) {
-    return (
-      <div className="text-center py-12 lg:py-16">
-        <Text variant="body" className="text-accent-red">
-          {t('common.error')}: {error.message}
-        </Text>
-      </div>
-    )
-  }
 
   return (
     <div>
