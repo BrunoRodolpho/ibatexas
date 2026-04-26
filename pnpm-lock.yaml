@@ -560,6 +560,9 @@ importers:
       '@adjudicate/core':
         specifier: workspace:*
         version: link:../core
+      '@adjudicate/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       '@anthropic-ai/sdk':
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)

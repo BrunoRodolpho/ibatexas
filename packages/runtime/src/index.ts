@@ -1,12 +1,15 @@
-// @adjudicate/runtime — DEFER consumer + idempotent resume.
+// @adjudicate/runtime — runtime-side framework helpers.
 //
-// Pure resume logic for parked deferred intents. The kernel returns DEFER
-// for valid intents that await an external signal (e.g. a payment webhook
-// confirming a parked order). resumeDeferredIntent uses content-addressed
-// dedup so duplicate webhook deliveries fold into a single resume.
+// Two concerns live here:
 //
-// Adopters wire their own NATS / queue subscriber and Redis client; the
-// framework keeps no transport coupling.
+//  1. Deferred intent resume (defer-resume.ts) — when the kernel returns
+//     DEFER for a valid-but-pending intent, this package handles the
+//     resume half with content-addressed dedup so duplicate webhook
+//     deliveries fold into a single resume.
+//
+//  2. Deadline helpers (with-deadlines.ts) — small primitives for racing
+//     async generators against a hard wall-clock deadline; useful for
+//     orchestrators that wrap LLM streams.
 
 export {
   deferResumeHash,
@@ -18,3 +21,5 @@ export {
   type ParkedEnvelope,
   type ResumeDeferredIntentArgs,
 } from "./defer-resume.js"
+
+export { DEADLINE_HIT, deadlinePromise } from "./with-deadlines.js"

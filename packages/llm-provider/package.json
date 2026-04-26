@@ -25,6 +25,7 @@
     "@ibatexas/types": "workspace:*",
     "@adjudicate/audit": "workspace:*",
     "@adjudicate/core": "workspace:*",
+    "@adjudicate/runtime": "workspace:*",
     "fuse.js": "^7.1.0",
     "xstate": "^5.29.0",
     "zod": "^4.3.6"
