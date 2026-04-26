@@ -89,35 +89,6 @@ export {
   type OrderState,
 } from "./order-policy-bundle.js"
 
-// Shadow infrastructure (P0-a)
-export {
-  adjudicateWithShadow,
-  classifyDivergence,
-  legacyDecisionAsKernelDecision,
-  setShadowTelemetrySink,
-  type DivergenceClass,
-  type LegacyDecisionResult,
-  type ShadowResult,
-  type ShadowTelemetrySink,
-} from "./intent-shadow.js"
-export { isEnforced, isShadowed } from "./intent-enforce-config.js"
-
-// Observability metrics (P0-f)
-export {
-  createConsoleMetricsSink,
-  recordDecision,
-  recordLedgerOp,
-  recordRefusal,
-  recordSinkFailure,
-  setMetricsSink,
-  type DecisionEvent,
-  type LedgerOpEvent,
-  type MetricsSink,
-  type RefusalEvent,
-  type ShadowDivergenceEvent,
-  type SinkFailureEvent,
-} from "./intent-metrics.js"
-
 // Ledger error type (P0-g)
 export { LedgerUnavailableError } from "./intent-ledger.js"
 

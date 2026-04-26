@@ -3,14 +3,14 @@
  *   "A second domain scaffold (clinic booking: 3 tools, 4 state transitions,
  *    1 PolicyBundle) builds against the packages in under a day with no fork."
  *
- * The clinic scaffold in `examples/clinic/` uses only @adjudicate/intent-core and
- * @adjudicate/intent-kernel. This test exercises the adjudicate() boundary with the
+ * The clinic scaffold in `examples/clinic/` uses only @adjudicate/core and
+ * @adjudicate/core/kernel. This test exercises the adjudicate() boundary with the
  * scaffold's PolicyBundle.
  */
 
 import { describe, expect, it } from "vitest";
-import { buildEnvelope } from "@adjudicate/intent-core";
-import { adjudicate } from "@adjudicate/intent-kernel";
+import { buildEnvelope } from "@adjudicate/core";
+import { adjudicate } from "@adjudicate/core/kernel";
 import {
   clinicPolicyBundle,
   clinicTools,

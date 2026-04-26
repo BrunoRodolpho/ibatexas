@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@adjudicate/audit": "workspace:*",
-    "@adjudicate/intent-core": "workspace:*"
+    "@adjudicate/core": "workspace:*"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.0.0",

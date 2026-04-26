@@ -7,7 +7,7 @@
 //
 // Schema: see ./schema.ts and ./migrations/001-create-intent-audit.sql.
 
-import type { AuditRecord } from "@adjudicate/intent-core";
+import type { AuditRecord } from "@adjudicate/core";
 import type { AuditSink } from "@adjudicate/audit";
 
 /**

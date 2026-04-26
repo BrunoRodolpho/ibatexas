@@ -7,7 +7,7 @@
  * NOT lose audit — sinks persist independently.
  */
 
-import type { AuditRecord } from "@adjudicate/intent-core";
+import type { AuditRecord } from "@adjudicate/core";
 
 export interface AuditSink {
   /**

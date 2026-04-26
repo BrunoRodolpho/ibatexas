@@ -5,7 +5,7 @@
 // AuditRecord objects so the standard `replay()` from @adjudicate/audit can
 // re-adjudicate them.
 
-import type { AuditRecord, Decision, IntentEnvelope } from "@adjudicate/intent-core";
+import type { AuditRecord, Decision, IntentEnvelope } from "@adjudicate/core";
 import type { IntentAuditRow } from "./postgres-sink.js";
 
 export interface AuditQueryWindow {

@@ -22,7 +22,7 @@ import {
   type LedgerRecordInput,
 } from "@adjudicate/audit"
 import { rk, safeRedis } from "@ibatexas/tools"
-import { recordLedgerOp } from "./intent-metrics.js"
+import { recordLedgerOp } from "@adjudicate/core/kernel"
 
 /**
  * Thrown when the Redis ledger is unavailable AND fail-open is disabled.

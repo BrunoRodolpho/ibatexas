@@ -115,7 +115,7 @@ import {
 } from "@ibatexas/types"
 import { z } from "zod"
 import type { Tool } from "@anthropic-ai/sdk/resources/index.js"
-import { buildEnvelope } from "@adjudicate/intent-core"
+import { buildEnvelope } from "@adjudicate/core"
 import {
   TOOL_CLASSIFICATION,
   type ToolIntent,

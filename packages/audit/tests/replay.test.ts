@@ -8,7 +8,7 @@ import {
   decisionRefuse,
   refuse,
   type AuditRecord,
-} from "@adjudicate/intent-core";
+} from "@adjudicate/core";
 import { replay } from "../src/replay.js";
 
 function record(kind: "EXECUTE" | "REFUSE", seed: string): AuditRecord {

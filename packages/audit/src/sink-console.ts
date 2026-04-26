@@ -6,7 +6,7 @@
  * when it ships).
  */
 
-import type { AuditRecord } from "@adjudicate/intent-core";
+import type { AuditRecord } from "@adjudicate/core";
 import type { AuditSink } from "./sink.js";
 
 export interface ConsoleSinkOptions {

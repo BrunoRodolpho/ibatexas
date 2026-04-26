@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { isKnownBasisCode } from "@adjudicate/intent-core"
+import { isKnownBasisCode } from "@adjudicate/core"
 import {
   validateBufferedTextTyped,
   validateBufferedText,

@@ -10,9 +10,9 @@
 // basis. Consumers that need legacy `{cleanText, violations}` shape still have
 // `validateBufferedText()`.
 
-import { basis, BASIS_CODES, type DecisionBasis } from "@adjudicate/intent-core"
+import { basis, BASIS_CODES, type DecisionBasis } from "@adjudicate/core"
 import { refuseForbiddenPhrase } from "./refusal-taxonomy.js"
-import type { Refusal } from "@adjudicate/intent-core"
+import type { Refusal } from "@adjudicate/core"
 
 // ── Forbidden patterns per state ──────────────────────────────────────────────
 
@@ -170,7 +170,7 @@ export function validateBufferedTextTyped(
   // This is the first concrete use of the REWRITE semantics in IBX-IGE.
   //
   // REWRITE is scope-restricted: sanitization (stripping a forbidden phrase)
-  // is the canonical allowed category per @adjudicate/intent-kernel README.
+  // is the canonical allowed category per @adjudicate/core/kernel README.
   const firstViolation = violations[0]!
   const detail: Record<string, unknown> = {
     stateValue,

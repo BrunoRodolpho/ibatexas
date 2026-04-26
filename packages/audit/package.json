@@ -20,7 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/intent-core": "workspace:*"
+    "@adjudicate/core": "workspace:*"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.0.0",

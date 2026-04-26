@@ -7,7 +7,7 @@ import {
   decisionExecute,
   decisionRefuse,
   refuse,
-} from "@adjudicate/intent-core";
+} from "@adjudicate/core";
 import {
   createPostgresSink,
   partitionMonthOf,

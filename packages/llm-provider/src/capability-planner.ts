@@ -3,7 +3,7 @@
 // Phase I of IBX-IGE extracts the security-sensitive capability-shaping
 // decisions (STATE_TOOLS map, resolveTools, forbidden-concept lookup) from
 // prompt-synthesizer.ts into a dedicated module behind the generic
-// `@adjudicate/intent-llm` CapabilityPlanner interface.
+// `@adjudicate/core/llm` CapabilityPlanner interface.
 //
 // The prompt-synthesizer continues to live where it is for v1.0 (it is the
 // IbateXas PromptRenderer — cosmetic, state-aware, pt-BR) and calls
@@ -15,7 +15,7 @@
 import type {
   CapabilityPlanner as FrameworkCapabilityPlanner,
   Plan,
-} from "@adjudicate/intent-llm"
+} from "@adjudicate/core/llm"
 import type { OrderContext } from "./machine/types.js"
 import { TOOL_CLASSIFICATION } from "./machine/types.js"
 
@@ -117,7 +117,7 @@ export function allowedIntentsFor(stateValue: string): ReadonlyArray<string> {
 // ── CapabilityPlanner adapter (framework interface) ──────────────────────────
 
 /**
- * Adapter conforming to the generic `@adjudicate/intent-llm.CapabilityPlanner<S, C>`
+ * Adapter conforming to the generic `@adjudicate/core/llm.CapabilityPlanner<S, C>`
  * interface. Consumers of the framework interface can swap this implementation
  * without touching the renderer.
  */

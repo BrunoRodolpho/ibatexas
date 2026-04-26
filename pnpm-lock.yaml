@@ -354,9 +354,9 @@ importers:
 
   packages/audit:
     dependencies:
-      '@adjudicate/intent-core':
+      '@adjudicate/core':
         specifier: workspace:*
-        version: link:../intent-core
+        version: link:../core
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3.0.0
@@ -382,9 +382,9 @@ importers:
       '@adjudicate/audit':
         specifier: workspace:*
         version: link:../audit
-      '@adjudicate/intent-core':
+      '@adjudicate/core':
         specifier: workspace:*
-        version: link:../intent-core
+        version: link:../core
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3.0.0
@@ -481,6 +481,34 @@ importers:
         specifier: ^3.2.0
         version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
 
+  packages/core:
+    dependencies:
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      fast-check:
+        specifier: ^3.23.1
+        version: 3.23.2
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
   packages/domain:
     dependencies:
       '@ibatexas/types':
@@ -524,101 +552,14 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
-  packages/intent-core:
-    dependencies:
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@ibatexas/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      fast-check:
-        specifier: ^3.23.1
-        version: 3.23.2
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  packages/intent-kernel:
-    dependencies:
-      '@adjudicate/intent-core':
-        specifier: workspace:*
-        version: link:../intent-core
-    devDependencies:
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@ibatexas/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      fast-check:
-        specifier: ^3.23.1
-        version: 3.23.2
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  packages/intent-llm:
-    dependencies:
-      '@adjudicate/intent-core':
-        specifier: workspace:*
-        version: link:../intent-core
-    devDependencies:
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@ibatexas/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
   packages/llm-provider:
     dependencies:
       '@adjudicate/audit':
         specifier: workspace:*
         version: link:../audit
-      '@adjudicate/intent-core':
+      '@adjudicate/core':
         specifier: workspace:*
-        version: link:../intent-core
-      '@adjudicate/intent-kernel':
-        specifier: workspace:*
-        version: link:../intent-kernel
-      '@adjudicate/intent-llm':
-        specifier: workspace:*
-        version: link:../intent-llm
+        version: link:../core
       '@anthropic-ai/sdk':
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)
@@ -681,12 +622,9 @@ importers:
 
   packages/runtime:
     dependencies:
-      '@adjudicate/intent-core':
+      '@adjudicate/core':
         specifier: workspace:*
-        version: link:../intent-core
-      '@adjudicate/intent-kernel':
-        specifier: workspace:*
-        version: link:../intent-kernel
+        version: link:../core
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3.0.0

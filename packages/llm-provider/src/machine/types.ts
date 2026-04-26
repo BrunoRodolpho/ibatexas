@@ -295,7 +295,7 @@ export interface KernelOutput {
    * is valid and keeps legacy consumers green. Populated by adjudicate() call
    * sites as they are wired in subsequent phases.
    */
-  decisions?: readonly import("@adjudicate/intent-core").Decision[]
+  decisions?: readonly import("@adjudicate/core").Decision[]
 }
 
 /** Async side-effect the orchestrator must execute between transitions. */
@@ -409,7 +409,7 @@ export const TOOL_CLASSIFICATION = {
 
 // ── Intent Bridge (LLM proposes, Machine decides) ───────────────────────────
 
-import type { IntentEnvelope } from "@adjudicate/intent-core"
+import type { IntentEnvelope } from "@adjudicate/core"
 
 /**
  * Payload carried inside a versioned IntentEnvelope for mutating tool proposals.

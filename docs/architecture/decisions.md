@@ -121,7 +121,7 @@ prompt injection could trigger fraudulent orders.
 7. **Execution Ledger + Audit Sinks** — hot-path replay dedup (Redis, `intentHash` keyed) vs durable governance trail (Console/NATS/Postgres sinks); the two are intentionally distinct
 8. **Structured Refusal** — stratified `SECURITY | BUSINESS_RULE | AUTH | STATE`, first-class output, never an exception
 
-**Load-bearing invariants (verified by property tests in [`@adjudicate/intent-kernel/tests/invariants/`](../../packages/intent-kernel/tests/invariants/)):**
+**Load-bearing invariants (verified by property tests in [`@adjudicate/core/kernel/tests/invariants/`](../../packages/intent-kernel/tests/invariants/)):**
 - UNTRUSTED never yields EXECUTE when policy demands TRUSTED+
 - Unknown envelope versions always REFUSE with `schema_version_unsupported`
 - Same `intentHash` submitted twice → second call returns LedgerHit, no double execution
@@ -137,10 +137,10 @@ prompt injection could trigger fraudulent orders.
 - `@adjudicate/intent-*` packages are domain-independent substrate; second-domain scaffold (clinic) builds in under a day without forking (see [`packages/intent-runtime/examples/clinic/`](../../packages/intent-runtime/examples/clinic/))
 
 **Packages:**
-- [`@adjudicate/intent-core`](../../packages/intent-core/README.md) — types + lattice + `BASIS_CODES`
-- [`@adjudicate/intent-kernel`](../../packages/intent-kernel/README.md) — `adjudicate()` + policy combinators
+- [`@adjudicate/core`](../../packages/intent-core/README.md) — types + lattice + `BASIS_CODES`
+- [`@adjudicate/core/kernel`](../../packages/intent-kernel/README.md) — `adjudicate()` + policy combinators
 - [`@adjudicate/audit`](../../packages/intent-audit/README.md) — ledger + audit sinks + replay
-- [`@adjudicate/intent-llm`](../../packages/intent-llm/README.md) — capability planner + prompt renderer + tool classification
+- [`@adjudicate/core/llm`](../../packages/intent-llm/README.md) — capability planner + prompt renderer + tool classification
 - [`@adjudicate/runtime`](../../packages/intent-runtime/README.md) — orchestrator + XState adapter + order policies (`apps/api`'s only import)
 
 **Files (legacy, still host the concrete implementation in v1.0 per the plan's open decision on v2.0 split timing):**

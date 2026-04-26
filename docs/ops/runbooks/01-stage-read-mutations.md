@@ -22,7 +22,7 @@ Intent kinds covered in this stage:
 - [ ] Dashboards green: no open Sentry alerts for `audit_kernel_shadow_diverged_*`
 - [ ] On-call briefed; this runbook open in shared tab
 - [ ] Rollback procedure rehearsed against staging (≤2 min from flip to revert)
-- [ ] `pnpm test --filter @adjudicate/intent-kernel --filter @adjudicate/runtime` clean on the deployed SHA
+- [ ] `pnpm test --filter @adjudicate/core/kernel --filter @adjudicate/runtime` clean on the deployed SHA
 
 ## Shadow flip (if not already covered by `IBX_KERNEL_SHADOW=*`)
 

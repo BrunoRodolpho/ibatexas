@@ -14,8 +14,8 @@ import {
   decisionRefuse,
   type IntentEnvelope,
   type TaintPolicy,
-} from "@adjudicate/intent-core"
-import type { Guard, PolicyBundle } from "@adjudicate/intent-kernel"
+} from "@adjudicate/core"
+import type { Guard, PolicyBundle } from "@adjudicate/core/kernel"
 import {
   refuseCartEmpty,
   refuseGuestCheckoutBlocked,
