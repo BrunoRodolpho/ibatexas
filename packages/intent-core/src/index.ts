@@ -1,4 +1,4 @@
-// @ibx/intent-core — public surface.
+// @adjudicate/intent-core — public surface.
 
 export {
   BASIS_CODES,

@@ -1,4 +1,4 @@
-# @ibx/intent-runtime
+# @adjudicate/intent-runtime
 
 Runtime + IbateXas adapter for IBX Intent-Gated Execution. `apps/api` depends
 only on this package.
@@ -15,16 +15,16 @@ import {
   deferOnPendingPix,
   PIX_CONFIRMATION_SIGNAL,
   PIX_DEFER_TIMEOUT_MS,
-} from "@ibx/intent-runtime";
+} from "@adjudicate/intent-runtime";
 ```
 
 Subpath exports organize the package for the v2.0 split:
 
 | Subpath | v1.0 | v2.0 target |
 |---|---|---|
-| `@ibx/intent-runtime/engine` | `runOrchestrator`, `executeKernel` | stays here |
-| `@ibx/intent-runtime/adapters/xstate` | XState binding | extracts to `@ibx/intent-runtime-xstate` |
-| `@ibx/intent-runtime/policies/order` | IbateXas PolicyBundle | extracts to `@ibx/intent-domain-order` |
+| `@adjudicate/intent-runtime/engine` | `runOrchestrator`, `executeKernel` | stays here |
+| `@adjudicate/intent-runtime/adapters/xstate` | XState binding | extracts to `@adjudicate/intent-runtime-xstate` |
+| `@adjudicate/intent-runtime/policies/order` | IbateXas PolicyBundle | extracts to `@adjudicate/intent-domain-order` |
 
 Adopter imports should use these subpaths — when the split lands, they are a
 rename, not a redesign.
@@ -52,14 +52,14 @@ Timeout: `PIX_DEFER_TIMEOUT_MS` defaults to 15 minutes.
 ## Building a second domain (clinic / salon / mechanic)
 
 See [`examples/clinic/`](./examples/clinic/) for a minimal
-second-domain scaffold against `@ibx/intent-kernel` — 3 tools, 4 state
+second-domain scaffold against `@adjudicate/intent-kernel` — 3 tools, 4 state
 transitions, 1 PolicyBundle.
 
 The framework pieces you reuse unchanged:
-- `@ibx/intent-core` — envelope, decision, taint, refusal, basis
-- `@ibx/intent-kernel` — `adjudicate`, `PolicyBundle`, combinators
-- `@ibx/intent-audit` — ledger, sinks, replay
-- `@ibx/intent-llm` — `CapabilityPlanner`, `PromptRenderer`, `ToolClassification`
+- `@adjudicate/intent-core` — envelope, decision, taint, refusal, basis
+- `@adjudicate/intent-kernel` — `adjudicate`, `PolicyBundle`, combinators
+- `@adjudicate/intent-audit` — ledger, sinks, replay
+- `@adjudicate/intent-llm` — `CapabilityPlanner`, `PromptRenderer`, `ToolClassification`
 
 The pieces you write per domain:
 - Domain types (`Appointment`, `Slot`, `Service`, …)

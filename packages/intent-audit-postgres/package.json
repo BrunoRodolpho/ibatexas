@@ -1,7 +1,9 @@
 {
-  "name": "@ibx/intent-audit-postgres",
-  "version": "0.0.1",
-  "private": true,
+  "name": "@adjudicate/intent-audit-postgres",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,8 +20,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ibx/intent-audit": "workspace:*",
-    "@ibx/intent-core": "workspace:*"
+    "@adjudicate/intent-audit": "workspace:*",
+    "@adjudicate/intent-core": "workspace:*"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.0.0",

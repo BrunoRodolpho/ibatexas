@@ -93,7 +93,7 @@ WhatsApp/web conversations were stored only in Redis with 24-48h TTL. No durable
 The system evolved from "LLM calls tools directly" to **Intent-Gated Execution**
 — a framework where the LLM is a semantic parser with zero authority to mutate
 state and a deterministic kernel decides what executes. Extracted from
-IbateXas into the reusable `@ibx/intent-*` framework (v1.0).
+IbateXas into the reusable `@adjudicate/intent-*` framework (v1.0).
 
 **Renaming rationale:** "Zero-Trust LLM" is industry-overloaded to mean "zero
 trust in LLM output" (content safety). What we actually do is give the LLM
@@ -121,7 +121,7 @@ prompt injection could trigger fraudulent orders.
 7. **Execution Ledger + Audit Sinks** — hot-path replay dedup (Redis, `intentHash` keyed) vs durable governance trail (Console/NATS/Postgres sinks); the two are intentionally distinct
 8. **Structured Refusal** — stratified `SECURITY | BUSINESS_RULE | AUTH | STATE`, first-class output, never an exception
 
-**Load-bearing invariants (verified by property tests in [`@ibx/intent-kernel/tests/invariants/`](../../packages/intent-kernel/tests/invariants/)):**
+**Load-bearing invariants (verified by property tests in [`@adjudicate/intent-kernel/tests/invariants/`](../../packages/intent-kernel/tests/invariants/)):**
 - UNTRUSTED never yields EXECUTE when policy demands TRUSTED+
 - Unknown envelope versions always REFUSE with `schema_version_unsupported`
 - Same `intentHash` submitted twice → second call returns LedgerHit, no double execution
@@ -133,15 +133,15 @@ prompt injection could trigger fraudulent orders.
 - Kernel executor handles post-order mutations deterministically
 - Prompts rewritten: no "CHAME" (call) directives for mutating tools; LLM uses "consulte" (consult) for read-only
 - Event injection whitelist: only `PIX_DETAILS_COLLECTED` and `SET_NAME` allowed post-LLM
-- `apps/api` consumes only `@ibx/intent-runtime` — 2-line import flip from the legacy `@ibatexas/llm-provider`
-- `@ibx/intent-*` packages are domain-independent substrate; second-domain scaffold (clinic) builds in under a day without forking (see [`packages/intent-runtime/examples/clinic/`](../../packages/intent-runtime/examples/clinic/))
+- `apps/api` consumes only `@adjudicate/intent-runtime` — 2-line import flip from the legacy `@ibatexas/llm-provider`
+- `@adjudicate/intent-*` packages are domain-independent substrate; second-domain scaffold (clinic) builds in under a day without forking (see [`packages/intent-runtime/examples/clinic/`](../../packages/intent-runtime/examples/clinic/))
 
 **Packages:**
-- [`@ibx/intent-core`](../../packages/intent-core/README.md) — types + lattice + `BASIS_CODES`
-- [`@ibx/intent-kernel`](../../packages/intent-kernel/README.md) — `adjudicate()` + policy combinators
-- [`@ibx/intent-audit`](../../packages/intent-audit/README.md) — ledger + audit sinks + replay
-- [`@ibx/intent-llm`](../../packages/intent-llm/README.md) — capability planner + prompt renderer + tool classification
-- [`@ibx/intent-runtime`](../../packages/intent-runtime/README.md) — orchestrator + XState adapter + order policies (`apps/api`'s only import)
+- [`@adjudicate/intent-core`](../../packages/intent-core/README.md) — types + lattice + `BASIS_CODES`
+- [`@adjudicate/intent-kernel`](../../packages/intent-kernel/README.md) — `adjudicate()` + policy combinators
+- [`@adjudicate/intent-audit`](../../packages/intent-audit/README.md) — ledger + audit sinks + replay
+- [`@adjudicate/intent-llm`](../../packages/intent-llm/README.md) — capability planner + prompt renderer + tool classification
+- [`@adjudicate/intent-runtime`](../../packages/intent-runtime/README.md) — orchestrator + XState adapter + order policies (`apps/api`'s only import)
 
 **Files (legacy, still host the concrete implementation in v1.0 per the plan's open decision on v2.0 split timing):**
 - Classification: `packages/llm-provider/src/machine/types.ts` (`TOOL_CLASSIFICATION`, `ALLOWED_POST_LLM_EVENTS`)

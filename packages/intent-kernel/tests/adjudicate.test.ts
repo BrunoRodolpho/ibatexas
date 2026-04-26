@@ -8,7 +8,7 @@ import {
   refuse,
   type IntentEnvelope,
   type TaintPolicy,
-} from "@ibx/intent-core";
+} from "@adjudicate/intent-core";
 import { adjudicate } from "../src/adjudicate.js";
 import type { Guard, PolicyBundle } from "../src/policy.js";
 

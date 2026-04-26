@@ -3,7 +3,7 @@ import {
   buildAuditRecord,
   buildEnvelope,
   decisionExecute,
-} from "@ibx/intent-core";
+} from "@adjudicate/intent-core";
 import {
   createNatsSink,
   NatsSinkError,

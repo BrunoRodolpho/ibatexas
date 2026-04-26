@@ -1,8 +1,8 @@
-# @ibx/intent-audit-postgres
+# @adjudicate/intent-audit-postgres
 
 Postgres durable governance trail for IBX Intent-Gated Execution.
 
-Implements `AuditSink` from `@ibx/intent-audit` against a partitioned-by-month
+Implements `AuditSink` from `@adjudicate/intent-audit` against a partitioned-by-month
 `intent_audit` table. Adopters supply a Postgres writer that runs an INSERT;
 the sink flattens each `AuditRecord` into the table's row shape.
 
@@ -19,8 +19,8 @@ according to the compliance window (typically 7y for financial intents,
 ## Usage
 
 ```ts
-import { createPostgresSink } from "@ibx/intent-audit-postgres";
-import { multiSink, createConsoleSink, createNatsSink } from "@ibx/intent-audit";
+import { createPostgresSink } from "@adjudicate/intent-audit-postgres";
+import { multiSink, createConsoleSink, createNatsSink } from "@adjudicate/intent-audit";
 
 const sink = multiSink(
   createConsoleSink(),
@@ -55,8 +55,8 @@ const sink = multiSink(
 ## Replay
 
 ```ts
-import { readAuditWindow } from "@ibx/intent-audit-postgres";
-import { replay } from "@ibx/intent-audit";
+import { readAuditWindow } from "@adjudicate/intent-audit-postgres";
+import { replay } from "@adjudicate/intent-audit";
 
 const records = await readAuditWindow(myQuery, {
   fromIso: "2026-04-01T00:00:00Z",
@@ -82,7 +82,7 @@ until durable retention matters.
 
 ## Why a separate package
 
-`@ibx/intent-audit` stays free of Postgres-specific imports — adopters that
+`@adjudicate/intent-audit` stays free of Postgres-specific imports — adopters that
 ship to environments without Postgres (edge functions, mobile-first runtimes)
 do not pull in this dependency. The base `AuditSink` interface is everything
 they need.

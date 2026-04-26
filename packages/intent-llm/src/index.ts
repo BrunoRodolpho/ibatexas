@@ -1,4 +1,4 @@
-// @ibx/intent-llm — capability planner + prompt renderer + tool classification.
+// @adjudicate/intent-llm — capability planner + prompt renderer + tool classification.
 
 export {
   staticPlanner,

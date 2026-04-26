@@ -1,7 +1,7 @@
 // Audit sink wiring — Phase H.
 //
 // Bridges @ibatexas/nats-client.publishNatsEvent into the framework-agnostic
-// AuditSink interface. Keeps @ibx/intent-audit domain-independent — this file
+// AuditSink interface. Keeps @adjudicate/intent-audit domain-independent — this file
 // is the IbateXas-specific adapter.
 //
 // Every intent capture emits one structured AuditRecord to
@@ -14,7 +14,7 @@ import {
   createNatsSink,
   multiSink,
   type AuditSink,
-} from "@ibx/intent-audit"
+} from "@adjudicate/intent-audit"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 
 let _sink: AuditSink | null = null

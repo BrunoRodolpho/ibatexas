@@ -19,8 +19,8 @@ import {
   refuse,
   type Decision,
   type IntentEnvelope,
-} from "@ibx/intent-core"
-import type { PolicyBundle } from "@ibx/intent-kernel"
+} from "@adjudicate/intent-core"
+import type { PolicyBundle } from "@adjudicate/intent-kernel"
 
 describe("classifyDivergence (pure)", () => {
   function exec(): Decision {

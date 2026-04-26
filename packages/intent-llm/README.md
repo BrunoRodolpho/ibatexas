@@ -1,4 +1,4 @@
-# @ibx/intent-llm
+# @adjudicate/intent-llm
 
 Capability planner + prompt renderer + tool classification for IBX-IGE.
 
@@ -51,6 +51,6 @@ the LLM. They literally do not appear in the serialized tool list.
 - Renderer: snapshot tests matching prior prompt output
 
 If you ever change the planner, the invariant property tests in
-`@ibx/intent-kernel/tests/invariants/` still protect you — UNTRUSTED can
+`@adjudicate/intent-kernel/tests/invariants/` still protect you — UNTRUSTED can
 never EXECUTE when policy demands SYSTEM, regardless of which tools were
 offered to the LLM.

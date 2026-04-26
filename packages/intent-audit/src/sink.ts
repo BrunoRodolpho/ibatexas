@@ -7,7 +7,7 @@
  * NOT lose audit — sinks persist independently.
  */
 
-import type { AuditRecord } from "@ibx/intent-core";
+import type { AuditRecord } from "@adjudicate/intent-core";
 
 export interface AuditSink {
   /**

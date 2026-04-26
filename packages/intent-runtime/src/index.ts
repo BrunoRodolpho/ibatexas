@@ -1,4 +1,4 @@
-// @ibx/intent-runtime — the IBX-IGE runtime entrypoint.
+// @adjudicate/intent-runtime — the IBX-IGE runtime entrypoint.
 //
 // apps/api depends on this package's `runOrchestrator()` as the sole public
 // surface. Subpath exports (/engine, /adapters/xstate, /policies/order) are

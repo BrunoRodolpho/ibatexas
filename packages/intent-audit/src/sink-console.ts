@@ -2,11 +2,11 @@
  * ConsoleSink — default sink for development and tests.
  *
  * Emits one-line-per-record structured logs. Production deployments should
- * layer a NatsSink or PostgresSink on top (see @ibx/intent-audit-postgres
+ * layer a NatsSink or PostgresSink on top (see @adjudicate/intent-audit-postgres
  * when it ships).
  */
 
-import type { AuditRecord } from "@ibx/intent-core";
+import type { AuditRecord } from "@adjudicate/intent-core";
 import type { AuditSink } from "./sink.js";
 
 export interface ConsoleSinkOptions {

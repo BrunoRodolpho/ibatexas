@@ -1,6 +1,6 @@
 // IBX-IGE Phase P0-c — DEFER consumer NATS wiring.
 //
-// Pure resume logic + dedup invariants live in @ibx/intent-runtime
+// Pure resume logic + dedup invariants live in @adjudicate/intent-runtime
 // (see packages/intent-runtime/src/defer-resume.ts and the property tests
 // at packages/intent-runtime/tests/defer-resume.test.ts). This module wires
 // that logic to the IbateXas NATS subscriber and Redis client.
@@ -20,15 +20,15 @@ import {
   PIX_CONFIRMED_STATUSES,
   resumeDeferredIntent as resumeDeferredIntentImpl,
   type DeferResumeResult,
-} from "@ibx/intent-runtime"
+} from "@adjudicate/intent-runtime"
 import type { FastifyBaseLogger } from "fastify"
 
 export {
   PIX_CONFIRMED_STATUSES,
   DEFER_PENDING_TTL_GRACE_SECONDS,
   deferResumeHash,
-} from "@ibx/intent-runtime"
-export type { DeferResumeResult } from "@ibx/intent-runtime"
+} from "@adjudicate/intent-runtime"
+export type { DeferResumeResult } from "@adjudicate/intent-runtime"
 
 export async function resumeDeferredIntent(
   sessionId: string,

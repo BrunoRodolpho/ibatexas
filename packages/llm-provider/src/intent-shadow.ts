@@ -20,8 +20,8 @@ import type {
   Decision,
   DecisionBasis,
   IntentEnvelope,
-} from "@ibx/intent-core"
-import { adjudicate, type PolicyBundle } from "@ibx/intent-kernel"
+} from "@adjudicate/intent-core"
+import { adjudicate, type PolicyBundle } from "@adjudicate/intent-kernel"
 
 export type DivergenceClass =
   | "NONE"

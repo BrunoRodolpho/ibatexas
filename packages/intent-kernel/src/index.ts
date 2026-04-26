@@ -1,4 +1,4 @@
-// @ibx/intent-kernel — public surface.
+// @adjudicate/intent-kernel — public surface.
 
 export { adjudicate } from "./adjudicate.js";
 export { allOf, constant, firstMatch } from "./combinators.js";

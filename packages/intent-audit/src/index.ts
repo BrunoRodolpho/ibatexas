@@ -1,4 +1,4 @@
-// @ibx/intent-audit — execution ledger + durable audit sinks + replay.
+// @adjudicate/intent-audit — execution ledger + durable audit sinks + replay.
 
 export { type Ledger, type LedgerHit, type LedgerRecordInput } from "./ledger.js";
 export {

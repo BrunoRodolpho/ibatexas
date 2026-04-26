@@ -7,7 +7,7 @@
  * ran, not only the one that made the final call.
  */
 
-import { basis, BASIS_CODES, type DecisionBasis } from "@ibx/intent-core";
+import { basis, BASIS_CODES, type DecisionBasis } from "@adjudicate/intent-core";
 
 type PassCategory = "state" | "auth" | "taint" | "business";
 

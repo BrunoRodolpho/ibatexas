@@ -5,7 +5,7 @@
  * and pass it to the planner. The type system enforces the partition: a tool
  * name can belong to exactly one of the two sets at registration time.
  *
- * When the v2.0 split lands and this package becomes `@ibx/intent-runtime-xstate`,
+ * When the v2.0 split lands and this package becomes `@adjudicate/intent-runtime-xstate`,
  * the ToolClassification interface stays here — it is runtime-agnostic.
  */
 

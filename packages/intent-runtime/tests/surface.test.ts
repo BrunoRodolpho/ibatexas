@@ -1,5 +1,5 @@
 /**
- * Surface test — confirms @ibx/intent-runtime re-exports the public API
+ * Surface test — confirms @adjudicate/intent-runtime re-exports the public API
  * apps/api depends on. If any of these imports fails, apps/api's Phase L flip
  * will break.
  */
@@ -15,7 +15,7 @@ import {
 import { runOrchestrator as rootOrchestrator } from "../src/engine/orchestrator.js"
 import { orderMachine } from "../src/adapters/xstate/index.js"
 
-describe("@ibx/intent-runtime — public surface", () => {
+describe("@adjudicate/intent-runtime — public surface", () => {
   it("exports runOrchestrator as a function", () => {
     expect(runOrchestrator).toBeTypeOf("function")
   })

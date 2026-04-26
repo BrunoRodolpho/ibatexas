@@ -13,7 +13,7 @@
 // IbateXas wiring (in `apps/api/src/plugins/sentry.ts` extension or similar)
 // installs a real sink at boot. Tests can install a mock sink for assertions.
 
-import type { Decision, Refusal } from "@ibx/intent-core"
+import type { Decision, Refusal } from "@adjudicate/intent-core"
 import type {
   DivergenceClass,
   LegacyDecisionResult,

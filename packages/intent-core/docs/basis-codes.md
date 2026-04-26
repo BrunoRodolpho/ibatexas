@@ -24,7 +24,7 @@ Always prefer the `basis()` helper over raw object literals. It gives you
 compile-time enforcement that the `code` belongs to the chosen `category`.
 
 ```ts
-import { basis, BASIS_CODES } from "@ibx/intent-core";
+import { basis, BASIS_CODES } from "@adjudicate/intent-core";
 
 // Compile-safe — code is narrowed to the category's known values.
 const b = basis("auth", BASIS_CODES.auth.SCOPE_SUFFICIENT);
@@ -41,9 +41,9 @@ your adopter package:
 
 ```ts
 // In @my-domain/intent-codes
-import "@ibx/intent-core";
+import "@adjudicate/intent-core";
 
-declare module "@ibx/intent-core" {
+declare module "@adjudicate/intent-core" {
   interface BasisCodesMap {
     business: BasisCodesMap["business"] & {
       INVENTORY_RESERVED: "inventory_reserved";
@@ -71,7 +71,7 @@ category even after augmentation.
   "basis vocabulary purity" invariant test fails loudly if a runtime code does
   not belong to `BASIS_CODES[category]`.
 - **Do not** add a new `category` via augmentation. The `BasisCategory` union
-  is closed in `@ibx/intent-core`; extending it would break exhaustive matching
+  is closed in `@adjudicate/intent-core`; extending it would break exhaustive matching
   in the kernel and in audit sinks.
 - **Do not** place business codes under `validation` or vice versa. Category
   meaning is part of the audit contract.

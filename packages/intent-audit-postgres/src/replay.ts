@@ -2,10 +2,10 @@
 // for the replay harness. Inverse of recordToRow().
 //
 // Adopters supply a query function that returns rows; this module reconstructs
-// AuditRecord objects so the standard `replay()` from @ibx/intent-audit can
+// AuditRecord objects so the standard `replay()` from @adjudicate/intent-audit can
 // re-adjudicate them.
 
-import type { AuditRecord, Decision, IntentEnvelope } from "@ibx/intent-core";
+import type { AuditRecord, Decision, IntentEnvelope } from "@adjudicate/intent-core";
 import type { IntentAuditRow } from "./postgres-sink.js";
 
 export interface AuditQueryWindow {
@@ -48,7 +48,7 @@ export function rowToRecord(row: IntentAuditRow): AuditRecord {
 
 /**
  * Read a window of audit rows and return them as AuditRecord[] suitable for
- * `replay()` from @ibx/intent-audit.
+ * `replay()` from @adjudicate/intent-audit.
  */
 export async function readAuditWindow(
   query: AuditQuery,

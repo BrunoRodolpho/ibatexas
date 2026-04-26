@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { adjudicate } from "@ibx/intent-kernel"
-import { buildEnvelope } from "@ibx/intent-core"
+import { adjudicate } from "@adjudicate/intent-kernel"
+import { buildEnvelope } from "@adjudicate/intent-core"
 import {
   orderPolicyBundle,
   PIX_CONFIRMATION_SIGNAL,

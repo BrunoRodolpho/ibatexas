@@ -14,7 +14,7 @@
  * per CLAUDE.md rule #4.
  */
 
-import { refuse, type Refusal } from "@ibx/intent-core"
+import { refuse, type Refusal } from "@adjudicate/intent-core"
 
 // ── Forbidden-phrase refusals (SECURITY) ──────────────────────────────────────
 

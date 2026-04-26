@@ -1,14 +1,14 @@
 // PostgresSink — durable governance trail in Postgres.
 //
-// Implements `AuditSink` from @ibx/intent-audit. Adopters supply a Postgres
+// Implements `AuditSink` from @adjudicate/intent-audit. Adopters supply a Postgres
 // query executor that runs an INSERT against the `intent_audit` table.
 // Framework-agnostic — works with any Postgres client (pg, postgres.js,
 // Prisma's $executeRaw, etc.) via the simple `executeInsert` interface.
 //
 // Schema: see ./schema.ts and ./migrations/001-create-intent-audit.sql.
 
-import type { AuditRecord } from "@ibx/intent-core";
-import type { AuditSink } from "@ibx/intent-audit";
+import type { AuditRecord } from "@adjudicate/intent-core";
+import type { AuditSink } from "@adjudicate/intent-audit";
 
 /**
  * Minimal Postgres-write interface. Adopters wrap their existing Postgres

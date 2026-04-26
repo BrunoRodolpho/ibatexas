@@ -114,6 +114,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@adjudicate/intent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/intent-runtime
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2
@@ -153,9 +156,6 @@ importers:
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../../packages/types
-      '@ibx/intent-runtime':
-        specifier: workspace:*
-        version: link:../../packages/intent-runtime
       '@sentry/node':
         specifier: ^10.45.0
         version: 10.47.0(@opentelemetry/exporter-trace-otlp-http@0.200.0(@opentelemetry/api@1.9.1))
@@ -473,7 +473,7 @@ importers:
 
   packages/intent-audit:
     dependencies:
-      '@ibx/intent-core':
+      '@adjudicate/intent-core':
         specifier: workspace:*
         version: link:../intent-core
     devDependencies:
@@ -498,10 +498,10 @@ importers:
 
   packages/intent-audit-postgres:
     dependencies:
-      '@ibx/intent-audit':
+      '@adjudicate/intent-audit':
         specifier: workspace:*
         version: link:../intent-audit
-      '@ibx/intent-core':
+      '@adjudicate/intent-core':
         specifier: workspace:*
         version: link:../intent-core
     devDependencies:
@@ -554,7 +554,7 @@ importers:
 
   packages/intent-kernel:
     dependencies:
-      '@ibx/intent-core':
+      '@adjudicate/intent-core':
         specifier: workspace:*
         version: link:../intent-core
     devDependencies:
@@ -582,7 +582,7 @@ importers:
 
   packages/intent-llm:
     dependencies:
-      '@ibx/intent-core':
+      '@adjudicate/intent-core':
         specifier: workspace:*
         version: link:../intent-core
     devDependencies:
@@ -607,21 +607,21 @@ importers:
 
   packages/intent-runtime:
     dependencies:
+      '@adjudicate/intent-core':
+        specifier: workspace:*
+        version: link:../intent-core
+      '@adjudicate/intent-kernel':
+        specifier: workspace:*
+        version: link:../intent-kernel
+      '@adjudicate/intent-llm':
+        specifier: workspace:*
+        version: link:../intent-llm
       '@ibatexas/llm-provider':
         specifier: workspace:*
         version: link:../llm-provider
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types
-      '@ibx/intent-core':
-        specifier: workspace:*
-        version: link:../intent-core
-      '@ibx/intent-kernel':
-        specifier: workspace:*
-        version: link:../intent-kernel
-      '@ibx/intent-llm':
-        specifier: workspace:*
-        version: link:../intent-llm
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3.0.0
@@ -644,6 +644,18 @@ importers:
 
   packages/llm-provider:
     dependencies:
+      '@adjudicate/intent-audit':
+        specifier: workspace:*
+        version: link:../intent-audit
+      '@adjudicate/intent-core':
+        specifier: workspace:*
+        version: link:../intent-core
+      '@adjudicate/intent-kernel':
+        specifier: workspace:*
+        version: link:../intent-kernel
+      '@adjudicate/intent-llm':
+        specifier: workspace:*
+        version: link:../intent-llm
       '@anthropic-ai/sdk':
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)
@@ -659,18 +671,6 @@ importers:
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types
-      '@ibx/intent-audit':
-        specifier: workspace:*
-        version: link:../intent-audit
-      '@ibx/intent-core':
-        specifier: workspace:*
-        version: link:../intent-core
-      '@ibx/intent-kernel':
-        specifier: workspace:*
-        version: link:../intent-kernel
-      '@ibx/intent-llm':
-        specifier: workspace:*
-        version: link:../intent-llm
       fuse.js:
         specifier: ^7.1.0
         version: 7.2.0

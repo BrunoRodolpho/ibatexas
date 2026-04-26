@@ -8,7 +8,7 @@ import {
   decisionRefuse,
   refuse,
   type AuditRecord,
-} from "@ibx/intent-core";
+} from "@adjudicate/intent-core";
 import { replay } from "../src/replay.js";
 
 function record(kind: "EXECUTE" | "REFUSE", seed: string): AuditRecord {

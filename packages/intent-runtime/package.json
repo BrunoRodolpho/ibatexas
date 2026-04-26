@@ -1,7 +1,9 @@
 {
-  "name": "@ibx/intent-runtime",
-  "version": "0.0.1",
-  "private": true,
+  "name": "@adjudicate/intent-runtime",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -35,9 +37,9 @@
   "dependencies": {
     "@ibatexas/llm-provider": "workspace:*",
     "@ibatexas/types": "workspace:*",
-    "@ibx/intent-core": "workspace:*",
-    "@ibx/intent-kernel": "workspace:*",
-    "@ibx/intent-llm": "workspace:*"
+    "@adjudicate/intent-core": "workspace:*",
+    "@adjudicate/intent-kernel": "workspace:*",
+    "@adjudicate/intent-llm": "workspace:*"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.0.0",

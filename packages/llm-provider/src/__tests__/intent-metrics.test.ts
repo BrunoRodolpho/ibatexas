@@ -20,8 +20,8 @@ import {
   buildEnvelope,
   decisionRefuse,
   refuse,
-} from "@ibx/intent-core"
-import type { PolicyBundle } from "@ibx/intent-kernel"
+} from "@adjudicate/intent-core"
+import type { PolicyBundle } from "@adjudicate/intent-kernel"
 
 describe("intent-metrics — sink dispatch", () => {
   let sink: MetricsSink

@@ -5,8 +5,8 @@
  * 3 tools, 4 state transitions, 1 PolicyBundle) builds against the packages
  * in under a day with no fork."
  *
- * Every piece below is clinic-specific. None of `@ibx/intent-core`,
- * `@ibx/intent-kernel`, `@ibx/intent-audit`, or `@ibx/intent-llm` was forked
+ * Every piece below is clinic-specific. None of `@adjudicate/intent-core`,
+ * `@adjudicate/intent-kernel`, `@adjudicate/intent-audit`, or `@adjudicate/intent-llm` was forked
  * or patched to make this work.
  */
 
@@ -17,8 +17,8 @@ import {
   refuse,
   type IntentEnvelope,
   type TaintPolicy,
-} from "@ibx/intent-core";
-import type { Guard, PolicyBundle } from "@ibx/intent-kernel";
+} from "@adjudicate/intent-core";
+import type { Guard, PolicyBundle } from "@adjudicate/intent-kernel";
 
 // ── Clinic domain types ───────────────────────────────────────────────────────
 

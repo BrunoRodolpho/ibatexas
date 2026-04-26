@@ -8,7 +8,7 @@
  * re-adjudicates.
  */
 
-import type { AuditRecord, Decision } from "@ibx/intent-core";
+import type { AuditRecord, Decision } from "@adjudicate/intent-core";
 
 export interface ReplayReport {
   readonly total: number;

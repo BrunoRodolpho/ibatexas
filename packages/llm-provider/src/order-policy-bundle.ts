@@ -1,9 +1,9 @@
 // Order-domain PolicyBundle for IBX-IGE.
 //
 // Lives in @ibatexas/llm-provider so the responder can consume it without
-// reaching up into @ibx/intent-runtime (which would be a circular dep —
+// reaching up into @adjudicate/intent-runtime (which would be a circular dep —
 // intent-runtime depends on llm-provider). After P1-i extracts the runtime
-// files, this module moves into @ibx/intent-domain-order alongside the
+// files, this module moves into @adjudicate/intent-domain-order alongside the
 // machine and the guards. The export shape is preserved so callers do not
 // change at the v2.0 split.
 
@@ -14,8 +14,8 @@ import {
   decisionRefuse,
   type IntentEnvelope,
   type TaintPolicy,
-} from "@ibx/intent-core"
-import type { Guard, PolicyBundle } from "@ibx/intent-kernel"
+} from "@adjudicate/intent-core"
+import type { Guard, PolicyBundle } from "@adjudicate/intent-kernel"
 import {
   refuseCartEmpty,
   refuseGuestCheckoutBlocked,

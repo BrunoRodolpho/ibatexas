@@ -26,13 +26,13 @@ import {
   buildEnvelope,
   decisionRewrite,
   type Decision,
-} from "@ibx/intent-core"
+} from "@adjudicate/intent-core"
 import {
   adjudicateWithShadow,
   legacyDecisionAsKernelDecision,
 } from "./intent-shadow.js"
 import { isEnforced, isShadowed } from "./intent-enforce-config.js"
-import { adjudicate } from "@ibx/intent-kernel"
+import { adjudicate } from "@adjudicate/intent-kernel"
 import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
 
 // ── Config ────────────────────────────────────────────────────────────────────

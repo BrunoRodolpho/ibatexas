@@ -15,7 +15,7 @@ import type {
   Decision,
   IntentEnvelope,
   TaintPolicy,
-} from "@ibx/intent-core";
+} from "@adjudicate/intent-core";
 
 export type Guard<K extends string, P, S> = (
   envelope: IntentEnvelope<K, P>,

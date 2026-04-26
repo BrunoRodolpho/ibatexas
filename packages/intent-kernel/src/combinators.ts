@@ -7,7 +7,7 @@
  *   constant(decision)   — always returns the given Decision (useful in tests)
  */
 
-import type { Decision } from "@ibx/intent-core";
+import type { Decision } from "@adjudicate/intent-core";
 import type { Guard } from "./policy.js";
 
 export function allOf<K extends string, P, S>(

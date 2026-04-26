@@ -1,4 +1,4 @@
-// @ibx/intent-audit-postgres — durable governance trail in Postgres.
+// @adjudicate/intent-audit-postgres — durable governance trail in Postgres.
 
 export {
   createPostgresSink,

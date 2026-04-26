@@ -1,4 +1,4 @@
-# @ibx/intent-core
+# @adjudicate/intent-core
 
 Pure types + lattice algebra + code constants for IBX Intent-Gated Execution.
 
@@ -31,7 +31,7 @@ import {
   BASIS_CODES,
   buildEnvelope,
   decisionExecute,
-} from "@ibx/intent-core";
+} from "@adjudicate/intent-core";
 
 const envelope = buildEnvelope({
   kind: "order.tool.propose",

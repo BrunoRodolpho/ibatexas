@@ -1,7 +1,9 @@
 {
-  "name": "@ibx/intent-kernel",
-  "version": "0.0.1",
-  "private": true,
+  "name": "@adjudicate/intent-kernel",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,7 +21,7 @@
     "test:invariants": "vitest run tests/invariants/"
   },
   "dependencies": {
-    "@ibx/intent-core": "workspace:*"
+    "@adjudicate/intent-core": "workspace:*"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.0.0",

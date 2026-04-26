@@ -5,7 +5,7 @@ import {
   decisionExecute,
   basis,
   BASIS_CODES,
-} from "@ibx/intent-core";
+} from "@adjudicate/intent-core";
 import { createConsoleSink } from "../src/sink-console.js";
 import { createNatsSink, type NatsPublisher } from "../src/sink-nats.js";
 import { multiSink } from "../src/sink.js";

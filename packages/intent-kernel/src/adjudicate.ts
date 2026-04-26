@@ -29,7 +29,7 @@ import {
   type Decision,
   type DecisionBasis,
   type IntentEnvelope,
-} from "@ibx/intent-core";
+} from "@adjudicate/intent-core";
 import type { PolicyBundle } from "./policy.js";
 import { makePassBasis } from "./basis.js";
 

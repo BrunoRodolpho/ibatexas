@@ -7,7 +7,7 @@ import {
   decisionRefuse,
   refuse,
   type IntentEnvelope,
-} from "@ibx/intent-core";
+} from "@adjudicate/intent-core";
 import { allOf, constant, firstMatch } from "../src/combinators.js";
 import type { Guard } from "../src/policy.js";
 

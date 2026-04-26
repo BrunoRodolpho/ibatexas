@@ -25,7 +25,7 @@ const mockAcquireWebAgentLock = vi.hoisted(() => vi.fn());
 const mockReleaseWebAgentLock = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 
-vi.mock("@ibx/intent-runtime", () => ({ runOrchestrator: mockRunAgent }));
+vi.mock("@adjudicate/intent-runtime", () => ({ runOrchestrator: mockRunAgent }));
 vi.mock("../session/store.js", () => ({
   loadSession: mockLoadSession,
   appendMessages: mockAppendMessages,

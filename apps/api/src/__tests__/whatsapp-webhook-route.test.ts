@@ -44,7 +44,7 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
 
-vi.mock("@ibx/intent-runtime", () => ({
+vi.mock("@adjudicate/intent-runtime", () => ({
   runOrchestrator: mockRunAgent,
 }));
 
