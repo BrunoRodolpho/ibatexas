@@ -1,5 +1,5 @@
 {
-  "name": "@adjudicate/intent-runtime",
+  "name": "@adjudicate/audit",
   "version": "0.1.0",
   "publishConfig": {
     "access": "public"
@@ -20,8 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/intent-core": "workspace:*",
-    "@adjudicate/intent-kernel": "workspace:*"
+    "@adjudicate/intent-core": "workspace:*"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.0.0",

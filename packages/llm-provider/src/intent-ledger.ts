@@ -1,5 +1,5 @@
-// Thin adapter wiring @adjudicate/intent-audit's Execution Ledger to IbateXas's
-// Redis infrastructure. Keeps the framework package (@adjudicate/intent-audit)
+// Thin adapter wiring @adjudicate/audit's Execution Ledger to IbateXas's
+// Redis infrastructure. Keeps the framework package (@adjudicate/audit)
 // domain-independent — the Redis client + rk() namespacing lives here.
 //
 // Phase F: shadow writes behind IBX_LEDGER_ENABLED.
@@ -20,7 +20,7 @@ import {
   type Ledger,
   type LedgerHit,
   type LedgerRecordInput,
-} from "@adjudicate/intent-audit"
+} from "@adjudicate/audit"
 import { rk, safeRedis } from "@ibatexas/tools"
 import { recordLedgerOp } from "./intent-metrics.js"
 

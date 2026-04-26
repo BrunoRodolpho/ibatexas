@@ -23,7 +23,7 @@
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
-    "@adjudicate/intent-audit": "workspace:*",
+    "@adjudicate/audit": "workspace:*",
     "@adjudicate/intent-core": "workspace:*",
     "@adjudicate/intent-kernel": "workspace:*",
     "@adjudicate/intent-llm": "workspace:*",

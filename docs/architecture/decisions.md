@@ -133,15 +133,15 @@ prompt injection could trigger fraudulent orders.
 - Kernel executor handles post-order mutations deterministically
 - Prompts rewritten: no "CHAME" (call) directives for mutating tools; LLM uses "consulte" (consult) for read-only
 - Event injection whitelist: only `PIX_DETAILS_COLLECTED` and `SET_NAME` allowed post-LLM
-- `apps/api` consumes only `@adjudicate/intent-runtime` — 2-line import flip from the legacy `@ibatexas/llm-provider`
+- `apps/api` consumes only `@adjudicate/runtime` — 2-line import flip from the legacy `@ibatexas/llm-provider`
 - `@adjudicate/intent-*` packages are domain-independent substrate; second-domain scaffold (clinic) builds in under a day without forking (see [`packages/intent-runtime/examples/clinic/`](../../packages/intent-runtime/examples/clinic/))
 
 **Packages:**
 - [`@adjudicate/intent-core`](../../packages/intent-core/README.md) — types + lattice + `BASIS_CODES`
 - [`@adjudicate/intent-kernel`](../../packages/intent-kernel/README.md) — `adjudicate()` + policy combinators
-- [`@adjudicate/intent-audit`](../../packages/intent-audit/README.md) — ledger + audit sinks + replay
+- [`@adjudicate/audit`](../../packages/intent-audit/README.md) — ledger + audit sinks + replay
 - [`@adjudicate/intent-llm`](../../packages/intent-llm/README.md) — capability planner + prompt renderer + tool classification
-- [`@adjudicate/intent-runtime`](../../packages/intent-runtime/README.md) — orchestrator + XState adapter + order policies (`apps/api`'s only import)
+- [`@adjudicate/runtime`](../../packages/intent-runtime/README.md) — orchestrator + XState adapter + order policies (`apps/api`'s only import)
 
 **Files (legacy, still host the concrete implementation in v1.0 per the plan's open decision on v2.0 split timing):**
 - Classification: `packages/llm-provider/src/machine/types.ts` (`TOOL_CLASSIFICATION`, `ALLOWED_POST_LLM_EVENTS`)

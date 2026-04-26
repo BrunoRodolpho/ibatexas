@@ -9,7 +9,7 @@ short-circuits on the first non-null Decision, collects `DecisionBasis[]` from
 passing guards, falls back to `policy.default`.
 
 **No LLM calls inside.** Same inputs always produce the same output — the
-replay harness in `@adjudicate/intent-audit` depends on this.
+replay harness in `@adjudicate/audit` depends on this.
 
 ## `REWRITE` scope — bounded by design
 

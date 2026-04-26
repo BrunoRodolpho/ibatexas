@@ -4,7 +4,7 @@
  * Purpose: "has this intentHash already been executed against a current
  * resourceVersion?" If yes, suppress re-execution and return the previous
  * result envelope. This is NOT the governance record of truth — that is
- * AuditSink. See `@adjudicate/intent-audit/README.md` for the distinction.
+ * AuditSink. See `@adjudicate/audit/README.md` for the distinction.
  */
 
 export interface LedgerHit {

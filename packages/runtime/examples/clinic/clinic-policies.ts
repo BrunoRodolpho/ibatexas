@@ -6,7 +6,7 @@
  * in under a day with no fork."
  *
  * Every piece below is clinic-specific. None of `@adjudicate/intent-core`,
- * `@adjudicate/intent-kernel`, `@adjudicate/intent-audit`, or `@adjudicate/intent-llm` was forked
+ * `@adjudicate/intent-kernel`, `@adjudicate/audit`, or `@adjudicate/intent-llm` was forked
  * or patched to make this work.
  */
 

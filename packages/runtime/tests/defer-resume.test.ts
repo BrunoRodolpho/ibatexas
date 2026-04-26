@@ -5,7 +5,7 @@
 // resume succeeds. All others return `duplicate_resume_suppressed`.
 //
 // Lives at the framework level (not in apps/api) because the invariant is
-// a property of @adjudicate/intent-runtime semantics + ledger SET-NX dedup, not
+// a property of @adjudicate/runtime semantics + ledger SET-NX dedup, not
 // API-consumer behavior. apps/api wires the result to NATS.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"

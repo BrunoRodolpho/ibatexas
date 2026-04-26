@@ -1,7 +1,7 @@
 // Order-domain PolicyBundle for IBX-IGE.
 //
 // Lives in @ibatexas/llm-provider so the responder can consume it without
-// reaching up into @adjudicate/intent-runtime (which would be a circular dep —
+// reaching up into @adjudicate/runtime (which would be a circular dep —
 // intent-runtime depends on llm-provider). After P1-i extracts the runtime
 // files, this module moves into @adjudicate/intent-domain-order alongside the
 // machine and the guards. The export shape is preserved so callers do not

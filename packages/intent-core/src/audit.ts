@@ -2,7 +2,7 @@
  * AuditRecord — the durable governance trail entry.
  *
  * Every Decision returned by adjudicate() must produce exactly one AuditRecord.
- * These records are emitted to @adjudicate/intent-audit sinks (Console, NATS, Postgres)
+ * These records are emitted to @adjudicate/audit sinks (Console, NATS, Postgres)
  * and are the governance record of truth. The Execution Ledger is separate —
  * it handles hot-path dedup and is not authoritative for audit.
  */

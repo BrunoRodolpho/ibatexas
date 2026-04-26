@@ -1,4 +1,4 @@
-# @adjudicate/intent-audit
+# @adjudicate/audit
 
 Execution Ledger + durable audit sinks + replay harness.
 
@@ -7,7 +7,7 @@ Execution Ledger + durable audit sinks + replay harness.
 | | Purpose | Backend (v1.0) | TTL | Authority |
 |---|---|---|---|---|
 | **Execution Ledger** | Hot-path replay/dedup: "has `intentHash` already executed?" | Redis (`SET NX` + JSON blob) | 14 days | **Execution dedup only** — not the governance record of truth |
-| **Audit Sink** | Durable governance trail: "what happened, why, on what basis?" | `ConsoleSink`, `NatsSink`, `PostgresSink` (opt-in `@adjudicate/intent-audit-postgres`) | Permanent / stream-lifetime | **Governance record of truth** |
+| **Audit Sink** | Durable governance trail: "what happened, why, on what basis?" | `ConsoleSink`, `NatsSink`, `PostgresSink` (opt-in `@adjudicate/audit-postgres`) | Permanent / stream-lifetime | **Governance record of truth** |
 
 **Do not conflate them.** Redis is not a durable audit substrate. If the
 ledger is ever lost, execution dedup regresses (retries may duplicate). Audit
@@ -16,7 +16,7 @@ records stay intact because Sinks persist independently.
 ## Execution Ledger
 
 ```ts
-import { createRedisLedger, createMemoryLedger } from "@adjudicate/intent-audit";
+import { createRedisLedger, createMemoryLedger } from "@adjudicate/audit";
 
 const ledger = createRedisLedger({
   client: myRedisClient,               // exposes `set(key, value, options)` + `get(key)`
@@ -40,7 +40,7 @@ SET NX + TTL. First writer wins. Memory implementation available for tests.
 ## Audit Sinks
 
 ```ts
-import { createConsoleSink, createNatsSink, multiSink } from "@adjudicate/intent-audit";
+import { createConsoleSink, createNatsSink, multiSink } from "@adjudicate/audit";
 
 const sink = multiSink(
   createConsoleSink({ prefix: "[audit]" }),
@@ -57,7 +57,7 @@ harness catches dropped records later.
 ## Replay harness
 
 ```ts
-import { replay } from "@adjudicate/intent-audit";
+import { replay } from "@adjudicate/audit";
 
 const report = replay(records, (r) => adjudicate(r.envelope, state, policy));
 // report.matched === report.total means your policy still produces identical

@@ -1,4 +1,4 @@
-// @adjudicate/intent-audit-postgres — durable governance trail in Postgres.
+// @adjudicate/audit-postgres — durable governance trail in Postgres.
 
 export {
   createPostgresSink,

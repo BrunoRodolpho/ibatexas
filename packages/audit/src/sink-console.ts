@@ -2,7 +2,7 @@
  * ConsoleSink — default sink for development and tests.
  *
  * Emits one-line-per-record structured logs. Production deployments should
- * layer a NatsSink or PostgresSink on top (see @adjudicate/intent-audit-postgres
+ * layer a NatsSink or PostgresSink on top (see @adjudicate/audit-postgres
  * when it ships).
  */
 

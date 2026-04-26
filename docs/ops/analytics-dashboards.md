@@ -368,7 +368,7 @@ WHERE event IN ('audit_decision_executed', 'audit_decision_refused')
 GROUP BY event
 ```
 
-**NATS subjects:** all 8 events also publish to `ibatexas.analytics.event` per the standard pipeline. The audit-only durable trail emits separately to `ibatexas.audit.intent.decision.v1` via `@adjudicate/intent-audit/sink-nats`.
+**NATS subjects:** all 8 events also publish to `ibatexas.analytics.event` per the standard pipeline. The audit-only durable trail emits separately to `ibatexas.audit.intent.decision.v1` via `@adjudicate/audit/sink-nats`.
 
 ### NATS Analytics Events
 

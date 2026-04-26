@@ -12,7 +12,7 @@
 | `payment.regenerate_pix` | `regenerate_pix` | Issues new PIX QR; voids old |
 | `payment.set_pix_details` | `set_pix_details` | Binds PIX payload to order |
 
-DEFER + webhook resume path (`apps/api/src/subscribers/defer-resolver.ts` → `@adjudicate/intent-runtime resumeDeferredIntent`) exercises here. Ledger SET-NX dedup prevents double-execution from duplicate webhook deliveries.
+DEFER + webhook resume path (`apps/api/src/subscribers/defer-resolver.ts` → `@adjudicate/runtime resumeDeferredIntent`) exercises here. Ledger SET-NX dedup prevents double-execution from duplicate webhook deliveries.
 
 ## Pre-flight checklist
 
@@ -23,7 +23,7 @@ This is the most demanding pre-flight in the rollout. Skipping any of these has 
 - [ ] **Ledger flags staged:**
   - [ ] `IBX_LEDGER_ENABLED=true` running ≥14d in production (shadow ledger writes only)
   - [ ] Ledger Redis circuit-breaker exercised in chaos drill within last 30d (`IBX_LEDGER_FAIL_OPEN=true` decision documented)
-  - [ ] Postgres audit sink (`@adjudicate/intent-audit-postgres`) writing without backlog (lag <30s)
+  - [ ] Postgres audit sink (`@adjudicate/audit-postgres`) writing without backlog (lag <30s)
 - [ ] **Webhook subscriber resilience verified:**
   - [ ] `payment.status_changed` NATS subject draining without lag (>1s lag pages already)
   - [ ] `defer-resolver.ts` deployed + healthy; smoke: park a fake DEFER, deliver PIX webhook, observe resume in <5s

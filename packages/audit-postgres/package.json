@@ -1,5 +1,5 @@
 {
-  "name": "@adjudicate/intent-audit-postgres",
+  "name": "@adjudicate/audit-postgres",
   "version": "0.1.0",
   "publishConfig": {
     "access": "public"
@@ -20,7 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/intent-audit": "workspace:*",
+    "@adjudicate/audit": "workspace:*",
     "@adjudicate/intent-core": "workspace:*"
   },
   "devDependencies": {

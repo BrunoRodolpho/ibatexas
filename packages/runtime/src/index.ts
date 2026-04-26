@@ -1,4 +1,4 @@
-// @adjudicate/intent-runtime — DEFER consumer + idempotent resume.
+// @adjudicate/runtime — DEFER consumer + idempotent resume.
 //
 // Pure resume logic for parked deferred intents. The kernel returns DEFER
 // for valid intents that await an external signal (e.g. a payment webhook

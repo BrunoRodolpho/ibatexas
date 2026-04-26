@@ -1,4 +1,4 @@
-# @adjudicate/intent-runtime
+# @adjudicate/runtime
 
 Replay-safe resume for deferred intents.
 
@@ -20,7 +20,7 @@ import {
   type DeferResumeResult,
   type ParkedEnvelope,
   type ResumeDeferredIntentArgs,
-} from "@adjudicate/intent-runtime";
+} from "@adjudicate/runtime";
 ```
 
 ## How it works
