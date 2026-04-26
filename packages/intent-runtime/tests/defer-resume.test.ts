@@ -13,7 +13,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   deferResumeHash,
   resumeDeferredIntent,
-  PIX_CONFIRMED_STATUSES,
   type DeferRedis,
 } from "../src/defer-resume.js"
 
@@ -44,20 +43,6 @@ describe("deferResumeHash (pure)", () => {
 
   it("differs for different signals", () => {
     expect(deferResumeHash("a", "x")).not.toBe(deferResumeHash("a", "y"))
-  })
-})
-
-describe("PIX_CONFIRMED_STATUSES", () => {
-  it("covers paid, captured, confirmed", () => {
-    expect(PIX_CONFIRMED_STATUSES.has("paid")).toBe(true)
-    expect(PIX_CONFIRMED_STATUSES.has("captured")).toBe(true)
-    expect(PIX_CONFIRMED_STATUSES.has("confirmed")).toBe(true)
-  })
-
-  it("does not cover pending, expired, failed", () => {
-    expect(PIX_CONFIRMED_STATUSES.has("pending")).toBe(false)
-    expect(PIX_CONFIRMED_STATUSES.has("expired")).toBe(false)
-    expect(PIX_CONFIRMED_STATUSES.has("failed")).toBe(false)
   })
 })
 

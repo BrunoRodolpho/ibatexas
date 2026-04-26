@@ -613,15 +613,6 @@ importers:
       '@adjudicate/intent-kernel':
         specifier: workspace:*
         version: link:../intent-kernel
-      '@adjudicate/intent-llm':
-        specifier: workspace:*
-        version: link:../intent-llm
-      '@ibatexas/llm-provider':
-        specifier: workspace:*
-        version: link:../llm-provider
-      '@ibatexas/types':
-        specifier: workspace:*
-        version: link:../types
     devDependencies:
       '@eslint/eslintrc':
         specifier: ^3.0.0

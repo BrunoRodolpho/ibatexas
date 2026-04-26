@@ -12,21 +12,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
-    },
-    "./engine": {
-      "types": "./dist/engine/index.d.ts",
-      "import": "./dist/engine/index.js",
-      "default": "./dist/engine/index.js"
-    },
-    "./adapters/xstate": {
-      "types": "./dist/adapters/xstate/index.d.ts",
-      "import": "./dist/adapters/xstate/index.js",
-      "default": "./dist/adapters/xstate/index.js"
-    },
-    "./policies/order": {
-      "types": "./dist/policies/order-policies.d.ts",
-      "import": "./dist/policies/order-policies.js",
-      "default": "./dist/policies/order-policies.js"
     }
   },
   "scripts": {
@@ -35,11 +20,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ibatexas/llm-provider": "workspace:*",
-    "@ibatexas/types": "workspace:*",
     "@adjudicate/intent-core": "workspace:*",
-    "@adjudicate/intent-kernel": "workspace:*",
-    "@adjudicate/intent-llm": "workspace:*"
+    "@adjudicate/intent-kernel": "workspace:*"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.0.0",

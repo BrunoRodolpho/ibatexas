@@ -172,6 +172,11 @@ const requireSlotsFilled: Guard<string, unknown, OrderState> = (
 
 export const PIX_DEFER_TIMEOUT_MS = 15 * 60 * 1000
 export const PIX_CONFIRMATION_SIGNAL = "payment.confirmed"
+export const PIX_CONFIRMED_STATUSES: ReadonlySet<string> = new Set([
+  "paid",
+  "captured",
+  "confirmed",
+])
 
 const deferOnPendingPix: Guard<string, unknown, OrderState> = (
   envelope,

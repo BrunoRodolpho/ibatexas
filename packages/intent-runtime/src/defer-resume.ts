@@ -21,12 +21,6 @@ import { createHash } from "node:crypto"
 
 export const DEFER_PENDING_TTL_GRACE_SECONDS = 14 * 24 * 60 * 60 // 14d resume-token retention
 
-export const PIX_CONFIRMED_STATUSES: ReadonlySet<string> = new Set([
-  "paid",
-  "captured",
-  "confirmed",
-])
-
 export function deferResumeHash(intentHash: string, signal: string): string {
   return createHash("sha256").update(intentHash + ":" + signal).digest("hex")
 }

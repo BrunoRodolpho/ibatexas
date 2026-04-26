@@ -16,19 +16,12 @@
 import { subscribeNatsEvent } from "@ibatexas/nats-client"
 import { getRedisClient, rk } from "@ibatexas/tools"
 import type { PaymentStatusChangedEvent } from "@ibatexas/types"
+import { PIX_CONFIRMED_STATUSES } from "@ibatexas/llm-provider"
 import {
-  PIX_CONFIRMED_STATUSES,
   resumeDeferredIntent as resumeDeferredIntentImpl,
   type DeferResumeResult,
 } from "@adjudicate/intent-runtime"
 import type { FastifyBaseLogger } from "fastify"
-
-export {
-  PIX_CONFIRMED_STATUSES,
-  DEFER_PENDING_TTL_GRACE_SECONDS,
-  deferResumeHash,
-} from "@adjudicate/intent-runtime"
-export type { DeferResumeResult } from "@adjudicate/intent-runtime"
 
 export async function resumeDeferredIntent(
   sessionId: string,

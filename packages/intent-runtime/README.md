@@ -1,68 +1,65 @@
 # @adjudicate/intent-runtime
 
-Runtime + IbateXas adapter for IBX Intent-Gated Execution. `apps/api` depends
-only on this package.
+Replay-safe resume for deferred intents.
+
+The kernel returns `DEFER` when an intent is valid but awaits an external
+signal — a payment webhook confirming a pending charge, a manager approving
+a request, an inventory restock unblocking an order. This package handles
+the **resume** half of that flow with content-addressed deduplication so
+duplicate webhook deliveries fold into exactly one execution.
 
 ## Public surface
 
 ```ts
 import {
-  runOrchestrator,         // the stable contract apps/api consumes
-  createDefaultContext,    // factory for the initial OrderContext
-  isCheckoutState,
-  orderPolicyBundle,       // PolicyBundle for the IbateXas order domain
-  orderTaintPolicy,
-  deferOnPendingPix,
-  PIX_CONFIRMATION_SIGNAL,
-  PIX_DEFER_TIMEOUT_MS,
+  resumeDeferredIntent,
+  deferResumeHash,
+  DEFER_PENDING_TTL_GRACE_SECONDS,
+  type DeferRedis,
+  type DeferLogger,
+  type DeferResumeResult,
+  type ParkedEnvelope,
+  type ResumeDeferredIntentArgs,
 } from "@adjudicate/intent-runtime";
 ```
 
-Subpath exports organize the package for the v2.0 split:
+## How it works
 
-| Subpath | v1.0 | v2.0 target |
-|---|---|---|
-| `@adjudicate/intent-runtime/engine` | `runOrchestrator`, `executeKernel` | stays here |
-| `@adjudicate/intent-runtime/adapters/xstate` | XState binding | extracts to `@adjudicate/intent-runtime-xstate` |
-| `@adjudicate/intent-runtime/policies/order` | IbateXas PolicyBundle | extracts to `@adjudicate/intent-domain-order` |
+When the kernel returns `DEFER`, the adopter parks the envelope at a
+session-scoped Redis key with TTL = `signal.timeoutMs + grace`. When the
+awaited signal lands, the adopter calls `resumeDeferredIntent`, which:
 
-Adopter imports should use these subpaths — when the split lands, they are a
-rename, not a redesign.
+1. Reads the parked envelope.
+2. Computes `deferResumeHash(intentHash, signal)`.
+3. Acquires a resume token via `SET NX` — first writer wins.
+4. On success, deletes the parked key and returns the envelope so the
+   adopter can re-adjudicate it. Duplicate deliveries return
+   `duplicate_resume_suppressed`.
 
-## Connecting a DEFER producer (PIX webhook example)
+The Redis client and key-builder are injected — this package has no
+transport or namespacing assumptions of its own.
 
-`DEFER` is the "valid but awaits an external signal" Decision kind. The
-bundled `deferOnPendingPix` guard returns DEFER for `order.confirm` intents
-whose `paymentMethod === "pix"` and `paymentStatus !== "confirmed"`.
+## Adapter contract
 
-To resolve a deferred intent in production:
+```ts
+interface DeferRedis {
+  get(key: string): Promise<string | null>;
+  set(
+    key: string,
+    value: string,
+    options: { NX: true; EX: number },
+  ): Promise<string | null>;
+  del(key: string): Promise<unknown>;
+}
+```
 
-1. Parse the incoming PIX webhook (Stripe / Mercado Pago).
-2. Publish a NATS event on the subject `PIX_CONFIRMATION_SIGNAL` with
-   `{ sessionId, orderId }`.
-3. A subscriber at `apps/api/src/subscribers/payment-lifecycle.ts` listens
-   for the signal, marks `paymentStatus = "confirmed"` in the machine
-   snapshot, and triggers the parked intent through `runOrchestrator`.
-4. The kernel re-adjudicates, finds `paymentStatus === "confirmed"`, and
-   returns EXECUTE on the same intentHash — the Execution Ledger prevents a
-   double submit.
+Any Redis client implementing those three methods works. The shape matches
+`node-redis` v4+; `ioredis` users need a thin wrapper.
 
-Timeout: `PIX_DEFER_TIMEOUT_MS` defaults to 15 minutes.
+## Second-domain example
 
-## Building a second domain (clinic / salon / mechanic)
-
-See [`examples/clinic/`](./examples/clinic/) for a minimal
-second-domain scaffold against `@adjudicate/intent-kernel` — 3 tools, 4 state
-transitions, 1 PolicyBundle.
-
-The framework pieces you reuse unchanged:
-- `@adjudicate/intent-core` — envelope, decision, taint, refusal, basis
-- `@adjudicate/intent-kernel` — `adjudicate`, `PolicyBundle`, combinators
-- `@adjudicate/intent-audit` — ledger, sinks, replay
-- `@adjudicate/intent-llm` — `CapabilityPlanner`, `PromptRenderer`, `ToolClassification`
-
-The pieces you write per domain:
-- Domain types (`Appointment`, `Slot`, `Service`, …)
-- Domain PolicyBundle (guards for your state machine)
-- Domain `CapabilityPlanner` (which tools visible in which state)
-- Domain `PromptRenderer` (your voice, your locale)
+[`examples/clinic/clinic-policies.ts`](./examples/clinic/clinic-policies.ts)
+is a minimal `PolicyBundle` that shows how to author a domain against
+`@adjudicate/intent-{core,kernel}` without forking the framework — useful
+for verifying the kernel handles your domain shape before wiring up the
+resume flow above.

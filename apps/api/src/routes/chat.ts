@@ -9,7 +9,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { Channel, type AgentContext } from "@ibatexas/types";
-import { runOrchestrator } from "@adjudicate/intent-runtime";
+import { runOrchestrator } from "@ibatexas/llm-provider";
 import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
 import { loadSession, appendMessages } from "../session/store.js";
 import { optionalAuth } from "../middleware/auth.js";

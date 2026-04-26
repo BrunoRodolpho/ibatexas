@@ -83,6 +83,7 @@ export {
   orderPolicyBundle,
   orderTaintPolicy,
   PIX_CONFIRMATION_SIGNAL,
+  PIX_CONFIRMED_STATUSES,
   PIX_DEFER_TIMEOUT_MS,
   type OrderEnvelope,
   type OrderState,

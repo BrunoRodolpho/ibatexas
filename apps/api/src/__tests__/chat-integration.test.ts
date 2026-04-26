@@ -25,7 +25,7 @@ const mockRunAgent = vi.hoisted(() =>
 const mockLoadSession = vi.hoisted(() => vi.fn().mockResolvedValue([]))
 const mockAppendMessages = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 
-vi.mock("@adjudicate/intent-runtime", () => ({
+vi.mock("@ibatexas/llm-provider", () => ({
   runOrchestrator: mockRunAgent,
 }))
 
