@@ -76,49 +76,14 @@ export function formatMissingSlots(ctx: OrderContext): string {
 }
 
 // ── State → tools map ─────────────────────────────────────────────────────────
+//
+// IBX-IGE Phase I: capability shaping lives in `capability-planner.ts` —
+// security-sensitive decisions are isolated from the cosmetic renderer. The
+// prompt-synthesizer below is the PromptRenderer and calls the planner for
+// its tool list and forbidden concepts.
 
-// Keys are exact state values or glob-style prefixes ending in ".*".
-// Lookup happens in declaration order; first match wins.
-
-const STATE_TOOLS: Array<[pattern: string, tools: string[]]> = [
-  ["idle", ["get_customer_profile", "search_products", "check_order_status", "get_order_history"]],
-  ["first_contact", ["get_customer_profile", "search_products"]],
-  ["browsing", ["search_products", "get_product_details", "check_inventory", "get_nutritional_info", "estimate_delivery", "check_order_status", "get_order_history"]],
-  ["ordering.", ["search_products", "get_also_added", "get_ordered_together"]],
-  ["checkout.collecting_pix_details", ["set_pix_details"]],
-  ["checkout.reviewing_pix_details", []],
-  ["checkout.", []],
-  ["post_order.cancelling", []],
-  ["post_order.amending", []],
-  ["post_order.regenerating_pix", []],
-  ["post_order.", ["get_loyalty_balance", "check_order_status", "check_payment_status", "search_products"]],
-  ["reservation", ["check_table_availability", "get_my_reservations"]],
-  ["support", ["handoff_to_human"]],
-  ["loyalty_check", ["get_loyalty_balance"]],
-  ["reorder", ["get_order_history", "search_products"]],
-  ["objection", ["schedule_follow_up"]],
-  ["fallback", ["search_products", "get_customer_profile", "estimate_delivery", "check_order_status", "get_order_history"]],
-]
-
-function resolveTools(stateValue: string, ctx?: OrderContext): string[] {
-  for (const [pattern, tools] of STATE_TOOLS) {
-    if (pattern.endsWith(".")) {
-      // prefix match — e.g. "ordering." matches "ordering.item_added"
-      if (stateValue.startsWith(pattern) || stateValue === pattern.slice(0, -1)) {
-        // When closed + item_unavailable: remove search tools to prevent LLM
-        // from bypassing the machine's frozen-only search filter.
-        if (stateValue === "ordering.item_unavailable" && ctx?.mealPeriod === "closed") {
-          return tools.filter((t) => t !== "search_products")
-        }
-        return tools
-      }
-    } else {
-      if (stateValue === pattern) return tools
-    }
-  }
-  // Unknown state — return an empty tool list (safe default)
-  return []
-}
+import { resolveTools } from "./capability-planner.js"
+export { resolveTools, STATE_TOOLS } from "./capability-planner.js"
 
 // ── Order confirmation formatter ──────────────────────────────────────────────
 

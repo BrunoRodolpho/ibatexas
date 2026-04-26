@@ -14,6 +14,7 @@
 | 25 AI tools — auth level, inputs, outputs | [docs/architecture/design/agent-tools.md](docs/architecture/design/agent-tools.md) |
 | ADRs, cross-cutting patterns | [docs/architecture/decisions.md](docs/architecture/decisions.md) |
 | Zero-Trust LLM, tool classification, intent bridge | [docs/architecture/decisions.md](docs/architecture/decisions.md) (ADR #9) |
+| Kernel rollout — 4-stage shadow → enforce playbook | [docs/ops/runbooks/](docs/ops/runbooks/) |
 | Analytics events, PostHog dashboards | [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) |
 | Redis key patterns, TTLs | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
 | Claude Code plugins — what's installed, usage | [docs/setup/plugins.md](docs/setup/plugins.md) |
@@ -38,7 +39,7 @@ If a command does not exist for what you need, add it to `packages/cli/` first, 
 6. **`.env`:** never committed — update `.env.example` when adding new vars
 7. **Redis keys:** always use `rk()` from `@ibatexas/tools` — never build raw key strings inline. This includes cache modules, session stores, and job schedulers.
 8. **Analytics events:** add to `AnalyticsEvent` union in `apps/web/src/domains/analytics/events.ts` AND document in `docs/ops/analytics-dashboards.md`
-9. **LLM Authority:** the LLM is a semantic parser with zero state-mutation authority. Mutating tools use `executeToolDirect()` (kernel-only). Never add mutating tools to `STATE_TOOLS` in the prompt synthesizer — they are kernel-controlled via `TOOL_CLASSIFICATION` in `packages/llm-provider/src/machine/types.ts`.
+9. **LLM Authority (IBX Intent-Gated Execution v2.0):** the LLM is a semantic parser with zero state-mutation authority. Mutating tools are captured as `IntentEnvelope<kind, payload>` objects (`@ibx/intent-core`), adjudicated by the kernel (`@ibx/intent-kernel.adjudicate()`), and orchestrated via `@ibx/intent-runtime` (`runOrchestrator`, `executeKernel`). Tool visibility to the LLM is controlled by the `CapabilityPlanner` and `ToolClassification` contracts in `@ibx/intent-llm`; never add mutating tools to the planner's visible list. Current implementations: `packages/llm-provider/src/capability-planner.ts`, `TOOL_CLASSIFICATION` in `packages/llm-provider/src/machine/types.ts`, intent-bridge in `packages/llm-provider/src/tool-registry.ts`. **Staged rollout** is gated per-intent-class via `IBX_KERNEL_SHADOW` and `IBX_KERNEL_ENFORCE` (parsed in `packages/llm-provider/src/intent-enforce-config.ts`) — see [docs/ops/runbooks/](docs/ops/runbooks/) for the 4-stage playbook. **Execution dedup** is gated by `IBX_LEDGER_ENABLED` / `IBX_LEDGER_ENFORCE` / `IBX_LEDGER_FAIL_OPEN` (`@ibx/intent-audit`). See ADR #9 and the `@ibx/intent-{core,kernel,llm,runtime,audit,audit-postgres}` package READMEs.
 10. **Redis locks:** always use UUID lock values with Lua conditional release. Never use plain `redis.del()` to release a lock — use the ownership-checking Lua script pattern. See `apps/api/src/whatsapp/session.ts` for reference.
 
 ---

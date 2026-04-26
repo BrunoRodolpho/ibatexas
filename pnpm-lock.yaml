@@ -153,6 +153,9 @@ importers:
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@ibx/intent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/intent-runtime
       '@sentry/node':
         specifier: ^10.45.0
         version: 10.47.0(@opentelemetry/exporter-trace-otlp-http@0.200.0(@opentelemetry/api@1.9.1))
@@ -468,6 +471,177 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
+  packages/intent-audit:
+    dependencies:
+      '@ibx/intent-core':
+        specifier: workspace:*
+        version: link:../intent-core
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/intent-audit-postgres:
+    dependencies:
+      '@ibx/intent-audit':
+        specifier: workspace:*
+        version: link:../intent-audit
+      '@ibx/intent-core':
+        specifier: workspace:*
+        version: link:../intent-core
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/intent-core:
+    dependencies:
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      fast-check:
+        specifier: ^3.23.1
+        version: 3.23.2
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/intent-kernel:
+    dependencies:
+      '@ibx/intent-core':
+        specifier: workspace:*
+        version: link:../intent-core
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      fast-check:
+        specifier: ^3.23.1
+        version: 3.23.2
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/intent-llm:
+    dependencies:
+      '@ibx/intent-core':
+        specifier: workspace:*
+        version: link:../intent-core
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/intent-runtime:
+    dependencies:
+      '@ibatexas/llm-provider':
+        specifier: workspace:*
+        version: link:../llm-provider
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../types
+      '@ibx/intent-core':
+        specifier: workspace:*
+        version: link:../intent-core
+      '@ibx/intent-kernel':
+        specifier: workspace:*
+        version: link:../intent-kernel
+      '@ibx/intent-llm':
+        specifier: workspace:*
+        version: link:../intent-llm
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
   packages/llm-provider:
     dependencies:
       '@anthropic-ai/sdk':
@@ -476,12 +650,27 @@ importers:
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain
+      '@ibatexas/nats-client':
+        specifier: workspace:*
+        version: link:../nats-client
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../tools
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types
+      '@ibx/intent-audit':
+        specifier: workspace:*
+        version: link:../intent-audit
+      '@ibx/intent-core':
+        specifier: workspace:*
+        version: link:../intent-core
+      '@ibx/intent-kernel':
+        specifier: workspace:*
+        version: link:../intent-kernel
+      '@ibx/intent-llm':
+        specifier: workspace:*
+        version: link:../intent-llm
       fuse.js:
         specifier: ^7.1.0
         version: 7.2.0

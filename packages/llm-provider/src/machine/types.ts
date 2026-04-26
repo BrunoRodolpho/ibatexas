@@ -290,6 +290,12 @@ export interface KernelOutput {
     eventType: string
     timestamp: number
   }
+  /**
+   * IBX-IGE Phase E: decisions produced during this turn. Additive — empty array
+   * is valid and keeps legacy consumers green. Populated by adjudicate() call
+   * sites as they are wired in subsequent phases.
+   */
+  decisions?: readonly import("@ibx/intent-core").Decision[]
 }
 
 /** Async side-effect the orchestrator must execute between transitions. */
@@ -403,18 +409,49 @@ export const TOOL_CLASSIFICATION = {
 
 // ── Intent Bridge (LLM proposes, Machine decides) ───────────────────────────
 
+import type { IntentEnvelope } from "@ibx/intent-core"
+
+/**
+ * Payload carried inside a versioned IntentEnvelope for mutating tool proposals.
+ */
+export interface ToolProposePayload {
+  toolName: string
+  input: unknown
+  toolUseId: string
+}
+
+/**
+ * The canonical envelope kind for LLM-proposed mutating tool calls.
+ * Adopters should treat this as the sole vocabulary for the "order.tool.propose" intent
+ * and migrate away from direct ToolIntent access in Phase I.
+ */
+export type ToolProposeEnvelope = IntentEnvelope<
+  "order.tool.propose",
+  ToolProposePayload
+>
+
 /**
  * When the LLM calls a mutating tool, instead of executing it directly,
  * the system captures it as a ToolIntent. The kernel executor validates
  * the intent against the current machine state and decides whether to execute.
+ *
+ * Phase B (IBX-IGE): the `envelope` field is the new canonical shape — a
+ * versioned IntentEnvelope with a content-addressable `intentHash`. The legacy
+ * `toolName` / `input` / `toolUseId` fields remain for one release to keep
+ * existing call sites green; they will be removed in Phase I.
  */
 export interface ToolIntent {
-  /** Tool name the LLM wants to call */
+  /** Tool name the LLM wants to call (legacy — read from envelope.payload.toolName in new code) */
   toolName: string
-  /** Raw input from the LLM (pre-validated) */
+  /** Raw input from the LLM (legacy — read from envelope.payload.input) */
   input: unknown
-  /** Tool use ID from the Anthropic API (for returning results) */
+  /** Tool use ID from the Anthropic API (legacy — read from envelope.payload.toolUseId) */
   toolUseId: string
+  /**
+   * Canonical envelope. Optional in Phase B; becomes required in Phase I once
+   * every construction site has been migrated.
+   */
+  envelope?: ToolProposeEnvelope
 }
 
 // ── Default context factory ─────────────────────────────────────────────────

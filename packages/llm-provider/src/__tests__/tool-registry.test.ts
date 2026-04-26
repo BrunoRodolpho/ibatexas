@@ -220,10 +220,27 @@ describe("withCustomerId injection", () => {
 
   it("returns intent for MUTATING tools via executeTool", async () => {
     const result = await executeTool("create_reservation", { timeSlotId: "slot_01", partySize: 2 }, ctx)
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: "intent",
-      intent: { toolName: "create_reservation", input: { timeSlotId: "slot_01", partySize: 2 }, toolUseId: "" },
+      intent: {
+        toolName: "create_reservation",
+        input: { timeSlotId: "slot_01", partySize: 2 },
+        toolUseId: "",
+        envelope: {
+          version: 1,
+          kind: "order.tool.propose",
+          taint: "UNTRUSTED",
+          actor: { principal: "llm" },
+          payload: {
+            toolName: "create_reservation",
+            input: { timeSlotId: "slot_01", partySize: 2 },
+          },
+        },
+      },
     })
+    // intentHash is deterministic — present and sha256-shaped
+    if (result.kind !== "intent") throw new Error("expected intent")
+    expect(result.intent.envelope?.intentHash).toMatch(/^[0-9a-f]{64}$/)
   })
 
   it("throws when ctx.customerId is missing for auth-required tools", async () => {

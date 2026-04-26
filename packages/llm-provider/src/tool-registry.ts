@@ -115,7 +115,12 @@ import {
 } from "@ibatexas/types"
 import { z } from "zod"
 import type { Tool } from "@anthropic-ai/sdk/resources/index.js"
-import { TOOL_CLASSIFICATION, type ToolIntent } from "./machine/types.js"
+import { buildEnvelope } from "@ibx/intent-core"
+import {
+  TOOL_CLASSIFICATION,
+  type ToolIntent,
+  type ToolProposePayload,
+} from "./machine/types.js"
 
 // ── Tool definitions (passed to Claude API) ───────────────────────────────────
 // SearchProductsTool uses `inputSchema` (camelCase) for internal use.
@@ -371,9 +376,28 @@ export async function executeTool(
 
   // MUTATING tools: capture as intent, don't execute.
   // The caller (llm-responder) will pass this to the kernel for validation.
+  // Phase B: wrap in a versioned IntentEnvelope alongside legacy fields.
+  const payload: ToolProposePayload = {
+    toolName: name,
+    input,
+    toolUseId: toolUseId ?? "",
+  }
+  const envelope = buildEnvelope({
+    kind: "order.tool.propose",
+    payload,
+    actor: { principal: "llm", sessionId: ctx.sessionId },
+    // User message is the ultimate source of the LLM's tool proposal.
+    // v1.0 payload-level taint; field-level ships in v1.1 per docs/taint.md.
+    taint: "UNTRUSTED",
+  })
   return {
     kind: "intent",
-    intent: { toolName: name, input, toolUseId: toolUseId ?? "" },
+    intent: {
+      toolName: name,
+      input,
+      toolUseId: toolUseId ?? "",
+      envelope,
+    },
   }
 }
 

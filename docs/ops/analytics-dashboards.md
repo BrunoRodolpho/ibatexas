@@ -320,6 +320,56 @@ flowchart TD
 
 **Note:** Conversation archival events flow through NATS to the `conversation-archiver` subscriber (Postgres persistence), NOT through PostHog. These are infrastructure events for durable storage, not analytics events.
 
+### IBX-IGE Audit Events (v2.0 — kernel observability)
+
+These events emit when the Intent-Gated Execution kernel runs against live traffic. They are critical for the staged kernel rollout and post-rollout health monitoring.
+
+| Event | Trigger | Key Properties | Operational policy |
+|-------|---------|----------------|--------------------|
+| `audit_kernel_shadow_diverged_basis` | Shadow mode: same outcome, different `decision.basis` | `intentKind`, `decisionKind`, `basisCount` | Metric only — basis-vocabulary upgrade artifact, not page-worthy |
+| `audit_kernel_shadow_diverged_kind` | Shadow mode: legacy and adjudicate produced different `decision.kind` | `intentKind`, `legacyKind`, `adjudicateKind`, `refusalCode?` | **PAGE on-call** when rate >0.1% per intent class for >5 minutes. Each occurrence is a policy bug — fix before flipping that intent class to ENFORCE |
+| `audit_kernel_shadow_diverged_rewrite` | Shadow mode: adjudicate returned REWRITE, legacy did not | `intentKind`, `rewriteReason`, `basisCodes[]` | Manual review per occurrence. Decide: accept (kernel right), tighten REWRITE scope, or extend legacy |
+| `audit_decision_executed` | adjudicate() returned EXECUTE for a mutating intent | `intentKind`, `taint`, `basisCodes[]`, `durationMs` | Metric — track distribution per intent class |
+| `audit_decision_refused` | adjudicate() returned REFUSE | `intentKind`, `refusalKind`, `refusalCode`, `taint` | Track refusal-rate per intent kind; alert on sudden spike (>2× 7-day baseline) |
+| `audit_ledger_hit` | Execution Ledger replay-suppressed a duplicate intent | `intentKind`, `intentHash`, `firstAt`, `subkind` (e.g., `defer_resume`) | Metric — high rate may indicate webhook redelivery storm |
+| `audit_nats_sink_failed` | NatsSink emit() rejected | `subject`, `errorClass`, `consecutiveFailures` | Alert at >10 consecutive failures (NatsSink throws `NatsSinkError` at this point) |
+| `audit_replay_divergence` | Replay harness produced different Decision than recorded | `intentHash`, `expected`, `actual` | Critical — policy or kernel changed in a way that breaks reproducibility. Block any release that introduces divergence |
+
+**Rollout dashboards** (per the IBX-IGE v2.0 Progressive Authority Rollout):
+
+- **Stage 1 (read-like mutating):** weekly bar chart of `audit_kernel_shadow_diverged_kind` by `intentKind` for `apply_coupon`, `update_preferences`, `submit_review`, `schedule_follow_up`. Promote when rate is zero for 7 consecutive days.
+- **Stage 2 (order updates):** same chart filtered to cart-mutating intents.
+- **Stage 3 (order submission):** hourly chart during the rollout window; on-call watches in real-time.
+- **Stage 4 (financial reversals):** 14-day soak required; chart includes both `audit_kernel_shadow_diverged_kind` and `audit_kernel_shadow_diverged_rewrite`.
+
+**Sample PostHog queries:**
+
+```
+# Shadow divergence rate per intent class (DECISION_KIND only)
+SELECT
+  properties.intentKind AS intent_kind,
+  count() AS divergence_count,
+  count() / SUM(count()) OVER () AS rate
+FROM events
+WHERE event = 'audit_kernel_shadow_diverged_kind'
+  AND timestamp > now() - INTERVAL 7 DAY
+GROUP BY intent_kind
+ORDER BY rate DESC
+```
+
+```
+# Decision distribution under enforcement
+SELECT
+  event,
+  count() AS volume
+FROM events
+WHERE event IN ('audit_decision_executed', 'audit_decision_refused')
+  AND timestamp > now() - INTERVAL 1 HOUR
+GROUP BY event
+```
+
+**NATS subjects:** all 8 events also publish to `ibatexas.analytics.event` per the standard pipeline. The audit-only durable trail emits separately to `ibatexas.audit.intent.decision.v1` via `@ibx/intent-audit/sink-nats`.
+
 ### NATS Analytics Events
 
 Web analytics events are published to NATS subject `analytics.event` (full: `ibatexas.analytics.event`) for downstream consumers (e.g., PostHog ingestion pipeline).

@@ -11,7 +11,29 @@ import { getRedisClient, rk } from "@ibatexas/tools"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 import type { ToolExecutionResult } from "./tool-registry.js"
 import type { OrderContext, SynthesizedPrompt, ToolIntent } from "./machine/types.js"
-import { shouldBufferText, validateBufferedText } from "./validation-layer.js"
+import {
+  shouldBufferText,
+  validateBufferedText,
+  validateBufferedTextTyped,
+} from "./validation-layer.js"
+import {
+  getIntentLedger,
+  isLedgerEnforced,
+} from "./intent-ledger.js"
+import { getAuditSink } from "./intent-audit-wiring.js"
+import {
+  buildAuditRecord,
+  buildEnvelope,
+  decisionRewrite,
+  type Decision,
+} from "@ibx/intent-core"
+import {
+  adjudicateWithShadow,
+  legacyDecisionAsKernelDecision,
+} from "./intent-shadow.js"
+import { isEnforced, isShadowed } from "./intent-enforce-config.js"
+import { adjudicate } from "@ibx/intent-kernel"
+import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -187,6 +209,7 @@ const MAX_TOOLS_PER_TURN = 5
 async function processToolCalls(
   content: ContentBlock[],
   context: AgentContext,
+  machineCtx: OrderContext,
   onChunk: (chunk: StreamChunk) => void,
   conversationRetries: { count: number },
   allowedTools: string[],
@@ -227,15 +250,208 @@ async function processToolCalls(
     if (isToolExecutionResult(result)) {
       if (result.kind === "intent" && result.intent) {
         console.warn("[llm-responder] Intent captured for mutating tool: %s", block.name)
-        onToolIntent?.(result.intent)
-        onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
+
+        // ── Phase F/G: Execution Ledger (shadow or enforce) ────────────────
+        // The ledger is consulted only when IBX_LEDGER_ENABLED or _ENFORCE is
+        // set; otherwise getIntentLedger() returns null and we fall through.
+        const hash = result.intent.envelope?.intentHash
+        if (hash) {
+          try {
+            const ledger = await getIntentLedger()
+            if (ledger) {
+              const hit = await ledger.checkLedger(hash)
+              if (hit && isLedgerEnforced()) {
+                // Phase G enforcement: duplicate execution — do NOT dispatch
+                // onToolIntent. Surface a "already processed" tool result.
+                console.warn(
+                  "[llm-responder] Ledger replay suppressed (hash=%s, firstAt=%s)",
+                  hash,
+                  hit.at,
+                )
+                onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
+                toolResults.push({
+                  type: "tool_result",
+                  tool_use_id: block.id,
+                  content: JSON.stringify({
+                    status: "already_processed",
+                    message: "Essa solicitação já foi processada.",
+                    toolName: block.name,
+                  }),
+                })
+                continue
+              }
+              // Record (shadow or enforce — both record). First writer wins.
+              await ledger.recordExecution({
+                intentHash: hash,
+                resourceVersion: `session:${context.sessionId}`,
+                sessionId: context.sessionId,
+                kind: result.intent.envelope?.kind ?? "order.tool.propose",
+              })
+            }
+          } catch (err) {
+            // Ledger is best-effort on the hot path. A failure must not block
+            // the intent — the audit sink captures the attempt independently.
+            console.error(
+              "[llm-responder] Ledger error — continuing without dedup:",
+              (err as Error).message,
+            )
+          }
+        }
+
+        // ── Phase P0-b: per-intent kernel adjudication ────────────────────
+        // For each intent kind, decide which path is authoritative:
+        //   1. enforce list  → adjudicate() is the decision
+        //   2. shadow list   → run both, log divergence, legacy stays authoritative
+        //   3. neither       → pure legacy (always-EXECUTE for v1.0 stub baseline)
+        //
+        // The legacy boolean for v1.0 was effectively "always EXECUTE" because
+        // the responder unconditionally invoked onToolIntent. Shadow mode
+        // surfaces every non-EXECUTE adjudicate decision as a DECISION_KIND
+        // divergence — exactly the signal needed to grow the enforce list.
+        const envelope = result.intent.envelope
+        const intentKind = envelope?.kind ?? block.name
+        const orderState: OrderState = { ctx: machineCtx }
+        const startedAt = Date.now()
+        let decision: Decision
+        if (envelope && isEnforced(intentKind, process.env)) {
+          decision = adjudicate(envelope, orderState, orderPolicyBundle)
+        } else if (envelope && isShadowed(intentKind, process.env)) {
+          const shadow = adjudicateWithShadow({
+            envelope,
+            state: orderState,
+            policy: orderPolicyBundle,
+            // v1.0 baseline: legacy always EXECUTE'd. Divergences from this
+            // baseline surface every kernel REFUSE as DECISION_KIND so the
+            // on-call can tune the policy before flipping to enforce.
+            legacy: () => true,
+          })
+          decision = legacyDecisionAsKernelDecision(shadow.legacyDecision)
+        } else {
+          // Pure legacy — preserve v1.0 behavior exactly.
+          decision = legacyDecisionAsKernelDecision({ kind: "EXECUTE" })
+        }
+
+        // Audit emit — the real Decision now drives the record (no more stub).
+        if (envelope) {
+          try {
+            const record = buildAuditRecord({
+              envelope,
+              decision,
+              durationMs: Date.now() - startedAt,
+            })
+            void getAuditSink().emit(record).catch((err: unknown) => {
+              console.error(
+                "[llm-responder] Audit emit failed:",
+                (err as Error).message,
+              )
+            })
+          } catch (err) {
+            console.error(
+              "[llm-responder] Audit record build failed:",
+              (err as Error).message,
+            )
+          }
+        }
+
+        // Branch on decision.kind. EXECUTE preserves the v1.0 onToolIntent
+        // path; non-EXECUTE outcomes short-circuit with structured tool
+        // results. ESCALATE / REQUEST_CONFIRMATION fall through to a refusal
+        // shape until their dedicated producers arrive in later phases.
+        if (decision.kind === "EXECUTE" || decision.kind === "REWRITE") {
+          // REWRITE substitutes a sanitized envelope; for now we route the
+          // original to preserve v1.0 behavior. The first REWRITE producer
+          // (P0-d validation layer) handles the rewritten payload at the
+          // text-commit boundary, not here.
+          onToolIntent?.(result.intent)
+          onChunk({
+            type: "tool_result",
+            toolName: block.name,
+            toolUseId: block.id,
+            success: true,
+          })
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify({
+              status: "intent_registered",
+              message: "Solicitação registrada. O sistema processará sua requisição.",
+              toolName: block.name,
+            }),
+          })
+          continue
+        }
+
+        if (decision.kind === "DEFER") {
+          // Park the intent for the DEFER consumer (P0-c) to resume.
+          // Storage shape: TTL = signal.timeoutMs + 60s grace.
+          if (envelope) {
+            try {
+              const redis = await getRedisClient()
+              const ttlSeconds = Math.ceil(decision.timeoutMs / 1000) + 60
+              await redis.set(
+                rk(`defer:pending:${context.sessionId}`),
+                JSON.stringify({
+                  envelope,
+                  signal: decision.signal,
+                  parkedAt: new Date().toISOString(),
+                }),
+                { EX: ttlSeconds },
+              )
+            } catch (err) {
+              console.error(
+                "[llm-responder] DEFER park failed:",
+                (err as Error).message,
+              )
+            }
+          }
+          onChunk({
+            type: "tool_result",
+            toolName: block.name,
+            toolUseId: block.id,
+            success: true,
+          })
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify({
+              status: "deferred",
+              message: "Estou aguardando confirmação. Te aviso assim que tudo estiver certo.",
+              signal: decision.signal,
+              toolName: block.name,
+            }),
+          })
+          continue
+        }
+
+        // REFUSE / ESCALATE / REQUEST_CONFIRMATION — surface the user-facing
+        // text. onToolIntent is NOT invoked: the kernel said no.
+        const refusalText =
+          decision.kind === "REFUSE"
+            ? decision.refusal.userFacing
+            : decision.kind === "REQUEST_CONFIRMATION"
+              ? decision.prompt
+              : "Vou pedir uma revisão antes de seguir."
+        onChunk({
+          type: "tool_result",
+          toolName: block.name,
+          toolUseId: block.id,
+          success: false,
+        })
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
           content: JSON.stringify({
-            status: "intent_registered",
-            message: "Solicitação registrada. O sistema processará sua requisição.",
+            status:
+              decision.kind === "REFUSE"
+                ? "refused"
+                : decision.kind === "REQUEST_CONFIRMATION"
+                  ? "confirmation_required"
+                  : "escalated",
+            message: refusalText,
             toolName: block.name,
+            ...(decision.kind === "REFUSE"
+              ? { refusalCode: decision.refusal.code, refusalKind: decision.refusal.kind }
+              : {}),
           }),
         })
         continue
@@ -420,19 +636,67 @@ export async function* generateResponse(
           turnBuffer.join("").slice(0, 100),
         )
       } else {
-        // end_turn — validate and flush
+        // end_turn — validate and flush.
+        // P0-d: route through the typed ValidationOutcome so REWRITE
+        // sanitization produces a structured AuditRecord instead of a silent
+        // console.warn drop. PASS streams as before; REWRITE streams the
+        // sanitized text and emits a REWRITE Decision audit; REFUSE emits
+        // refusal text and a REFUSE audit.
         const rawText = turnBuffer.join("")
-        const { cleanText, violations } = validateBufferedText(rawText, stateValue)
-        if (violations.length > 0) {
-          console.warn(
-            "[agent] Removed %d forbidden phrase(s) in %s: %s",
-            violations.length,
-            stateValue,
-            violations.map((v) => v.match).join(", "),
-          )
-        }
-        if (cleanText.length > 0) {
-          yield { type: "text_delta", delta: cleanText }
+        const outcome = validateBufferedTextTyped(rawText, stateValue)
+        if (outcome.kind === "PASS") {
+          if (outcome.text.length > 0) {
+            yield { type: "text_delta", delta: outcome.text }
+          }
+        } else if (outcome.kind === "REWRITE") {
+          // Emit a structured audit record. The synthetic envelope captures
+          // the validation event so downstream replay can reproduce it.
+          try {
+            const validationEnvelope = buildEnvelope({
+              kind: "validation.text.rewrite",
+              payload: { stateValue, originalLength: rawText.length },
+              actor: { principal: "system", sessionId: agentContext.sessionId },
+              taint: "SYSTEM",
+            })
+            const record = buildAuditRecord({
+              envelope: validationEnvelope,
+              decision: decisionRewrite(validationEnvelope, outcome.reason, outcome.basis),
+              durationMs: 0,
+            })
+            void getAuditSink().emit(record).catch((err: unknown) => {
+              console.error(
+                "[llm-responder] REWRITE audit emit failed:",
+                (err as Error).message,
+              )
+            })
+          } catch (err) {
+            console.error(
+              "[llm-responder] REWRITE audit build failed:",
+              (err as Error).message,
+            )
+          }
+          if (outcome.rewritten.length > 0) {
+            yield { type: "text_delta", delta: outcome.rewritten }
+          }
+        } else {
+          // REFUSE — surface a brief refusal to the user, do not stream raw.
+          try {
+            const refuseEnvelope = buildEnvelope({
+              kind: "validation.text.refuse",
+              payload: { stateValue, originalLength: rawText.length },
+              actor: { principal: "system", sessionId: agentContext.sessionId },
+              taint: "SYSTEM",
+            })
+            const record = buildAuditRecord({
+              envelope: refuseEnvelope,
+              decision: { kind: "REFUSE", refusal: outcome.refusal, basis: outcome.basis },
+              durationMs: 0,
+            })
+            void getAuditSink().emit(record).catch(() => {})
+          } catch {
+            /* best-effort */
+          }
+          yield { type: "text_delta", delta: outcome.refusal.userFacing }
         }
       }
     }
@@ -464,6 +728,7 @@ export async function* generateResponse(
       const toolResults = await processToolCalls(
         finalMessage.content,
         agentContext,
+        machineCtx,
         (chunk) => pendingChunks.push(chunk),
         conversationRetries,
         synthesized.availableTools,

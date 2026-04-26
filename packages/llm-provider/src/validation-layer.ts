@@ -3,6 +3,16 @@
 // Two-phase language commit: text is buffered when tools are available,
 // then validated against forbidden patterns before being committed (streamed).
 // When no tools are available, text streams live with zero TTFB penalty.
+//
+// IBX-IGE Phase E: sanitization produces a typed `ValidationOutcome` that maps
+// directly onto the 6-valued Decision algebra. When a forbidden phrase is
+// removed, the outcome is REWRITE (not silent drop) with a vocabulary-controlled
+// basis. Consumers that need legacy `{cleanText, violations}` shape still have
+// `validateBufferedText()`.
+
+import { basis, BASIS_CODES, type DecisionBasis } from "@ibx/intent-core"
+import { refuseForbiddenPhrase } from "./refusal-taxonomy.js"
+import type { Refusal } from "@ibx/intent-core"
 
 // ── Forbidden patterns per state ──────────────────────────────────────────────
 
@@ -111,6 +121,89 @@ export function validateBufferedText(
   }
 
   return { cleanText, violations }
+}
+
+// ── IBX-IGE Phase E: typed validation outcome (REWRITE algebra) ──────────────
+
+/**
+ * Typed outcome of the two-phase commit — the first consumer of the Decision
+ * algebra's REWRITE semantics. Adopters should prefer this over
+ * `validateBufferedText()` when integrating with the kernel.
+ *
+ * - PASS    → text had no forbidden phrases; emit as-is
+ * - REWRITE → sanitization happened; `rewritten` is the safe replacement, with
+ *             vocabulary-controlled basis. This is the "first REWRITE user"
+ *             called out in the IBX-IGE plan.
+ * - REFUSE  → sanitization was not safely possible (reserved for future use —
+ *             currently unused because rewrite is always viable)
+ */
+export type ValidationOutcome =
+  | { kind: "PASS"; text: string }
+  | {
+      kind: "REWRITE"
+      rewritten: string
+      reason: string
+      basis: readonly DecisionBasis[]
+    }
+  | {
+      kind: "REFUSE"
+      refusal: Refusal
+      basis: readonly DecisionBasis[]
+    }
+
+/**
+ * Typed two-phase commit. Returns PASS when text is clean, REWRITE when
+ * sanitization replaced forbidden phrases with nothing (hold-until-tool-result
+ * semantics), or REFUSE if future logic determines the text is unsafe even
+ * after sanitization.
+ */
+export function validateBufferedTextTyped(
+  text: string,
+  stateValue: string,
+): ValidationOutcome {
+  const { cleanText, violations } = validateBufferedText(text, stateValue)
+  if (violations.length === 0) {
+    return { kind: "PASS", text: cleanText }
+  }
+
+  // Sanitization was successful — emit a REWRITE Decision-shape.
+  // This is the first concrete use of the REWRITE semantics in IBX-IGE.
+  //
+  // REWRITE is scope-restricted: sanitization (stripping a forbidden phrase)
+  // is the canonical allowed category per @ibx/intent-kernel README.
+  const firstViolation = violations[0]!
+  const detail: Record<string, unknown> = {
+    stateValue,
+    pattern: firstViolation.pattern,
+    match: firstViolation.match,
+    violationCount: violations.length,
+  }
+  return {
+    kind: "REWRITE",
+    rewritten: cleanText,
+    reason: `Forbidden-phrase sanitized from LLM output (state=${stateValue})`,
+    basis: [basis("validation", BASIS_CODES.validation.UNICODE_NORMALIZED, detail)],
+  }
+}
+
+/**
+ * Map a forbidden-phrase refusal onto the stratified taxonomy. Used when the
+ * caller decides sanitization is not acceptable (e.g. the state forbids
+ * proceeding even with the phrase removed).
+ */
+export function refuseValidationFailure(
+  stateValue: string,
+  match: string,
+): { refusal: Refusal; basis: readonly DecisionBasis[] } {
+  return {
+    refusal: refuseForbiddenPhrase(stateValue, match),
+    basis: [
+      basis("validation", BASIS_CODES.validation.FORBIDDEN_PHRASE_ABSENT, {
+        stateValue,
+        match,
+      }),
+    ],
+  }
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────

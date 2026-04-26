@@ -169,9 +169,20 @@ describe("tool-registry edge cases", () => {
 
   it("returns intent for MUTATING tools via executeTool", async () => {
     const result = await executeTool("modify_reservation", { reservationId: "r1" }, customerCtx)
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: "intent",
-      intent: { toolName: "modify_reservation", input: { reservationId: "r1" }, toolUseId: "" },
+      intent: {
+        toolName: "modify_reservation",
+        input: { reservationId: "r1" },
+        toolUseId: "",
+        envelope: {
+          version: 1,
+          kind: "order.tool.propose",
+          taint: "UNTRUSTED",
+          actor: { principal: "llm" },
+          payload: { toolName: "modify_reservation", input: { reservationId: "r1" } },
+        },
+      },
     })
   })
 

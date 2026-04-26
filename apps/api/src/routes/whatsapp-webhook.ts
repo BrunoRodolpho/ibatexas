@@ -19,7 +19,7 @@ import { parse as parseQuerystring } from "node:querystring";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import twilio from "twilio";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
-import { runOrchestrator } from "@ibatexas/llm-provider";
+import { runOrchestrator } from "@ibx/intent-runtime";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
   normalizePhone,

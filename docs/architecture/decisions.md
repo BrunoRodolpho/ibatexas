@@ -88,29 +88,71 @@ WhatsApp/web conversations were stored only in Redis with 24-48h TTL. No durable
 - CLI: `packages/cli/src/commands/chat.ts` (`ibx chat list/dump/clean/scenarios`)
 - Tests: `packages/llm-provider/src/__tests__/scenarios/` (11 fixtures)
 
-### 9. Zero-Trust LLM Architecture (Final Alignment)
+### 9. Intent-Gated Execution (IBX-IGE) — formerly "Zero-Trust LLM Architecture"
 
-The system moved from "LLM calls tools directly" to a strict Semantic Parser model where the LLM has zero authority to mutate state.
+The system evolved from "LLM calls tools directly" to **Intent-Gated Execution**
+— a framework where the LLM is a semantic parser with zero authority to mutate
+state and a deterministic kernel decides what executes. Extracted from
+IbateXas into the reusable `@ibx/intent-*` framework (v1.0).
 
-**Problem:** Red Team audit found that the LLM could call mutating tools (`cancel_order`, `add_to_cart`, `create_checkout`) directly, bypassing the XState machine's business logic guards. A prompt injection could trigger fraudulent orders.
+**Renaming rationale:** "Zero-Trust LLM" is industry-overloaded to mean "zero
+trust in LLM output" (content safety). What we actually do is give the LLM
+zero *authority*. "Intent-Gated Execution" (IGX, KAIJU 2026) is the named
+research direction; we align with that vocabulary to be findable.
 
-**Decision:** Three-layer defense:
-1. **Tool Classification:** All 34 tools classified as READ_ONLY (15) or MUTATING (19) in `TOOL_CLASSIFICATION` constant
-2. **Intent Bridge:** `executeTool()` returns `{ kind: "intent" }` for MUTATING tools instead of executing. Kernel uses `executeToolDirect()`.
-3. **State-Gate:** `processToolCalls()` validates tool names against `synthesized.availableTools` before dispatch
+**Prior art & convergent research (2025–2026):**
+- **CaMeL** ([arXiv 2503.18813](https://arxiv.org/abs/2503.18813), DeepMind, March 2025) — privileged LLM emits sandboxed DSL; custom interpreter enforces capability-based flow. Closest conceptual match; our `IntentEnvelope` + `adjudicate()` is the typed-intent variant of CaMeL's code-sandbox approach.
+- **FIDES** ([arXiv 2505.23643](https://arxiv.org/abs/2505.23643), Microsoft, May 2025) — deterministic information-flow control with confidentiality/integrity labels. Inspires our v1.1 field-level `TaintedValue<T>` roadmap.
+- **KAIJU** (arXiv 2604.02375, April 2026) — coins "Intent-Gated Execution (IGX)". Nearly a 1:1 restatement of our pattern with integer intent tags instead of typed envelopes.
+- **Microsoft Agent Governance Toolkit** (open-sourced April 2026) — GovernanceKernel is the closest commercial analog to our `adjudicate()` — same split, policy-as-data instead of typed-intent vocabulary.
+- **OWASP LLM06 (Excessive Agency)** + **OWASP Agentic Top 10 2026 ASI01/02/03/05** — our pattern directly addresses these.
+
+**Problem (original):** Red Team audit found that the LLM could call mutating
+tools directly, bypassing the XState machine's business-logic guards. A
+prompt injection could trigger fraudulent orders.
+
+**Decision — 8-layer defense (IBX-IGE v1.0):**
+1. **Tool Classification** — type-enforced READ_ONLY vs MUTATING partition
+2. **Prompt Synthesizer / Capability Planner** — structurally filters MUTATING tools from the LLM's visible tool list (security-sensitive, separated from the cosmetic PromptRenderer)
+3. **Intent Vocabulary** — LLM emits typed `IntentEnvelope<kind, payload>` with `intentHash` + taint; never calls mutating functions directly
+4. **Kernel Adjudicator** — pure function `(envelope, state, policy) → Decision`, 6-valued: `EXECUTE | REFUSE | ESCALATE | REQUEST_CONFIRMATION | DEFER | REWRITE`
+5. **State Machine Gate** — XState decides transition legality; kernel consults it
+6. **Taint Lattice** — `SYSTEM > TRUSTED > UNTRUSTED` with `canPropose()` gating per intent kind
+7. **Execution Ledger + Audit Sinks** — hot-path replay dedup (Redis, `intentHash` keyed) vs durable governance trail (Console/NATS/Postgres sinks); the two are intentionally distinct
+8. **Structured Refusal** — stratified `SECURITY | BUSINESS_RULE | AUTH | STATE`, first-class output, never an exception
+
+**Load-bearing invariants (verified by property tests in [`@ibx/intent-kernel/tests/invariants/`](../../packages/intent-kernel/tests/invariants/)):**
+- UNTRUSTED never yields EXECUTE when policy demands TRUSTED+
+- Unknown envelope versions always REFUSE with `schema_version_unsupported`
+- Same `intentHash` submitted twice → second call returns LedgerHit, no double execution
+- Every basis.code is drawn from `BASIS_CODES[category]` — no free-form strings
+- REWRITE stays in scope (sanitization/normalization/safe-capping only; never business transformation)
 
 **Consequences:**
 - `post_order` refactored from flat state to compound: `idle`, `cancelling`, `amending`, `regenerating_pix`
 - Kernel executor handles post-order mutations deterministically
 - Prompts rewritten: no "CHAME" (call) directives for mutating tools; LLM uses "consulte" (consult) for read-only
 - Event injection whitelist: only `PIX_DETAILS_COLLECTED` and `SET_NAME` allowed post-LLM
+- `apps/api` consumes only `@ibx/intent-runtime` — 2-line import flip from the legacy `@ibatexas/llm-provider`
+- `@ibx/intent-*` packages are domain-independent substrate; second-domain scaffold (clinic) builds in under a day without forking (see [`packages/intent-runtime/examples/clinic/`](../../packages/intent-runtime/examples/clinic/))
 
-**Files:**
+**Packages:**
+- [`@ibx/intent-core`](../../packages/intent-core/README.md) — types + lattice + `BASIS_CODES`
+- [`@ibx/intent-kernel`](../../packages/intent-kernel/README.md) — `adjudicate()` + policy combinators
+- [`@ibx/intent-audit`](../../packages/intent-audit/README.md) — ledger + audit sinks + replay
+- [`@ibx/intent-llm`](../../packages/intent-llm/README.md) — capability planner + prompt renderer + tool classification
+- [`@ibx/intent-runtime`](../../packages/intent-runtime/README.md) — orchestrator + XState adapter + order policies (`apps/api`'s only import)
+
+**Files (legacy, still host the concrete implementation in v1.0 per the plan's open decision on v2.0 split timing):**
 - Classification: `packages/llm-provider/src/machine/types.ts` (`TOOL_CLASSIFICATION`, `ALLOWED_POST_LLM_EVENTS`)
-- Intent bridge: `packages/llm-provider/src/tool-registry.ts` (`executeTool` vs `executeToolDirect`)
-- State gate: `packages/llm-provider/src/llm-responder.ts` (`processToolCalls`)
+- Intent bridge: `packages/llm-provider/src/tool-registry.ts` (envelope wrapping in `executeTool`)
+- State gate: `packages/llm-provider/src/llm-responder.ts` (`processToolCalls` + ledger + audit wiring)
 - Machine: `packages/llm-provider/src/machine/order-machine.ts` (post_order sub-states)
 - Kernel: `packages/llm-provider/src/kernel-executor.ts` (cancel/amend/pix handlers)
+
+**Feature flags:**
+- `IBX_LEDGER_ENABLED=true` — shadow writes to the execution ledger
+- `IBX_LEDGER_ENFORCE=true` — ledger authoritative on the write path (dedup enforced)
 
 ### 10. Ownership-Based Redis Locks
 

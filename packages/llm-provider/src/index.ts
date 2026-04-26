@@ -29,6 +29,96 @@ export { generateResponse, buildConfirmationFallback } from "./llm-responder.js"
 
 // Validation layer
 export { shouldBufferText, checkForbiddenPhrases, validateBufferedText } from "./validation-layer.js"
+export { validateBufferedTextTyped, refuseValidationFailure, type ValidationOutcome } from "./validation-layer.js"
+
+// Refusal taxonomy (Phase D)
+export {
+  refuseCartEmpty,
+  refuseForbiddenPhrase,
+  refuseGuestCheckoutBlocked,
+  refuseInvalidPaymentMethod,
+  refuseNoOrderToMutate,
+  refuseNotAuthenticated,
+  refuseOrderAlreadyCancelled,
+  refuseOrderAlreadyShipped,
+  refuseQuantityOverLimit,
+  refuseSlotsIncomplete,
+  refuseUpsellExhausted,
+  refuseDefaultDeny,
+  GUARD_REFUSAL_MAP,
+} from "./refusal-taxonomy.js"
+
+// Guards (re-exported so adopter packages can wire PolicyBundles)
+export {
+  isAuthenticated,
+  isWhatsApp,
+  isNewCustomer,
+  canCheckout,
+  isCartEmpty,
+  hasCartItems,
+  allSlotsFilled,
+  hasFulfillment,
+  hasPaymentMethod,
+  isValidPayment,
+  shouldUpsell,
+  computeCartFlags,
+  canCancelOrder,
+  canAmendOrder,
+  hasOrderId,
+  isPickup,
+  isDelivery,
+} from "./machine/guards.js"
+
+// Capability planner (Phase I)
+export {
+  STATE_TOOLS,
+  resolveTools,
+  allowedIntentsFor,
+  getForbiddenConceptsFor,
+  orderCapabilityPlanner,
+} from "./capability-planner.js"
+
+// Order PolicyBundle (Phase B + Phase M)
+export {
+  orderPolicyBundle,
+  orderTaintPolicy,
+  PIX_CONFIRMATION_SIGNAL,
+  PIX_DEFER_TIMEOUT_MS,
+  type OrderEnvelope,
+  type OrderState,
+} from "./order-policy-bundle.js"
+
+// Shadow infrastructure (P0-a)
+export {
+  adjudicateWithShadow,
+  classifyDivergence,
+  legacyDecisionAsKernelDecision,
+  setShadowTelemetrySink,
+  type DivergenceClass,
+  type LegacyDecisionResult,
+  type ShadowResult,
+  type ShadowTelemetrySink,
+} from "./intent-shadow.js"
+export { isEnforced, isShadowed } from "./intent-enforce-config.js"
+
+// Observability metrics (P0-f)
+export {
+  createConsoleMetricsSink,
+  recordDecision,
+  recordLedgerOp,
+  recordRefusal,
+  recordSinkFailure,
+  setMetricsSink,
+  type DecisionEvent,
+  type LedgerOpEvent,
+  type MetricsSink,
+  type RefusalEvent,
+  type ShadowDivergenceEvent,
+  type SinkFailureEvent,
+} from "./intent-metrics.js"
+
+// Ledger error type (P0-g)
+export { LedgerUnavailableError } from "./intent-ledger.js"
 
 // Re-export agent types for consumers
 export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
