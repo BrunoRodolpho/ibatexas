@@ -60,6 +60,7 @@ Any Redis client implementing those three methods works. The shape matches
 
 [`examples/clinic/clinic-policies.ts`](./examples/clinic/clinic-policies.ts)
 is a minimal `PolicyBundle` that shows how to author a domain against
-`@adjudicate/intent-{core,kernel}` without forking the framework — useful
-for verifying the kernel handles your domain shape before wiring up the
-resume flow above.
+`@adjudicate/core` (top-level types) and `@adjudicate/core/kernel`
+(`adjudicate`, `PolicyBundle`, combinators) without forking the
+framework — useful for verifying the kernel handles your domain shape
+before wiring up the resume flow above.

@@ -27,7 +27,7 @@ This is the most demanding pre-flight in the rollout. Skipping any of these has 
 - [ ] **Webhook subscriber resilience verified:**
   - [ ] `payment.status_changed` NATS subject draining without lag (>1s lag pages already)
   - [ ] `defer-resolver.ts` deployed + healthy; smoke: park a fake DEFER, deliver PIX webhook, observe resume in <5s
-  - [ ] Property tests in `packages/intent-runtime/tests/defer-resume.test.ts` clean on the deployed SHA — N=50 concurrent invariant must hold
+  - [ ] Property tests in `packages/runtime/tests/defer-resume.test.ts` clean on the deployed SHA — N=50 concurrent invariant must hold
 - [ ] **Refund pipeline:** existing manual-refund tooling tested within last 7d as fallback if kernel REFUSE blocks an in-flight refund
 - [ ] **On-call:**
   - [ ] Two-person on-call rotation for the full 14-day window (fatigue is a real risk on long shadow soaks)

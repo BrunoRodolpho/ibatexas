@@ -1,11 +1,11 @@
-// Order-domain PolicyBundle for IBX-IGE.
+// Order-domain PolicyBundle — IbateXas adopter glue against the
+// @adjudicate/* framework.
 //
-// Lives in @ibatexas/llm-provider so the responder can consume it without
-// reaching up into @adjudicate/runtime (which would be a circular dep —
-// intent-runtime depends on llm-provider). After P1-i extracts the runtime
-// files, this module moves into @adjudicate/intent-domain-order alongside the
-// machine and the guards. The export shape is preserved so callers do not
-// change at the v2.0 split.
+// Lives in @ibatexas/llm-provider as the canonical example of how an
+// adopter authors a PolicyBundle against the framework's contracts.
+// When this code eventually ships as a published commerce-reference,
+// it moves into that example package; the export shape stays stable so
+// the responder's import doesn't churn.
 
 import {
   basis,

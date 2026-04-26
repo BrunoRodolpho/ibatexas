@@ -1,16 +1,16 @@
 // CapabilityPlanner implementation for IbateXas.
 //
-// Phase I of IBX-IGE extracts the security-sensitive capability-shaping
-// decisions (STATE_TOOLS map, resolveTools, forbidden-concept lookup) from
-// prompt-synthesizer.ts into a dedicated module behind the generic
-// `@adjudicate/core/llm` CapabilityPlanner interface.
+// Implements the security-sensitive capability-shaping decisions
+// (STATE_TOOLS map, resolveTools, forbidden-concept lookup) behind the
+// generic `@adjudicate/core/llm` CapabilityPlanner interface.
 //
-// The prompt-synthesizer continues to live where it is for v1.0 (it is the
-// IbateXas PromptRenderer — cosmetic, state-aware, pt-BR) and calls
-// `resolveTools` + `getForbiddenConceptsFor` from here internally.
+// The prompt-synthesizer is the IbateXas PromptRenderer (cosmetic,
+// state-aware, pt-BR) and calls `resolveTools` + `getForbiddenConceptsFor`
+// from here internally.
 //
-// In v2.0 this module moves to `@adjudicate/intent-domain-order/planner.ts` alongside
-// the XState machine; nothing in the interface changes.
+// When this code eventually ships as a published commerce-reference example,
+// the body of the planner moves into that example package; the interface
+// it implements (CapabilityPlanner) stays in @adjudicate/core/llm.
 
 import type {
   CapabilityPlanner as FrameworkCapabilityPlanner,

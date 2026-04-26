@@ -1,8 +1,8 @@
 // IBX-IGE Phase P0-c — DEFER consumer NATS wiring.
 //
 // Pure resume logic + dedup invariants live in @adjudicate/runtime
-// (see packages/intent-runtime/src/defer-resume.ts and the property tests
-// at packages/intent-runtime/tests/defer-resume.test.ts). This module wires
+// (see packages/runtime/src/defer-resume.ts and the property tests
+// at packages/runtime/tests/defer-resume.test.ts). This module wires
 // that logic to the IbateXas NATS subscriber and Redis client.
 //
 // Note: PaymentStatusChangedEvent carries `customerId` but not `sessionId`.

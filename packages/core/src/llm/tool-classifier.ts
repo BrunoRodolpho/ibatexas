@@ -5,8 +5,8 @@
  * and pass it to the planner. The type system enforces the partition: a tool
  * name can belong to exactly one of the two sets at registration time.
  *
- * When the v2.0 split lands and this package becomes `@adjudicate/runtime-xstate`,
- * the ToolClassification interface stays here — it is runtime-agnostic.
+ * Runtime-agnostic by design: works with XState, plain state machines, or
+ * any other engine the adopter chooses.
  */
 
 export interface ToolClassification<

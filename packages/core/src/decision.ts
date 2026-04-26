@@ -9,7 +9,7 @@
  *   REWRITE              → kernel substitutes a sanitized/normalized/capped envelope
  *
  * REWRITE is scope-restricted: sanitization, normalization, and safe mechanical
- * capping only. Never business transformation. See @adjudicate/intent-kernel/README.md.
+ * capping only. Never business transformation. See @adjudicate/core/README.md.
  */
 
 import type { IntentEnvelope } from "./envelope.js";
