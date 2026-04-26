@@ -352,6 +352,59 @@ importers:
         specifier: ^8.46.0
         version: 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
 
+  examples/commerce-reference:
+    dependencies:
+      '@adjudicate/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@adjudicate/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../../packages/eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  examples/vacation-approval:
+    dependencies:
+      '@adjudicate/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../../packages/eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
   packages/audit:
     dependencies:
       '@adjudicate/core':
