@@ -9,8 +9,8 @@ import {
   type IntentEnvelope,
   type TaintPolicy,
 } from "@adjudicate/core";
-import { adjudicate } from "../src/adjudicate.js";
-import type { Guard, PolicyBundle } from "../src/policy.js";
+import { adjudicate } from "../../src/kernel/adjudicate.js";
+import type { Guard, PolicyBundle } from "../../src/kernel/policy.js";
 
 type Kind = "order.tool.propose";
 interface Payload {

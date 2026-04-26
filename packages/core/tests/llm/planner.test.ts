@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { staticPlanner } from "../src/planner.js";
+import { staticPlanner } from "../../src/llm/planner.js";
 import {
   filterReadOnly,
   isMutating,
   isReadOnly,
   type ToolClassification,
-} from "../src/tool-classifier.js";
+} from "../../src/llm/tool-classifier.js";
 
 describe("staticPlanner", () => {
   it("returns the fixed plan", () => {

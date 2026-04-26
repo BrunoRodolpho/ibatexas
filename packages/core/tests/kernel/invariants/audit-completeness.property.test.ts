@@ -18,8 +18,8 @@ import {
   type Taint,
   type TaintPolicy,
 } from "@adjudicate/core";
-import { adjudicate } from "../../src/adjudicate.js";
-import type { PolicyBundle } from "../../src/policy.js";
+import { adjudicate } from "../../../src/kernel/adjudicate.js";
+import type { PolicyBundle } from "../../../src/kernel/policy.js";
 
 const taintArb = fc.constantFrom<Taint>("SYSTEM", "TRUSTED", "UNTRUSTED");
 const defaultArb = fc.constantFrom<"REFUSE" | "EXECUTE">("REFUSE", "EXECUTE");

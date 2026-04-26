@@ -16,8 +16,8 @@ import {
   INTENT_ENVELOPE_VERSION,
   type IntentEnvelope,
 } from "@adjudicate/core";
-import { adjudicate } from "../../src/adjudicate.js";
-import type { PolicyBundle } from "../../src/policy.js";
+import { adjudicate } from "../../../src/kernel/adjudicate.js";
+import type { PolicyBundle } from "../../../src/kernel/policy.js";
 
 const permissiveBundle: PolicyBundle<string, unknown, unknown> = {
   stateGuards: [],

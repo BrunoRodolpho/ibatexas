@@ -8,8 +8,8 @@ import {
   refuse,
   type IntentEnvelope,
 } from "@adjudicate/core";
-import { allOf, constant, firstMatch } from "../src/combinators.js";
-import type { Guard } from "../src/policy.js";
+import { allOf, constant, firstMatch } from "../../src/kernel/combinators.js";
+import type { Guard } from "../../src/kernel/policy.js";
 
 type Kind = "order.tool.propose";
 type State = null;
