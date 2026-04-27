@@ -2,3 +2,10 @@ packages:
   - "apps/*"
   - "packages/*"
   - "examples/*"
+  # Cross-repo: the Adjudicate platform packages live in a sibling repo.
+  # Workspace-scoping them here lets pnpm resolve their `workspace:*` deps
+  # (e.g. @adjudicate/pack-payments-pix needs @adjudicate/core which is
+  # also in the platform repo) without npm publication. Replace with npm
+  # registry deps once the platform publishes — see docs/architecture/decisions.md ADR #13.
+  - "../adjudicate/packages/*"
+  - "../adjudicate/examples/*"

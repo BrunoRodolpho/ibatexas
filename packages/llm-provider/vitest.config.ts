@@ -1,31 +1,6 @@
 import { defineConfig } from "vitest/config"
-import { fileURLToPath } from "node:url"
 
 export default defineConfig({
-  resolve: {
-    // Alias workspace @adjudicate/* packages to source files so tests
-    // run without a built dist/. Most-specific aliases first.
-    alias: {
-      "@adjudicate/core/kernel": fileURLToPath(
-        new URL("../core/src/kernel/index.ts", import.meta.url),
-      ),
-      "@adjudicate/core/llm": fileURLToPath(
-        new URL("../core/src/llm/index.ts", import.meta.url),
-      ),
-      "@adjudicate/core": fileURLToPath(
-        new URL("../core/src/index.ts", import.meta.url),
-      ),
-      "@adjudicate/audit": fileURLToPath(
-        new URL("../audit/src/index.ts", import.meta.url),
-      ),
-      "@adjudicate/runtime": fileURLToPath(
-        new URL("../runtime/src/index.ts", import.meta.url),
-      ),
-      "@adjudicate/pack-payments-pix": fileURLToPath(
-        new URL("../pack-payments-pix/src/index.ts", import.meta.url),
-      ),
-    },
-  },
   test: {
     globals: true,
     environment: "node",

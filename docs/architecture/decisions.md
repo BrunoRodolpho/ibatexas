@@ -268,3 +268,32 @@ Stripe and WhatsApp webhook routes use scoped content type parsers via
 - The `pix.send` taint requirement (an aspirational entry — no intent kind ever matched it) was removed from `orderTaintPolicy`. The Pack's own `pixPaymentsTaintPolicy` is now authoritative for `pix.charge.*` intent kinds.
 - `CLAUDE.md` Hard Rule #9 updated to reference the Pack as the canonical PIX adjudication surface.
 
+**Phase 2 follow-up — platform consolidation (2026-04-27):**
+
+Completed the cross-repo consolidation. The `@adjudicate/*` workspace copies (core, runtime, audit, audit-postgres, pack-payments-pix) and the `@example/*` examples (vacation-approval, commerce-reference) have been **deleted from the IbateXas monorepo**. Source of truth now lives exclusively in the standalone platform repo: [BrunoRodolpho/adjudicate](https://github.com/BrunoRodolpho/adjudicate).
+
+Linking strategy chosen: **`pnpm-workspace.yaml` cross-repo include** (`../adjudicate/packages/*` and `../adjudicate/examples/*`) rather than `file:` deps. The `file:` interim was attempted first but failed because the platform's `@adjudicate/pack-payments-pix` declares `workspace:*` deps on `@adjudicate/core` etc., which can't resolve from outside the platform's workspace. Including the platform's packages glob in IbateXas's workspace lets pnpm satisfy those transitive `workspace:*` resolutions without npm publication. Once the platform publishes to npm (separate session, not blocking this consolidation), the cross-repo include drops in favor of registry deps.
+
+Platform-side companion changes shipped in [BrunoRodolpho/adjudicate#feat/pix-pack-defer-guard-factory](https://github.com/BrunoRodolpho/adjudicate/pull/new/feat/pix-pack-defer-guard-factory) (commit `467c9c6`):
+
+- `createPixPendingDeferGuard` factory ported from IbateXas (the load-bearing artifact for cross-adopter reuse).
+- Signal constant renamed to `PIX_CONFIRMATION_SIGNAL = "payment.confirmed"` (matches the IbateXas wire vocabulary documented in clause 3 of this ADR's "What was painful" section above).
+- `escalateFailedConfirm` state guard ported (real operational gap in v0.1).
+- Four new refusal builders + one new `PixChargeStatus` enum value (`"failed"`).
+- Two new test files (adopter-guard, defer-round-trip) bringing the platform Pack's test count from 20 to 28.
+- ADR-002-defer-guard-factory.md captures the design rationale on the platform side.
+
+IbateXas-side changes in this PR:
+
+- Workspace copies of all `@adjudicate/*` packages and `@example/*` examples deleted (~3500-4500 LOC removed).
+- `pnpm-workspace.yaml` extended with cross-repo includes (5 new lines + comment).
+- `packages/llm-provider/package.json` and `apps/api/package.json` keep `workspace:*` references — they now resolve through the cross-repo workspace.
+- `vitest.config.ts` aliases for `@adjudicate/*` removed from both `packages/llm-provider/` and `apps/api/` (vitest now resolves directly to the cross-repo workspace via node_modules).
+- New defense-in-depth test: `packages/llm-provider/src/__tests__/pack-signal-contract.test.ts` pins `PIX_CONFIRMATION_SIGNAL === "payment.confirmed"`. Any future Pack version that renames the signal trips this test on dependency upgrade. llm-provider test count: 84 → 85.
+
+Test counts unchanged across consumers: `@ibatexas/api` 642 passing, `@ibatexas/llm-provider` 85 passing (was 84 + 1 new pinning test). Platform-side tests: 204 passing across 8 packages.
+
+Cross-link to platform-side ADR: [`packages/pack-payments-pix/docs/ADR-002-defer-guard-factory.md`](https://github.com/BrunoRodolpho/adjudicate/blob/main/packages/pack-payments-pix/docs/ADR-002-defer-guard-factory.md).
+
+**Future follow-up (deferred):** when the `@adjudicate` npm org is claimed and the platform's release pipeline publishes `0.2.0-experimental` to the registry, IbateXas drops the cross-repo workspace include and pins to npm versions. That's a single additional PR (`pnpm-workspace.yaml` -2 lines, two `package.json` changes from `workspace:*` to `^0.2.0-experimental`).
+
