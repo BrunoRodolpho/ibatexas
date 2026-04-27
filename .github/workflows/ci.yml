@@ -13,6 +13,18 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+      # Cross-repo workspace include: pnpm-workspace.yaml references
+      # `../adjudicate/packages/*` until @adjudicate/* is published to npm.
+      # Clone the platform sibling repo at the parent level so workspace deps
+      # resolve. See docs/architecture/decisions.md ADR #13.
+      - name: Checkout adjudicate sibling repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: BrunoRodolpho/adjudicate
+          ref: main
+          path: __adjudicate__
+      - name: Position adjudicate at parent path expected by pnpm-workspace.yaml
+        run: mv __adjudicate__ ../adjudicate
       - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

@@ -8,19 +8,6 @@ import Anthropic from "@anthropic-ai/sdk"
 import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropic-ai/sdk/resources/messages.js"
 import { NonRetryableError, type AgentContext, type StreamChunk } from "@ibatexas/types"
 import { getRedisClient, rk } from "@ibatexas/tools"
-import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
-import type { ToolExecutionResult } from "./tool-registry.js"
-import type { OrderContext, SynthesizedPrompt, ToolIntent } from "./machine/types.js"
-import {
-  shouldBufferText,
-  validateBufferedText,
-  validateBufferedTextTyped,
-} from "./validation-layer.js"
-import {
-  getIntentLedger,
-  isLedgerEnforced,
-} from "./intent-ledger.js"
-import { getAuditSink } from "./intent-audit-wiring.js"
 import {
   buildAuditRecord,
   buildEnvelope,
@@ -34,6 +21,18 @@ import {
   isShadowed,
   legacyDecisionAsKernelDecision,
 } from "@adjudicate/core/kernel"
+import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
+import type { ToolExecutionResult } from "./tool-registry.js"
+import type { OrderContext, SynthesizedPrompt, ToolIntent } from "./machine/types.js"
+import {
+  shouldBufferText,
+  validateBufferedTextTyped,
+} from "./validation-layer.js"
+import {
+  getIntentLedger,
+  isLedgerEnforced,
+} from "./intent-ledger.js"
+import { getAuditSink } from "./intent-audit-wiring.js"
 import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
 
 // ── Config ────────────────────────────────────────────────────────────────────

@@ -5,8 +5,18 @@
 FROM public.ecr.aws/docker/library/node:22-alpine AS build
 
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
+# git is needed to clone the @adjudicate/* sibling repo at build time —
+# pnpm-workspace.yaml references `../adjudicate/packages/*` until @adjudicate
+# is published to npm. See docs/architecture/decisions.md ADR #13.
+RUN apk add --no-cache git
 
 WORKDIR /app
+
+# Clone the platform sibling repo at /adjudicate so `../adjudicate` (relative
+# to /app) resolves correctly for the workspace include.
+ARG ADJUDICATE_REF=main
+RUN git clone --depth=1 --branch "$ADJUDICATE_REF" \
+      https://github.com/BrunoRodolpho/adjudicate.git /adjudicate
 
 # Copy workspace manifests first for layer caching
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./

@@ -11,8 +11,8 @@
 // `validateBufferedText()`.
 
 import { basis, BASIS_CODES, type DecisionBasis } from "@adjudicate/core"
-import { refuseForbiddenPhrase } from "./refusal-taxonomy.js"
 import type { Refusal } from "@adjudicate/core"
+import { refuseForbiddenPhrase } from "./refusal-taxonomy.js"
 
 // ── Forbidden patterns per state ──────────────────────────────────────────────
 
