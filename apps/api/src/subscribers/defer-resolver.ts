@@ -16,12 +16,24 @@
 import { subscribeNatsEvent } from "@ibatexas/nats-client"
 import { getRedisClient, rk } from "@ibatexas/tools"
 import type { PaymentStatusChangedEvent } from "@ibatexas/types"
-import { PIX_CONFIRMED_STATUSES } from "@ibatexas/llm-provider"
+import { PIX_CONFIRMATION_SIGNAL } from "@adjudicate/pack-payments-pix"
 import {
   resumeDeferredIntent as resumeDeferredIntentImpl,
   type DeferResumeResult,
 } from "@adjudicate/runtime"
 import type { FastifyBaseLogger } from "fastify"
+
+// Wire-level "this PIX has settled" status set, in IbateXas's Stripe
+// vocabulary (`paid`, `captured`, `confirmed`). Distinct from the
+// Pack's `PIX_CONFIRMED_STATUSES`, which uses the Pack's normalized
+// `PixChargeStatus` vocabulary and excludes `paid`. Kept local because
+// the mapping from Stripe labels to settled-or-not is an IbateXas
+// concern, not a Pack contract.
+const SETTLED_WIRE_STATUSES: ReadonlySet<string> = new Set([
+  "paid",
+  "captured",
+  "confirmed",
+])
 
 export async function resumeDeferredIntent(
   sessionId: string,
@@ -39,7 +51,7 @@ export async function startDeferResolverSubscriber(
     const event = payload as unknown as PaymentStatusChangedEvent
     const { newStatus, paymentId, orderId } = event
 
-    if (!PIX_CONFIRMED_STATUSES.has(newStatus)) {
+    if (!SETTLED_WIRE_STATUSES.has(newStatus)) {
       return
     }
 
@@ -53,7 +65,7 @@ export async function startDeferResolverSubscriber(
       const sessionId = m[1]!
       const result = await resumeDeferredIntent(
         sessionId,
-        "payment.confirmed",
+        PIX_CONFIRMATION_SIGNAL,
         log,
       )
       if (result.resumed) {

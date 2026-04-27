@@ -236,3 +236,35 @@ Stripe and WhatsApp webhook routes use scoped content type parsers via
 - Backfill creates Payment rows from existing `OrderProjection.paymentStatus`/`paymentMethod` using `system_backfill` actor
 - Legacy fields kept on `OrderProjection` during transition period
 
+### 13. PIX Pack Extraction — `@adjudicate/pack-payments-pix`
+
+**Decision:** Extract PIX (Brazilian instant payment) charge-lifecycle adjudication into the first published Adjudicate Pack (`@adjudicate/pack-payments-pix@0.1.0-experimental`). The Pack defines its own intent kinds (`pix.charge.create`, `pix.charge.confirm`, `pix.charge.refund`) and a PolicyBundle covering all six kernel Decision outcomes. IbateXas migrates by composing the Pack's reusable DEFER guard factory into its existing `order.confirm` flow.
+
+**Why now (Phase 1 of the platform roadmap):**
+- The kernel becomes a platform the moment two unrelated domains compose Packs. Shipping one Pack end-to-end is the forcing function for the `PackV0` contract.
+- PIX exercises DEFER + signal-resume — the kernel's hardest, most differentiated capability. Sync-only payments wouldn't prove the round-trip.
+- Per Principle 3 ("dogfood is destructive, not parallel"), the inline PIX policy block previously in `packages/llm-provider/src/order-policy-bundle.ts` (lines 173–201 pre-migration) is deleted, not parallel-shipped.
+
+**What landed:**
+- `PackV0` contract in `@adjudicate/core` (`packages/core/src/pack.ts`) — `metadata + policyBundle + capabilityPlanner + toolClassification`. Type-level conformance via `expectPackV0()`.
+- `@adjudicate/pack-payments-pix` package with PolicyBundle covering EXECUTE / REFUSE / ESCALATE / REQUEST_CONFIRMATION / DEFER / REWRITE plus DEFER round-trip integration test.
+- IbateXas migration: `order-policy-bundle.ts` composes `createPixPendingDeferGuard` from the Pack instead of declaring the DEFER guard inline. `apps/api/src/subscribers/defer-resolver.ts` imports `PIX_CONFIRMATION_SIGNAL` directly from the Pack. Inline `PIX_DEFER_TIMEOUT_MS`, `PIX_CONFIRMATION_SIGNAL`, `PIX_CONFIRMED_STATUSES` constants and the `deferOnPendingPix` guard are deleted from IbateXas.
+- 4-stage shadow→enforce playbook in [docs/ops/runbooks/05-stage-pix-charge-pack.md](../ops/runbooks/05-stage-pix-charge-pack.md).
+
+**What was painful (the migration friction worth recording):**
+
+1. **Intent-kind mismatch.** The roadmap calls for `pix.charge.create/confirm/refund` as Pack-canonical intents. IbateXas's LLM doesn't propose those — it proposes `order.confirm` with `paymentMethod: "pix"`, and the kernel adjudicates the higher-level intent. Two reasonable resolutions: (a) reshape IbateXas's flow, or (b) have the Pack expose a reusable guard factory. We chose (b): the Pack ships both its canonical PolicyBundle (for adopters that route through `pix.charge.*`) and `createPixPendingDeferGuard` (for adopters with their own intent kind, like IbateXas). Phase 5's stripe-greenfield Pack will validate the canonical path; this Pack proves the factory path.
+
+2. **Wire-status vocabulary differs from Pack-status vocabulary.** IbateXas's `payment.status_changed` NATS event uses Stripe labels (`paid`, `captured`, `confirmed`); the Pack's `PixChargeStatus` is normalized (`pending`, `confirmed`, `captured`, …). Mapping at the IbateXas adapter boundary is correct, but this means `defer-resolver.ts` keeps its own local `SETTLED_WIRE_STATUSES` set rather than importing the Pack's `PIX_CONFIRMED_STATUSES`. Documented in the resolver. Phase 5 will surface whether the Pack should grow a wire-status mapping helper.
+
+3. **Signal name kept as `payment.confirmed` (not `pix.charge.confirmed`).** Production IbateXas already publishes `payment.confirmed` and the Pack adopts that name to avoid a same-PR rename of NATS subjects in the audit-replay window. A future major Pack version may rename to align the signal namespace with the intent kind namespace; that would be a documented breaking change.
+
+4. **Strict kernel guard ordering surfaced a unit-test design mistake.** A first cut of the taint-gate test asserted REFUSE on an UNTRUSTED-proposed `pix.charge.confirm` against a *pending* charge. The kernel's order is state → auth → taint, so the DEFER state guard fires first; the taint gate never runs. Fixed by exercising the taint gate with a state where all state guards pass (`status: "confirmed"`). Worth recording: Pack authors must read the kernel's strict guard order before designing security tests, or risk pinning the wrong invariant.
+
+5. **No npm publication yet.** Per Phase -1 of the platform roadmap, the Pack ships as a `workspace:*` dep inside the IbateXas monorepo for now. The `@adjudicate` org claim, public repo, Sigstore CI, and changesets pipeline are still pending; once those land, the Pack tags `0.1.0-experimental` as its first npm publish without code changes.
+
+**Consequences:**
+- IbateXas's `@ibatexas/llm-provider` no longer re-exports `PIX_CONFIRMATION_SIGNAL` / `PIX_DEFER_TIMEOUT_MS` / `PIX_CONFIRMED_STATUSES`. New consumers import directly from `@adjudicate/pack-payments-pix`. The single existing consumer (`apps/api/src/subscribers/defer-resolver.ts`) was migrated in this PR.
+- The `pix.send` taint requirement (an aspirational entry — no intent kind ever matched it) was removed from `orderTaintPolicy`. The Pack's own `pixPaymentsTaintPolicy` is now authoritative for `pix.charge.*` intent kinds.
+- `CLAUDE.md` Hard Rule #9 updated to reference the Pack as the canonical PIX adjudication surface.
+

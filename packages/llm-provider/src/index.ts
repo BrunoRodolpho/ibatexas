@@ -79,12 +79,13 @@ export {
 } from "./capability-planner.js"
 
 // Order PolicyBundle (Phase B + Phase M)
+//
+// PIX-pending DEFER constants (signal, timeout, settled-status set)
+// now live in @adjudicate/pack-payments-pix. Consumers must import
+// directly from there; no re-export shim is provided.
 export {
   orderPolicyBundle,
   orderTaintPolicy,
-  PIX_CONFIRMATION_SIGNAL,
-  PIX_CONFIRMED_STATUSES,
-  PIX_DEFER_TIMEOUT_MS,
   type OrderEnvelope,
   type OrderState,
 } from "./order-policy-bundle.js"

@@ -114,6 +114,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@adjudicate/pack-payments-pix':
+        specifier: workspace:*
+        version: link:../../packages/pack-payments-pix
       '@adjudicate/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -613,6 +616,9 @@ importers:
       '@adjudicate/core':
         specifier: workspace:*
         version: link:../core
+      '@adjudicate/pack-payments-pix':
+        specifier: workspace:*
+        version: link:../pack-payments-pix
       '@adjudicate/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -669,6 +675,34 @@ importers:
         specifier: ^2.29.3
         version: 2.29.3
     devDependencies:
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/pack-payments-pix:
+    dependencies:
+      '@adjudicate/core':
+        specifier: workspace:*
+        version: link:../core
+      '@adjudicate/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+    devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

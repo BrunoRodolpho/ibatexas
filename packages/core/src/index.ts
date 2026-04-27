@@ -12,5 +12,6 @@ export * from "./refusal.js";
 export * from "./taint.js";
 export * from "./audit.js";
 export * from "./hash.js";
+export * from "./pack.js";
 export * from "./kernel/index.js";
 export * from "./llm/index.js";

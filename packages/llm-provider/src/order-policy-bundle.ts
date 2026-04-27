@@ -6,16 +6,21 @@
 // When this code eventually ships as a published commerce-reference,
 // it moves into that example package; the export shape stays stable so
 // the responder's import doesn't churn.
+//
+// PIX-pending DEFER semantics live in @adjudicate/pack-payments-pix
+// (Phase 1 lighthouse Pack). The factory `createPixPendingDeferGuard`
+// is composed below so the Pack owns the contract; this file owns
+// only the IbateXas-specific intent kind that triggers it.
 
 import {
   basis,
   BASIS_CODES,
-  decisionDefer,
   decisionRefuse,
   type IntentEnvelope,
   type TaintPolicy,
 } from "@adjudicate/core"
 import type { Guard, PolicyBundle } from "@adjudicate/core/kernel"
+import { createPixPendingDeferGuard } from "@adjudicate/pack-payments-pix"
 import {
   refuseCartEmpty,
   refuseGuestCheckoutBlocked,
@@ -44,7 +49,6 @@ const INTENT_TAINT_REQUIREMENTS: Record<
 > = {
   // Payment is the most sensitive — must originate from a TRUSTED actor.
   "payment.send": "TRUSTED",
-  "pix.send": "TRUSTED",
   "refund.issue": "TRUSTED",
   // Order mutations proposed by the LLM are inherently UNTRUSTED at this
   // stage; the guards below enforce the state-machine legality gate.
@@ -168,37 +172,23 @@ const requireSlotsFilled: Guard<string, unknown, OrderState> = (
   ])
 }
 
-// ── DEFER producer (Phase M of v1.0) ───────────────────────────────────────
+// ── DEFER producer (delegated to @adjudicate/pack-payments-pix) ────────────
 
-export const PIX_DEFER_TIMEOUT_MS = 15 * 60 * 1000
-export const PIX_CONFIRMATION_SIGNAL = "payment.confirmed"
-export const PIX_CONFIRMED_STATUSES: ReadonlySet<string> = new Set([
-  "paid",
-  "captured",
-  "confirmed",
-])
-
-const deferOnPendingPix: Guard<string, unknown, OrderState> = (
-  envelope,
-  state,
-) => {
-  if (envelope.kind !== "order.confirm") return null
-  const ctx = state.ctx as {
-    paymentMethod?: string | null
-    paymentStatus?: string | null
-  }
-  if (ctx.paymentMethod !== "pix") return null
-  if (ctx.paymentStatus === "confirmed" || ctx.paymentStatus === "captured") {
-    return null
-  }
-  return decisionDefer(PIX_CONFIRMATION_SIGNAL, PIX_DEFER_TIMEOUT_MS, [
-    basis("state", BASIS_CODES.state.TRANSITION_VALID, {
-      reason: "pix_pending",
-      waitFor: PIX_CONFIRMATION_SIGNAL,
-      timeoutMs: PIX_DEFER_TIMEOUT_MS,
-    }),
-  ])
-}
+// The PIX-pending DEFER guard is owned by the Pack. The factory below
+// adapts it to IbateXas's intent kind (`order.confirm`) and the
+// OrderContext shape. The wire signal (`payment.confirmed`), 15-minute
+// timeout, and confirmed-statuses set ({paid, captured, confirmed,
+// pix's own internal labels}) come from the Pack so consumers cannot
+// silently diverge from Pack semantics.
+const deferOnPendingPix: Guard<string, unknown, OrderState> =
+  createPixPendingDeferGuard<OrderState>({
+    readPaymentMethod: (state) =>
+      (state.ctx as { paymentMethod?: string | null }).paymentMethod ?? null,
+    readPaymentStatus: (state) =>
+      (state.ctx as { paymentStatus?: string | null }).paymentStatus ?? null,
+    matchesIntent: (kind) => kind === "order.confirm",
+    confirmedStatuses: new Set(["paid", "captured", "confirmed"]),
+  })
 
 // ── PolicyBundle ───────────────────────────────────────────────────────────
 
