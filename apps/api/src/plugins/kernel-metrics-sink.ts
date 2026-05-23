@@ -30,9 +30,11 @@ import type {
 import * as Sentry from "@sentry/node"
 import {
   Counter,
+  Gauge,
   Histogram,
   Registry,
   type CounterConfiguration,
+  type GaugeConfiguration,
   type HistogramConfiguration,
 } from "prom-client"
 
@@ -63,6 +65,17 @@ export interface KernelMetricsSinkDeps {
   readonly log: MetricsSinkLogger
   /** prom-client Registry — shared with the `/metrics` route. */
   readonly register: Registry
+  /**
+   * W5-9 — KNOWN_INTENT_KINDS for the coverage gauge. Optional: when
+   * omitted, the coverage gauge stays at 0 and the
+   * `kernel_distinct_intent_kinds_observed` gauge still publishes —
+   * the operator can compute coverage manually from the absolute count.
+   *
+   * The expected wiring is `kernel-bootstrap.ts` passes
+   * `KNOWN_INTENT_KINDS` from `@ibatexas/llm-provider` so the sink can
+   * publish `count / KNOWN_INTENT_KINDS.size` as a ratio.
+   */
+  readonly knownIntentKinds?: ReadonlySet<string>
 }
 
 // ── PostHog event name constants ────────────────────────────────────────────
@@ -93,6 +106,25 @@ interface RegisteredMetrics {
   readonly ledgerOpTotal: Counter<"outcome" | "op">
   readonly auditSinkFailureTotal: Counter<"sink" | "reason">
   readonly deferResumeDuration: Histogram<"kind">
+  /**
+   * W5-9 — governance coverage gauge.
+   *
+   * Tracks `KNOWN_INTENT_KINDS.size` / count_distinct(intent_kind in
+   * last 24h). Value < 100% means the system emitted an intent kind
+   * that is NOT in the typo gate — i.e., either an undocumented kind
+   * leaked through (potential bug) OR a new caller appeared with a
+   * kind the Pack surface doesn't recognize (silent default-REFUSE
+   * under enforce).
+   *
+   * Published as a single-sample gauge; the apps/api ops dashboard
+   * subscribes via Prometheus scrape and alerts when the value drops
+   * below 1.0.
+   */
+  readonly intentKindCoverage: Gauge<never>
+  /** Companion: how many distinct intent kinds we've observed in the window. */
+  readonly distinctIntentKindsObserved: Gauge<never>
+  /** Companion: the total known intent kinds count (KNOWN_INTENT_KINDS.size). */
+  readonly knownIntentKindsTotal: Gauge<never>
 }
 
 function counter<L extends string>(
@@ -107,6 +139,13 @@ function histogram<L extends string>(
   registers: Registry[],
 ): Histogram<L> {
   return new Histogram<L>({ ...config, registers })
+}
+
+function gauge<L extends string>(
+  config: GaugeConfiguration<L>,
+  registers: Registry[],
+): Gauge<L> {
+  return new Gauge<L>({ ...config, registers })
 }
 
 function registerMetrics(register: Registry): RegisteredMetrics {
@@ -176,6 +215,30 @@ function registerMetrics(register: Registry): RegisteredMetrics {
       },
       [register],
     ),
+    intentKindCoverage: gauge(
+      {
+        name: "kernel_intent_kind_coverage",
+        help: "Ratio of KNOWN_INTENT_KINDS that have been observed in the last 24h window. <1.0 implies emitted kinds outside the typo gate.",
+        labelNames: [] as const,
+      },
+      [register],
+    ),
+    distinctIntentKindsObserved: gauge(
+      {
+        name: "kernel_distinct_intent_kinds_observed",
+        help: "Count of distinct intent kinds the kernel observed via recordDecision in the last 24h window.",
+        labelNames: [] as const,
+      },
+      [register],
+    ),
+    knownIntentKindsTotal: gauge(
+      {
+        name: "kernel_known_intent_kinds_total",
+        help: "Total intent kinds in KNOWN_INTENT_KINDS — the typo gate's accepted set.",
+        labelNames: [] as const,
+      },
+      [register],
+    ),
   }
 }
 
@@ -191,8 +254,59 @@ function registerMetrics(register: Registry): RegisteredMetrics {
 export function createKernelMetricsSink(
   deps: KernelMetricsSinkDeps,
 ): MetricsSink {
-  const { trackAnalytics, sentry, log, register } = deps
+  const { trackAnalytics, sentry, log, register, knownIntentKinds } = deps
   const metrics = registerMetrics(register)
+
+  // ── W5-9: coverage gauge state ─────────────────────────────────────────
+  //
+  // Rolling 24h window of observed intent kinds — keyed map kind →
+  // timestamp of last observation. The recordDecision hook updates this;
+  // every minute we evict entries older than 24h. The gauge value is
+  // recomputed every `kind observed` event so the dashboard always shows
+  // the current snapshot.
+  //
+  // Process-local. Restarts reset the window, which is acceptable: the
+  // gauge is meant for the "operator notices an intent kind being emitted
+  // that's not in the typo gate" alarm, not for historical analytics
+  // (that's PostHog's job).
+
+  const observedIntentKinds = new Map<string, number>()
+  const COVERAGE_WINDOW_MS = 24 * 60 * 60 * 1000
+
+  function publishCoverageGauges(): void {
+    // Evict stale entries (older than 24h).
+    const now = Date.now()
+    const cutoff = now - COVERAGE_WINDOW_MS
+    for (const [kind, ts] of observedIntentKinds) {
+      if (ts < cutoff) observedIntentKinds.delete(kind)
+    }
+    const observed = observedIntentKinds.size
+    metrics.distinctIntentKindsObserved.set(observed)
+    if (knownIntentKinds) {
+      metrics.knownIntentKindsTotal.set(knownIntentKinds.size)
+      // Coverage = (observed ∩ known) / |known|. The numerator counts
+      // observed kinds that ARE in the typo gate — distinct from the
+      // raw observation count, which can include unknown kinds.
+      let knownObserved = 0
+      for (const kind of observedIntentKinds.keys()) {
+        if (knownIntentKinds.has(kind)) knownObserved += 1
+      }
+      const ratio =
+        knownIntentKinds.size === 0 ? 0 : knownObserved / knownIntentKinds.size
+      metrics.intentKindCoverage.set(ratio)
+    }
+  }
+
+  // Publish the known total at construction time so the dashboard has
+  // the denominator even before any traffic.
+  if (knownIntentKinds) {
+    try {
+      metrics.knownIntentKindsTotal.set(knownIntentKinds.size)
+      metrics.intentKindCoverage.set(0)
+    } catch {
+      // Defensive: registry might reject if duplicated under tests.
+    }
+  }
 
   const safeTrack = (event: string, properties: Record<string, unknown>): void => {
     try {
@@ -270,6 +384,11 @@ export function createKernelMetricsSink(
           { intent_kind: event.intentKind },
           event.latencyMs / 1000,
         )
+      })
+      // W5-9: track observed kinds for the coverage gauge.
+      safeIncr("kernel_intent_kind_coverage", () => {
+        observedIntentKinds.set(event.intentKind, Date.now())
+        publishCoverageGauges()
       })
       // PostHog: split on decision kind per task table.
       const phEvent =

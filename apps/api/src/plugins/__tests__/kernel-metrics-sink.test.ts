@@ -54,6 +54,9 @@ function makeDeps(
     sentry: overrides?.sentry ?? { addBreadcrumb: breadcrumb },
     log: overrides?.log ?? log,
     register: overrides?.register ?? register,
+    ...(overrides?.knownIntentKinds !== undefined
+      ? { knownIntentKinds: overrides.knownIntentKinds }
+      : {}),
   }
   return { deps, track, breadcrumb, log, register }
 }
@@ -178,6 +181,106 @@ describe("createKernelMetricsSink — recordDecision", () => {
     sink.recordDecision(mkDecision("EXECUTE"))
     sink.recordDecision(mkDecision("REFUSE"))
     expect(breadcrumb).not.toHaveBeenCalled()
+  })
+})
+
+// ── W5-9: coverage gauge ─────────────────────────────────────────────────────
+
+describe("createKernelMetricsSink — kernel_intent_kind_coverage gauge (W5-9)", () => {
+  it("publishes 0 ratio when no decisions observed yet", async () => {
+    const { deps, register } = makeDeps({
+      knownIntentKinds: new Set(["order.item.add", "payment.refund.issue"]),
+    })
+    createKernelMetricsSink(deps)
+    const out = await register.getSingleMetricAsString(
+      "kernel_intent_kind_coverage",
+    )
+    expect(out).toMatch(/kernel_intent_kind_coverage\s+0/)
+  })
+
+  it("publishes ratio based on observed-vs-known kinds", async () => {
+    const { deps, register } = makeDeps({
+      knownIntentKinds: new Set([
+        "order.item.add",
+        "order.cancel",
+        "payment.refund.issue",
+        "payment.charge.confirm",
+      ]),
+    })
+    const sink = createKernelMetricsSink(deps)
+    sink.recordDecision(
+      mkDecision("EXECUTE", { intentKind: "order.item.add" }),
+    )
+    sink.recordDecision(
+      mkDecision("EXECUTE", { intentKind: "order.cancel" }),
+    )
+    const out = await register.getSingleMetricAsString(
+      "kernel_intent_kind_coverage",
+    )
+    // 2 of 4 known kinds observed → 0.5
+    expect(out).toMatch(/kernel_intent_kind_coverage\s+0\.5/)
+  })
+
+  it("publishes total known kinds gauge", async () => {
+    const { deps, register } = makeDeps({
+      knownIntentKinds: new Set([
+        "order.item.add",
+        "payment.refund.issue",
+        "reservation.create",
+      ]),
+    })
+    createKernelMetricsSink(deps)
+    const out = await register.getSingleMetricAsString(
+      "kernel_known_intent_kinds_total",
+    )
+    expect(out).toMatch(/kernel_known_intent_kinds_total\s+3/)
+  })
+
+  it("tracks distinct observed kinds (deduped within window)", async () => {
+    const { deps, register } = makeDeps({
+      knownIntentKinds: new Set(["order.item.add"]),
+    })
+    const sink = createKernelMetricsSink(deps)
+    // Same kind 3 times → distinct count = 1
+    sink.recordDecision(mkDecision("EXECUTE", { intentKind: "order.item.add" }))
+    sink.recordDecision(mkDecision("EXECUTE", { intentKind: "order.item.add" }))
+    sink.recordDecision(mkDecision("REFUSE", { intentKind: "order.item.add" }))
+    const out = await register.getSingleMetricAsString(
+      "kernel_distinct_intent_kinds_observed",
+    )
+    expect(out).toMatch(/kernel_distinct_intent_kinds_observed\s+1/)
+  })
+
+  it("flags unknown kinds — observed but not in KNOWN_INTENT_KINDS doesn't lift coverage", async () => {
+    const { deps, register } = makeDeps({
+      knownIntentKinds: new Set(["order.item.add", "payment.refund.issue"]),
+    })
+    const sink = createKernelMetricsSink(deps)
+    // An unknown kind leaks through. Coverage stays at 0 because no
+    // known kind has been observed.
+    sink.recordDecision(
+      mkDecision("EXECUTE", { intentKind: "rogue.unknown.kind" }),
+    )
+    const out = await register.getSingleMetricAsString(
+      "kernel_intent_kind_coverage",
+    )
+    expect(out).toMatch(/kernel_intent_kind_coverage\s+0/)
+    // But the distinct-observed gauge DOES count the unknown (so the
+    // operator can compare observed vs known directly).
+    const observed = await register.getSingleMetricAsString(
+      "kernel_distinct_intent_kinds_observed",
+    )
+    expect(observed).toMatch(/kernel_distinct_intent_kinds_observed\s+1/)
+  })
+
+  it("works without knownIntentKinds (coverage stays at 0; counters still publish)", async () => {
+    const { deps, register } = makeDeps()
+    const sink = createKernelMetricsSink(deps)
+    sink.recordDecision(mkDecision("EXECUTE", { intentKind: "order.item.add" }))
+    const out = await register.getSingleMetricAsString(
+      "kernel_distinct_intent_kinds_observed",
+    )
+    expect(out).toMatch(/kernel_distinct_intent_kinds_observed\s+1/)
   })
 })
 

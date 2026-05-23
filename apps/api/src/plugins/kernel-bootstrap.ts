@@ -102,6 +102,12 @@ export function installKernelMetricsSink(
     sentry: overrides?.sentry ?? Sentry,
     log: overrides?.log ?? logger,
     register,
+    // W5-9: pass KNOWN_INTENT_KINDS so the sink can publish
+    // `kernel_intent_kind_coverage`. The set is computed at the llm-provider
+    // package boundary from the first-party Pack unions; passing it in keeps
+    // the sink layered above @ibatexas/llm-provider rather than coupling
+    // them at module-graph level.
+    knownIntentKinds: overrides?.knownIntentKinds ?? KNOWN_INTENT_KINDS,
   })
   setMetricsSink(sink)
   return register
