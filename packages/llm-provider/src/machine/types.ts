@@ -381,6 +381,11 @@ export const TOOL_CLASSIFICATION = {
     "get_ordered_together",
     "get_loyalty_balance",
     "check_payment_status",
+    // set_pix_details performs no mutation — it validates customer-supplied
+    // {name, email, cpf} and returns a {event: "PIX_DETAILS_COLLECTED"} payload
+    // that the responder must surface via onToolEvent (kind === "result" branch).
+    // Classifying it as MUTATING silently drops the event (see investigation 01 P0 #2).
+    "set_pix_details",
   ]),
 
   MUTATING: new Set([
@@ -403,7 +408,6 @@ export const TOOL_CLASSIFICATION = {
     "handoff_to_human",
     "schedule_follow_up",
     "regenerate_pix",
-    "set_pix_details",
   ]),
 } as const
 
