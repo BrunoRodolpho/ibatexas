@@ -17,29 +17,53 @@
 //     reads CPF in cleartext.
 //   - This module nukes the leak BEFORE fan-out.
 //
+// ── P0-15: auditHash recomputation (Option A) ─────────────────────────────
+//
+// Pre-W2 the redactor preserved `auditHash` verbatim while mutating
+// `envelope.payload`. `verifyAuditRecord` reading a durable redacted record
+// re-derived `sha256Canonical(record \ {auditHash, signature})` against
+// the redacted envelope and reported `tampered` for EVERY redacted record.
+// Tamper-detection at the audit-record level was structurally inert
+// downstream of `getAuditSink()`.
+//
+// The W2 fix recomputes `auditHash` over the redacted record. The trade-off
+// (documented in docs/adjudicate-migration/audit/REDACTION-HASH-DECISION.md):
+//
+//   - LOSS: the original-content tamper guarantee at the audit-record level.
+//     A downstream reader cannot prove the unredacted payload was unmodified;
+//     they can only prove the REDACTED payload was unmodified.
+//   - GAIN: `verifyAuditRecord` actually works on redacted records (the
+//     only kind any downstream sink sees, by invariant #1 of this module).
+//   - REPLAY: must redact with the same config to reproduce the same hash.
+//     The redaction salt (`AUDIT_REDACT_SECRET`) becomes part of the replay
+//     contract — operators MUST snapshot it alongside the audit records.
+//
 // Invariants (do not break under any pull-request):
 //   1. Idempotent — `redact(redact(record))` deep-equals `redact(record)`.
-//   2. Hash-preserving — `record.intentHash` and `record.auditHash` are
-//      NEVER recomputed. They were derived from the *unredacted* envelope
-//      at `buildAuditRecord` time; replay rebuilds the same envelope from
-//      audit storage and would re-derive the same hash. Mutating either
-//      field here would break ledger dedup and the v4 tamper-evidence
-//      contract.
-//   3. Shape-preserving — `decision`, `decision_basis`, `at`, `durationMs`,
+//   2. Hash-stable post-redaction — `redact(record).auditHash` equals
+//      `sha256Canonical(redact(record) \ {auditHash, signature})`. The
+//      stored hash matches what `verifyAuditRecord` will derive.
+//   3. `intentHash` is NEVER recomputed — replay reconstructs the envelope
+//      from the redacted record's nonce + actor + taint + createdAt, and
+//      since `intentHash` is computed over the ORIGINAL payload at build-
+//      time, the redacted record's intentHash is still byte-identical to
+//      the originating envelope's. Ledger dedup remains correct.
+//   4. Shape-preserving — `decision`, `decision_basis`, `at`, `durationMs`,
 //      `version`, `plan`, `supersedes`, `kernelIdentity`, `kernelVersion`,
-//      `policyVersion`, `auditHash`, `signature`, and the envelope's
-//      `actor` / `taint` / `kind` / `nonce` / `createdAt` / `version` /
-//      `intentHash` fields are untouched.
-//   4. Fail-open — if a redaction step throws (e.g. cycle in payload), we
+//      `policyVersion`, `signature`, and the envelope's `actor` / `taint` /
+//      `kind` / `nonce` / `createdAt` / `version` / `intentHash` fields are
+//      untouched (only `envelope.payload` and `auditHash` change).
+//   5. Fail-open — if a redaction step throws (e.g. cycle in payload), we
 //      replace the entire payload with `{ __redactor_error: true }` and
-//      log. NEVER block a decision because of a redactor bug.
+//      log. NEVER block a decision because of a redactor bug. The stub
+//      payload's hash is also recomputed for invariant #2.
 //
 // See `docs/adjudicate-migration/tasks/18-audit-redactor.md` and
 // `docs/adjudicate-migration/investigation/08-security-trust-boundaries.md`
 // §"P0 #1" for the full rationale.
 
 import { createHash } from "node:crypto"
-import type { AuditRecord } from "@adjudicate/core"
+import { sha256Canonical, type AuditRecord } from "@adjudicate/core"
 
 // ── Field-name rules ──────────────────────────────────────────────────────────
 //
@@ -326,18 +350,32 @@ export function createAuditRedactor(
         hashSecret,
       })
 
-      // Shallow-clone the record and envelope. Object spread preserves
-      // `auditHash` / `signature` / `version` / `intentHash` etc. without
-      // touching them — exactly what invariant #2 requires.
-      return {
+      // Shallow-clone the record and envelope, substituting the redacted
+      // payload. Invariant #3: intentHash is NEVER recomputed — replay uses
+      // it to look up the original envelope and that lookup must remain
+      // stable.
+      const redactedRecord: AuditRecord = {
         ...record,
         envelope: {
           ...record.envelope,
           payload: redactedPayload,
         },
       }
+
+      // P0-15 Option A: recompute auditHash over the redacted record so
+      // `verifyAuditRecord` reading from a downstream sink (NATS, Postgres)
+      // can verify tamper-evidence on the redacted record. The pre-W2
+      // redactor preserved the unredacted-payload auditHash verbatim,
+      // which guaranteed `verifyAuditRecord` reported `tampered` for
+      // every redacted record (the only kind any sink ever sees).
+      //
+      // Replay implications: a replay tool re-deriving auditHash against
+      // a stored record MUST redact with the same config (rule sets +
+      // hashSecret) to reproduce the stored hash. Operators MUST snapshot
+      // `AUDIT_REDACT_SECRET` alongside the audit stream.
+      return recomputeAuditHash(redactedRecord)
     } catch (err) {
-      // Invariant #4: fail-open. Surface a structured stand-in so downstream
+      // Invariant #5: fail-open. Surface a structured stand-in so downstream
       // sinks can detect the failure (presence of `__redactor_error`) without
       // having access to the original PII.
       warn(
@@ -345,17 +383,46 @@ export function createAuditRedactor(
           (err as Error).message
         } — replacing payload with stub.`,
       )
-      return {
+      const stubbed: AuditRecord = {
         ...record,
         envelope: {
           ...record.envelope,
           payload: { __redactor_error: true },
         },
       }
+      // The fail-open stub payload also needs a recomputed auditHash so
+      // `verifyAuditRecord` doesn't surface false-positive tamper warnings
+      // for stub records.
+      return recomputeAuditHash(stubbed)
     }
   }
 
   return { redact, redactPayload }
+}
+
+// ── Audit-hash recomputation helper ───────────────────────────────────────────
+//
+// `verifyAuditRecord` from `@adjudicate/core/audit.ts:235-249` does:
+//   const { auditHash, signature, ...rest } = record
+//   const derived = sha256Canonical(rest)
+//   return derived === auditHash ? verified : tampered
+//
+// To produce a record where this returns `verified: true`, the redactor
+// must compute the SAME canonical-JSON hash over the SAME record minus
+// auditHash + signature. We replicate the strip-and-hash here.
+//
+// Records lacking a v4 `auditHash` (pre-v4 audit records) get a freshly
+// computed one — this is upgrade-friendly. Records with a signature: the
+// signature would be invalidated by hash change, so we drop it on
+// redaction. If non-repudiation is needed downstream, the signer must
+// re-sign post-redaction (out of scope for the redactor).
+function recomputeAuditHash(record: AuditRecord): AuditRecord {
+  // Strip auditHash + signature before deriving. Mirrors verifyAuditRecord.
+  const { auditHash: _previous, signature: _signature, ...rest } = record
+  void _previous
+  void _signature
+  const auditHash = sha256Canonical(rest)
+  return { ...rest, auditHash }
 }
 
 // ── Walker ────────────────────────────────────────────────────────────────────

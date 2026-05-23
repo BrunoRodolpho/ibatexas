@@ -351,12 +351,16 @@ describe("adjudicateKernelMutation — enforce path", () => {
     // P0-7: park flows through parkDeferredIntent which calls INCR (quota
     // counter), EXPIRE (TTL on counter), then SET (envelope blob).
     expect(redisIncrMock).toHaveBeenCalledTimes(1)
-    const [counterKey] = redisIncrMock.mock.calls[0]!
-    expect(counterKey).toBe(`ibatexas:defer:count:${SESSION_ID}`)
+    const incrCall = redisIncrMock.mock.calls[0] as unknown as [string]
+    expect(incrCall[0]).toBe(`ibatexas:defer:count:${SESSION_ID}`)
     expect(redisSetMock).toHaveBeenCalledTimes(1)
-    const [key, value, opts] = redisSetMock.mock.calls[0]!
-    expect(key).toBe(`ibatexas:defer:pending:${SESSION_ID}`)
-    const parsed = JSON.parse(value as string) as {
+    const setCall = redisSetMock.mock.calls[0] as unknown as [
+      string,
+      string,
+      { EX: number },
+    ]
+    expect(setCall[0]).toBe(`ibatexas:defer:pending:${SESSION_ID}`)
+    const parsed = JSON.parse(setCall[1]) as {
       envelope: {
         intentHash: string
         version: number
@@ -374,7 +378,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
     expect(parsed.envelope.nonce).toBe(envelope.nonce)
     expect(parsed.envelope.taint).toBe(envelope.taint)
     expect(parsed.envelope.actorPrincipal).toBe(envelope.actor.principal)
-    expect((opts as { EX: number }).EX).toBeGreaterThan(60)
+    expect(setCall[2].EX).toBeGreaterThan(60)
   })
 
   it("addItem DEFER with quota_exceeded → proceed:false + userFacing pt-BR copy", async () => {
