@@ -558,8 +558,30 @@ function walk(value: unknown, path: string, ctx: WalkContext): unknown {
 
   if (typeof value === "object") {
     const obj = value as Record<string, unknown>
-    const out: Record<string, unknown> = {}
+    // NEW-P0-X5: use `Object.create(null)` so assigning a key called
+    // `__proto__` does NOT mutate the prototype chain of our output. We
+    // also reject `__proto__` / `constructor` / `prototype` as own-key
+    // names during walk — a JSON.parse'd payload with `{"__proto__": ...}`
+    // exposes the key via `Object.keys`, and `out["__proto__"] = X` on a
+    // plain `{}` would silently set the prototype. With a null-prototype
+    // container the assignment becomes a regular property (still rejected
+    // explicitly so downstream JSON serialisation doesn't carry the
+    // pollution shape forward).
+    const out: Record<string, unknown> = Object.create(null) as Record<
+      string,
+      unknown
+    >
     for (const rawKey of Object.keys(obj)) {
+      // Drop pollution-class keys outright. These never carry useful audit
+      // payload; an LLM emitting an envelope with `__proto__` is either
+      // adversarial or unintentionally constructing a polluted object.
+      if (
+        rawKey === "__proto__" ||
+        rawKey === "constructor" ||
+        rawKey === "prototype"
+      ) {
+        continue
+      }
       const v = obj[rawKey]
       // Key-level scrub: if a KEY itself contains a PII shape (rare but the
       // bypass corpus includes it — e.g. `"12345678900_was_processed"`), we
@@ -654,8 +676,15 @@ function redactSubtree(value: unknown): unknown {
     return value.map((v) => redactSubtree(v))
   }
   if (typeof value === "object") {
-    const out: Record<string, unknown> = {}
+    // NEW-P0-X5: null-prototype container + reject pollution-class keys.
+    const out: Record<string, unknown> = Object.create(null) as Record<
+      string,
+      unknown
+    >
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k === "__proto__" || k === "constructor" || k === "prototype") {
+        continue
+      }
       out[k] = redactSubtree(v)
     }
     return out
