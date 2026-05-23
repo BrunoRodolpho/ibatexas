@@ -420,14 +420,44 @@ export async function resolveDeferredSession(
   // P0-8 — Two-phase commit, step 1: check the long-term dedup ledger BEFORE
   // claiming a resuming slot. A duplicate webhook delivery for an already-
   // resumed intent should short-circuit early.
-  const alreadyResumed = await redis.get(resumedKey).catch(() => null)
-  if (alreadyResumed !== null) {
+  //
+  // P1-D-VERIFY (deep audit #4): the pre-existing `.catch(() => null)` at
+  // this site collapsed a transient Redis IOError into "no prior resume",
+  // which let the resume path dispatch the envelope a SECOND time. We now
+  // go through `robustRedisGet` (3-retry exponential backoff) — same
+  // helper the parked-blob GET already uses earlier in this function —
+  // and distinguish: missing (proceed to resume), value (already resumed,
+  // skip), error (DLQ + transient_error so the subscriber can flag ops).
+  const resumedGetResult = await robustRedisGet(redis, resumedKey, log)
+  if (resumedGetResult.kind === "error") {
+    log?.error(
+      { sessionId, signal, intentHash, err: (resumedGetResult.err as Error)?.message },
+      "[defer-resolver] redis.get(resumedKey) exhausted retries — DLQ + skip",
+    )
+    // Release the resuming slot we have not yet claimed — but make sure
+    // the cycle counter we haven't yet incremented stays untouched. The
+    // DLQ entry surfaces the transient error so ops can investigate.
+    await pushToDlq(
+      "intent.defer.resume",
+      { sessionId, signal, intentHash, reason: "redis_get_resumed_key_failed" },
+      resumedGetResult.err,
+      log,
+    )
+    return {
+      kind: "transient_error",
+      reason: `redis_get_resumed_key_failed: ${
+        (resumedGetResult.err as Error)?.message ?? "unknown"
+      }`,
+    }
+  }
+  if (resumedGetResult.kind === "value") {
     log?.debug(
       { sessionId, signal, intentHash },
       "[defer-resolver] duplicate webhook delivery — resume already committed",
     )
     return { kind: "duplicate_suppressed", intentHash }
   }
+  // resumedGetResult.kind === "missing" — proceed to claim the resuming slot.
 
   // P0-8 — Two-phase commit, step 2: SETNX the resuming marker. If acquired,
   // we own the resume for this (intentHash, signal) pair. If not, another
