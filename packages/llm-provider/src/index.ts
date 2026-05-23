@@ -131,6 +131,10 @@ export {
 // Re-export agent types for consumers
 export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
 
+// Logger shim (W6-10 / P2-C) — apps/api can pass `req.log` for reqId
+// correlation. Default passthrough preserves dev console-log behaviour.
+export { defaultLogger, resolveLogger, type IbxLogger } from "./logger.js"
+
 // Intent-kind union (Phase M / task-08 follow-up) — consumed by
 // `validateEnforceConfig` from `@adjudicate/core/kernel` so typos in
 // `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` surface at boot.
