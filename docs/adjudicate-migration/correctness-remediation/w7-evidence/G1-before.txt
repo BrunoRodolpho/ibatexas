@@ -1,0 +1,154 @@
+# G1 — Whitespace customerId trim (BEFORE fix)
+#
+# Command (run from /Users/thaisrodolpho/projects/ibatexas/apps/api):
+#   pnpm vitest run src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts
+#
+# Expected: the new positive regression test FAILS because the current
+# assertCustomerId only rejects customerId === "" and does not handle
+# whitespace-only strings or trim padded inputs.
+#
+# Raw vitest output:
+
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ❯ src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts (8 tests | 6 failed) 19ms
+   × W7-G1 — whitespace customerId is now correctly rejected > rejects '   ' (three spaces) with InvalidCustomerIdError — no Redis write 15ms
+     → promise resolved "undefined" instead of rejecting
+   × W7-G1 — whitespace customerId is now correctly rejected > rejects '\n' (newline) with InvalidCustomerIdError 0ms
+     → promise resolved "undefined" instead of rejecting
+   × W7-G1 — whitespace customerId is now correctly rejected > rejects '\t' (tab) with InvalidCustomerIdError 0ms
+     → promise resolved "undefined" instead of rejecting
+   × W7-G1 — whitespace customerId is now correctly rejected > rejects '  \n  ' (mixed whitespace) with InvalidCustomerIdError 0ms
+     → promise resolved "undefined" instead of rejecting
+   × W7-G1 — whitespace customerId is now correctly rejected > canonicalises padded ids — '\tabc\t' lands key with the TRIMMED suffix 2ms
+     → expected 'ibatexas:anonymize:otp:\tabc\t' to be 'ibatexas:anonymize:otp:abc' // Object.is equality
+   × W7-G1 — whitespace customerId is now correctly rejected > canonicalises padded ids — ' abc ' lands key with the TRIMMED suffix 0ms
+     → expected 'ibatexas:anonymize:otp: abc ' to be 'ibatexas:anonymize:otp:abc' // Object.is equality
+   ✓ W7-G1 — whitespace customerId is now correctly rejected > accepts 'abc' (untrimmed, no leading/trailing whitespace) — control 0ms
+   ✓ W7-G1 — whitespace customerId is now correctly rejected > continues to reject empty string (Wave 4 P0-11 contract preserved) 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts > W7-G1 — whitespace customerId is now correctly rejected > rejects '   ' (three spaces) with InvalidCustomerIdError — no Redis write
+AssertionError: promise resolved "undefined" instead of rejecting
+
+[32m- Expected:[39m 
+Error {
+  "message": "rejected promise",
+}
+
+[31m+ Received:[39m 
+undefined
+
+ ❯ src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts:86:37
+     84|       "../../routes/me/anonymize-otp-gate.js"
+     85|     );
+     86|     await expect(markOtpFresh("   ")).rejects.toBeInstanceOf(InvalidCu…
+       |                                     ^
+     87|     expect(mockRedisSet).not.toHaveBeenCalled();
+     88|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts > W7-G1 — whitespace customerId is now correctly rejected > rejects '\n' (newline) with InvalidCustomerIdError
+AssertionError: promise resolved "undefined" instead of rejecting
+
+[32m- Expected:[39m 
+Error {
+  "message": "rejected promise",
+}
+
+[31m+ Received:[39m 
+undefined
+
+ ❯ src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts:94:36
+     92|       "../../routes/me/anonymize-otp-gate.js"
+     93|     );
+     94|     await expect(markOtpFresh("\n")).rejects.toBeInstanceOf(InvalidCus…
+       |                                    ^
+     95|     expect(mockRedisSet).not.toHaveBeenCalled();
+     96|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts > W7-G1 — whitespace customerId is now correctly rejected > rejects '\t' (tab) with InvalidCustomerIdError
+AssertionError: promise resolved "undefined" instead of rejecting
+
+[32m- Expected:[39m 
+Error {
+  "message": "rejected promise",
+}
+
+[31m+ Received:[39m 
+undefined
+
+ ❯ src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts:102:36
+    100|       "../../routes/me/anonymize-otp-gate.js"
+    101|     );
+    102|     await expect(markOtpFresh("\t")).rejects.toBeInstanceOf(InvalidCus…
+       |                                    ^
+    103|     expect(mockRedisSet).not.toHaveBeenCalled();
+    104|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts > W7-G1 — whitespace customerId is now correctly rejected > rejects '  \n  ' (mixed whitespace) with InvalidCustomerIdError
+AssertionError: promise resolved "undefined" instead of rejecting
+
+[32m- Expected:[39m 
+Error {
+  "message": "rejected promise",
+}
+
+[31m+ Received:[39m 
+undefined
+
+ ❯ src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts:110:40
+    108|       "../../routes/me/anonymize-otp-gate.js"
+    109|     );
+    110|     await expect(markOtpFresh("  \n  ")).rejects.toBeInstanceOf(Invali…
+       |                                        ^
+    111|     expect(mockRedisSet).not.toHaveBeenCalled();
+    112|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts > W7-G1 — whitespace customerId is now correctly rejected > canonicalises padded ids — '\tabc\t' lands key with the TRIMMED suffix
+AssertionError: expected 'ibatexas:anonymize:otp:\tabc\t' to be 'ibatexas:anonymize:otp:abc' // Object.is equality
+
+Expected: [32m"ibatexas:anonymize:otp:abc"[39m
+Received: [31m"ibatexas:anonymize:otp:[7m	[27mabc[7m	[27m"[39m
+
+ ❯ src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts:123:43
+    121|     await markOtpFresh("\tabc\t");
+    122|     expect(mockRedisSet).toHaveBeenCalledTimes(1);
+    123|     expect(mockRedisSet.mock.calls[0][0]).toBe("ibatexas:anonymize:otp…
+       |                                           ^
+    124|   });
+    125| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts > W7-G1 — whitespace customerId is now correctly rejected > canonicalises padded ids — ' abc ' lands key with the TRIMMED suffix
+AssertionError: expected 'ibatexas:anonymize:otp: abc ' to be 'ibatexas:anonymize:otp:abc' // Object.is equality
+
+Expected: [32m"ibatexas:anonymize:otp:abc"[39m
+Received: [31m"ibatexas:anonymize:otp:[7m [27mabc[7m [27m"[39m
+
+ ❯ src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts:132:43
+    130|     await markOtpFresh(" abc ");
+    131|     expect(mockRedisSet).toHaveBeenCalledTimes(1);
+    132|     expect(mockRedisSet.mock.calls[0][0]).toBe("ibatexas:anonymize:otp…
+       |                                           ^
+    133|   });
+    134| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  6 failed | 2 passed (8)
+   Start at  17:46:58
+   Duration  364ms (transform 37ms, setup 0ms, collect 28ms, tests 19ms, environment 0ms, prepare 54ms)
+

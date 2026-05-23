@@ -76,17 +76,64 @@ import twilio from "twilio";
 // `requireAuth` already rejects empty `customerId` upstream, but every
 // helper here repeats the guard so a future refactor that adds a new
 // caller (CLI, subscriber, …) cannot accidentally drop the gate.
+//
+// ── W7-G1: trim-aware guard + canonicalising assignment ─────────────────
+//
+// Wave 6 red-team Target 5 (apps/api/src/__tests__/wave6-red-team/
+// 01-customerid-whitespace-bypass.test.ts) demonstrated that the prior
+// guard `customerId === ""` admitted whitespace-only strings ("   ",
+// "\n", "\t") through every Redis-key builder. The downstream keys
+// collapsed any forged JWT whose `sub` was whitespace onto a colliding
+// namespace, partially un-doing the original P0-X8 stolen-JWT hardening.
+//
+// W7-G1 closes the bypass:
+//   * `assertCustomerId` rejects null/undefined/non-string/empty/
+//     all-whitespace strings with `InvalidCustomerIdError`.
+//   * The assertion narrows to the TRIMMED string so callers downstream
+//     of the guard see the canonical form and key builders cannot
+//     accidentally route padded ids (`"\tabc\t"` vs `"abc"`) into
+//     independent namespaces for the same human.
+//
+// Note: the literal four-character string "null" is NOT rejected here;
+// requireAuth upstream is the place to refuse the literal-null `sub`
+// foot-gun, and this layer cannot distinguish a legitimate customerId
+// that happens to be the string "null" from an unparseable JWT claim.
 class InvalidCustomerIdError extends Error {
   constructor() {
-    super("Empty customerId rejected — anonymize gate keys must be tenant-scoped.");
+    super(
+      "Invalid customerId rejected — anonymize gate keys must be tenant-scoped (non-empty, non-whitespace).",
+    );
     this.name = "InvalidCustomerIdError";
   }
 }
 
-function assertCustomerId(customerId: string | null | undefined): asserts customerId is string {
-  if (customerId == null || typeof customerId !== "string" || customerId === "") {
+function assertCustomerId(
+  customerId: string | null | undefined,
+): asserts customerId is string {
+  if (
+    customerId == null ||
+    typeof customerId !== "string" ||
+    customerId.trim().length === 0
+  ) {
     throw new InvalidCustomerIdError();
   }
+}
+
+/**
+ * Canonicalise a customerId by trimming surrounding whitespace.
+ *
+ * Pairs with `assertCustomerId` — the assertion guarantees the input is a
+ * non-empty, non-whitespace string; this helper returns the trimmed form
+ * for use in Redis key construction. Two padded variants of the same id
+ * (`"\tabc\t"` vs `"abc"`) collapse to the same canonical key so a
+ * stolen-JWT attacker cannot satisfy two independent attempt namespaces
+ * for one human.
+ *
+ * Callers MUST call `assertCustomerId(customerId)` first; this helper
+ * assumes the input has already been validated.
+ */
+function canonicalizeCustomerId(customerId: string): string {
+  return customerId.trim();
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────
@@ -171,8 +218,9 @@ export async function verifyAnonymizeOtp(phone: string, code: string): Promise<b
  */
 export async function markOtpFresh(customerId: string): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  await redis.set(rk(`anonymize:otp:${customerId}`), "1", {
+  await redis.set(rk(`anonymize:otp:${id}`), "1", {
     EX: ANONYMIZE_OTP_TTL_SECONDS,
   });
 }
@@ -186,8 +234,9 @@ export async function markOtpFresh(customerId: string): Promise<void> {
  */
 export async function hasFreshOtp(customerId: string): Promise<boolean> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  const value = await redis.get(rk(`anonymize:otp:${customerId}`));
+  const value = await redis.get(rk(`anonymize:otp:${id}`));
   return value !== null;
 }
 
@@ -198,8 +247,9 @@ export async function hasFreshOtp(customerId: string): Promise<boolean> {
  */
 export async function consumeOtpMarker(customerId: string): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  await redis.del(rk(`anonymize:otp:${customerId}`));
+  await redis.del(rk(`anonymize:otp:${id}`));
 }
 
 // ── P0-11: verify-step marker + brute-force counter + cancel cooldown ────
@@ -233,8 +283,9 @@ export const ANONYMIZE_CANCEL_COOLDOWN_SECONDS = 30 * 60;
  */
 export async function markOtpVerified(customerId: string): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  await redis.set(rk(`anonymize:otp_verified:${customerId}`), "1", {
+  await redis.set(rk(`anonymize:otp_verified:${id}`), "1", {
     EX: ANONYMIZE_VERIFY_TTL_SECONDS,
   });
 }
@@ -247,8 +298,9 @@ export async function markOtpVerified(customerId: string): Promise<void> {
  */
 export async function hasFreshVerifiedOtp(customerId: string): Promise<boolean> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  const value = await redis.get(rk(`anonymize:otp_verified:${customerId}`));
+  const value = await redis.get(rk(`anonymize:otp_verified:${id}`));
   return value !== null;
 }
 
@@ -259,8 +311,9 @@ export async function hasFreshVerifiedOtp(customerId: string): Promise<boolean> 
  */
 export async function consumeOtpVerifiedMarker(customerId: string): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  await redis.del(rk(`anonymize:otp_verified:${customerId}`));
+  await redis.del(rk(`anonymize:otp_verified:${id}`));
 }
 
 /**
@@ -273,8 +326,9 @@ export async function consumeOtpVerifiedMarker(customerId: string): Promise<void
  */
 export async function incrementOtpFailureCount(customerId: string): Promise<number> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  const key = rk(`anonymize:fail:${customerId}`);
+  const key = rk(`anonymize:fail:${id}`);
   const next = await redis.incr(key);
   if (next === 1) {
     // First failure → set the TTL.
@@ -290,8 +344,9 @@ export async function incrementOtpFailureCount(customerId: string): Promise<numb
  */
 export async function getOtpFailureCount(customerId: string): Promise<number> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  const value = await redis.get(rk(`anonymize:fail:${customerId}`));
+  const value = await redis.get(rk(`anonymize:fail:${id}`));
   return value === null ? 0 : Number.parseInt(value, 10) || 0;
 }
 
@@ -301,8 +356,9 @@ export async function getOtpFailureCount(customerId: string): Promise<number> {
  */
 export async function resetOtpFailureCount(customerId: string): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  await redis.del(rk(`anonymize:fail:${customerId}`));
+  await redis.del(rk(`anonymize:fail:${id}`));
 }
 
 // ── P0-X-OTP — Atomic INCR + threshold check (audit 03 R6) ───────────────
@@ -385,9 +441,10 @@ export async function acquireOtpAttempt(
   customerId: string,
 ): Promise<OtpAttemptResult> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  const failKey = rk(`anonymize:fail:${customerId}`);
-  const lockoutKey = rk(`anonymize:lockout:${customerId}`);
+  const failKey = rk(`anonymize:fail:${id}`);
+  const lockoutKey = rk(`anonymize:lockout:${id}`);
   const raw = (await (
     redis as unknown as {
       eval: (
@@ -425,8 +482,9 @@ export async function acquireOtpAttempt(
  */
 export async function clearOtpLockout(customerId: string): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  await redis.del(rk(`anonymize:lockout:${customerId}`));
+  await redis.del(rk(`anonymize:lockout:${id}`));
 }
 
 /**
@@ -435,8 +493,9 @@ export async function clearOtpLockout(customerId: string): Promise<void> {
  */
 export async function setCancelCooldown(customerId: string): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  await redis.set(rk(`anonymize:cancel-cooldown:${customerId}`), "1", {
+  await redis.set(rk(`anonymize:cancel-cooldown:${id}`), "1", {
     EX: ANONYMIZE_CANCEL_COOLDOWN_SECONDS,
   });
 }
@@ -447,8 +506,9 @@ export async function setCancelCooldown(customerId: string): Promise<void> {
  */
 export async function hasCancelCooldown(customerId: string): Promise<boolean> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  const value = await redis.get(rk(`anonymize:cancel-cooldown:${customerId}`));
+  const value = await redis.get(rk(`anonymize:cancel-cooldown:${id}`));
   return value !== null;
 }
 
@@ -477,9 +537,10 @@ export async function persistPendingDeletion(
   receipt: PendingAnonymizeReceipt,
 ): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
   await redis.set(
-    rk(`anonymize:pending:${customerId}`),
+    rk(`anonymize:pending:${id}`),
     JSON.stringify(receipt),
     { EX: ANONYMIZE_GRACE_TTL_SECONDS },
   );
@@ -493,8 +554,9 @@ export async function readPendingDeletion(
   customerId: string,
 ): Promise<PendingAnonymizeReceipt | null> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  const raw = await redis.get(rk(`anonymize:pending:${customerId}`));
+  const raw = await redis.get(rk(`anonymize:pending:${id}`));
   if (!raw) return null;
   try {
     return JSON.parse(raw) as PendingAnonymizeReceipt;
@@ -509,8 +571,9 @@ export async function readPendingDeletion(
  */
 export async function clearPendingDeletion(customerId: string): Promise<void> {
   assertCustomerId(customerId);
+  const id = canonicalizeCustomerId(customerId);
   const redis = await getRedisClient();
-  await redis.del(rk(`anonymize:pending:${customerId}`));
+  await redis.del(rk(`anonymize:pending:${id}`));
 }
 
 // Export the assertion + error for tests; route code should rely on
