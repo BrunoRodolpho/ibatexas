@@ -12,14 +12,14 @@
 //
 // # Scope today
 //
-// Two intent unions are imported:
-//   - `OrderIntentKind`   from `@ibatexas/pack-orders`
-//   - `PixIntentKind`     from `@adjudicate/pack-payments-pix`
+// Three intent unions are imported:
+//   - `OrderIntentKind`       from `@ibatexas/pack-orders`
+//   - `ReservationIntentKind` from `@ibatexas/pack-reservations`
+//   - `PixIntentKind`         from `@adjudicate/pack-payments-pix`
 //
 // # TODO — future Packs
 //
-// As tasks 09 / 10 / 21 land, extend this union with:
-//   - `ReservationIntentKind`         from `@ibatexas/pack-reservations`    (task 09)
+// As tasks 10 / 21 land, extend this union with:
 //   - `WhatsappIntentKind`            from `@ibatexas/pack-whatsapp`        (task 10)
 //   - `CustomerOnboardingIntentKind`  from `@ibatexas/pack-customer-onboarding` (task 21)
 //
@@ -37,6 +37,7 @@
 // its union without also updating this list. That's the typo-guard guard.
 
 import type { OrderIntentKind } from "@ibatexas/pack-orders"
+import type { ReservationIntentKind } from "@ibatexas/pack-reservations"
 import type { PixIntentKind } from "@adjudicate/pack-payments-pix"
 
 // ── Pack-orders intent surface ───────────────────────────────────────────────
@@ -57,6 +58,26 @@ const ORDER_INTENT_KINDS = [
   "order.amend.request",
   "order.note.add",
 ] as const satisfies readonly OrderIntentKind[]
+
+// ── Pack-reservations intent surface ─────────────────────────────────────────
+//
+// Mirrors the `ReservationIntentKind` union in
+// `packages/pack-reservations/src/types.ts`. If you add a kind there, add it
+// here too — `satisfies` will fail the build otherwise.
+//
+// Source: `docs/adjudicate-migration/governance/01-intent-taxonomy.md`
+// §"Domain: reservation".
+
+const RESERVATION_INTENT_KINDS = [
+  "reservation.create",
+  "reservation.modify",
+  "reservation.cancel",
+  "reservation.checkin",
+  "reservation.complete",
+  "reservation.no_show.mark",
+  "reservation.waitlist.join",
+  "reservation.waitlist.notify",
+] as const satisfies readonly ReservationIntentKind[]
 
 // ── Pack-payments-pix intent surface ─────────────────────────────────────────
 //
@@ -80,8 +101,8 @@ const PIX_INTENT_KINDS = [
 
 export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...ORDER_INTENT_KINDS,
+  ...RESERVATION_INTENT_KINDS,
   ...PIX_INTENT_KINDS,
-  // TODO(task-09): ...RESERVATION_INTENT_KINDS,
   // TODO(task-10): ...WHATSAPP_INTENT_KINDS,
   // TODO(task-21): ...CUSTOMER_ONBOARDING_INTENT_KINDS,
 ])
