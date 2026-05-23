@@ -1121,6 +1121,9 @@ importers:
       '@ibatexas/pack-orders':
         specifier: workspace:*
         version: link:../pack-orders
+      '@ibatexas/pack-payments':
+        specifier: workspace:*
+        version: link:../pack-payments
       '@ibatexas/pack-reservations':
         specifier: workspace:*
         version: link:../pack-reservations

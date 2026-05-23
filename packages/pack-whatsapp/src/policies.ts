@@ -390,6 +390,30 @@ const executeSessionHandover: WhatsAppGuard = (envelope) => {
   ])
 }
 
+/**
+ * W5-6: persistence-side append. SYSTEM-only (taint-gated) — the
+ * conversation-archiver subscriber emits this for archival, not the LLM.
+ * The Pack does not validate the body beyond non-empty — the archiver
+ * is responsible for upstream content vetting.
+ */
+const executeConversationAppend: WhatsAppGuard = (envelope) => {
+  if (envelope.kind !== "conversation.message.append") return null
+  const payload = envelope.payload as { body?: unknown }
+  if (typeof payload.body !== "string" || payload.body.length === 0) {
+    return decisionRefuse(refuseDefault("conversation_body_empty"), [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: "body_non_empty",
+        kind: envelope.kind,
+      }),
+    ])
+  }
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
 // ── PolicyBundle ────────────────────────────────────────────────────────
 
 /**
@@ -431,6 +455,7 @@ export const whatsappPolicyBundle: PolicyBundle<
     executeMessageSend,
     executeTemplateSend,
     executeSessionHandover,
+    executeConversationAppend,
   ],
   /**
    * Fail-safe per master plan §"Governance principles" #4 — an intent

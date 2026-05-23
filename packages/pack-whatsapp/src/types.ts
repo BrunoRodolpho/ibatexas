@@ -68,6 +68,11 @@ export type WhatsAppIntentKind =
   | "whatsapp.message.send"
   | "whatsapp.template.send"
   | "whatsapp.session.handover"
+  // W5-6: persistence-side append (system-actor). Distinct from
+  // `whatsapp.message.send` (which is the wire-egress event). The
+  // conversation-archiver subscriber emits this for archival; the LLM
+  // never proposes it.
+  | "conversation.message.append"
 
 // ── Payloads ────────────────────────────────────────────────────────────
 
@@ -146,6 +151,21 @@ export interface WhatsAppSessionHandoverPayload {
 }
 
 /**
+ * W5-6: persistence-side conversation append. Emitted by the
+ * conversation-archiver subscriber. SYSTEM-only at the taint layer
+ * (the LLM must not be able to forge archived messages); the policy
+ * inspects `direction` so audit analytics can split inbound vs outbound.
+ */
+export interface ConversationMessageAppendPayload {
+  readonly sessionId: string
+  readonly direction: "inbound" | "outbound"
+  readonly body: string
+  readonly recipientPhoneHash: string
+  /** Optional Twilio MessageSid for cross-referencing the egress event. */
+  readonly twilioMessageSid?: string
+}
+
+/**
  * Discriminated payload union — typed by `kind`. Guards narrow via
  * `envelope.kind` and may cast `envelope.payload` to the matching
  * member; payload contracts are validated by the guards in
@@ -155,6 +175,7 @@ export type WhatsAppPayload =
   | WhatsAppMessageSendPayload
   | WhatsAppTemplateSendPayload
   | WhatsAppSessionHandoverPayload
+  | ConversationMessageAppendPayload
 
 // ── Context (per-turn caller identity / channel surface) ────────────────
 
@@ -228,7 +249,11 @@ export interface WhatsAppState {
  * `policies.ts` decide whether to admit / rewrite / refuse it.
  */
 export const whatsappTaintPolicy = createSystemTaintPolicy({
-  systemOnlyKinds: ["whatsapp.template.send", "whatsapp.session.handover"],
+  systemOnlyKinds: [
+    "whatsapp.template.send",
+    "whatsapp.session.handover",
+    "conversation.message.append",
+  ],
   userMinimum: "UNTRUSTED",
 })
 
