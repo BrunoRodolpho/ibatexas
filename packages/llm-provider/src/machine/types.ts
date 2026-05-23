@@ -397,7 +397,6 @@ export const TOOL_CLASSIFICATION = {
     "create_checkout",
     "cancel_order",
     "amend_order",
-    "add_order_note",
     "reorder",
     "create_reservation",
     "modify_reservation",
