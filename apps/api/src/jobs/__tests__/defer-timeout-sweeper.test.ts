@@ -8,6 +8,7 @@ import {
   sweepDeferTimeouts,
   startDeferTimeoutSweeper,
   stopDeferTimeoutSweeper,
+  runRecoveryScan,
   type DeferTimeoutEventPayload,
 } from "../defer-timeout-sweeper.js"
 
@@ -16,6 +17,7 @@ import {
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 const mockSentryWithScope = vi.hoisted(() => vi.fn())
 const mockSentryCaptureException = vi.hoisted(() => vi.fn())
+const mockSentryCaptureMessage = vi.hoisted(() => vi.fn())
 
 // ── In-memory Redis stub with TTL semantics ────────────────────────────────
 
@@ -78,6 +80,7 @@ vi.mock("@ibatexas/nats-client", () => ({
 vi.mock("@sentry/node", () => ({
   withScope: mockSentryWithScope,
   captureException: mockSentryCaptureException,
+  captureMessage: mockSentryCaptureMessage,
   init: vi.fn(),
 }))
 
@@ -275,6 +278,17 @@ describe("sweepDeferTimeouts", () => {
     expect(store.get(`test:defer:pending:${sessionId}`)).toBeDefined()
   })
 
+  // ── 7. [P1-E] Heartbeat is refreshed on every sweep tick ────────────────
+
+  it("[P1-E] refreshes heartbeat:defer-sweeper on every sweep tick", async () => {
+    await sweepDeferTimeouts(makeLogger())
+    const hb = store.get("test:heartbeat:defer-sweeper")
+    expect(hb).toBeDefined()
+    expect(hb?.ttl).toBeGreaterThan(0)
+    // Heartbeat TTL is 2x the repeat interval (60s * 2 = 120s).
+    expect(hb?.ttl).toBe(120)
+  })
+
   // ── Lifecycle ───────────────────────────────────────────────────────────
 
   it("startDeferTimeoutSweeper starts without throwing", () => {
@@ -283,5 +297,111 @@ describe("sweepDeferTimeouts", () => {
 
   it("stopDeferTimeoutSweeper resolves when not started", async () => {
     await expect(stopDeferTimeoutSweeper()).resolves.toBeUndefined()
+  })
+})
+
+// ── P1-E: Recovery scan tests ──────────────────────────────────────────────
+
+describe("[P1-E] runRecoveryScan", () => {
+  beforeEach(() => {
+    store.clear()
+    vi.clearAllMocks()
+    redisStub = makeRedisStub()
+    mockSentryWithScope.mockImplementation((cb: (s: unknown) => void) =>
+      cb({ setTag: vi.fn(), setContext: vi.fn() }),
+    )
+    mockPublishNatsEvent.mockResolvedValue(undefined)
+  })
+
+  it("publishes intent.defer.timeout for expired parks left behind during worker downtime", async () => {
+    // Simulate worker outage: two parks with TTLs at the imminent threshold
+    // are sitting in Redis because no sweep tick fired for them.
+    store.set("test:defer:pending:sess_orphan_a", {
+      value: parkBlob({ sessionId: "sess_orphan_a", intentHash: "ih_a" }),
+      ttl: 3,
+    })
+    store.set("test:defer:pending:sess_orphan_b", {
+      value: parkBlob({ sessionId: "sess_orphan_b", intentHash: "ih_b" }),
+      ttl: 10,
+    })
+    // One healthy park — should NOT be touched by recovery scan.
+    store.set("test:defer:pending:sess_healthy", {
+      value: parkBlob({ sessionId: "sess_healthy", intentHash: "ih_h" }),
+      ttl: 800,
+    })
+
+    const count = await runRecoveryScan(makeLogger())
+
+    expect(count).toBe(2)
+    expect(mockPublishNatsEvent).toHaveBeenCalledTimes(2)
+    const publishedHashes = mockPublishNatsEvent.mock.calls.map(
+      (call) => (call[1] as DeferTimeoutEventPayload).intentHash,
+    )
+    expect(publishedHashes.sort()).toEqual(["ih_a", "ih_b"])
+    // Recovery-fired markers were SETNX'd, dedup keys exist.
+    expect(store.get("test:recovery:fired:ih_a")).toBeDefined()
+    expect(store.get("test:recovery:fired:ih_b")).toBeDefined()
+    // Healthy park untouched.
+    expect(store.get("test:defer:pending:sess_healthy")).toBeDefined()
+    // Sentry-tagged info message for ops visibility.
+    expect(mockSentryCaptureMessage).toHaveBeenCalledOnce()
+  })
+
+  it("does NOT double-fire: recovery scan then steady-state sweep produces one timeout per intent", async () => {
+    store.set("test:defer:pending:sess_dual", {
+      value: parkBlob({ sessionId: "sess_dual", intentHash: "ih_dual" }),
+      ttl: 1,
+    })
+
+    // Recovery fires first.
+    const recoveryCount = await runRecoveryScan(makeLogger())
+    expect(recoveryCount).toBe(1)
+    expect(mockPublishNatsEvent).toHaveBeenCalledTimes(1)
+    // Now re-park the same envelope to simulate the steady-state sweep
+    // encountering the same intentHash again (e.g., if the recovery scan's
+    // DEL of the parked key was somehow missed but the recovery-fired
+    // marker SETNX'd). The recovery-fired marker still exists, so the
+    // sweep should NOT republish.
+    store.set("test:defer:pending:sess_dual", {
+      value: parkBlob({ sessionId: "sess_dual", intentHash: "ih_dual" }),
+      ttl: 1,
+    })
+
+    const sweepCount = await sweepDeferTimeouts(makeLogger())
+    expect(sweepCount).toBe(0)
+    expect(mockPublishNatsEvent).toHaveBeenCalledTimes(1)
+    // The sweep still cleans up the parked key (it's an idempotent op).
+    expect(store.get("test:defer:pending:sess_dual")).toBeUndefined()
+  })
+
+  it("does not publish when there are no expired parks", async () => {
+    store.set("test:defer:pending:sess_healthy", {
+      value: parkBlob({ sessionId: "sess_healthy", intentHash: "ih_h" }),
+      ttl: 800,
+    })
+
+    const count = await runRecoveryScan(makeLogger())
+    expect(count).toBe(0)
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled()
+    // No Sentry message when nothing was recovered.
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalled()
+  })
+
+  it("publish failure releases the dedup marker so retry can re-claim it", async () => {
+    const sessionId = "sess_pubfail_recovery"
+    const intentHash = "ih_pubfail_recovery"
+    store.set(`test:defer:pending:${sessionId}`, {
+      value: parkBlob({ sessionId, intentHash }),
+      ttl: 1,
+    })
+
+    mockPublishNatsEvent.mockRejectedValueOnce(new Error("nats down"))
+
+    const count = await runRecoveryScan(makeLogger())
+    expect(count).toBe(0)
+    // Marker was released so the next attempt can re-claim it.
+    expect(store.get(`test:recovery:fired:${intentHash}`)).toBeUndefined()
+    // Parked key still there — next sweep retries.
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeDefined()
   })
 })
