@@ -82,7 +82,7 @@ export function formatMissingSlots(ctx: OrderContext): string {
 // prompt-synthesizer below is the PromptRenderer and calls the planner for
 // its tool list and forbidden concepts.
 
-import { resolveTools } from "./capability-planner.js"
+import { orderCapabilityPlanner } from "./capability-planner.js"
 export { resolveTools, STATE_TOOLS } from "./capability-planner.js"
 
 // ── Order confirmation formatter ──────────────────────────────────────────────
@@ -618,11 +618,26 @@ export function synthesizePrompt(
   // Clamp to reasonable bounds (minimum 200, maximum 2x base)
   const finalTokens = Math.max(200, Math.min(adjustedTokens, baseTokens * 2))
 
-  // 5. Assemble and return
+  // 5. Build the Plan via the capability planner. `safePlan` (wrapped at
+  //    export in capability-planner.ts) asserts no MUTATING tool leaks into
+  //    `plan.visibleReadTools` — a misconfigured STATE_TOOLS row throws here,
+  //    BEFORE the LLM sees the leaked surface. The responder consumes
+  //    `plan.allowedIntents` to gate intent dispatch (task 07).
+  const plan = orderCapabilityPlanner.plan(effectiveState, freshContext)
+
+  // The LLM-visible tool list is the union of READ tools (callable directly)
+  // and MUTATING intent identities (proposable via the intent bridge). The
+  // state-gate in `llm-responder.ts:processToolCalls` enforces this set as
+  // the ingress filter; the new planner-violation gate (task 07) additionally
+  // refuses mutating proposals whose identity is not in `plan.allowedIntents`.
+  const availableTools = [...plan.visibleReadTools, ...plan.allowedIntents]
+
+  // 6. Assemble and return
   return {
     systemPrompt: `${baseVoice}\n\nHORA ATUAL: ${timeStr}\n\n${stateBlock}${toneDirective}`,
-    availableTools: resolveTools(effectiveState, freshContext),
+    availableTools,
     maxTokens: finalTokens,
+    plan,
   }
 }
 

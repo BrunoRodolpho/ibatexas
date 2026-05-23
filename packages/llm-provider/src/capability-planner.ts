@@ -8,22 +8,41 @@
 // state-aware, pt-BR) and calls `resolveTools` + `getForbiddenConceptsFor`
 // from here internally.
 //
+// Task 07 (M1): the raw planner is wrapped in `safePlan(...)` from
+// `@adjudicate/core/llm` — every `.plan(state, ctx)` call asserts no
+// MUTATING tool leaks into `visibleReadTools`. The exported
+// `orderCapabilityPlanner` IS the wrapped planner; consumers always go
+// through it. The split between `visibleReadTools` (READ_ONLY only) and
+// `allowedIntents` (MUTATING proposals) is now structural — the framework's
+// `Plan` shape is authoritative and the responder consults
+// `plan.allowedIntents` before invoking `adjudicate()`.
+//
 // When this code eventually ships as a published commerce-reference example,
 // the body of the planner moves into that example package; the interface
 // it implements (CapabilityPlanner) stays in @adjudicate/core/llm.
 
-import type {
-  CapabilityPlanner as FrameworkCapabilityPlanner,
-  Plan,
+import {
+  safePlan,
+  type CapabilityPlanner as FrameworkCapabilityPlanner,
+  type Plan,
 } from "@adjudicate/core/llm"
 import type { OrderContext } from "./machine/types.js"
 import { TOOL_CLASSIFICATION } from "./machine/types.js"
 
-// ── Allowed mutating-intent kinds per state family ────────────────────────────
-
-const ALL_INTENT_KINDS = Array.from(TOOL_CLASSIFICATION.MUTATING)
-
-// ── State → read-only tool list ───────────────────────────────────────────────
+// ── State → tool list (full visibility set the LLM has historically seen) ────
+//
+// Historically (pre-task-07) IbateXas's `resolveTools` returned a single mixed
+// list per state — both READ tools the LLM calls directly AND MUTATING tools
+// the LLM may PROPOSE (which are routed through the intent bridge). The
+// framework's `Plan` interface splits these: `visibleReadTools` (READ_ONLY)
+// vs `allowedIntents` (mutating intent identities). The planner below
+// partitions this mixed list against `TOOL_CLASSIFICATION`. The mixed list
+// below is preserved as the source of truth so the LLM's visible-tool surface
+// stays identical (see decisions-log §D7).
+//
+// Pattern matching: `"foo."` is a prefix match for nested states (`foo.bar`,
+// `foo.baz` — XState compound states); a bare key (`"idle"`) is an exact
+// match. First match wins; order is significant.
 
 export const STATE_TOOLS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["idle", ["get_customer_profile", "search_products", "check_order_status", "get_order_history"]],
@@ -46,11 +65,19 @@ export const STATE_TOOLS: ReadonlyArray<readonly [string, readonly string[]]> = 
 ]
 
 /**
- * Resolve the tools the LLM is allowed to see in the given state.
+ * Resolve the tools the LLM is allowed to SEE in the given state — the
+ * union of `Plan.visibleReadTools` + `Plan.allowedIntents`.
  *
- * The LLM never sees MUTATING tools — this function only returns READ_ONLY
- * names. The tool registry's `executeTool()` separately captures MUTATING
- * calls as intents; those are not exposed through the prompt.
+ * The framework split between READ vs proposable-MUTATING is reflected in
+ * the `Plan` shape; the LLM tool-call surface (Anthropic `tools` array)
+ * still gets the union, because mutating tools are intercepted at
+ * `executeTool` time and routed through the intent bridge — the LLM needs
+ * to know they exist to propose them. The state-gate in `llm-responder.ts`
+ * uses this union for ingress filtering; the new planner-violation gate
+ * (task 07) consults `plan.allowedIntents` specifically.
+ *
+ * Behavior preserved: this function returns the SAME list it returned
+ * before task 07 — only the framing changed.
  */
 export function resolveTools(stateValue: string, ctx?: OrderContext): string[] {
   for (const [pattern, tools] of STATE_TOOLS) {
@@ -99,40 +126,109 @@ export function getForbiddenConceptsFor(stateValue: string): ReadonlyArray<strin
   return []
 }
 
-// ── Intent kinds allowed per state (Phase I — taints proposals by state) ──────
+// ── Plan partition helpers (READ vs MUTATING) ────────────────────────────────
+//
+// Task 07: `safePlan` requires `visibleReadTools` to be pure READ_ONLY. We
+// partition each state's mixed tool list against `TOOL_CLASSIFICATION` —
+// MUTATING entries become `allowedIntents`, READ_ONLY entries become
+// `visibleReadTools`. Unknown names route to `visibleReadTools` (the safer
+// option — they cannot be proposed without an entry in MUTATING anyway).
+
+function partitionTools(
+  tools: ReadonlyArray<string>,
+): { readonly read: ReadonlyArray<string>; readonly intents: ReadonlyArray<string> } {
+  const read: string[] = []
+  const intents: string[] = []
+  for (const name of tools) {
+    if (TOOL_CLASSIFICATION.MUTATING.has(name as never)) {
+      intents.push(name)
+    } else {
+      // READ_ONLY OR unclassified — keep on the read side. The state-gate
+      // still requires the name to be in the union list, so unclassified
+      // names that slipped past TOOL_CLASSIFICATION won't suddenly become
+      // freely callable; they just appear in the visible-read bucket.
+      read.push(name)
+    }
+  }
+  return { read, intents }
+}
 
 /**
- * Which mutating intent kinds the LLM may propose in this state. Today we
- * allow any of the `TOOL_CLASSIFICATION.MUTATING` tools in any "authorized"
- * state; this narrows further in Phase J when adjudicate() is the sole gate.
+ * Resolve the READ-only tools the LLM may call directly in `stateValue`.
+ * Exposed for tests + audit consumers that need the partitioned view
+ * without going through the planner adapter.
  */
-export function allowedIntentsFor(stateValue: string): ReadonlyArray<string> {
-  // In states where no READ tools are exposed, no intents may be proposed
-  // either (e.g. post_order.cancelling runs a deterministic action).
-  const readTools = resolveTools(stateValue)
-  if (readTools.length === 0) return []
-  return ALL_INTENT_KINDS
+export function resolveReadTools(
+  stateValue: string,
+  ctx?: OrderContext,
+): ReadonlyArray<string> {
+  return partitionTools(resolveTools(stateValue, ctx)).read
+}
+
+/**
+ * Resolve the MUTATING intent identities the LLM may PROPOSE in
+ * `stateValue`. Today these are tool names (matching `intent.toolName`);
+ * once domain-specific intent kinds replace the generic `order.tool.propose`
+ * envelope kind, the mapping can shift to those kinds without changing the
+ * STATE_TOOLS table.
+ *
+ * In states where the deterministic kernel-executor (task 06) handles a
+ * mutation on behalf of the LLM, the corresponding intent is intentionally
+ * NOT in the state's mixed list — so it's absent here too. The kernel-
+ * executor path is route-driven (XState transitions) and does not flow
+ * through the LLM-proposed intent surface.
+ */
+export function allowedIntentsFor(
+  stateValue: string,
+  ctx?: OrderContext,
+): ReadonlyArray<string> {
+  return partitionTools(resolveTools(stateValue, ctx)).intents
 }
 
 // ── CapabilityPlanner adapter (framework interface) ──────────────────────────
 
 /**
- * Adapter conforming to the generic `@adjudicate/core/llm.CapabilityPlanner<S, C>`
- * interface. Consumers of the framework interface can swap this implementation
- * without touching the renderer.
- *
- * Note: `forbiddenConcepts` is intentionally not part of the framework `Plan`
- * shape — it's a cosmetic prompt-rendering concern, not a security boundary.
- * The PromptRenderer calls `getForbiddenConceptsFor(stateValue)` directly.
+ * Raw planner — partitions `STATE_TOOLS` against `TOOL_CLASSIFICATION` and
+ * returns a `Plan { visibleReadTools, allowedIntents }`. Wrapped in
+ * `safePlan(...)` below; exported separately for tests that need to drive
+ * a deliberately-broken raw planner through `safePlan` and observe the
+ * conformance assertion.
  */
-export const orderCapabilityPlanner: FrameworkCapabilityPlanner<
+export const rawOrderCapabilityPlanner: FrameworkCapabilityPlanner<
   string,
-  OrderContext
+  OrderContext | undefined
 > = {
   plan(stateValue, ctx): Plan {
+    const { read, intents } = partitionTools(resolveTools(stateValue, ctx))
     return {
-      visibleReadTools: resolveTools(stateValue, ctx),
-      allowedIntents: allowedIntentsFor(stateValue),
+      visibleReadTools: read,
+      allowedIntents: intents,
     }
   },
 }
+
+/**
+ * Adapter conforming to `@adjudicate/core/llm.CapabilityPlanner<S, C>`.
+ * Wrapped in `safePlan(...)` so every `.plan()` call asserts the strongest
+ * claim of the framework: no MUTATING tool name leaks into
+ * `visibleReadTools`. A misconfigured STATE_TOOLS row fails LOUDLY at
+ * runtime — the LLM never sees the leaked surface.
+ *
+ * `safePlan` accepts an optional `Pack` argument for the second assertion
+ * (allowedIntents ⊆ pack.intents). We don't pass one today because the
+ * IbateXas LLM-proposed mutating surface is the tool-name set (today's
+ * envelope kind is the generic `order.tool.propose` — the real identity is
+ * `intent.toolName`). When the planner mapping shifts to domain-specific
+ * intent kinds — e.g. `order.cart.add` — wiring the Pack here will
+ * additionally guard the allowedIntents leak path described in
+ * `assertPlanSubsetOfPack`.
+ *
+ * Note: `forbiddenConcepts` is intentionally not part of the framework
+ * `Plan` shape — it's a cosmetic prompt-rendering concern, not a security
+ * boundary. The PromptRenderer calls `getForbiddenConceptsFor(stateValue)`
+ * directly.
+ */
+export const orderCapabilityPlanner: FrameworkCapabilityPlanner<
+  string,
+  OrderContext | undefined
+> = safePlan(rawOrderCapabilityPlanner, TOOL_CLASSIFICATION)

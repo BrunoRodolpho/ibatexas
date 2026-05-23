@@ -158,10 +158,22 @@ export interface OrderContext {
 
 // ── Synthesized prompt (output of prompt synthesizer) ───────────────────────
 
+import type { Plan } from "@adjudicate/core/llm"
+
 export interface SynthesizedPrompt {
   systemPrompt: string // targeted instructions for LLM
   availableTools: string[] // only tools LLM can call in this state
   maxTokens: number // response length limit
+  /**
+   * Capability planner output for this turn — `visibleReadTools` lists
+   * READ tools the LLM may call directly, `allowedIntents` lists mutating
+   * intent identities the LLM may PROPOSE (those route through the
+   * Zero-Trust intent bridge). The responder consults `plan.allowedIntents`
+   * before invoking `adjudicate()` and stamps the snapshot into audit
+   * records via `buildAuditRecord({ plan })`. See task 07 + investigation
+   * 05 for the framework-side guarantees.
+   */
+  plan: Plan
 }
 
 // ── Meal period helper ──────────────────────────────────────────────────────

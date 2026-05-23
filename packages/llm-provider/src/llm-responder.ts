@@ -15,6 +15,7 @@ import {
   decisionRewrite,
   type Decision,
 } from "@adjudicate/core"
+import type { Plan } from "@adjudicate/core/llm"
 import {
   adjudicate,
   adjudicateWithShadow,
@@ -24,6 +25,7 @@ import {
 } from "@adjudicate/core/kernel"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 import type { ToolExecutionResult } from "./tool-registry.js"
+import { TOOL_CLASSIFICATION } from "./machine/types.js"
 import type { OrderContext, SynthesizedPrompt, ToolIntent } from "./machine/types.js"
 import type { DispatchResult } from "./intent-dispatcher.js"
 import {
@@ -215,6 +217,7 @@ async function processToolCalls(
   onChunk: (chunk: StreamChunk) => void,
   conversationRetries: { count: number },
   allowedTools: string[],
+  plan: Plan,
   onToolEvent?: (event: { type: string; payload: Record<string, unknown> }) => void,
   onToolIntent?: (intent: ToolIntent) => Promise<DispatchResult | void> | DispatchResult | void,
 ): Promise<ToolResultBlockParam[]> {
@@ -252,6 +255,43 @@ async function processToolCalls(
     if (isToolExecutionResult(result)) {
       if (result.kind === "intent" && result.intent) {
         console.warn("[llm-responder] Intent captured for mutating tool: %s", block.name)
+
+        // ── Task 07: Planner-violation gate ────────────────────────────────
+        // Defense-in-depth check: even though the state-gate above (line ~237)
+        // rejects tools not in the visible-tool union, the planner is the
+        // single security-sensitive surface that names which mutating intent
+        // identities the LLM may PROPOSE in the current state. If the
+        // identity is not in `plan.allowedIntents`, refuse with a
+        // planner-violation refusal (pt-BR per CLAUDE.md #4). Today the
+        // identity is the tool name — once domain-specific intent kinds ship
+        // (e.g. `order.cart.add`), this check shifts to envelope.kind.
+        const intentIdentity = block.name
+        const isMutating = TOOL_CLASSIFICATION.MUTATING.has(intentIdentity as never)
+        if (isMutating && !plan.allowedIntents.includes(intentIdentity)) {
+          console.warn(
+            "[llm-responder] Planner violation: %s not in allowedIntents (%s)",
+            intentIdentity,
+            plan.allowedIntents.join(", ") || "<empty>",
+          )
+          onChunk({
+            type: "tool_result",
+            toolName: block.name,
+            toolUseId: block.id,
+            success: false,
+          })
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify({
+              status: "refused",
+              message: "Não posso processar esta solicitação no momento.",
+              toolName: block.name,
+              refusalCode: "planner_violation",
+              refusalKind: "policy",
+            }),
+          })
+          continue
+        }
 
         // ── Phase F/G: Execution Ledger (shadow or enforce) ────────────────
         // The ledger is consulted only when IBX_LEDGER_ENABLED or _ENFORCE is
@@ -344,12 +384,22 @@ async function processToolCalls(
         // Suppressed for the pure-legacy branch to keep the audit stream
         // signal-dense (shadow/enforce records remain load-bearing for the
         // operator console and the nightly replay harness).
+        //
+        // Task 07: include the AuditPlanSnapshot — buildAuditRecord computes
+        // `planFingerprint = sha256Canonical({visibleReadTools, allowedIntents})`
+        // when `plan` is passed. This binds every record to the exact planner
+        // state the LLM saw, enabling replay-against-historical-plan and
+        // tamper detection on the planner surface.
         if (envelope && !isPureLegacy) {
           try {
             const record = buildAuditRecord({
               envelope,
               decision,
               durationMs: Date.now() - startedAt,
+              plan: {
+                visibleReadTools: plan.visibleReadTools,
+                allowedIntents: plan.allowedIntents,
+              },
             })
             void getAuditSink().emit(record).catch((err: unknown) => {
               console.error(
@@ -801,6 +851,7 @@ export async function* generateResponse(
         (chunk) => pendingChunks.push(chunk),
         conversationRetries,
         synthesized.availableTools,
+        synthesized.plan,
         opts.onToolEvent,
         opts.onToolIntent,
       )

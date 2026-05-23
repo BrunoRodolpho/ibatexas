@@ -26,8 +26,8 @@
 
 | ID | Item | Status |
 |---|---|---|
-| F4 | Envelope nonce migration (5 ts errors + 2 test failures) | ⏳ |
-| F2 | `kernel.intent_dispatched` basis code | ⏳ |
+| F4 | Envelope nonce migration (5 ts errors + 2 test failures) | ✅ |
+| F2 | `kernel.intent_dispatched` basis code | ⏸ DEFERRED (adjudicate repo dirty — see D6) |
 | F3 | `KNOWN_INTENT_KINDS` stub | ⏳ |
 | F1 | `setResumeIntentDispatcher` adapter | ⏳ |
 | F5 | `add_order_note` orphan cleanup | ⏳ |
@@ -37,8 +37,8 @@
 
 | ID | Task | Status |
 |---|---|---|
-| 06 | Wrap kernel-direct mutations; remove `executeToolDirect` | ⏳ |
-| 07 | Adopt `orderCapabilityPlanner` + `safePlan` | ⏳ |
+| 06 | Wrap kernel-direct mutations; remove `executeToolDirect` | ✅ |
+| 07 | Adopt `orderCapabilityPlanner` + `safePlan` | 🟡 |
 
 ## M2 — Pack architecture (4 packs)
 
