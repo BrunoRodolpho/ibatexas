@@ -21,6 +21,7 @@
     "@anthropic-ai/sdk": "^0.82.0",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
+    "@ibatexas/pack-customer-onboarding": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",
     "@ibatexas/pack-reservations": "workspace:*",
     "@ibatexas/pack-whatsapp": "workspace:*",

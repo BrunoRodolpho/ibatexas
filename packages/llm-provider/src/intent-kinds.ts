@@ -18,17 +18,6 @@
 //   - `WhatsAppIntentKind`    from `@ibatexas/pack-whatsapp`
 //   - `PixIntentKind`         from `@adjudicate/pack-payments-pix`
 //
-// # TODO — future Packs
-//
-// As task 21 lands, extend this union with:
-//   - `CustomerOnboardingIntentKind`  from `@ibatexas/pack-customer-onboarding` (task 21)
-//
-// Each follow-up should:
-//   1. Add the import line below.
-//   2. Add a `const ${pack}_INTENT_KINDS = [...] as const satisfies readonly NewIntentKind[]`
-//      block listing every kind that union admits.
-//   3. Spread it into the final `Set` constructor below.
-//
 // # Why explicit literal lists?
 //
 // Type-only imports can't be enumerated at runtime — a `Set<OrderIntentKind>`
@@ -36,6 +25,7 @@
 // expression so TypeScript fails the build if the Pack adds a new kind to
 // its union without also updating this list. That's the typo-guard guard.
 
+import type { CustomerOnboardingIntentKind } from "@ibatexas/pack-customer-onboarding"
 import type { OrderIntentKind } from "@ibatexas/pack-orders"
 import type { ReservationIntentKind } from "@ibatexas/pack-reservations"
 import type { WhatsAppIntentKind } from "@ibatexas/pack-whatsapp"
@@ -113,6 +103,29 @@ const PIX_INTENT_KINDS = [
   "pix.charge.refund",
 ] as const satisfies readonly PixIntentKind[]
 
+// ── Pack-customer-onboarding intent surface ──────────────────────────────────
+//
+// Mirrors the `CustomerOnboardingIntentKind` union in
+// `packages/pack-customer-onboarding/src/types.ts`. If you add a kind there,
+// add it here too — `satisfies` will fail the build otherwise.
+//
+// Source: `docs/adjudicate-migration/governance/01-intent-taxonomy.md`
+// §"Domain: customer". The taxonomy enumerates more customer.* kinds; this
+// Pack covers the 8 identity-lifecycle kinds. The remaining kinds
+// (`customer.session.*`, `customer.loyalty.*`, `customer.welcome_credit.*`)
+// belong to future Packs (auth, loyalty, promotions).
+
+const CUSTOMER_ONBOARDING_INTENT_KINDS = [
+  "customer.create",
+  "customer.profile.update",
+  "customer.preferences.update",
+  "customer.pix.details.save",
+  "customer.address.add",
+  "customer.address.remove",
+  "customer.anonymize",
+  "customer.anonymize.cancel",
+] as const satisfies readonly CustomerOnboardingIntentKind[]
+
 // ── Combined set ─────────────────────────────────────────────────────────────
 //
 // `validateEnforceConfig` accepts any `ReadonlySet<string>` — widening to
@@ -124,5 +137,5 @@ export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...RESERVATION_INTENT_KINDS,
   ...WHATSAPP_INTENT_KINDS,
   ...PIX_INTENT_KINDS,
-  // TODO(task-21): ...CUSTOMER_ONBOARDING_INTENT_KINDS,
+  ...CUSTOMER_ONBOARDING_INTENT_KINDS,
 ])
