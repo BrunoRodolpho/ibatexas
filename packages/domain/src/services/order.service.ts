@@ -3,8 +3,54 @@
 // Requires a medusaAdmin function via dependency injection — callers in
 // apps/api and packages/tools inject the shared client from @ibatexas/tools,
 // which handles Bearer-JWT auth via MEDUSA_ADMIN_EMAIL/PASSWORD.
+//
+// ── W7-P6 (correctness remediation) — mutation egress through medusaAdjudicated ──
+//
+// The 6 mutating sites in this file (cancelOrder POST, cancelItem POST/POST/
+// DELETE/POST, capturePayment POST/POST) historically went through the bare
+// `medusaAdminFn` — bypassing the adjudicate kernel and audit emit. Per
+// Task 17's `medusaAdjudicated` wrapper at packages/tools/src/medusa/
+// adjudicated.ts, each Medusa egress is now a governed IntentEnvelope.
+//
+// Because `packages/domain` cannot depend on `@ibatexas/tools` (reverse
+// dependency direction), the wrapper is INJECTED via the optional
+// `adminAdjudicated` parameter on `createOrderService`. Callers in
+// `apps/api` and `packages/tools` wire it via a thin closure that binds
+// the source-subject + audit-sink at the construction site.
+//
+// Backwards-compat: when `adminAdjudicated` is undefined, mutations fall
+// back to the bare `fetchAdmin` path (preserved for legacy tests). New
+// production wiring MUST supply the adjudicated DI per CLAUDE.md rule #9.
+//
+// GETs (reads) always pass through `fetchAdmin` directly — the wrapper's
+// own `dispatchHttp` would do the same for GET; the wrapper pass-through
+// for GET is duplicated here to keep the service surface narrow.
 
 export type MedusaFetch = (path: string, options?: RequestInit) => Promise<unknown>
+
+/**
+ * Signature of the injected adjudicated-egress callback. Matches the
+ * essential surface of `medusaAdjudicated` from
+ * `packages/tools/src/medusa/adjudicated.ts` — see that file's
+ * MedusaAdjudicatedArgs interface for the full spec. We keep the type
+ * narrow here so the domain package does not need to import from
+ * @ibatexas/tools (which depends on @ibatexas/domain — would cycle).
+ */
+export interface AdminAdjudicatedRequest<P> {
+  readonly method: "POST" | "PATCH" | "PUT" | "DELETE"
+  readonly path: string
+  readonly payload?: P
+  /** Optional override of the auto-detected medusa.* intent kind. */
+  readonly intentKind?: string
+  /** Idempotency / nonce key; forwarded as Idempotency-Key header. */
+  readonly idempotencyKey?: string
+  /** Short call-site label; surfaces in audit record's actor.sessionId. */
+  readonly sourceSubject: string
+}
+
+export type AdminAdjudicated = <P, R = unknown>(
+  args: AdminAdjudicatedRequest<P>,
+) => Promise<R>
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,10 +85,59 @@ export interface OrderItem {
   priceInCentavos: number
 }
 
+/**
+ * Optional DI for createOrderService. When `adminAdjudicated` is
+ * supplied, the 6 mutating egresses route through the kernel-gated
+ * wrapper; otherwise they fall back to the bare `medusaAdminFn` path
+ * (legacy posture). Log is used for the fallback-warning once at
+ * service construction.
+ */
+export interface OrderServiceOptions {
+  readonly adminAdjudicated?: AdminAdjudicated
+  readonly log?: { warn?: (...args: unknown[]) => void }
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
-export function createOrderService(medusaAdminFn: MedusaFetch) {
+export function createOrderService(
+  medusaAdminFn: MedusaFetch,
+  options?: OrderServiceOptions,
+) {
   const fetchAdmin = medusaAdminFn
+  const adminAdjudicated = options?.adminAdjudicated
+
+  /**
+   * Dispatch a mutation through the adjudicated wrapper when injected,
+   * otherwise fall back to bare fetchAdmin. The fallback exists ONLY
+   * to keep legacy tests / unmigrated callers operational while the
+   * W7 closure cycle is in flight. Production wiring (apps/api,
+   * packages/tools) MUST supply `adminAdjudicated`.
+   */
+  async function mutate<P, R = unknown>(args: {
+    path: string
+    method: "POST" | "DELETE"
+    payload?: P
+    sourceSubject: string
+    idempotencyKey?: string
+  }): Promise<R> {
+    if (adminAdjudicated) {
+      return adminAdjudicated<P, R>({
+        method: args.method,
+        path: args.path,
+        ...(args.payload !== undefined ? { payload: args.payload } : {}),
+        sourceSubject: args.sourceSubject,
+        ...(args.idempotencyKey !== undefined
+          ? { idempotencyKey: args.idempotencyKey }
+          : {}),
+      })
+    }
+    // Legacy fallback path — no kernel adjudication, no audit emit.
+    const init: RequestInit = { method: args.method }
+    if (args.payload !== undefined) {
+      init.body = JSON.stringify(args.payload)
+    }
+    return (await fetchAdmin(args.path, init)) as R
+  }
 
   return {
     /**
@@ -112,7 +207,12 @@ export function createOrderService(medusaAdminFn: MedusaFetch) {
         }
       }
 
-      await fetchAdmin(`/admin/orders/${orderId}/cancel`, { method: "POST" })
+      await mutate({
+        path: `/admin/orders/${orderId}/cancel`,
+        method: "POST",
+        sourceSubject: "service:order.cancel",
+        idempotencyKey: `order.cancel:${orderId}`,
+      })
       return { success: true, message: "Pedido cancelado com sucesso." }
     },
 
@@ -158,23 +258,37 @@ export function createOrderService(medusaAdminFn: MedusaFetch) {
 
       // If this is the only item, cancel the whole order
       if ((order.items ?? []).length === 1) {
-        await fetchAdmin(`/admin/orders/${orderId}/cancel`, { method: "POST" })
+        await mutate({
+          path: `/admin/orders/${orderId}/cancel`,
+          method: "POST",
+          sourceSubject: "service:order.cancel-item-collapses-order",
+          idempotencyKey: `order.cancel:${orderId}`,
+        })
         return { success: true, message: `"${itemTitle}" cancelado e pedido encerrado.` }
       }
 
       // Remove single item via order edit API
       try {
-        const editData = await fetchAdmin(`/admin/orders/${orderId}/edits`, {
+        const editData = await mutate<unknown, { order_edit: { id: string } }>({
+          path: `/admin/orders/${orderId}/edits`,
           method: "POST",
-        }) as { order_edit: { id: string } }
+          sourceSubject: "service:order.edit.create",
+          idempotencyKey: `order.edit.create:${orderId}:${item.id}`,
+        })
         const editId = editData.order_edit.id
 
-        await fetchAdmin(`/admin/orders/${orderId}/edits/${editId}/items/${item.id}`, {
+        await mutate({
+          path: `/admin/orders/${orderId}/edits/${editId}/items/${item.id}`,
           method: "DELETE",
+          sourceSubject: "service:order.edit.items.remove",
+          idempotencyKey: `order.edit.items.remove:${orderId}:${editId}:${item.id}`,
         })
 
-        await fetchAdmin(`/admin/orders/${orderId}/edits/${editId}/confirm`, {
+        await mutate({
+          path: `/admin/orders/${orderId}/edits/${editId}/confirm`,
           method: "POST",
+          sourceSubject: "service:order.edit.confirm",
+          idempotencyKey: `order.edit.confirm:${orderId}:${editId}`,
         })
 
         return { success: true, message: `"${itemTitle}" removido do pedido.` }
@@ -224,10 +338,18 @@ export function createOrderService(medusaAdminFn: MedusaFetch) {
         }
       }
 
-      await fetchAdmin(`/admin/orders/${orderId}/capture-payment`, { method: "POST" })
-      await fetchAdmin(`/admin/orders/${orderId}`, {
+      await mutate({
+        path: `/admin/orders/${orderId}/capture-payment`,
         method: "POST",
-        body: JSON.stringify({ metadata: { stripePaymentIntentId: paymentIntentId } }),
+        sourceSubject: "service:order.capture-payment",
+        idempotencyKey: `order.capture-payment:${orderId}:${paymentIntentId}`,
+      })
+      await mutate<{ metadata: { stripePaymentIntentId: string } }>({
+        path: `/admin/orders/${orderId}`,
+        method: "POST",
+        payload: { metadata: { stripePaymentIntentId: paymentIntentId } },
+        sourceSubject: "service:order.update-metadata",
+        idempotencyKey: `order.update-metadata:${orderId}:${paymentIntentId}`,
       })
 
       // Medusa v2 returns unit_price in reais — convert to centavos

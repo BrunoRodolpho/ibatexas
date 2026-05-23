@@ -341,7 +341,26 @@ async function handlePaymentSucceeded(
     return;
   }
 
-  const svc = createOrderService(medusaAdmin);
+  // W7-P6: route order.service mutations through the kernel-gated wrapper.
+  // The adminAdjudicated closure binds the source-subject + audit sink at
+  // this call site; the service's mutate() helper picks it up.
+  const svc = createOrderService(medusaAdmin, {
+    adminAdjudicated: (args) =>
+      medusaAdjudicated({
+        scope: "admin",
+        method: args.method,
+        path: args.path,
+        ...(args.payload !== undefined ? { payload: args.payload } : {}),
+        ...(args.intentKind ? { intentKind: args.intentKind as never } : {}),
+        ...(args.idempotencyKey !== undefined
+          ? { idempotencyKey: args.idempotencyKey }
+          : {}),
+        sourceSubject: `webhook:stripe:${event.id}:${args.sourceSubject}`,
+        auditSink: getAuditSink(),
+        log: logger,
+      }),
+    log: logger,
+  });
   const result = await svc.capturePayment(orderId, paymentIntent.id, {
     amountInCentavos: paymentIntent.amount,
   });

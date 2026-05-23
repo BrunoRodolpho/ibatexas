@@ -30,12 +30,23 @@
 //
 // ── Auth ────────────────────────────────────────────────────────────────
 //
-// requireManagerRole — MANAGER or OWNER (per W4 P1-H tightened rule).
-// The two-person rule then refuses step-2-by-same-staff. Production
-// guidance per `migration/05-kill-switch-strategy.md` is OWNER-only;
-// MANAGER is permitted in this implementation so non-OWNER admins can
-// drill the runbook in staging. To upgrade to OWNER-only, swap to
-// requireOwnerRole.
+// requireOwnerRole — OWNER role only (W7-O1 reconciliation). The strategy
+// doc at `migration/05-kill-switch-strategy.md` §"Authorisation matrix"
+// is explicit: scope=Global requires OWNER, "MANAGER cannot trigger" — a
+// non-negotiable threat-model statement, not a deployment preference.
+//
+// The W6 operational-drill audit (Drill 1, verdict PARTIAL) flagged that
+// the route's previous `requireManagerRole` gate did not match this doc.
+// W7-O1 closes that mismatch by raising the route to OWNER-only.
+//
+// The MANAGER-permitting variant that briefly existed in the W3 D2 commit
+// (justification: "non-OWNER admins can drill the runbook in staging") was
+// not load-bearing: drills run via the CLI's direct Redis path (which is
+// still OWNER-equivalent because it bypasses the route entirely for ops
+// emergencies — see W7-DECISIONS-ops.md §"O3"). Staging tests use the
+// staff JWT with role: "OWNER" (see kernel-kill-switch.test.ts).
+//
+// The two-person rule still applies on top — two distinct OWNER staffIds.
 
 import { randomUUID, timingSafeEqual } from "node:crypto"
 import type { FastifyInstance } from "fastify"
@@ -50,7 +61,7 @@ import {
   rk,
   createKillSwitchStore,
 } from "@ibatexas/tools"
-import { requireManagerRole } from "../../middleware/staff-auth.js"
+import { requireOwnerRole } from "../../middleware/staff-auth.js"
 
 // ── Pending kernel kill-switch action ──────────────────────────────────────
 
@@ -169,7 +180,7 @@ export async function adminKernelRoutes(
   app.post(
     "/api/admin/kernel/kill-switch",
     {
-      preHandler: [requireManagerRole],
+      preHandler: [requireOwnerRole],
       schema: {
         tags: ["admin", "kernel"],
         summary:
@@ -276,7 +287,7 @@ export async function adminKernelRoutes(
   app.get(
     "/api/admin/kernel/kill-switch",
     {
-      preHandler: [requireManagerRole],
+      preHandler: [requireOwnerRole],
       schema: {
         tags: ["admin", "kernel"],
         summary: "Mostra o estado atual do kill switch global",

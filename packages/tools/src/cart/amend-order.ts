@@ -38,7 +38,8 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdjudicated } from "../medusa/adjudicated.js";
 import { medusaAdmin } from "../medusa/client.js";
 import { withLock } from "../redis/distributed-lock.js";
-import { cancelStalePaymentIntent, getStripe } from "./_stripe-helpers.js";
+import { stripeAdjudicated } from "../stripe/adjudicated.js";
+import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 
 /**
  * After a successful amendment, cancel the old Stripe PI and create a new one
@@ -63,13 +64,19 @@ async function regeneratePixIfNeeded(
   const newTotal = updatedOrder.total ?? 0;
   if (newTotal <= 0) return null;
 
-  const stripe = getStripe();
-  const newPi = await stripe.paymentIntents.create({
-    amount: newTotal,
-    currency: "brl",
-    payment_method_types: ["pix"],
-    metadata: { medusaOrderId: orderId },
-  }) as Stripe.PaymentIntent & {
+  // Stripe PI create — kernel-adjudicated egress.
+  const newPi = await stripeAdjudicated.paymentIntents.create(
+    {
+      amount: newTotal,
+      currency: "brl",
+      payment_method_types: ["pix"],
+      metadata: { medusaOrderId: orderId },
+    },
+    {
+      sourceSubject: `tool:amend-order:regeneratePixIfNeeded:${sessionId}`,
+      idempotencyKey: `amend:pix:${orderId}:${newTotal}`,
+    },
+  ) as Stripe.PaymentIntent & {
     next_action?: { pix_display_qr_code?: { data?: string; image_url_svg?: string } };
   };
 
@@ -513,13 +520,19 @@ export async function amendOrder(
       let pixExpiresAt: Date | undefined;
 
       if (parsed.paymentMethod === "pix" || parsed.paymentMethod === "card") {
-        const stripe = getStripe();
-        newStripePI = await stripe.paymentIntents.create({
-          amount: activePayment.amountInCentavos,
-          currency: "brl",
-          payment_method_types: [parsed.paymentMethod],
-          metadata: { orderId: parsed.orderId },
-        }) as Stripe.PaymentIntent;
+        // Stripe PI create for the new payment method — kernel-adjudicated.
+        newStripePI = await stripeAdjudicated.paymentIntents.create(
+          {
+            amount: activePayment.amountInCentavos,
+            currency: "brl",
+            payment_method_types: [parsed.paymentMethod],
+            metadata: { orderId: parsed.orderId },
+          },
+          {
+            sourceSubject: `tool:amend-order:change_payment:${ctx.customerId}`,
+            idempotencyKey: `amend:switch:${activePayment.id}:${parsed.paymentMethod}`,
+          },
+        ) as Stripe.PaymentIntent;
 
         if (parsed.paymentMethod === "pix") {
           const pixData = (newStripePI as Stripe.PaymentIntent & {

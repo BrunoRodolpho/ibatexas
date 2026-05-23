@@ -26,7 +26,8 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { withLock } from "../redis/distributed-lock.js";
-import { cancelStalePaymentIntent, getStripe } from "./_stripe-helpers.js";
+import { stripeAdjudicated } from "../stripe/adjudicated.js";
+import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 
 interface RegeneratePixInput {
   orderId: string;
@@ -130,14 +131,19 @@ export async function regeneratePix(
       return { success: false, message: "Não foi possível cancelar o pagamento atual." };
     }
 
-    // Create new Stripe PI with PIX
-    const stripe = getStripe();
-    const newPi = await stripe.paymentIntents.create({
-      amount: active.amountInCentavos,
-      currency: "brl",
-      payment_method_types: ["pix"],
-      metadata: { orderId: input.orderId },
-    }) as Stripe.PaymentIntent & {
+    // Create new Stripe PI with PIX (kernel-adjudicated egress).
+    const newPi = await stripeAdjudicated.paymentIntents.create(
+      {
+        amount: active.amountInCentavos,
+        currency: "brl",
+        payment_method_types: ["pix"],
+        metadata: { orderId: input.orderId },
+      },
+      {
+        sourceSubject: `tool:regenerate-pix:${customerId}`,
+        idempotencyKey: `pix-regen:${active.id}:${customerId}`,
+      },
+    ) as Stripe.PaymentIntent & {
       next_action?: {
         pix_display_qr_code?: {
           data?: string;

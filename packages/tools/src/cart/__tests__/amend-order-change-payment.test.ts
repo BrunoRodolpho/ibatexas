@@ -69,6 +69,18 @@ vi.mock("../_stripe-helpers.js", () => ({
   getStripe: mockGetStripe,
 }))
 
+// W7 P5: amend-order now routes Stripe PI creates through
+// stripeAdjudicated. Mock the wrapper at the module boundary so the
+// existing mockStripePaymentIntentsCreate fixture continues to drive
+// the test (kernel + audit are covered by adjudicated.test.ts).
+vi.mock("../../stripe/adjudicated.js", () => ({
+  stripeAdjudicated: {
+    paymentIntents: {
+      create: mockStripePaymentIntentsCreate,
+    },
+  },
+}))
+
 vi.mock("../../redis/distributed-lock.js", () => ({
   withLock: mockWithLock,
 }))
@@ -286,7 +298,10 @@ describe("amendOrder — change_payment", () => {
     it("creates a Stripe PaymentIntent with card payment method", async () => {
       await amendOrder(CARD_INPUT, CTX)
 
-      expect(mockStripePaymentIntentsCreate).toHaveBeenCalledWith(
+      // W7 P5: call signature is now (params, meta) via stripeAdjudicated.
+      expect(mockStripePaymentIntentsCreate).toHaveBeenCalledTimes(1)
+      const [params, meta] = mockStripePaymentIntentsCreate.mock.calls[0]
+      expect(params).toEqual(
         expect.objectContaining({
           amount: 26700,
           currency: "brl",
@@ -294,6 +309,10 @@ describe("amendOrder — change_payment", () => {
           metadata: { orderId: "order_01" },
         }),
       )
+      expect(meta).toMatchObject({
+        sourceSubject: expect.stringContaining("tool:amend-order"),
+        idempotencyKey: expect.stringContaining("amend:switch:pay_01"),
+      })
     })
 
     it("creates new Payment row with the Stripe PI id via createFromEnvelope (W3 P0-3)", async () => {

@@ -96,8 +96,10 @@ export type MedusaIntentKind =
   | "medusa.admin.order.update_metadata"
   | "medusa.admin.order.edit.create"
   | "medusa.admin.order.edit.items"
+  | "medusa.admin.order.edit.items.remove"
   | "medusa.admin.order.edit.confirm"
   | "medusa.admin.order.cancel"
+  | "medusa.admin.order.capture_payment"
   | "medusa.admin.product.update"
   | "medusa.unknown"
 
@@ -115,8 +117,10 @@ export const MEDUSA_INTENT_KINDS: ReadonlyArray<MedusaIntentKind> = [
   "medusa.admin.order.update_metadata",
   "medusa.admin.order.edit.create",
   "medusa.admin.order.edit.items",
+  "medusa.admin.order.edit.items.remove",
   "medusa.admin.order.edit.confirm",
   "medusa.admin.order.cancel",
+  "medusa.admin.order.capture_payment",
   "medusa.admin.product.update",
   "medusa.unknown",
 ]
@@ -138,11 +142,25 @@ interface PathRule {
 
 // Most-specific paths first — the first match wins.
 const PATH_RULES: ReadonlyArray<PathRule> = [
-  // Admin order edits — confirm / items / create (in that specificity order).
+  // Admin order edits — confirm with :editId (most specific) first, then
+  // legacy bare /confirm (kept for backwards-compat), items / create.
+  // W7-P6: order.service.ts uses the real Medusa shape with editId.
+  {
+    method: "POST",
+    pattern: /^\/admin\/orders\/[^/]+\/edits\/[^/]+\/confirm\/?$/,
+    kind: "medusa.admin.order.edit.confirm",
+  },
   {
     method: "POST",
     pattern: /^\/admin\/orders\/[^/]+\/edits\/confirm\/?$/,
     kind: "medusa.admin.order.edit.confirm",
+  },
+  // DELETE item-scoped edit row — the actual Medusa "remove line item from
+  // an order edit" shape. W7-P6: order.service.cancelItem() uses this.
+  {
+    method: "DELETE",
+    pattern: /^\/admin\/orders\/[^/]+\/edits\/[^/]+\/items\/[^/]+\/?$/,
+    kind: "medusa.admin.order.edit.items.remove",
   },
   {
     method: "POST",
@@ -158,6 +176,13 @@ const PATH_RULES: ReadonlyArray<PathRule> = [
     method: "POST",
     pattern: /^\/admin\/orders\/[^/]+\/cancel\/?$/,
     kind: "medusa.admin.order.cancel",
+  },
+  // Capture payment — admin trigger for Stripe-confirmed orders.
+  // W7-P6: order.service.capturePayment() uses this path.
+  {
+    method: "POST",
+    pattern: /^\/admin\/orders\/[^/]+\/capture-payment\/?$/,
+    kind: "medusa.admin.order.capture_payment",
   },
   // Admin order metadata — bare POST against /admin/orders/:id.
   {

@@ -77,6 +77,18 @@ vi.mock("../_stripe-helpers.js", () => ({
   })),
 }))
 
+// W7 P5: regenerate-pix now routes the Stripe PI create through
+// stripeAdjudicated. Mock the wrapper so the kernel + audit path is
+// bypassed in this tool-level test — the wrapper itself is covered by
+// packages/tools/src/stripe/__tests__/adjudicated.test.ts.
+vi.mock("../../stripe/adjudicated.js", () => ({
+  stripeAdjudicated: {
+    paymentIntents: {
+      create: mockStripePaymentIntentsCreate,
+    },
+  },
+}))
+
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
 const INPUT = { orderId: "order_01" }

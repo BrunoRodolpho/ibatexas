@@ -175,6 +175,36 @@ describe("detectMedusaIntentKind", () => {
     ).toBe("medusa.admin.order.edit.confirm")
   })
 
+  // W7-P6: order.service.ts uses the actual Medusa shape with :editId.
+  it("maps POST /admin/orders/:id/edits/:editId/confirm to medusa.admin.order.edit.confirm", () => {
+    expect(
+      detectMedusaIntentKind(
+        "POST",
+        "/admin/orders/order_01/edits/edit_99/confirm",
+      ),
+    ).toBe("medusa.admin.order.edit.confirm")
+  })
+
+  // W7-P6: order.service.cancelItem() DELETEs a single line from an edit.
+  it("maps DELETE /admin/orders/:id/edits/:editId/items/:itemId to medusa.admin.order.edit.items.remove", () => {
+    expect(
+      detectMedusaIntentKind(
+        "DELETE",
+        "/admin/orders/order_01/edits/edit_99/items/item_42",
+      ),
+    ).toBe("medusa.admin.order.edit.items.remove")
+  })
+
+  // W7-P6: order.service.capturePayment().
+  it("maps POST /admin/orders/:id/capture-payment to medusa.admin.order.capture_payment", () => {
+    expect(
+      detectMedusaIntentKind(
+        "POST",
+        "/admin/orders/order_01/capture-payment",
+      ),
+    ).toBe("medusa.admin.order.capture_payment")
+  })
+
   it("maps POST /admin/orders/<id>/cancel to medusa.admin.order.cancel", () => {
     expect(
       detectMedusaIntentKind("POST", "/admin/orders/order_01/cancel"),
@@ -237,14 +267,20 @@ describe("detectMedusaIntentKind", () => {
 // ── MEDUSA_INTENT_KINDS sanity check ────────────────────────────────────
 
 describe("MEDUSA_INTENT_KINDS", () => {
-  it("exposes the 15 mapped kinds plus medusa.unknown", () => {
+  it("exposes the 17 mapped kinds plus medusa.unknown", () => {
     // P0-X9 follow-up added medusa.admin.product.update +
     // medusa.payment_session.create to the union → 16 total.
-    expect(MEDUSA_INTENT_KINDS).toHaveLength(16)
-    expect(new Set(MEDUSA_INTENT_KINDS).size).toBe(16)
+    // W7-P6 added medusa.admin.order.edit.items.remove (DELETE shape) +
+    // medusa.admin.order.capture_payment → 18 total.
+    expect(MEDUSA_INTENT_KINDS).toHaveLength(18)
+    expect(new Set(MEDUSA_INTENT_KINDS).size).toBe(18)
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.unknown")
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.product.update")
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.payment_session.create")
+    expect(MEDUSA_INTENT_KINDS).toContain(
+      "medusa.admin.order.edit.items.remove",
+    )
+    expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.order.capture_payment")
   })
 })
 

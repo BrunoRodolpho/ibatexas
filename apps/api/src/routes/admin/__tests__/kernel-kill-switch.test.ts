@@ -11,13 +11,22 @@
 //
 // Coverage:
 //   - 401 when no JWT and no API key
-//   - 403 when ATTENDANT role (requireManagerRole gate)
+//   - 403 when ATTENDANT role (requireOwnerRole gate)
+//   - 403 when MANAGER role (W7-O4 — OWNER-only per strategy doc)
 //   - Step 1 (enable): 202 + receipt + reason carried forward
 //   - Step 2 with the SAME staffId is refused (two-person rule, 403)
 //   - Step 2 with a DIFFERENT staffId succeeds and flips the Redis flag
 //   - Step 1 (disable): mirror flow for the disable action
 //   - GET status returns the current Redis state
 //   - Receipt is single-use (replay returns 410)
+//
+// W7-O4 — Role-gate alignment:
+//   The strategy doc at `migration/05-kill-switch-strategy.md`
+//   §"Authorisation matrix" requires OWNER for global kill-switch toggles.
+//   The W3 D2 implementation used `requireManagerRole`; the W6 operational
+//   drill (Drill 1, verdict PARTIAL) flagged the mismatch. W7-O4 reconciles
+//   the route to OWNER-only and the test fixtures here follow suit — every
+//   passing-staffer case below uses OWNER staffRole.
 
 import {
   afterAll,
@@ -128,13 +137,20 @@ async function buildApp(defaultStaff: StaffContext): Promise<FastifyInstance> {
   return app
 }
 
+// W7-O4 — OWNER-only gate (`requireOwnerRole`). The role-passing fixtures
+// here are OWNER-typed; the MANAGER fixture below now lives in a 403
+// assertion to lock the OWNER-only contract against future regressions.
+const OWNER_1: StaffContext = {
+  staffId: "staff_owner_1",
+  staffRole: "OWNER",
+}
+const OWNER_2_HEADERS = {
+  "x-staff-id": "staff_owner_2",
+  "x-staff-role": "OWNER",
+}
 const MANAGER_1: StaffContext = {
   staffId: "staff_mgr_1",
   staffRole: "MANAGER",
-}
-const MANAGER_2_HEADERS = {
-  "x-staff-id": "staff_mgr_2",
-  "x-staff-role": "MANAGER",
 }
 const ATTENDANT: StaffContext = {
   staffId: "staff_att_1",
@@ -166,11 +182,25 @@ describe("POST /api/admin/kernel/kill-switch — role gate", () => {
     expect(res.statusCode).toBe(403)
     await app.close()
   })
+
+  // W7-O4 — OWNER-only gate. Strategy doc
+  // (`migration/05-kill-switch-strategy.md` §"Authorisation matrix") says
+  // scope=Global requires OWNER; MANAGER must NOT engage the kill switch.
+  it("returns 403 when role is MANAGER (W7-O4: OWNER-only per strategy)", async () => {
+    const app = await buildApp(MANAGER_1)
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/kernel/kill-switch",
+      payload: { action: "enable", reason: "test" },
+    })
+    expect(res.statusCode).toBe(403)
+    await app.close()
+  })
 })
 
 describe("POST /api/admin/kernel/kill-switch — two-step (enable)", () => {
   it("step 1 returns 202 + receipt + carries the reason", async () => {
-    const app = await buildApp(MANAGER_1)
+    const app = await buildApp(OWNER_1)
     const res = await app.inject({
       method: "POST",
       url: "/api/admin/kernel/kill-switch",
@@ -192,7 +222,7 @@ describe("POST /api/admin/kernel/kill-switch — two-step (enable)", () => {
   })
 
   it("step 2 same actor → 403 (two-person rule)", async () => {
-    const app = await buildApp(MANAGER_1)
+    const app = await buildApp(OWNER_1)
     // Step 1
     const step1 = await app.inject({
       method: "POST",
@@ -217,7 +247,7 @@ describe("POST /api/admin/kernel/kill-switch — two-step (enable)", () => {
   })
 
   it("step 2 with a different operator → 200, flag set in Redis", async () => {
-    const app = await buildApp(MANAGER_1)
+    const app = await buildApp(OWNER_1)
     const step1 = await app.inject({
       method: "POST",
       url: "/api/admin/kernel/kill-switch",
@@ -228,7 +258,7 @@ describe("POST /api/admin/kernel/kill-switch — two-step (enable)", () => {
       method: "POST",
       url: "/api/admin/kernel/kill-switch",
       payload: { action: "confirm", confirmationId },
-      headers: MANAGER_2_HEADERS,
+      headers: OWNER_2_HEADERS,
     })
     expect(step2.statusCode).toBe(200)
     const body = step2.json() as {
@@ -238,7 +268,7 @@ describe("POST /api/admin/kernel/kill-switch — two-step (enable)", () => {
     }
     expect(body.active).toBe(true)
     expect(body.reason).toBe("incident X")
-    expect(body.enabledBy).toContain("staff_mgr_1")
+    expect(body.enabledBy).toContain("staff_owner_1")
     // Confirm the Redis flag is set.
     const raw = await requireRuntimeRedis().get(
       "test-admin:kill-switch:global",
@@ -250,7 +280,7 @@ describe("POST /api/admin/kernel/kill-switch — two-step (enable)", () => {
   })
 
   it("receipt is single-use — replay returns 410", async () => {
-    const app = await buildApp(MANAGER_1)
+    const app = await buildApp(OWNER_1)
     const step1 = await app.inject({
       method: "POST",
       url: "/api/admin/kernel/kill-switch",
@@ -262,14 +292,14 @@ describe("POST /api/admin/kernel/kill-switch — two-step (enable)", () => {
       method: "POST",
       url: "/api/admin/kernel/kill-switch",
       payload: { action: "confirm", confirmationId },
-      headers: MANAGER_2_HEADERS,
+      headers: OWNER_2_HEADERS,
     })
     // Replay (same receipt, again).
     const replay = await app.inject({
       method: "POST",
       url: "/api/admin/kernel/kill-switch",
       payload: { action: "confirm", confirmationId },
-      headers: MANAGER_2_HEADERS,
+      headers: OWNER_2_HEADERS,
     })
     expect(replay.statusCode).toBe(410)
     await app.close()
@@ -278,7 +308,7 @@ describe("POST /api/admin/kernel/kill-switch — two-step (enable)", () => {
 
 describe("POST /api/admin/kernel/kill-switch — two-step (disable)", () => {
   it("disable step 1 → 202, step 2 → 200 + flag removed", async () => {
-    const app = await buildApp(MANAGER_1)
+    const app = await buildApp(OWNER_1)
     // Pre-engage the flag directly so we have something to release.
     await requireRuntimeRedis().set(
       "test-admin:kill-switch:global",
@@ -302,7 +332,7 @@ describe("POST /api/admin/kernel/kill-switch — two-step (disable)", () => {
       method: "POST",
       url: "/api/admin/kernel/kill-switch",
       payload: { action: "confirm", confirmationId },
-      headers: MANAGER_2_HEADERS,
+      headers: OWNER_2_HEADERS,
     })
     expect(step2.statusCode).toBe(200)
     const body = step2.json() as { active: boolean }
@@ -318,7 +348,7 @@ describe("POST /api/admin/kernel/kill-switch — two-step (disable)", () => {
 
 describe("GET /api/admin/kernel/kill-switch — status", () => {
   it("returns active=false when no flag set", async () => {
-    const app = await buildApp(MANAGER_1)
+    const app = await buildApp(OWNER_1)
     const res = await app.inject({
       method: "GET",
       url: "/api/admin/kernel/kill-switch",
@@ -330,7 +360,7 @@ describe("GET /api/admin/kernel/kill-switch — status", () => {
   })
 
   it("returns active=true + metadata when flag is set", async () => {
-    const app = await buildApp(MANAGER_1)
+    const app = await buildApp(OWNER_1)
     await requireRuntimeRedis().set(
       "test-admin:kill-switch:global",
       JSON.stringify({
