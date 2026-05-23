@@ -230,7 +230,15 @@ function isSentinelString(s: string): boolean {
 // replaced; the `replace` callback is idempotent because the sentinel itself
 // does NOT match any of these patterns.
 
-const CPF_RE = /(?<![\d.-])(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?![\d.-])/g
+// NEW-P1-CPF (deep-audit hidden bug #7): the previous lookahead
+//   (?![\d.-])
+// rejected `-` as a trailing char, so `12345678900-foo` slipped past
+// redaction. The lookahead now only blocks another digit — `.` and `-`
+// after a CPF mark a non-CPF boundary (concatenation with a tag) and
+// the match should fire. Lookbehind unchanged: a `-` BEFORE the CPF
+// would still mean we're mid-sequence in a longer number (e.g.
+// `999-12345678900-456` is two fragments, not a CPF).
+const CPF_RE = /(?<![\d.-])(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/g
 const EMAIL_RE = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g
 // Brazilian phone shapes:
 //   - +55 11 99999-9999 (international)

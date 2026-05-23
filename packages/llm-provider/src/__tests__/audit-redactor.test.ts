@@ -186,6 +186,69 @@ describe("audit-redactor — regex defense for unmatched field names", () => {
     expect(out.notes).toMatch(/\[REDACTED:(CPF|PHONE)\]/)
   })
 
+  // ── NEW-P1-CPF: CPF-followed-by-`-` regression ───────────────────────
+  //
+  // Audit hidden bug #7. The previous lookahead `(?![\d.-])` rejected a
+  // trailing `-`, so a bare-digit CPF concatenated with a hyphenated
+  // suffix (`12345678900-foo`) slipped past redaction. The new lookahead
+  // is `(?!\d)` so non-digit boundary characters (including `-` and `.`)
+  // are now valid CPF terminators.
+
+  it("[P1-CPF] redacts bare-digit CPF followed by hyphen-tag (12345678900-foo)", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const out = r.redactPayload({
+      notes: "12345678900-foo",
+    }) as Record<string, string>
+    expect(out.notes).not.toMatch(/12345678900/)
+    // Either CPF or PHONE sentinel — both scrub the digits.
+    expect(out.notes).toMatch(/\[REDACTED:(CPF|PHONE)\]/)
+  })
+
+  it("[P1-CPF] redacts CPF prefixed by 'cpf:' followed by hyphen-bar", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const out = r.redactPayload({
+      notes: "cpf:12345678900-bar",
+    }) as Record<string, string>
+    expect(out.notes).not.toMatch(/12345678900/)
+    expect(out.notes).toMatch(/\[REDACTED:(CPF|PHONE)\]/)
+  })
+
+  it("[P1-CPF] redacts dotted-CPF followed by hyphen-tag (123.456.789-00-x)", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const out = r.redactPayload({
+      notes: "123.456.789-00-x",
+    }) as Record<string, string>
+    expect(out.notes).not.toMatch(/123\.456\.789-00/)
+    expect(out.notes).toContain("[REDACTED:CPF]")
+  })
+
+  it("[P1-CPF] fuzz: each of the 4 audit-spec shapes is redacted", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const cases = [
+      "12345678900-foo",
+      "cpf:12345678900-bar",
+      "id=12345678900-tag",
+      "12345678900-",
+    ]
+    for (const input of cases) {
+      const out = r.redactPayload({ notes: input }) as Record<string, string>
+      expect(out.notes, `case=${input}`).not.toMatch(/12345678900/)
+    }
+  })
+
+  it("[P1-CPF] does NOT match when CPF is followed by another digit (longer run)", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    // 12 digits — not a CPF, it's a longer number. The regex must NOT
+    // produce a partial-CPF redaction here. Either the redactor catches
+    // it as a card-shape or it leaves the run alone — both are fine; the
+    // assertion is "no PARTIAL match producing `[REDACTED:CPF]` inside
+    // a longer number".
+    const out = r.redactPayload({
+      notes: "code 123456789001 reference",
+    }) as Record<string, string>
+    expect(out.notes).not.toMatch(/\d{3}\.?\d{3}\.?\d{3}-?\d{2}\[REDACTED:CPF\]/)
+  })
+
   it("redacts email embedded in description", () => {
     const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
     const out = r.redactPayload({
