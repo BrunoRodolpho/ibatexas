@@ -50,6 +50,7 @@ import {
   refuseDefault,
   refuseHandoffRateLimited,
   refuseInvalidTemplate,
+  refuseUnclassifiedStaffRoute,
   refuseWindowExpired,
 } from "./refusals.js"
 import { sanitizeCustomerString } from "./sanitize.js"
@@ -129,17 +130,63 @@ const requireWindowOpen: WhatsAppGuard = (envelope, state) => {
 
 // ── Auth guards ─────────────────────────────────────────────────────────
 //
-// This Pack has no auth-phase guards today. Customer→staff
-// `whatsapp.message.send` is the canonical sensitive flow (legitimate
-// relayed handoff `reason` strings flow through it); the policy
-// REWRITEs through `sanitizeCustomerToStaff` in the business phase
-// rather than REFUSEing at the auth phase, so a sanitized envelope
-// proceeds rather than being dropped on the floor.
+// ── W4 P1-G — fail-closed on missing recipientType ──────────────────────
 //
-// A future revision may add a customer→staff REFUSE when the relayed
-// message is not part of an active handover; today the
-// `recipientType=staff` projection in state is set ONLY by the
-// handover-aware command service.
+// The business-phase REWRITE (`sanitizeCustomerToStaff`) only fires
+// when `state.ctx.recipientType === "staff"`. If the upstream command
+// service forgets to project that field, the REWRITE silently skips
+// and an unsanitized customer-controlled string reaches a staff
+// phone (template-injection, PII echo, etc.) — audit 04 §"Finding #3"
+// + audit 05 §P1-G.
+//
+// The auth-phase REFUSE guard below closes the gap: for
+// `whatsapp.message.send` with `senderRole = "customer"` and a
+// MISSING `recipientType`, we refuse outright. The legitimate
+// customer→staff path (where the upstream projects `recipientType =
+// "staff"`) still routes through the REWRITE sanitization in the
+// business phase.
+//
+// Note: customer→customer messages don't need this defense — they
+// have `recipientType="customer"` set by the command service. Only
+// the case where `recipientType` is undefined / null AND
+// `senderRole==="customer"` is fenced off.
+
+/**
+ * P1-G — REFUSE customer-controlled `whatsapp.message.send` when the
+ * upstream did not project a `recipientType` in state. Defends against
+ * the upstream-projection-bug failure mode where the REWRITE guard
+ * silently skips and an unsanitized customer string slips through to
+ * a staff phone.
+ *
+ * Logic:
+ *   - kind must be `whatsapp.message.send`
+ *   - `senderRole` must be `"customer"`
+ *   - `recipientType` must be MISSING (undefined or null)
+ *
+ * Returns `null` in every other case so legitimate paths continue
+ * through the existing pipeline.
+ */
+const refuseUnprojectedStaffRouting: WhatsAppGuard = (envelope, state) => {
+  if (envelope.kind !== "whatsapp.message.send") return null
+  const payload = envelope.payload as WhatsAppMessageSendPayload
+  if (payload.senderRole !== "customer") return null
+  // Templated outbounds bypass the 24h window via `isTemplated`; they
+  // also bypass this guard because the template path doesn't carry
+  // customer-controlled bodies that need sanitization.
+  if (isTemplated(payload)) return null
+  // Already-classified: let the REWRITE in the business phase handle
+  // it (customer→staff sanitization, customer→customer pass-through).
+  if (state.ctx.recipientType === "staff") return null
+  if (state.ctx.recipientType === "customer") return null
+  if (state.ctx.recipientType === "system") return null
+  // Missing classification (undefined or null) → REFUSE.
+  return decisionRefuse(refuseUnclassifiedStaffRoute(), [
+    basis("auth", BASIS_CODES.auth.IDENTITY_MISSING, {
+      reason: "recipient_type_unprojected",
+      senderRole: payload.senderRole,
+    }),
+  ])
+}
 
 // ── Business guards ─────────────────────────────────────────────────────
 
@@ -370,7 +417,11 @@ export const whatsappPolicyBundle: PolicyBundle<
   WhatsAppState
 > = {
   stateGuards: [requireWindowOpen],
-  authGuards: [],
+  // P1-G — auth-phase REFUSE when the upstream forgets to project
+  // recipientType for a customer-sourced message. Without this guard
+  // the REWRITE silently skips and unsanitized customer content can
+  // reach a staff phone.
+  authGuards: [refuseUnprojectedStaffRouting],
   taint: whatsappTaintPolicy,
   business: [
     validateTemplate,

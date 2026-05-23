@@ -141,6 +141,7 @@ export {
   refuseDefault,
   refuseHandoffRateLimited,
   refuseInvalidTemplate,
+  refuseUnclassifiedStaffRoute,
   refuseWindowExpired,
   portugueseRefusalMessages,
 } from "./refusals.js"
@@ -188,6 +189,8 @@ export const whatsappPack = {
     "whatsapp.handoff.rate_limited",
     "whatsapp.template.invalid",
     "whatsapp.default.deny",
+    // P1-G — auth-phase refusal when upstream forgets recipientType.
+    "whatsapp.staff.recipient_unknown",
   ],
   /**
    * Wire signals this Pack parks on via DEFER. Empty — this Pack does

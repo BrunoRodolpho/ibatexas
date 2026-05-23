@@ -89,6 +89,27 @@ export function refuseDefault(reason?: string): Refusal {
   )
 }
 
+// ── Auth refusals (AUTH) ────────────────────────────────────────────────
+
+/**
+ * P1-G — Customer-controlled message addressed to staff WITHOUT a
+ * `recipientType` projection in state. The downstream REWRITE
+ * (`sanitizeCustomerToStaff`) only fires when `recipientType==="staff"`.
+ * If the upstream command service forgets to project that field, the
+ * REWRITE silently skips and an unsanitized customer string slips
+ * through to a staff phone. Audit 04 §"Finding #3" + Audit 05 §P1-G.
+ *
+ * The auth-phase guard returns this refusal so the pipeline fails-closed
+ * rather than fails-open on missing state.
+ */
+export function refuseUnclassifiedStaffRoute(): Refusal {
+  return refuse(
+    "AUTH",
+    "whatsapp.staff.recipient_unknown",
+    "Não foi possível identificar o destinatário desta mensagem. Pedido recusado por segurança.",
+  )
+}
+
 // ── pt-BR locale dictionary (re-export for adopter convenience) ─────────
 
 /**
