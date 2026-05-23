@@ -40,9 +40,21 @@ vi.mock("@ibatexas/tools", () => ({
   atomicIncr: mockAtomicIncr,
 }));
 
+// W7 P3: route now uses customerSvc.createFromEnvelope (system-actor
+// envelope, source: "wa-auto") instead of the bare-arg upsertFromWhatsApp.
+// The shim derives its EXECUTE result from `mockUpsertFromWhatsApp` so
+// existing test setups continue to wire correctly.
 vi.mock("@ibatexas/domain", () => ({
   createCustomerService: () => ({
     upsertFromWhatsApp: mockUpsertFromWhatsApp,
+    createFromEnvelope: async (
+      _envelope: unknown,
+      _state: unknown,
+      extras: { phone: string },
+    ) => {
+      const row = await mockUpsertFromWhatsApp(extras.phone);
+      return { decision: { kind: "EXECUTE" }, result: row };
+    },
   }),
 }));
 
