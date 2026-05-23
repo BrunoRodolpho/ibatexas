@@ -127,3 +127,86 @@ describe("bootstrapKernel — P0-9 enforce-config typo fail-closed", () => {
     )
   })
 })
+
+// ── P0-9-TRUE: empty-after-trim ─────────────────────────────────────────────
+
+describe("assertEnforceConfigNotEmptyAfterTrim — P0-9-TRUE", () => {
+  // Import the helper directly so we can drive it with synthetic env objects.
+  it("accepts env unset (deliberate empty)", async () => {
+    const { assertEnforceConfigNotEmptyAfterTrim } = await import(
+      "../kernel-bootstrap.js"
+    )
+    expect(() => assertEnforceConfigNotEmptyAfterTrim({})).not.toThrow()
+  })
+
+  it("accepts an explicitly empty-string env (legitimate empty config)", async () => {
+    const { assertEnforceConfigNotEmptyAfterTrim } = await import(
+      "../kernel-bootstrap.js"
+    )
+    expect(() =>
+      assertEnforceConfigNotEmptyAfterTrim({ IBX_KERNEL_ENFORCE: "" }),
+    ).not.toThrow()
+    expect(() =>
+      assertEnforceConfigNotEmptyAfterTrim({ IBX_KERNEL_SHADOW: "" }),
+    ).not.toThrow()
+  })
+
+  it("accepts a non-empty enforce list with trailing comma", async () => {
+    const { assertEnforceConfigNotEmptyAfterTrim } = await import(
+      "../kernel-bootstrap.js"
+    )
+    // "order.cancel, " strips to ["order.cancel"] — at least one valid kind
+    // survives. This is suspicious but not the all-empty typo pattern; the
+    // existing typo-guard will catch unknown kinds.
+    expect(() =>
+      assertEnforceConfigNotEmptyAfterTrim({
+        IBX_KERNEL_ENFORCE: "order.cancel, ",
+      }),
+    ).not.toThrow()
+  })
+
+  it("THROWS when IBX_KERNEL_ENFORCE is all commas+whitespace", async () => {
+    const { assertEnforceConfigNotEmptyAfterTrim } = await import(
+      "../kernel-bootstrap.js"
+    )
+    expect(() =>
+      assertEnforceConfigNotEmptyAfterTrim({ IBX_KERNEL_ENFORCE: " , , " }),
+    ).toThrow(/strips to an empty kind list/i)
+  })
+
+  it("THROWS when IBX_KERNEL_ENFORCE is a single comma", async () => {
+    const { assertEnforceConfigNotEmptyAfterTrim } = await import(
+      "../kernel-bootstrap.js"
+    )
+    expect(() =>
+      assertEnforceConfigNotEmptyAfterTrim({ IBX_KERNEL_ENFORCE: "," }),
+    ).toThrow(/strips to an empty kind list/i)
+  })
+
+  it("THROWS when IBX_KERNEL_ENFORCE is whitespace only", async () => {
+    const { assertEnforceConfigNotEmptyAfterTrim } = await import(
+      "../kernel-bootstrap.js"
+    )
+    expect(() =>
+      assertEnforceConfigNotEmptyAfterTrim({ IBX_KERNEL_ENFORCE: "  " }),
+    ).toThrow(/strips to an empty kind list/i)
+  })
+
+  it("THROWS when IBX_KERNEL_SHADOW is all commas+whitespace", async () => {
+    const { assertEnforceConfigNotEmptyAfterTrim } = await import(
+      "../kernel-bootstrap.js"
+    )
+    expect(() =>
+      assertEnforceConfigNotEmptyAfterTrim({ IBX_KERNEL_SHADOW: " , , " }),
+    ).toThrow(/strips to an empty kind list/i)
+  })
+
+  it("rejects empty-after-trim BEFORE unknown-token validation in bootstrap", async () => {
+    process.env.IBX_KERNEL_ENFORCE = " , , "
+    const { server } = makeServer()
+    // The throw mentions empty-after-trim, NOT the unknown-token message.
+    await expect(bootstrapKernel(server)).rejects.toThrow(
+      /strips to an empty kind list/i,
+    )
+  })
+})

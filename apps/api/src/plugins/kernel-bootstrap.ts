@@ -135,6 +135,56 @@ export function installFirstPartyPacks() {
   return { orders, reservations, whatsapp, customerOnboarding, payments }
 }
 
+// ── P0-9-TRUE: empty-after-trim validation ───────────────────────────────────
+//
+// Detects the operator-typo case where `IBX_KERNEL_SHADOW` or
+// `IBX_KERNEL_ENFORCE` is SET in the environment but every token strips to
+// empty (e.g. `" , , "`, `","`, `"  "`). The upstream `parseList` filters
+// these to an empty set silently — visually identical to "env var unset" —
+// silently disabling shadow/enforce. We throw here so the misconfig surfaces
+// at boot, not at incident.
+//
+// Allows the env var to be UNSET (legitimate empty-set config). Also accepts
+// a non-empty parsed set with trailing comma (`"order.cancel,"`) — the
+// parser already keeps `"order.cancel"`; only "all tokens strip to empty"
+// is flagged.
+//
+// To intentionally configure an empty enforce list, UNSET the variable.
+// Exported for unit testing.
+
+const KIND_LIST_ENV_VARS = ["IBX_KERNEL_SHADOW", "IBX_KERNEL_ENFORCE"] as const
+
+/** @internal — exported for tests. */
+export function assertEnforceConfigNotEmptyAfterTrim(
+  env: NodeJS.ProcessEnv,
+): void {
+  for (const name of KIND_LIST_ENV_VARS) {
+    const raw = env[name]
+    // Allow env var to be unset (legitimate empty-set config).
+    if (raw === undefined) continue
+    // Compute the parsed kind list using the same rules as the upstream
+    // parser (`@adjudicate/core/kernel/enforce-config.ts:19-29`):
+    //   split(",") -> map(trim) -> filter(len > 0)
+    const parsed = raw
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0)
+    if (parsed.length > 0) continue
+    // Parsed empty. If the raw value also has zero length, treat as
+    // "set to empty string" — this is the operator's deliberate
+    // empty signal (e.g. `IBX_KERNEL_ENFORCE=` in `.env`). Accept.
+    if (raw.length === 0) continue
+    // Parsed empty BUT raw has characters — must be commas/whitespace.
+    // This is the typo case. Throw.
+    throw new Error(
+      `[kernel-bootstrap] ${name} is set to "${raw}" which strips to an ` +
+        `empty kind list — this looks like a typo, not a deliberate ` +
+        `empty configuration. Unset the variable to disable, or fix the ` +
+        `value. Refusing to boot.`,
+    )
+  }
+}
+
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
 
 /**
@@ -181,10 +231,22 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
   // list as fatal: throw a structured error so the bootstrap promise rejects
   // and `start().catch(...)` (P0-6) triggers `process.exit(1)`.
   //
+  // P0-9-TRUE (deep-audit hidden bug #6): the upstream parser silently
+  // accepts `IBX_KERNEL_ENFORCE=" , , "` (or `","`, `"  "`, `"order.cancel, "`)
+  // — every token strips to empty so the parsed set is empty, which the
+  // bootstrap currently treats identically to "env var unset". Operator
+  // typos that ALL strip to empty silently disable enforcement. We surface
+  // this BEFORE the unknown-token check: any time the env var is set in the
+  // process environment AND the parsed kind list is empty AND the raw value
+  // contains a comma OR whitespace (the syntactic markers of a typo, not a
+  // deliberate empty), the bootstrap throws. Operators with a deliberate
+  // empty-enforce configuration MUST unset the env var entirely.
+  //
   // `KNOWN_INTENT_KINDS` is assembled in `@ibatexas/llm-provider/intent-kinds.ts`
   // from each first-party Pack's intent surface. Future Packs (reservations /
   // whatsapp / customer-onboarding) extend it from inside that module — no
   // change here is needed when those packs land.
+  assertEnforceConfigNotEmptyAfterTrim(process.env)
   const enforceConfig = validateEnforceConfig(KNOWN_INTENT_KINDS, process.env, (msg) => {
     server.log.warn({ msg }, "[kernel-bootstrap] enforce-config validation")
   })
