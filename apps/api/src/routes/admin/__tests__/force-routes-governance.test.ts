@@ -1419,3 +1419,130 @@ describe("AdminConfirmationStore — Redis-backed atomic single-use store", () =
     expect(await store.consume("")).toBeNull();
   });
 });
+
+// ── Tests: concurrent two-step confirm — Lua atomicity (W6-5) ─────────────
+
+describe("AdminConfirmationStore — concurrent consume Lua atomicity (W6-5)", () => {
+  beforeEach(() => {
+    confirmationStorage.clear();
+    mockRedisSet.mockClear();
+    mockRedisEval.mockClear();
+  });
+
+  it("exactly one of two concurrent consumes succeeds (Promise.all)", async () => {
+    // Per audit/08 item #2 and audit §"Concurrency gaps": Task 13's Lua
+    // GET+DEL script claims atomic single-use semantics. This test fires
+    // two concurrent consume()s against the SAME receipt; the contract
+    // says exactly one returns the pending payload and the other returns
+    // null.
+    //
+    // The mocked redis.eval (defined at the top of the file) emulates the
+    // Lua script: it reads from the in-memory map then deletes the key
+    // in the same JS turn — equivalent to Redis's single-threaded EVAL
+    // semantics. We pin the contract under that emulation.
+    const { createAdminConfirmationStore } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const store = createAdminConfirmationStore();
+    const { confirmationId } = await store.create({
+      kind: "order.status.transition",
+      payload: { orderId: "order_w6_5", newStatus: "canceled", actor: "admin" },
+      nonce: "n-w6-5",
+      staffId: "staff_w6_5_a",
+      staffRole: "MANAGER",
+      actorPrincipal: "user",
+      requestorIp: "127.0.0.1",
+      prompt: "test",
+      route: "force-cancel",
+      createdAt: new Date().toISOString(),
+      orderId: "order_w6_5",
+    });
+
+    // Two concurrent consumes — Promise.all wakes both microtasks at
+    // ~the same tick. Node's event loop is single-threaded so the Lua
+    // GET+DEL emulation cannot interleave at the JS level; the contract
+    // is "exactly one wins, the other gets null".
+    const [a, b] = await Promise.all([
+      store.consume(confirmationId),
+      store.consume(confirmationId),
+    ]);
+
+    const successes = [a, b].filter((v): v is NonNullable<typeof a> => v !== null);
+    const failures = [a, b].filter((v) => v === null);
+
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(successes[0]!.kind).toBe("order.status.transition");
+
+    // A third consume after the race also returns null — the receipt
+    // is permanently consumed.
+    const third = await store.consume(confirmationId);
+    expect(third).toBeNull();
+  });
+
+  it("ten concurrent consumes: exactly one wins, nine return null", async () => {
+    // Stress version — proves the Lua single-use semantics hold even
+    // under a thundering herd.
+    const { createAdminConfirmationStore } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const store = createAdminConfirmationStore();
+    const { confirmationId } = await store.create({
+      kind: "payment.status.transition",
+      payload: { paymentId: "pay_w6_5" },
+      nonce: "n-w6-5-stress",
+      staffId: "staff_w6_5_stress",
+      staffRole: "MANAGER",
+      actorPrincipal: "user",
+      requestorIp: null,
+      prompt: "test",
+      route: "force-status",
+      createdAt: new Date().toISOString(),
+      orderId: "order_w6_5_stress",
+    });
+
+    const consumes = await Promise.all(
+      Array.from({ length: 10 }, () => store.consume(confirmationId)),
+    );
+
+    const winners = consumes.filter((v) => v !== null);
+    const losers = consumes.filter((v) => v === null);
+
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(9);
+  });
+
+  it("consumeWithSameActorCheck races behave consistently: only one outcome wins", async () => {
+    // The route layer wraps `consume()` in `consumeWithSameActorCheck`
+    // (P0-5 same-actor refusal). Even when two operators race against
+    // the same receipt, exactly one sees the pending payload.
+    const { createAdminConfirmationStore, consumeWithSameActorCheck } =
+      await import("../admin-confirmation-store.js");
+    const store = createAdminConfirmationStore();
+    const { confirmationId } = await store.create({
+      kind: "order.status.transition",
+      payload: { orderId: "order_w6_5_sa", newStatus: "canceled" },
+      nonce: "n-w6-5-sa",
+      staffId: "staff_w6_5_step1",
+      staffRole: "MANAGER",
+      actorPrincipal: "user",
+      requestorIp: null,
+      prompt: "t",
+      route: "force-cancel",
+      createdAt: new Date().toISOString(),
+      orderId: "order_w6_5_sa",
+    });
+
+    const [a, b] = await Promise.all([
+      consumeWithSameActorCheck(store, confirmationId, "staff_w6_5_step2_a"),
+      consumeWithSameActorCheck(store, confirmationId, "staff_w6_5_step2_b"),
+    ]);
+
+    // Exactly one is `ok` (the winner of the Lua race), the other is
+    // `missing` (the receipt was already drained).
+    const oks = [a, b].filter((v) => v.kind === "ok");
+    const misses = [a, b].filter((v) => v.kind === "missing");
+    expect(oks).toHaveLength(1);
+    expect(misses).toHaveLength(1);
+  });
+});
