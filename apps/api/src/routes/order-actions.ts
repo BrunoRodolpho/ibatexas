@@ -25,6 +25,9 @@ import {
   prisma,
   InvalidTransitionError,
   type OrderStatusTransitionPayload,
+  type PaymentCreatePayload,
+  type PaymentRegenerationCountIncrementPayload,
+  type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
 import {
   OrderFulfillmentStatus,
@@ -729,24 +732,86 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Cancel current payment (terminal for this attempt)
-      try {
-        await paymentCmdSvc.transitionStatus(currentPayment.id, {
-          newStatus: PaymentStatus.CANCELED,
-          actor: "customer",
-          actorId: customerId,
-          reason: "Nova tentativa de pagamento",
-        });
-      } catch {
-        // May already be terminal
+      // ── W3 P0-2 (audit remediation) ──────────────────────────────────
+      //
+      // The previous flow chained THREE bypasses: bare-arg
+      // `paymentCmdSvc.transitionStatus` + bare-arg `paymentCmdSvc.create`
+      // + zero kernel adjudication. Now every mutation is an envelope
+      // run through `*FromEnvelope`. Each step's failure surfaces a
+      // pt-BR refusal via the kernel decision.
+      //
+      // Wave 5 will replace this two-envelope decomposition with a
+      // composite `payment.retry` intent kind in pack-payments (see
+      // `migration/remediation/W3-INTENT-GAPS.md`).
+
+      // 1. Cancel current payment (best-effort if already terminal).
+      const cancelPayload: PaymentStatusTransitionPayload = {
+        paymentId: currentPayment.id,
+        newStatus: PaymentStatus.CANCELED,
+        actor: "customer",
+        actorId: customerId,
+        reason: "Nova tentativa de pagamento",
+      };
+      const cancelEnvelope = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: cancelPayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "TRUSTED",
+      });
+      const cancelOutcome =
+        await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
+      // Tolerate REFUSE (e.g., already terminal). REQUEST_CONFIRMATION /
+      // ESCALATE are not expected on a status transition; surface as 403.
+      if (
+        cancelOutcome.decision.kind !== "EXECUTE" &&
+        cancelOutcome.decision.kind !== "REWRITE" &&
+        cancelOutcome.decision.kind !== "REFUSE"
+      ) {
+        const text =
+          cancelOutcome.decision.kind === "ESCALATE"
+            ? "Operação requer atendimento humano."
+            : "Cancelamento do pagamento anterior requer confirmação adicional.";
+        return reply.code(503).send({ error: text });
       }
 
-      // Create new payment attempt with same method
-      const newPayment = await paymentCmdSvc.create({
+      // 2. Create the new payment attempt — adjudicated path.
+      const createPayload: PaymentCreatePayload = {
         orderId: id,
         method: currentPayment.method as "pix" | "card" | "cash",
         amountInCentavos: currentPayment.amountInCentavos,
+      };
+      const createEnvelope = buildEnvelope<
+        "payment.create",
+        PaymentCreatePayload
+      >({
+        kind: "payment.create",
+        payload: createPayload,
+        nonce: randomUUID(),
+        // payment.create is SYSTEM-only — the retry route is acting on
+        // the customer's behalf but the new-payment-row creation is a
+        // system-actor responsibility.
+        actor: { principal: "system", sessionId: `customer:${customerId}` },
+        taint: "SYSTEM",
       });
+      const createOutcome =
+        await paymentCmdSvc.createFromEnvelope(createEnvelope);
+      if (
+        createOutcome.decision.kind !== "EXECUTE" &&
+        createOutcome.decision.kind !== "REWRITE"
+      ) {
+        const text =
+          createOutcome.decision.kind === "REFUSE"
+            ? createOutcome.decision.refusal.userFacing
+            : "Não foi possível criar nova tentativa de pagamento.";
+        return reply
+          .code(createOutcome.decision.kind === "REFUSE" ? 403 : 503)
+          .send({ error: text });
+      }
+      const newPayment = createOutcome.result!;
 
       return reply.send({
         success: true,
@@ -806,7 +871,13 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Per-order limit: 5 total regenerations
+      // ── W3 P0-2 (audit remediation) ──────────────────────────────────
+      //
+      // The per-order cap is also enforced inside the kernel's
+      // `regenerationCountCapGuard` (default 5; env override
+      // `MAX_PIX_REGENERATIONS_PER_PAYMENT`). The HTTP-layer check stays
+      // as a fast-fail for the common case; the kernel guard is the
+      // authoritative gate.
       if (currentPayment.regenerationCount >= 5) {
         return reply.code(429).send({
           error: "Limite de regenerações para este pedido atingido.",
@@ -814,29 +885,98 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Cancel current payment, create new one
-      try {
-        await paymentCmdSvc.transitionStatus(currentPayment.id, {
-          newStatus: PaymentStatus.CANCELED,
-          actor: "customer",
-          actorId: customerId,
-          reason: "Regeneração de PIX",
+      // 1. Cancel the current payment (best-effort if terminal).
+      const cancelPayload: PaymentStatusTransitionPayload = {
+        paymentId: currentPayment.id,
+        newStatus: PaymentStatus.CANCELED,
+        actor: "customer",
+        actorId: customerId,
+        reason: "Regeneração de PIX",
+      };
+      const cancelEnvelope = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: cancelPayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "TRUSTED",
+      });
+      const cancelOutcome =
+        await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
+      // Tolerate REFUSE (already terminal). Anything else: surface.
+      if (
+        cancelOutcome.decision.kind !== "EXECUTE" &&
+        cancelOutcome.decision.kind !== "REWRITE" &&
+        cancelOutcome.decision.kind !== "REFUSE"
+      ) {
+        return reply.code(503).send({
+          error: "Cancelamento do pagamento anterior requer confirmação.",
         });
-      } catch {
-        // May already be terminal
       }
 
-      const newPayment = await paymentCmdSvc.create({
+      // 2. Create the new payment row.
+      const createPayload: PaymentCreatePayload = {
         orderId: id,
         method: "pix",
         amountInCentavos: currentPayment.amountInCentavos,
+      };
+      const createEnvelope = buildEnvelope<
+        "payment.create",
+        PaymentCreatePayload
+      >({
+        kind: "payment.create",
+        payload: createPayload,
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: `customer:${customerId}` },
+        taint: "SYSTEM",
       });
+      const createOutcome =
+        await paymentCmdSvc.createFromEnvelope(createEnvelope);
+      if (
+        createOutcome.decision.kind !== "EXECUTE" &&
+        createOutcome.decision.kind !== "REWRITE"
+      ) {
+        const text =
+          createOutcome.decision.kind === "REFUSE"
+            ? createOutcome.decision.refusal.userFacing
+            : "Não foi possível gerar novo PIX.";
+        return reply
+          .code(createOutcome.decision.kind === "REFUSE" ? 403 : 503)
+          .send({ error: text });
+      }
+      const newPayment = createOutcome.result!;
 
-      // Increment regeneration count on the new payment
-      await prisma.payment.update({
-        where: { id: newPayment.id },
-        data: { regenerationCount: currentPayment.regenerationCount + 1 },
+      // 3. Bump the regeneration counter via the kernel-adjudicated path.
+      //    The cap guard refuses bumps above
+      //    `MAX_PIX_REGENERATIONS_PER_PAYMENT` (default 5).
+      const bumpPayload: PaymentRegenerationCountIncrementPayload = {
+        paymentId: newPayment.id,
+        currentCount: 0,
+      };
+      const bumpEnvelope = buildEnvelope<
+        "payment.regeneration.count.increment",
+        PaymentRegenerationCountIncrementPayload
+      >({
+        kind: "payment.regeneration.count.increment",
+        payload: bumpPayload,
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: `customer:${customerId}` },
+        taint: "SYSTEM",
       });
+      const bumpOutcome =
+        await paymentCmdSvc.bumpRegenerationCountFromEnvelope(bumpEnvelope);
+      if (
+        bumpOutcome.decision.kind !== "EXECUTE" &&
+        bumpOutcome.decision.kind !== "REWRITE"
+      ) {
+        const text =
+          bumpOutcome.decision.kind === "REFUSE"
+            ? bumpOutcome.decision.refusal.userFacing
+            : "Limite de regenerações atingido.";
+        return reply.code(429).send({ error: text, code: "REGEN_CAP" });
+      }
 
       return reply.send({
         success: true,
