@@ -22,6 +22,7 @@
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",
+    "@ibatexas/pack-reservations": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@adjudicate/audit": "workspace:*",
