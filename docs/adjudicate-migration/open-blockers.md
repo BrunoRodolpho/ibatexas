@@ -23,3 +23,16 @@ Task 15 landed the chokepoint helper (`withAdjudicate`) plus envelope-typed entr
 - Reservations: only the most-used methods (`create`, `modify`, `cancel`, `transition`) got envelope-typed entry points. `joinWaitlist` / `promoteWaitlist` use the same pattern and can be added in a follow-up if a caller actually needs envelope dispatch for them.
 - Customer: `customer.address.add` and `customer.address.remove` from `pack-customer-onboarding` were not wired up — the existing `customer.service.ts` has no corresponding methods (addresses live in `apps/api/src/routes/me.ts` direct Prisma writes). Future task: add `addAddressFromEnvelope` / `removeAddressFromEnvelope` once a service-level abstraction exists.
 - Payments: `payment.method.switch` intent kind is declared in `paymentProjectionPolicyBundle` but the executor side is out of scope (the method-switch lives in `packages/tools/src/cart/amend-order.ts` today). Wiring it in is a follow-up — add to task 14's customer-route migration if it becomes a dependency.
+
+## Task 13 follow-up — admin-force REQUEST_CONFIRMATION at the pack layer
+
+Task 13 wired the four admin force-* routes (`force-cancel`, `payment/refund`, `waive`, `payment/status`) through `*FromEnvelope` per task 15 and added a **route-level** two-person confirmation flow (`apps/api/src/routes/admin/admin-confirmation-store.ts`) — a Redis-backed pending-intent store with Lua atomic consume and 600s TTL.
+
+The deeper pack-level integration (a `confirmationToken` payload field + `createConfirmGuard` for admin intents that emits `REQUEST_CONFIRMATION` decisions from the kernel itself, like `pack-deployments-approval.confirmDestructiveRollback`) was **deliberately deferred**:
+
+- `@ibatexas/pack-orders` does not declare `order.admin.force_cancel` / `order.admin.refund` / `order.admin.waive_payment` / `order.admin.force_payment_status` intent kinds. It governs the LLM-proposable surface only (cart, item, checkout, cancel, note, amend). The LLM has no business proposing admin force-* actions.
+- `orderProjectionPolicyBundle` / `paymentProjectionPolicyBundle` carry the canonical projection-lifecycle intents (`order.status.transition`, `payment.status.transition`, etc.) that task 13's admin routes now dispatch. These are domain-internal policies and do not (yet) carry the admin-force confirmation guards.
+
+The route-level confirmation flow shipped here is functionally equivalent (atomic single-use receipt + audit trail), but the receipt token is NOT bound to the envelope's `intentHash` and the kernel does NOT substitute EXECUTE on second-pass dispatch (it adjudicates each step independently). Equivalence is achieved by the route handler refusing to mutate without a consumed receipt.
+
+**Follow-up task (M4 candidate):** add `confirmationToken?: string` to `OrderStatusTransitionPayload` / `PaymentStatusTransitionPayload` (or introduce dedicated `order.admin.*` / `payment.admin.*` intent kinds in a new `@ibatexas/pack-admin-actions` Pack) and wire `createConfirmGuard` so the kernel emits REQUEST_CONFIRMATION natively. At that point the route's `confirmationStore.consume()` becomes the receipt-substitution path proper, and the audit trail carries `predecessorAt` linking the two adjudications.
