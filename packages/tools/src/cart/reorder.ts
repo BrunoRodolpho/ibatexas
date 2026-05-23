@@ -1,9 +1,20 @@
 // reorder tool — create a new cart from a previous order's items
+//
+// ── W3 P1-L (audit remediation) ────────────────────────────────────────
+//
+// `reorder.ts` was incorrectly listed under `ALLOWED_MEDUSA_DIRECT` in
+// `bypass-detection.test.ts` as "read-only fetches". It actually POSTs
+// to `/store/carts` (cart create) and `/store/carts/:id/line-items`
+// (item add) — both kernel-owned mutations. Per Wave 3 of the audit
+// remediation, the writes now route through `medusaAdjudicated()`
+// (Task 17 wrapper), so each cart create + line-item add produces an
+// audit record and the carve-out can be removed from the allow-list.
 
 import { ReorderInputSchema, NonRetryableError, type ReorderInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { withOrderOwnership } from "../guards/with-ownership.js";
-import { medusaAdminFetch, medusaStoreFetch } from "./_shared.js";
+import { medusaAdjudicated } from "../medusa/adjudicated.js";
+import { medusaAdminFetch } from "./_shared.js";
 
 async function reorderImpl(
   input: ReorderInput,
@@ -27,25 +38,31 @@ async function reorderImpl(
     return { message: "Não foi possível carregar os itens do pedido anterior." };
   }
 
-  // Create a new cart
-  const cartData = await medusaStoreFetch("/store/carts", {
+  // Create a new cart — adjudicated egress (kind: medusa.cart.create)
+  const cartData = await medusaAdjudicated<{ customer_id: string }, { cart?: { id: string } }>({
+    scope: "store",
     method: "POST",
-    body: JSON.stringify({ customer_id: ctx.customerId }),
-  }) as { cart?: { id: string } };
+    path: "/store/carts",
+    payload: { customer_id: ctx.customerId },
+    sourceSubject: "tool:reorder",
+  });
 
   const cartId = cartData.cart?.id;
   if (!cartId) {
     return { message: "Erro ao criar novo carrinho." };
   }
 
-  // Add each item
+  // Add each item — adjudicated egress (kind: medusa.cart.line_items.add)
   const errors: string[] = [];
   for (const item of items) {
     if (!item.variant_id) continue;
     try {
-      await medusaStoreFetch(`/store/carts/${cartId}/line-items`, {
+      await medusaAdjudicated<{ variant_id: string; quantity: number }, unknown>({
+        scope: "store",
         method: "POST",
-        body: JSON.stringify({ variant_id: item.variant_id, quantity: item.quantity }),
+        path: `/store/carts/${cartId}/line-items`,
+        payload: { variant_id: item.variant_id, quantity: item.quantity },
+        sourceSubject: "tool:reorder",
       });
     } catch {
       errors.push(item.title);
