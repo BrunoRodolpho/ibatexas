@@ -8,6 +8,27 @@
 //
 // INVARIANT: Payment is the source of truth for billing.
 // This subscriber bridges the Billing → Commerce boundary via NATS events.
+//
+// ── Task 16 (M3) — kernel-gated auto-confirm / auto-cancel ────────────────
+//
+// Per investigation 04 P0 #1: payment-lifecycle auto-confirms / auto-cancels
+// orders by webhook with ZERO kernel review. A forged NATS event today can
+// confirm or cancel any order — no per-message auth. This subscriber now
+// builds a SYSTEM-actor IntentEnvelope and routes the order transition
+// through `orderCmdSvc.transitionStatusFromEnvelope(envelope)` (Task 15).
+//
+//   - kind:               order.status.transition
+//   - actor.principal:    "system"
+//   - actor.sessionId:    `payment.status_changed:${paymentId}:${newStatus}`
+//   - taint:              "SYSTEM"
+//   - nonce:              `${paymentId}:${newStatus}` (deterministic per event)
+//
+// On REFUSE the original NATS payload is pushed to the DLQ for ops
+// inspection. EXECUTE / REWRITE proceed; DEFER / REQUEST_CONFIRMATION /
+// ESCALATE log the outcome and skip the mutation (the kernel decision
+// metric surfaces the refusal upstream).
+//
+// Existing dedup (`isNewEvent`) and event-log archival are preserved.
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -15,7 +36,9 @@ import {
   createOrderCommandService,
   createOrderQueryService,
   createOrderEventLogService,
+  type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
+import { getAuditSink } from "@ibatexas/llm-provider";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,
@@ -23,11 +46,15 @@ import {
 } from "@ibatexas/types";
 import type { FastifyBaseLogger } from "fastify";
 import { isNewEvent } from "./dedup.js";
+import { pushToDlq } from "./dlq.js";
+import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 
 export async function startPaymentLifecycleSubscriber(
   log?: FastifyBaseLogger,
 ): Promise<void> {
-  const orderCmdSvc = createOrderCommandService();
+  const orderCmdSvc = createOrderCommandService(log ?? undefined, {
+    auditSink: getAuditSink(),
+  });
   const orderQuerySvc = createOrderQueryService();
   const eventLogSvc = createOrderEventLogService(log);
 
@@ -77,12 +104,47 @@ export async function startPaymentLifecycleSubscriber(
             break;
           }
 
+          // ── Task 16: kernel-gated transition ──────────────────────────
+          const transitionPayload: OrderStatusTransitionPayload = {
+            orderId,
+            newStatus: OrderFulfillmentStatus.CONFIRMED,
+            actor: "system",
+            reason: "Pagamento confirmado",
+          };
+          const envelope = buildSystemEnvelope({
+            kind: "order.status.transition" as const,
+            payload: transitionPayload,
+            sourceSubject: "payment.status_changed",
+            eventId: `auto_confirm:${paymentId}:${newStatus}`,
+          });
+
           try {
-            await orderCmdSvc.transitionStatus(orderId, {
-              newStatus: OrderFulfillmentStatus.CONFIRMED,
-              actor: "system",
-              reason: "Pagamento confirmado",
-            });
+            const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
+
+            if (
+              outcome.decision.kind !== "EXECUTE" &&
+              outcome.decision.kind !== "REWRITE"
+            ) {
+              // REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE — mutation skipped.
+              const decisionKind = outcome.decision.kind;
+              const refusalCode =
+                outcome.decision.kind === "REFUSE"
+                  ? outcome.decision.refusal.code
+                  : undefined;
+              log?.warn(
+                { orderId, paymentId, decision: decisionKind, refusalCode },
+                "[payment-lifecycle] kernel did not authorize auto-confirm — mutation skipped",
+              );
+              if (outcome.decision.kind === "REFUSE") {
+                await pushToDlq(
+                  "payment.status_changed",
+                  payload as Record<string, unknown>,
+                  `kernel REFUSE: ${outcome.decision.refusal.code}`,
+                  log,
+                );
+              }
+              break;
+            }
 
             await publishNatsEvent("order.status_changed", {
               eventType: "order.status_changed",
@@ -125,12 +187,46 @@ export async function startPaymentLifecycleSubscriber(
             break;
           }
 
+          // ── Task 16: kernel-gated cancel ──────────────────────────────
+          const cancelPayload: OrderStatusTransitionPayload = {
+            orderId,
+            newStatus: OrderFulfillmentStatus.CANCELED,
+            actor: "system",
+            reason: "Pagamento reembolsado",
+          };
+          const envelope = buildSystemEnvelope({
+            kind: "order.status.transition" as const,
+            payload: cancelPayload,
+            sourceSubject: "payment.status_changed",
+            eventId: `auto_cancel:${paymentId}:${newStatus}`,
+          });
+
           try {
-            await orderCmdSvc.transitionStatus(orderId, {
-              newStatus: OrderFulfillmentStatus.CANCELED,
-              actor: "system",
-              reason: "Pagamento reembolsado",
-            });
+            const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
+
+            if (
+              outcome.decision.kind !== "EXECUTE" &&
+              outcome.decision.kind !== "REWRITE"
+            ) {
+              const decisionKind = outcome.decision.kind;
+              const refusalCode =
+                outcome.decision.kind === "REFUSE"
+                  ? outcome.decision.refusal.code
+                  : undefined;
+              log?.warn(
+                { orderId, paymentId, decision: decisionKind, refusalCode },
+                "[payment-lifecycle] kernel did not authorize auto-cancel — mutation skipped",
+              );
+              if (outcome.decision.kind === "REFUSE") {
+                await pushToDlq(
+                  "payment.status_changed",
+                  payload as Record<string, unknown>,
+                  `kernel REFUSE: ${outcome.decision.refusal.code}`,
+                  log,
+                );
+              }
+              break;
+            }
 
             await publishNatsEvent("order.canceled", {
               eventType: "order.canceled",
