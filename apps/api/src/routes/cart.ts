@@ -35,8 +35,8 @@ import {
   MedusaAdjudicateNeedsReviewError,
 } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
-import { createCustomerService, createPaymentQueryService, prisma } from "@ibatexas/domain";
-import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderState } from "@ibatexas/pack-orders";
+import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
+import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
@@ -871,7 +871,10 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         await redis.del(rk(`cart:owner:${cartId}`));
       }
 
-      // Persist customer notes as OrderNote — best-effort, never fails checkout
+      // Persist customer notes as OrderNote — best-effort, never fails checkout.
+      // W7-P4: routed through addNoteFromEnvelope so the order.note.add intent
+      // is kernel-adjudicated and audit-emitted. The Wave-6 finding flagged the
+      // direct prisma.orderNote.create as a parallel/duplicate surface bypass.
       if (request.body.notes && result.orderId) {
         try {
           const displayIdMatch = /^IBX-(\d+)$/i.exec(result.orderId);
@@ -879,17 +882,61 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
             const displayId = Number.parseInt(displayIdMatch[1], 10);
             const projection = await prisma.orderProjection.findFirst({
               where: { displayId },
-              select: { id: true },
+              select: {
+                id: true,
+                customerId: true,
+                paymentMethod: true,
+                paymentStatus: true,
+                totalInCentavos: true,
+              },
             });
             if (projection) {
-              await prisma.orderNote.create({
-                data: {
+              const noteEnvelope = buildEnvelope<
+                "order.note.add",
+                OrderNoteAddPayload
+              >({
+                kind: "order.note.add" as const,
+                payload: {
                   orderId: projection.id,
-                  author: "customer",
-                  authorId: request.customerId ?? undefined,
-                  content: request.body.notes,
+                  body: request.body.notes,
                 },
+                nonce: randomUUID(),
+                actor: {
+                  principal: "user",
+                  sessionId: request.customerId
+                    ? `customer:${request.customerId}`
+                    : `cart:${cartId}`,
+                },
+                taint: "UNTRUSTED",
               });
+              const noteOrderState: OrderState = {
+                ctx: {
+                  channel: "web",
+                  customerId: projection.customerId,
+                  cartId: null,
+                  orderId: projection.id,
+                  paymentMethod: (projection.paymentMethod as
+                    | "pix"
+                    | "card"
+                    | "cash"
+                    | null) ?? null,
+                  paymentStatus: projection.paymentStatus,
+                  totalInCentavos: projection.totalInCentavos,
+                },
+              };
+              const orderCmdSvc = createOrderCommandService(undefined, {
+                auditSink: getAuditSink(),
+              });
+              await orderCmdSvc.addNoteFromEnvelope(
+                noteEnvelope,
+                noteOrderState,
+                {
+                  author: "customer",
+                  ...(request.customerId
+                    ? { authorId: request.customerId }
+                    : {}),
+                },
+              );
             }
           }
         } catch {

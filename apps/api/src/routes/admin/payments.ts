@@ -41,6 +41,7 @@ import { buildEnvelope } from "@adjudicate/core";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
+  createOrderCommandService,
   createOrderEventLogService,
   createOrderQueryService,
   createPaymentCommandService,
@@ -49,6 +50,10 @@ import {
   type PaymentRefundIssuePayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
+import type {
+  OrderNoteAddPayload,
+  OrderState,
+} from "@ibatexas/pack-orders";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import {
   PaymentStatus,
@@ -263,6 +268,10 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
   });
   const paymentQuerySvc = createPaymentQueryService();
   const orderQuerySvc = createOrderQueryService();
+  // W7-P4: addNoteFromEnvelope path needs an audit-wired OrderCommandService.
+  const orderCmdSvc = createOrderCommandService(server.log, {
+    auditSink: getAuditSink(),
+  });
   const eventLogSvc = createOrderEventLogService(server.log);
   const confirmationStore = createAdminConfirmationStore();
 
@@ -1232,24 +1241,80 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     async (request, reply) => {
       const { id } = request.params;
 
-      const note = await prisma.orderNote.create({
-        data: {
+      // W7-P4: route the admin note through addNoteFromEnvelope so the
+      // order.note.add intent is kernel-adjudicated and audit-emitted.
+      // The Wave-6 finding flagged the direct prisma.orderNote.create as a
+      // parallel/duplicate surface bypass.
+      const order = await orderQuerySvc.getById(id);
+      if (!order) {
+        return reply.code(404).send({ error: "Pedido não encontrado." });
+      }
+      const staffId = request.staffId ?? null;
+      const noteEnvelope = buildEnvelope<
+        "order.note.add",
+        OrderNoteAddPayload
+      >({
+        kind: "order.note.add" as const,
+        payload: {
           orderId: id,
-          author: "admin",
-          authorId: request.staffId ?? undefined,
-          content: request.body.content,
+          body: request.body.content,
         },
+        nonce: randomUUID(),
+        actor: staffId
+          ? { principal: "user", sessionId: `admin:${staffId}` }
+          : { principal: "system", sessionId: "admin:api-key" },
+        taint: staffId ? "TRUSTED" : "SYSTEM",
+      });
+      const noteOrderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId: order.customerId,
+          cartId: null,
+          orderId: id,
+          paymentMethod: (order.paymentMethod as
+            | "pix"
+            | "card"
+            | "cash"
+            | null) ?? null,
+          paymentStatus: order.paymentStatus,
+          totalInCentavos: order.totalInCentavos,
+        },
+      };
+      const outcome = await orderCmdSvc.addNoteFromEnvelope(
+        noteEnvelope,
+        noteOrderState,
+        {
+          author: "staff",
+          ...(staffId ? { authorId: staffId } : {}),
+        },
+      );
+
+      if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+        const message =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.userFacing
+            : "Não foi possível adicionar a nota no momento.";
+        return reply.code(403).send({ error: message });
+      }
+      const noteResult = outcome.result!;
+      const persisted = await prisma.orderNote.findUnique({
+        where: { id: noteResult.noteId },
       });
 
       await publishNatsEvent("order.note_added", {
         eventType: "order.note_added",
         orderId: id,
-        noteId: note.id,
+        noteId: noteResult.noteId,
         author: "admin",
         timestamp: new Date().toISOString(),
       });
 
-      return reply.code(201).send({ id: note.id, content: note.content, createdAt: note.createdAt.toISOString() });
+      return reply.code(201).send({
+        id: noteResult.noteId,
+        content: persisted?.content ?? request.body.content,
+        createdAt:
+          persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
+      });
     },
   );
 

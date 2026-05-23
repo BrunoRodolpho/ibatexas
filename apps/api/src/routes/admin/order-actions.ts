@@ -61,6 +61,10 @@ import {
   type OrderStatusTransitionPayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
+import type {
+  OrderNoteAddPayload,
+  OrderState,
+} from "@ibatexas/pack-orders";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import {
   OrderFulfillmentStatus,
@@ -117,7 +121,9 @@ function principalFor(staffId: string | null): {
 
 export async function adminOrderActionRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
-  const orderCmdSvc = createOrderCommandService();
+  const orderCmdSvc = createOrderCommandService(server.log, {
+    auditSink: getAuditSink(),
+  });
   const orderQuerySvc = createOrderQueryService();
   const paymentCmdSvc = createPaymentCommandService(server.log, {
     auditSink: getAuditSink(),
@@ -816,21 +822,72 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
-      const note = await prisma.orderNote.create({
-        data: {
+      // W7-P4: route the staff internal note through addNoteFromEnvelope so
+      // the order.note.add intent is kernel-adjudicated and audit-emitted.
+      // The Wave-6 finding flagged the direct prisma.orderNote.create as a
+      // parallel/duplicate surface bypass. isInternal=true is passed via
+      // the payload so the pack-orders policy can observe it; pack-orders
+      // currently honors the field through OrderNoteAddPayload.isInternal.
+      const staffId = request.staffId ?? null;
+      const noteEnvelope = buildEnvelope<
+        "order.note.add",
+        OrderNoteAddPayload
+      >({
+        kind: "order.note.add" as const,
+        payload: {
           orderId: id,
-          author: "admin",
-          authorId: request.staffId ?? undefined,
-          content: request.body.content,
+          body: request.body.content,
           isInternal: true,
         },
+        nonce: randomUUID(),
+        actor: staffId
+          ? { principal: "user", sessionId: `admin:${staffId}` }
+          : { principal: "system", sessionId: "admin:api-key" },
+        taint: staffId ? "TRUSTED" : "SYSTEM",
+      });
+      const noteOrderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId: order.customerId,
+          cartId: null,
+          orderId: id,
+          paymentMethod: (order.paymentMethod as
+            | "pix"
+            | "card"
+            | "cash"
+            | null) ?? null,
+          paymentStatus: order.paymentStatus,
+          totalInCentavos: order.totalInCentavos,
+        },
+      };
+      const outcome = await orderCmdSvc.addNoteFromEnvelope(
+        noteEnvelope,
+        noteOrderState,
+        {
+          author: "staff",
+          ...(staffId ? { authorId: staffId } : {}),
+        },
+      );
+
+      if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+        const message =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.userFacing
+            : "Não foi possível adicionar a nota interna no momento.";
+        return reply.code(403).send({ error: message });
+      }
+
+      const noteResult = outcome.result!;
+      const persisted = await prisma.orderNote.findUnique({
+        where: { id: noteResult.noteId },
       });
 
       return reply.code(201).send({
-        id: note.id,
-        content: note.content,
+        id: noteResult.noteId,
+        content: persisted?.content ?? request.body.content,
         isInternal: true,
-        createdAt: note.createdAt.toISOString(),
+        createdAt:
+          persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
       });
     },
   );

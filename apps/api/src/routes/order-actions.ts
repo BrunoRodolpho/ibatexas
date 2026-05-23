@@ -43,6 +43,7 @@ import {
   portugueseRefusalMessages,
   type OrderAmendRequestPayload,
   type OrderCancelPayload,
+  type OrderNoteAddPayload,
   type OrderState,
 } from "@ibatexas/pack-orders";
 import { getAuditSink } from "@ibatexas/llm-provider";
@@ -672,24 +673,85 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
-      const note = await prisma.orderNote.create({
-        data: {
+      // W7-P4: route the customer note through addNoteFromEnvelope so the
+      // order.note.add intent is kernel-adjudicated and audit-emitted. The
+      // Wave-6 finding flagged the direct prisma.orderNote.create as a
+      // parallel/duplicate surface bypass.
+      const projection = await orderQuerySvc.getById(id);
+      if (!projection) {
+        // Should not occur — verifyOwnership above passed — but bail safely.
+        return reply.code(404).send({ error: "Pedido não encontrado." });
+      }
+      const noteEnvelope = buildEnvelope<
+        "order.note.add",
+        OrderNoteAddPayload
+      >({
+        kind: "order.note.add" as const,
+        payload: {
           orderId: id,
-          author: "customer",
-          authorId: customerId,
-          content: request.body.content,
+          body: request.body.content,
         },
+        nonce: randomUUID(),
+        actor: {
+          principal: "user",
+          sessionId: `customer:${customerId}`,
+        },
+        taint: "UNTRUSTED",
+      });
+      const noteOrderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          paymentMethod: (projection.paymentMethod as
+            | "pix"
+            | "card"
+            | "cash"
+            | null) ?? null,
+          paymentStatus: projection.paymentStatus,
+          totalInCentavos: projection.totalInCentavos,
+        },
+      };
+      const noteAddSvc = createOrderCommandService(server.log, {
+        auditSink: getAuditSink(),
+      });
+      const outcome = await noteAddSvc.addNoteFromEnvelope(
+        noteEnvelope,
+        noteOrderState,
+        { author: "customer", authorId: customerId },
+      );
+
+      if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+        const message =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.userFacing
+            : "Não foi possível adicionar a observação no momento.";
+        return reply.code(403).send({ error: message });
+      }
+
+      const noteResult = outcome.result!;
+      // The service returns { noteId, orderId }. The route response shape
+      // includes content + createdAt — refetch the row to surface those
+      // (the service-layer chokepoint stays narrow).
+      const persisted = await prisma.orderNote.findUnique({
+        where: { id: noteResult.noteId },
       });
 
       await publishNatsEvent("order.note_added", {
         eventType: "order.note_added",
         orderId: id,
-        noteId: note.id,
+        noteId: noteResult.noteId,
         author: "customer",
         timestamp: new Date().toISOString(),
       });
 
-      return reply.code(201).send({ id: note.id, content: note.content, createdAt: note.createdAt.toISOString() });
+      return reply.code(201).send({
+        id: noteResult.noteId,
+        content: persisted?.content ?? request.body.content,
+        createdAt:
+          persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
+      });
     },
   );
 

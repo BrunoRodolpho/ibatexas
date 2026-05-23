@@ -9,7 +9,14 @@ export {
   type ReservationService,
   type ReservationServiceOptions,
 } from "./services/reservation.service.js"
-export { createOrderService, type OrderService, type MedusaFetch } from "./services/order.service.js"
+export {
+  createOrderService,
+  type OrderService,
+  type MedusaFetch,
+  type AdminAdjudicated,
+  type AdminAdjudicatedRequest,
+  type OrderServiceOptions,
+} from "./services/order.service.js"
 export { getEffectivePonr, isWithinPonr, getItemPonrStatus, type PonrConfig, type ItemPonrStatus } from "./services/ponr.js"
 export {
   createCustomerService,
