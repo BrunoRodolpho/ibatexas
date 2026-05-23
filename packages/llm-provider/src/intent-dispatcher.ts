@@ -177,8 +177,8 @@ export function createDefaultDispatchHandlers(): ReadonlyMap<
  * The current production envelope kind is the generic `order.tool.propose`
  * (every LLM-proposed mutation shares it). The real identity is in
  * `intent.toolName`. We check the envelope kind first so that future,
- * domain-specific intent kinds (`order.cart.add` etc., per task 06) take
- * precedence once they ship.
+ * domain-specific intent kinds (`order.item.add` etc., per pack-orders)
+ * take precedence once callers ship them.
  */
 function intentIdentity(intent: ToolIntent): string {
   const envelopeKind = intent.envelope?.kind
