@@ -24,6 +24,7 @@ import {
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 import type { ToolExecutionResult } from "./tool-registry.js"
 import type { OrderContext, SynthesizedPrompt, ToolIntent } from "./machine/types.js"
+import type { DispatchResult } from "./intent-dispatcher.js"
 import {
   shouldBufferText,
   validateBufferedTextTyped,
@@ -214,7 +215,7 @@ async function processToolCalls(
   conversationRetries: { count: number },
   allowedTools: string[],
   onToolEvent?: (event: { type: string; payload: Record<string, unknown> }) => void,
-  onToolIntent?: (intent: ToolIntent) => void,
+  onToolIntent?: (intent: ToolIntent) => Promise<DispatchResult | void> | DispatchResult | void,
 ): Promise<ToolResultBlockParam[]> {
   const toolResults: ToolResultBlockParam[] = []
 
@@ -362,7 +363,49 @@ async function processToolCalls(
           // original to preserve v1.0 behavior. The first REWRITE producer
           // (P0-d validation layer) handles the rewritten payload at the
           // text-commit boundary, not here.
-          onToolIntent?.(result.intent)
+          //
+          // Task 02 (investigation 01 P0 #1): await the dispatcher so that
+          // a failed dispatch downgrades the LLM-visible tool_result. Until
+          // this change shipped, dispatch was a no-op and the responder
+          // always claimed "intent_registered" even when nothing executed.
+          let dispatchResult: DispatchResult | void
+          try {
+            dispatchResult = await onToolIntent?.(result.intent)
+          } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err))
+            dispatchResult = { kind: "failed", error }
+          }
+
+          if (dispatchResult && dispatchResult.kind === "failed") {
+            // Dispatch failed — do NOT tell the LLM "Solicitação registrada".
+            // Surface a refusal-style tool_result so the LLM stops claiming
+            // success in its turn.
+            console.error(
+              "[llm-responder] Intent dispatch failed for %s: %s",
+              block.name,
+              dispatchResult.error.message,
+            )
+            onChunk({
+              type: "tool_result",
+              toolName: block.name,
+              toolUseId: block.id,
+              success: false,
+            })
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify({
+                status: "dispatch_failed",
+                message: "Não consegui completar essa ação agora. Tente novamente em instantes.",
+                toolName: block.name,
+              }),
+            })
+            continue
+          }
+
+          // executed | skipped | undefined (legacy no-op caller) → success.
+          // For `skipped`, the deterministic kernel already mutated state
+          // upstream — the LLM just needs to know the operation is in flight.
           onChunk({
             type: "tool_result",
             toolName: block.name,
@@ -542,8 +585,15 @@ export interface GenerateResponseOptions {
   isPostCheckout: boolean
   stateValue: string
   onToolEvent?: (event: { type: string; payload: Record<string, unknown> }) => void
-  /** Callback for mutating tool intents intercepted by the Zero-Trust intent bridge. */
-  onToolIntent?: (intent: ToolIntent) => void
+  /**
+   * Callback for mutating tool intents intercepted by the Zero-Trust intent
+   * bridge. Returns a DispatchResult so the responder can downgrade the
+   * LLM-visible tool_result when dispatch fails (see Task 02 / investigation
+   * 01 P0 #1). Returning void is supported for backward compatibility — the
+   * responder treats undefined as "no dispatcher wired" and falls through to
+   * the pre-Task-02 behavior (audit emit only).
+   */
+  onToolIntent?: (intent: ToolIntent) => Promise<DispatchResult | void> | DispatchResult | void
 }
 
 /**

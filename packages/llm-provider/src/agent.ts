@@ -40,6 +40,10 @@ import {
   SESSION_TOKEN_BUDGET,
   _resetClient,
 } from "./llm-responder.js"
+import {
+  createIntentDispatcher,
+  createDefaultDispatchHandlers,
+} from "./intent-dispatcher.js"
 
 // Re-export for backward compatibility
 export { _resetClient }
@@ -326,6 +330,16 @@ export async function* runAgent(
 
   const pendingMachineEvents: Array<{ type: string; payload: Record<string, unknown> }> = []
 
+  // Build the post-adjudication intent dispatcher (Task 02 / investigation 01 P0 #1).
+  // Today `onToolIntent` was undefined here — every EXECUTE adjudication for a
+  // LLM-proposed mutating tool was a silent drop. The dispatcher closes that
+  // gap: it skips intents the deterministic kernel-executor already mutated
+  // (cart/checkout/cancel/regenerate-pix) and invokes the real handler for the
+  // LLM-only tools (handoff_to_human, schedule_follow_up, set_pix_details).
+  const dispatch = createIntentDispatcher({
+    handlers: createDefaultDispatchHandlers(),
+  })
+
   yield* generateResponse({
     synthesized,
     message,
@@ -335,6 +349,7 @@ export async function* runAgent(
     isPostCheckout,
     stateValue,
     onToolEvent: (evt) => pendingMachineEvents.push(evt),
+    onToolIntent: (intent) => dispatch(intent, context),
   })
 
   // Post-LLM: inject tool events into machine (LLM proposes → Machine commits)
