@@ -8,10 +8,7 @@ import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligenc
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
-import {
-  setResumeIntentDispatcher,
-  startDeferResolverSubscriber,
-} from "./subscribers/defer-resolver.js";
+import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
 import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
 import { startAuditConsumer } from "./subscribers/audit-consumer.js";
 import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
@@ -98,7 +95,17 @@ const start = async (): Promise<void> => {
       // [task 03] defer-resolver wired after payment-lifecycle so the lifecycle
       // subscriber has already settled the payment row before defer-resolver
       // re-executes the parked envelope. See docs/adjudicate-migration/tasks/03-*.
-      await startDeferResolverSubscriber(server.log);
+      //
+      // NEW-P0-X1 fix: pass the resume-intent dispatcher as an explicit
+      // parameter so it is wired BEFORE the NATS subscription becomes
+      // live. Pre-fix the dispatcher was wired ~19 lines later via
+      // `setResumeIntentDispatcher(...)`, leaving a boot-window where a
+      // PIX webhook would silently mark a parked envelope as resumed
+      // without dispatching the intent — silent data loss on every cold
+      // boot for in-flight PIX confirmations.
+      await startDeferResolverSubscriber(server.log, {
+        dispatcher: createResumeDispatcherAdapter({ log: server.log }),
+      });
       // [task 14] LGPD anonymize 24h grace resolver — consumes
       // `intent.defer.timeout` for the customer.anonymize signal and runs
       // `anonymizeCustomer` if no cancel-deletion arrived within the
@@ -111,13 +118,6 @@ const start = async (): Promise<void> => {
       // is not "true"; pairs with the in-process Postgres sink composed by
       // `intent-audit-wiring.ts`. Both flip together per runbook 04.
       await startAuditConsumer(server.log);
-      // [F1 follow-up] Bridge the resume-path subscriber to the responder's
-      // intent-dispatcher (task 02). Without this wire, resumed EXECUTE
-      // decisions only emit audit records — handlers (handoff_to_human,
-      // schedule_follow_up, set_pix_details) never fire on the resume side.
-      // The adapter is fail-closed: any thrown exception is logged and
-      // swallowed so the subscriber's SCAN loop is never broken.
-      setResumeIntentDispatcher(createResumeDispatcherAdapter({ log: server.log }));
 
       // Start all BullMQ background workers
       registerWorkers(server.log);

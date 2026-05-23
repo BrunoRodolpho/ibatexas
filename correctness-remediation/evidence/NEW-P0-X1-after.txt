@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ✓ src/__tests__/boot-window-race.test.ts (2 tests) 47ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  14:28:35
+   Duration  464ms (transform 125ms, setup 0ms, collect 135ms, tests 47ms, environment 0ms, prepare 41ms)
+

@@ -562,11 +562,35 @@ export async function resolveDeferredSession(
         )
       }
     } else {
-      // Dispatcher not wired (task 02 not yet merged). The audit record
-      // above captures the EXECUTE decision; ops can replay manually.
-      log?.warn(
+      // NEW-P0-X1 — Boot-window race fix.
+      //
+      // Pre-fix: when the dispatcher is null (the boot-window between
+      // `startDeferResolverSubscriber(...)` and `setResumeIntentDispatcher(...)`
+      // in `index.ts`), this branch logged a warning and FELL THROUGH to the
+      // COMMIT path below — marking `defer:resumed:{hash}` durably committed
+      // and deleting `defer:pending:{sessionId}`. The intent was NEVER
+      // dispatched. Silent data loss on every cold boot for any in-flight
+      // PIX confirmation that landed during the boot window.
+      //
+      // Post-fix: treat "EXECUTE/REWRITE with no dispatcher" as a dispatch
+      // failure — clear the resuming marker, leave the parked envelope
+      // intact, and route to DLQ. The next NATS delivery (or sweeper
+      // recovery scan) can retry; the parked envelope is recoverable.
+      //
+      // The proper fix in `apps/api/src/index.ts` is to wire the dispatcher
+      // via `startDeferResolverSubscriber({ dispatcher })` BEFORE the NATS
+      // subscription becomes live — this branch is the belt-and-braces
+      // guard for any caller that forgets.
+      dispatchFailed = true
+      log?.error(
         { sessionId, intentHash, signal, kind: decision.kind },
-        "[defer-resolver] EXECUTE on resume but no dispatcher wired — audit-only",
+        "[defer-resolver] EXECUTE on resume but no dispatcher wired — DATA-LOSS GUARD: leaving park intact for retry (NEW-P0-X1)",
+      )
+      await pushToDlq(
+        "intent.defer.resume",
+        { sessionId, signal, intentHash, decision: decision.kind },
+        new Error("dispatcher_not_wired"),
+        log,
       )
     }
   } else if (decision.kind === "DEFER") {
@@ -644,9 +668,41 @@ export async function resolveDeferredSession(
 
 // ── NATS subscriber entry point ────────────────────────────────────────────
 
+/**
+ * Optional configuration for `startDeferResolverSubscriber`.
+ *
+ * `dispatcher` — when provided, wires the resume-intent dispatcher
+ * SYNCHRONOUSLY before the NATS subscription becomes live. This
+ * eliminates the boot-window race (NEW-P0-X1) where a PIX webhook
+ * arriving between `startDeferResolverSubscriber(...)` and the later
+ * `setResumeIntentDispatcher(...)` would silently mark a parked
+ * envelope as resumed without ever dispatching the intent.
+ *
+ * Callers that pass `dispatcher` here MUST NOT also call
+ * `setResumeIntentDispatcher` separately — the two paths are mutually
+ * exclusive. Tests that prefer the singleton wiring may continue to
+ * use `setResumeIntentDispatcher` and pass no `dispatcher` here.
+ *
+ * NOTE: `setResumeIntentDispatcher` remains for backward compatibility
+ * with existing tests; new callers should prefer the parameter form.
+ * A future Q2 refactor will delete the module-level singleton entirely.
+ */
+export interface StartDeferResolverSubscriberOptions {
+  readonly dispatcher?: ResumeIntentDispatcher
+}
+
 export async function startDeferResolverSubscriber(
   log?: FastifyBaseLogger,
+  options?: StartDeferResolverSubscriberOptions,
 ): Promise<void> {
+  // NEW-P0-X1 fix: wire dispatcher BEFORE the NATS subscription becomes
+  // live so there is no window where `_dispatcher` is null while resume
+  // events can arrive. Callers using the legacy singleton path (the
+  // pre-fix test corpus) pass no options and continue to work.
+  if (options?.dispatcher !== undefined) {
+    setResumeIntentDispatcher(options.dispatcher)
+  }
+
   await subscribeNatsEvent("payment.status_changed", async (payload) => {
     const event = payload as unknown as PaymentStatusChangedEvent
     const { newStatus, paymentId, orderId } = event
