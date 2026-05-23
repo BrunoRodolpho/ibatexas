@@ -174,8 +174,8 @@ describe("ibx kernel replay (stub mode)", () => {
 
 // ── ibx kernel divergence ─────────────────────────────────────────────────
 
-describe("ibx kernel divergence (stub mode)", () => {
-  it("no-ops with structured TODO when no telemetry is wired", async () => {
+describe("ibx kernel divergence", () => {
+  it("no-ops with structured TODO when audit-postgres is off", async () => {
     delete process.env.IBX_AUDIT_POSTGRES_ENABLED
     delete process.env.POSTHOG_API_KEY
     await cmd.parseAsync(["divergence", "--since=24h"], { from: "user" })
@@ -186,12 +186,22 @@ describe("ibx kernel divergence (stub mode)", () => {
     expect(out).toContain("PAYLOAD_REWRITE")
   })
 
-  it("renders placeholder summary when audit-postgres is enabled", async () => {
+  it("refuses to run without DATABASE_URL when audit-postgres is enabled", async () => {
     process.env.IBX_AUDIT_POSTGRES_ENABLED = "true"
-    delete process.env.POSTHOG_API_KEY
+    delete process.env.DATABASE_URL
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {})
     await cmd.parseAsync(["divergence"], { from: "user" })
-    const out = stdout.getOutput()
-    expect(out).toContain("formato stub")
-    expect(out).toContain("BASIS_ONLY")
+    expect(stderrSpy).toHaveBeenCalled()
+    expect(process.exitCode).toBe(1)
+    stderrSpy.mockRestore()
+  })
+
+  it("validates --since duration syntax", async () => {
+    process.env.IBX_AUDIT_POSTGRES_ENABLED = "true"
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    await cmd.parseAsync(["divergence", "--since=invalid"], { from: "user" })
+    expect(stderrSpy).toHaveBeenCalled()
+    expect(process.exitCode).toBe(1)
+    stderrSpy.mockRestore()
   })
 })
