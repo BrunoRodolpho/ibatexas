@@ -317,7 +317,7 @@ describe("audit-redactor — idempotency", () => {
     expect(twice).toEqual(once)
   })
 
-  it("redact(redact(record)) preserves intentHash and auditHash", () => {
+  it("redact(redact(record)) preserves intentHash; auditHash is stable post-redaction (P0-15)", () => {
     const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
     const record = makeRecord("customer.pix.details.save", {
       name: "João Silva",
@@ -326,10 +326,16 @@ describe("audit-redactor — idempotency", () => {
     })
     const once = r.redact(record)
     const twice = r.redact(once)
+    // intentHash NEVER recomputed — replay invariant.
     expect(once.intentHash).toBe(record.intentHash)
     expect(twice.intentHash).toBe(record.intentHash)
-    expect(once.auditHash).toBe(record.auditHash)
-    expect(twice.auditHash).toBe(record.auditHash)
+    // P0-15: auditHash is recomputed over the redacted record so
+    // verifyAuditRecord works post-redaction. Second pass over an already-
+    // redacted record produces the same payload (idempotency) AND the same
+    // hash (stable). The hash differs from the original (because payload
+    // changed) but is consistent between once and twice.
+    expect(once.auditHash).not.toBe(record.auditHash)
+    expect(twice.auditHash).toBe(once.auditHash)
     expect(twice).toEqual(once)
   })
 })

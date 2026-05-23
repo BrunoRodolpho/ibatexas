@@ -28,6 +28,7 @@ import {
   isShadowed,
   legacyDecisionAsKernelDecision,
 } from "@adjudicate/core/kernel"
+import { parkDeferredIntent } from "@adjudicate/runtime"
 import { orderMachine, getStateString, createDefaultContext, isCheckoutState } from "./machine/order-machine.js"
 import type { OrderContext, KernelOutput } from "./machine/types.js"
 import { extractIllusionContext } from "./machine/types.js"
@@ -261,21 +262,50 @@ async function adjudicateKernelMutation<K extends string, P>(
       }
 
     case "DEFER": {
-      // Park the envelope so the defer-resolver subscriber can resume it.
-      // Best-effort: a Redis failure logs and surfaces a refusal instead of
-      // silently dropping the intent.
+      // Park the envelope via the runtime's `parkDeferredIntent` primitive.
+      // The primitive enforces a per-session quota (DEFAULT_DEFER_QUOTA_PER_SESSION = 16),
+      // populates the T-005 verification fields (`version`, `nonce`, `taint`,
+      // `actorPrincipal`) so the resume side can verify the hash, and emits
+      // `recordResourceLimit` telemetry on quota exhaustion. Bypassing this
+      // primitive (the pre-W2 behaviour) left every parked blob with
+      // `verified: null, reason: "missing_fields"` at resume time — tamper
+      // detection was structurally inert.
       try {
         const redis = await getRedisClient()
         const ttlSeconds = Math.ceil(decision.timeoutMs / 1000) + 60
-        await redis.set(
-          rk(`defer:pending:${sessionId}`),
-          JSON.stringify({
-            envelope,
-            signal: decision.signal,
-            parkedAt: new Date().toISOString(),
-          }),
-          { EX: ttlSeconds },
-        )
+        const parkResult = await parkDeferredIntent({
+          envelope: {
+            intentHash: envelope.intentHash,
+            kind: envelope.kind,
+            actor: { sessionId: envelope.actor.sessionId },
+            payload: envelope.payload,
+            // T-005 verification fields — spread as flat top-level keys so
+            // `verifyParkedEnvelopeHash` can re-derive the hash on resume.
+            version: envelope.version,
+            nonce: envelope.nonce,
+            taint: envelope.taint,
+            actorPrincipal: envelope.actor.principal,
+          },
+          signal: decision.signal,
+          ttlSeconds,
+          redis,
+          rk,
+        })
+        if (!parkResult.parked) {
+          // Quota exceeded — surface as a refusal so the user learns their
+          // additional DEFER was rejected rather than silently swallowed.
+          console.warn(
+            "[kernel-executor] DEFER park quota exceeded:",
+            parkResult.reason,
+            "observed:", parkResult.observed,
+            "limit:", parkResult.limit,
+          )
+          return {
+            proceed: false,
+            decision,
+            userFacing: "Você tem muitas operações em espera. Aguarde uma delas concluir antes de tentar novamente.",
+          }
+        }
       } catch (err) {
         console.error("[kernel-executor] DEFER park failed:", (err as Error).message)
       }

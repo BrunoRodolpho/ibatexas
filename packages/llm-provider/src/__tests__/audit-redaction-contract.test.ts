@@ -22,7 +22,7 @@
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { describe, it, expect, vi } from "vitest"
-import { buildAuditRecord, buildEnvelope } from "@adjudicate/core"
+import { buildAuditRecord, buildEnvelope, verifyAuditRecord } from "@adjudicate/core"
 import type { AuditRecord, IntentEnvelope } from "@adjudicate/core"
 import { createAuditRedactor } from "../audit-redactor.js"
 
@@ -680,14 +680,49 @@ describe("audit-redaction CONTRACT (CI gate)", () => {
     expect(findings).toEqual([])
   })
 
-  it("every fixture preserves intentHash + auditHash through redaction", () => {
+  it("every fixture preserves intentHash through redaction (replay invariant)", () => {
     for (let i = 0; i < CORPUS.length; i++) {
       const fx = CORPUS[i]!
       const record = makeRecord(fx, i)
       const redacted = redactor.redact(record)
+      // intentHash is NEVER recomputed — the redacted record's intentHash
+      // still matches the originating envelope's intentHash so ledger
+      // dedup + replayEnvelopeFromAudit remain correct.
       expect(redacted.intentHash).toBe(record.intentHash)
-      expect(redacted.auditHash).toBe(record.auditHash)
     }
+  })
+
+  it("[P0-15] every fixture recomputes auditHash so verifyAuditRecord works on redacted records", () => {
+    for (let i = 0; i < CORPUS.length; i++) {
+      const fx = CORPUS[i]!
+      const record = makeRecord(fx, i)
+      const redacted = redactor.redact(record)
+      // Pre-W2 the redactor preserved auditHash verbatim, so
+      // verifyAuditRecord reported `tampered` for every redacted record
+      // (the only kind any sink ever sees). Now auditHash is recomputed
+      // over the redacted record — verifyAuditRecord returns `verified: true`.
+      const verification = verifyAuditRecord(redacted)
+      expect(verification.verified).toBe(true)
+    }
+  })
+
+  it("[P0-15] redacted auditHash differs from the original auditHash whenever payload changed", () => {
+    let anyDiffered = false
+    for (let i = 0; i < CORPUS.length; i++) {
+      const fx = CORPUS[i]!
+      const record = makeRecord(fx, i)
+      const redacted = redactor.redact(record)
+      // For fixtures whose redacted payload differs from the original (i.e.,
+      // PII was scrubbed), the recomputed auditHash MUST differ — otherwise
+      // verifyAuditRecord wouldn't be doing its job. For fixtures with no
+      // PII to redact, the hashes coincide. We assert AT LEAST ONE fixture
+      // produces a divergent hash so the recomputation path is exercised.
+      if (JSON.stringify(redacted.envelope.payload) !== JSON.stringify(record.envelope.payload)) {
+        expect(redacted.auditHash).not.toBe(record.auditHash)
+        anyDiffered = true
+      }
+    }
+    expect(anyDiffered).toBe(true)
   })
 
   it("every fixture preserves envelope governance fields (actor, taint, kind, nonce, createdAt, version)", () => {

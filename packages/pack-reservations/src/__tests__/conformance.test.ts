@@ -380,9 +380,14 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "REFUSE", refusalCode: "reservation.staff_only" },
   },
 
-  // ── DEFER (2 cases) ──────────────────────────────────────────────────
+  // ── DEFER (0 cases) — slot.released removed per W2/P1-F decisions-log §D9 ─
+  //
+  // Pre-W2 modify-against-full-new-slot DEFER'd on `slot.released`; W2
+  // removed that guard because no publisher existed. Modify now REFUSEs
+  // at default polarity. Two former DEFER fixtures relocated to REFUSE
+  // category below.
   {
-    name: "DEFER: reservation.modify on a full new slot",
+    name: "REFUSE: reservation.modify on a full new slot (formerly DEFER on slot.released)",
     envelope: env("reservation.modify", {
       reservationId: "r-1",
       newTimeSlotId: "ts-2",
@@ -401,10 +406,10 @@ const corpus: ReadonlyArray<Fixture> = [
         reservedCovers: 40,
       },
     }),
-    expect: { kind: "DEFER", signal: "slot.released" },
+    expect: { kind: "REFUSE", refusalCode: "reservation.slot.full" },
   },
   {
-    name: "DEFER: reservation.modify on an over-capacity new slot",
+    name: "REFUSE: reservation.modify on an over-capacity new slot (formerly DEFER on slot.released)",
     envelope: env("reservation.modify", {
       reservationId: "r-1",
       newTimeSlotId: "ts-2",
@@ -424,7 +429,7 @@ const corpus: ReadonlyArray<Fixture> = [
         reservedCovers: 40,
       },
     }),
-    expect: { kind: "DEFER", signal: "slot.released" },
+    expect: { kind: "REFUSE", refusalCode: "reservation.slot.full" },
   },
 
   // ── REQUEST_CONFIRMATION (3 cases) ───────────────────────────────────

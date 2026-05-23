@@ -54,3 +54,21 @@ Picked **(A)**. Each service method now has BOTH surfaces:
 The `withAdjudicate` helper (`packages/domain/src/services/__shared__/with-adjudicate.ts`) wraps the existing imperative executor with adjudicate + audit emit, so the new path runs the SAME Prisma logic — only the entry surface changes.
 
 **How to apply:** New callers built by tasks 12-14, 16, 17 use the `*FromEnvelope` surface exclusively. They build envelopes via `buildEnvelope({kind, payload, nonce: randomUUID(), actor, taint})` from `@adjudicate/core` and route through the new methods. After all M3 caller migrations land, a follow-up sweep removes the legacy bare-arg methods. The bypass-detection test at `packages/domain/src/services/__tests__/no-direct-prisma-bypass.test.ts` guards against future regressions of the 3 rogue cart-writer consolidations (investigation 03 P0 #2). 99 backwards-compat tests + 28 new envelope-targeted tests + 8 bypass-detection tests all pass at HEAD.
+
+## D9 — W2/P1-F: REMOVE `slot.released` signal vs. IMPLEMENT publisher
+**Why:** `@ibatexas/pack-reservations` declared a `slot.released` DEFER signal and a `deferOnSlotFull` state guard that parked `reservation.modify` envelopes when the new slot was at capacity. The intent was that a `reservation.cancel` or `reservation.no_show` event would later free covers on that slot, fire a `slot.released` wire event, and the kernel would re-adjudicate the parked envelope.
+
+**No publisher existed anywhere in the codebase.** The reservation cancel route (`apps/api/src/routes/admin/reservations.ts`) and the (planned) no-show job never fired `slot.released`. No defer-resolver subscriber listened for it either. Parked envelopes silently TTL'd after 30 minutes (`RESERVATION_SLOT_RELEASED_TIMEOUT_MS`) — the customer who tried to modify their reservation got a "we'll let you know" response that never resolved.
+
+Two options on the table:
+
+  - **(A)** IMPLEMENT: write the publisher (NATS event on cancel + no-show carrying the freed slot id) AND the resolver subscriber (subscribe to `slot.released`, drain matching parked envelopes, re-adjudicate). Add end-to-end tests for the round-trip.
+  - **(B)** REMOVE: delete the signal constant + DEFER guard. Replace the guard with a REFUSE so `reservation.modify` against a full new slot rejects immediately with a clear "slot full" message instead of a stuck wait.
+
+Picked **(B) REMOVE.** Rationale:
+
+  - W2 scope is correctness fixes, not feature implementation. Implementing the publisher + subscriber + tests would expand W2 by ~500 LOC of net-new infrastructure.
+  - The pre-W2 behaviour was a silent loss after 30 minutes — the customer never knew their modify request had stalled. A REFUSE is strictly better UX: the customer gets a meaningful "slot esgotado" pt-BR rejection and can choose a different slot or join the waitlist immediately.
+  - The feature can re-land cleanly when modify-on-slot-released is genuinely on the roadmap. Future work owns: publisher in reservation cancel + no-show handlers, resolver subscriber, end-to-end test for the round-trip.
+
+**How to apply:** Removed `RESERVATION_SLOT_RELEASED_SIGNAL` + `RESERVATION_SLOT_RELEASED_TIMEOUT_MS` exports from `pack-reservations`. Removed `deferOnSlotFull` guard. Added `refuseModifyOnFullNewSlot` state guard that REFUSEs with code `reservation.slot.full` when `state.ctx.newSlot.reservedCovers >= newSlot.maxCovers`. `reservationsPack.signals` is now an empty array. Conformance fixtures + reservations-pack tests updated to expect REFUSE (with `reservation.slot.full` code) instead of DEFER. When the feature re-lands, this commit must be reverted before re-adding the guard.

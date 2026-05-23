@@ -29,6 +29,23 @@
 //   shutdown semantics, retries) stays consistent. setInterval would
 //   require its own lifecycle management.
 //
+// ── P1-E: Startup recovery scan + heartbeat ──────────────────────────────
+//
+// BullMQ's `upsertJobScheduler` does NOT replay missed runs. If the
+// worker is down for >TTL on parked envelopes, Redis GCs the keys
+// before any sweep fires — `intent.defer.timeout` is never published —
+// the anonymize-grace-resolver (LGPD obligation enforcer) never runs,
+// and the customer notification never goes out.
+//
+// The fix:
+//   1. `runRecoveryScan()` on worker startup. Finds any expired-or-
+//      imminently-expiring parked envelopes and publishes their timeouts
+//      idempotently (SETNX `recovery:fired:{intentHash}` marker dedups
+//      against subsequent normal sweeps).
+//   2. Heartbeat key `heartbeat:defer-sweeper` updated every tick (60s
+//      TTL). Downstream ops monitoring queries this for liveness; a
+//      missing heartbeat indicates worker outage.
+//
 // CLAUDE.md rules honoured:
 //   #7 rk() for all Redis keys (defer:pending:* matches what the responder
 //      wrote when parking).
@@ -67,6 +84,15 @@ const SCAN_COUNT = 100;
 // rest 60s later.
 const MAX_KEYS_PER_SWEEP = 1000;
 
+// P1-E: heartbeat TTL — 2x the repeat interval so a single missed tick
+// doesn't trigger a false alarm but two missed ticks do (worker outage).
+const HEARTBEAT_TTL_SECONDS = (REPEAT_INTERVAL_MS / 1000) * 2;
+
+// P1-E: dedup TTL for recovery-fired markers. Long enough that a recovery
+// scan can't double-fire across consecutive startups; short enough that
+// stale markers don't accumulate forever. Matches the runtime grace.
+const RECOVERY_FIRED_TTL_SECONDS = 14 * 24 * 60 * 60; // 14d
+
 let queue: Queue | null = null;
 let worker: Worker | null = null;
 let logger: FastifyBaseLogger | null = null;
@@ -103,6 +129,20 @@ export async function sweepDeferTimeouts(
     );
     return 0;
   }
+
+  // P1-E: heartbeat — refresh on every tick so downstream monitoring can
+  // detect worker outage. Best-effort; a failed heartbeat doesn't block
+  // the sweep itself.
+  await redis
+    .set(rk("heartbeat:defer-sweeper"), new Date().toISOString(), {
+      EX: HEARTBEAT_TTL_SECONDS,
+    })
+    .catch((err) => {
+      effectiveLogger?.warn(
+        { err: (err as Error).message },
+        "[defer-timeout-sweeper] heartbeat refresh failed",
+      );
+    });
 
   // Collect candidates first via SCAN; do the per-key TTL/DEL work after
   // we've finished iterating so we don't hold the cursor open for too long.
@@ -180,6 +220,29 @@ export async function sweepDeferTimeouts(
         }
       }
 
+      // P1-E: dedup against the recovery scan. If a recovery scan fired
+      // this timeout already (e.g., worker restarted between recovery and
+      // the first tick), SETNX returns null and we skip — the recovery
+      // scan was the one source of truth for this intent.
+      const recoveryKey = rk(
+        `recovery:fired:${intentHash || sessionId}`,
+      );
+      const acquired = await redis
+        .set(recoveryKey, new Date().toISOString(), {
+          NX: true,
+          EX: RECOVERY_FIRED_TTL_SECONDS,
+        })
+        .catch(() => null);
+      if (acquired !== "OK") {
+        effectiveLogger?.debug(
+          { sessionId, intentHash, signal, ttl },
+          "[defer-timeout-sweeper] timeout already fired by recovery scan — skipping",
+        );
+        // Still DEL the parked key so it doesn't loop forever.
+        await redis.del(key).catch(() => {});
+        continue;
+      }
+
       // Publish the timeout. Subscribers (e.g. notification fan-out)
       // consume `intent.defer.timeout` to drive user-facing follow-ups.
       const payload: DeferTimeoutEventPayload = {
@@ -195,7 +258,9 @@ export async function sweepDeferTimeouts(
       } catch (publishErr) {
         // publishNatsEvent already swallows NATS errors internally; this
         // path only fires for synchronous misuse. Don't DEL the key if
-        // publish failed so the next sweep retries.
+        // publish failed so the next sweep retries. Also release the
+        // dedup marker so retry can re-claim it.
+        await redis.del(recoveryKey).catch(() => {});
         effectiveLogger?.error(
           { key, err: (publishErr as Error).message },
           "[defer-timeout-sweeper] publishNatsEvent failed — leaving key for retry",
@@ -243,6 +308,189 @@ function parseSessionId(key: string): string {
   return m ? m[1]! : key;
 }
 
+/**
+ * P1-E — Recovery scan run on worker startup.
+ *
+ * BullMQ's `upsertJobScheduler` does NOT replay missed runs across worker
+ * downtime. If the sweeper is down for >TTL, parked envelopes silently
+ * expire and `intent.defer.timeout` is never published — the LGPD
+ * anonymize-grace-resolver never fires, the customer notification never
+ * goes out.
+ *
+ * The recovery scan fires on each startup BEFORE the repeatable job is
+ * registered. It SCANs the parked-envelope namespace, finds any keys at
+ * or past their deadline, and publishes `intent.defer.timeout` events
+ * idempotently. A `recovery:fired:{intentHash}` SETNX marker dedups
+ * against subsequent normal sweeps so the same envelope's timeout isn't
+ * published twice (once by recovery, once by the next 60s tick).
+ *
+ * Returns the count of recovery-fired events. Logs + Sentry on completion
+ * so ops can see how many envelopes were caught during downtime.
+ */
+export async function runRecoveryScan(
+  log?: FastifyBaseLogger | null,
+): Promise<number> {
+  const effectiveLogger = log ?? logger;
+  let recoveryFiredCount = 0;
+
+  let redis: Awaited<ReturnType<typeof getRedisClient>>;
+  try {
+    redis = await getRedisClient();
+  } catch (err) {
+    effectiveLogger?.error(
+      { err: (err as Error).message },
+      "[defer-timeout-sweeper] Redis unavailable during recovery scan",
+    );
+    return 0;
+  }
+
+  effectiveLogger?.info(
+    { run_at: new Date().toISOString() },
+    "[defer-timeout-sweeper] starting recovery scan",
+  );
+
+  // Same SCAN pattern as the regular sweep — the recovery scan is a
+  // one-shot variant of the same logic, with the additional idempotency
+  // marker.
+  const candidates: string[] = [];
+  const pattern = rk("defer:pending:*");
+  try {
+    for await (const key of redis.scanIterator({
+      MATCH: pattern,
+      COUNT: SCAN_COUNT,
+    })) {
+      if (Array.isArray(key)) {
+        candidates.push(...key);
+      } else {
+        candidates.push(key as string);
+      }
+      if (candidates.length >= MAX_KEYS_PER_SWEEP) break;
+    }
+  } catch (err) {
+    effectiveLogger?.error(
+      { err: (err as Error).message },
+      "[defer-timeout-sweeper] SCAN failed during recovery scan",
+    );
+    Sentry.withScope((scope) => {
+      scope.setTag("job", "defer-timeout-sweeper");
+      scope.setTag("source", "recovery-scan");
+      Sentry.captureException(err);
+    });
+    return 0;
+  }
+
+  for (const key of candidates) {
+    try {
+      const ttl = await redis.ttl(key).catch(() => -2);
+      if (ttl === -2) continue;
+      // For recovery scan: pick up everything ≤ IMMINENT_TTL_SECONDS, same
+      // threshold as the steady-state sweep. Anything fresher is owned
+      // by the next normal tick.
+      if (ttl > IMMINENT_TTL_SECONDS) continue;
+
+      const raw = await redis.get(key).catch(() => null);
+      const sessionId = parseSessionId(key);
+      let intentHash = "";
+      let signal = "";
+      let parkedAt = "";
+      if (raw) {
+        try {
+          const parked = JSON.parse(raw) as ParkedEnvelope;
+          intentHash = parked.envelope?.intentHash ?? "";
+          signal = parked.signal ?? "";
+          parkedAt = parked.parkedAt ?? "";
+        } catch (parseErr) {
+          effectiveLogger?.warn(
+            { key, err: (parseErr as Error).message },
+            "[defer-timeout-sweeper] malformed parked envelope during recovery — publishing minimal timeout",
+          );
+        }
+      }
+
+      // Idempotency: SETNX the recovery-fired marker keyed by intentHash.
+      // If a previous sweep (recovery or steady-state) already fired the
+      // timeout for this intent, we skip. Falls back to sessionId when
+      // intentHash is unavailable (malformed blob).
+      const recoveryKey = rk(
+        `recovery:fired:${intentHash || sessionId}`,
+      );
+      const acquired = await redis
+        .set(recoveryKey, new Date().toISOString(), {
+          NX: true,
+          EX: RECOVERY_FIRED_TTL_SECONDS,
+        })
+        .catch(() => null);
+      if (acquired !== "OK") {
+        effectiveLogger?.debug(
+          { sessionId, intentHash, signal, ttl },
+          "[defer-timeout-sweeper] recovery: timeout already fired — skipping",
+        );
+        continue;
+      }
+
+      const payload: DeferTimeoutEventPayload = {
+        eventType: "intent.defer.timeout",
+        sessionId,
+        intentHash,
+        signal,
+        parkedAt,
+        timestamp: new Date().toISOString(),
+      };
+      try {
+        await publishNatsEvent("intent.defer.timeout", payload);
+      } catch (publishErr) {
+        // Same as steady-state: don't DEL key on publish failure. Release
+        // the dedup marker so the next attempt can retry.
+        await redis.del(recoveryKey).catch(() => {});
+        effectiveLogger?.error(
+          { key, err: (publishErr as Error).message },
+          "[defer-timeout-sweeper] recovery: publishNatsEvent failed — leaving key for retry",
+        );
+        continue;
+      }
+      await redis.del(key).catch(() => {});
+
+      recoveryFiredCount++;
+      effectiveLogger?.info(
+        { sessionId, intentHash, signal, ttl },
+        "[defer-timeout-sweeper] RECOVERY published intent.defer.timeout — worker was down during deadline",
+      );
+    } catch (err) {
+      effectiveLogger?.error(
+        { key, err: (err as Error).message },
+        "[defer-timeout-sweeper] error during recovery for key",
+      );
+      Sentry.withScope((scope) => {
+        scope.setTag("job", "defer-timeout-sweeper");
+        scope.setTag("source", "recovery-scan");
+        scope.setContext("parked", { key });
+        Sentry.captureException(err);
+      });
+    }
+  }
+
+  // Always log + Sentry-tagged so ops can correlate to deploys.
+  effectiveLogger?.info(
+    {
+      recovery_fired_count: recoveryFiredCount,
+      run_at: new Date().toISOString(),
+    },
+    "[defer-timeout-sweeper] recovery scan complete",
+  );
+  if (recoveryFiredCount > 0) {
+    Sentry.withScope((scope) => {
+      scope.setTag("job", "defer-timeout-sweeper");
+      scope.setTag("source", "recovery-scan");
+      scope.setContext("recovery", { recoveryFiredCount });
+      Sentry.captureMessage(
+        `[defer-timeout-sweeper] recovery sweep fired ${recoveryFiredCount} events`,
+        "info",
+      );
+    });
+  }
+  return recoveryFiredCount;
+}
+
 /** BullMQ processor — wraps the core logic. */
 async function processor(_job: Job): Promise<void> {
   await sweepDeferTimeouts();
@@ -260,6 +508,24 @@ export function startDeferTimeoutSweeper(log?: FastifyBaseLogger): void {
     Sentry.withScope((scope) => {
       scope.setTag("job", "defer-timeout-sweeper");
       scope.setTag("source", "background-job");
+      Sentry.captureException(err);
+    });
+  });
+
+  // P1-E: kick off the recovery scan fire-and-forget BEFORE registering
+  // the repeatable job. If the worker was down through one or more TTL
+  // expirations, this catches the missed envelopes and publishes their
+  // timeouts idempotently (the SETNX recovery-fired marker dedups against
+  // the first normal sweep). We don't await — the recovery scan can run
+  // alongside the steady-state ticks (the marker prevents double-fire).
+  void runRecoveryScan(logger).catch((err) => {
+    logger?.error(
+      { err: (err as Error).message },
+      "[defer-timeout-sweeper] startup recovery scan threw",
+    );
+    Sentry.withScope((scope) => {
+      scope.setTag("job", "defer-timeout-sweeper");
+      scope.setTag("source", "recovery-scan");
       Sentry.captureException(err);
     });
   });
