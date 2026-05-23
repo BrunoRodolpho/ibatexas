@@ -577,7 +577,10 @@ interface DivergenceCounter {
  * When IBX_AUDIT_POSTGRES_ENABLED=false, gracefully output the runbook
  * step (no shadow data yet — operator enables postgres + waits 24h+).
  */
-async function runDivergence(opts: { since?: string }): Promise<void> {
+async function runDivergence(opts: {
+  since?: string
+  intentKind?: string
+}): Promise<void> {
   const sinceInput = opts.since ?? "24h"
   let sinceMs: number
   try {
@@ -590,7 +593,11 @@ async function runDivergence(opts: { since?: string }): Promise<void> {
 
   console.log()
   console.log(chalk.bold("ibx kernel divergence"))
-  console.log(chalk.dim(`Janela: últimos ${sinceInput}`))
+  console.log(
+    chalk.dim(
+      `Janela: últimos ${sinceInput}; kind: ${opts.intentKind ?? "todos"}`,
+    ),
+  )
   console.log()
 
   // NEW-P1-ENV: see runStatus() above for rationale.
@@ -675,10 +682,22 @@ async function runDivergence(opts: { since?: string }): Promise<void> {
         },
       }
 
+      // W3 D4 fix: thread `--intent-kind` through to the window
+      // descriptor. The `queryFn.fetchRows` above already handles
+      // `window.intentKind` correctly — the bug was that `runDivergence`
+      // never passed it. Audit/08 documented the leak; the operator
+      // asked for one kind and silently got everything.
       const records = await readAuditWindow(
         // @ts-expect-error — runtime shape matches AuditQueryFn
         queryFn,
-        { fromIso, toIso, limit: 10_000 },
+        {
+          fromIso,
+          toIso,
+          ...(opts.intentKind !== undefined
+            ? { intentKind: opts.intentKind }
+            : {}),
+          limit: 10_000,
+        },
       )
 
       spinner.succeed(`Lidos ${records.length} registros de audit.`)
@@ -1046,7 +1065,11 @@ export function registerKernelCommands(group: Command): void {
     .command("divergence")
     .description("Resumo de divergências shadow-mode por classe (BASIS_ONLY, DECISION_KIND, PAYLOAD_REWRITE)")
     .option("--since <duration>", "Janela de tempo (ex: 24h, 7d)", "24h")
-    .action(async (opts: { since?: string }) => {
+    .option(
+      "--intent-kind <kind>",
+      "Filtra por intent kind (ex: order.checkout.create) — W3 D4 fix",
+    )
+    .action(async (opts: { since?: string; intentKind?: string }) => {
       await runDivergence(opts)
     })
 

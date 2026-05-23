@@ -379,6 +379,30 @@ describe("ibx kernel divergence", () => {
     expect(process.exitCode).toBe(1)
     stderrSpy.mockRestore()
   })
+
+  // W3 D4 — bug fix: --intent-kind was parsed but never threaded into
+  // the SQL WHERE clause (audit 08, kernel.ts:449). Result: operator
+  // asked for one kind, got everything in the window.
+  it("threads --intent-kind into the SQL WHERE clause", async () => {
+    pgQueryRows.reset()
+    pgQueryRows.rows = []
+    process.env.IBX_AUDIT_POSTGRES_ENABLED = "true"
+    process.env.DATABASE_URL = "postgres://mock:mock@localhost/mock"
+    await cmd.parseAsync(
+      [
+        "divergence",
+        "--since=24h",
+        "--intent-kind=order.checkout.create",
+      ],
+      { from: "user" },
+    )
+    const sqlSeen = pgQueryRows.capturedSql.join(" | ")
+    expect(sqlSeen).toMatch(/intent_kind\s*=\s*\$\d/)
+    const allParams = pgQueryRows.capturedParams.flat()
+    expect(allParams).toContain("order.checkout.create")
+    delete process.env.IBX_AUDIT_POSTGRES_ENABLED
+    delete process.env.DATABASE_URL
+  })
 })
 
 // ── ibx kernel kill-switch (W3 D1) ────────────────────────────────────────
