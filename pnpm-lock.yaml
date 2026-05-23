@@ -708,6 +708,9 @@ importers:
       '@ibatexas/pack-reservations':
         specifier: workspace:*
         version: link:../../packages/pack-reservations
+      '@ibatexas/pack-whatsapp':
+        specifier: workspace:*
+        version: link:../../packages/pack-whatsapp
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../../packages/tools
@@ -1061,6 +1064,9 @@ importers:
       '@ibatexas/pack-reservations':
         specifier: workspace:*
         version: link:../pack-reservations
+      '@ibatexas/pack-whatsapp':
+        specifier: workspace:*
+        version: link:../pack-whatsapp
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../tools
@@ -1144,6 +1150,34 @@ importers:
         version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
 
   packages/pack-reservations:
+    dependencies:
+      '@adjudicate/core':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/core
+      '@adjudicate/locales-pt-br':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/locales-pt-BR
+      '@adjudicate/primitives':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/primitives
+    devDependencies:
+      '@adjudicate/conformance':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/conformance
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/pack-whatsapp:
     dependencies:
       '@adjudicate/core':
         specifier: workspace:*
