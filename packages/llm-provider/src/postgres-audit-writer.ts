@@ -22,8 +22,34 @@
 //   - Postgres unreachable: the INSERT throws. The buffered sink catches,
 //     spills to Redis, and the redundancy consumer
 //     (`audit-consumer.ts`) eventually drains via NATS replay.
-//   - Unique-constraint violation on (intent_hash, recorded_at): the SQL
-//     uses ON CONFLICT DO NOTHING so duplicate writes are idempotent.
+//   - Duplicate insert (Redis dedup miss + NATS-replay): handled by
+//     `ON CONFLICT DO NOTHING` (P0-14, see schema note below).
+//
+// ── P0-14 schema-alignment note ─────────────────────────────────────────
+//
+// The previous SQL targeted `ON CONFLICT (intent_hash, recorded_at)` — a
+// constraint that does NOT exist in the @adjudicate/audit-postgres
+// schema. Migration 001 declares:
+//   - PRIMARY KEY (id, recorded_at)        // id is BIGSERIAL
+//   - INDEX (intent_hash, recorded_at DESC) // NOT UNIQUE
+// Migrations 002-008 add columns + a non-unique nonce index. There is no
+// unique constraint on `(intent_hash, recorded_at)` anywhere in the
+// schema. The original ON CONFLICT clause would throw Postgres error
+// 42P10 ("there is no unique or exclusion constraint matching the ON
+// CONFLICT specification") on the first INSERT with
+// `IBX_AUDIT_POSTGRES_ENABLED=true`.
+//
+// We fall back to bare `ON CONFLICT DO NOTHING` (no column list). This:
+//   - is valid SQL — matches any unique constraint violation;
+//   - is a no-op today because no row can conflict (`id` is BIGSERIAL);
+//   - is forward-compatible: if a unique constraint on intent_hash is
+//     later added upstream, the same SQL silently picks up the dedup
+//     without code changes here.
+//
+// Layer-1 dedup remains the Redis SETNX in `audit-consumer.ts`. Layer-2
+// dedup at the Postgres level is currently a no-op; the assumption that
+// it caught duplicates was wishful. Schema-level dedup is tracked as a
+// follow-up against the @adjudicate/audit-postgres package.
 
 import type {
   IntentAuditRow,
@@ -65,7 +91,7 @@ VALUES (
   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::timestamptz,
   $14, $15, $16, $17::jsonb, $18, $19::jsonb
 )
-ON CONFLICT (intent_hash, recorded_at) DO NOTHING
+ON CONFLICT DO NOTHING
 `.trim()
 
 export interface CreatePostgresAuditWriterOptions {
