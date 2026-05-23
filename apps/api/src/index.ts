@@ -12,6 +12,7 @@ import {
   setResumeIntentDispatcher,
   startDeferResolverSubscriber,
 } from "./subscribers/defer-resolver.js";
+import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
 import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
@@ -97,6 +98,12 @@ const start = async (): Promise<void> => {
       // subscriber has already settled the payment row before defer-resolver
       // re-executes the parked envelope. See docs/adjudicate-migration/tasks/03-*.
       await startDeferResolverSubscriber(server.log);
+      // [task 14] LGPD anonymize 24h grace resolver — consumes
+      // `intent.defer.timeout` for the customer.anonymize signal and runs
+      // `anonymizeCustomer` if no cancel-deletion arrived within the
+      // window. Wired alongside the defer-resolver so both subscribe to
+      // the timeout fan-out from `defer-timeout-sweeper`.
+      await startAnonymizeGraceResolverSubscriber(server.log);
       // [F1 follow-up] Bridge the resume-path subscriber to the responder's
       // intent-dispatcher (task 02). Without this wire, resumed EXECUTE
       // decisions only emit audit records — handlers (handoff_to_human,

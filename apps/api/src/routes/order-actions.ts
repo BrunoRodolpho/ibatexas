@@ -10,9 +10,11 @@
 //
 // All routes require authentication + ownership verification.
 
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { buildEnvelope } from "@adjudicate/core";
 import { getRedisClient, rk, withLock } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
@@ -22,6 +24,7 @@ import {
   createPaymentQueryService,
   prisma,
   InvalidTransitionError,
+  type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
 import {
   OrderFulfillmentStatus,
@@ -32,8 +35,17 @@ import {
 } from "@ibatexas/types";
 import { getEffectivePonr } from "@ibatexas/domain";
 import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from "@ibatexas/tools";
+import {
+  ordersPolicyBundle,
+  portugueseRefusalMessages,
+  type OrderAmendRequestPayload,
+  type OrderCancelPayload,
+  type OrderState,
+} from "@ibatexas/pack-orders";
+import { getAuditSink } from "@ibatexas/llm-provider";
 import { type AgentContext, Channel } from "@ibatexas/types";
 import { requireAuth } from "../middleware/auth.js";
+import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 
 /** Build a minimal AgentContext for API-originated tool calls. */
 function apiContext(customerId: string): AgentContext {
@@ -202,44 +214,90 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      try {
-        const result = await orderCmdSvc.transitionStatus(id, {
-          newStatus: OrderFulfillmentStatus.CANCELED,
-          actor: "customer",
-          actorId: customerId,
-          reason: request.body.reason ?? "Cancelado pelo cliente",
-        });
+      // ── Task 14 — wrap cancel in adjudicate envelope ───────────────────
+      //
+      // The customer-facing cancel kind is `order.cancel` (per
+      // `@ibatexas/pack-orders`). The kernel may REFUSE (post-PONR) /
+      // REQUEST_CONFIRMATION (paid orders) / ESCALATE (shipped). On
+      // EXECUTE we keep the existing imperative path that uses the
+      // command-service to transition + cancel payment + publish NATS.
+      const cancelPayload: OrderCancelPayload = {
+        orderId: id,
+        reason: request.body.reason ?? "Cancelado pelo cliente",
+      };
+      const envelope = buildEnvelope<"order.cancel", OrderCancelPayload>({
+        kind: "order.cancel",
+        payload: cancelPayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "UNTRUSTED",
+      });
 
-        // Cancel active payment if not already paid
-        const activePayment = await paymentCmdSvc.findActiveByOrderId(id);
-        if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
-          try {
-            await paymentCmdSvc.transitionStatus(activePayment.id, {
-              newStatus: PaymentStatus.CANCELED,
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          totalInCentavos: order.totalInCentavos,
+          lastAction: null,
+        },
+      };
+
+      try {
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            const result = await orderCmdSvc.transitionStatus(id, {
+              newStatus: OrderFulfillmentStatus.CANCELED,
               actor: "customer",
               actorId: customerId,
-              reason: "Pedido cancelado pelo cliente",
+              reason: request.body.reason ?? "Cancelado pelo cliente",
             });
-          } catch {
-            // Payment may already be terminal — non-critical
-          }
-        }
 
-        await publishNatsEvent("order.canceled", {
-          eventType: "order.canceled",
-          orderId: id,
-          displayId: order.displayId,
-          customerId,
-          reason: request.body.reason ?? "Cancelado pelo cliente",
-          canceledBy: "customer",
-          timestamp: new Date().toISOString(),
+            // Cancel active payment if not already paid
+            const activePayment = await paymentCmdSvc.findActiveByOrderId(id);
+            if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
+              try {
+                await paymentCmdSvc.transitionStatus(activePayment.id, {
+                  newStatus: PaymentStatus.CANCELED,
+                  actor: "customer",
+                  actorId: customerId,
+                  reason: "Pedido cancelado pelo cliente",
+                });
+              } catch {
+                // Payment may already be terminal — non-critical
+              }
+            }
+
+            await publishNatsEvent("order.canceled", {
+              eventType: "order.canceled",
+              orderId: id,
+              displayId: order.displayId,
+              customerId,
+              reason: request.body.reason ?? "Cancelado pelo cliente",
+              canceledBy: "customer",
+              timestamp: new Date().toISOString(),
+            });
+
+            return {
+              success: true,
+              version: result.version,
+              fulfillmentStatus: result.newStatus,
+            };
+          },
+          ctx: {
+            customerId,
+            route: "order.cancel",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
         });
 
-        return reply.send({
-          success: true,
-          version: result.version,
-          fulfillmentStatus: result.newStatus,
-        });
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof InvalidTransitionError) {
           return reply.code(422).send({ error: "Transição de status inválida.", from: err.from, to: err.to });
@@ -433,18 +491,71 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
-      try {
-        const result = await amendOrder(
+      // ── Task 14 — wrap amend in adjudicate envelope ────────────────────
+      //
+      // The pack's `order.amend.request` kind carries a `changes` array
+      // (the kernel supports batch + single via the same payload shape).
+      // Single-action callers wrap their op in a 1-element changes array.
+      // Map IbateXas's amend action vocabulary to the pack's. The HTTP
+      // surface uses `update_qty` for legacy compatibility; the pack's
+      // payload uses `update` per the master taxonomy.
+      const packOp: "add" | "remove" | "update" =
+        request.body.action === "update_qty" ? "update" : request.body.action;
+      const amendPayload: OrderAmendRequestPayload = {
+        orderId: id,
+        changes: [
           {
-            orderId: id,
-            action: request.body.action,
-            variantId: request.body.variantId,
-            itemTitle: request.body.itemTitle,
-            quantity: request.body.quantity,
+            op: packOp,
+            ...(request.body.variantId !== undefined ? { variantId: request.body.variantId } : {}),
+            ...(request.body.quantity !== undefined ? { quantity: request.body.quantity } : {}),
           },
-          apiContext(customerId),
-        );
-        return reply.send(result);
+        ],
+      };
+      const envelope = buildEnvelope<"order.amend.request", OrderAmendRequestPayload>({
+        kind: "order.amend.request",
+        payload: amendPayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "UNTRUSTED",
+      });
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          lastAction: null,
+        },
+      };
+
+      try {
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            return amendOrder(
+              {
+                orderId: id,
+                action: request.body.action,
+                variantId: request.body.variantId,
+                itemTitle: request.body.itemTitle,
+                quantity: request.body.quantity,
+              },
+              apiContext(customerId),
+            );
+          },
+          ctx: {
+            customerId,
+            route: "order.amend",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });
