@@ -127,6 +127,7 @@ export {
   WHATSAPP_SANITIZE_MAX_LENGTH,
   whatsappTaintPolicy,
   type WhatsAppContext,
+  type ConversationMessageAppendPayload,
   type WhatsAppIntentKind,
   type WhatsAppMessageSendPayload,
   type WhatsAppPayload,
@@ -169,12 +170,13 @@ export {
  */
 export const whatsappPack = {
   id: "ibatexas/pack-whatsapp",
-  version: "1.0.0",
+  version: "1.1.0",
   contract: "v0",
   intents: [
     "whatsapp.message.send",
     "whatsapp.template.send",
     "whatsapp.session.handover",
+    "conversation.message.append",
   ],
   policy: whatsappPolicyBundle,
   planner: whatsappCapabilityPlanner,

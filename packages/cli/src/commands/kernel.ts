@@ -326,38 +326,64 @@ async function runReplay(opts: {
 
 // ── ibx kernel divergence ─────────────────────────────────────────────────
 
+interface DivergenceCounter {
+  total: number
+  byClass: Record<string, number>
+  byKind: Record<string, number>
+  byKindClass: Record<string, Record<string, number>>
+}
+
+/**
+ * W5-8: implement enough of `ibx kernel divergence` to be useful in
+ * shadow rollout. Pulls audit records from Postgres in the window,
+ * groups by intent kind, counts kernel-vs-legacy divergence events,
+ * and prints a summary table.
+ *
+ * Today's audit pipeline emits `kernel_shadow_divergence_total` metric
+ * via the MetricsSink, but the raw events are persisted to Postgres
+ * via the audit-postgres adopter when `IBX_AUDIT_POSTGRES_ENABLED=true`.
+ * The audit-record `basis` carries a `kernel.shadow_divergence` flag
+ * with the divergence class (BASIS_ONLY / DECISION_KIND / PAYLOAD_REWRITE)
+ * in metadata. This CLI scans for those.
+ *
+ * When IBX_AUDIT_POSTGRES_ENABLED=false, gracefully output the runbook
+ * step (no shadow data yet — operator enables postgres + waits 24h+).
+ */
 async function runDivergence(opts: { since?: string }): Promise<void> {
   const sinceInput = opts.since ?? "24h"
+  let sinceMs: number
+  try {
+    sinceMs = parseDuration(sinceInput)
+  } catch (err) {
+    console.error(chalk.red((err as Error).message))
+    process.exitCode = 1
+    return
+  }
+
   console.log()
   console.log(chalk.bold("ibx kernel divergence"))
   console.log(chalk.dim(`Janela: últimos ${sinceInput}`))
   console.log()
 
   const postgresEnabled = process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
-  const postHogKey = process.env.POSTHOG_API_KEY
 
-  if (!postgresEnabled && !postHogKey) {
+  if (!postgresEnabled) {
     console.log(
       chalk.yellow(
-        "⚠  Nem IBX_AUDIT_POSTGRES_ENABLED nem POSTHOG_API_KEY estão configurados.",
+        "⚠  IBX_AUDIT_POSTGRES_ENABLED=false — sem dados de shadow ainda.",
       ),
     )
     console.log()
     console.log(chalk.bold("TODO para o operador:"))
     console.log()
-    console.log("  Opção A — Postgres (recomendado em produção):")
-    console.log("    1. Habilitar IBX_AUDIT_POSTGRES_ENABLED=true.")
-    console.log("    2. Aguardar uma janela de shadow (24h+) com IBX_KERNEL_SHADOW definido.")
-    console.log("    3. Rodar `ibx kernel divergence --since=24h`.")
-    console.log()
-    console.log("  Opção B — PostHog (recomendado em dev):")
-    console.log("    1. Setar POSTHOG_API_KEY no .env.")
-    console.log("    2. Confirmar que setMetricsSink() está conectado ao PostHog em runtime.")
-    console.log("    3. Rodar `ibx kernel divergence --since=24h`.")
+    console.log("    1. Habilitar IBX_AUDIT_POSTGRES_ENABLED=true em .env.")
+    console.log("    2. Setar IBX_KERNEL_SHADOW=<kinds> para iniciar shadow.")
+    console.log("    3. Aguardar uma janela de 24h+ com tráfego real.")
+    console.log("    4. Rodar `ibx kernel divergence --since=24h` novamente.")
     console.log()
     console.log(
       chalk.dim(
-        "Os 3 classes de divergência são: BASIS_ONLY, DECISION_KIND, PAYLOAD_REWRITE.",
+        "Classes de divergência: BASIS_ONLY, DECISION_KIND, PAYLOAD_REWRITE.",
       ),
     )
     console.log(
@@ -366,31 +392,170 @@ async function runDivergence(opts: { since?: string }): Promise<void> {
       ),
     )
     console.log()
+    process.exitCode = 0
     return
   }
 
-  // STUB: when telemetry IS wired, query and aggregate. Today this prints
-  // a placeholder so the runbook step has a known surface.
-  console.log(
-    chalk.yellow(
-      "⚠  Implementação de divergence ainda no formato stub — operadores devem usar dashboards PostHog (ver docs/ops/analytics-dashboards.md) até o shipping completo.",
-    ),
-  )
-  console.log()
-  console.log(chalk.bold("Resumo (placeholder):"))
-  console.log()
-  console.log("  Classe              Eventos    Intent kinds afetados")
-  console.log("  ─────────────────   ────────   ──────────────────────")
-  console.log("  BASIS_ONLY               —     —")
-  console.log("  DECISION_KIND            —     —")
-  console.log("  PAYLOAD_REWRITE          —     —")
-  console.log()
-  console.log(
-    chalk.dim(
-      "TODO(divergence-cli): implementar agregação real quando o pipeline PostHog/Postgres de shadow-events estabilizar — task 21+.",
-    ),
-  )
-  console.log()
+  const databaseUrl = process.env.DATABASE_URL
+  if (!databaseUrl) {
+    console.error(
+      chalk.red("DATABASE_URL não definido — divergence requer conexão Postgres."),
+    )
+    process.exitCode = 1
+    return
+  }
+
+  const spinner = ora(`Lendo audit window dos últimos ${sinceInput}…`).start()
+  try {
+    const { readAuditWindow } = await import("@adjudicate/audit-postgres")
+    const { default: pg } = await import("pg" as string).catch(() => {
+      throw new Error("módulo pg não encontrado — instale com `pnpm install`")
+    })
+
+    const client = new pg.Client({ connectionString: databaseUrl })
+    await client.connect()
+    try {
+      const toIso = new Date().toISOString()
+      const fromIso = new Date(Date.now() - sinceMs).toISOString()
+
+      const queryFn = {
+        async fetchRows(window: {
+          fromIso: string
+          toIso: string
+          intentKind?: string
+          limit?: number
+        }): Promise<readonly Record<string, unknown>[]> {
+          const params: unknown[] = [window.fromIso, window.toIso]
+          let sql =
+            "SELECT * FROM intent_audit WHERE recorded_at >= $1 AND recorded_at < $2"
+          if (window.intentKind) {
+            params.push(window.intentKind)
+            sql += ` AND intent_kind = $${params.length}`
+          }
+          if (window.limit !== undefined) {
+            params.push(window.limit)
+            sql += ` ORDER BY recorded_at DESC LIMIT $${params.length}`
+          }
+          const result = (await client.query(sql, params)) as {
+            rows: Array<Record<string, unknown>>
+          }
+          return result.rows
+        },
+      }
+
+      const records = await readAuditWindow(
+        // @ts-expect-error — runtime shape matches AuditQueryFn
+        queryFn,
+        { fromIso, toIso, limit: 10_000 },
+      )
+
+      spinner.succeed(`Lidos ${records.length} registros de audit.`)
+
+      // Group divergence events. We look at the basis array on each
+      // record for entries with category="kernel" and code containing
+      // "shadow_divergence" — those carry the class in metadata.
+      const counter: DivergenceCounter = {
+        total: 0,
+        byClass: {},
+        byKind: {},
+        byKindClass: {},
+      }
+
+      for (const record of records) {
+        const basisList = ((record as { basis?: unknown }).basis ??
+          []) as ReadonlyArray<{
+          category?: string
+          code?: string
+          metadata?: Record<string, unknown>
+        }>
+        const divergence = basisList.find(
+          (b) =>
+            b.category === "kernel" &&
+            typeof b.code === "string" &&
+            b.code.includes("shadow_divergence"),
+        )
+        if (!divergence) continue
+
+        const divClass =
+          typeof divergence.metadata?.["class"] === "string"
+            ? (divergence.metadata["class"] as string)
+            : "UNKNOWN"
+        const kind =
+          (record as { envelope?: { kind?: string } }).envelope?.kind ??
+          "unknown.kind"
+
+        counter.total += 1
+        counter.byClass[divClass] = (counter.byClass[divClass] ?? 0) + 1
+        counter.byKind[kind] = (counter.byKind[kind] ?? 0) + 1
+        if (!counter.byKindClass[kind]) counter.byKindClass[kind] = {}
+        counter.byKindClass[kind]![divClass] =
+          (counter.byKindClass[kind]![divClass] ?? 0) + 1
+      }
+
+      console.log()
+      console.log(chalk.bold("Resumo por classe:"))
+      console.log()
+      console.log("  Classe              Eventos    Intent kinds afetados")
+      console.log("  ─────────────────   ────────   ──────────────────────")
+      for (const klass of ["BASIS_ONLY", "DECISION_KIND", "PAYLOAD_REWRITE"]) {
+        const count = counter.byClass[klass] ?? 0
+        const affectedKinds = Object.entries(counter.byKindClass)
+          .filter(([, v]) => v[klass] !== undefined && v[klass]! > 0)
+          .map(([k]) => k)
+          .join(", ")
+        console.log(
+          `  ${klass.padEnd(17)}   ${String(count).padStart(8)}   ${
+            affectedKinds || chalk.dim("—")
+          }`,
+        )
+      }
+
+      if (counter.total === 0) {
+        console.log()
+        console.log(
+          chalk.green(
+            "Nenhuma divergência detectada — pacote shadow está alinhado com legacy.",
+          ),
+        )
+      } else {
+        console.log()
+        console.log(chalk.bold("Top intent kinds (eventos totais):"))
+        console.log()
+        const sorted = Object.entries(counter.byKind).sort(
+          (a, b) => b[1] - a[1],
+        )
+        for (const [kind, count] of sorted.slice(0, 10)) {
+          console.log(`  ${chalk.cyan(String(count).padStart(6))}  ${kind}`)
+        }
+
+        // Suggest unsafe intents: high divergence count = risky enforce flip.
+        const unsafe = sorted
+          .filter(([, count]) => count >= 5)
+          .map(([k]) => k)
+        if (unsafe.length > 0) {
+          console.log()
+          console.log(chalk.bold.yellow("⚠  Sugestão — NÃO habilitar enforce para:"))
+          for (const kind of unsafe) {
+            console.log(
+              `  • ${kind} ${chalk.dim(`(${counter.byKind[kind]} divergências em ${sinceInput})`)}`,
+            )
+          }
+          console.log()
+          console.log(
+            chalk.dim(
+              "Esses kinds têm alto volume de divergência — revisar o policy bundle antes de incluir em IBX_KERNEL_ENFORCE.",
+            ),
+          )
+        }
+      }
+      console.log()
+    } finally {
+      await client.end()
+    }
+  } catch (err) {
+    spinner.fail(chalk.red(`Falhou: ${(err as Error).message}`))
+    process.exitCode = 1
+  }
 }
 
 // ── Registration ──────────────────────────────────────────────────────────

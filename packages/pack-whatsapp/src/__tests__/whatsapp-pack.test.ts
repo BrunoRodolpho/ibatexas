@@ -447,6 +447,64 @@ describe("whatsappPolicyBundle — template validation", () => {
 
 // ── Default-deny invariant ──────────────────────────────────────────────
 
+// ── W5-6: conversation.message.append ───────────────────────────────────
+
+describe("whatsappPolicyBundle — conversation.message.append (W5-6)", () => {
+  it("EXECUTE conversation.message.append with TRUSTED taint (system-actor)", () => {
+    const decision = adjudicate(
+      env(
+        "conversation.message.append",
+        {
+          sessionId: "sess-1",
+          direction: "inbound",
+          body: "Olá",
+          recipientPhoneHash: "abc123",
+        },
+        "TRUSTED",
+      ),
+      baseState(),
+      whatsappPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE conversation.message.append with UNTRUSTED taint (LLM can't forge)", () => {
+    const decision = adjudicate(
+      env(
+        "conversation.message.append",
+        {
+          sessionId: "sess-1",
+          direction: "outbound",
+          body: "Olá",
+          recipientPhoneHash: "abc123",
+        },
+        "UNTRUSTED",
+      ),
+      baseState(),
+      whatsappPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("REFUSE conversation.message.append with empty body", () => {
+    const decision = adjudicate(
+      env(
+        "conversation.message.append",
+        {
+          sessionId: "sess-1",
+          direction: "inbound",
+          body: "",
+          recipientPhoneHash: "abc123",
+        },
+        "TRUSTED",
+      ),
+      baseState(),
+      whatsappPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+})
+
 describe("whatsappPolicyBundle — default-deny invariant", () => {
   it("policy.default is REFUSE (fail-safe — master plan #4)", () => {
     expect(whatsappPolicyBundle.default).toBe("REFUSE")
@@ -468,8 +526,8 @@ describe("whatsappPack — PackV0 shape", () => {
     expect(whatsappPack.id).toBe("ibatexas/pack-whatsapp")
   })
 
-  it("version is 1.0.0 (first stable release of pack-whatsapp)", () => {
-    expect(whatsappPack.version).toBe("1.0.0")
+  it("version is 1.1.0 (W5-6 adds conversation.message.append)", () => {
+    expect(whatsappPack.version).toBe("1.1.0")
   })
 
   it("declares non-empty unique intents", () => {

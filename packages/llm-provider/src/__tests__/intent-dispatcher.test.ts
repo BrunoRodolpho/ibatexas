@@ -72,14 +72,14 @@ describe("DETERMINISTIC_KERNEL_COVERAGE", () => {
     expect(DETERMINISTIC_KERNEL_COVERAGE.has("regenerate_pix")).toBe(true)
   })
 
-  it("also includes the future intent kinds documented in task 06", () => {
-    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.cart.add")).toBe(true)
-    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.cart.update")).toBe(true)
-    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.cart.remove")).toBe(true)
-    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.cart.get_or_create")).toBe(true)
+  it("also includes the canonical intent kinds (W5-3 — drift-corrected names)", () => {
+    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.item.add")).toBe(true)
+    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.item.update")).toBe(true)
+    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.item.remove")).toBe(true)
+    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.cart.ensure")).toBe(true)
     expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.checkout.create")).toBe(true)
     expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.cancel")).toBe(true)
-    expect(DETERMINISTIC_KERNEL_COVERAGE.has("order.pix.regenerate")).toBe(true)
+    expect(DETERMINISTIC_KERNEL_COVERAGE.has("payment.pix.regenerate")).toBe(true)
   })
 
   it("does NOT include LLM-only mutating tools", () => {
@@ -118,7 +118,7 @@ describe("createIntentDispatcher — skip path", () => {
       log: silentLog,
     })
 
-    const intent = buildIntent("add_to_cart", {}, "order.cart.add")
+    const intent = buildIntent("add_to_cart", {}, "order.item.add")
     const result = await dispatch(intent, ctx)
 
     expect(result.kind).toBe("skipped")

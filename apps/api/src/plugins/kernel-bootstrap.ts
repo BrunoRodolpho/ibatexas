@@ -28,6 +28,7 @@ import { installPack, PackConformanceError } from "@adjudicate/core"
 import { setMetricsSink, validateEnforceConfig } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { ordersPack } from "@ibatexas/pack-orders"
+import { paymentsPack } from "@ibatexas/pack-payments"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS } from "@ibatexas/llm-provider"
@@ -101,6 +102,12 @@ export function installKernelMetricsSink(
     sentry: overrides?.sentry ?? Sentry,
     log: overrides?.log ?? logger,
     register,
+    // W5-9: pass KNOWN_INTENT_KINDS so the sink can publish
+    // `kernel_intent_kind_coverage`. The set is computed at the llm-provider
+    // package boundary from the first-party Pack unions; passing it in keeps
+    // the sink layered above @ibatexas/llm-provider rather than coupling
+    // them at module-graph level.
+    knownIntentKinds: overrides?.knownIntentKinds ?? KNOWN_INTENT_KINDS,
   })
   setMetricsSink(sink)
   return register
@@ -124,7 +131,8 @@ export function installFirstPartyPacks() {
   const reservations = installPack(reservationsPack)
   const whatsapp = installPack(whatsappPack)
   const customerOnboarding = installPack(customerOnboardingPack)
-  return { orders, reservations, whatsapp, customerOnboarding }
+  const payments = installPack(paymentsPack)
+  return { orders, reservations, whatsapp, customerOnboarding, payments }
 }
 
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
@@ -144,7 +152,13 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     server.log.info(
       {
         event: "kernel.bootstrap.pack_installed",
-        packs: ["orders", "reservations", "whatsapp", "customer-onboarding"],
+        packs: [
+          "orders",
+          "reservations",
+          "whatsapp",
+          "customer-onboarding",
+          "payments",
+        ],
       },
       "[kernel-bootstrap] first-party packs installed",
     )

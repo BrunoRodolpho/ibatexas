@@ -110,7 +110,7 @@ function expectKernelEnvelopeShape(
 // ── buildAddItemEnvelope ────────────────────────────────────────────────────
 
 describe("buildAddItemEnvelope", () => {
-  it("produces a SYSTEM-taint system-actor envelope of kind order.cart.add", () => {
+  it("produces a SYSTEM-taint system-actor envelope of kind order.item.add", () => {
     const payload: KernelAddItemPayload = {
       cartId: "cart_01",
       variantId: "var_01",
@@ -123,7 +123,7 @@ describe("buildAddItemEnvelope", () => {
   })
 
   it("uses the exported intent kind literal", () => {
-    expect(KERNEL_INTENT_KIND_ADD_ITEM).toBe("order.cart.add")
+    expect(KERNEL_INTENT_KIND_ADD_ITEM).toBe("order.item.add")
   })
 
   it("produces distinct nonces on consecutive calls (idempotency keys)", () => {
@@ -204,7 +204,7 @@ describe("buildCancelOrderEnvelope", () => {
 // ── buildRegeneratePixEnvelope ──────────────────────────────────────────────
 
 describe("buildRegeneratePixEnvelope", () => {
-  it("produces a SYSTEM-taint system-actor envelope of kind order.pix.regenerate", () => {
+  it("produces a SYSTEM-taint system-actor envelope of kind payment.pix.regenerate", () => {
     const payload: KernelRegeneratePixPayload = { orderId: "ord_01" }
     const envelope = buildRegeneratePixEnvelope(payload, makeCtx(), SESSION_ID)
     expectKernelEnvelopeShape(envelope, KERNEL_INTENT_KIND_PIX_REGENERATE)
@@ -212,6 +212,6 @@ describe("buildRegeneratePixEnvelope", () => {
   })
 
   it("uses the exported intent kind literal", () => {
-    expect(KERNEL_INTENT_KIND_PIX_REGENERATE).toBe("order.pix.regenerate")
+    expect(KERNEL_INTENT_KIND_PIX_REGENERATE).toBe("payment.pix.regenerate")
   })
 })

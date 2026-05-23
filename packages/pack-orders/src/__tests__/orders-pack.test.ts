@@ -538,8 +538,8 @@ describe("ordersPack — PackV0 shape", () => {
     expect(ordersPack.id).toBe("ibatexas/pack-orders")
   })
 
-  it("version is 1.0.0 (first stable release of pack-orders)", () => {
-    expect(ordersPack.version).toBe("1.0.0")
+  it("version is 1.1.0 (W5-2 expansion of pack-orders)", () => {
+    expect(ordersPack.version).toBe("1.1.0")
   })
 
   it("declares non-empty unique intents", () => {

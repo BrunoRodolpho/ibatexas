@@ -268,7 +268,7 @@ async function processToolCalls(
         // identity is not in `plan.allowedIntents`, refuse with a
         // planner-violation refusal (pt-BR per CLAUDE.md #4). Today the
         // identity is the tool name — once domain-specific intent kinds ship
-        // (e.g. `order.cart.add`), this check shifts to envelope.kind.
+        // (e.g. `order.item.add`), this check shifts to envelope.kind.
         const intentIdentity = block.name
         const isMutating = TOOL_CLASSIFICATION.MUTATING.has(intentIdentity as never)
         if (isMutating && !plan.allowedIntents.includes(intentIdentity)) {

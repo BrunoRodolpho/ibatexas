@@ -490,6 +490,191 @@ const corpus: ReadonlyArray<Fixture> = [
     }),
     expect: { kind: "ESCALATE", escalateTo: "human" },
   },
+
+  // ── W5-2 cases ──────────────────────────────────────────────────────
+  {
+    name: "EXECUTE: order.cart.sync with items",
+    envelope: env("order.cart.sync", {
+      cartId: "cart-1",
+      items: [
+        { variantId: "v-1", quantity: 2, allergens: [] },
+      ],
+    }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.pix.details.set",
+    envelope: env("order.pix.details.set", {
+      cartId: "cart-1",
+      name: "Cliente Teste",
+      email: "teste@example.com",
+      cpf: "11122233344",
+    }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.address.change",
+    envelope: env("order.address.change", {
+      orderId: "o-1",
+      address: {
+        street: "Rua A",
+        number: "100",
+        neighborhood: "Centro",
+        city: "Belo Horizonte",
+        state: "MG",
+        zip: "30000-000",
+      },
+    }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.type.switch delivery→takeout",
+    envelope: env("order.type.switch", {
+      orderId: "o-1",
+      newType: "takeout",
+    }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.review.submit",
+    envelope: env("order.review.submit", {
+      orderId: "o-1",
+      productId: "prod-1",
+      rating: 5,
+      comment: "Tudo ótimo!",
+    }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: TRUSTED order.projection.create (SYSTEM-only)",
+    envelope: env(
+      "order.projection.create",
+      {
+        orderId: "o-1",
+        customerId: "c-1",
+        totalCentavos: 50_000,
+        source: "checkout",
+      },
+      "TRUSTED",
+    ),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: TRUSTED order.status.transition",
+    envelope: env(
+      "order.status.transition",
+      {
+        orderId: "o-1",
+        newStatus: "confirmed",
+        actor: "admin",
+        actorId: "staff-1",
+      },
+      "TRUSTED",
+    ),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: TRUSTED order.status.reconcile (SYSTEM-only)",
+    envelope: env(
+      "order.status.reconcile",
+      {
+        orderId: "o-1",
+        newStatus: "paid",
+        source: "payment_lifecycle",
+      },
+      "TRUSTED",
+    ),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.amend.add_item with explicit allergens",
+    envelope: env("order.amend.add_item", {
+      orderId: "o-1",
+      variantId: "v-2",
+      quantity: 1,
+      allergens: [],
+    }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.amend.update_qty",
+    envelope: env("order.amend.update_qty", {
+      orderId: "o-1",
+      itemId: "item-1",
+      quantity: 2,
+    }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.amend.remove_item",
+    envelope: env("order.amend.remove_item", {
+      orderId: "o-1",
+      itemId: "item-1",
+    }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "REFUSE: order.amend.add_item missing allergens",
+    envelope: env("order.amend.add_item", {
+      orderId: "o-1",
+      variantId: "v-2",
+      quantity: 1,
+    }),
+    state: authenticatedState(),
+    expect: {
+      kind: "REFUSE",
+      refusalCode: "order.item.allergens_not_explicit",
+    },
+  },
+  {
+    name: "REFUSE: UNTRUSTED order.projection.create (taint gate)",
+    envelope: env(
+      "order.projection.create",
+      {
+        orderId: "o-1",
+        customerId: "c-1",
+        totalCentavos: 50_000,
+        source: "checkout",
+      },
+      "UNTRUSTED",
+    ),
+    state: authenticatedState(),
+    expect: { kind: "REFUSE" },
+  },
+  {
+    name: "REFUSE: UNTRUSTED order.status.reconcile (taint gate)",
+    envelope: env(
+      "order.status.reconcile",
+      {
+        orderId: "o-1",
+        newStatus: "paid",
+        source: "payment_lifecycle",
+      },
+      "UNTRUSTED",
+    ),
+    state: authenticatedState(),
+    expect: { kind: "REFUSE" },
+  },
+  {
+    name: "REFUSE: order.address.change without orderId in state",
+    envelope: env("order.address.change", {
+      orderId: "o-1",
+      address: { street: "Rua A", city: "BH", state: "MG", zip: "30000-000" },
+    }),
+    state: authenticatedState({ orderId: null }),
+    expect: { kind: "REFUSE", refusalCode: "order.not_found" },
+  },
 ]
 
 describe("ordersPack — corpus (30+ cases across all 6 decision kinds)", () => {

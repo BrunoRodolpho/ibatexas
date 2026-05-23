@@ -30,6 +30,7 @@
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/pack-customer-onboarding": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",
+    "@ibatexas/pack-payments": "workspace:*",
     "@ibatexas/pack-reservations": "workspace:*",
     "@ibatexas/pack-whatsapp": "workspace:*",
     "@ibatexas/tools": "workspace:*",

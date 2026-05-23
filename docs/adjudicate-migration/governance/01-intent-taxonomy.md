@@ -148,47 +148,71 @@ All outbound WhatsApp must produce an intent envelope. The `notification.send` s
 
 ## Intent kind union (knownIntents)
 
-The `validateEnforceConfig(knownIntents, env)` call from `@adjudicate/core/kernel` (per investigation 06 §"Plumbing gaps" P0-3) requires a single `ReadonlySet<string>` of every kind in this catalog. Generated at boot from a `KNOWN_INTENT_KINDS` constant exported from `@ibatexas/llm-provider/intent-kinds.ts` (new file).
+The `validateEnforceConfig(knownIntents, env)` call from `@adjudicate/core/kernel` (per investigation 06 §"Plumbing gaps" P0-3) requires a single `ReadonlySet<string>` of every kind in this catalog. Generated at boot from a `KNOWN_INTENT_KINDS` constant exported from `@ibatexas/llm-provider/intent-kinds.ts`.
 
 ```ts
-// @ibatexas/llm-provider/intent-kinds.ts
+// @ibatexas/llm-provider/intent-kinds.ts (catalog view — full taxonomy)
 export const KNOWN_INTENT_KINDS = new Set<string>([
-  // order
+  // order (19; W5-2 expansion brings runtime count to 22 — see note below)
   "order.cart.ensure", "order.item.add", "order.item.update", "order.item.remove",
   "order.cart.sync", "order.coupon.apply", "order.checkout.create",
   "order.pix.details.set", "order.cancel", "order.cancel.system",
   "order.cancel.force", "order.amend.request", "order.address.change",
   "order.type.switch", "order.note.add", "order.status.transition",
   "order.status.reconcile", "order.review.submit", "order.reorder",
-  // payment
+  // payment (14 — pack-payments now provides 17 due to the W5-1 addition
+  // of `payment.create` + `payment.charge.create` alias + `payment.status.transition`
+  // + `payment.status.reconcile`; the catalog below tracks the original
+  // user-facing 14 from the taxonomy.)
   "payment.charge.create", "payment.charge.confirm", "payment.charge.fail",
   "payment.charge.expire", "payment.charge.cancel", "payment.pix.regenerate",
   "payment.method.switch", "payment.retry", "payment.refund.issue",
   "payment.refund.confirm", "payment.dispute.open", "payment.cash.confirm",
   "payment.waive", "payment.status.force",
-  // reservation
+  // reservation (8)
   "reservation.create", "reservation.modify", "reservation.cancel",
   "reservation.checkin", "reservation.complete", "reservation.no_show.mark",
   "reservation.waitlist.join", "reservation.waitlist.notify",
-  // customer
+  // customer (14)
   "customer.create", "customer.profile.update", "customer.preferences.update",
   "customer.pix.details.save", "customer.address.add", "customer.address.remove",
   "customer.anonymize", "customer.anonymize.cancel",
   "customer.session.issue", "customer.session.revoke",
   "customer.session.refresh", "customer.loyalty.stamp.award",
   "customer.loyalty.redeem", "customer.welcome_credit.grant",
-  // whatsapp
+  // whatsapp (6 — W5-6 adds conversation.message.append for the
+  // persistence-side append distinct from wire-egress whatsapp.message.send)
   "whatsapp.message.send", "whatsapp.template.send", "whatsapp.handoff.request",
   "whatsapp.followup.schedule", "whatsapp.outreach.send",
   "whatsapp.session.handover",
-  // system
+  // system (6)
   "system.kernel.kill_switch.toggle", "system.kernel.shadow.add",
   "system.kernel.enforce.add", "system.kernel.pack.register",
   "system.replay.run", "system.backfill.execute",
 ] as const);
 ```
 
-Total: **64 intent kinds** (adds `customer.anonymize.cancel` for the LGPD grace-period cancel flow per task 14). Per investigation 02 §"Totals", the mutation entrypoint count is ~150; the kind count is smaller because multiple entry points (LLM tool + HTTP route + subscriber for the same logical action) share one envelope kind.
+**Total in this taxonomy union: 67 intent kinds.** (19 order + 14 payment + 8 reservation + 14 customer + 6 whatsapp + 6 system = 67. Previously documented as "64" — the discrepancy was a counting error per audit 07 §"Appendix"; corrected in W5-5.)
+
+**Runtime delta** — `KNOWN_INTENT_KINDS` at `@ibatexas/llm-provider/intent-kinds.ts` totals **62 kinds** today (post W5), differing from the taxonomy union by:
+
+| Difference | Direction | Reason |
+|---|---|---|
+| `payment.create` (W3) | runtime + | Carried by pack-payments as the legacy alias for `payment.charge.create`; kept for audit-record vocabulary continuity. |
+| `payment.status.transition` (W3) | runtime + | Introduced in W3 to give the kernel an envelope around admin/system status flips; not in original taxonomy. |
+| `payment.status.reconcile` (W3) | runtime + | Same — introduced in W3 for Stripe webhook reconcile path. |
+| `order.amend.add_item` / `.update_qty` / `.remove_item` (W5-2) | runtime + | Granular amend variant the W3 amend-order migration prefers. |
+| `order.projection.create` (W5-2) | runtime + | Used by cart-intelligence subscriber to seed the order projection. |
+| `order.status.transition` / `.reconcile` (W5-2) | runtime + | Lifecycle kinds the W3 admin-order remediation depends on. |
+| `conversation.message.append` (W5-6) | runtime + | Persistence-side; distinct from `whatsapp.message.send` (wire-egress). |
+| `pix.charge.create` / `.confirm` / `.refund` | runtime + | `@adjudicate/pack-payments-pix` PSP-namespace kinds; not in IbateXas taxonomy. |
+| `whatsapp.handoff.request` / `.followup.schedule` / `.outreach.send` | runtime − | Taxonomy reserves these for future Packs; not yet declared. |
+| `customer.session.*` / `.loyalty.*` / `.welcome_credit.*` (6 kinds) | runtime − | Future Packs (auth, loyalty, promotions); not yet declared. |
+| `system.*` (6 kinds) | runtime − | Operator-console kinds reserved for future Pack; not yet emitted by any caller. |
+| `order.cancel.force` | runtime − | Taxonomy-only today; route currently uses `order.status.transition`. |
+| `medusa.*` (13 kinds) | runtime − by design | W5-7 / D10 — internal egress wrapper, not part of customer-facing taxonomy. |
+
+Per investigation 02 §"Totals", the mutation entrypoint count is ~150; the kind count is smaller because multiple entry points (LLM tool + HTTP route + subscriber for the same logical action) share one envelope kind.
 
 ## Default refuse policy
 

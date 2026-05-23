@@ -66,8 +66,8 @@ No intent-kind gap. This is a bypass-detection test correction (remove POST-writ
 
 | Gap | Status | Wave 5 owner |
 |---|---|---|
-| `payment.refund.issue` declaration | OPEN | pack-payments task |
-| `payment.retry` declaration | OPEN | pack-payments task |
-| `payment.pix.regenerate` declaration | OPEN | pack-payments task |
-| `order.amend.batch` (or granular) declaration | OPEN | pack-orders extension task |
-| `paymentProjectionPolicyBundle` → pack-payments migration | OPEN | pack-payments task |
+| `payment.refund.issue` declaration | DONE (W5-1) | pack-payments task |
+| `payment.retry` declaration | DONE (W5-1) | pack-payments task |
+| `payment.pix.regenerate` declaration | DONE (W5-1) | pack-payments task |
+| `order.amend.batch` (or granular) declaration | DONE (W5-2, granular variant) | pack-orders extension task |
+| `paymentProjectionPolicyBundle` → pack-payments migration | DONE (W5-1, shim retained per D8) | pack-payments task |

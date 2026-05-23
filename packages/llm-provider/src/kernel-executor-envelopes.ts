@@ -28,14 +28,18 @@
 //    legacy direct-call path runs (see `kernel-executor.ts` for the
 //    shadow/enforce branching).
 //
-//  - Intent kinds match the names task 06 baked into
-//    `DETERMINISTIC_KERNEL_COVERAGE` (`intent-dispatcher.ts:107-115`) so
-//    the dispatcher continues to skip these when the LLM ALSO proposes
-//    them. Pack-orders' canonical `OrderIntentKind` surface uses
-//    `order.item.add` instead of `order.cart.add`; we keep the task-spec
-//    naming here and rely on the policy bundle's `PolicyBundle<string,
-//    unknown, ...>` widening to accept the literal kinds (today's
-//    pack-orders bundle was migrated under the same shim).
+//  - Intent kinds align with the governance taxonomy
+//    (`docs/adjudicate-migration/governance/01-intent-taxonomy.md`) and
+//    pack-orders / pack-payments / pack-payments-pix surfaces:
+//      * `order.item.add` (was `order.cart.add` in W1 — drift fixed in W5-3
+//        per audit 07; pack-orders declares `order.item.add` as the
+//        canonical add-item kind).
+//      * `payment.pix.regenerate` (was `order.pix.regenerate` in W1 —
+//        drift fixed in W5-3; payment-domain kind owned by
+//        `@ibatexas/pack-payments` shipped in W5-1).
+//    `DETERMINISTIC_KERNEL_COVERAGE` in `intent-dispatcher.ts` mirrors
+//    these names so the dispatcher continues to skip these when the LLM
+//    ALSO proposes them.
 //
 // Nonce: a fresh UUID per attempt. The XState kernel does not yet thread
 // idempotency keys through its transitions; ledger dedup is owned by the
@@ -49,10 +53,13 @@ import type { OrderContext } from "./machine/types.js"
 
 // ── Intent kinds (mirror DETERMINISTIC_KERNEL_COVERAGE) ──────────────────────
 
-export const KERNEL_INTENT_KIND_ADD_ITEM = "order.cart.add" as const
+// W5-3 fix: align with taxonomy / pack-orders / pack-payments. The W1
+// `order.cart.add` and `order.pix.regenerate` names were drift — pack-orders
+// declares `order.item.add` and the payment domain owns `payment.pix.regenerate`.
+export const KERNEL_INTENT_KIND_ADD_ITEM = "order.item.add" as const
 export const KERNEL_INTENT_KIND_CHECKOUT = "order.checkout.create" as const
 export const KERNEL_INTENT_KIND_CANCEL = "order.cancel" as const
-export const KERNEL_INTENT_KIND_PIX_REGENERATE = "order.pix.regenerate" as const
+export const KERNEL_INTENT_KIND_PIX_REGENERATE = "payment.pix.regenerate" as const
 
 export type KernelIntentKind =
   | typeof KERNEL_INTENT_KIND_ADD_ITEM

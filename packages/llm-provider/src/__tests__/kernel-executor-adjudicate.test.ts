@@ -478,7 +478,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
     expect(adjudicateMock.mock.calls[0]![0].kind).toBe("order.cancel")
   })
 
-  it("regeneratePix REFUSE → proceed:false (envelope kind = order.pix.regenerate)", async () => {
+  it("regeneratePix REFUSE → proceed:false (envelope kind = payment.pix.regenerate)", async () => {
     isEnforcedMock.mockReturnValue(true)
     adjudicateMock.mockReturnValue(refuseDecision("Pedido não encontrado."))
 
@@ -490,7 +490,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
       SESSION_ID,
     )
     expect(gate.proceed).toBe(false)
-    expect(adjudicateMock.mock.calls[0]![0].kind).toBe("order.pix.regenerate")
+    expect(adjudicateMock.mock.calls[0]![0].kind).toBe("payment.pix.regenerate")
   })
 })
 

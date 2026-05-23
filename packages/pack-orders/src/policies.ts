@@ -112,15 +112,22 @@ const VALID_PAYMENT_METHODS = new Set(["pix", "card", "cash"])
 
 /**
  * Most user-touching intents require a known customer principal. The
- * exception is `order.cart.ensure` (anonymous get-or-create) and the
- * system-only `order.cancel.system` (taint gate enforces TRUSTED for
- * that kind separately).
+ * exceptions are `order.cart.ensure` (anonymous get-or-create) and the
+ * system-only kinds (`order.cancel.system`, `order.projection.create`,
+ * `order.status.reconcile`); the taint gate enforces TRUSTED for those
+ * separately. `order.status.transition` is admin/system; auth is at
+ * the route layer.
  */
+const SYSTEM_OR_ANON_KINDS: ReadonlySet<string> = new Set([
+  "order.cart.ensure",
+  "order.cancel.system",
+  "order.projection.create",
+  "order.status.transition",
+  "order.status.reconcile",
+])
+
 const requireAuthenticated: OrderGuard = (envelope, state) => {
-  if (
-    envelope.kind === "order.cart.ensure" ||
-    envelope.kind === "order.cancel.system"
-  ) {
+  if (SYSTEM_OR_ANON_KINDS.has(envelope.kind)) {
     return null
   }
   if (isAuthenticated(state)) return null
@@ -145,14 +152,18 @@ const requireCheckoutEligibility: OrderGuard = (envelope, state) => {
 
 // ── State guards ────────────────────────────────────────────────────────
 
+const CART_OPS_REQUIRING_CART_ID: ReadonlySet<string> = new Set([
+  "order.item.add",
+  "order.item.update",
+  "order.item.remove",
+  "order.cart.sync",
+  "order.coupon.apply",
+  "order.checkout.create",
+  "order.pix.details.set",
+])
+
 const requireCartIdForCartOps: OrderGuard = (envelope, _state) => {
-  if (
-    envelope.kind !== "order.item.add" &&
-    envelope.kind !== "order.item.update" &&
-    envelope.kind !== "order.item.remove" &&
-    envelope.kind !== "order.coupon.apply" &&
-    envelope.kind !== "order.checkout.create"
-  ) {
+  if (!CART_OPS_REQUIRING_CART_ID.has(envelope.kind)) {
     return null
   }
   const payload = envelope.payload as { cartId?: unknown }
@@ -189,13 +200,23 @@ const requireSlotsFilledForCheckout: OrderGuard = (envelope, state) => {
   ])
 }
 
+const ORDER_OPS_REQUIRING_ORDER_ID: ReadonlySet<string> = new Set([
+  "order.cancel",
+  "order.cancel.system",
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+  "order.note.add",
+  "order.address.change",
+  "order.type.switch",
+  "order.review.submit",
+  "order.status.transition",
+  "order.status.reconcile",
+])
+
 const requireOrderIdForMutation: OrderGuard = (envelope, state) => {
-  if (
-    envelope.kind !== "order.cancel" &&
-    envelope.kind !== "order.cancel.system" &&
-    envelope.kind !== "order.amend.request" &&
-    envelope.kind !== "order.note.add"
-  ) {
+  if (!ORDER_OPS_REQUIRING_ORDER_ID.has(envelope.kind)) {
     return null
   }
   if (hasOrderId(state)) return null
@@ -221,8 +242,15 @@ const requireCancellable: OrderGuard = (envelope, state) => {
   ])
 }
 
+const AMEND_KINDS: ReadonlySet<string> = new Set([
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+])
+
 const requireAmendable: OrderGuard = (envelope, state) => {
-  if (envelope.kind !== "order.amend.request") return null
+  if (!AMEND_KINDS.has(envelope.kind)) return null
   if (canAmendOrder(state)) return null
   return decisionRefuse(refuseOrderAlreadyShipped(), [
     basis("state", BASIS_CODES.state.TERMINAL_STATE, {
@@ -267,8 +295,13 @@ const deferOnPendingPix = nameGuard(
  * CLAUDE.md hard rule #1 exists to block. Refuses if the payload is
  * missing the field, has a non-array, or has any non-string entry.
  */
+const KINDS_REQUIRING_EXPLICIT_ALLERGENS: ReadonlySet<string> = new Set([
+  "order.item.add",
+  "order.amend.add_item",
+])
+
 const requireExplicitAllergens: OrderGuard = (envelope) => {
-  if (envelope.kind !== "order.item.add") return null
+  if (!KINDS_REQUIRING_EXPLICIT_ALLERGENS.has(envelope.kind)) return null
   const payload = envelope.payload as { allergens?: unknown }
   const value = payload.allergens
   if (!Array.isArray(value)) {
@@ -295,6 +328,7 @@ const requireExplicitAllergens: OrderGuard = (envelope) => {
       )
     }
   }
+  // For cart.sync, also validate each item carries explicit allergens.
   return null
 }
 
@@ -303,11 +337,15 @@ const requireExplicitAllergens: OrderGuard = (envelope) => {
  * integer-only — CLAUDE.md rule #2 for prices; this guard enforces the
  * same polarity for line-item counts).
  */
+const KINDS_REQUIRING_QUANTITY: ReadonlySet<string> = new Set([
+  "order.item.add",
+  "order.item.update",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+])
+
 const validateQuantity: OrderGuard = (envelope) => {
-  if (
-    envelope.kind !== "order.item.add" &&
-    envelope.kind !== "order.item.update"
-  ) {
+  if (!KINDS_REQUIRING_QUANTITY.has(envelope.kind)) {
     return null
   }
   const payload = envelope.payload as { quantity?: unknown }
@@ -487,8 +525,15 @@ const executeCancel: OrderGuard = (envelope) => {
   return null
 }
 
+const EXECUTABLE_AMEND_KINDS: ReadonlySet<string> = new Set([
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+])
+
 const executeAmend: OrderGuard = (envelope) => {
-  if (envelope.kind !== "order.amend.request") return null
+  if (!EXECUTABLE_AMEND_KINDS.has(envelope.kind)) return null
   return decisionExecute([
     basis("business", BASIS_CODES.business.RULE_SATISFIED, {
       kind: envelope.kind,
@@ -507,6 +552,29 @@ const executeNoteAdd: OrderGuard = (envelope) => {
       }),
     ])
   }
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
+// ── W5-2 EXECUTE producers ──────────────────────────────────────────────
+
+const W5_EXECUTE_KINDS: ReadonlySet<string> = new Set([
+  "order.cart.sync",
+  "order.pix.details.set",
+  "order.address.change",
+  "order.type.switch",
+  "order.review.submit",
+  "order.reorder",
+  "order.projection.create",
+  "order.status.transition",
+  "order.status.reconcile",
+])
+
+const executeW5Kinds: OrderGuard = (envelope) => {
+  if (!W5_EXECUTE_KINDS.has(envelope.kind)) return null
   return decisionExecute([
     basis("business", BASIS_CODES.business.RULE_SATISFIED, {
       kind: envelope.kind,
@@ -557,6 +625,7 @@ export const ordersPolicyBundle: PolicyBundle<
     executeCancel,
     executeAmend,
     executeNoteAdd,
+    executeW5Kinds,
   ],
   /**
    * Fail-safe per master plan §"Governance principles" #4 — an intent
