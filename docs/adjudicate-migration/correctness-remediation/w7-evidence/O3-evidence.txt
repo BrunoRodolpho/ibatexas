@@ -1,0 +1,82 @@
+W7-O3 — CLI vs admin endpoint two-person rule reconciliation
+==============================================================
+
+Finding (W6 operational drill, Drill 1 §"3am responder using ONLY the CLI"):
+
+  No two-key check on the CLI. Runbook §"Two-key rollout" requires two
+  operators. The CLI (this command) writes the Redis flag directly via
+  `createKillSwitchStore` — no human confirmation. Only the HTTP admin route
+  (apps/api/src/routes/admin/kernel.ts) implements two-step + same-actor
+  refusal.
+
+  A 3am responder using ONLY the CLI bypasses the two-person rule entirely.
+  The runbook needs to call this out: CLI is for solo emergencies, HTTP is
+  for scheduled flips.
+
+Chosen path: (b) — document the CLI as an OPS-EMERGENCY surface with
+                   explicit risk acceptance; keep the admin HTTP endpoint
+                   as the two-person surface for scheduled flips.
+
+  Rationale: see docs/adjudicate-migration/correctness-remediation/W7-DECISIONS-ops.md §O3.
+
+Implementation:
+
+  packages/cli/src/commands/kernel.ts
+    - new `confirmSoloOperatorBypass()` helper that EITHER:
+        (i) accepts --yes-i-am-solo-on-call (non-interactive escape hatch)
+       (ii) prompts the operator to type "engajar agora" on a TTY
+      (iii) refuses with exit code 1 if neither — script pipelines cannot
+            single-handedly engage the kill switch by accident.
+    - runKillSwitchEnable wired to confirm BEFORE the Redis write.
+    - Sentry breadcrumb metadata now carries
+        bypass: "two_person_rule"
+        surface: "cli"
+        bypassMode: "tty_prompt" | "flag"
+      so an incident review can correlate CLI-engaged switches with the
+      bypass policy.
+    - CLI summary line prints `bypass : two_person_rule (surface=cli)`
+      so the operator (and any tee'd log) carries the marker forward.
+
+  docs/adjudicate-migration/runbooks/SHADOW-ENFORCE-ROLLOUT.md
+    - new §"Two surfaces — different threat models (W7-O3)" subsection
+      under Kill-switch procedure naming the explicit posture difference.
+
+  docs/adjudicate-migration/migration/05-kill-switch-strategy.md
+    - §"CLI specification" §"Implementation" updated to replace the
+      stale M4-era plan ("CLI calls the admin endpoint over HTTPS")
+      with the actual current shape + W7-O3 reasoning + the breadcrumb
+      tag spec.
+
+Tests added (packages/cli/src/commands/__tests__/kernel.test.ts):
+
+  W7-O3 — two-person bypass posture
+    ✓ refuses to enable without --yes-i-am-solo-on-call when stdin is not a TTY (and Redis stays clean)
+    ✓ allows enable with --yes-i-am-solo-on-call and the flag flows into the Redis write + breadcrumb
+    ✓ enable prints the bypass posture marker on the success summary
+
+Test run results (full kernel CLI suite):
+
+$ pnpm vitest run packages/cli/src/commands/__tests__/kernel.test.ts --reporter=verbose
+
+ ✓ ibx kernel kill-switch > enable writes a flag with metadata to Redis 1ms
+ ✓ ibx kernel kill-switch > enable publishes an event on the events channel 0ms
+ ✓ ibx kernel kill-switch > status reflects the active kill switch (pt-BR human-readable) 0ms
+ ✓ ibx kernel kill-switch > status --json emits structured output 0ms
+ ✓ ibx kernel kill-switch > status --json with no active switch emits active=false 0ms
+ ✓ ibx kernel kill-switch > disable removes the flag and publishes a disable event 0ms
+ ✓ ibx kernel kill-switch > enable requires --reason 0ms
+ ✓ ibx kernel kill-switch > status pt-BR text shows 'inativo' when no flag is set 0ms
+ ✓ ibx kernel kill-switch > W7-O3 — two-person bypass posture > refuses to enable without --yes-i-am-solo-on-call when stdin is not a TTY (and Redis stays clean) 0ms
+ ✓ ibx kernel kill-switch > W7-O3 — two-person bypass posture > allows enable with --yes-i-am-solo-on-call and the flag flows into the Redis write + breadcrumb 0ms
+ ✓ ibx kernel kill-switch > W7-O3 — two-person bypass posture > enable prints the bypass posture marker on the success summary 0ms
+
+Test totals: 27 passed / 2 pre-existing failures (status > emits JSON when --json is set, status > groups intent kinds by domain prefix in text mode — both reference a stale 32-kind / 10-order-kind count from before W5 expanded KNOWN_INTENT_KINDS to 62; unrelated to W7-O3 and present without these changes — see kernel.test.ts:121 + :133).
+
+Posture summary:
+
+  - CLI = solo on-call emergency surface, two-person rule INTENTIONALLY
+    bypassed (W7-O3 policy).
+  - HTTP = scheduled flips, two distinct OWNER staffIds required (W7-O4
+    policy).
+  - Both surfaces emit audit + Sentry trail tagged so an incident review
+    can attribute the engagement to the right policy and operator.

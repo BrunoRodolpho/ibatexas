@@ -163,6 +163,19 @@ IBX_KERNEL_ENFORCE=<other.kinds.but.not.this.one>
 
 The legacy path resumes within 5 minutes (the time it takes ECS to roll). In-flight DEFER intents survive — the kernel's park primitives are Redis-backed and the deferred resumer runs regardless of enforce state.
 
+### Two surfaces — different threat models (W7-O3)
+
+The global kill-switch has two operator surfaces and they are **not** interchangeable:
+
+| Surface | Two-person rule | When to use |
+|---|---|---|
+| `POST /api/admin/kernel/kill-switch` (admin HTTP) | ENFORCED — two distinct OWNER staffIds required (see `apps/api/src/routes/admin/kernel.ts` + `apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts`) | **Scheduled flips and drills.** Normal operations. The receipt-store + same-actor refusal mirrors the order-force-cancel pattern. |
+| `ibx kernel kill-switch enable` (CLI) | INTENTIONALLY BYPASSED — solo on-call emergency surface (W7-O3) | **3am emergencies.** Secondary operator unreachable / pager dead / system-wide refusal cascading. The CLI prints a red banner naming the bypass and requires either a TTY confirmation prompt (`engajar agora`) or `--yes-i-am-solo-on-call`. Sentry breadcrumb stamps `bypass: "two_person_rule"`, `surface: "cli"` for incident correlation. |
+
+The CLI bypass is a deliberate trade-off: the kill switch is a REFUSE-everything switch (engagement causes availability loss, not data loss), and a solo on-call cannot afford to wait for a second operator if the secondary phone is silent. The risk of a compromised bastion credential single-handedly engaging the switch is accepted; mitigations are the OWNER-only bastion access (`docs/setup/deployment.md`), the audit trail in Sentry + the structured log line, and the 24h auto-disengage TTL. **DO NOT use the CLI for scheduled drills** — use the admin endpoint so the two-person rule is exercised in staging.
+
+See `docs/adjudicate-migration/correctness-remediation/W7-DECISIONS-ops.md` §O3 for the full rationale.
+
 After the kill-switch:
 
 1. **File an incident report within 4 hours.** Include the audit query that showed the regression, the customer impact, the diagnosed root cause.

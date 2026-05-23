@@ -467,6 +467,9 @@ describe("ibx kernel kill-switch", () => {
         "kill-switch",
         "enable",
         "--reason=Refusal-rate spike at 19:35",
+        // W7-O3 — non-interactive bypass acknowledgement. Without this
+        // flag a TTY-less caller is refused (see new tests below).
+        "--yes-i-am-solo-on-call",
       ],
       { from: "user" },
     )
@@ -486,7 +489,7 @@ describe("ibx kernel kill-switch", () => {
 
   it("enable publishes an event on the events channel", async () => {
     await cmd.parseAsync(
-      ["kill-switch", "enable", "--reason=Soak window"],
+      ["kill-switch", "enable", "--reason=Soak window", "--yes-i-am-solo-on-call"],
       { from: "user" },
     )
     const events = killSwitchFakeRedis.channels.get(
@@ -506,7 +509,7 @@ describe("ibx kernel kill-switch", () => {
 
   it("status reflects the active kill switch (pt-BR human-readable)", async () => {
     await cmd.parseAsync(
-      ["kill-switch", "enable", "--reason=incident"],
+      ["kill-switch", "enable", "--reason=incident", "--yes-i-am-solo-on-call"],
       { from: "user" },
     )
     await cmd.parseAsync(["kill-switch", "status"], { from: "user" })
@@ -518,7 +521,7 @@ describe("ibx kernel kill-switch", () => {
 
   it("status --json emits structured output", async () => {
     await cmd.parseAsync(
-      ["kill-switch", "enable", "--reason=incident"],
+      ["kill-switch", "enable", "--reason=incident", "--yes-i-am-solo-on-call"],
       { from: "user" },
     )
     // Reset stdout capture so we only see the status call's output.
@@ -544,7 +547,7 @@ describe("ibx kernel kill-switch", () => {
 
   it("disable removes the flag and publishes a disable event", async () => {
     await cmd.parseAsync(
-      ["kill-switch", "enable", "--reason=engage"],
+      ["kill-switch", "enable", "--reason=engage", "--yes-i-am-solo-on-call"],
       { from: "user" },
     )
     expect(
@@ -585,5 +588,69 @@ describe("ibx kernel kill-switch", () => {
     await cmd.parseAsync(["kill-switch", "status"], { from: "user" })
     const out = stdout.getOutput()
     expect(out).toContain("inativo")
+  })
+
+  // W7-O3 — two-person bypass posture.
+  //
+  // The CLI enable surface intentionally bypasses the two-person rule
+  // applied by the admin HTTP endpoint. Each of the bypass guardrails is
+  // asserted here so a future regression that drops the prompt / flag /
+  // breadcrumb tag fails the build.
+
+  describe("W7-O3 — two-person bypass posture", () => {
+    it("refuses to enable without --yes-i-am-solo-on-call when stdin is not a TTY (and Redis stays clean)", async () => {
+      // Vitest runs under a non-TTY stdin by default. The bypass-confirmation
+      // helper must refuse rather than blocking on a hung prompt.
+      const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+      await cmd.parseAsync(
+        ["kill-switch", "enable", "--reason=incident"],
+        { from: "user" },
+      )
+      // Process exit code is set rather than thrown so the CLI shell can
+      // tail logs; the Redis flag MUST NOT have been written.
+      expect(process.exitCode).toBe(1)
+      expect(
+        killSwitchFakeRedis.store.has("test-cli:kill-switch:global"),
+      ).toBe(false)
+      stderrSpy.mockRestore()
+      process.exitCode = 0
+    })
+
+    it("allows enable with --yes-i-am-solo-on-call and the flag flows into the Redis write + breadcrumb", async () => {
+      await cmd.parseAsync(
+        [
+          "kill-switch",
+          "enable",
+          "--reason=Pager dead at 03h47",
+          "--yes-i-am-solo-on-call",
+        ],
+        { from: "user" },
+      )
+      const raw = killSwitchFakeRedis.store.get(
+        "test-cli:kill-switch:global",
+      )
+      expect(raw).toBeDefined()
+      const parsed = JSON.parse(raw!) as { reason: string }
+      expect(parsed.reason).toBe("Pager dead at 03h47")
+      // The bypass banner is part of the CLI output — assert the operator
+      // saw the warning even if non-interactive.
+      const out = stdout.getOutput()
+      expect(out).toMatch(/bypass.*dois operadores/i)
+    })
+
+    it("enable prints the bypass posture marker on the success summary", async () => {
+      await cmd.parseAsync(
+        [
+          "kill-switch",
+          "enable",
+          "--reason=Soak window",
+          "--yes-i-am-solo-on-call",
+        ],
+        { from: "user" },
+      )
+      const out = stdout.getOutput()
+      expect(out).toContain("two_person_rule")
+      expect(out).toContain("surface=cli")
+    })
   })
 })

@@ -297,7 +297,7 @@ ibx kernel kill-switch status --json
 ibx kernel kill-switch enable order.cancel --reason "Soak" --expires 1h
 ```
 
-**Implementation:** The CLI calls the admin endpoint over HTTPS using the operator's bastion credentials (per the `ibx infra` command pattern in `docs/cli/reference.md`). No direct Redis/NATS access from the CLI; all writes go through the admin endpoint for auditability.
+**Implementation (current — W3 D1 + W7-O3):** The CLI today writes the Redis flag directly via `createKillSwitchStore` (`packages/cli/src/commands/kernel.ts` `runKillSwitchEnable`); the M4-era plan to route the CLI through the admin endpoint over HTTPS was downgraded in W7-O3 because the threat models diverged. The CLI surface exists for solo-on-call emergencies and INTENTIONALLY bypasses the two-person rule applied by the admin endpoint — see `docs/adjudicate-migration/correctness-remediation/W7-DECISIONS-ops.md` §O3 for the rationale. The CLI requires either an interactive TTY confirmation prompt (typing `engajar agora`) or `--yes-i-am-solo-on-call` for CI / pager scripts; Sentry breadcrumb metadata stamps `bypass: "two_person_rule"`, `surface: "cli"`, `bypassMode: "tty_prompt" | "flag"` so an incident review can correlate. For scheduled flips and drills, operators MUST use the admin endpoint.
 
 **Output format (default):**
 

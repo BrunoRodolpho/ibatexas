@@ -859,6 +859,111 @@ async function emitSentryBreadcrumb(input: {
   }
 }
 
+// W7-O3 — Two-person bypass posture for the CLI surface.
+//
+// The CLI engages the kill switch by writing the Redis flag directly
+// (`createKillSwitchStore.enable`); the admin HTTP endpoint at
+// `apps/api/src/routes/admin/kernel.ts` enforces a two-person rule via the
+// receipt-store + same-actor refusal. The two surfaces have different threat
+// models and we own naming that explicitly:
+//
+//   - CLI    → solo on-call EMERGENCIES. The two-person rule is intentionally
+//              bypassed because the failure mode the CLI exists to break out
+//              of is "secondary operator unreachable at 3am". Compromised
+//              credential trade-off accepted (see W7-DECISIONS-ops.md §O3).
+//   - HTTP   → scheduled flips. Two distinct OWNER staff identities required.
+//
+// To make the bypass posture impossible to miss, we:
+//   1. Print a red banner naming the bypass before mutating Redis.
+//   2. Require an explicit `--yes-i-am-solo-on-call` flag OR an interactive
+//      TTY confirmation prompt. Non-TTY callers without the flag REFUSE so
+//      a `yes | ibx kernel kill-switch enable ...` pipeline cannot
+//      single-handedly engage by accident.
+//   3. Stamp `bypass: "two_person_rule"`, `surface: "cli"` on the Sentry
+//      breadcrumb metadata so an incident review can correlate.
+
+async function confirmSoloOperatorBypass(opts: {
+  yesIAmSoloOnCall: boolean
+}): Promise<boolean> {
+  // The flag is the non-interactive escape hatch. CI / pager-script callers
+  // pass it explicitly; the docstring + commit log are the audit trail.
+  if (opts.yesIAmSoloOnCall) {
+    console.log()
+    console.log(
+      chalk.red.bold(
+        "ATENÇÃO — bypass da regra de dois operadores via --yes-i-am-solo-on-call",
+      ),
+    )
+    console.log(
+      chalk.dim(
+        "Esta invocação ignora a regra de dois operadores aplicada pelo endpoint admin.",
+      ),
+    )
+    console.log()
+    return true
+  }
+  // No flag — require an interactive TTY so a script pipeline cannot bypass.
+  if (!process.stdin.isTTY) {
+    console.error()
+    console.error(
+      chalk.red.bold(
+        "Recusado — bypass da regra de dois operadores requer TTY ou --yes-i-am-solo-on-call.",
+      ),
+    )
+    console.error(
+      chalk.dim(
+        "Pipeline detectado (stdin não é TTY). Para emergências de plantão solo, passe --yes-i-am-solo-on-call.",
+      ),
+    )
+    console.error()
+    return false
+  }
+  // Interactive prompt — operator must type the literal pt-BR confirmation
+  // phrase. Constant-string compare (not constant-time — this is a user-
+  // typed value, not a secret).
+  const expected = "engajar agora"
+  console.log()
+  console.log(
+    chalk.red.bold(
+      "ATENÇÃO — engajar kill switch via CLI ignora a regra de dois operadores.",
+    ),
+  )
+  console.log(
+    chalk.dim(
+      "Esta superfície existe para emergências de plantão solo. Operações agendadas devem usar POST /api/admin/kernel/kill-switch.",
+    ),
+  )
+  console.log()
+  process.stdout.write(
+    `Digite "${expected}" para confirmar o bypass: `,
+  )
+  const answer = await readSingleLineFromStdin()
+  if (answer.trim() !== expected) {
+    console.log()
+    console.log(chalk.dim("Cancelado — kill switch NÃO engajado."))
+    console.log()
+    return false
+  }
+  return true
+}
+
+async function readSingleLineFromStdin(): Promise<string> {
+  return new Promise<string>((resolve) => {
+    let buf = ""
+    const onData = (chunk: Buffer | string): void => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8")
+      buf += text
+      if (buf.includes("\n")) {
+        process.stdin.removeListener("data", onData)
+        process.stdin.pause()
+        resolve(buf.replace(/\n.*$/s, ""))
+      }
+    }
+    process.stdin.resume()
+    process.stdin.on("data", onData)
+  })
+}
+
 interface KillSwitchCliDeps {
   readonly getRedis: () => Promise<unknown>
   readonly rk: (key: string) => string
@@ -897,7 +1002,18 @@ async function closeRedisQuietly(): Promise<void> {
   }
 }
 
-async function runKillSwitchEnable(opts: { reason: string }): Promise<void> {
+async function runKillSwitchEnable(opts: {
+  reason: string
+  yesIAmSoloOnCall?: boolean
+}): Promise<void> {
+  // W7-O3 — confirm or refuse the two-person-rule bypass BEFORE touching Redis.
+  const confirmed = await confirmSoloOperatorBypass({
+    yesIAmSoloOnCall: opts.yesIAmSoloOnCall === true,
+  })
+  if (!confirmed) {
+    process.exitCode = 1
+    return
+  }
   const { getRedis, rk } = await loadKillSwitchDeps()
   const { createKillSwitchStore } = await import("@ibatexas/tools")
   const redis = (await getRedis()) as Parameters<
@@ -912,7 +1028,14 @@ async function runKillSwitchEnable(opts: { reason: string }): Promise<void> {
   await emitSentryBreadcrumb({
     action: "enable",
     reason: opts.reason,
-    metadata: { enabledBy },
+    metadata: {
+      enabledBy,
+      // W7-O3 — explicit posture tag so incident review can correlate
+      // CLI-engaged switches with the bypass policy.
+      bypass: "two_person_rule",
+      surface: "cli",
+      bypassMode: opts.yesIAmSoloOnCall ? "flag" : "tty_prompt",
+    },
   })
   console.log()
   console.log(chalk.red.bold("ibx kernel kill-switch enable"))
@@ -926,6 +1049,7 @@ async function runKillSwitchEnable(opts: { reason: string }): Promise<void> {
   console.log(`  ${chalk.bold("operador")}  : ${md.enabledBy}`)
   console.log(`  ${chalk.bold("desde")}     : ${md.enabledAt}`)
   console.log(`  ${chalk.bold("TTL")}        : 24h (auto-disengage)`)
+  console.log(`  ${chalk.bold("bypass")}     : two_person_rule (surface=cli)`)
   console.log()
   console.log(
     chalk.dim(
@@ -1086,22 +1210,32 @@ export function registerKernelCommands(group: Command): void {
   killSwitch
     .command("enable")
     .description(
-      "Engaja o kill switch global — todas as mutações são refusadas até disable",
+      "Engaja o kill switch global (EMERGÊNCIA DE PLANTÃO SOLO — bypassa a regra de dois operadores; use POST /api/admin/kernel/kill-switch para fluxo agendado)",
     )
     .requiredOption(
       "--reason <text>",
       "Motivo humano-legível (obrigatório — auditado e enviado para Sentry)",
     )
-    .action(async (opts: { reason: string }) => {
-      try {
-        await runKillSwitchEnable(opts)
-      } finally {
-        // Close Redis so the CLI process exits cleanly. The test
-        // harness (vi.mock @ibatexas/tools) returns a closeRedisClient
-        // stub which is a no-op in unit tests.
-        await closeRedisQuietly()
-      }
-    })
+    // W7-O3 — opt-in escape hatch for CI / pager scripts. Without this
+    // flag AND without a TTY, the command refuses (see
+    // confirmSoloOperatorBypass).
+    .option(
+      "--yes-i-am-solo-on-call",
+      "Confirma o bypass da regra de dois operadores sem prompt (uso em scripts de plantão)",
+      false,
+    )
+    .action(
+      async (opts: { reason: string; yesIAmSoloOnCall?: boolean }) => {
+        try {
+          await runKillSwitchEnable(opts)
+        } finally {
+          // Close Redis so the CLI process exits cleanly. The test
+          // harness (vi.mock @ibatexas/tools) returns a closeRedisClient
+          // stub which is a no-op in unit tests.
+          await closeRedisQuietly()
+        }
+      },
+    )
 
   killSwitch
     .command("disable")
