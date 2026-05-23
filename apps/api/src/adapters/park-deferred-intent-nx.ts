@@ -105,8 +105,11 @@ export const PARK_COLLISION_REFUSAL_PT_BR =
 export async function parkDeferredIntentWithNxGuard(
   args: ParkDeferredIntentArgs,
 ): Promise<ParkDeferredIntentNxResult> {
-  const sessionId = args.envelope.actor.sessionId
-  const parkKey = args.rk(deferParkKey(sessionId))
+  // W7-G3: defensively hoist envelope.actor.principal → top-level actorPrincipal
+  // so verifyParkedEnvelopeHash can re-derive intentHash on resume.
+  const argsHoisted = hoistEnvelopeActorPrincipal(args)
+  const sessionId = argsHoisted.envelope.actor.sessionId
+  const parkKey = argsHoisted.rk(deferParkKey(sessionId))
 
   // ─── Step 1: SETNX placeholder ──────────────────────────────────────────
   // We attempt to claim the park slot with a sentinel value and the same TTL
@@ -118,14 +121,14 @@ export async function parkDeferredIntentWithNxGuard(
     sessionId,
     claimedAt: new Date().toISOString(),
   })
-  const placeholderClaim = await args.redis.set(
+  const placeholderClaim = await argsHoisted.redis.set(
     parkKey,
     placeholderValue,
-    { EX: args.ttlSeconds, NX: true } as unknown as { EX: number },
+    { EX: argsHoisted.ttlSeconds, NX: true } as unknown as { EX: number },
   )
   if (placeholderClaim !== "OK") {
-    args.log?.warn?.(
-      { sessionId, intentHash: args.envelope.intentHash },
+    argsHoisted.log?.warn?.(
+      { sessionId, intentHash: argsHoisted.envelope.intentHash },
       "[park-deferred-intent-nx] collision — envelope already parked",
     )
     return { parked: false, reason: "collision", sessionId }
@@ -137,26 +140,56 @@ export async function parkDeferredIntentWithNxGuard(
   // matters. The framework's quota INCR runs inside `parkDeferredIntent`,
   // so a session at quota still gets the proper `quota_exceeded` result.
   try {
-    const result = await parkDeferredIntent(args)
+    const result = await parkDeferredIntent(argsHoisted)
     if (!result.parked) {
       // Quota exceeded inside the framework — release the slot so the next
       // legitimate DEFER for this session isn't blocked by our placeholder.
       // We swallow del errors; the TTL is the safety net.
-      await (args.redis as { del?: (k: string) => Promise<unknown> })
+      await (argsHoisted.redis as { del?: (k: string) => Promise<unknown> })
         .del?.(parkKey)
         ?.catch(() => {})
       // W3-6 — bump kernel_defer_quota_exceeded_total{kind} per rejection.
       if (result.reason === "quota_exceeded") {
-        await bumpDeferQuotaExceededMetric(args.envelope.kind)
+        await bumpDeferQuotaExceededMetric(argsHoisted.envelope.kind)
       }
     }
     return result
   } catch (err) {
     // Park failed mid-flight. Release the slot so subsequent DEFERs can park.
     // Swallow del errors; TTL is the safety net.
-    await (args.redis as { del?: (k: string) => Promise<unknown> })
+    await (argsHoisted.redis as { del?: (k: string) => Promise<unknown> })
       .del?.(parkKey)
       ?.catch(() => {})
     throw err
+  }
+}
+
+// W7-G3: defensive hoist of envelope.actor.principal → top-level actorPrincipal.
+// `verifyParkedEnvelopeHash` reads `actorPrincipal` at the envelope's top
+// level; a caller passing a raw `IntentEnvelope` (where principal is nested
+// inside actor) without the explicit hoist would silently land in the
+// `missing_fields` back-compat branch and disable tamper-at-rest detection.
+// Returns the input unchanged when no hoist is needed (preserves referential
+// equality). The other three verification fields (version/nonce/taint) have
+// no canonical fallback source — callers MUST pass them at top level.
+function hoistEnvelopeActorPrincipal(
+  args: ParkDeferredIntentArgs,
+): ParkDeferredIntentArgs {
+  const actor = args.envelope.actor as unknown as {
+    sessionId: string
+    principal?: string
+  }
+  if (
+    typeof args.envelope.actorPrincipal === "string" ||
+    typeof actor.principal !== "string"
+  ) {
+    return args
+  }
+  return {
+    ...args,
+    envelope: {
+      ...args.envelope,
+      actorPrincipal: actor.principal as "llm" | "user" | "system",
+    },
   }
 }
