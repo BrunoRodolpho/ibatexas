@@ -45,13 +45,29 @@ interface Fixture {
   readonly label: string
   readonly kind: string
   readonly payload: unknown
+  /**
+   * P0-10: per-fixture override for actor.sessionId. When unset, the
+   * default `sess_corpus_${i}` is used. HTTP routes set
+   * `actor.sessionId = customerId` verbatim, so a subset of fixtures
+   * uses a customerId-shaped sessionId to exercise the hash path.
+   */
+  readonly sessionId?: string
+  /**
+   * P0-10: per-fixture override for actor.principal. Defaults to "llm";
+   * the user-route fixtures override to "user" to mirror the production
+   * code path (me.ts, cart.ts, order-actions.ts).
+   */
+  readonly principal?: string
 }
 
 function makeRecord(fx: Fixture, i: number): AuditRecord {
   const envelope: IntentEnvelope = buildEnvelope({
     kind: fx.kind,
     payload: fx.payload,
-    actor: { principal: "llm", sessionId: `sess_corpus_${i}` },
+    actor: {
+      principal: (fx.principal as "user" | "llm" | "system" | undefined) ?? "llm",
+      sessionId: fx.sessionId ?? `sess_corpus_${i}`,
+    },
     taint: "UNTRUSTED",
     nonce: `n_corpus_${i}`,
     createdAt: "2025-01-01T00:00:00.000Z",
@@ -585,6 +601,38 @@ const CORPUS: Fixture[] = [
       reason: "Cliente João Henrique reverteu o pedido de exclusão",
     },
   },
+
+  // ── P0-10: actor.sessionId leak fixtures (W4 security) ───────────────────
+  //
+  // HTTP routes (me.ts:280 LGPD anonymize, cart.ts checkout, order-actions.ts
+  // cancel) set `actor.sessionId = customerId` directly. The customerId is a
+  // 24-char hex-ish identifier (cuid/uuid). Without the W4 hash fix, this
+  // value reaches NATS + Postgres in cleartext.
+  //
+  // Each fixture below exercises a different real route's actor.sessionId
+  // shape. The detectPII helper now scans `envelope.actor` so any leak
+  // surfaces as a test failure.
+  {
+    label: "P0-10: LGPD anonymize — sessionId is customerId",
+    kind: "customer.anonymize",
+    payload: { customerId: "cust_01HN12ABCDEF34GHIJ56KLMN", scope: "lgpd_art_18" },
+    sessionId: "cust_01HN12ABCDEF34GHIJ56KLMN",
+    principal: "user",
+  },
+  {
+    label: "P0-10: LGPD cancel — sessionId is customerId",
+    kind: "customer.anonymize.cancel",
+    payload: { customerId: "cust_99XY78QRSTUV23WXYZ12ABCD" },
+    sessionId: "cust_99XY78QRSTUV23WXYZ12ABCD",
+    principal: "user",
+  },
+  {
+    label: "P0-10: PIX checkout — sessionId carries customer cuid",
+    kind: "order.checkout.create",
+    payload: { orderId: "ord_1", paymentMethod: "pix" },
+    sessionId: "ckabc123xyz789cust",
+    principal: "user",
+  },
 ]
 
 // ── PII detection helper ─────────────────────────────────────────────────────
@@ -595,9 +643,18 @@ interface PIIFinding {
 }
 
 function detectPII(record: AuditRecord, label: string): PIIFinding {
-  // Serialize ONLY the redactor-controlled surface: `envelope.payload`.
+  // P0-10: include `envelope.actor.sessionId` in the detection sweep.
   //
-  // We deliberately exclude:
+  // HTTP routes set `actor.sessionId = customerId` (me.ts, cart.ts,
+  // order-actions.ts), and the previous redactor preserved that field
+  // verbatim — shipping plaintext customerId to NATS + Postgres. The
+  // W4 fix hashes sessionId so PII detection on the redacted record
+  // must now scan the actor too. WhatsApp sessions are already SHA-256
+  // hashed phone numbers, so the second hash pass is a no-op semantically
+  // (deterministic hash of a hex string), but we keep the assertion
+  // shape simple by scanning the whole `actor + payload` surface.
+  //
+  // We still exclude:
   //   - `record.intentHash` / `record.auditHash` — sha256 hex (64 chars). A
   //     uniform random 64-hex string has a ~50% chance of containing a
   //     10-digit-run substring that the BR phone regex would flag — those
@@ -607,18 +664,16 @@ function detectPII(record: AuditRecord, label: string): PIIFinding {
   //   - `record.envelope.nonce` / `record.envelope.createdAt` — adopter-
   //     controlled metadata (the fixture builder uses fixed shapes that
   //     are PII-free; production nonces are UUIDs).
-  //   - `record.envelope.actor.sessionId` — adopter-controlled. Sessions in
-  //     IbateXas are SHA-256 hashed phone numbers (see apps/api/src/whatsapp/
-  //     session.ts); the hash is PII-free.
   //   - The sentinel sub-strings `[REDACTED:CPF|EMAIL|PHONE|CARD]` and the
   //     `hashed:xxxxxxxx` prefix — these are the redactor's authorised
   //     output and must not flag.
   //
   // What remains is exactly the surface the redactor is responsible for.
   const payloadJson = JSON.stringify(record.envelope.payload)
+  const actorJson = JSON.stringify(record.envelope.actor)
   // Strip all sentinel sub-strings so a stray "REDACTED:PHONE" wrapper
   // cannot trip the phone regex if a digit happens to live nearby.
-  const stripped = payloadJson
+  const stripped = (payloadJson + actorJson)
     .replace(/\[REDACTED(?::[A-Z]+)?\]/g, "")
     .replace(/hashed:[a-f0-9]{8}/g, "")
 
@@ -725,12 +780,15 @@ describe("audit-redaction CONTRACT (CI gate)", () => {
     expect(anyDiffered).toBe(true)
   })
 
-  it("every fixture preserves envelope governance fields (actor, taint, kind, nonce, createdAt, version)", () => {
+  it("every fixture preserves envelope governance fields (actor.principal, taint, kind, nonce, createdAt, version)", () => {
     for (let i = 0; i < CORPUS.length; i++) {
       const fx = CORPUS[i]!
       const record = makeRecord(fx, i)
       const redacted = redactor.redact(record)
-      expect(redacted.envelope.actor).toEqual(record.envelope.actor)
+      // P0-10: actor.principal stays plaintext (enum, not PII), but
+      // actor.sessionId is HASHED. Compare principal explicitly rather
+      // than asserting deep-equal on the whole actor.
+      expect(redacted.envelope.actor.principal).toBe(record.envelope.actor.principal)
       expect(redacted.envelope.taint).toBe(record.envelope.taint)
       expect(redacted.envelope.kind).toBe(record.envelope.kind)
       expect(redacted.envelope.nonce).toBe(record.envelope.nonce)
@@ -747,6 +805,117 @@ describe("audit-redaction CONTRACT (CI gate)", () => {
       const twice = redactor.redact(once)
       expect(twice).toEqual(once)
     }
+  })
+
+  // ── P0-10: actor.sessionId hash assertions ────────────────────────────
+
+  it("[P0-10] actor.sessionId is hashed (no plaintext customerId reaches sinks)", () => {
+    // Build a fixture with a recognisable customerId-shaped sessionId.
+    const fx: Fixture = {
+      label: "P0-10 assertion: customerId in sessionId",
+      kind: "customer.anonymize",
+      payload: { customerId: "cust_TARGET_LEAK_PROBE", scope: "lgpd_art_18" },
+      sessionId: "cust_TARGET_LEAK_PROBE",
+      principal: "user",
+    }
+    const record = makeRecord(fx, 9001)
+    // Sanity: the unredacted record carries the plaintext customerId in
+    // the actor surface.
+    expect(record.envelope.actor.sessionId).toBe("cust_TARGET_LEAK_PROBE")
+
+    const redacted = redactor.redact(record)
+    // The customerId MUST NOT appear in the redacted actor surface.
+    const actorJson = JSON.stringify(redacted.envelope.actor)
+    expect(actorJson).not.toContain("cust_TARGET_LEAK_PROBE")
+    // The sessionId MUST be hashed (sentinel prefix detectable downstream).
+    expect(redacted.envelope.actor.sessionId).toMatch(/^hashed:[a-f0-9]{8}$/)
+    // Principal is preserved verbatim (enum, not PII).
+    expect(redacted.envelope.actor.principal).toBe("user")
+  })
+
+  it("[P0-10] sessionId hash is correlation-preserving (same input → same hash)", () => {
+    // Two records for the same customer must produce the same actor.sessionId
+    // hash so audit consumers can group records. Different intent kinds and
+    // payloads do not affect the actor hash.
+    const fxA: Fixture = {
+      label: "P0-10 correlation A",
+      kind: "customer.anonymize",
+      payload: { customerId: "cust_CORRELATION_TEST", scope: "lgpd_art_18" },
+      sessionId: "cust_CORRELATION_TEST",
+      principal: "user",
+    }
+    const fxB: Fixture = {
+      label: "P0-10 correlation B",
+      kind: "customer.profile.update",
+      payload: { name: "Maria" },
+      sessionId: "cust_CORRELATION_TEST",
+      principal: "user",
+    }
+    const redA = redactor.redact(makeRecord(fxA, 9100))
+    const redB = redactor.redact(makeRecord(fxB, 9101))
+    expect(redA.envelope.actor.sessionId).toBe(redB.envelope.actor.sessionId)
+    expect(redA.envelope.actor.sessionId).toMatch(/^hashed:[a-f0-9]{8}$/)
+  })
+
+  it("[P0-10] different customers produce different sessionId hashes", () => {
+    const fxA: Fixture = {
+      label: "P0-10 distinct A",
+      kind: "customer.profile.update",
+      payload: { name: "Ana" },
+      sessionId: "cust_DISTINCT_A",
+      principal: "user",
+    }
+    const fxB: Fixture = {
+      label: "P0-10 distinct B",
+      kind: "customer.profile.update",
+      payload: { name: "Bia" },
+      sessionId: "cust_DISTINCT_B",
+      principal: "user",
+    }
+    const redA = redactor.redact(makeRecord(fxA, 9200))
+    const redB = redactor.redact(makeRecord(fxB, 9201))
+    expect(redA.envelope.actor.sessionId).not.toBe(
+      redB.envelope.actor.sessionId,
+    )
+  })
+
+  it("[P0-10] WhatsApp-style hashed-phone session is idempotent (does not double-hash sentinels)", () => {
+    // The WhatsApp session pipeline already pre-hashes the phone into the
+    // form `hashed:xxxxxxxx`. The redactor must recognise that as a
+    // sentinel and leave it unchanged so a second redact pass produces
+    // the same record.
+    const prehashed = "hashed:abcd1234"
+    const fx: Fixture = {
+      label: "P0-10 WA pre-hashed session",
+      kind: "whatsapp.message.send",
+      payload: { to: "+5511999998888", body: "olá" },
+      sessionId: prehashed,
+    }
+    const record = makeRecord(fx, 9300)
+    const once = redactor.redact(record)
+    expect(once.envelope.actor.sessionId).toBe(prehashed)
+    const twice = redactor.redact(once)
+    expect(twice.envelope.actor.sessionId).toBe(prehashed)
+  })
+
+  it("[P0-10] auditHash recomputation accounts for actor.sessionId changes", () => {
+    // The auditHash is computed over the full record (minus auditHash and
+    // signature). Changing actor.sessionId must invalidate the original
+    // hash and produce a new verifiable one.
+    const fx: Fixture = {
+      label: "P0-10 hash recompute",
+      kind: "customer.anonymize",
+      payload: { customerId: "cust_HASH_RECOMPUTE", scope: "lgpd_art_18" },
+      sessionId: "cust_HASH_RECOMPUTE",
+      principal: "user",
+    }
+    const record = makeRecord(fx, 9400)
+    const redacted = redactor.redact(record)
+    // The hashes must differ because we changed the sessionId.
+    expect(redacted.auditHash).not.toBe(record.auditHash)
+    // The new auditHash must still verify cleanly.
+    const verification = verifyAuditRecord(redacted)
+    expect(verification.verified).toBe(true)
   })
 })
 

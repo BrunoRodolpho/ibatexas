@@ -357,14 +357,17 @@ describe("audit-redactor — audit-record shape preservation", () => {
     expect(out.version).toBe(record.version)
   })
 
-  it("preserves envelope actor, taint, kind, nonce, createdAt, version, intentHash", () => {
+  it("preserves envelope actor.principal, taint, kind, nonce, createdAt, version, intentHash (P0-10 hashes sessionId)", () => {
     const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
     const record = makeRecord("customer.profile.update", {
       name: "x",
       email: "y@z.com",
     })
     const out = r.redact(record)
-    expect(out.envelope.actor).toEqual(record.envelope.actor)
+    // P0-10: actor.principal is preserved verbatim, actor.sessionId is
+    // hashed to prevent HTTP-route customerId leakage.
+    expect(out.envelope.actor.principal).toBe(record.envelope.actor.principal)
+    expect(out.envelope.actor.sessionId).toMatch(/^hashed:[a-f0-9]{8}$/)
     expect(out.envelope.taint).toBe(record.envelope.taint)
     expect(out.envelope.kind).toBe(record.envelope.kind)
     expect(out.envelope.nonce).toBe(record.envelope.nonce)
