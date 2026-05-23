@@ -12,6 +12,39 @@
  *
  * Codes are stable — audit replays depend on them. User-facing text is pt-BR
  * per CLAUDE.md rule #4.
+ *
+ * ## Task 11 — `@adjudicate/locales-pt-BR` audit
+ *
+ * The canonical pt-BR dictionary (`portugueseRefusalMessages.byCode`) covers
+ * *kernel-emitted* codes: `kill_switch_active`, `schema_version_unsupported`,
+ * `taint_level_insufficient`, `default_deny`, `guard_panic`,
+ * `ledger_replay_suppressed`, `kernel_deadline_exceeded`.
+ *
+ * Every code emitted by the helpers below is **Pack-specific** — they don't
+ * appear in the canonical dictionary today, so each one falls back to
+ * `portugueseRefusalMessages.fallback` when routed through
+ * `localizeDecision` blindly. The `resolveLocalizedRefusalText` policy in
+ * `localizer.ts` accounts for this: if a code is absent from the canonical
+ * dictionary, the responder keeps the Pack-emitted `userFacing` text below
+ * (which is already pt-BR) instead of degrading to the generic fallback.
+ *
+ * The following codes are tracked as candidates for upstream contribution to
+ * `@adjudicate/locales-pt-BR` (see Task 11 PR description for the full list):
+ *
+ *   - `post_order.forbidden_phrase`, `checkout.forbidden_phrase`,
+ *     `ordering.forbidden_phrase`
+ *   - `auth.required`, `auth.guest_checkout_blocked`
+ *   - `cart.empty`
+ *   - `order.already_cancelled`, `order.not_found`, `order.already_shipped`
+ *   - `checkout.slots_incomplete`
+ *   - `payment.invalid_method`
+ *   - `quantity.over_limit`, `upsell.exhausted`
+ *   - `default.deny` (note: kernel uses `default_deny` with underscore — the
+ *     Pack-emitted `default.deny` is a distinct semantic and stays separate)
+ *
+ * Until those codes land in the canonical dictionary, the inline pt-BR text
+ * in each `refuse(...)` call below IS the source of truth. Do NOT delete
+ * the inline strings.
  */
 
 import { refuse, type Refusal } from "@adjudicate/core"

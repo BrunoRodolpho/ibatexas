@@ -28,6 +28,7 @@
     "@ibatexas/types": "workspace:*",
     "@adjudicate/audit": "workspace:*",
     "@adjudicate/core": "workspace:*",
+    "@adjudicate/locales-pt-br": "workspace:*",
     "@adjudicate/pack-payments-pix": "workspace:*",
     "@adjudicate/runtime": "workspace:*",
     "fuse.js": "^7.1.0",

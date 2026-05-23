@@ -13,6 +13,7 @@ import {
   buildAuditRecord,
   buildEnvelope,
   decisionRewrite,
+  localizeDecision,
   type Decision,
 } from "@adjudicate/core"
 import type { Plan } from "@adjudicate/core/llm"
@@ -23,6 +24,8 @@ import {
   isShadowed,
   legacyDecisionAsKernelDecision,
 } from "@adjudicate/core/kernel"
+import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br"
+import { resolveLocalizedRefusalText } from "./localizer.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 import type { ToolExecutionResult } from "./tool-registry.js"
 import { TOOL_CLASSIFICATION } from "./machine/types.js"
@@ -529,11 +532,23 @@ async function processToolCalls(
 
         // REFUSE / ESCALATE / REQUEST_CONFIRMATION — surface the user-facing
         // text. onToolIntent is NOT invoked: the kernel said no.
+        //
+        // Task 11: route REFUSE decisions through `localizeDecision` at the
+        // presentation boundary so kernel-emitted refusals (kill_switch,
+        // taint, default_deny, deadline, ...) render in pt-BR. Pack-emitted
+        // refusal codes that aren't in the canonical dictionary fall through
+        // to `portugueseRefusalMessages.fallback`; for those, the inline
+        // pt-BR string constructed by the Pack's `refuse(...)` factory
+        // remains the source of truth — see `localizer.ts` for the policy.
+        const localizedDecision = localizeDecision(
+          decision,
+          portugueseRefusalMessages,
+        )
         const refusalText =
-          decision.kind === "REFUSE"
-            ? decision.refusal.userFacing
-            : decision.kind === "REQUEST_CONFIRMATION"
-              ? decision.prompt
+          localizedDecision.kind === "REFUSE"
+            ? resolveLocalizedRefusalText(decision, localizedDecision)
+            : localizedDecision.kind === "REQUEST_CONFIRMATION"
+              ? localizedDecision.prompt
               : "Vou pedir uma revisão antes de seguir."
         onChunk({
           type: "tool_result",
@@ -546,15 +561,18 @@ async function processToolCalls(
           tool_use_id: block.id,
           content: JSON.stringify({
             status:
-              decision.kind === "REFUSE"
+              localizedDecision.kind === "REFUSE"
                 ? "refused"
-                : decision.kind === "REQUEST_CONFIRMATION"
+                : localizedDecision.kind === "REQUEST_CONFIRMATION"
                   ? "confirmation_required"
                   : "escalated",
             message: refusalText,
             toolName: block.name,
-            ...(decision.kind === "REFUSE"
-              ? { refusalCode: decision.refusal.code, refusalKind: decision.refusal.kind }
+            ...(localizedDecision.kind === "REFUSE"
+              ? {
+                  refusalCode: localizedDecision.refusal.code,
+                  refusalKind: localizedDecision.refusal.kind,
+                }
               : {}),
           }),
         })
