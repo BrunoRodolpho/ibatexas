@@ -8,12 +8,14 @@
 
 | Wave | Theme | Est | Status |
 |---|---|---|---|
-| W1 | Fail-safety + enforcement | ~2d | ⏳ |
-| W2 | DEFER + replay correctness | ~3-4d | ⏳ |
-| W3 | Money-path governance | ~3-4d | ⏳ |
-| W4 | Security + LGPD | ~3-5d | ⏳ |
-| W5 | Enforcement readiness (pack-payments + taxonomy) | ~3-5d | ⏳ |
-| W6 | Testing + observability + docs | ~2-3d | ⏳ |
+| W1 | Fail-safety + enforcement | ~2d | ✅ tag `audit-w1-complete` |
+| W2 | DEFER + replay correctness | ~3-4d | ✅ tag `audit-w2-complete` |
+| W3 | Money-path governance | ~3-4d | ✅ tag `audit-w3-complete` |
+| W4 | Security + LGPD | ~3-5d | ✅ tag `audit-w4-complete` (P0-12 partial — operator action) |
+| W5 | Enforcement readiness (pack-payments + taxonomy) | ~3-5d | ✅ tag `audit-w5-complete` |
+| W6 | Testing + observability + docs | ~2-3d | ✅ tag `audit-w6-complete` |
+
+**Final summary:** see [`REMEDIATION-COMPLETE.md`](./REMEDIATION-COMPLETE.md)
 
 ## P0 ledger (15 findings)
 
