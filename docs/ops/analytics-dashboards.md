@@ -370,6 +370,48 @@ GROUP BY event
 
 **NATS subjects:** all 8 events also publish to `ibatexas.analytics.event` per the standard pipeline. The audit-only durable trail emits separately to `ibatexas.audit.intent.decision.v1` via `@adjudicate/audit/sink-nats`.
 
+### Kernel metrics (Prometheus)
+
+The same `MetricsSink` adapter that emits the 8 PostHog `audit_*` events above also populates a `prom-client` registry exposed at `GET /metrics` on the API. The endpoint is token-gated by `PROMETHEUS_TOKEN` — unset = 503 (closed by default). All metric names are stable contracts shared with `docs/adjudicate-migration/migration/06-observability-requirements.md`.
+
+**Producer:** `apps/api/src/plugins/kernel-metrics-sink.ts` (`createKernelMetricsSink`).
+**Scrape route:** `apps/api/src/routes/metrics.ts`.
+
+| Metric | Type | Labels | Purpose |
+|--------|------|--------|---------|
+| `kernel_decision_total` | Counter | `kind` (Decision kind: EXECUTE / REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE / REWRITE), `intent_kind` | Every adjudicate() call. Refusal-rate denominator. |
+| `kernel_refusal_total` | Counter | `kind` (refusal kind: SECURITY / BUSINESS_RULE / AUTH / STATE), `intent_kind`, `basis_category`, `basis_code` | Per-intent refusal distribution. Alert on >2× 7-day baseline. |
+| `kernel_decision_duration_seconds` | Histogram | `intent_kind` | adjudicate() latency in seconds. Alert on p99 > 100ms. Buckets: 1ms — 10s. |
+| `kernel_shadow_divergence_total` | Counter | `class` (BASIS_ONLY / DECISION_KIND / PAYLOAD_REWRITE), `intent_kind` | Enforce-flip gate metric per `04-shadow-enforce-sequencing.md`. |
+| `kernel_ledger_op_total` | Counter | `outcome` (hit / miss / ok / duplicate / error), `op` (check / record) | Execution Ledger fail-open detection. |
+| `kernel_audit_sink_failure_total` | Counter | `sink` (nats / postgres / console), `reason` (errorClass) | NATS / Postgres audit pipeline health. Drives circuit-breaker engagement. |
+| `kernel_defer_resume_duration_seconds` | Histogram | `kind` | Park-to-resume latency for DEFER intents. Populated by the resolver (Task 03). Buckets: 100ms — 4h. |
+
+**Scrape config (Prometheus):**
+
+```yaml
+scrape_configs:
+  - job_name: ibatexas-kernel
+    metrics_path: /metrics
+    scheme: https
+    static_configs:
+      - targets: ["api.ibatexas.com.br:443"]
+    bearer_token: # NOT used — use the custom header instead
+    relabel_configs: []
+    # Inject PROMETHEUS_TOKEN via a custom header on the scrape config:
+    authorization: { type: "", credentials: "" }
+```
+
+In practice the Prometheus job sets `http_config.proxy_url` or injects the header via a reverse-proxy. For a Grafana Agent / k8s deployment, use:
+
+```yaml
+- job_name: ibatexas-kernel
+  metrics_path: /metrics
+  http_config:
+    request_headers:
+      x-prometheus-token: ${PROMETHEUS_TOKEN}
+```
+
 ### NATS Analytics Events
 
 Web analytics events are published to NATS subject `analytics.event` (full: `ibatexas.analytics.event`) for downstream consumers (e.g., PostHog ingestion pipeline).
