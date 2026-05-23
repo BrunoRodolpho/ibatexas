@@ -13,6 +13,7 @@ import { registerSwagger } from "./plugins/swagger.js";
 import { registerRateLimit } from "./plugins/rate-limit.js";
 import { genRequestId, registerRequestId } from "./plugins/request-id.js";
 import { installKernelMetricsSink } from "./plugins/kernel-bootstrap.js";
+import { parseBoolEnv } from "@ibatexas/llm-provider";
 import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
 import { metricsRoutes } from "./routes/metrics.js";
@@ -28,7 +29,9 @@ export async function buildServer(): Promise<FastifyInstance> {
           ? undefined
           : { target: "pino-pretty", options: { colorize: true } },
     },
-    trustProxy: process.env.TRUST_PROXY === "true",
+    // NEW-P1-ENV: was `=== "true"` — silently rejected "TRUE", "1", "yes".
+    // parseBoolEnv accepts the canonical truthy lexicon.
+    trustProxy: parseBoolEnv(process.env.TRUST_PROXY, false),
     connectionTimeout: 30_000,
     requestTimeout: 60_000,
     keepAliveTimeout: 72_000,

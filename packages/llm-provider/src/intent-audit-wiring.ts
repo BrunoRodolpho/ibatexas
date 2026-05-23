@@ -62,6 +62,7 @@ import { publishNatsEvent } from "@ibatexas/nats-client"
 import { getRedisClient } from "@ibatexas/tools"
 import { prisma } from "@ibatexas/domain"
 import { createAuditRedactor, type AuditRedactor } from "./audit-redactor.js"
+import { parseBoolEnv } from "./parse-bool-env.js"
 import {
   createRedisSpillStorage,
   type RedisListClient,
@@ -104,7 +105,10 @@ function bufferCapacity(): number {
 }
 
 function postgresEnabled(): boolean {
-  return process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+  // NEW-P1-ENV: was `=== "true"` (silently disabled by "TRUE", "1", "yes",
+  // whitespace). parseBoolEnv accepts the canonical truthy lexicon and
+  // defaults to false when the var is unset or carries a typo.
+  return parseBoolEnv(process.env.IBX_AUDIT_POSTGRES_ENABLED, false)
 }
 
 // ── Test-injectable overrides ──────────────────────────────────────────────

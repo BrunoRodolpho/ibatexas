@@ -136,6 +136,12 @@ export {
   type AuditRedactorOptions,
 } from "./audit-redactor.js"
 
+// NEW-P1-ENV — strict-yet-tolerant boolean env-var parser. Replaces
+// the unsafe `process.env.X === "true"` pattern across the codebase.
+// Accepts true/1/yes/on (any case, trimmed); falls back to caller's
+// defaultValue for empty/undefined/typo inputs.
+export { parseBoolEnv } from "./parse-bool-env.js"
+
 // Re-export agent types for consumers
 export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
 

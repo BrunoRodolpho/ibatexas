@@ -72,6 +72,22 @@ async function resolveAuthenticator(): Promise<Authenticator | undefined> {
   return undefined
 }
 
+// NEW-P1-ENV: strict-yet-tolerant boolean env parser. Mirrors the
+// shared helper at `@ibatexas/llm-provider/parse-bool-env.ts`; copied
+// inline here because `@ibatexas/nats-client` cannot import from
+// `@ibatexas/llm-provider` (llm-provider depends on nats-client).
+function parseBoolEnv(
+  value: string | undefined,
+  defaultValue: boolean,
+): boolean {
+  if (value === undefined) return defaultValue
+  const v = value.trim().toLowerCase()
+  if (v.length === 0) return defaultValue
+  if (v === "true" || v === "1" || v === "yes" || v === "on") return true
+  if (v === "false" || v === "0" || v === "no" || v === "off") return false
+  return defaultValue
+}
+
 /**
  * Resolve TLS options from env. Returns `undefined` when no CA is
  * configured. Setting `NATS_TLS_REQUIRED=true` while no CA is provided
@@ -80,7 +96,10 @@ async function resolveAuthenticator(): Promise<Authenticator | undefined> {
  */
 async function resolveTls(): Promise<TlsOptions | undefined> {
   const caPath = process.env.NATS_TLS_CA
-  const required = process.env.NATS_TLS_REQUIRED === "true"
+  // NEW-P1-ENV: was `=== "true"` — accepted only the exact string and
+  // silently fell through for "TRUE", "1", "yes". A security-critical
+  // gate (transport encryption) MUST honour the canonical truthy lexicon.
+  const required = parseBoolEnv(process.env.NATS_TLS_REQUIRED, false)
   if (caPath && caPath.length > 0) {
     const ca = await readFile(caPath, "utf8")
     return { ca }

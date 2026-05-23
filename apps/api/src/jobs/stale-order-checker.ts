@@ -39,7 +39,7 @@ import {
   type OrderStatusTransitionPayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink, parseBoolEnv } from "@ibatexas/llm-provider";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,
@@ -63,7 +63,10 @@ function getThresholdMs(): number {
 }
 
 function isDryRun(): boolean {
-  return process.env.STALE_ORDER_DRY_RUN === "true";
+  // NEW-P1-ENV: was `=== "true"` — operator setting `=1` or `=TRUE`
+  // would silently land on the destructive path. parseBoolEnv accepts
+  // the canonical truthy lexicon and defaults to false (production-safe).
+  return parseBoolEnv(process.env.STALE_ORDER_DRY_RUN, false);
 }
 
 /** Core job logic — exported for direct testing. */

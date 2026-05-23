@@ -31,6 +31,7 @@
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
+import { parseBoolEnv } from "@ibatexas/llm-provider"
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -84,10 +85,19 @@ function parseDuration(input: string): number {
 async function runStatus(opts: { json?: boolean }): Promise<void> {
   const shadow = parseEnvList(process.env.IBX_KERNEL_SHADOW)
   const enforce = parseEnvList(process.env.IBX_KERNEL_ENFORCE)
-  const ledgerEnabled = process.env.IBX_LEDGER_ENABLED === "true"
-  const ledgerEnforce = process.env.IBX_LEDGER_ENFORCE === "true"
-  const ledgerFailOpen = process.env.IBX_LEDGER_FAIL_OPEN === "true"
-  const postgresEnabled = process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+  // NEW-P1-ENV: was `=== "true"` for all four. parseBoolEnv accepts the
+  // canonical truthy lexicon (true/1/yes/on, any case) and defaults to
+  // false for unset/typo inputs. The CLI now agrees with the runtime
+  // sites that read these same env vars (kernel-bootstrap, intent-
+  // audit-wiring, intent-ledger) — fixing the "CLI shows enabled but
+  // runtime reads disabled" drift that a `=TRUE` typo would produce.
+  const ledgerEnabled = parseBoolEnv(process.env.IBX_LEDGER_ENABLED, false)
+  const ledgerEnforce = parseBoolEnv(process.env.IBX_LEDGER_ENFORCE, false)
+  const ledgerFailOpen = parseBoolEnv(process.env.IBX_LEDGER_FAIL_OPEN, false)
+  const postgresEnabled = parseBoolEnv(
+    process.env.IBX_AUDIT_POSTGRES_ENABLED,
+    false,
+  )
 
   // Pull KNOWN_INTENT_KINDS + kill switch lazily; the imports drag the
   // policy bundles into the CLI process which is fine but slow on cold
@@ -198,7 +208,11 @@ async function runReplay(opts: {
     return
   }
   const limit = Number.parseInt(opts.limit ?? "1000", 10)
-  const postgresEnabled = process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+  // NEW-P1-ENV: see runStatus() above for rationale.
+  const postgresEnabled = parseBoolEnv(
+    process.env.IBX_AUDIT_POSTGRES_ENABLED,
+    false,
+  )
 
   console.log()
   console.log(chalk.bold("ibx kernel replay"))
@@ -365,7 +379,11 @@ async function runDivergence(opts: { since?: string }): Promise<void> {
   console.log(chalk.dim(`Janela: últimos ${sinceInput}`))
   console.log()
 
-  const postgresEnabled = process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+  // NEW-P1-ENV: see runStatus() above for rationale.
+  const postgresEnabled = parseBoolEnv(
+    process.env.IBX_AUDIT_POSTGRES_ENABLED,
+    false,
+  )
 
   if (!postgresEnabled) {
     console.log(

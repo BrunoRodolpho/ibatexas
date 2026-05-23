@@ -1,0 +1,82 @@
+NEW-P1-ENV — Boolean env parsing strictness — BEFORE
+=====================================================
+
+Date: 2026-05-23
+Source: deep-audit/09-code-quality-debt.md #11 + 05 #9
+
+Affected sites (13 in active code, excluding tests)
+---------------------------------------------------
+1. packages/nats-client/src/index.ts:83
+     const required = process.env.NATS_TLS_REQUIRED === "true"
+2. packages/cli/src/commands/kernel.ts:87
+     const ledgerEnabled = process.env.IBX_LEDGER_ENABLED === "true"
+3. packages/cli/src/commands/kernel.ts:88
+     const ledgerEnforce = process.env.IBX_LEDGER_ENFORCE === "true"
+4. packages/cli/src/commands/kernel.ts:89
+     const ledgerFailOpen = process.env.IBX_LEDGER_FAIL_OPEN === "true"
+5. packages/cli/src/commands/kernel.ts:90
+     const postgresEnabled = process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+6. packages/cli/src/commands/kernel.ts:201
+     const postgresEnabled = process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+7. packages/cli/src/commands/kernel.ts:368
+     const postgresEnabled = process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+8. packages/llm-provider/src/intent-audit-wiring.ts:107
+     return process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+9. apps/api/src/server.ts:31
+     trustProxy: process.env.TRUST_PROXY === "true"
+10. apps/api/src/jobs/stale-order-checker.ts:66
+     return process.env.STALE_ORDER_DRY_RUN === "true"
+
+(packages/llm-provider/src/intent-ledger.ts already uses the correct
+robust check; apps/commerce metadata + catalog `.transform` are scope-
+bounded outside this fix.)
+
+Symptom
+-------
+Every `=== "true"` site silently returns false for the common operator
+inputs:
+
+  - "TRUE", "True"           → false (case mismatch)
+  - "1"                       → false (numeric flag)
+  - "yes", "YES", "on"        → false (canonical "yes" flag)
+  - " true ", "true\n"        → false (whitespace from .env)
+
+An operator who sets `IBX_AUDIT_POSTGRES_ENABLED=TRUE` in their
+production env will get a SILENTLY DISABLED Postgres audit sink. The
+runtime gate that the kernel is supposed to enforce stays off until the
+operator notices that no audit records are landing in Postgres — which
+is hours-to-days later.
+
+Same hazard for `IBX_LEDGER_*` (execution dedup), `NATS_TLS_REQUIRED`
+(transport security gate), `STALE_ORDER_DRY_RUN`, `TRUST_PROXY`.
+
+Repro
+-----
+> process.env.IBX_AUDIT_POSTGRES_ENABLED = "TRUE"
+> process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+< false
+> process.env.IBX_AUDIT_POSTGRES_ENABLED = "1"
+> process.env.IBX_AUDIT_POSTGRES_ENABLED === "true"
+< false
+
+Fix
+---
+1. New helper: packages/llm-provider/src/parse-bool-env.ts
+     export function parseBoolEnv(value: string | undefined,
+                                  defaultValue: boolean): boolean
+   Accepts (case-insensitive, trimmed):
+     "true", "1", "yes", "on"    → true
+     "false", "0", "no", "off"   → false
+     ""                          → defaultValue
+     undefined                   → defaultValue
+     any other string            → defaultValue (don't silently flip)
+
+2. Migrate the listed sites to use parseBoolEnv.
+
+Note on the default
+-------------------
+Each site has its own existing default: some default-false (Postgres
+sink, ledger enforce, stale-order dry-run), some default-true
+(production NATS_TLS_REQUIRED). The helper takes a defaultValue and the
+caller passes the existing default — no behavioural drift for valid
+inputs.
