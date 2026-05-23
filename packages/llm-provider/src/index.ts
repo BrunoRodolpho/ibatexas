@@ -3,7 +3,10 @@
 
 export { runAgent } from "./agent.js"
 export { NonRetryableError } from "@ibatexas/types"
-export { TOOL_DEFINITIONS, executeTool, executeToolDirect } from "./tool-registry.js"
+// `executeToolDirect` was removed in task 06 (M1) — see tool-registry.ts
+// for the rationale. Production mutations route through `executeTool`
+// (LLM-proposed) or `executeKernel` (deterministic).
+export { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 export type { ToolExecutionResult } from "./tool-registry.js"
 
 // Backward compat: SYSTEM_PROMPT still available for any consumer that imports it
