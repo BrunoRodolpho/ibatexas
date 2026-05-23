@@ -55,6 +55,16 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
     // SEC-004: Check if the token has been revoked (e.g., after logout)
     await checkRevocation(payload.jti);
 
+    // NEW-P0-X8 (W1 correctness remediation): reject empty-string `sub`.
+    // An empty `sub` would otherwise be assigned to `customerId`/`staffId`,
+    // collapsing every empty-`sub` JWT onto the same Redis key namespace
+    // (`anonymize:otp:`, `defer:pending:`, …). The downstream
+    // `requireAuth` gate currently catches `!customerId` (since `!""` is
+    // truthy), but defense-in-depth: never assign empty `sub`.
+    if (typeof payload.sub !== "string" || payload.sub === "") {
+      return;
+    }
+
     request.userType = payload.userType as "guest" | "customer" | "staff";
 
     // DOM-001: Staff tokens carry staffId (sub) + role; customer tokens carry customerId (sub)
@@ -81,6 +91,11 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
 
     if (payload.userType !== "staff") return; // Unexpected — not a staff token
 
+    // NEW-P0-X8: same defense-in-depth for the staff path.
+    if (typeof payload.sub !== "string" || payload.sub === "") {
+      return;
+    }
+
     // SEC-004: Check revocation for staff token too
     await checkRevocation(payload.jti);
 
@@ -106,10 +121,13 @@ export function requireAuth(
 ): void {
   // Return before done() on 401 to prevent route handler from executing
   extractAuth(request).then(() => {
-    if (!request.customerId) {
+    // NEW-P0-X8: explicit empty-string check (defense in depth). `!""` is
+    // truthy so the original `!request.customerId` already catches it,
+    // but spell it out so the invariant survives future refactors.
+    if (!request.customerId || request.customerId === "") {
       void reply
         .code(401)
-        .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." });
+        .send({ statusCode: 401, error: "Unauthorized", message: "Sessão inválida." });
       return;
     }
     done();
