@@ -24,6 +24,8 @@
 | **Tier** | Risk class from `migration/04-shadow-enforce-sequencing.md` — Tier 1 (idempotent, reversible) through Tier 4 (money, LGPD). |
 | **Divergence class** | `BASIS_ONLY` (same decision kind, different basis codes), `DECISION_KIND` (legacy and kernel disagree on EXECUTE/REFUSE/etc), `PAYLOAD_REWRITE` (kernel returned REWRITE), `NONE` (perfect match — no event emitted). |
 
+> **Redis key convention.** Every Redis key written by ibatexas code goes through `rk()` from `@ibatexas/tools` (see `packages/tools/src/redis/key.ts`), which prepends `<APP_ENV>:` — the live `APP_ENV` value at runtime (e.g. `production`, `staging`, `development`). When this runbook (and `migration/05-kill-switch-strategy.md`, `remediation/NATS-AUTH-REQUIREMENTS.md`, `governance/07-rollback-recovery.md`) shows `defer:pending:{sessionId}` or `kill-switch:global`, the literal Redis key is `<APP_ENV>:defer:pending:{sessionId}` / `<APP_ENV>:kill-switch:global`. **Not** `ibatexas:foo` — the project name is not the prefix. Substitute your `APP_ENV` when running `redis-cli SCAN` / `GET`.
+
 ---
 
 ## Per-tier rollout procedure

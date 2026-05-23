@@ -103,7 +103,7 @@ const killHandle = startDistributedKillSwitchPubSub({
 process.on("SIGTERM", () => killHandle.stop());
 ```
 
-The Redis key shape (`ibatexas:env:kernel:killswitch`) is what `EmergencyStateStore` reads/writes (per investigation 05 §"createRedisEmergencyStateStore"). The admin endpoint mutates the key via:
+The Redis key shape is `<APP_ENV>:kernel:killswitch` — the `<APP_ENV>` prefix (e.g. `production`, `staging`, `development`) is added by `rk()` from `@ibatexas/tools` (see `packages/tools/src/redis/key.ts`). The operator-facing literal substitutes the live `APP_ENV` value, e.g. `production:kernel:killswitch`. This is what `EmergencyStateStore` reads/writes (per investigation 05 §"createRedisEmergencyStateStore"). The admin endpoint mutates the key via:
 
 ```ts
 // POST /api/admin/kernel/kill
@@ -264,23 +264,25 @@ Per [`06-deferred-execution-policy.md`](./06-deferred-execution-policy.md) §"Ti
 
 ### Triage procedure
 
-1. **Identify the parked envelope**:
+1. **Identify the parked envelope**. Keys are namespaced by `rk()` with `<APP_ENV>:` (per `packages/tools/src/redis/key.ts`); substitute the live `APP_ENV` value (e.g. `production`, `staging`, `development`):
    ```bash
-   redis-cli SCAN 0 MATCH "ibatexas:prod:defer:pending:*"
+   # Example assumes APP_ENV=production:
+   redis-cli SCAN 0 MATCH "${APP_ENV}:defer:pending:*"
+   # → e.g. "production:defer:pending:cust_abc"
    ```
 2. **Read the envelope**:
    ```bash
-   redis-cli GET "ibatexas:prod:defer:pending:{sessionId}"
+   redis-cli GET "${APP_ENV}:defer:pending:{sessionId}"
    # JSON contains { envelope, signal, parkedAt }
    ```
 3. **Check the wire path**:
    - For `payment.confirmed` signal: was the Stripe webhook delivered? Check `webhook:processed:{event.id}` in Redis.
    - Was the NATS `payment.status_changed` published? Check the Postgres `OrderEventLog` (idempotencyKey-keyed).
-4. **Manual resume** (operator command, new CLI):
+4. **Manual resume** (operator command, W7-O1 CLI):
    ```bash
-   ibx kernel defer:resume --session-id=<sid> --signal=payment.confirmed --force
+   ibx kernel defer resume <sessionId> --signal=pix.confirmed
    ```
-   This is an admin-authority envelope (`system.replay.run` per [`01-intent-taxonomy.md`](./01-intent-taxonomy.md) §"system") that calls `resumeDeferredIntent` manually with the intended signal. The resume goes through `adjudicateAndAudit` per [`06-deferred-execution-policy.md`](./06-deferred-execution-policy.md) §"Re-execution semantics".
+   This calls `resolveDeferredSession` directly with a synthesised wire event so the parked envelope re-adjudicates and dispatches without waiting for the real NATS signal. The resume goes through the same `adjudicate()` + audit path used by `defer-resolver` per [`06-deferred-execution-policy.md`](./06-deferred-execution-policy.md) §"Re-execution semantics".
 5. **If manual resume produces REFUSE** (state advanced): notify customer via WhatsApp (`whatsapp.message.send` with template `defer_timeout_apology`).
 
 ### Replay log
