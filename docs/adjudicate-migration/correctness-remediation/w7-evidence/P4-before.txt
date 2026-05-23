@@ -1,0 +1,58 @@
+=== W7-P4 BEFORE state — 4 prisma.orderNote.create sites bypassing kernel ===
+Commit: 94964f0772385567857e6b9b13dfec3a104ea181
+Branch: feat/correctness-w7-close-w6-findings
+
+── apps/api/src/routes/cart.ts:885 (checkout — customer note, best-effort) ─────
+              await prisma.orderNote.create({
+                data: {
+                  orderId: projection.id,
+                  author: "customer",
+                  authorId: request.customerId ?? undefined,
+                  content: request.body.notes,
+                },
+              });
+
+── apps/api/src/routes/order-actions.ts:675 (POST /api/orders/:id/notes — customer) ─
+      const note = await prisma.orderNote.create({
+        data: {
+          orderId: id,
+          author: "customer",
+          authorId: customerId,
+          content: request.body.content,
+        },
+      });
+
+── apps/api/src/routes/admin/order-actions.ts:819 (staff internal note) ─────────
+      const note = await prisma.orderNote.create({
+        data: {
+          orderId: id,
+          author: "admin",
+          authorId: request.staffId ?? undefined,
+          content: request.body.content,
+          isInternal: true,
+        },
+      });
+
+── apps/api/src/routes/admin/payments.ts:1235 (admin note) ─────────────────────
+      const note = await prisma.orderNote.create({
+        data: {
+          orderId: id,
+          author: "admin",
+          authorId: request.staffId ?? undefined,
+          content: request.body.content,
+        },
+      });
+
+── Existing kernel surface (verified) ─────────────────────────────────────────
+- order.note.add intent kind: packages/pack-orders/src/types.ts:86, policies.ts:545, capabilities.ts
+- OrderCommandService.addNoteFromEnvelope: packages/domain/src/services/order-command.service.ts:200, 494
+- Reference caller: packages/tools/src/cart/add-order-note.ts (W7-Stripe-Wrapper scope, READ-ONLY for us)
+
+── Wave 6 finding ────────────────────────────────────────────────────────────
+The order.note.add intent kind already exists in @ibatexas/pack-orders and
+OrderCommandService.addNoteFromEnvelope is the chokepoint. Route handlers
+write prisma.orderNote.create directly — bypassing kernel adjudication and
+audit emit. This is the parallel/duplicate-surface symptom flagged in W6.
+
+GET handlers (findMany) at order-actions.ts:715 and admin/payments.ts:1268
+are read-only and remain on direct prisma access — out of scope here.
