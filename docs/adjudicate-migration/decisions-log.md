@@ -72,3 +72,21 @@ Picked **(B) REMOVE.** Rationale:
   - The feature can re-land cleanly when modify-on-slot-released is genuinely on the roadmap. Future work owns: publisher in reservation cancel + no-show handlers, resolver subscriber, end-to-end test for the round-trip.
 
 **How to apply:** Removed `RESERVATION_SLOT_RELEASED_SIGNAL` + `RESERVATION_SLOT_RELEASED_TIMEOUT_MS` exports from `pack-reservations`. Removed `deferOnSlotFull` guard. Added `refuseModifyOnFullNewSlot` state guard that REFUSEs with code `reservation.slot.full` when `state.ctx.newSlot.reservedCovers >= newSlot.maxCovers`. `reservationsPack.signals` is now an empty array. Conformance fixtures + reservations-pack tests updated to expect REFUSE (with `reservation.slot.full` code) instead of DEFER. When the feature re-lands, this commit must be reverted before re-adding the guard.
+
+## D10 — W5/W5-7: `medusa.*` namespace EXCLUDED from `KNOWN_INTENT_KINDS`
+**Why:** `packages/tools/src/medusa/adjudicated.ts` declares 13 intent kinds (`medusa.admin.order.{edit.confirm,edit.items,edit.create,cancel,update_metadata}`, `medusa.cart.{line_items.update,line_items.remove,line_items.add,promotion.apply,complete,update,create}`, `medusa.payment_collection.create`). These are emitted by `medusaAdjudicated()` — the inline minimal-policy wrapper around the Medusa REST proxy, used by amend-order, reorder, and a handful of admin routes. They are NOT in the master taxonomy at `governance/01-intent-taxonomy.md`.
+
+The audit 07 §"medusa.* namespace" classification labels them "NOT-IN-SCOPE — operates one layer below domain intents." The choice is whether to include them in `KNOWN_INTENT_KINDS`:
+
+Two options on the table:
+
+  - **(A) INCLUDE**: add the 13 kinds to `KNOWN_INTENT_KINDS` so `validateEnforceConfig` accepts them in `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE`. Treats them as first-class kinds in the typo gate.
+  - **(B) EXCLUDE**: leave them out. The kernel boot does not validate them; their inline policy in `adjudicated.ts` is the sole gate.
+
+Picked **(B) EXCLUDE.** Rationale:
+
+  - The `medusa.*` kinds are not user-facing intents — they are an egress-translation contract (LLM tool intent → Medusa HTTP write) one layer below the customer-facing taxonomy. Surfacing them as flippable `IBX_KERNEL_ENFORCE` values would imply operators are expected to gradually enable enforcement per-kind for them, which is not the design intent: `medusaAdjudicated()` already enforces them unconditionally via the inline policy, independent of the kernel rollout.
+  - Including them would inflate the typo-gate set without adding any safety. The typo gate exists to catch `IBX_KERNEL_ENFORCE=order.cart.adddd` (one-letter typo in a customer-facing kind). It does NOT exist to validate internal egress wrappers.
+  - Future evolution: when amend-order / reorder migrate to typed envelopes against pack-orders' new `order.amend.{add_item,update_qty,remove_item}` kinds (W5-2), the `medusa.*` kinds become DEAD code and can be retired entirely. Until then, they remain governed inline.
+
+**How to apply:** `packages/llm-provider/src/intent-kinds.ts` documents the exclusion at the top of the file. `KNOWN_INTENT_KINDS` is constructed from the 5 first-party + 1 platform Pack unions only. The `intent-kinds.test.ts` asserts the exclusion (3 sample `medusa.*` kinds → `KNOWN_INTENT_KINDS.has() === false`). If the `medusa.*` policy stops being self-contained — e.g., if `IBX_KERNEL_ENFORCE` rollout per-kind matters for them — revisit this decision; the typo gate is the natural place.
