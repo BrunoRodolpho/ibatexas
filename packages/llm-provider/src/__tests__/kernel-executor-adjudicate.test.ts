@@ -33,13 +33,21 @@ const {
   isEnforcedMock,
   isShadowedMock,
   redisSetMock,
+  redisIncrMock,
+  redisDecrMock,
+  redisExpireMock,
   auditEmitMock,
 } = vi.hoisted(() => ({
   adjudicateMock: vi.fn(),
   adjudicateWithShadowMock: vi.fn(),
   isEnforcedMock: vi.fn(),
   isShadowedMock: vi.fn(),
-  redisSetMock: vi.fn(),
+  redisSetMock: vi.fn(async () => "OK"),
+  // parkDeferredIntent calls INCR → EXPIRE → SET. We default to count=1
+  // so the quota check (default 16) is satisfied.
+  redisIncrMock: vi.fn(async () => 1),
+  redisDecrMock: vi.fn(async () => 0),
+  redisExpireMock: vi.fn(async () => 1),
   auditEmitMock: vi.fn(async () => undefined),
 }))
 
@@ -58,6 +66,7 @@ vi.mock("@adjudicate/core/kernel", async () => {
 })
 
 // Redis stub for the DEFER park path. We assert against `set` calls.
+// parkDeferredIntent uses INCR/EXPIRE/SET so all four are needed.
 vi.mock("@ibatexas/tools", async () => {
   const actual = (await vi.importActual("@ibatexas/tools")) as Record<
     string,
@@ -65,7 +74,12 @@ vi.mock("@ibatexas/tools", async () => {
   >
   return {
     ...actual,
-    getRedisClient: vi.fn(async () => ({ set: redisSetMock })),
+    getRedisClient: vi.fn(async () => ({
+      set: redisSetMock,
+      incr: redisIncrMock,
+      decr: redisDecrMock,
+      expire: redisExpireMock,
+    })),
     rk: (k: string) => `ibatexas:${k}`,
   }
 })
@@ -318,7 +332,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
     expect(gate.rewrittenPayload).toEqual(cappedPayload)
   })
 
-  it("addItem DEFER → proceed:false + envelope parked in redis", async () => {
+  it("addItem DEFER → proceed:false + envelope parked in redis via parkDeferredIntent", async () => {
     isEnforcedMock.mockReturnValue(true)
     adjudicateMock.mockReturnValue(deferDecision())
 
@@ -334,17 +348,57 @@ describe("adjudicateKernelMutation — enforce path", () => {
     )
     expect(gate.proceed).toBe(false)
     expect(gate.parked).toBe(true)
-    // Redis park: key shape matches llm-responder.ts:445-453.
+    // P0-7: park flows through parkDeferredIntent which calls INCR (quota
+    // counter), EXPIRE (TTL on counter), then SET (envelope blob).
+    expect(redisIncrMock).toHaveBeenCalledTimes(1)
+    const [counterKey] = redisIncrMock.mock.calls[0]!
+    expect(counterKey).toBe(`ibatexas:defer:count:${SESSION_ID}`)
     expect(redisSetMock).toHaveBeenCalledTimes(1)
     const [key, value, opts] = redisSetMock.mock.calls[0]!
     expect(key).toBe(`ibatexas:defer:pending:${SESSION_ID}`)
     const parsed = JSON.parse(value as string) as {
-      envelope: { intentHash: string }
+      envelope: {
+        intentHash: string
+        version: number
+        nonce: string
+        taint: string
+        actorPrincipal: string
+      }
       signal: string
     }
     expect(parsed.envelope.intentHash).toBe(envelope.intentHash)
     expect(parsed.signal).toBe("payment.confirmed")
+    // T-005: verification fields are populated so verifyParkedEnvelopeHash
+    // can re-derive the intentHash on resume.
+    expect(parsed.envelope.version).toBe(envelope.version)
+    expect(parsed.envelope.nonce).toBe(envelope.nonce)
+    expect(parsed.envelope.taint).toBe(envelope.taint)
+    expect(parsed.envelope.actorPrincipal).toBe(envelope.actor.principal)
     expect((opts as { EX: number }).EX).toBeGreaterThan(60)
+  })
+
+  it("addItem DEFER with quota_exceeded → proceed:false + userFacing pt-BR copy", async () => {
+    // Simulate the quota threshold being exceeded by returning a count
+    // above DEFAULT_DEFER_QUOTA_PER_SESSION (16).
+    redisIncrMock.mockResolvedValueOnce(17)
+    isEnforcedMock.mockReturnValue(true)
+    adjudicateMock.mockReturnValue(deferDecision())
+
+    const envelope = buildAddItemEnvelope(
+      { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
+      makeCtx(),
+      SESSION_ID,
+    )
+    const gate = await __testOnly__adjudicateKernelMutation(
+      envelope,
+      makeCtx(),
+      SESSION_ID,
+    )
+    expect(gate.proceed).toBe(false)
+    // No park blob written because quota was exceeded.
+    expect(redisSetMock).not.toHaveBeenCalled()
+    // pt-BR refusal copy surfaces.
+    expect(gate.userFacing).toMatch(/operações em espera/i)
   })
 
   it("addItem REQUEST_CONFIRMATION → proceed:false + pt-BR copy", async () => {

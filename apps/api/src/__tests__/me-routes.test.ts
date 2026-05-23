@@ -50,6 +50,24 @@ const mockRedisDel = vi.hoisted(() =>
     return had ? 1 : 0;
   }),
 );
+// P0-7 — parkDeferredIntent calls INCR/DECR/EXPIRE on the quota counter.
+const mockRedisIncr = vi.hoisted(() =>
+  vi.fn(async (key: string) => {
+    const cur = Number.parseInt(redisStorage.get(key) ?? "0", 10);
+    const next = cur + 1;
+    redisStorage.set(key, String(next));
+    return next;
+  }),
+);
+const mockRedisDecr = vi.hoisted(() =>
+  vi.fn(async (key: string) => {
+    const cur = Number.parseInt(redisStorage.get(key) ?? "0", 10);
+    const next = cur - 1;
+    redisStorage.set(key, String(next));
+    return next;
+  }),
+);
+const mockRedisExpire = vi.hoisted(() => vi.fn(async (_key: string, _seconds: number) => 1));
 
 vi.mock("@ibatexas/domain", () => ({
   exportCustomerData: mockExportCustomerData,
@@ -65,6 +83,9 @@ vi.mock("@ibatexas/tools", () => ({
     set: mockRedisSet,
     get: mockRedisGet,
     del: mockRedisDel,
+    incr: mockRedisIncr,
+    decr: mockRedisDecr,
+    expire: mockRedisExpire,
   })),
   rk: (k: string) => `ibatexas:${k}`,
 }));

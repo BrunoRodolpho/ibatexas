@@ -32,6 +32,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
+import { parkDeferredIntent } from "@adjudicate/runtime";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import {
   createCustomerService,
@@ -305,25 +306,67 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       const parkedAt = Date.now();
       const intentHash = envelope.intentHash;
       const onDefer = async () => {
-        // Park the parked envelope blob in the same shape the
-        // defer-timeout-sweeper / defer-resolver expect.
+        // Park via the runtime's `parkDeferredIntent` primitive — populates
+        // the T-005 verification fields so the resume side can detect
+        // tamper-at-rest, and enforces the per-session park quota (P0-7).
+        let parkQuotaExceeded = false;
         try {
           const redis = await getRedisClient();
           const ttlSeconds = ANONYMIZE_GRACE_TTL_SECONDS + 60; // sweeper grace
-          await redis.set(
-            rk(`defer:pending:${customerId}`),
-            JSON.stringify({
-              envelope,
-              signal: "customer.anonymize.confirmed_after_grace",
-              parkedAt: new Date(parkedAt).toISOString(),
-            }),
-            { EX: ttlSeconds },
-          );
+          const parkResult = await parkDeferredIntent({
+            envelope: {
+              intentHash: envelope.intentHash,
+              kind: envelope.kind,
+              actor: { sessionId: envelope.actor.sessionId },
+              payload: envelope.payload,
+              version: envelope.version,
+              nonce: envelope.nonce,
+              taint: envelope.taint,
+              actorPrincipal: envelope.actor.principal,
+            },
+            signal: "customer.anonymize.confirmed_after_grace",
+            ttlSeconds,
+            redis,
+            rk,
+          });
+          if (!parkResult.parked) {
+            parkQuotaExceeded = true;
+            request.log.warn(
+              {
+                customerId,
+                reason: parkResult.reason,
+                observed: parkResult.observed,
+                limit: parkResult.limit,
+              },
+              "[me/anonymize] DEFER park quota exceeded",
+            );
+          }
         } catch (err) {
           request.log.error(
             { customerId, err: (err as Error).message },
             "[me/anonymize] DEFER park failed",
           );
+        }
+
+        if (parkQuotaExceeded) {
+          return {
+            statusCode: 429,
+            body: {
+              status: "refused",
+              message: "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
+              reason: "quota_exceeded",
+            },
+            decision: {
+              kind: "REFUSE" as const,
+              refusal: {
+                kind: "BUSINESS_RULE" as const,
+                code: "quota_exceeded",
+                userFacing:
+                  "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
+              },
+              basis: [],
+            },
+          };
         }
 
         // Persist the customer-facing receipt — single source of truth

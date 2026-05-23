@@ -25,6 +25,7 @@ import {
   legacyDecisionAsKernelDecision,
 } from "@adjudicate/core/kernel"
 import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br"
+import { parkDeferredIntent } from "@adjudicate/runtime"
 import { resolveLocalizedRefusalText } from "./localizer.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 import type { ToolExecutionResult } from "./tool-registry.js"
@@ -489,27 +490,69 @@ async function processToolCalls(
         }
 
         if (decision.kind === "DEFER") {
-          // Park the intent for the DEFER consumer (P0-c) to resume.
-          // Storage shape: TTL = signal.timeoutMs + 60s grace.
+          // Park the intent via the runtime's `parkDeferredIntent` primitive.
+          // The primitive enforces a per-session quota and populates the T-005
+          // verification fields (`version`, `nonce`, `taint`, `actorPrincipal`)
+          // so the resume side can detect tamper-at-rest. Without these fields,
+          // `verifyParkedEnvelopeHash` returns `verified: null` and the
+          // defer-resolver's tamper-detection is structurally inert (P0-7).
+          let parkQuotaExceeded = false
           if (envelope) {
             try {
               const redis = await getRedisClient()
               const ttlSeconds = Math.ceil(decision.timeoutMs / 1000) + 60
-              await redis.set(
-                rk(`defer:pending:${context.sessionId}`),
-                JSON.stringify({
-                  envelope,
-                  signal: decision.signal,
-                  parkedAt: new Date().toISOString(),
-                }),
-                { EX: ttlSeconds },
-              )
+              const parkResult = await parkDeferredIntent({
+                envelope: {
+                  intentHash: envelope.intentHash,
+                  kind: envelope.kind,
+                  actor: { sessionId: envelope.actor.sessionId },
+                  payload: envelope.payload,
+                  version: envelope.version,
+                  nonce: envelope.nonce,
+                  taint: envelope.taint,
+                  actorPrincipal: envelope.actor.principal,
+                },
+                signal: decision.signal,
+                ttlSeconds,
+                redis,
+                rk,
+              })
+              if (!parkResult.parked) {
+                parkQuotaExceeded = true
+                console.warn(
+                  "[llm-responder] DEFER park quota exceeded:",
+                  parkResult.reason,
+                  "observed:", parkResult.observed,
+                  "limit:", parkResult.limit,
+                )
+              }
             } catch (err) {
               console.error(
                 "[llm-responder] DEFER park failed:",
                 (err as Error).message,
               )
             }
+          }
+          if (parkQuotaExceeded) {
+            // Surface as a refusal so the customer learns their additional
+            // DEFER was rejected rather than silently swallowed.
+            onChunk({
+              type: "tool_result",
+              toolName: block.name,
+              toolUseId: block.id,
+              success: false,
+            })
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify({
+                status: "refused",
+                message: "Você tem muitas operações em espera. Aguarde uma delas concluir antes de tentar novamente.",
+                reason: "quota_exceeded",
+                toolName: block.name,
+              }),
+            })
+            continue
           }
           onChunk({
             type: "tool_result",
