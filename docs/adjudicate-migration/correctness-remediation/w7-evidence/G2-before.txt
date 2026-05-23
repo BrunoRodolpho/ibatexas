@@ -1,0 +1,102 @@
+# G2 — Template-literal bypass detection (BEFORE fix)
+#
+# Command (run from /Users/thaisrodolpho/projects/ibatexas/apps/api):
+#   pnpm vitest run src/__tests__/bypass-detection/bypass-detection.test.ts
+#
+# Expected: the new W7-G2 block in bypass-detection.test.ts FAILS the
+# "detects all 4 backtick-method bypass cases" and "each pattern's
+# quote class admits backticks" assertions. The pre-W7-G2 regex used
+# `['"]` for the method quote class; the new fixture's backtick-quoted
+# method literals (`method: ` + backtick + `POST` + backtick) yield
+# ZERO matches against any of the four FORBIDDEN_MEDUSA_MULTILINE
+# patterns.
+#
+# Raw vitest output (last ~80 lines including the 2 G2 failures):
+
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+
+[W6-8 WARN] Suspicious console.log of PII-bearing field (4 matches):
+  • packages/domain/src/seed-delivery.ts:167  →  console.log(`  ⚠️  Customer ${phone} not found, skipping address`)
+  • packages/domain/src/seed-delivery.ts:190  →  console.log(`  ⚠️  Customer ${phone} not found, skipping preferences`)
+  • packages/domain/src/seed-orders.ts:367  →  console.log(`  ⚠️  Customer ${order.phone} not found, skipping order ${order.orderId}`)
+  • packages/domain/src/seed-orders.ts:441  →  console.log(`  ⚠️  Customer ${template.phone} not found, skipping reservation`)
+
+stderr | src/__tests__/bypass-detection/bypass-detection.test.ts > Bypass detection — runtime smoke: dispatcher refuses unknown tool > returns kind:'failed' when no handler is registered for a tool name
+[intent-dispatcher] No handler for definitely_not_a_real_tool_12345 — returning failed
+
+ ❯ src/__tests__/bypass-detection/bypass-detection.test.ts (31 tests | 2 failed) 1298ms
+   ✓ Bypass detection — Scenario 1: direct prisma writes for kernel-owned tables > no match for /prisma\.orderNote\.create/ 10ms
+   ✓ Bypass detection — Scenario 1: direct prisma writes for kernel-owned tables > no match for /prisma\.orderProjection\.update\b/ 4ms
+   ✓ Bypass detection — Scenario 1: direct prisma writes for kernel-owned tables > no match for /prisma\.payment\.update\b/ 4ms
+   ✓ Bypass detection — Scenario 1: direct prisma writes for kernel-owned tables > no match for /prisma\.reservation\.create\b/ 3ms
+   ✓ Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated() > no NEW multi-line medusa write patterns (post-NEW-P0-X9 baseline) 25ms
+   ✓ Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated() > DEFERRED_MEDUSA_MIGRATIONS is empty in steady state (sentinel) 0ms
+   ✓ Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated() > single-line backup: no match for /medusaStore\s*\(\s*[^)]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/ 4ms
+   ✓ Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated() > single-line backup: no match for /medusaAdmin\s*\(\s*[^)]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/ 4ms
+   ✓ Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated() > single-line backup: no match for /medusaStoreFetch\s*\(\s*[^)]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/ 4ms
+   ✓ Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated() > single-line backup: no match for /medusaAdminFetch\s*\(\s*[^)]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/ 4ms
+   ✓ Bypass detection — NEW-P0-X9 multi-line scan > strips block comments before applying multi-line regex 0ms
+   ✓ Bypass detection — NEW-P0-X9 multi-line scan > preserves line numbers when stripping comments (newlines kept) 0ms
+   ✓ Bypass detection — NEW-P0-X9 multi-line scan > detects all 4 multi-line bypass cases in the fixture 1ms
+   ✓ Bypass detection — NEW-P0-X9 multi-line scan > PRE-FIX REPRODUCTION: the old line-by-line scan misses 3 of 4 fixture cases 0ms
+   × Bypass detection — W7-G2 template-literal multi-line scan > detects all 4 backtick-method bypass cases in the template-literal fixture 4ms
+     → expected [] to include 'medusaStore'
+   ✓ Bypass detection — W7-G2 template-literal multi-line scan > PRE-FIX REPRODUCTION: a regex with only ['"] quote class catches ZERO backtick cases 0ms
+   × Bypass detection — W7-G2 template-literal multi-line scan > each FORBIDDEN_MEDUSA_MULTILINE pattern's quote class admits backticks 1ms
+     → pattern medusaStore\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"] must include backtick in the method quote class: expected 'medusaStore\s*\([^()]*?\{[^{}]*?\bmet…' to match /\['"`\]/
+   ✓ Bypass detection — Scenario 3: executeToolDirect re-introduction (task 06) > no declaration matching /export\s+(async\s+)?function\s+executeToolDirect\b/ 25ms
+   ✓ Bypass detection — Scenario 3: executeToolDirect re-introduction (task 06) > no declaration matching /export\s*\{[^}]*\bexecuteToolDirect\b[^}]*\}/ 10ms
+   ✓ Bypass detection — Scenario 4: setMetricsSink(undefined|null) reset after task 05 > no production call matching /setMetricsSink\(\s*undefined\s*\)/ 62ms
+   ✓ Bypass detection — Scenario 4: setMetricsSink(undefined|null) reset after task 05 > no production call matching /setMetricsSink\(\s*null\s*\)/ 25ms
+   ✓ Bypass detection — ALLOWED_MEDUSA_DIRECT carve-out audit (W3 P1-L) > each allow-listed file is strictly read-only (GET-only) 0ms
+   ✓ Bypass detection — ALLOWED_MEDUSA_DIRECT carve-out audit (W3 P1-L) > does not allow-list files that were removed by W3 P1-L 0ms
+   ✓ Bypass detection — W6-8 extension: redis.del lock release without Lua > no production redis.del("...lock...") match for /redis(?:Client)?\.del\([^)]*\b[Ll]ock\b[^)]*\)/ 10ms
+   ✓ Bypass detection — W6-8 extension: $executeRaw outside command services > no $executeRaw match outside packages/domain/src/services/ for /\$executeRaw(Unsafe)?\s*[`(]/ 9ms
+   ✓ Bypass detection — W6-8 extension: direct twilio.messages.create outside allow-list > no direct twilio.messages.create match for /\.messages\.create\s*\(/ 7ms
+   ✓ Bypass detection — W6-8 extension: console.log of envelope/payload (PII leak risk) > logs suspicious console.log matches for /console\.log\s*\([^)]*\b(envelope|payload|intent|cpf|email|phone)\b/ (warning only) 18ms
+   ✓ Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMIN_LOW_RISK > every bare admin service call in the scan files matches a DEFERRED_ADMIN_LOW_RISK entry 1ms
+   ✓ Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMIN_LOW_RISK > every DEFERRED_ADMIN_LOW_RISK entry actually appears in its referenced file (sentinel) 0ms
+   ✓ Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMIN_LOW_RISK > DEFERRED_ADMIN_LOW_RISK size matches the W7-P2 baseline (10 entries — promotion sentinel) 0ms
+   ✓ Bypass detection — runtime smoke: dispatcher refuses unknown tool > returns kind:'failed' when no handler is registered for a tool name  1060ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/bypass-detection/bypass-detection.test.ts > Bypass detection — W7-G2 template-literal multi-line scan > detects all 4 backtick-method bypass cases in the template-literal fixture
+AssertionError: expected [] to include 'medusaStore'
+ ❯ src/__tests__/bypass-detection/bypass-detection.test.ts:569:26
+    567|     }
+    568| 
+    569|     expect(matchedKinds).toContain("medusaStore")
+       |                          ^
+    570|     expect(matchedKinds).toContain("medusaAdmin")
+    571|     expect(matchedKinds).toContain("medusaStoreFetch")
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/bypass-detection/bypass-detection.test.ts > Bypass detection — W7-G2 template-literal multi-line scan > each FORBIDDEN_MEDUSA_MULTILINE pattern's quote class admits backticks
+AssertionError: pattern medusaStore\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"] must include backtick in the method quote class: expected 'medusaStore\s*\([^()]*?\{[^{}]*?\bmet…' to match /\['"`\]/
+
+[32m- Expected:[39m 
+/\['"`\]/
+
+[31m+ Received:[39m 
+"medusaStore\\s*\\([^()]*?\\{[^{}]*?\\bmethod\\s*:\\s*['\"](POST|PUT|DELETE|PATCH)['\"]"
+
+ ❯ src/__tests__/bypass-detection/bypass-detection.test.ts:600:9
+    598|         pattern.source,
+    599|         `pattern ${pattern.source} must include backtick in the method…
+    600|       ).toMatch(/\['"`\]/)
+       |         ^
+    601|     }
+    602|   })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 29 passed (31)
+   Start at  17:51:32
+   Duration  1.58s (transform 478ms, setup 0ms, collect 35ms, tests 1.30s, environment 0ms, prepare 55ms)
+

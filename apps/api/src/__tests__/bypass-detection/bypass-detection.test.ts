@@ -169,10 +169,16 @@ const FORBIDDEN_MEDUSA = [
  * Q2 backlog.
  */
 const FORBIDDEN_MEDUSA_MULTILINE = [
-  /medusaStore\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/g,
-  /medusaAdmin\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/g,
-  /medusaStoreFetch\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/g,
-  /medusaAdminFetch\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/g,
+  // W7-G2: backtick added to the method-literal quote class. Wave 6 Target 8
+  // demonstrated that `method: \`POST\`` (template literal) silently passed
+  // every pre-G2 pattern because the quote class was `['"]` only. Widening
+  // to `['"`]` closes the bypass without changing match semantics for the
+  // single/double-quoted cases. The companion `template-literal-method.txt`
+  // fixture pins this contract against future reverts.
+  /medusaStore\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"`](POST|PUT|DELETE|PATCH)['"`]/g,
+  /medusaAdmin\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"`](POST|PUT|DELETE|PATCH)['"`]/g,
+  /medusaStoreFetch\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"`](POST|PUT|DELETE|PATCH)['"`]/g,
+  /medusaAdminFetch\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"`](POST|PUT|DELETE|PATCH)['"`]/g,
 ] as const
 
 const FORBIDDEN_EXECUTE_TOOL_DIRECT = [
@@ -529,6 +535,76 @@ describe("Bypass detection — NEW-P0-X9 multi-line scan", () => {
     // The old pattern would catch ZERO of the 4 multi-line cases (the
     // method literal is always on a separate line from the call).
     expect(matches.length).toBe(0)
+  })
+})
+
+// ── W7-G2: template-literal bypass detection ───────────────────────────────
+//
+// Wave 6 red-team Target 8 (apps/api/src/__tests__/wave6-red-team/
+// 02-template-literal-bypass.test.ts) demonstrated that the
+// FORBIDDEN_MEDUSA_MULTILINE patterns used `['"]` for the method-literal
+// quote class, silently passing any developer who wrote
+// `method: \`POST\`` (template literal) instead of `method: 'POST'`.
+//
+// W7-G2 widens the quote class to `['"\`]` in all four patterns. The
+// fixture below contains the 4 backtick variants (one per medusa*
+// function); the test asserts the post-fix regex catches all 4 AND
+// re-derives the pre-fix gap empirically (zero matches with the old
+// quote class).
+
+describe("Bypass detection — W7-G2 template-literal multi-line scan", () => {
+  function readTemplateFixture(): string {
+    return readFileSync(
+      join(__dirname, "fixtures", "template-literal-method.txt"),
+      "utf8",
+    )
+  }
+
+  it("detects all 4 backtick-method bypass cases in the template-literal fixture", () => {
+    const fixtureContent = readTemplateFixture()
+    const stripped = stripComments(fixtureContent)
+
+    const matchedKinds: string[] = []
+    for (const pattern of FORBIDDEN_MEDUSA_MULTILINE) {
+      const fresh = new RegExp(pattern.source, pattern.flags)
+      for (const m of stripped.matchAll(fresh)) {
+        if (m[0]) matchedKinds.push(m[0].split(/\s|\(/)[0]!)
+      }
+    }
+
+    expect(matchedKinds).toContain("medusaStore")
+    expect(matchedKinds).toContain("medusaAdmin")
+    expect(matchedKinds).toContain("medusaStoreFetch")
+    expect(matchedKinds).toContain("medusaAdminFetch")
+    expect(matchedKinds.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it("PRE-FIX REPRODUCTION: a regex with only ['\"] quote class catches ZERO backtick cases", () => {
+    // Re-create the pre-W7-G2 regex shape (no backtick in the quote class)
+    // and apply it to the template-literal fixture. The point is to pin
+    // the empirical bypass — if some future refactor were to drop the
+    // backtick from the quote class, this assertion would surface it
+    // alongside the positive check above.
+    const preFixPattern =
+      /medusaStore\s*\([^()]*?\{[^{}]*?\bmethod\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/g
+    const fixtureContent = readTemplateFixture()
+    const matches = Array.from(fixtureContent.matchAll(preFixPattern))
+    expect(matches.length).toBe(0)
+  })
+
+  it("each FORBIDDEN_MEDUSA_MULTILINE pattern's quote class admits backticks", () => {
+    // Defense-in-depth: walk the regex source strings directly and assert
+    // they reference the backtick character in the method-quote position.
+    // A future revert that drops the backtick from any of the 4 patterns
+    // fails the build immediately.
+    for (const pattern of FORBIDDEN_MEDUSA_MULTILINE) {
+      // The post-W7-G2 quote class is `['"\`]` — assert the backtick is
+      // present in the pattern source.
+      expect(
+        pattern.source,
+        `pattern ${pattern.source} must include backtick in the method quote class`,
+      ).toMatch(/\['"`\]/)
+    }
   })
 })
 
