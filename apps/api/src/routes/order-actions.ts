@@ -134,7 +134,14 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         productType: i.metadata?.["productType"] as "food" | "frozen" | "merchandise" | undefined,
       }));
 
-      await orderCmdSvc.create({
+      // ── R1-DELETE (NEW-P0-X4 sibling) ─────────────────────────────────
+      //
+      // Migrated from bare-arg `orderCmdSvc.create(...)` to the envelope
+      // path so projection creation is adjudicated like every other
+      // mutation. order.projection.create is a SYSTEM-only intent kind
+      // (the projection is a derived projection from Medusa, not a
+      // customer-initiated state mutation).
+      const projectionFullInput = {
         id: mo.id,
         displayId: mo.display_id,
         customerId: mo.metadata?.["customerId"] ?? mo.customer_id ?? null,
@@ -154,7 +161,40 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         paymentMethod: mo.metadata?.["paymentMethod"] ?? null,
         tipInCentavos: Number(mo.metadata?.["tipInCentavos"]) || 0,
         medusaCreatedAt: new Date(mo.created_at),
+      };
+      const projectionEnvelope = buildEnvelope<
+        "order.projection.create",
+        { readonly orderId: string; readonly displayId: number; readonly customerId: string | null; readonly fulfillmentStatus: string; readonly paymentStatus: string | null; readonly totalInCentavos: number }
+      >({
+        kind: "order.projection.create",
+        payload: {
+          orderId: mo.id,
+          displayId: mo.display_id,
+          customerId: projectionFullInput.customerId,
+          fulfillmentStatus: projectionFullInput.fulfillmentStatus,
+          paymentStatus: projectionFullInput.paymentStatus,
+          totalInCentavos: projectionFullInput.totalInCentavos,
+        },
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: `lazy-create:${mo.id}` },
+        taint: "SYSTEM",
       });
+      const createOutcome = await orderCmdSvc.createFromEnvelope(
+        projectionEnvelope,
+        projectionFullInput,
+      );
+      if (
+        createOutcome.decision.kind !== "EXECUTE" &&
+        createOutcome.decision.kind !== "REWRITE"
+      ) {
+        // Projection creation refused — surface as a non-throw so the
+        // ownership-check path can fall through to its existing failure.
+        server.log.warn(
+          { orderId, decisionKind: createOutcome.decision.kind },
+          "[ensureProjectionExists] kernel refused projection create",
+        );
+        return false;
+      }
       server.log.info({ orderId }, "order projection lazy-created from Medusa");
       return true;
     } catch (err) {
@@ -253,25 +293,68 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           state: orderState,
           policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
           executor: async () => {
-            const result = await orderCmdSvc.transitionStatus(id, {
-              newStatus: OrderFulfillmentStatus.CANCELED,
-              actor: "customer",
-              actorId: customerId,
-              reason: request.body.reason ?? "Cancelado pelo cliente",
+            // ── R1-DELETE (sibling fix) ────────────────────────────────
+            // Inner mutations migrated from bare-arg `transitionStatus`
+            // to envelope-typed `transitionStatusFromEnvelope`. The
+            // outer `order.cancel` envelope is already adjudicated by
+            // runCustomerIntent; these inner envelopes adjudicate the
+            // projection-level transitions (order + payment).
+            const orderTransitionEnvelope = buildEnvelope<
+              "order.status.transition",
+              OrderStatusTransitionPayload
+            >({
+              kind: "order.status.transition",
+              payload: {
+                orderId: id,
+                newStatus: OrderFulfillmentStatus.CANCELED,
+                actor: "customer",
+                actorId: customerId,
+                reason: request.body.reason ?? "Cancelado pelo cliente",
+              },
+              nonce: randomUUID(),
+              actor: { principal: "user", sessionId: customerId },
+              taint: "UNTRUSTED",
             });
+            const orderOutcome = await orderCmdSvc.transitionStatusFromEnvelope(
+              orderTransitionEnvelope,
+            );
+            if (
+              orderOutcome.decision.kind !== "EXECUTE" &&
+              orderOutcome.decision.kind !== "REWRITE"
+            ) {
+              // Inner adjudication refused — propagate as transition error.
+              throw new InvalidTransitionError(
+                id,
+                order.fulfillmentStatus,
+                OrderFulfillmentStatus.CANCELED,
+              );
+            }
+            const result = orderOutcome.result!;
 
-            // Cancel active payment if not already paid
+            // Cancel active payment if not already paid.
             const activePayment = await paymentCmdSvc.findActiveByOrderId(id);
             if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
               try {
-                await paymentCmdSvc.transitionStatus(activePayment.id, {
-                  newStatus: PaymentStatus.CANCELED,
-                  actor: "customer",
-                  actorId: customerId,
-                  reason: "Pedido cancelado pelo cliente",
+                const paymentCancelEnvelope = buildEnvelope<
+                  "payment.status.transition",
+                  PaymentStatusTransitionPayload
+                >({
+                  kind: "payment.status.transition",
+                  payload: {
+                    paymentId: activePayment.id,
+                    newStatus: PaymentStatus.CANCELED,
+                    actor: "customer",
+                    actorId: customerId,
+                    reason: "Pedido cancelado pelo cliente",
+                  },
+                  nonce: randomUUID(),
+                  actor: { principal: "user", sessionId: customerId },
+                  taint: "TRUSTED",
                 });
+                // REFUSE is tolerated (payment may already be terminal).
+                await paymentCmdSvc.transitionStatusFromEnvelope(paymentCancelEnvelope);
               } catch {
-                // Payment may already be terminal — non-critical
+                // Payment may already be terminal — non-critical.
               }
             }
 
@@ -1042,33 +1125,109 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Atomic switch via switching_method → cancel old → create new
+      // ── NEW-P0-X4 (W1 correctness remediation) ───────────────────────
+      //
+      // The previous flow chained THREE bypasses: bare-arg
+      // `paymentCmdSvc.transitionStatus` × 2 + bare-arg `paymentCmdSvc.create`.
+      // `payment.method.switch` is a registered kind in @ibatexas/pack-payments
+      // (W5) but the route never adjudicated it. We now:
+      //
+      //   1. Build a `payment.method.switch` envelope. (We don't run it
+      //      through the customer-intent-gateway because that gateway is
+      //      for the customer-onboarding/orders kinds; payment kinds go
+      //      directly through the payments policy bundle. This mirrors
+      //      payment-retry / regenerate-pix.)
+      //   2. Cancel-old via `transitionStatusFromEnvelope` and create-new
+      //      via `createFromEnvelope`.
+      //   3. The HTTP-layer pre-checks (paid, same-method, switchable
+      //      states) stay as fast-fails before kernel dispatch.
+
       const result = await withLock(`payment:${currentPayment.id}`, async () => {
-        // Transition old payment → switching_method → canceled
+        // 1. Transition old payment → switching_method (if allowed) via envelope.
         if (canTransitionPayment(currentPayment.status as PaymentStatus, PaymentStatus.SWITCHING_METHOD)) {
-          await paymentCmdSvc.transitionStatus(currentPayment.id, {
-            newStatus: PaymentStatus.SWITCHING_METHOD,
-            actor: "customer",
-            actorId: customerId,
-            reason: `Troca de ${currentPayment.method} para ${newMethod}`,
+          const switchingEnvelope = buildEnvelope<
+            "payment.status.transition",
+            PaymentStatusTransitionPayload
+          >({
+            kind: "payment.status.transition",
+            payload: {
+              paymentId: currentPayment.id,
+              newStatus: PaymentStatus.SWITCHING_METHOD,
+              actor: "customer",
+              actorId: customerId,
+              reason: `Troca de ${currentPayment.method} para ${newMethod}`,
+            },
+            nonce: randomUUID(),
+            actor: { principal: "user", sessionId: customerId },
+            taint: "TRUSTED",
           });
+          const switchingOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope);
+          if (
+            switchingOutcome.decision.kind !== "EXECUTE" &&
+            switchingOutcome.decision.kind !== "REWRITE" &&
+            switchingOutcome.decision.kind !== "REFUSE"
+          ) {
+            return { needsEscalation: true } as const;
+          }
         }
 
-        await paymentCmdSvc.transitionStatus(currentPayment.id, {
-          newStatus: PaymentStatus.CANCELED,
-          actor: "customer",
-          actorId: customerId,
-          reason: `Troca de método: ${currentPayment.method} → ${newMethod}`,
+        // 2. Transition old payment → canceled via envelope.
+        const cancelEnvelope = buildEnvelope<
+          "payment.status.transition",
+          PaymentStatusTransitionPayload
+        >({
+          kind: "payment.status.transition",
+          payload: {
+            paymentId: currentPayment.id,
+            newStatus: PaymentStatus.CANCELED,
+            actor: "customer",
+            actorId: customerId,
+            reason: `Troca de método: ${currentPayment.method} → ${newMethod}`,
+          },
+          nonce: randomUUID(),
+          actor: { principal: "user", sessionId: customerId },
+          taint: "TRUSTED",
         });
+        const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
+        if (
+          cancelOutcome.decision.kind !== "EXECUTE" &&
+          cancelOutcome.decision.kind !== "REWRITE" &&
+          cancelOutcome.decision.kind !== "REFUSE"
+        ) {
+          return { needsEscalation: true } as const;
+        }
 
-        // Create new payment with new method
-        const newPayment = await paymentCmdSvc.create({
+        // 3. Create new payment with new method via envelope.
+        const createPayload: PaymentCreatePayload = {
           orderId: id,
           method: newMethod,
           amountInCentavos: currentPayment.amountInCentavos,
+        };
+        const createEnvelope = buildEnvelope<
+          "payment.create",
+          PaymentCreatePayload
+        >({
+          kind: "payment.create",
+          payload: createPayload,
+          nonce: randomUUID(),
+          actor: { principal: "system", sessionId: `customer:${customerId}` },
+          taint: "SYSTEM",
         });
+        const createOutcome = await paymentCmdSvc.createFromEnvelope(createEnvelope);
+        if (
+          createOutcome.decision.kind !== "EXECUTE" &&
+          createOutcome.decision.kind !== "REWRITE"
+        ) {
+          if (createOutcome.decision.kind === "REFUSE") {
+            return {
+              refused: true,
+              userFacing: createOutcome.decision.refusal.userFacing,
+            } as const;
+          }
+          return { needsEscalation: true } as const;
+        }
+        const newPayment = createOutcome.result!;
 
-        // Publish method change event
         await publishNatsEvent("payment.method_changed", {
           eventType: "payment.method_changed",
           orderId: id,
@@ -1078,16 +1237,25 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           timestamp: new Date().toISOString(),
         });
 
-        return newPayment;
+        return { ok: true, payment: newPayment } as const;
       }, 15);
 
       if (!result) {
         return reply.code(409).send({ error: "Operação em andamento. Tente novamente.", code: "LOCK_CONFLICT" });
       }
+      if ("refused" in result && result.refused) {
+        return reply.code(403).send({ error: result.userFacing });
+      }
+      if ("needsEscalation" in result && result.needsEscalation) {
+        return reply.code(503).send({ error: "Troca de método requer atendimento humano." });
+      }
+      if (!("ok" in result) || !result.ok) {
+        return reply.code(500).send({ error: "Erro interno na troca de método de pagamento." });
+      }
 
       return reply.send({
         success: true,
-        paymentId: result.id,
+        paymentId: result.payment.id,
         method: newMethod,
         message: `Método de pagamento alterado para ${newMethod}.`,
       });

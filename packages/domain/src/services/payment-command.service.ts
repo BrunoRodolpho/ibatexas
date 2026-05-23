@@ -105,13 +105,13 @@ interface ReconcileFromWebhookInput {
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export interface PaymentCommandService {
-  /**
-   * @deprecated Use `createFromEnvelope(envelope)` instead.
-   * Create a new payment for an order. Enforces single-active-payment.
-   *
-   * @throws ActivePaymentExistsError if order already has a non-terminal payment
-   */
-  create(data: CreatePaymentInput): Promise<{ id: string; version: number }>
+  // ── R1-DELETE (W1 correctness remediation) ──────────────────────────
+  //
+  // The bare-arg @deprecated entry points (`create`, `transitionStatus`,
+  // `reconcileFromWebhook`) have been DELETED from the interface. All
+  // production callers were migrated to the `*FromEnvelope` path
+  // (apps/api/src/routes/order-actions.ts, packages/tools/src/cart/).
+  // The type system now structurally prevents reintroducing the bypass.
 
   /**
    * Envelope-typed entry point for `payment.create`. SYSTEM-only.
@@ -121,19 +121,6 @@ export interface PaymentCommandService {
   ): Promise<AdjudicatedResult<{ id: string; version: number }>>
 
   /**
-   * @deprecated Use `transitionStatusFromEnvelope(envelope)` instead.
-   * Transition payment status with validation and optimistic concurrency.
-   *
-   * @throws PaymentConcurrencyError if expectedVersion doesn't match
-   * @throws PaymentNotFoundError if payment not found
-   * @throws InvalidPaymentTransitionError if transition not allowed
-   */
-  transitionStatus(
-    paymentId: string,
-    input: TransitionPaymentStatusInput,
-  ): Promise<{ version: number; previousStatus: string; newStatus: string }>
-
-  /**
    * Envelope-typed entry point for `payment.status.transition`.
    */
   transitionStatusFromEnvelope(
@@ -141,15 +128,6 @@ export interface PaymentCommandService {
   ): Promise<
     AdjudicatedResult<{ version: number; previousStatus: string; newStatus: string }>
   >
-
-  /**
-   * @deprecated Use `reconcileFromWebhookFromEnvelope(envelope)` instead.
-   * Reconcile payment status from a Stripe webhook event.
-   */
-  reconcileFromWebhook(
-    paymentId: string,
-    input: ReconcileFromWebhookInput,
-  ): Promise<{ version: number } | null>
 
   /**
    * Envelope-typed entry point for `payment.status.reconcile`. SYSTEM-only.
@@ -575,19 +553,10 @@ export function createPaymentCommandService(
   }
 
   return {
-    // ── Legacy bare-arg methods ─────────────────────────────────────
-
-    async create(data) {
-      return executeCreate(data)
-    },
-
-    async transitionStatus(paymentId, input) {
-      return executeTransition(paymentId, input)
-    },
-
-    async reconcileFromWebhook(paymentId, input) {
-      return executeReconcile(paymentId, input)
-    },
+    // ── R1-DELETE: bare-arg @deprecated methods removed ──────────────
+    // executor helpers (executeCreate, executeTransition,
+    // executeReconcile) remain — they're invoked from the envelope-
+    // typed entry points below.
 
     async findActiveByOrderId(orderId) {
       const payment = await prisma.payment.findFirst({

@@ -49,7 +49,17 @@ vi.mock("@ibatexas/tools", () => ({
 }));
 
 vi.mock("@ibatexas/domain", () => ({
+  // R1-DELETE: route now uses transitionStatusFromEnvelope for inner mutations.
   createOrderCommandService: () => ({
+    transitionStatusFromEnvelope: vi.fn(async () => ({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 2, previousStatus: "pending", newStatus: "canceled" },
+    })),
+    createFromEnvelope: vi.fn(async () => ({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { id: "order_01", version: 1 },
+    })),
+    // Keep bare-arg mock for the few legacy assertions that still check it.
     transitionStatus: mockTransitionStatus,
   }),
   createOrderQueryService: () => ({
@@ -57,6 +67,10 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createPaymentCommandService: () => ({
     findActiveByOrderId: mockFindActiveByOrderId,
+    transitionStatusFromEnvelope: vi.fn(async () => ({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 2, previousStatus: "awaiting_payment", newStatus: "canceled" },
+    })),
     transitionStatus: vi.fn(),
   }),
   createPaymentQueryService: () => ({

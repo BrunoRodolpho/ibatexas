@@ -5,10 +5,23 @@
 // 2. Enforces rate limits (3/hr per customer, 5 per order total)
 // 3. Transitions old payment → canceled, creates new Payment row → payment_pending
 // 4. Creates new Stripe PI, publishes payment.status_changed
+//
+// ── R1-DELETE (W1 correctness remediation) ────────────────────────────────
+//
+// All Payment mutations now go through `*FromEnvelope`. The previous
+// bare-arg `cmdSvc.transitionStatus(...)` + `cmdSvc.create(...)` calls
+// were two of the nine known kernel-bypass sites.
 
+import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
+import { buildEnvelope } from "@adjudicate/core";
 import { NonRetryableError, type AgentContext } from "@ibatexas/types";
-import { createPaymentQueryService, createPaymentCommandService } from "@ibatexas/domain";
+import {
+  createPaymentQueryService,
+  createPaymentCommandService,
+  type PaymentStatusTransitionPayload,
+  type PaymentCreatePayload,
+} from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
@@ -85,14 +98,32 @@ export async function regeneratePix(
       await cancelStalePaymentIntent(active.stripePaymentIntentId);
     }
 
-    // Transition current payment → canceled (terminal)
-    await cmdSvc.transitionStatus(active.id, {
-      newStatus: "canceled",
-      actor: "customer",
-      actorId: ctx.customerId,
-      reason: "pix_regeneration",
-      expectedVersion: freshPayment.version,
+    // Transition current payment → canceled (terminal) via envelope.
+    const cancelEnvelope = buildEnvelope<
+      "payment.status.transition",
+      PaymentStatusTransitionPayload
+    >({
+      kind: "payment.status.transition",
+      payload: {
+        paymentId: active.id,
+        newStatus: "canceled",
+        actor: "customer",
+        actorId: ctx.customerId,
+        reason: "pix_regeneration",
+        expectedVersion: freshPayment.version,
+      },
+      nonce: randomUUID(),
+      actor: { principal: "user", sessionId: ctx.customerId },
+      taint: "TRUSTED",
     });
+    const cancelOutcome = await cmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
+    if (
+      cancelOutcome.decision.kind !== "EXECUTE" &&
+      cancelOutcome.decision.kind !== "REWRITE" &&
+      cancelOutcome.decision.kind !== "REFUSE"
+    ) {
+      return { success: false, message: "Não foi possível cancelar o pagamento atual." };
+    }
 
     // Create new Stripe PI with PIX
     const stripe = getStripe();
@@ -115,14 +146,32 @@ export async function regeneratePix(
       ? new Date(newPi.next_action.pix_display_qr_code.expires_at * 1000).toISOString()
       : null;
 
-    // Create new Payment row → payment_pending
-    const newPayment = await cmdSvc.create({
+    // Create new Payment row → payment_pending via envelope.
+    const createPayload: PaymentCreatePayload = {
       orderId: input.orderId,
       method: "pix",
       amountInCentavos: active.amountInCentavos,
       stripePaymentIntentId: newPi.id,
-      pixExpiresAt: pixExpiresAt ? new Date(pixExpiresAt) : undefined,
+      pixExpiresAt: pixExpiresAt ? new Date(pixExpiresAt).toISOString() : undefined,
+    };
+    const createEnvelope = buildEnvelope<
+      "payment.create",
+      PaymentCreatePayload
+    >({
+      kind: "payment.create",
+      payload: createPayload,
+      nonce: randomUUID(),
+      actor: { principal: "system", sessionId: `customer:${ctx.customerId}` },
+      taint: "SYSTEM",
     });
+    const createOutcome = await cmdSvc.createFromEnvelope(createEnvelope);
+    if (
+      createOutcome.decision.kind !== "EXECUTE" &&
+      createOutcome.decision.kind !== "REWRITE"
+    ) {
+      return { success: false, message: "Não foi possível gerar novo PIX." };
+    }
+    const newPayment = createOutcome.result!;
 
     // Publish event
     void publishNatsEvent("payment.status_changed", {

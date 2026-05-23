@@ -1,9 +1,22 @@
 // cancel_order tool — cancel a Medusa order if eligible (with PONR check)
 //
 // Phase 2 enhancement: also cancels the active Payment row if not already paid.
+//
+// ── R1-DELETE (W1 correctness remediation) ────────────────────────────────
+//
+// Payment cancellation now goes through `transitionStatusFromEnvelope`.
+// The previous bare-arg `paymentCmdSvc.transitionStatus(...)` bypassed
+// kernel adjudication.
 
+import { randomUUID } from "node:crypto";
+import { buildEnvelope } from "@adjudicate/core";
 import { CancelOrderInputSchema, NonRetryableError, type CancelOrderInput, type AgentContext } from "@ibatexas/types";
-import { createOrderService, createPaymentQueryService, createPaymentCommandService } from "@ibatexas/domain";
+import {
+  createOrderService,
+  createPaymentQueryService,
+  createPaymentCommandService,
+  type PaymentStatusTransitionPayload,
+} from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdmin } from "../medusa/client.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
@@ -37,14 +50,25 @@ export async function cancelOrder(
             await cancelStalePaymentIntent(activePayment.stripePaymentIntentId);
           }
 
-          // Transition payment → canceled
-          await paymentCmdSvc.transitionStatus(activePayment.id, {
-            newStatus: "canceled",
-            actor: "customer",
-            actorId: ctx.customerId,
-            reason: "order_canceled",
-            expectedVersion: activePayment.version,
+          // Transition payment → canceled via the kernel-adjudicated path.
+          const cancelEnvelope = buildEnvelope<
+            "payment.status.transition",
+            PaymentStatusTransitionPayload
+          >({
+            kind: "payment.status.transition",
+            payload: {
+              paymentId: activePayment.id,
+              newStatus: "canceled",
+              actor: "customer",
+              actorId: ctx.customerId,
+              reason: "order_canceled",
+              expectedVersion: activePayment.version,
+            },
+            nonce: randomUUID(),
+            actor: { principal: "user", sessionId: ctx.customerId },
+            taint: "TRUSTED",
           });
+          await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
 
           void publishNatsEvent("payment.status_changed", {
             orderId: parsed.orderId,

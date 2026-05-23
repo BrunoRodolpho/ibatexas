@@ -141,14 +141,15 @@ export interface ChangeAddressResult {
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export interface OrderCommandService {
-  /**
-   * @deprecated Use `createFromEnvelope(envelope)` instead. The bare-arg
-   * surface is retained for backwards compatibility with un-migrated
-   * callers (tasks 12-14, 16, 17 own those callers' migrations).
-   *
-   * Create a new order projection (called on order.placed).
-   */
-  create(data: CreateOrderProjectionInput): Promise<{ id: string; version: number }>
+  // ── R1-DELETE (W1 correctness remediation) ──────────────────────────
+  //
+  // The bare-arg @deprecated entry points (`create`, `transitionStatus`,
+  // `reconcileStatus`) have been DELETED from the interface. All
+  // production callers were migrated to the `*FromEnvelope` path; the
+  // type system now structurally prevents reintroducing the bypass.
+  //
+  // Per the audit (deep-audit/09-code-quality-debt.md #1), this closes
+  // the chokepoint claim in CLAUDE.md rule #9.
 
   /**
    * Envelope-typed entry point for the `order.projection.create` system
@@ -166,19 +167,6 @@ export interface OrderCommandService {
   ): Promise<AdjudicatedResult<{ id: string; version: number }>>
 
   /**
-   * @deprecated Use `transitionStatusFromEnvelope(envelope)` instead.
-   * Transition order status with validation and optimistic concurrency.
-   *
-   * @throws ConcurrencyError if expectedVersion doesn't match
-   * @throws ProjectionNotFoundError if order not in projection
-   * @throws InvalidTransitionError if transition is not allowed
-   */
-  transitionStatus(
-    orderId: string,
-    input: TransitionStatusInput,
-  ): Promise<{ version: number; previousStatus: string; newStatus: string }>
-
-  /**
    * Envelope-typed entry point for the `order.status.transition` intent.
    * Adjudicates via `orderProjectionPolicyBundle`. Tolerates UNTRUSTED
    * (admin/customer/system actors all accepted at taint).
@@ -188,14 +176,6 @@ export interface OrderCommandService {
   ): Promise<
     AdjudicatedResult<{ version: number; previousStatus: string; newStatus: string }>
   >
-
-  /**
-   * @deprecated Use `reconcileStatusFromEnvelope(envelope)` instead.
-   * Reconcile status from an event (subscriber safety net).
-   *
-   * @throws MissingEventVersionError if eventVersion is missing
-   */
-  reconcileStatus(orderId: string, input: ReconcileStatusInput): Promise<{ version: number } | null>
 
   /**
    * Envelope-typed entry point for the `order.status.reconcile` intent.
@@ -453,20 +433,11 @@ export function createOrderCommandService(
   }
 
   return {
-    // ── Legacy bare-arg methods ─────────────────────────────────────────
-
-    async create(data) {
-      return executeCreate(data)
-    },
-
-    async transitionStatus(orderId, input) {
-      return executeTransition(orderId, input)
-    },
-
-    async reconcileStatus(orderId, input) {
-      return executeReconcile(orderId, input)
-    },
-
+    // ── R1-DELETE: bare-arg @deprecated methods removed ─────────────────
+    // The executor helpers (executeCreate, executeTransition,
+    // executeReconcile) remain — they're invoked from the envelope-typed
+    // entry points below.
+    //
     // ── Envelope-typed entry points ─────────────────────────────────────
 
     async createFromEnvelope(envelope, fullInput) {
