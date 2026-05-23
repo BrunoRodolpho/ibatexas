@@ -1,0 +1,250 @@
+# Prometheus AlertManager rules for the IBX-IGE kernel.
+#
+# Wave-3 materialization of `docs/adjudicate-migration/migration/06-observability-requirements.md`
+# §"Alerting rules" (the 14-rule table at lines 336-353).
+#
+# Compatible with:
+#   - Prometheus rule format v2 (the `groups:` shape)
+#   - Alertmanager + PagerDuty integration (severity label drives routing)
+#   - Sentry alert ingestion via the prometheus-exporter side-channel
+#
+# Routing convention:
+#   labels.severity = "S1"       → PagerDuty critical page + Slack #ibx-rollout
+#   labels.severity = "S2"       → PagerDuty warn + Slack #ibx-rollout
+#   labels.team     = "kernel"   → routes to the migration on-call rotation
+#
+# Anti-theater note: each `expr` references metrics that exist in
+# `apps/api/src/plugins/kernel-metrics-sink.ts` OR are new W3 metrics this
+# session adds. The validation test at
+# `packages/cli/src/__tests__/infra-grafana-alerts.test.ts` parses this file
+# and asserts every metric name appears in the canonical list.
+
+groups:
+  - name: kernel-correctness
+    interval: 30s
+    rules:
+      # ── 1 ──────────────────────────────────────────────────────────────────
+      - alert: KernelRefusalRateSpike
+        expr: |
+          (
+            sum by(intent_kind) (rate(kernel_refusal_total[5m]))
+            /
+            clamp_min(sum by(intent_kind) (rate(kernel_decision_total[5m])), 0.001)
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: S1
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Kernel refusal rate >10% for {{ $labels.intent_kind }}"
+          description: |
+            Sustained REFUSE rate above 10% for intent_kind={{ $labels.intent_kind }}.
+            Customer-visible refusal storm; investigate Pack policy or upstream
+            data quality.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/runbooks/SHADOW-ENFORCE-ROLLOUT.md#common-failure-modes"
+
+      # ── 2 ──────────────────────────────────────────────────────────────────
+      - alert: KernelDivergenceDecisionKind
+        expr: sum(increase(kernel_shadow_divergence_total{class="DECISION_KIND"}[1m])) > 0
+        for: 1m
+        labels:
+          severity: S2
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Shadow DECISION_KIND divergence detected"
+          description: |
+            kernel and legacy code disagree on the decision kind (EXECUTE vs
+            REFUSE / DEFER / ESCALATE). Block enforce flip for affected intent.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/runbooks/SHADOW-ENFORCE-ROLLOUT.md#step-2--monitor-the-soak-window"
+
+      # ── 3 ──────────────────────────────────────────────────────────────────
+      - alert: KernelDivergencePayloadRewrite
+        expr: sum(increase(kernel_shadow_divergence_total{class="PAYLOAD_REWRITE"}[1m])) > 0
+        for: 1m
+        labels:
+          severity: S2
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Shadow PAYLOAD_REWRITE divergence detected"
+          description: |
+            Kernel returned REWRITE; legacy did not. Requires manual review of
+            the audit record before enforce flip.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/ops/runbooks/01-stage-read-mutations.md"
+
+      # ── 4 ──────────────────────────────────────────────────────────────────
+      - alert: KernelDecisionLatencyHigh
+        expr: histogram_quantile(0.99, sum by(le) (rate(kernel_decision_duration_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: S2
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Kernel decision p99 latency > 2s"
+          description: |
+            adjudicate() p99 latency exceeded 2s for 5m. Customer-visible
+            chat/WhatsApp latency; the kernel is on the hot path of every
+            mutating request.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/runbooks/SHADOW-ENFORCE-ROLLOUT.md#common-failure-modes"
+
+      # ── 5 ──────────────────────────────────────────────────────────────────
+      - alert: KernelAuditLagHighPostgres
+        expr: histogram_quantile(0.99, sum by(le) (rate(kernel_audit_lag_seconds_bucket{sink="postgres"}[5m]))) > 5
+        for: 5m
+        labels:
+          severity: S2
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Audit Postgres lag p99 > 5s"
+          description: |
+            audit_intent table write lag p99 above 5s. Possible amplification
+            from a new enforce flip; check kernel-decision Grafana panel for
+            volume change.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/ops/runbooks/04-stage-financial-mutations.md"
+
+      # ── 6 ──────────────────────────────────────────────────────────────────
+      - alert: KernelAuditLagHighNats
+        expr: histogram_quantile(0.99, sum by(le) (rate(kernel_audit_lag_seconds_bucket{sink="nats"}[5m]))) > 1
+        for: 5m
+        labels:
+          severity: S2
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Audit NATS lag p99 > 1s"
+          description: |
+            audit.intent.decision.v1 publish-confirm lag above 1s. Likely
+            JetStream stream slow or consumer ack drift.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/remediation/NATS-AUTH-REQUIREMENTS.md"
+
+      # ── 7 ──────────────────────────────────────────────────────────────────
+      - alert: KernelLedgerUnavailable
+        expr: sum(rate(kernel_ledger_op_total{outcome="error"}[1m])) > 0
+        for: 1m
+        labels:
+          severity: S1
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Kernel execution-ledger error rate > 0"
+          description: |
+            Redis-backed execution ledger is failing. With FAIL_OPEN=true
+            replay protection is downgraded; without FAIL_OPEN we are
+            refusing every mutation. WhatsApp owner per investigation/07.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/migration/05-kill-switch-strategy.md"
+
+      # ── 8 ──────────────────────────────────────────────────────────────────
+      - alert: KernelDeferTimeoutRate
+        expr: sum by(kind) (rate(kernel_defer_timeout_total[1m])) > 0
+        for: 1m
+        labels:
+          severity: S1
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Kernel DEFER timeouts firing for {{ $labels.kind }}"
+          description: |
+            Intents parked past their timeoutMs. Strong signal of PSP outage
+            (PIX webhook silence) or resume-signal subscriber unwired.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/ops/runbooks/05-stage-pix-charge-pack.md"
+
+      # ── 9 ──────────────────────────────────────────────────────────────────
+      - alert: KernelDeferQuotaExceeded
+        expr: sum by(kind) (rate(kernel_defer_quota_exceeded_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: S2
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "DEFER quota exceeded for {{ $labels.kind }}"
+          description: |
+            Per-actor/per-kind park quota hit. Could be a stuck loop or abuse.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/governance/06-deferred-execution-policy.md"
+
+      # ── 10 ─────────────────────────────────────────────────────────────────
+      - alert: KernelReplayDriftRegressing
+        expr: sum by(class) (kernel_replay_drift_total{class=~"regressing|flapping"}) > 0
+        for: 0s
+        labels:
+          severity: S1
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Daily replay job detected regressing/flapping drift"
+          description: |
+            Daily ibx kernel replay --since=24h returned non-zero drift in
+            class regressing or flapping. Gate release; investigate Pack
+            policy change vs legacy code.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/governance/05-audit-replay-requirements.md"
+
+      # ── 11 ─────────────────────────────────────────────────────────────────
+      - alert: KernelKillSwitchEngaged
+        expr: kernel_kill_switch_state > 0
+        for: 0s
+        labels:
+          severity: S2
+          team: kernel
+          page: slack
+        annotations:
+          summary: "Kernel kill switch engaged: scope={{ $labels.scope }} target={{ $labels.target }}"
+          description: |
+            A kill switch is active. Track in the dashboard; review whether
+            the engagement is operator-driven or a circuit-breaker firing.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/migration/05-kill-switch-strategy.md"
+
+      # ── 12 ─────────────────────────────────────────────────────────────────
+      - alert: KernelAuditSinkFailureBurst
+        expr: sum by(sink) (increase(kernel_audit_sink_failure_total[1m])) > 5
+        for: 1m
+        labels:
+          severity: S2
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Audit sink {{ $labels.sink }} failure burst"
+          description: |
+            More than 5 consecutive audit-sink failures within a minute. The
+            persistentBufferedSink should be spilling to disk; check spill
+            size and underlying sink (postgres/nats) health.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/migration/05-kill-switch-strategy.md"
+
+      # ── 13 ─────────────────────────────────────────────────────────────────
+      - alert: KernelAuditSpillOverflow
+        expr: max(kernel_audit_spill_bytes) > 1073741824
+        for: 2m
+        labels:
+          severity: S1
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Audit spill > 1GB"
+          description: |
+            Persistent buffered-sink spilled audit records exceed the 1GB
+            capacity threshold. Risk of audit-record loss; investigate the
+            backing sink and consider engaging the audit-sink kill switch.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/migration/05-kill-switch-strategy.md"
+
+      # ── 14 ─────────────────────────────────────────────────────────────────
+      - alert: KernelToolCallSuccessDrop
+        expr: |
+          (
+            sum(rate(kernel_decision_total{kind="EXECUTE"}[10m]))
+            /
+            clamp_min(sum(rate(kernel_decision_total[10m])), 0.001)
+          ) < 0.95
+        for: 10m
+        labels:
+          severity: S1
+          team: kernel
+          page: pagerduty
+        annotations:
+          summary: "Tool-call EXECUTE rate < 95%"
+          description: |
+            Post-enforce tool-call success ratio dropped below 95%. Likely a
+            Pack regression; trigger rollback per the rollout runbook.
+          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/ops/runbooks/01-stage-read-mutations.md"

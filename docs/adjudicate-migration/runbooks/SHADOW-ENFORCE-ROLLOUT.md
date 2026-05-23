@@ -41,7 +41,7 @@ All boxes MUST be checked off in the rollout ticket. The non-negotiable items:
 1. **Latest deploy GREEN.** `pnpm test` clean on `main` for ≥24h. Tests = 911 (api) + 354 (llm-provider) + (other packages). Coverage of governance surface ≥ 88% (W5-9 metric).
 2. **`audit.intent.decision.v1` is flowing.** Grafana panel `audit_records_per_minute` reads non-zero for ≥48h. Postgres `intent_audit` row count growing at expected rate.
 3. **Sentry alerting on `kernel.bootstrap.enforce_config_typo` is on.** This catches the P0-9 typo scenario before it lands.
-4. **Shadow-divergence dashboard is open in another tab.** `https://grafana.{env}.ibatexas.com/d/kernel-shadow` (URL TBD when M4 dashboards deploy).
+4. **Shadow-divergence dashboard is open in another tab.** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness` (per-intent enforce-readiness, Wave-3 artifact at `infra/grafana/dashboards/kernel-enforcement-readiness.json`). The decision overview lives at `/d/kernel-decision-overview`; the audit pipeline panel is at `/d/kernel-audit-pipeline-health`; the DEFER backlog at `/d/kernel-defer-backlog`. Deployment of the JSON to a running Grafana instance is operator-side.
 5. **Kill-switch procedure rehearsed.** Refer to `migration/05-kill-switch-strategy.md` and verify the on-call engineer can revert `IBX_KERNEL_ENFORCE` within 5 minutes.
 6. **NATS auth deployed.** Per audit P0-12 — without NKey/JWT auth, anyone on the network can forge resume signals. Enforcement requires authenticated NATS. (DEFERRED: see `remediation/NATS-AUTH-REQUIREMENTS.md`.)
 7. **The intent's policy bundle is COMPLETE in its Pack.** `KNOWN_INTENT_KINDS` (in `packages/llm-provider/src/intent-kinds.ts`) contains the kind; the Pack registers a guard for every adjudicate call site that uses it.
@@ -83,11 +83,11 @@ Duration per `migration/04`:
 
 During the soak:
 
-- **Watch the shadow-divergence Grafana panel daily.** Specifically: `kernel_shadow_divergence_total{intent_kind="<kind>",divergence="DECISION_KIND"}` MUST stay at zero for every flip. Non-zero = STOP. Investigate.
+- **Watch the shadow-divergence Grafana panel daily** (`/d/kernel-enforcement-readiness?var-intent_kind=<kind>`). Specifically: `kernel_shadow_divergence_total{intent_kind="<kind>",class="DECISION_KIND"}` MUST stay at zero for every flip. Non-zero = STOP. Investigate. (W3 fix: the label is `class`, not `divergence`.)
 - **`BASIS_ONLY` divergence is tolerated at the Tier threshold.** Tier 1 allows up to 5% rolling 24h; Tier 4 demands < 1%.
-- **Run `ibx kernel divergence --since=24h --intent-kind=<kind>`** every weekday at 09h00 BRT. Output is JSON; pipe to `jq` to grep for `divergence=="DECISION_KIND"`. Any hit triggers an incident review.
+- **Run `ibx kernel divergence --since=24h --intent-kind=<kind>`** every weekday at 09h00 BRT. Output is JSON; pipe to `jq` to grep for `class=="DECISION_KIND"`. Any hit triggers an incident review.
 - **Run `ibx kernel replay --since=24h --intent-kind=<kind>`** every weekday. The CLI's replay path feeds yesterday's audit records back through adjudicate(); drift > 0 indicates a regression in either the legacy code OR the Pack — investigate via `intent_hash` cross-reference in `intent_audit`.
-- **Watch the audit-sink lag panel.** `kernel_audit_postgres_lag_seconds` p99 should stay < 5s. Spikes during a shadow flip suggest the new code path is amplifying writes.
+- **Watch the audit-sink lag panel** (`/d/kernel-audit-pipeline-health`). `kernel_audit_lag_seconds{sink="postgres"}` p99 should stay < 5s; `{sink="nats"}` p99 < 1s. Spikes during a shadow flip suggest the new code path is amplifying writes. PagerDuty rules: `KernelAuditLagHighPostgres` / `KernelAuditLagHighNats` in `infra/alerts/kernel.yaml`.
 
 If at any point a `DECISION_KIND` or `PAYLOAD_REWRITE` divergence fires:
 
@@ -136,8 +136,8 @@ The intent kind MUST appear under `enforce`. If not, the env var didn't propagat
 
 The first 24h after enforce flips:
 
-- **Watch the kernel-decision Grafana panel.** `kernel_decision_total{intent_kind="<kind>",decision_kind=...}` distribution should match the shadow-soak distribution within ±5%. Big shifts mean the legacy was filtering traffic in a way the Pack doesn't.
-- **Watch Sentry for `kernel_decision_unexpected_*`.** These are emitted by the metrics sink when an unexpected decision kind fires (e.g., REWRITE on a kind that never REWROTE in shadow).
+- **Watch the kernel-decision Grafana panel** (`/d/kernel-decision-overview`). `kernel_decision_total{intent_kind="<kind>",kind=...}` distribution should match the shadow-soak distribution within ±5%. Big shifts mean the legacy was filtering traffic in a way the Pack doesn't.
+- **Watch Sentry for refusal-burst breadcrumbs.** The kernel-metrics-sink emits Sentry breadcrumbs on every REFUSE (`audit_refused` category, see `apps/api/src/plugins/kernel-metrics-sink.ts`). PagerDuty rule `KernelRefusalRateSpike` in `infra/alerts/kernel.yaml` fires when the refusal rate exceeds 10% for 5m.
 - **Watch the audit-pipeline DLQ.** `ibx dlq list` should show no growth in `audit.intent.decision.v1`. Growth here = Postgres can't ingest fast enough, possibly correlated with enforce-driven volume change.
 - **Customer support tickets, the first day**. New refusals = customer-visible behaviour change. The on-call lead should triage all new refusal patterns within 2 hours.
 

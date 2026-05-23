@@ -13,7 +13,7 @@
 - **Per-intent shadow minimum 7 days.** Stretch to 14 days for payment-touching or LGPD-touching intents. Stretch to 21 days for `customer.anonymize` (irreversibility risk).
 - **Divergence thresholds are stratified.** Tier 1 tolerates higher `BASIS_ONLY` drift (vocabulary changes); Tier 4 demands `DECISION_KIND` = 0 *and* `PAYLOAD_REWRITE` = 0 *and* `BASIS_ONLY` < 1% for the full window.
 - **Each intent has a named rollback owner.** Tier 1 = on-call rotation; Tier 2 = on-call + migration lead; Tier 3 = on-call + migration lead + product owner; Tier 4 = on-call + migration lead + finance/legal.
-- **Dashboard URLs are placeholders.** Real URLs land when M4 deploys the Grafana dashboards; this doc names them.
+- **Dashboard URLs target the Wave-3 per-intent enforce-readiness dashboard** (`/d/kernel-enforcement-readiness?var-intent_kind=<kind>`, JSON at `infra/grafana/dashboards/kernel-enforcement-readiness.json`). Deployment of the JSON to a running Grafana instance is operator-side.
 
 ---
 
@@ -147,7 +147,7 @@ Tier 1 absorbs vocabulary upgrades (`BASIS_ONLY` higher than later tiers) becaus
 
 **Divergence threshold:** `DECISION_KIND` = 0, `PAYLOAD_REWRITE` = 0, `BASIS_ONLY` < 5%.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-reservation-create` (TODO: deploy in M4).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=reservation.create` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call rotation, escalate to migration lead.
 
@@ -177,7 +177,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Per-tier.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-order-note-add` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=order.note.add` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call rotation.
 
@@ -199,7 +199,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Per-tier.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-customer-preferences-update` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=customer.preferences.update` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call rotation.
 
@@ -222,7 +222,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Per-tier.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-whatsapp-message-send` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=whatsapp.message.send` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call rotation.
 
@@ -247,7 +247,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 2.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-order-item-add` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=order.item.add` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call rotation + migration lead.
 
@@ -272,7 +272,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 2.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-cart-delivery-update` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=cart.delivery.update` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call + migration lead.
 
@@ -295,7 +295,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 2.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-order-amend` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=order.amend` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call + migration lead.
 
@@ -318,7 +318,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 2.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-reservation-modify` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=reservation.modify` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call + migration lead.
 
@@ -345,7 +345,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 3.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-order-cancel` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=order.cancel` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call + migration lead + product owner.
 
@@ -369,7 +369,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 3.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-payment-pix-regenerate` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=payment.pix.regenerate` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call + migration lead + product owner.
 
@@ -394,7 +394,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 3.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-customer-profile-update` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=customer.profile.update` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call + migration lead + product owner.
 
@@ -419,7 +419,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 4. `DECISION_KIND` = 0, `PAYLOAD_REWRITE` = 0, `BASIS_ONLY` < 1%.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-payment-refund-issue` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=payment.refund.issue` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call (two-person) + migration lead + finance.
 
@@ -444,7 +444,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 4.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-payment-force-status` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=payment.force.status` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call (two-person) + migration lead + finance + Owner role.
 
@@ -468,7 +468,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 4.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-customer-anonymize` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=customer.anonymize` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call (two-person) + migration lead + legal + privacy officer.
 
@@ -493,7 +493,7 @@ ibx kernel kill-switch enable reservation.create
 
 **Divergence threshold:** Tier 4.
 
-**Dashboard URL:** `https://grafana.ibatexas/d/kernel-order-force-cancel` (TODO).
+**Dashboard URL:** `https://grafana.{env}.ibatexas.com/d/kernel-enforcement-readiness?var-intent_kind=order.force.cancel` (Wave-3 enforce-readiness dashboard, intent_kind filter).
 
 **Rollback owner:** On-call + migration lead + product owner + finance (if mid-fulfillment).
 
