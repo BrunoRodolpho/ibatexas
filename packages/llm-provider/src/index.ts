@@ -93,5 +93,9 @@ export {
 // Ledger error type (P0-g)
 export { LedgerUnavailableError } from "./intent-ledger.js"
 
+// Audit sink (Phase H) — needed by subscribers that emit audit records
+// outside the responder hot path (e.g. defer-resolver on resume).
+export { getAuditSink } from "./intent-audit-wiring.js"
+
 // Re-export agent types for consumers
 export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
