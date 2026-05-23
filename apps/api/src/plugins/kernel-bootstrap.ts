@@ -28,6 +28,7 @@ import { installPack, PackConformanceError } from "@adjudicate/core"
 import { setMetricsSink, validateEnforceConfig } from "@adjudicate/core/kernel"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { reservationsPack } from "@ibatexas/pack-reservations"
+import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS } from "@ibatexas/llm-provider"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
@@ -120,10 +121,10 @@ export function installKernelMetricsSink(
 export function installFirstPartyPacks() {
   const orders = installPack(ordersPack)
   const reservations = installPack(reservationsPack)
-  // Future Packs land here as tasks 10 / 21 merge:
-  //   const whatsapp     = installPack(whatsappPack)
+  const whatsapp = installPack(whatsappPack)
+  // Future Packs land here as task 21 merges:
   //   const customerOnb  = installPack(customerOnboardingPack)
-  return { orders, reservations }
+  return { orders, reservations, whatsapp }
 }
 
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
@@ -141,7 +142,10 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
   try {
     installFirstPartyPacks()
     server.log.info(
-      { event: "kernel.bootstrap.pack_installed", packs: ["orders", "reservations"] },
+      {
+        event: "kernel.bootstrap.pack_installed",
+        packs: ["orders", "reservations", "whatsapp"],
+      },
       "[kernel-bootstrap] first-party packs installed",
     )
   } catch (err) {

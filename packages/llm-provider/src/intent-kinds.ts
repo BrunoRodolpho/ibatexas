@@ -12,15 +12,15 @@
 //
 // # Scope today
 //
-// Three intent unions are imported:
+// Four intent unions are imported:
 //   - `OrderIntentKind`       from `@ibatexas/pack-orders`
 //   - `ReservationIntentKind` from `@ibatexas/pack-reservations`
+//   - `WhatsAppIntentKind`    from `@ibatexas/pack-whatsapp`
 //   - `PixIntentKind`         from `@adjudicate/pack-payments-pix`
 //
 // # TODO — future Packs
 //
-// As tasks 10 / 21 land, extend this union with:
-//   - `WhatsappIntentKind`            from `@ibatexas/pack-whatsapp`        (task 10)
+// As task 21 lands, extend this union with:
 //   - `CustomerOnboardingIntentKind`  from `@ibatexas/pack-customer-onboarding` (task 21)
 //
 // Each follow-up should:
@@ -38,6 +38,7 @@
 
 import type { OrderIntentKind } from "@ibatexas/pack-orders"
 import type { ReservationIntentKind } from "@ibatexas/pack-reservations"
+import type { WhatsAppIntentKind } from "@ibatexas/pack-whatsapp"
 import type { PixIntentKind } from "@adjudicate/pack-payments-pix"
 
 // ── Pack-orders intent surface ───────────────────────────────────────────────
@@ -79,6 +80,25 @@ const RESERVATION_INTENT_KINDS = [
   "reservation.waitlist.notify",
 ] as const satisfies readonly ReservationIntentKind[]
 
+// ── Pack-whatsapp intent surface ─────────────────────────────────────────────
+//
+// Mirrors the `WhatsAppIntentKind` union in
+// `packages/pack-whatsapp/src/types.ts`. If you add a kind there, add it
+// here too — `satisfies` will fail the build otherwise.
+//
+// Source: `docs/adjudicate-migration/governance/01-intent-taxonomy.md`
+// §"Domain: whatsapp". The taxonomy enumerates six whatsapp kinds; this
+// Pack covers three (`whatsapp.message.send`, `whatsapp.template.send`,
+// `whatsapp.session.handover`). The remaining three
+// (`whatsapp.handoff.request`, `whatsapp.followup.schedule`,
+// `whatsapp.outreach.send`) land in subsequent tasks.
+
+const WHATSAPP_INTENT_KINDS = [
+  "whatsapp.message.send",
+  "whatsapp.template.send",
+  "whatsapp.session.handover",
+] as const satisfies readonly WhatsAppIntentKind[]
+
 // ── Pack-payments-pix intent surface ─────────────────────────────────────────
 //
 // Mirrors the `PixIntentKind` union in
@@ -102,7 +122,7 @@ const PIX_INTENT_KINDS = [
 export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...ORDER_INTENT_KINDS,
   ...RESERVATION_INTENT_KINDS,
+  ...WHATSAPP_INTENT_KINDS,
   ...PIX_INTENT_KINDS,
-  // TODO(task-10): ...WHATSAPP_INTENT_KINDS,
   // TODO(task-21): ...CUSTOMER_ONBOARDING_INTENT_KINDS,
 ])
