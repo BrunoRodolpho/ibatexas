@@ -1,0 +1,88 @@
+W7-O2 — `pnpm migrate` phantom command — replaced with real `psql -f` path
+============================================================================
+
+Finding (W6 operational drill, Drill 4):
+
+  > Replay window | PARTIAL — `pnpm migrate` followup is a dead end (no script)
+
+  Top dead-end #2:
+  > "Run pnpm migrate" lies (Drills 4, 6). The CLI's TODO message tells the
+  > operator to run `pnpm migrate` in `@adjudicate/audit-postgres`. That
+  > script does not exist.
+
+Verification that no `migrate` script exists:
+
+$ cat ../adjudicate/packages/audit-postgres/package.json
+   ...
+   "scripts": {
+     "build": "tsc --outDir dist",
+     "lint": "tsc --noEmit && eslint \"src/**/*.ts\"",
+     "test": "vitest run"
+   },
+   ...
+
+$ grep -rn "runMigrations\|applyMigrations" ../adjudicate/packages/audit-postgres/src/
+   ../adjudicate/packages/audit-postgres/src/postgres-sink.ts:8:    // Schema: see ./schema.ts and ./migrations/001-create-intent-audit.sql.
+   ../adjudicate/packages/audit-postgres/src/postgres-sink.ts:142: * migrations/001-create-intent-audit.sql.
+
+No runner. Only raw SQL files.
+
+$ ls ../adjudicate/packages/audit-postgres/migrations/
+   001-create-intent-audit.sql
+   002-add-plan-jsonb.sql
+   003-add-nonce.sql
+   004-create-governance-events.sql
+   005-add-supersedes.sql
+   006-add-guard-fire-stats.sql
+   007-add-audit-outcomes.sql
+   008-add-v4-fields.sql
+
+Chosen path: (b) — replace the message with the actual operator command.
+
+  Rationale: see W7-DECISIONS-ops.md §O2. Writing a runner script from
+  scratch is out of scope; adding a `migrate` script to root package.json
+  that points to a non-existent implementation would re-create the phantom
+  on a new surface.
+
+Implementation:
+
+  packages/cli/src/commands/kernel.ts `runReplay()` off-state TODO:
+
+    BEFORE (W7-O2):
+      "Rodar pnpm migrate em @adjudicate/audit-postgres para criar a tabela intent_audit."
+
+    AFTER:
+      "Aplicar as migrações de @adjudicate/audit-postgres (SQL puro — não há
+       script `migrate`). Em ordem numérica, contra o $DATABASE_URL:
+         for f in ../adjudicate/packages/audit-postgres/migrations/*.sql; do
+           echo \"-- aplicando $f\" && psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\"
+         done
+       Pré-requisitos: psql instalado, $DATABASE_URL apontando para o cluster
+       destino, repo adjudicate (BrunoRodolpho/adjudicate) presente em ../adjudicate
+       conforme `pnpm-workspace.yaml` (cross-repo workspace)."
+
+  packages/cli/src/commands/__tests__/kernel.test.ts new assertion:
+
+    it("off-state TODO points to psql -f migrations/ — no phantom `pnpm migrate` (W7-O2)", ...)
+      asserts:
+        - out NOT matches /pnpm\s+migrate/
+        - out contains "psql"
+        - out contains "audit-postgres/migrations"
+
+Test run:
+
+$ pnpm vitest run packages/cli/src/commands/__tests__/kernel.test.ts -t "off-state TODO points to psql"
+
+ ✓ off-state TODO points to psql -f migrations/ — no phantom `pnpm migrate` (W7-O2)
+
+ Tests  1 passed (1)
+
+Effect for the 3am operator:
+
+  Before: "Rodar pnpm migrate em @adjudicate/audit-postgres"
+          → operator types `pnpm migrate` → error "command not found"
+          → forced to spelunk the audit-postgres package, find no runner,
+            and improvise.
+  After: explicit `for f in .../migrations/*.sql; do psql -v ON_ERROR_STOP=1
+         -f "$f"; done` — copy-paste executable. The operator does not need
+         to discover the SQL-only schema posture themselves.

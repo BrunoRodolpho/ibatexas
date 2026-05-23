@@ -231,15 +231,31 @@ async function runReplay(opts: {
     // STUB: audit-postgres is off in this deployment (task 19 default).
     // Operators flip the flag after the staging soak; until then, we
     // surface a structured TODO so the runbook step is honest.
+    //
+    // W7-O2 fix — replace the phantom `pnpm migrate` step with the
+    // actual operator command. @adjudicate/audit-postgres ships its
+    // schema as raw SQL files; there is no migration runner script.
+    // The earlier message ("Rodar pnpm migrate em @adjudicate/audit-
+    // postgres") sent operators to a non-existent script.
     console.log(chalk.yellow("⚠  IBX_AUDIT_POSTGRES_ENABLED=false — replay não pode ser executado."))
     console.log()
     console.log(chalk.bold("TODO para o operador (quando audit-postgres for habilitado):"))
     console.log()
     console.log("  1. Habilitar IBX_AUDIT_POSTGRES_ENABLED=true no .env de produção.")
-    console.log("  2. Rodar pnpm migrate em @adjudicate/audit-postgres para criar a tabela intent_audit.")
+    console.log("  2. Aplicar as migrações de @adjudicate/audit-postgres (SQL puro — não há")
+    console.log("     script `migrate`). Em ordem numérica, contra o $DATABASE_URL:")
+    console.log()
+    console.log(chalk.dim("       for f in ../adjudicate/packages/audit-postgres/migrations/*.sql; do"))
+    console.log(chalk.dim("         echo \"-- aplicando $f\" && psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f \"$f\""))
+    console.log(chalk.dim("       done"))
+    console.log()
+    console.log("     Pré-requisitos: psql instalado, $DATABASE_URL apontando para o cluster")
+    console.log("     destino, repo adjudicate (BrunoRodolpho/adjudicate) presente em ../adjudicate")
+    console.log("     conforme `pnpm-workspace.yaml` (cross-repo workspace).")
     console.log("  3. Rodar `ibx kernel replay --since=24h` novamente.")
     console.log()
-    console.log(chalk.dim("Veja docs/adjudicate-migration/tasks/19-audit-postgres-pgnats-bridge.md"))
+    console.log(chalk.dim("Migrações: ../adjudicate/packages/audit-postgres/migrations/{001..008}-*.sql"))
+    console.log(chalk.dim("Doc: docs/adjudicate-migration/tasks/19-audit-postgres-pgnats-bridge.md"))
     console.log()
     process.exitCode = 0
     return

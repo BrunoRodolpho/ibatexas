@@ -150,6 +150,20 @@ describe("ibx kernel replay (stub mode)", () => {
     expect(process.exitCode).not.toBe(1)
   })
 
+  // W7-O2 — the off-state TODO must NOT reference the phantom `pnpm migrate`
+  // command (no script exists). It must give the operator the actual `psql`
+  // command path against the raw SQL files in @adjudicate/audit-postgres.
+  it("off-state TODO points to psql -f migrations/ — no phantom `pnpm migrate` (W7-O2)", async () => {
+    delete process.env.IBX_AUDIT_POSTGRES_ENABLED
+    await cmd.parseAsync(["replay", "--since=24h"], { from: "user" })
+    const out = stdout.getOutput()
+    // Phantom is gone.
+    expect(out).not.toMatch(/pnpm\s+migrate/)
+    // The real operator command is present (psql + the migrations path).
+    expect(out).toContain("psql")
+    expect(out).toContain("audit-postgres/migrations")
+  })
+
   it("rejects invalid --since duration", async () => {
     delete process.env.IBX_AUDIT_POSTGRES_ENABLED
     await cmd.parseAsync(["replay", "--since=notarealduration"], {
