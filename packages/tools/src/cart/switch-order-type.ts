@@ -6,9 +6,27 @@
 // - preparing+ → denied
 // - If switching TO delivery from pickup/dine_in, cash must switch to PIX/card
 // - If switching FROM delivery, delivery fee removed
+//
+// ── Task 15 (M3) — consolidation under OrderCommandService ───────────────
+//
+// Previously this tool wrote `prisma.orderProjection.update` directly,
+// bypassing the version counter (investigation 03 P0 #2). The tool now
+// routes through `OrderCommandService.switchTypeFromEnvelope`, which:
+//
+//   - Adjudicates via `orderProjectionPolicyBundle` (`order.type.switch`)
+//   - Bumps `OrderProjection.version` consistently with other writers
+//   - Appends an OrderStatusHistory row keyed to the new version
+//   - Emits a governance audit record via the configured AuditSink
 
+import { randomUUID } from "node:crypto";
 import { NonRetryableError, canPerformAction, type AgentContext, type OrderFulfillmentStatus, type OrderType } from "@ibatexas/types";
-import { createOrderQueryService, createPaymentQueryService, prisma } from "@ibatexas/domain";
+import {
+  createOrderQueryService,
+  createPaymentQueryService,
+  createOrderCommandService,
+  type OrderTypeSwitchPayload,
+} from "@ibatexas/domain";
+import { buildEnvelope } from "@adjudicate/core";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 
 interface SwitchOrderTypeInput {
@@ -67,16 +85,33 @@ export async function switchOrderType(
     paymentMethodChangeRequired = true;
   }
 
-  await prisma.orderProjection.update({
-    where: { id: input.orderId },
-    data: {
-      deliveryType: input.newType,
-      // Remove shipping fee if switching away from delivery
-      ...(input.newType !== "delivery" && currentType === "delivery"
-        ? { shippingInCentavos: 0 }
-        : {}),
+  // ── Build the IntentEnvelope ────────────────────────────────────────
+  const payload: OrderTypeSwitchPayload = {
+    orderId: input.orderId,
+    newType: input.newType,
+    customerId: ctx.customerId,
+  };
+  const envelope = buildEnvelope({
+    kind: "order.type.switch" as const,
+    payload,
+    nonce: randomUUID(),
+    actor: {
+      principal: "llm",
+      sessionId: ctx.sessionId ?? `customer:${ctx.customerId}`,
     },
+    taint: "UNTRUSTED",
   });
+
+  const orderCmdSvc = createOrderCommandService();
+  const result = await orderCmdSvc.switchTypeFromEnvelope(envelope);
+
+  if (result.decision.kind !== "EXECUTE" && result.decision.kind !== "REWRITE") {
+    const message =
+      result.decision.kind === "REFUSE"
+        ? result.decision.refusal.userFacing
+        : "Não foi possível alterar o tipo do pedido no momento.";
+    return { success: false, message };
+  }
 
   await publishNatsEvent("order.type_changed", {
     eventType: "order.type_changed",

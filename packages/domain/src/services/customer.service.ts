@@ -2,13 +2,49 @@
 //
 // Handles: customer upsert, preference updates (Prisma side), review creation.
 // Cache (Redis profile hash) stays in the tools layer — services are pure Prisma.
+//
+// ── Task 15 (M3) — envelope-typed entry points ───────────────────────────
+//
+// Methods `*FromEnvelope` route through the adjudicate kernel via
+// `withAdjudicate` against `customerOnboardingPolicyBundle` from
+// `@ibatexas/pack-customer-onboarding`. Decision D8: parallel surface —
+// existing methods remain (`@deprecated`).
+//
+// Covered intents:
+//   - customer.create               → upsertFromPhone / upsertFromWhatsApp
+//   - customer.preferences.update   → updatePreferences
+//   - customer.pix.details.save     → updatePixDetails
+//   - customer.anonymize            → anonymizeCustomer (module-level helper)
 
 import { prisma } from "../client.js"
 import type { Channel } from "@ibatexas/types"
+import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import {
+  customerOnboardingPolicyBundle,
+  type CustomerCreatePayload,
+  type CustomerPreferencesUpdatePayload,
+  type CustomerPixDetailsSavePayload,
+  type CustomerAnonymizePayload,
+  type CustomerOnboardingState,
+} from "@ibatexas/pack-customer-onboarding"
+import {
+  withAdjudicate,
+  type AdjudicatedResult,
+} from "./__shared__/with-adjudicate.js"
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
-export function createCustomerService() {
+export interface CustomerServiceOptions {
+  readonly auditSink?: AuditSink
+  readonly log?: { readonly warn?: (...args: unknown[]) => void; readonly error?: (...args: unknown[]) => void }
+}
+
+export function createCustomerService(options?: CustomerServiceOptions) {
+  const adjudicateOptions = {
+    ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+    ...(options?.log ? { log: options.log } : {}),
+  } as const
+
   return {
     /**
      * Create or update a customer record from a verified phone number.
@@ -222,7 +258,145 @@ export function createCustomerService() {
         take: limit,
       })
     },
+
+    // ── Task 15: envelope-typed entry points ────────────────────────────
+
+    /**
+     * Envelope-typed entry point for `customer.create`. SYSTEM-only —
+     * the OTP-verify completion hook is the sole emitter. The `phone`
+     * is passed alongside the envelope (the pack's payload carries
+     * `phoneHash` only — the raw phone never enters policy state per
+     * PII discipline).
+     */
+    async createFromEnvelope(
+      envelope: IntentEnvelope<"customer.create", CustomerCreatePayload>,
+      state: CustomerOnboardingState,
+      extras: { readonly phone: string; readonly name?: string },
+    ): Promise<AdjudicatedResult<{ id: string }>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        customerOnboardingPolicyBundle,
+        async (payload) => {
+          const source = payload.source === "wa-auto" ? "whatsapp" : null
+          if (source === "whatsapp") {
+            return prisma.customer.upsert({
+              where: { phone: extras.phone },
+              create: { phone: extras.phone, source, firstContactAt: new Date() },
+              update: {},
+              select: { id: true },
+            })
+          }
+          // OTP source path.
+          const row = await prisma.customer.upsert({
+            where: { phone: extras.phone },
+            create: { phone: extras.phone, name: extras.name ?? null },
+            update: { ...(extras.name ? { name: extras.name } : {}) },
+            select: { id: true },
+          })
+          return row
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `customer.preferences.update`.
+     * UNTRUSTED-tolerant; pack enforces allergen-explicit-array safety
+     * (CLAUDE.md rule #1).
+     */
+    async updatePreferencesFromEnvelope(
+      envelope: IntentEnvelope<
+        "customer.preferences.update",
+        CustomerPreferencesUpdatePayload
+      >,
+      state: CustomerOnboardingState,
+      extras: { readonly customerId: string },
+    ): Promise<
+      AdjudicatedResult<{
+        allergenExclusions: string[]
+        dietaryRestrictions: string[]
+        favoriteCategories: string[]
+      }>
+    > {
+      return withAdjudicate(
+        envelope,
+        state,
+        customerOnboardingPolicyBundle,
+        async (payload) => {
+          // Pack's allergenExclusions / dietaryFlags are ReadonlyArray<string>;
+          // service's update method accepts string[].
+          return this.updatePreferences(extras.customerId, {
+            allergenExclusions: payload.allergenExclusions as string[],
+            ...(payload.dietaryFlags !== undefined
+              ? { dietaryRestrictions: payload.dietaryFlags as string[] }
+              : {}),
+          })
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `customer.pix.details.save`.
+     * UNTRUSTED-tolerant. The pack validates CPF shape; PII redaction
+     * for the audit emit happens in the upstream wiring layer (task 18).
+     */
+    async updatePixDetailsFromEnvelope(
+      envelope: IntentEnvelope<
+        "customer.pix.details.save",
+        CustomerPixDetailsSavePayload
+      >,
+      state: CustomerOnboardingState,
+      extras: { readonly customerId: string },
+    ): Promise<AdjudicatedResult<void>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        customerOnboardingPolicyBundle,
+        async (payload) => {
+          return this.updatePixDetails(extras.customerId, {
+            name: payload.name,
+            email: payload.email,
+            cpf: payload.cpf,
+          })
+        },
+        adjudicateOptions,
+      )
+    },
   }
+}
+
+// ── Task 15: envelope-typed anonymize entry point ───────────────────────
+
+/**
+ * Envelope-typed entry point for `customer.anonymize`. The pack DEFERs
+ * with a `customer.anonymize.grace` signal (24h by default) before the
+ * destructive operation runs. Adopter (route layer, task 14) decides how
+ * to surface DEFER to the customer and how to schedule the resume.
+ *
+ * The EXECUTE branch invokes `anonymizeCustomer` — the legacy
+ * module-level helper — preserving the existing transactional semantics.
+ */
+export async function anonymizeCustomerFromEnvelope(
+  envelope: IntentEnvelope<"customer.anonymize", CustomerAnonymizePayload>,
+  state: CustomerOnboardingState,
+  options?: CustomerServiceOptions,
+): Promise<AdjudicatedResult<{ success: true }>> {
+  const adjudicateOptions = {
+    ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+    ...(options?.log ? { log: options.log } : {}),
+  } as const
+  return withAdjudicate(
+    envelope,
+    state,
+    customerOnboardingPolicyBundle,
+    async (payload) => {
+      const result = await anonymizeCustomer(payload.customerId)
+      return result as { success: true }
+    },
+    adjudicateOptions,
+  )
 }
 
 /**

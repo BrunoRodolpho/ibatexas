@@ -4,14 +4,41 @@
 export { prisma } from "./client.js"
 
 // Domain services
-export { createReservationService, type ReservationService } from "./services/reservation.service.js"
+export {
+  createReservationService,
+  type ReservationService,
+  type ReservationServiceOptions,
+} from "./services/reservation.service.js"
 export { createOrderService, type OrderService, type MedusaFetch } from "./services/order.service.js"
 export { getEffectivePonr, isWithinPonr, getItemPonrStatus, type PonrConfig, type ItemPonrStatus } from "./services/ponr.js"
-export { createCustomerService, type CustomerService, anonymizeCustomer, exportCustomerData } from "./services/customer.service.js"
+export {
+  createCustomerService,
+  type CustomerService,
+  type CustomerServiceOptions,
+  anonymizeCustomer,
+  anonymizeCustomerFromEnvelope,
+  exportCustomerData,
+} from "./services/customer.service.js"
 export { createStaffService, type StaffService } from "./services/staff.service.js"
 export { assertOwnership, assertMutable } from "./services/shared.js"
 export { createReviewService, type ReviewService } from "./services/review.service.js"
-export { createConversationService, type ConversationService } from "./services/conversation.service.js"
+export {
+  createConversationService,
+  type ConversationService,
+  type ConversationServiceOptions,
+} from "./services/conversation.service.js"
+
+// Conversation envelope surface — Task 15.
+export {
+  conversationPolicyBundle,
+  conversationTaintPolicy,
+  type ConversationIntentKind,
+  type ConversationPayload,
+  type ConversationState,
+  type ConversationMessageAppendPayload,
+  type ConversationDeletePayload,
+  type ConversationDeleteAllPayload,
+} from "./services/__shared__/conversation-policy.js"
 export { createTableService, type TableService } from "./services/table.service.js"
 export { createDeliveryZoneService, type DeliveryZoneService } from "./services/delivery-zone.service.js"
 export { createLoyaltyService, type LoyaltyService } from "./services/loyalty.service.js"
@@ -28,11 +55,42 @@ export {
 export {
   createOrderCommandService,
   type OrderCommandService,
+  type OrderCommandServiceOptions,
+  type AddNoteResult,
+  type SwitchTypeResult,
+  type ChangeAddressResult,
   ConcurrencyError,
   ProjectionNotFoundError,
   InvalidTransitionError,
   MissingEventVersionError,
 } from "./services/order-command.service.js"
+
+// Envelope-typed surface — Task 15 (M3). Payload types for callers
+// building IntentEnvelopes for the OrderCommandService envelope-typed
+// methods. The Pack types (OrderNoteAddPayload, OrderIntentKind, etc.)
+// are re-exported from @ibatexas/pack-orders directly; these are the
+// domain-internal projection-lifecycle ones.
+export {
+  orderProjectionPolicyBundle,
+  orderProjectionTaintPolicy,
+  type OrderProjectionIntentKind,
+  type OrderProjectionPayload,
+  type OrderProjectionState,
+  type OrderProjectionCreatePayload,
+  type OrderStatusTransitionPayload,
+  type OrderStatusReconcilePayload,
+  type OrderTypeSwitchPayload,
+  type OrderAddressChangePayload,
+} from "./services/__shared__/order-projection-policy.js"
+
+// Helper for callers that want to build their own envelope→service flows.
+export {
+  withAdjudicate,
+  expectExecute,
+  CommandRefusedError,
+  type AdjudicatedResult,
+  type WithAdjudicateOptions,
+} from "./services/__shared__/with-adjudicate.js"
 export {
   createOrderQueryService,
   type OrderQueryService,
@@ -48,11 +106,26 @@ export {
 export {
   createPaymentCommandService,
   type PaymentCommandService,
+  type PaymentCommandServiceOptions,
+  type CreatePaymentInput,
   PaymentConcurrencyError,
   PaymentNotFoundError,
   InvalidPaymentTransitionError,
   ActivePaymentExistsError,
 } from "./services/payment-command.service.js"
+
+// Payment-projection policy + envelope types (Task 15 envelope surface).
+export {
+  paymentProjectionPolicyBundle,
+  paymentProjectionTaintPolicy,
+  type PaymentProjectionIntentKind,
+  type PaymentProjectionPayload,
+  type PaymentProjectionState,
+  type PaymentCreatePayload,
+  type PaymentStatusTransitionPayload,
+  type PaymentStatusReconcilePayload,
+  type PaymentMethodSwitchPayload,
+} from "./services/__shared__/payment-projection-policy.js"
 export {
   createPaymentQueryService,
   type PaymentQueryService,

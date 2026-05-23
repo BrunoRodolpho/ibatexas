@@ -37,3 +37,20 @@ Two options on the table:
 Picked (B) — the constraint in task 07 is "preserve existing visible-tool behavior" and "pick the safer (smaller visible set) option." Option (B) preserves behavior exactly while satisfying the framework invariant; option (A) would silently degrade the support and objection flows (removing `handoff_to_human` and `schedule_follow_up` from the LLM's tool-call surface), which is a regression dressed up as a security win.
 
 **How to apply:** New mutating tools added to a state's tool list will surface in `Plan.allowedIntents` automatically via `partitionTools` (in `packages/llm-provider/src/capability-planner.ts`). The state-gate in `llm-responder.ts:processToolCalls` continues to ingress-filter against the `availableTools` union; the new planner-violation gate (also in `llm-responder.ts`) refuses any mutating proposal whose identity is not in `plan.allowedIntents`. When a future state adds a mutating tool to its STATE_TOOLS row, the LLM sees it AND the planner allows the proposal — no code change required.
+
+## D8 — Task 15 command-service chokepoints: parallel envelope-typed surface (option A), not breaking replacement (option B)
+**Why:** Task 15's full scope is breaking — replacing every service method signature with `IntentEnvelope<*>` requires migrating every caller (admin routes, customer routes, jobs, subscribers, the Medusa wrapper) in lockstep. Those callers are owned by separate M3 tasks (12 Stripe webhook, 13 admin routes, 14 customer routes, 16 NATS subscribers, 17 Medusa subscriber wrapper) — none of which are merged yet. A breaking-replacement landing would leave the workspace red until all those tasks land, which is exactly the all-or-nothing M3 risk the migration plan explicitly tries to avoid.
+
+Two options on the table:
+
+  - **(A)** Parallel surface — keep the bare-arg methods (marked `@deprecated`), add new `*FromEnvelope` methods that flow through `withAdjudicate`. Callers migrate one at a time.
+  - **(B)** Breaking replacement — change every method signature to take an envelope only. Every caller must migrate before this PR can land.
+
+Picked **(A)**. Each service method now has BOTH surfaces:
+
+  - `orderCmdSvc.transitionStatus(id, input)` — legacy, `@deprecated`, unchanged behaviour.
+  - `orderCmdSvc.transitionStatusFromEnvelope(envelope)` — envelope-typed, kernel-gated.
+
+The `withAdjudicate` helper (`packages/domain/src/services/__shared__/with-adjudicate.ts`) wraps the existing imperative executor with adjudicate + audit emit, so the new path runs the SAME Prisma logic — only the entry surface changes.
+
+**How to apply:** New callers built by tasks 12-14, 16, 17 use the `*FromEnvelope` surface exclusively. They build envelopes via `buildEnvelope({kind, payload, nonce: randomUUID(), actor, taint})` from `@adjudicate/core` and route through the new methods. After all M3 caller migrations land, a follow-up sweep removes the legacy bare-arg methods. The bypass-detection test at `packages/domain/src/services/__tests__/no-direct-prisma-bypass.test.ts` guards against future regressions of the 3 rogue cart-writer consolidations (investigation 03 P0 #2). 99 backwards-compat tests + 28 new envelope-targeted tests + 8 bypass-detection tests all pass at HEAD.
