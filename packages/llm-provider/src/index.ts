@@ -104,3 +104,18 @@ export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
 // `validateEnforceConfig` from `@adjudicate/core/kernel` so typos in
 // `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` surface at boot.
 export { KNOWN_INTENT_KINDS } from "./intent-kinds.js"
+
+// Intent dispatcher (task 02) — the post-adjudication EXECUTE consumer.
+// Re-exported here so apps/api can compose the resume-path adapter
+// (`createResumeDispatcherAdapter`) without reaching into module-internal
+// paths.
+export {
+  createIntentDispatcher,
+  createDefaultDispatchHandlers,
+  DETERMINISTIC_KERNEL_COVERAGE,
+  type DispatchResult,
+  type DispatchHandler,
+  type IntentDispatcher,
+  type DispatcherDeps,
+  type DispatcherLogger,
+} from "./intent-dispatcher.js"
