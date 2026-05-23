@@ -20,13 +20,63 @@
 // Bypass-detection: every mutation path goes through
 // `transitionStatusFromEnvelope` — the legacy bare-arg `transitionStatus`
 // is NOT called for force-cancel / waive / refund / force-status.
+//
+// ── RULE 3: real-Redis migration (cross-cluster recon W1) ────────────────
+//
+// This suite previously stubbed `getRedisClient()` with Map-backed Lua
+// emulation. Cluster D flagged that as "theater": the P1-I-TRUE atomic
+// refund-cap Lua eval and the admin-confirmation-store GET+DEL eval are
+// the *whole point* of those pieces of code, and a hand-rolled JS
+// stand-in for Redis's single-threaded Lua interpreter gives a false
+// signal of correctness. The audit's RULE 3 forbids extending mock-Redis
+// with Lua emulation.
+//
+// The fix: spin up a real `redis:7-alpine` container (via testcontainers)
+// in `beforeAll`, route `getRedisClient()` to it, and `FLUSHDB` between
+// tests for isolation. Lua now runs on the real server. The
+// helper at `apps/api/src/__tests__/helpers/redis-testcontainer.ts` is
+// reusable by other suites that need real Redis (W4 test-infra rebuild
+// will lean on it).
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
+import type { RedisClientType } from "redis";
 import {
   serializerCompiler,
   validatorCompiler,
 } from "fastify-type-provider-zod";
+import {
+  setupRedisTestContainer,
+  type RedisTestHarness,
+} from "../../../__tests__/helpers/redis-testcontainer.js";
+
+// ── Real Redis harness ─────────────────────────────────────────────────────
+//
+// `runtimeRedis` is filled in by `beforeAll` once the testcontainer is
+// up. The `vi.mock` for `@ibatexas/tools` below resolves
+// `getRedisClient()` against this slot lazily — each call to the
+// production code fetches the live client at runtime, AFTER `beforeAll`
+// has executed.
+
+let runtimeHarness: RedisTestHarness | null = null;
+
+function requireRuntimeRedis(): RedisClientType {
+  if (!runtimeHarness) {
+    throw new Error(
+      "[force-routes-governance.test] real-Redis testcontainer not initialized — beforeAll did not complete",
+    );
+  }
+  return runtimeHarness.client;
+}
+
+beforeAll(async () => {
+  runtimeHarness = await setupRedisTestContainer();
+}, 120_000);
+
+afterAll(async () => {
+  await runtimeHarness?.teardown();
+  runtimeHarness = null;
+});
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 
@@ -42,84 +92,69 @@ const mockPaymentUpdate = vi.hoisted(() => vi.fn());
 const mockOrderEventLogAppend = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 
-// Confirmation store — module-scoped fake. Tests reach into it to
-// inspect / pre-seed pending actions.
-const confirmationStorage = vi.hoisted(() => new Map<string, string>());
+// `getRedisClient()` returns a thin proxy that forwards every operation
+// to the real testcontainer client. Spy wrappers around `set` / `eval`
+// preserve the original test's call-counting expectations
+// (`mockRedisSet.toHaveBeenCalledWith(...)`, `mockRedisEval.mockClear()`).
+//
+// The functions are hoisted so they're addressable from `vi.mock(...)`
+// below — but their bodies dereference `requireRuntimeRedis()` at call
+// time, not at module load.
 
 const mockRedisSet = vi.hoisted(() =>
-  vi.fn(async (key: string, value: string) => {
-    confirmationStorage.set(key, value);
-    return "OK";
-  }),
+  vi.fn(),
 );
-// W3 P1-I — drip cap reads a per-staff-day Redis counter.
-const dripBuckets = vi.hoisted(() => new Map<string, number>());
-
-const mockRedisEval = vi.hoisted(() =>
-  vi.fn(
-    async (
-      script: string,
-      opts: { keys: string[]; arguments?: string[] },
-    ) => {
-      const key = opts.keys[0]!;
-      // P1-I-TRUE — atomic check-and-increment Lua. Detect by the
-      // refund-cap key shape; the legacy consume-confirmation Lua uses
-      // a different key namespace.
-      if (key.startsWith("ibatexas:refund:daily-total:")) {
-        const amount = Number.parseInt(opts.arguments?.[0] ?? "0", 10);
-        const cap = Number.parseInt(opts.arguments?.[1] ?? "0", 10);
-        const current = dripBuckets.get(key) ?? 0;
-        if (current + amount > cap) {
-          return [0, current];
-        }
-        const newTotal = current + amount;
-        dripBuckets.set(key, newTotal);
-        return [1, newTotal];
-      }
-      // Legacy consume-confirmation Lua (GET + DEL).
-      const value = confirmationStorage.get(key);
-      if (value === undefined) return null;
-      confirmationStorage.delete(key);
-      return value;
-    },
-  ),
-);
-const mockRedisGet = vi.hoisted(() =>
-  vi.fn(async (key: string) => {
-    if (key.startsWith("ibatexas:refund:daily-total:")) {
-      const n = dripBuckets.get(key);
-      return n !== undefined ? String(n) : null;
-    }
-    return null;
-  }),
-);
-const mockRedisIncrBy = vi.hoisted(() =>
-  vi.fn(async (key: string, by: number) => {
-    const cur = dripBuckets.get(key) ?? 0;
-    const next = cur + by;
-    dripBuckets.set(key, next);
-    return next;
-  }),
-);
-const mockRedisExpire = vi.hoisted(() => vi.fn(async () => 1));
+const mockRedisEval = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => ({
-    set: mockRedisSet,
-    eval: mockRedisEval,
-    get: mockRedisGet,
-    del: vi.fn(),
-    incrBy: mockRedisIncrBy,
-    // P1-I-TRUE: rollbackDailyRefundReservation calls decrBy when the
-    // kernel REFUSEs after the atomic reservation succeeded.
-    decrBy: vi.fn(async (key: string, by: number) => {
-      const cur = dripBuckets.get(key) ?? 0;
-      const next = cur - by;
-      dripBuckets.set(key, next);
-      return next;
-    }),
-    expire: mockRedisExpire,
-  })),
+  getRedisClient: vi.fn(async () => {
+    // Lazy: real testcontainer is ready by the time route handlers
+    // call this (beforeAll completes before any test body runs).
+    const redis = requireRuntimeRedis();
+    return {
+      async set(
+        key: string,
+        value: string,
+        options?: { EX?: number },
+      ): Promise<string | null> {
+        mockRedisSet(key, value, options);
+        if (options?.EX !== undefined) {
+          return (await redis.set(key, value, { EX: options.EX })) as
+            | string
+            | null;
+        }
+        return (await redis.set(key, value)) as string | null;
+      },
+      async eval(
+        script: string,
+        opts: { keys: string[]; arguments?: string[] },
+      ): Promise<unknown> {
+        mockRedisEval(script, opts);
+        // node-redis 4.x `eval()` signature: `eval(script, options)` where
+        // options is `{ keys, arguments }`. The production code calls it
+        // exactly like this; we forward verbatim.
+        return await redis.eval(script, {
+          keys: opts.keys,
+          arguments: opts.arguments ?? [],
+        });
+      },
+      async get(key: string): Promise<string | null> {
+        return (await redis.get(key)) as string | null;
+      },
+      async del(key: string): Promise<number> {
+        return (await redis.del(key)) as number;
+      },
+      async incrBy(key: string, by: number): Promise<number> {
+        return (await redis.incrBy(key, by)) as number;
+      },
+      async decrBy(key: string, by: number): Promise<number> {
+        return (await redis.decrBy(key, by)) as number;
+      },
+      async expire(key: string, seconds: number): Promise<boolean | number> {
+        return (await redis.expire(key, seconds)) as boolean | number;
+      },
+    };
+  }),
   rk: (k: string) => `ibatexas:${k}`,
   reaisToCentavos: (r: number) => Math.round(r * 100),
   medusaAdmin: vi.fn(async () => ({ orders: [], count: 0 })),
@@ -170,7 +205,45 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
 
+// ── Test isolation ─────────────────────────────────────────────────────────
+//
+// Real Redis is shared across tests in this file. `FLUSHDB` wipes all
+// keys between tests so receipts / drip-cap counters from one test
+// cannot leak into the next. Cheaper than tearing the container down
+// per test.
+
+beforeEach(async () => {
+  if (runtimeHarness) {
+    await runtimeHarness.client.flushDb();
+  }
+});
+
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Build the staff/day bucket key used by the refund-drip-cap. Mirrors
+ * `refundDailyBucketKey` in apps/api/src/routes/admin/payments.ts. Kept
+ * inline so the test reflects the production-side format exactly.
+ */
+function bucketKeyFor(staffOrApi: string, now: Date = new Date()): string {
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  return `ibatexas:refund:daily-total:${staffOrApi}:${yyyy}-${mm}-${dd}`;
+}
+
+/** Read the drip-cap counter from real Redis (returns 0 if unset). */
+async function readBucket(key: string): Promise<number> {
+  const raw = await requireRuntimeRedis().get(key);
+  if (raw === null) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+/** Pre-seed a drip-cap counter in real Redis. */
+async function seedBucket(key: string, value: number): Promise<void> {
+  await requireRuntimeRedis().set(key, String(value));
+}
 
 interface StaffContext {
   readonly staffId: string | null;
@@ -311,7 +384,7 @@ const OWNER_2_HEADERS = {
 describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    confirmationStorage.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
     mockGetById.mockResolvedValue(makeOrder());
     mockGetActiveByOrderId.mockResolvedValue(null);
     mockOrderEventLogAppend.mockResolvedValue(undefined);
@@ -574,7 +647,7 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
 describe("POST /api/admin/orders/:id/waive — two-step receipt protocol", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    confirmationStorage.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
     mockGetById.mockResolvedValue(makeOrder());
     mockGetActiveByOrderId.mockResolvedValue(makePayment({ status: "paid" }));
     mockOrderEventLogAppend.mockResolvedValue(undefined);
@@ -753,7 +826,7 @@ function refundEscalateDecision(reason: string) {
 describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    confirmationStorage.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
     mockGetById.mockResolvedValue(makeOrder());
     mockGetActiveByOrderId.mockResolvedValue(
       makePayment({ status: "paid", amountInCentavos: 50_000 }),
@@ -1002,8 +1075,7 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow + 
 describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    confirmationStorage.clear();
-    dripBuckets.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
     mockGetById.mockResolvedValue(makeOrder());
     mockGetActiveByOrderId.mockResolvedValue(
       makePayment({ status: "paid", amountInCentavos: 500_000 }),
@@ -1028,12 +1100,10 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
         payload: { amountInCentavos: 10_000, reason: "small" },
       });
       expect(res.statusCode).toBe(200);
-      // The bucket holds R$100 (10000 centavos).
-      const bucketKey =
-        [...dripBuckets.keys()].find((k) =>
-          k.startsWith("ibatexas:refund:daily-total:staff_mgr_01:"),
-        ) ?? "";
-      expect(dripBuckets.get(bucketKey)).toBe(10_000);
+      // The bucket holds R$100 (10000 centavos). Read directly from
+      // real Redis — the Lua reservation script INCRBYed the counter.
+      const bucketKey = bucketKeyFor("staff_mgr_01");
+      expect(await readBucket(bucketKey)).toBe(10_000);
     } finally {
       await server.close();
     }
@@ -1041,14 +1111,8 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
 
   it("falls back to two-step receipt when cumulative + this > daily cap (R$2000 default)", async () => {
     // Pre-seed the bucket close to the cap: R$1950 already refunded today.
-    const bucketKey = (() => {
-      const now = new Date();
-      const yyyy = now.getUTCFullYear();
-      const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-      const dd = String(now.getUTCDate()).padStart(2, "0");
-      return `ibatexas:refund:daily-total:staff_mgr_01:${yyyy}-${mm}-${dd}`;
-    })();
-    dripBuckets.set(bucketKey, 195_000);
+    const bucketKey = bucketKeyFor("staff_mgr_01");
+    await seedBucket(bucketKey, 195_000);
 
     const server = await buildPaymentsServer(MANAGER);
     try {
@@ -1075,8 +1139,9 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
       // The refund executor MUST NOT have been called — drip cap held.
       expect(mockIssueRefundFromEnvelope).not.toHaveBeenCalled();
       // The bucket still shows the pre-seeded value (no increment on
-      // the drip-cap-deferred branch).
-      expect(dripBuckets.get(bucketKey)).toBe(195_000);
+      // the drip-cap-deferred branch). Real-Redis read confirms the
+      // atomic Lua refused the reservation without mutating the counter.
+      expect(await readBucket(bucketKey)).toBe(195_000);
     } finally {
       await server.close();
     }
@@ -1084,14 +1149,8 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
 
   it("respects REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS env override", async () => {
     vi.stubEnv("REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS", "50000"); // R$500
-    const bucketKey = (() => {
-      const now = new Date();
-      const yyyy = now.getUTCFullYear();
-      const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-      const dd = String(now.getUTCDate()).padStart(2, "0");
-      return `ibatexas:refund:daily-total:staff_mgr_01:${yyyy}-${mm}-${dd}`;
-    })();
-    dripBuckets.set(bucketKey, 45_000); // R$450 already
+    const bucketKey = bucketKeyFor("staff_mgr_01");
+    await seedBucket(bucketKey, 45_000); // R$450 already
 
     const server = await buildPaymentsServer(MANAGER);
     try {
@@ -1112,14 +1171,8 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
   });
 
   it("does NOT trigger drip cap when below cap (sum stays under)", async () => {
-    const bucketKey = (() => {
-      const now = new Date();
-      const yyyy = now.getUTCFullYear();
-      const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-      const dd = String(now.getUTCDate()).padStart(2, "0");
-      return `ibatexas:refund:daily-total:staff_mgr_01:${yyyy}-${mm}-${dd}`;
-    })();
-    dripBuckets.set(bucketKey, 100_000); // R$1000 used today
+    const bucketKey = bucketKeyFor("staff_mgr_01");
+    await seedBucket(bucketKey, 100_000); // R$1000 used today
 
     const server = await buildPaymentsServer(MANAGER);
     try {
@@ -1130,8 +1183,9 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
         payload: { amountInCentavos: 10_000, reason: "small" },
       });
       expect(res.statusCode).toBe(200);
-      // Bucket bumped to 110_000.
-      expect(dripBuckets.get(bucketKey)).toBe(110_000);
+      // Bucket bumped to 110_000 — the Lua reservation script ran INCRBY
+      // on the real server.
+      expect(await readBucket(bucketKey)).toBe(110_000);
     } finally {
       await server.close();
     }
@@ -1148,14 +1202,8 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
       staffRole: null,
       adminApiKeyRole: "MANAGER",
     };
-    const bucketKey = (() => {
-      const now = new Date();
-      const yyyy = now.getUTCFullYear();
-      const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
-      const dd = String(now.getUTCDate()).padStart(2, "0");
-      return `ibatexas:refund:daily-total:api-key:${yyyy}-${mm}-${dd}`;
-    })();
-    dripBuckets.set(bucketKey, 195_000);
+    const bucketKey = bucketKeyFor("api-key");
+    await seedBucket(bucketKey, 195_000);
 
     const server = await buildPaymentsServer(apiKeyContext);
     try {
@@ -1200,7 +1248,7 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
 describe("PATCH /api/admin/orders/:id/payment/status — two-step force-status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    confirmationStorage.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
     mockGetById.mockResolvedValue(makeOrder());
     mockGetActiveByOrderId.mockResolvedValue(makePayment());
     mockOrderEventLogAppend.mockResolvedValue(undefined);
@@ -1349,7 +1397,7 @@ describe("PATCH /api/admin/orders/:id/payment/status — two-step force-status",
 describe("POST /api/admin/orders/:id/payment/confirm-cash — envelope migration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    confirmationStorage.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
     mockGetById.mockResolvedValue(makeOrder());
     mockGetActiveByOrderId.mockResolvedValue(
       makePayment({ status: "cash_pending", method: "cash" }),
@@ -1381,7 +1429,7 @@ describe("POST /api/admin/orders/:id/payment/confirm-cash — envelope migration
 
 describe("AdminConfirmationStore — Redis-backed atomic single-use store", () => {
   beforeEach(() => {
-    confirmationStorage.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
     mockRedisSet.mockClear();
     mockRedisEval.mockClear();
   });
@@ -1452,7 +1500,7 @@ describe("AdminConfirmationStore — Redis-backed atomic single-use store", () =
 
 describe("AdminConfirmationStore — concurrent consume Lua atomicity (W6-5)", () => {
   beforeEach(() => {
-    confirmationStorage.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
     mockRedisSet.mockClear();
     mockRedisEval.mockClear();
   });
@@ -1579,7 +1627,7 @@ describe("AdminConfirmationStore — concurrent consume Lua atomicity (W6-5)", (
 
 describe("consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed", () => {
   beforeEach(() => {
-    confirmationStorage.clear();
+    // Real-Redis isolation: the global beforeEach FLUSHDBs the container.
   });
 
   async function makePending(overrides?: {
