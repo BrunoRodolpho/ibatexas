@@ -28,6 +28,7 @@
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/llm-provider": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
+    "@ibatexas/pack-orders": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@adjudicate/core": "workspace:*",

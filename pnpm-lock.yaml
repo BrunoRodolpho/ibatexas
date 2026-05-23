@@ -702,6 +702,9 @@ importers:
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../../packages/nats-client
+      '@ibatexas/pack-orders':
+        specifier: workspace:*
+        version: link:../../packages/pack-orders
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../../packages/tools
@@ -1049,6 +1052,9 @@ importers:
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../nats-client
+      '@ibatexas/pack-orders':
+        specifier: workspace:*
+        version: link:../pack-orders
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../tools
@@ -1093,6 +1099,37 @@ importers:
         specifier: ^2.29.3
         version: 2.29.3
     devDependencies:
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  packages/pack-orders:
+    dependencies:
+      '@adjudicate/core':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/core
+      '@adjudicate/locales-pt-br':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/locales-pt-BR
+      '@adjudicate/pack-payments-pix':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/pack-payments-pix
+      '@adjudicate/primitives':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/primitives
+    devDependencies:
+      '@adjudicate/conformance':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/conformance
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

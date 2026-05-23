@@ -1,29 +1,32 @@
 // kernel-bootstrap.ts — wires `@adjudicate/core/kernel` into the API boot
-// sequence. Two entry points:
+// sequence. Three entry points:
 //
 //   1. `installKernelMetricsSink()` — called from `buildServer()` (server.ts)
 //      BEFORE routes are registered. Installs the real MetricsSink (PostHog
 //      via NATS + Sentry breadcrumbs + Prometheus counters) and returns the
 //      shared prom-client Registry so the `/metrics` route can scrape it.
 //
-//   2. `bootstrapKernel(server)` — called from `index.ts` AFTER buildServer
-//      returns, before `server.listen()`. Validates `IBX_KERNEL_SHADOW` /
-//      `IBX_KERNEL_ENFORCE` against the known-intent set (typo-guard), will
-//      register first-party Packs via `installPack(...)` once task 08 lands.
-//      No metrics installation here — that already happened in step 1.
+//   2. `installFirstPartyPacks()` — called from `bootstrapKernel()`. Registers
+//      every first-party `@ibatexas/pack-*` via `installPack(...)`. Throws
+//      `PackConformanceError` synchronously if any Pack drifts from `PackV0`.
+//      Adds future Packs (reservations / whatsapp / customer-onboarding) here
+//      as tasks 09 / 10 / 21 land.
+//
+//   3. `bootstrapKernel(server)` — called from `index.ts` AFTER buildServer
+//      returns, before `server.listen()`. Installs Packs and validates
+//      `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` against the known-intent set
+//      (typo-guard). No metrics installation here — that already happened in
+//      step 1.
 //
 // Investigation 06 (Runtime Config & Governance Plumbing) flagged that the
 // kernel is "dormant by accident, not by design" — every framework hook
 // exists in `@adjudicate/core/kernel` but no IbateXas startup site calls
 // `installPack()`, `validateEnforceConfig()`, or `setMetricsSink()`. This
 // file is the boot anchor for all three.
-//
-// Out of scope for THIS file:
-//   • Kill-switch admin endpoint (deferred to a follow-up task).
-//   • Real Pack registration with `withBasisAudit` + conformance assertion
-//     (deferred to task 08 — see TODO inside `bootstrapKernel`).
 
+import { installPack, PackConformanceError } from "@adjudicate/core"
 import { setMetricsSink, validateEnforceConfig } from "@adjudicate/core/kernel"
+import { ordersPack } from "@ibatexas/pack-orders"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { Registry } from "prom-client"
@@ -99,17 +102,38 @@ export function installKernelMetricsSink(
   return register
 }
 
+// ── installFirstPartyPacks ───────────────────────────────────────────────────
+//
+// Per CLAUDE.md rule #9 (LLM authority / IBX-IGE v2.0) and the
+// adjudicate-migration master plan §"WS4 — Pack architecture", every
+// first-party Pack MUST be installed via `installPack(...)` from
+// `@adjudicate/core` so its conformance is asserted at boot. The Pack's
+// policy default (REFUSE — master plan #4) is verified by the assertion
+// and the boot fails-loud if drift is introduced.
+
+/**
+ * Install IbateXas's first-party Packs against the kernel. Throws
+ * `PackConformanceError` synchronously if any Pack drifts from `PackV0`.
+ */
+export function installFirstPartyPacks() {
+  const orders = installPack(ordersPack)
+  // Future Packs land here as tasks 09 / 10 / 21 merge:
+  //   const reservations = installPack(reservationsPack)
+  //   const whatsapp     = installPack(whatsappPack)
+  //   const customerOnb  = installPack(customerOnboardingPack)
+  return { orders }
+}
+
 // ── Known intent kinds (stub) ──────────────────────────────────────────────
 //
-// TODO(task-08): replace this empty Set with the authoritative
-// `KNOWN_INTENT_KINDS` constant exported from `@ibatexas/llm-provider`
-// once task 08 lands `@ibatexas/pack-orders`. The full set will be
-// derived from `TOOL_CLASSIFICATION.MUTATING` in
-// `packages/llm-provider/src/machine/types.ts:386-407` plus the PIX Pack
-// intents (`pix.charge.create`, `pix.charge.confirm`, `pix.charge.refund`).
-// With the stub empty, `validateEnforceConfig` will treat EVERY token in
-// `IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE` as a typo — which is fine,
-// because both env vars default to empty until staged rollout begins.
+// TODO(task-08-followup): replace this empty Set with the authoritative
+// `KNOWN_INTENT_KINDS` constant exported from `@ibatexas/llm-provider`.
+// Task 08 ships `@ibatexas/pack-orders` but the cross-package `KNOWN_INTENT_KINDS`
+// union still needs to be assembled (PIX Pack intents + each Pack's
+// intent surface). With the stub empty, `validateEnforceConfig` will
+// treat EVERY token in `IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE` as a
+// typo — fine, since both env vars default to empty until staged rollout
+// begins in M5.
 function getKnownIntentKinds(): ReadonlySet<string> {
   return new Set<string>()
 }
@@ -118,26 +142,26 @@ function getKnownIntentKinds(): ReadonlySet<string> {
 
 /**
  * Post-`buildServer()` kernel boot anchor. Called from `apps/api/src/index.ts`
- * before `server.listen()`. Responsible for validateEnforceConfig + (future)
- * installPack. Metrics sink is already wired by `installKernelMetricsSink()`
+ * before `server.listen()`. Responsible for Pack installation + enforce-config
+ * validation. Metrics sink is already wired by `installKernelMetricsSink()`
  * which runs earlier inside buildServer.
  */
 export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
-  // TODO(task-08): installPack(ordersPack, { warn: server.log.warn.bind(server.log) })
-  //    — currently using no-op pack. `@ibatexas/pack-orders` does not exist
-  //    yet (task 08 creates it). When it lands, replace this comment with:
-  //
-  //      import { installPack, PackConformanceError } from "@adjudicate/core";
-  //      import { ordersPack } from "@ibatexas/pack-orders";
-  //      try {
-  //        installPack(ordersPack, { warn: server.log.warn.bind(server.log) });
-  //      } catch (err) {
-  //        if (err instanceof PackConformanceError) {
-  //          server.log.fatal({ err }, "[kernel-bootstrap] pack conformance failed");
-  //          throw err; // fail-fast: process.exit non-zero before server.listen
-  //        }
-  //        throw err;
-  //      }
+  // Install first-party Packs. `installPack` throws `PackConformanceError`
+  // synchronously if any Pack drifts from `PackV0` — we let it propagate
+  // so `index.ts` exits non-zero before `server.listen()`.
+  try {
+    installFirstPartyPacks()
+    server.log.info(
+      { event: "kernel.bootstrap.pack_installed", packs: ["orders"] },
+      "[kernel-bootstrap] first-party packs installed",
+    )
+  } catch (err) {
+    if (err instanceof PackConformanceError) {
+      server.log.fatal({ err }, "[kernel-bootstrap] pack conformance failed")
+    }
+    throw err
+  }
 
   // Validate enforce-config against the known intent set. Surfaces typos in
   // `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` as one-time structured warn
@@ -149,13 +173,6 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     server.log.warn({ msg }, "[kernel-bootstrap] enforce-config validation")
   })
 
-  // Structured info lines so operators can verify the bootstrap fired at
-  // startup. Names match the docs/adjudicate-migration spec:
-  // `kernel.bootstrap.*`.
-  server.log.info(
-    { event: "kernel.bootstrap.pack_installed", pack: "noop-stub" },
-    "[kernel-bootstrap] pack installed (stub — replace in task 08)",
-  )
   server.log.info(
     {
       event: "kernel.bootstrap.enforce_config_validated",
