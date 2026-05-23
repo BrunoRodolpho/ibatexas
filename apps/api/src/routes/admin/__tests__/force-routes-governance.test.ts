@@ -52,18 +52,38 @@ const mockRedisSet = vi.hoisted(() =>
     return "OK";
   }),
 );
-const mockRedisEval = vi.hoisted(() =>
-  vi.fn(async (_script: string, opts: { keys: string[] }) => {
-    const key = opts.keys[0];
-    const value = confirmationStorage.get(key);
-    if (value === undefined) return null;
-    confirmationStorage.delete(key);
-    return value;
-  }),
-);
-
 // W3 P1-I — drip cap reads a per-staff-day Redis counter.
 const dripBuckets = vi.hoisted(() => new Map<string, number>());
+
+const mockRedisEval = vi.hoisted(() =>
+  vi.fn(
+    async (
+      script: string,
+      opts: { keys: string[]; arguments?: string[] },
+    ) => {
+      const key = opts.keys[0]!;
+      // P1-I-TRUE — atomic check-and-increment Lua. Detect by the
+      // refund-cap key shape; the legacy consume-confirmation Lua uses
+      // a different key namespace.
+      if (key.startsWith("ibatexas:refund:daily-total:")) {
+        const amount = Number.parseInt(opts.arguments?.[0] ?? "0", 10);
+        const cap = Number.parseInt(opts.arguments?.[1] ?? "0", 10);
+        const current = dripBuckets.get(key) ?? 0;
+        if (current + amount > cap) {
+          return [0, current];
+        }
+        const newTotal = current + amount;
+        dripBuckets.set(key, newTotal);
+        return [1, newTotal];
+      }
+      // Legacy consume-confirmation Lua (GET + DEL).
+      const value = confirmationStorage.get(key);
+      if (value === undefined) return null;
+      confirmationStorage.delete(key);
+      return value;
+    },
+  ),
+);
 const mockRedisGet = vi.hoisted(() =>
   vi.fn(async (key: string) => {
     if (key.startsWith("ibatexas:refund:daily-total:")) {
@@ -90,6 +110,14 @@ vi.mock("@ibatexas/tools", () => ({
     get: mockRedisGet,
     del: vi.fn(),
     incrBy: mockRedisIncrBy,
+    // P1-I-TRUE: rollbackDailyRefundReservation calls decrBy when the
+    // kernel REFUSEs after the atomic reservation succeeded.
+    decrBy: vi.fn(async (key: string, by: number) => {
+      const cur = dripBuckets.get(key) ?? 0;
+      const next = cur - by;
+      dripBuckets.set(key, next);
+      return next;
+    }),
     expire: mockRedisExpire,
   })),
   rk: (k: string) => `ibatexas:${k}`,

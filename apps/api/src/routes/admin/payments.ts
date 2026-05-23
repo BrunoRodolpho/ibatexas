@@ -122,6 +122,11 @@ function refundDailyBucketKey(staffId: string | null, now: Date = new Date()): s
 /**
  * Return the cumulative refund total for the staff/day bucket. Returns
  * 0 if the bucket is empty (no refunds yet today).
+ *
+ * P1-I-TRUE: this is now used ONLY for the read-side display in the
+ * 202 response (operator UX). The cap check itself uses
+ * tryReserveDailyRefund, which is atomic Lua. A stale value here can
+ * never bypass the cap.
  */
 async function readDailyRefundTotal(staffId: string | null): Promise<number> {
   const redis = await getRedisClient();
@@ -132,19 +137,96 @@ async function readDailyRefundTotal(staffId: string | null): Promise<number> {
 }
 
 /**
- * Add `centavos` to the staff/day bucket. INCRBY + EXPIRE — the EXPIRE
- * is renewed on every call so a multi-day spree at midnight rolls
- * cleanly into the next bucket.
+ * P1-I-TRUE — Atomic check-and-increment for the refund drip cap.
+ *
+ * Pre-fix (P1-I): the cap was checked in three steps —
+ *   1. GET current → 2. compute projected → 3. (much later) INCRBY.
+ * Five concurrent refunds at R$1900 with cap R$2000 ALL read
+ * currentTotal=0, ALL passed the check, ALL incremented — cap bypassed
+ * by ~5x. Confirmed by audit 03 R4.
+ *
+ * Post-fix: a single Lua eval performs the check + increment + TTL
+ * extension atomically on the Redis server, in one round trip. The
+ * client sees either {kind: "allowed", new_total} or
+ * {kind: "cap_exceeded", current_total}; no read-then-write window.
  */
-async function incrementDailyRefundTotal(
+const REFUND_CAP_CHECK_AND_INCR_LUA = `
+  local key = KEYS[1]
+  local amount = tonumber(ARGV[1])
+  local cap = tonumber(ARGV[2])
+  local ttl = tonumber(ARGV[3])
+  local current = tonumber(redis.call("GET", key)) or 0
+  if current + amount > cap then
+    return {0, current}
+  end
+  local new_total = redis.call("INCRBY", key, amount)
+  redis.call("EXPIRE", key, ttl)
+  return {1, new_total}
+`;
+
+export type RefundReservationResult =
+  | { readonly kind: "allowed"; readonly newTotal: number }
+  | { readonly kind: "cap_exceeded"; readonly currentTotal: number };
+
+/**
+ * Atomically attempt to reserve `centavos` against the staff/day refund
+ * cap. Returns `{kind: "allowed", newTotal}` if accepted; otherwise
+ * `{kind: "cap_exceeded", currentTotal}` and the counter is NOT
+ * incremented.
+ *
+ * Exported for testing.
+ */
+export async function tryReserveDailyRefund(
   staffId: string | null,
   centavos: number,
-): Promise<number> {
+  capCentavos: number,
+): Promise<RefundReservationResult> {
   const redis = await getRedisClient();
   const key = refundDailyBucketKey(staffId);
-  const next = await redis.incrBy(key, centavos);
-  await redis.expire(key, REFUND_DAILY_KEY_TTL_SECONDS);
-  return next;
+  const raw = (await (
+    redis as unknown as {
+      eval: (
+        script: string,
+        options: { keys: string[]; arguments: string[] },
+      ) => Promise<unknown>;
+    }
+  ).eval(REFUND_CAP_CHECK_AND_INCR_LUA, {
+    keys: [key],
+    arguments: [
+      String(centavos),
+      String(capCentavos),
+      String(REFUND_DAILY_KEY_TTL_SECONDS),
+    ],
+  })) as [number, number] | { 0: number; 1: number } | unknown;
+  // node-redis returns Lua table as array; some shims may return
+  // object-with-numeric-keys. Normalize.
+  const arr = Array.isArray(raw)
+    ? raw
+    : [
+        (raw as { 0: number })?.[0],
+        (raw as { 1: number })?.[1],
+      ];
+  const flag = Number(arr[0]);
+  const total = Number(arr[1]);
+  if (flag === 1) {
+    return { kind: "allowed", newTotal: total };
+  }
+  return { kind: "cap_exceeded", currentTotal: total };
+}
+
+/**
+ * Best-effort rollback for the rare case where the kernel REFUSEs after
+ * we reserved the slot. Symmetric with tryReserveDailyRefund — DECR by
+ * the same amount. Failures are non-fatal; the counter self-heals at
+ * the 25h TTL.
+ */
+async function rollbackDailyRefundReservation(
+  staffId: string | null,
+  centavos: number,
+): Promise<void> {
+  const redis = await getRedisClient();
+  const key = refundDailyBucketKey(staffId);
+  await redis.decrBy(key, centavos).catch(() => {});
 }
 
 /**
@@ -349,21 +431,12 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     }
     const result = outcome.result!;
 
-    // W3 P1-I — bump the per-staff-day cumulative refund total. The
-    // counter feeds the drip-cap check for sub-threshold refunds.
-    // Increment AFTER the kernel-adjudicated executor returned EXECUTE,
-    // so refused refunds don't pollute the bucket.
-    try {
-      await incrementDailyRefundTotal(args.staffId, result.refundAmountCentavos);
-    } catch (err) {
-      // Counter failures are non-fatal — the refund already executed.
-      // Log + continue; the worst case is the next refund slips the cap
-      // by one transaction, not silent unbounded spend.
-      server.log.warn(
-        { err: (err as Error).message, staffId: args.staffId },
-        "[refund-drip-cap] failed to increment daily counter",
-      );
-    }
+    // P1-I-TRUE — counter increment is performed ATOMICALLY at the cap
+    // check (tryReserveDailyRefund) for sub-threshold refunds. The
+    // step-2 receipt path enters here without a reservation, so we
+    // increment defensively (with no cap check — step-2 is already
+    // operator-gated). The pre-fix code incremented HERE for all paths,
+    // which was the source of the TOCTOU race confirmed by audit 03 R4.
 
     await publishNatsEvent("payment.status_changed", {
       eventType: "payment.status_changed",
@@ -459,22 +532,44 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
 
       // ── Threshold branch ──────────────────────────────────────────
       if (refundAmount < REFUND_CONFIRMATION_THRESHOLD_CENTAVOS) {
-        // W3 P1-I — check the per-staff-day drip cap. If executing this
-        // refund would push the cumulative total above the cap, fall
-        // back to the two-step receipt protocol (operator-UX gate).
+        // P1-I-TRUE — atomic check-and-reserve for the daily drip cap.
+        //
+        // Pre-fix (P1-I, audit 03 R4): the daily counter was read, the
+        // projected total computed, the refund executed, and THEN the
+        // counter incremented. N concurrent refunds at cap-1 all read the
+        // same starting value and all passed the check — cap bypassed by
+        // ~N×. Confirmed exploitable in concurrent burst tests.
+        //
+        // Post-fix: tryReserveDailyRefund performs GET + check + INCRBY +
+        // EXPIRE in a single Lua eval. Either the slot is reserved
+        // (counter is already incremented; refund may execute) or the
+        // cap-exceeded path runs (counter untouched; route to step-2).
+        // No read-then-write window survives.
         const dailyCap = getRefundDailyNoConfirmCapCentavos();
-        let currentDailyTotal = 0;
+        let reservation: RefundReservationResult;
         try {
-          currentDailyTotal = await readDailyRefundTotal(staffId);
-        } catch (err) {
-          server.log.warn(
-            { err: (err as Error).message, staffId },
-            "[refund-drip-cap] failed to read daily counter — defaulting to 0",
+          reservation = await tryReserveDailyRefund(
+            staffId,
+            refundAmount,
+            dailyCap,
           );
+        } catch (err) {
+          // Fail-CLOSED on Lua/Redis errors. The two-step receipt path
+          // already exists for high-value refunds; falling back to it on
+          // counter unavailability is safe (operator-UX gate). Better
+          // than the pre-fix behavior which defaulted to 0 and executed
+          // unbounded refunds during a Redis outage.
+          server.log.error(
+            { err: (err as Error).message, staffId },
+            "[refund-drip-cap] tryReserveDailyRefund failed — fail-CLOSED to step-2 receipt",
+          );
+          reservation = { kind: "cap_exceeded", currentTotal: 0 };
         }
-        const projectedTotal = currentDailyTotal + refundAmount;
-        if (projectedTotal > dailyCap) {
+        if (reservation.kind === "cap_exceeded") {
           // Drip cap exceeded — escalate to step-2 receipt protocol.
+          // The counter is NOT incremented (atomic guarantee).
+          const currentDailyTotal = reservation.currentTotal;
+          const projectedTotal = currentDailyTotal + refundAmount;
           const pending: PendingAdminAction = {
             kind: "payment.status.transition",
             payload: {
@@ -532,7 +627,10 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           });
         }
 
-        // Direct execute — envelope path still adjudicates.
+        // Slot reserved atomically. Direct execute — envelope path still
+        // adjudicates. If the kernel REFUSEs the magnitude check, rollback
+        // the atomic reservation so the bucket doesn't accumulate failed
+        // reservations.
         const result = await executeRefund({
           orderId: id,
           paymentId: payment.id,
@@ -550,6 +648,10 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           sessionId,
         });
         if (result.kind === "refused") {
+          // Rollback the atomic reservation since the refund didn't
+          // execute. Best-effort — failure here means the next refund
+          // sees a slightly-inflated counter, which is the safe side.
+          await rollbackDailyRefundReservation(staffId, refundAmount);
           // W3 P0-1 — surface the kernel's magnitude-decision distinctly.
           if (result.decision.kind === "ESCALATE") {
             return reply.code(503).send({
