@@ -34,6 +34,13 @@ jobs:
       - run: pnpm --filter @ibatexas/domain db:generate
       - run: pnpm lint
       - run: pnpm test -- -- --coverage
+      # Bypass-detection CI gate (task 20). Fails the build if any direct
+      # prisma write, direct medusa write, executeToolDirect re-introduction,
+      # or setMetricsSink(undefined) reset enters the codebase. The vitest
+      # suite is already run by `pnpm test` above, but we invoke the
+      # consolidated entry point explicitly so the gate is visible in CI logs.
+      - name: Bypass-detection CI gate
+        run: ./scripts/check-bypass.sh
       - name: Security audit
         run: pnpm audit --audit-level=high
       - run: pnpm build

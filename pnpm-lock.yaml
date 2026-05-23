@@ -924,9 +924,21 @@ importers:
 
   packages/cli:
     dependencies:
+      '@adjudicate/audit':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/audit
+      '@adjudicate/audit-postgres':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/audit-postgres
+      '@adjudicate/core':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/core
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain
+      '@ibatexas/llm-provider':
+        specifier: workspace:*
+        version: link:../llm-provider
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../nats-client
