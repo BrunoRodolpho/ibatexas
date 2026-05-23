@@ -34,6 +34,7 @@
     "@ibatexas/pack-whatsapp": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
+    "@adjudicate/audit-postgres": "workspace:*",
     "@adjudicate/core": "workspace:*",
     "@adjudicate/pack-payments-pix": "workspace:*",
     "@adjudicate/runtime": "workspace:*",
