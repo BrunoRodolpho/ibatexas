@@ -286,6 +286,76 @@ describe("payment-lifecycle governance (task 16)", () => {
     });
   });
 
+  describe("P1-C: DLQ on transitionStatusFromEnvelope throw", () => {
+    it("auto-confirm throw → original payload pushed to DLQ", async () => {
+      mockGetById.mockResolvedValue({
+        id: "order_thr_01",
+        displayId: 70,
+        customerId: "cust_thr_01",
+        fulfillmentStatus: "pending",
+        version: 1,
+      });
+      const err = new Error("ConcurrencyError: version stale");
+      mockTransitionStatusFromEnvelope.mockRejectedValue(err);
+
+      const originalPayload = {
+        orderId: "order_thr_01",
+        paymentId: "pay_thr_01",
+        previousStatus: "payment_pending",
+        newStatus: "paid",
+        method: "pix",
+        version: 2,
+      };
+
+      const callback = await getRegisteredCallback();
+      await callback(originalPayload);
+
+      // No order.status_changed publish.
+      expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+        "order.status_changed",
+        expect.anything(),
+      );
+      // DLQ push with the original payload + the thrown error.
+      expect(mockPushToDlq).toHaveBeenCalledOnce();
+      const [subject, payload, errOut] =
+        mockPushToDlq.mock.calls[0] as [string, Record<string, unknown>, unknown];
+      expect(subject).toBe("payment.status_changed");
+      expect(payload).toEqual(originalPayload);
+      expect(errOut).toBe(err);
+    });
+
+    it("auto-cancel throw → original payload pushed to DLQ", async () => {
+      mockGetById.mockResolvedValue({
+        id: "order_thr_02",
+        displayId: 71,
+        customerId: "cust_thr_02",
+        fulfillmentStatus: "confirmed",
+        version: 2,
+      });
+      const err = new Error("InvalidTransitionError");
+      mockTransitionStatusFromEnvelope.mockRejectedValue(err);
+
+      const originalPayload = {
+        orderId: "order_thr_02",
+        paymentId: "pay_thr_02",
+        previousStatus: "paid",
+        newStatus: "refunded",
+        method: "card",
+        version: 3,
+      };
+
+      const callback = await getRegisteredCallback();
+      await callback(originalPayload);
+
+      expect(mockPushToDlq).toHaveBeenCalledOnce();
+      const [subject, payload, errOut] =
+        mockPushToDlq.mock.calls[0] as [string, Record<string, unknown>, unknown];
+      expect(subject).toBe("payment.status_changed");
+      expect(payload).toEqual(originalPayload);
+      expect(errOut).toBe(err);
+    });
+  });
+
   describe("idempotency", () => {
     it("skips when dedup says the event is a duplicate", async () => {
       mockIsNewEvent.mockResolvedValue(false);

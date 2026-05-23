@@ -121,8 +121,13 @@ export async function startAuditConsumer(
 
       // Dedup layer 1: Redis SETNX. Composite key uses intentHash + at to
       // handle the (unlikely) case of two AuditRecords sharing an intent-
-      // Hash across distinct decisions. The Postgres unique constraint is
-      // (intent_hash, recorded_at) for the same reason.
+      // Hash across distinct decisions.
+      //
+      // P0-14 note: there is currently NO unique constraint on
+      // (intent_hash, recorded_at) in the @adjudicate/audit-postgres
+      // schema. Layer-2 dedup via `ON CONFLICT DO NOTHING` is a no-op
+      // until that constraint lands upstream. Layer 1 (this Redis SETNX)
+      // is load-bearing today.
       const dedupKey = `audit.intent.decision.v1:${record.intentHash}:${record.at}`
       try {
         if (!(await isNewEvent(dedupKey))) {

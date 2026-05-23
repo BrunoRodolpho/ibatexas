@@ -7,18 +7,19 @@
 //
 // ── Task 13/15 (M3) — kernel-gated transitions ──────────────────────────
 //
-// `checkin` and `complete` go through `transitionFromEnvelope` against
+// `checkin`, `complete`, and `cancel` go through *FromEnvelope against
 // `reservationsPolicyBundle` (staff-only by taint, ownership-checked by
 // state). The envelope carries:
 //   - actor.principal = "user" (staff JWT) | "system" (API key)
 //   - taint            = "TRUSTED" | "SYSTEM"
 //   - sessionId        = `admin:{staffId}` | `admin:api-key`
 //
-// The `cancel` admin endpoint remains a direct Prisma write — the
-// reservation Pack's `cancel` policy is customer-focused (cancel-window
-// guards), and admin-driven cancellation has different semantics (no
-// time window). A follow-up task can introduce a dedicated
-// `reservation.admin.cancel` intent kind if needed.
+// P0-4: the `cancel` admin endpoint previously bypassed the kernel via
+// `prisma.$transaction([...])` — refund-class semantics with no
+// adjudication. Now wraps via `reservationCmdSvc.cancelFromEnvelope`.
+// The cancel-window REQUEST_CONFIRMATION guard short-circuits cleanly
+// when `slot`/`now` are absent from projected state (admin path omits
+// them) so admins are not blocked by the customer-cancel window.
 
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -27,6 +28,7 @@ import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
 import { createReservationService, prisma } from "@ibatexas/domain";
 import type {
+  ReservationCancelPayload,
   ReservationCheckinPayload,
   ReservationCompletePayload,
   ReservationState,
@@ -241,6 +243,15 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
   );
 
   // POST /api/admin/reservations/:id/cancel
+  //
+  // P0-4: routes through `cancelFromEnvelope` (was a bare
+  // `prisma.$transaction([...])` direct write). Builds a TRUSTED admin
+  // envelope with the reservation owner's customerId so the pack's
+  // auth guard sees an authenticated customer and the service-layer
+  // ownership check matches the projected customerId. The cancel
+  // confirm-window guard is a no-op here because we don't project
+  // `slot`/`now` into state — admin cancels bypass the customer-facing
+  // last-minute window by design.
   app.post(
     "/api/admin/reservations/:id/cancel",
     {
@@ -253,6 +264,10 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+      const staffId = request.staffId ?? null;
+      const principal: "user" | "system" = staffId ? "user" : "system";
+      const taint: "TRUSTED" | "SYSTEM" = staffId ? "TRUSTED" : "SYSTEM";
+      const sessionId = staffId ? `admin:${staffId}` : "admin:api-key";
 
       const reservation = await prisma.reservation.findUnique({
         where: { id },
@@ -263,21 +278,52 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Reserva não encontrada." });
       }
 
-      if (["cancelled", "completed", "no_show"].includes(reservation.status)) {
-        return reply.code(422).send({ error: "Reserva não pode ser cancelada neste status." });
-      }
+      // Project state with the reservation's own customerId so the
+      // pack's `requireAuthenticated` guard passes for the admin path.
+      // The pack's auth guard checks `state.ctx.customerId !== null`;
+      // the inner `cancel()` then calls `assertOwnership` against the
+      // same customerId we pass into `extras`. Both match by construction.
+      const state = {
+        ctx: {
+          channel: "staff",
+          customerId: reservation.customerId,
+          staffId,
+          reservation: {
+            id: reservation.id,
+            status: reservation.status,
+            partySize: reservation.partySize,
+            timeSlotId: reservation.timeSlotId,
+          },
+        },
+      } as ReservationState;
 
-      await prisma.$transaction([
-        prisma.reservation.update({
-          where: { id },
-          data: { status: "cancelled", cancelledAt: new Date() },
-        }),
-        prisma.reservationTable.deleteMany({ where: { reservationId: id } }),
-        prisma.timeSlot.update({
-          where: { id: reservation.timeSlotId },
-          data: { reservedCovers: { decrement: reservation.partySize } },
-        }),
-      ]);
+      const payload: ReservationCancelPayload = { reservationId: id };
+      const envelope = buildEnvelope<
+        "reservation.cancel",
+        ReservationCancelPayload
+      >({
+        kind: "reservation.cancel",
+        payload,
+        nonce: randomUUID(),
+        actor: { principal, sessionId },
+        taint,
+      });
+
+      const outcome = await svc.cancelFromEnvelope(envelope, state, {
+        customerId: reservation.customerId,
+      });
+
+      if (
+        outcome.decision.kind !== "EXECUTE" &&
+        outcome.decision.kind !== "REWRITE"
+      ) {
+        const refusalText =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.userFacing
+            : "Operação não permitida pela política do kernel.";
+        const code = outcome.decision.kind === "REFUSE" ? 422 : 403;
+        return reply.code(code).send({ error: refusalText });
+      }
 
       return reply.send({ success: true });
     },

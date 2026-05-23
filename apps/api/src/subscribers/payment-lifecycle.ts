@@ -160,10 +160,22 @@ export async function startPaymentLifecycleSubscriber(
 
             log?.info({ orderId }, "[payment-lifecycle] Order auto-confirmed after payment");
           } catch (err) {
-            // ConcurrencyError or InvalidTransitionError — another process may have done it
-            log?.warn(
-              { orderId, error: String(err) },
-              "[payment-lifecycle] Failed to auto-confirm order — may already be advanced",
+            // P1-C: transitionStatusFromEnvelope threw (ConcurrencyError,
+            // InvalidTransitionError, kernel circuit-open, etc.). Previously
+            // we logged a warn and swallowed — the original NATS payload
+            // evaporated with no operator surface. Push to DLQ so ops can
+            // replay or triage; the dedup ledger keyed on
+            // (paymentId, newStatus) protects against re-firing the
+            // mutation if the replay turns into an EXECUTE.
+            log?.error(
+              { orderId, paymentId, error: String(err) },
+              "[payment-lifecycle] Failed to auto-confirm order — pushing to DLQ",
+            );
+            await pushToDlq(
+              "payment.status_changed",
+              payload as Record<string, unknown>,
+              err,
+              log,
             );
           }
           break;
@@ -240,9 +252,18 @@ export async function startPaymentLifecycleSubscriber(
 
             log?.info({ orderId }, "[payment-lifecycle] Order canceled after full refund");
           } catch (err) {
-            log?.warn(
-              { orderId, error: String(err) },
-              "[payment-lifecycle] Failed to cancel order after refund",
+            // P1-C: same fail-safety as the auto-confirm path above. The
+            // original NATS payload survives in the DLQ for ops replay
+            // rather than evaporating into the warn log.
+            log?.error(
+              { orderId, paymentId, error: String(err) },
+              "[payment-lifecycle] Failed to cancel order after refund — pushing to DLQ",
+            );
+            await pushToDlq(
+              "payment.status_changed",
+              payload as Record<string, unknown>,
+              err,
+              log,
             );
           }
           break;

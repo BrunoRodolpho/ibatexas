@@ -128,10 +128,18 @@ async function buildOrderActionsServer(staff: StaffContext): Promise<FastifyInst
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   // Inject staff identity for the requireManager / requireStaff middleware.
+  // P0-5 two-person tests need a per-request override so step 2 can use a
+  // different staffId from step 1; honour `x-staff-id` header when present.
   app.addHook("preHandler", async (req) => {
-    if (staff.staffId) {
-      (req as unknown as { staffId: string | null }).staffId = staff.staffId;
-      (req as unknown as { staffRole: string | null }).staffRole = staff.staffRole;
+    const overrideStaffId = req.headers["x-staff-id"] as string | undefined;
+    const overrideRole = req.headers["x-staff-role"] as
+      | StaffContext["staffRole"]
+      | undefined;
+    const effectiveStaffId = overrideStaffId ?? staff.staffId;
+    const effectiveRole = overrideRole ?? staff.staffRole;
+    if (effectiveStaffId) {
+      (req as unknown as { staffId: string | null }).staffId = effectiveStaffId;
+      (req as unknown as { staffRole: string | null }).staffRole = effectiveRole;
     }
   });
   await app.register(adminOrderActionRoutes);
@@ -145,9 +153,15 @@ async function buildPaymentsServer(staff: StaffContext): Promise<FastifyInstance
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   app.addHook("preHandler", async (req) => {
-    if (staff.staffId) {
-      (req as unknown as { staffId: string | null }).staffId = staff.staffId;
-      (req as unknown as { staffRole: string | null }).staffRole = staff.staffRole;
+    const overrideStaffId = req.headers["x-staff-id"] as string | undefined;
+    const overrideRole = req.headers["x-staff-role"] as
+      | StaffContext["staffRole"]
+      | undefined;
+    const effectiveStaffId = overrideStaffId ?? staff.staffId;
+    const effectiveRole = overrideRole ?? staff.staffRole;
+    if (effectiveStaffId) {
+      (req as unknown as { staffId: string | null }).staffId = effectiveStaffId;
+      (req as unknown as { staffRole: string | null }).staffRole = effectiveRole;
     }
   });
   await app.register(adminPaymentRoutes);
@@ -209,6 +223,18 @@ function makePayment(overrides?: Partial<{
 const MANAGER: StaffContext = { staffId: "staff_mgr_01", staffRole: "MANAGER" };
 const OWNER: StaffContext = { staffId: "staff_own_01", staffRole: "OWNER" };
 const ATTENDANT: StaffContext = { staffId: "staff_att_01", staffRole: "ATTENDANT" };
+
+// P0-5: step 2 of the two-person flow MUST be confirmed by a different
+// staff. Step-1 requests use the server's default staff; step-2 requests
+// send these headers to identify a *second* operator.
+const MANAGER_2_HEADERS = {
+  "x-staff-id": "staff_mgr_02",
+  "x-staff-role": "MANAGER",
+};
+const OWNER_2_HEADERS = {
+  "x-staff-id": "staff_own_02",
+  "x-staff-role": "OWNER",
+};
 
 // ── Tests: force-cancel ───────────────────────────────────────────────────
 
@@ -297,10 +323,12 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
       });
       const { confirmationId } = step1.json() as { confirmationId: string };
 
+      // P0-5: second operator confirms step 2.
       const step2 = await server.inject({
         method: "POST",
         url: "/api/admin/orders/order_01/force-cancel/confirm",
         payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
       });
 
       expect(step2.statusCode).toBe(200);
@@ -318,7 +346,8 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
       };
       expect(envelope.kind).toBe("order.status.transition");
       expect(envelope.actor.principal).toBe("user");
-      expect(envelope.actor.sessionId).toBe("admin:staff_mgr_01");
+      // Step 2 actor identity wins in the executed envelope.
+      expect(envelope.actor.sessionId).toBe("admin:staff_mgr_02");
       expect(envelope.taint).toBe("TRUSTED");
       expect(envelope.payload.orderId).toBe("order_01");
       expect(envelope.payload.newStatus).toBe("canceled");
@@ -326,6 +355,45 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
 
       // Legacy bare-arg path must NOT have been called.
       expect(mockTransitionStatus).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  // P0-5: same operator on both steps must be refused.
+  it("step 2 by the SAME staff as step 1 is refused (P0-5 same-actor)", async () => {
+    const server = await buildOrderActionsServer(MANAGER);
+    try {
+      const step1 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/force-cancel",
+        payload: { reason: "fraud" },
+      });
+      const { confirmationId } = step1.json() as { confirmationId: string };
+
+      // NO override header — step 2 uses the same MANAGER identity.
+      const step2 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/force-cancel/confirm",
+        payload: { confirmationId },
+      });
+
+      expect(step2.statusCode).toBe(403);
+      const body = step2.json() as { error: string };
+      // pt-BR refusal text (CLAUDE.md rule #4).
+      expect(body.error).toMatch(/Outro operador/i);
+
+      // The kernel envelope path MUST NOT have fired.
+      expect(mockTransitionStatusFromEnvelopeOrder).not.toHaveBeenCalled();
+
+      // Receipt was drained — a retry returns 410 (audit trail visible).
+      const replay = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/force-cancel/confirm",
+        payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
+      });
+      expect(replay.statusCode).toBe(410);
     } finally {
       await server.close();
     }
@@ -360,6 +428,7 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
         method: "POST",
         url: "/api/admin/orders/order_01/force-cancel/confirm",
         payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
       });
       expect(first.statusCode).toBe(200);
 
@@ -367,6 +436,7 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
         method: "POST",
         url: "/api/admin/orders/order_01/force-cancel/confirm",
         payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
       });
       expect(second.statusCode).toBe(410);
 
@@ -394,6 +464,7 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
         method: "POST",
         url: "/api/admin/orders/order_01/force-cancel/confirm",
         payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
       });
       expect(step2.statusCode).toBe(403);
       const body = step2.json() as { error: string };
@@ -419,6 +490,7 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
         method: "POST",
         url: "/api/admin/orders/order_02/force-cancel/confirm",
         payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
       });
       expect(step2.statusCode).toBe(410);
     } finally {
@@ -484,10 +556,12 @@ describe("POST /api/admin/orders/:id/waive — two-step receipt protocol", () =>
       });
       const { confirmationId } = step1.json() as { confirmationId: string };
 
+      // P0-5: second owner confirms.
       const step2 = await server.inject({
         method: "POST",
         url: "/api/admin/orders/order_01/waive/confirm",
         payload: { confirmationId },
+        headers: OWNER_2_HEADERS,
       });
       expect(step2.statusCode).toBe(200);
 
@@ -522,6 +596,7 @@ describe("POST /api/admin/orders/:id/waive — two-step receipt protocol", () =>
         method: "POST",
         url: "/api/admin/orders/order_01/waive/confirm",
         payload: { confirmationId },
+        headers: OWNER_2_HEADERS,
       });
       expect(first.statusCode).toBe(200);
 
@@ -529,8 +604,34 @@ describe("POST /api/admin/orders/:id/waive — two-step receipt protocol", () =>
         method: "POST",
         url: "/api/admin/orders/order_01/waive/confirm",
         payload: { confirmationId },
+        headers: OWNER_2_HEADERS,
       });
       expect(second.statusCode).toBe(410);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // P0-5: same owner on both steps must be refused.
+  it("waive step 2 by SAME owner as step 1 is refused (P0-5)", async () => {
+    const server = await buildOrderActionsServer(OWNER);
+    try {
+      const step1 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/waive",
+        payload: { reason: "courtesy" },
+      });
+      const { confirmationId } = step1.json() as { confirmationId: string };
+
+      // Same OWNER consumes — must be refused (same actor).
+      const step2 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/waive/confirm",
+        payload: { confirmationId },
+      });
+      expect(step2.statusCode).toBe(403);
+      expect(step2.json().error).toMatch(/Outro operador/i);
+      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
@@ -611,10 +712,12 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       });
       const { confirmationId } = step1.json() as { confirmationId: string };
 
+      // P0-5: second manager confirms (refund is a money path).
       const step2 = await server.inject({
         method: "POST",
         url: "/api/admin/orders/order_01/payment/refund/confirm",
         payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
       });
       expect(step2.statusCode).toBe(200);
 
@@ -639,6 +742,7 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
         method: "POST",
         url: "/api/admin/orders/order_01/payment/refund/confirm",
         payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
       });
       expect(first.statusCode).toBe(200);
 
@@ -646,11 +750,38 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
         method: "POST",
         url: "/api/admin/orders/order_01/payment/refund/confirm",
         payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
       });
       expect(second.statusCode).toBe(410);
 
       expect(mockTransitionStatusFromEnvelopePayment).toHaveBeenCalledTimes(1);
       expect(mockPaymentUpdate).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // P0-5: refund step 2 by SAME manager as step 1 is refused.
+  it("refund step 2 by SAME manager as step 1 is refused (P0-5)", async () => {
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      const step1 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 25_000, reason: "fraud" },
+      });
+      const { confirmationId } = step1.json() as { confirmationId: string };
+
+      const step2 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund/confirm",
+        payload: { confirmationId },
+      });
+      expect(step2.statusCode).toBe(403);
+      expect(step2.json().error).toMatch(/Outro operador/i);
+      // Money path MUST NOT have been called.
+      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
@@ -737,10 +868,12 @@ describe("PATCH /api/admin/orders/:id/payment/status — two-step force-status",
       });
       const { confirmationId } = step1.json() as { confirmationId: string };
 
+      // P0-5: second owner confirms.
       const step2 = await server.inject({
         method: "POST",
         url: "/api/admin/orders/order_01/payment/status/confirm",
         payload: { confirmationId },
+        headers: OWNER_2_HEADERS,
       });
       expect(step2.statusCode).toBe(200);
 
@@ -784,14 +917,41 @@ describe("PATCH /api/admin/orders/:id/payment/status — two-step force-status",
       });
       const { confirmationId } = step1.json() as { confirmationId: string };
 
+      // P0-5: second owner consumes; kernel REFUSEs the underlying transition.
+      const step2 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/status/confirm",
+        payload: { confirmationId },
+        headers: OWNER_2_HEADERS,
+      });
+      expect(step2.statusCode).toBe(403);
+      const body = step2.json() as { error: string };
+      expect(body.error).toMatch(/estado final/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // P0-5: force-status by SAME owner on both steps is refused even
+  // though force-status is OWNER-only — separation-of-duty.
+  it("force-status step 2 by SAME owner as step 1 is refused (P0-5)", async () => {
+    const server = await buildPaymentsServer(OWNER);
+    try {
+      const step1 = await server.inject({
+        method: "PATCH",
+        url: "/api/admin/orders/order_01/payment/status",
+        payload: { status: "disputed", reason: "test" },
+      });
+      const { confirmationId } = step1.json() as { confirmationId: string };
+
       const step2 = await server.inject({
         method: "POST",
         url: "/api/admin/orders/order_01/payment/status/confirm",
         payload: { confirmationId },
       });
       expect(step2.statusCode).toBe(403);
-      const body = step2.json() as { error: string };
-      expect(body.error).toMatch(/estado final/);
+      expect(step2.json().error).toMatch(/Outro operador/i);
+      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
