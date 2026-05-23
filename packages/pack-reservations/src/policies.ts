@@ -37,7 +37,6 @@ import {
 import {
   createConfirmGuard,
   createEscalateGuard,
-  createStateDeferGuard,
 } from "@adjudicate/primitives"
 import {
   refuseCustomerBlocked,
@@ -55,8 +54,6 @@ import {
 import {
   RESERVATION_CANCEL_CONFIRM_HOURS,
   RESERVATION_NO_SHOW_ESCALATE_RATE,
-  RESERVATION_SLOT_RELEASED_SIGNAL,
-  RESERVATION_SLOT_RELEASED_TIMEOUT_MS,
   reservationTaintPolicy,
   type ReservationIntentKind,
   type ReservationPayload,
@@ -246,47 +243,32 @@ const requireReservationCancellable: ReservationGuard = (envelope, state) => {
   ])
 }
 
-// ── DEFER on slot.released (delegated to @adjudicate/primitives) ────────
-
-/**
- * `reservation.modify` parks on `slot.released` when the *new* slot has
- * no remaining capacity. The runtime resolver fires when a cancel or
- * no-show on that slot releases covers — at which point the kernel
- * re-adjudicates. Analogous to PIX's `payment.confirmed` DEFER.
- *
- * Notes:
- *   - This DEFER is only meaningful when the move is to a *different*
- *     slot. Same-slot modifications (just changing party size) are
- *     not parked here — the requireSlotWithCapacity logic for create
- *     does NOT apply because modify uses a separate capacity check
- *     (the existing reservation's covers are subtracted out).
- *   - We DEFER on the *new* slot's id; the resolver matches by
- *     `slot.released` signal carrying the freed slot id.
- */
-const deferOnSlotFull = nameGuard(
-  "deferOnSlotFull",
-  createStateDeferGuard<
-    ReservationIntentKind,
-    ReservationPayload,
-    ReservationState
-  >({
-    matches: (envelope, state) => {
-      if (envelope.kind !== "reservation.modify") return false
-      const newSlot = state.ctx.newSlot
-      if (!newSlot) return false
-      return newSlot.reservedCovers >= newSlot.maxCovers
-    },
-    signal: RESERVATION_SLOT_RELEASED_SIGNAL,
-    timeoutMs: RESERVATION_SLOT_RELEASED_TIMEOUT_MS,
-    basis: (envelope, state) => [
-      basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
-        reason: "new_slot_full",
-        timeSlotId: state.ctx.newSlot?.timeSlotId,
-        kind: envelope.kind,
-      }),
-    ],
-  }),
-) as ReservationGuard
+// ── REFUSE on full new slot (replaces removed slot.released DEFER) ──────
+//
+// Per W2 / P1-F (audit synthesis 03-deferred-workflow §"slot.released"
+// dead code) and decisions-log §D9: the `slot.released` signal was
+// declared but no publisher existed anywhere in the codebase. The
+// pre-W2 `deferOnSlotFull` guard parked intents that no resolver
+// would ever wake — silent loss after a 30-minute TTL.
+//
+// Choice: REMOVE the DEFER (vs. IMPLEMENT publisher + subscriber). W2
+// is correctness-focused; the feature can re-land cleanly when modify-
+// on-slot-released is genuinely on the roadmap. Until then, refuse the
+// modify outright so the customer gets an immediate, actionable
+// rejection instead of a stuck wait.
+const refuseModifyOnFullNewSlot: ReservationGuard = (envelope, state) => {
+  if (envelope.kind !== "reservation.modify") return null
+  const newSlot = state.ctx.newSlot
+  if (!newSlot) return null
+  if (newSlot.reservedCovers < newSlot.maxCovers) return null
+  return decisionRefuse(refuseSlotFull(), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      reason: "new_slot_full",
+      timeSlotId: newSlot.timeSlotId,
+      kind: envelope.kind,
+    }),
+  ])
+}
 
 // ── Business guards ─────────────────────────────────────────────────────
 
@@ -502,7 +484,7 @@ export const reservationsPolicyBundle: PolicyBundle<
     requireReservationCancellable,
     requireSlotInFuture,
     requireSlotWithCapacity,
-    deferOnSlotFull,
+    refuseModifyOnFullNewSlot,
   ],
   authGuards: [requireAuthenticated, requireStaff],
   taint: reservationTaintPolicy,

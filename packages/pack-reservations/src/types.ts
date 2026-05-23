@@ -16,9 +16,11 @@
  *
  *   - reservation.create           — UNTRUSTED. Customer creates booking.
  *   - reservation.modify           — UNTRUSTED. Reschedule / change party
- *                                     size. May DEFER on `slot.released`
- *                                     when the *new* slot is at capacity
- *                                     pending a release.
+ *                                     size. REFUSEs when the new slot is
+ *                                     at capacity (pre-W2 this DEFER'd on
+ *                                     a never-published `slot.released`
+ *                                     signal — see W2/P1-F decisions-log
+ *                                     §D9 for the removal rationale).
  *   - reservation.cancel           — UNTRUSTED (or TRUSTED for staff).
  *                                     REQUEST_CONFIRMATION when within
  *                                     N hours of the slot start.
@@ -156,8 +158,9 @@ export interface ReservationContext {
  *     locked under `FOR UPDATE` at command time.
  *   - `newSlot` is populated when the intent is `reservation.modify` AND
  *     the customer is moving to a different slot. When populated AND
- *     `newSlot.reservedCovers === newSlot.maxCovers`, the modify DEFERs
- *     on `slot.released`.
+ *     `newSlot.reservedCovers === newSlot.maxCovers`, the modify falls
+ *     through to the default REFUSE (the slot.released DEFER guard was
+ *     removed in W2; see decisions-log §D9).
  */
 export interface ReservationState {
   readonly ctx: ReservationContext & {
@@ -249,23 +252,11 @@ export const RESERVATION_NO_SHOW_ESCALATE_RATE = readPositiveNumber(
   0.3,
 )
 
-// ── DEFER signal vocabulary ─────────────────────────────────────────────
-
-/**
- * Wire signal the kernel parks `reservation.modify` on when the *new*
- * slot has no remaining capacity. The runtime resolver fires when a
- * cancel / no-show event releases covers on that slot — analogous to
- * how `pack-payments-pix` fires `payment.confirmed` on webhook arrival.
- *
- * Per investigation 05 §"Packs ibatexas should write":
- *   "DEFER on `payment.confirmed` and `slot.released`"
- */
-export const RESERVATION_SLOT_RELEASED_SIGNAL = "slot.released"
-
-/**
- * Default DEFER timeout: 30 minutes. Long enough that a same-day
- * cancellation can free the slot; short enough that the parked intent
- * doesn't outlive the customer's intent. Mirrors `pack-payments-pix`'s
- * 15-minute default in style (pick a value, document why).
- */
-export const RESERVATION_SLOT_RELEASED_TIMEOUT_MS = 30 * 60 * 1000
+// ── DEFER signal vocabulary — REMOVED ───────────────────────────────────
+//
+// Per W2 / P1-F (audit 03 §"slot.released") and decisions-log §D9: the
+// `slot.released` signal had no publisher anywhere in the codebase, so
+// any parked `reservation.modify` envelope would silently TTL out after
+// 30 minutes with no resolution. Removed to eliminate dead code; can
+// re-land cleanly when modify-on-slot-released is genuinely on the
+// roadmap (publisher + subscriber + end-to-end tests).

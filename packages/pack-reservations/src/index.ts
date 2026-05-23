@@ -32,12 +32,11 @@
 import type { PackV0 } from "@adjudicate/core"
 import { reservationsCapabilityPlanner } from "./capabilities.js"
 import { reservationsPolicyBundle } from "./policies.js"
-import {
-  RESERVATION_SLOT_RELEASED_SIGNAL,
-  type ReservationContext,
-  type ReservationIntentKind,
-  type ReservationPayload,
-  type ReservationState,
+import type {
+  ReservationContext,
+  ReservationIntentKind,
+  ReservationPayload,
+  ReservationState,
 } from "./types.js"
 
 // ── Rehydrator ──────────────────────────────────────────────────────────
@@ -128,8 +127,6 @@ export function rehydrateReservationState(raw: unknown): ReservationState {
 export {
   RESERVATION_CANCEL_CONFIRM_HOURS,
   RESERVATION_NO_SHOW_ESCALATE_RATE,
-  RESERVATION_SLOT_RELEASED_SIGNAL,
-  RESERVATION_SLOT_RELEASED_TIMEOUT_MS,
   reservationTaintPolicy,
   type ReservationCancelPayload,
   type ReservationCheckinPayload,
@@ -215,13 +212,14 @@ export const reservationsPack = {
     "reservation.default.deny",
   ],
   /**
-   * DEFER signal vocabulary. The Pack parks `reservation.modify`
-   * on `slot.released` via the composed `createStateDeferGuard`
-   * factory. `@adjudicate/conformance`'s AC-004 invariant check
-   * verifies that every DEFER decision the policy emits carries a
-   * signal from this list.
+   * DEFER signal vocabulary. Empty since W2/P1-F removed the
+   * `slot.released` DEFER guard (no publisher existed; see
+   * decisions-log §D9). The Pack has no parked envelopes today
+   * — reservation.modify against a full new slot REFUSEs at the
+   * default policy instead of waiting for a release that would
+   * never arrive.
    */
-  signals: [RESERVATION_SLOT_RELEASED_SIGNAL],
+  signals: [],
   rehydrateState: rehydrateReservationState,
 } as const satisfies PackV0<
   ReservationIntentKind,

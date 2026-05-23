@@ -207,10 +207,16 @@ describe("reservationsPolicyBundle — ESCALATE on high no-show rate", () => {
   })
 })
 
-// ── DEFER on slot.released ──────────────────────────────────────────────
+// ── [W2/P1-F] slot.released REMOVED — modify against full new slot REFUSEs ──
+//
+// Pre-W2 a `reservation.modify` against a full new slot DEFER'd on the
+// `slot.released` signal — but no publisher ever fired that signal, so
+// the parked envelope silently TTL'd after 30 minutes. Now the policy
+// falls through to default REFUSE (the customer gets a meaningful
+// rejection instead of a stuck wait). See decisions-log §D9.
 
-describe("reservationsPolicyBundle — DEFER on slot.released for full modify target", () => {
-  it("DEFER reservation.modify when the new slot is at capacity", () => {
+describe("reservationsPolicyBundle — modify against full new slot (post P1-F removal)", () => {
+  it("REFUSE reservation.modify when the new slot is at capacity (no more DEFER)", () => {
     const decision = adjudicate(
       env("reservation.modify", {
         reservationId: "r-1",
@@ -232,9 +238,10 @@ describe("reservationsPolicyBundle — DEFER on slot.released for full modify ta
       }),
       reservationsPolicyBundle,
     )
-    expect(decision.kind).toBe("DEFER")
-    if (decision.kind !== "DEFER") return
-    expect(decision.signal).toBe("slot.released")
+    // Pre-W2: DEFER on "slot.released" (with no resolver). Post-W2:
+    // REFUSE — the customer gets a clear "slot full" rejection instead
+    // of a silent timeout.
+    expect(decision.kind).toBe("REFUSE")
   })
 
   it("EXECUTE reservation.modify when the new slot has capacity", () => {
@@ -500,8 +507,11 @@ describe("reservationsPack — PackV0 shape", () => {
     expect(unique.size).toBe(reservationsPack.intents.length)
   })
 
-  it("declares the slot.released signal", () => {
-    expect(reservationsPack.signals).toContain("slot.released")
+  it("[W2/P1-F] declares an empty signals array (slot.released removed — no publisher existed)", () => {
+    // Per decisions-log §D9: the slot.released signal was removed because
+    // no wire publisher existed; parked reservation.modify envelopes
+    // silently TTL'd. Pack now has zero DEFER signals.
+    expect(reservationsPack.signals).toEqual([])
   })
 
   it("planner returns a Plan with read-only tools and allowed intents", () => {
