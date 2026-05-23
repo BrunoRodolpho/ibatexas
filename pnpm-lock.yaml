@@ -997,6 +997,30 @@ importers:
 
   packages/domain:
     dependencies:
+      '@adjudicate/audit':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/audit
+      '@adjudicate/core':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/core
+      '@adjudicate/primitives':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/primitives
+      '@ibatexas/nats-client':
+        specifier: workspace:*
+        version: link:../nats-client
+      '@ibatexas/pack-customer-onboarding':
+        specifier: workspace:*
+        version: link:../pack-customer-onboarding
+      '@ibatexas/pack-orders':
+        specifier: workspace:*
+        version: link:../pack-orders
+      '@ibatexas/pack-reservations':
+        specifier: workspace:*
+        version: link:../pack-reservations
+      '@ibatexas/pack-whatsapp':
+        specifier: workspace:*
+        version: link:../pack-whatsapp
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types
@@ -1007,6 +1031,9 @@ importers:
         specifier: ^7.6.0
         version: 7.6.0(prisma@7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(typescript@5.9.3)
     devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
       prisma:
         specifier: ^7.6.0
         version: 7.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(magicast@0.3.5)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)
@@ -1016,6 +1043,9 @@ importers:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
 
   packages/eslint-config:
     dependencies:
@@ -1244,12 +1274,18 @@ importers:
 
   packages/tools:
     dependencies:
+      '@adjudicate/core':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/core
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../nats-client
+      '@ibatexas/pack-orders':
+        specifier: workspace:*
+        version: link:../pack-orders
       '@ibatexas/types':
         specifier: workspace:*
         version: link:../types
