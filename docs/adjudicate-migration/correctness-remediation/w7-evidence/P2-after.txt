@@ -1,0 +1,29 @@
+=== W7-P2 AFTER state — allowlist landed, sentinel pinned ===
+Branch: feat/correctness-w7-close-w6-findings
+Date: Sat May 23 17:56:08 CDT 2026
+
+── DEFERRED_ADMIN_LOW_RISK entries (10 total, by file:line of bare call site) ──
+apps/api/src/routes/admin/tables.ts:55:        const table = await tableSvc.upsert(body)
+apps/api/src/routes/admin/tables.ts:92:        const result = await tableSvc.generateTimeSlots(body)
+apps/api/src/routes/admin/schedule.ts:109:      const holiday = await svc.addHoliday(request.body);
+apps/api/src/routes/admin/schedule.ts:171:      const override = await svc.upsertOverride(date, request.body);
+apps/api/src/routes/admin/delivery-zones.ts:75:      const zone = await deliveryZoneSvc.create(request.body);
+apps/api/src/routes/admin/delivery-zones.ts:115:      const zone = await deliveryZoneSvc.update(request.params.id, request.body);
+
+── W7-P2 test surface (3 new tests under W7-P2 describe block) ──
+1106:describe("Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMIN_LOW_RISK", () => {
+1139:  it("every bare admin service call in the scan files matches a DEFERRED_ADMIN_LOW_RISK entry", () => {
+1162:  it("every DEFERRED_ADMIN_LOW_RISK entry actually appears in its referenced file (sentinel)", () => {
+1205:  it("DEFERRED_ADMIN_LOW_RISK size matches the W7-P2 baseline (10 entries — promotion sentinel)", () => {
+
+── Test execution (only the W7-P2 describe block) ──
+ Test Files  1 passed (1)
+      Tests  3 passed | 28 skipped (31)
+
+── Full bypass-detection test result ──
+ Test Files  1 passed (1)
+      Tests  31 passed (31)
+
+── Decision artifact ──
+-rw-r--r--  1 thaisrodolpho  staff  14530 May 23 17:52 docs/adjudicate-migration/correctness-remediation/W7-DECISIONS-admin.md
+     276 docs/adjudicate-migration/correctness-remediation/W7-DECISIONS-admin.md

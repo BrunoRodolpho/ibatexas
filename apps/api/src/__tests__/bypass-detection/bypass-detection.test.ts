@@ -926,6 +926,311 @@ describe("Bypass detection — W6-8 extension: console.log of envelope/payload (
   }
 })
 
+// ── W7-P2: DEFERRED_ADMIN_LOW_RISK allowlist (admin scheduler/tables/zones) ──
+//
+// Ten admin route call sites bypass the *FromEnvelope adjudication path
+// because their underlying services (`schedule.service.ts`,
+// `table.service.ts`, `delivery-zone.service.ts`) do NOT have *FromEnvelope
+// methods today. W7-Govern-Admin chose path (b) over path (a) — see
+// `docs/adjudicate-migration/correctness-remediation/W7-DECISIONS-admin.md`
+// for the policy-blast / audit-trail / rollout-cost analysis.
+//
+// This allowlist is the declarative contract that says "we deliberately do
+// NOT govern these 10 sites with the envelope flow; the trade-off is
+// documented." A test below scans the 3 admin route files for bare
+// `<svc>.<mutator>(...)` patterns and fails the build IF:
+//
+//   1. A bare-call pattern appears in one of the 3 files but is NOT
+//      enumerated in DEFERRED_ADMIN_LOW_RISK (regression — a new bypass
+//      surfaced without a paired deferral rationale).
+//   2. An allowlist entry disappears from the source (silent allowlist
+//      loss — an entry was deleted but the bare call was NOT replaced
+//      with an envelope path; either fix the route to use the envelope
+//      path OR drop the entry from the allowlist deliberately).
+//
+// The shape `{ file, pattern, rationale }` lets the test report the
+// site-by-site rationale on failure and keeps the table machine-readable
+// for a future migration audit (W8/W9 governance review).
+//
+// IMPORTANT: this is a code-shape grep, not a runtime gate. The actual
+// admin route mutations still happen at runtime — they are just NOT
+// wrapped in `adjudicate()`. The W7-DECISIONS-admin.md rationale spells
+// out why that is acceptable for the 10 staff-only, operator-driven sites
+// listed below.
+//
+// PROMOTION TRIGGER: see W7-DECISIONS-admin.md §"Follow-up triggers" for
+// the conditions that should re-open path (a) and empty this allowlist.
+
+interface DeferredAdminLowRiskEntry {
+  /**
+   * Repo-relative path of the admin route file. Mirrors the format used
+   * by ALLOWED_MEDUSA_DIRECT.
+   */
+  readonly file: string
+  /**
+   * The bare service-call shape that bypasses *FromEnvelope. The pattern
+   * is anchored with `\b...(` so a future call site that introduces a
+   * similarly-named method (e.g., `tableSvc.upsert2(...)`) does NOT
+   * accidentally pass the gate.
+   */
+  readonly pattern: RegExp
+  /**
+   * Short rationale (one line). The full rationale is in
+   * W7-DECISIONS-admin.md — this is the at-a-glance reminder for the
+   * test failure message.
+   */
+  readonly rationale: string
+}
+
+const DEFERRED_ADMIN_LOW_RISK: readonly DeferredAdminLowRiskEntry[] = [
+  // ── apps/api/src/routes/admin/schedule.ts ──────────────────────────
+  //
+  // 1. PUT /api/admin/schedule/weekly — operator-driven weekly hours.
+  //    Manager-role-only, low-frequency, no LLM caller, no PII.
+  {
+    file: "apps/api/src/routes/admin/schedule.ts",
+    pattern: /\bsvc\.upsertDay\s*\(/,
+    rationale:
+      "schedule.upsertDay — operator-only weekly-hours upsert, manager-role gated, no LLM caller",
+  },
+  // 2. POST /api/admin/schedule/holidays — add holiday entry.
+  //    Same risk profile as upsertDay (operator-only, low blast).
+  {
+    file: "apps/api/src/routes/admin/schedule.ts",
+    pattern: /\bsvc\.addHoliday\s*\(/,
+    rationale:
+      "schedule.addHoliday — operator-only holiday create, manager-role gated, no LLM caller",
+  },
+  // 3. DELETE /api/admin/schedule/holidays/:id — remove holiday.
+  {
+    file: "apps/api/src/routes/admin/schedule.ts",
+    pattern: /\bsvc\.removeHoliday\s*\(/,
+    rationale:
+      "schedule.removeHoliday — operator-only holiday delete, manager-role gated, no LLM caller",
+  },
+  // 4. PUT /api/admin/schedule/overrides/:date — per-date schedule override.
+  {
+    file: "apps/api/src/routes/admin/schedule.ts",
+    pattern: /\bsvc\.upsertOverride\s*\(/,
+    rationale:
+      "schedule.upsertOverride — operator-only per-date override, manager-role gated, no LLM caller",
+  },
+  // 5. DELETE /api/admin/schedule/overrides/:date — remove override.
+  {
+    file: "apps/api/src/routes/admin/schedule.ts",
+    pattern: /\bsvc\.removeOverride\s*\(/,
+    rationale:
+      "schedule.removeOverride — operator-only override delete, manager-role gated, no LLM caller",
+  },
+  // ── apps/api/src/routes/admin/tables.ts ────────────────────────────
+  //
+  // 6. POST /api/admin/tables — table CRUD upsert.
+  //    Manager-role-only, low-frequency, no LLM caller, no PII.
+  {
+    file: "apps/api/src/routes/admin/tables.ts",
+    pattern: /\btableSvc\.upsert\s*\(/,
+    rationale:
+      "table.upsert — operator-only table CRUD, manager-role gated, no LLM caller",
+  },
+  // 7. POST /api/admin/timeslots — bulk-create reservation slots.
+  //    Idempotent (skipDuplicates), manager-role-only.
+  {
+    file: "apps/api/src/routes/admin/tables.ts",
+    pattern: /\btableSvc\.generateTimeSlots\s*\(/,
+    rationale:
+      "table.generateTimeSlots — idempotent bulk slot generation, manager-role gated, no LLM caller",
+  },
+  // ── apps/api/src/routes/admin/delivery-zones.ts ────────────────────
+  //
+  // 8. POST /api/admin/delivery-zones — create delivery zone.
+  //    Route layer rejects duplicate CEPs; manager-role-only.
+  {
+    file: "apps/api/src/routes/admin/delivery-zones.ts",
+    pattern: /\bdeliveryZoneSvc\.create\s*\(/,
+    rationale:
+      "deliveryZone.create — operator-only zone create with Redis dedup, manager-role gated, no LLM caller",
+  },
+  // 9. PUT /api/admin/delivery-zones/:id — update delivery zone.
+  //    Route layer rejects CEP collisions with other zones; manager-role-only.
+  {
+    file: "apps/api/src/routes/admin/delivery-zones.ts",
+    pattern: /\bdeliveryZoneSvc\.update\s*\(/,
+    rationale:
+      "deliveryZone.update — operator-only zone update with collision-check + Redis dedup, manager-role gated, no LLM caller",
+  },
+  // 10. DELETE /api/admin/delivery-zones/:id — remove delivery zone.
+  //     Same risk profile as create/update; Redis dedup applied.
+  {
+    file: "apps/api/src/routes/admin/delivery-zones.ts",
+    pattern: /\bdeliveryZoneSvc\.remove\s*\(/,
+    rationale:
+      "deliveryZone.remove — operator-only zone delete with Redis dedup, manager-role gated, no LLM caller",
+  },
+] as const
+
+/**
+ * Files scanned for bare service-call shapes (W7-P2). Each file in
+ * this set MUST have at least one corresponding DEFERRED_ADMIN_LOW_RISK
+ * entry — otherwise the file should not be in the scan surface (it
+ * either uses *FromEnvelope properly, or it doesn't have admin
+ * mutations at all).
+ */
+const ADMIN_LOW_RISK_SCAN_FILES = [
+  "apps/api/src/routes/admin/schedule.ts",
+  "apps/api/src/routes/admin/tables.ts",
+  "apps/api/src/routes/admin/delivery-zones.ts",
+] as const
+
+/**
+ * The set of bare-call regex shapes the W7-P2 gate looks for in the
+ * admin route files. If any of these patterns appears in one of the
+ * scanned files but does NOT have a matching `(file, pattern)` entry
+ * in DEFERRED_ADMIN_LOW_RISK, the test fails. Future-proofs against
+ * a developer adding a NEW bare service call (e.g.,
+ * `tableSvc.deleteAll(...)`) without either routing through an
+ * envelope OR adding a deferral entry.
+ *
+ * Regex shape: `\b<svc>\.<mutator>\s*\(` — anchored to the service
+ * variable names used in the 3 admin routes today
+ * (`svc`, `tableSvc`, `deliveryZoneSvc`) AND any method name that
+ * looks like a mutator (`create`, `update`, `upsert`, `delete`,
+ * `remove`, `add`, `generate`, `seed`). Read-only methods (`listAll`,
+ * `findActiveByPrefix`, `getFullSchedule`, etc.) are NOT matched.
+ */
+const BARE_ADMIN_SERVICE_CALL_PATTERNS: readonly RegExp[] = [
+  /\bsvc\.(?:create|update|upsert|delete|remove|add|generate|seed)[A-Z]\w*\s*\(/,
+  /\btableSvc\.(?:create|update|upsert|delete|remove|add|generate|seed)\w*\s*\(/,
+  /\bdeliveryZoneSvc\.(?:create|update|upsert|delete|remove|add|generate|seed)\w*\s*\(/,
+] as const
+
+describe("Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMIN_LOW_RISK", () => {
+  // Helper: collect all bare-call hits across the 3 admin route files.
+  function collectAdminBareCalls(): Array<{
+    file: string
+    line: number
+    text: string
+  }> {
+    const hits: Array<{ file: string; line: number; text: string }> = []
+    for (const rel of ADMIN_LOW_RISK_SCAN_FILES) {
+      const abs = join(REPO_ROOT, rel)
+      let content: string
+      try {
+        content = readFileSync(abs, "utf8")
+      } catch {
+        // Missing file is itself a regression — flagged by a separate
+        // test below.
+        continue
+      }
+      const lines = content.split("\n")
+      lines.forEach((text, i) => {
+        if (isCommentLine(text)) return
+        for (const pattern of BARE_ADMIN_SERVICE_CALL_PATTERNS) {
+          if (pattern.test(text)) {
+            hits.push({ file: rel, line: i + 1, text: text.trim() })
+            // One pattern match per line is enough; avoid double-reporting.
+            return
+          }
+        }
+      })
+    }
+    return hits
+  }
+
+  it("every bare admin service call in the scan files matches a DEFERRED_ADMIN_LOW_RISK entry", () => {
+    const hits = collectAdminBareCalls()
+    // For each hit, find a matching allowlist entry by (file, pattern).
+    const orphans: Array<{ file: string; line: number; text: string }> = []
+    for (const hit of hits) {
+      const matched = DEFERRED_ADMIN_LOW_RISK.some(
+        (entry) => entry.file === hit.file && entry.pattern.test(hit.text),
+      )
+      if (!matched) {
+        orphans.push(hit)
+      }
+    }
+    if (orphans.length > 0) {
+      const lines = orphans
+        .map((o) => `  • ${o.file}:${o.line}  →  ${o.text}`)
+        .join("\n")
+      throw new Error(
+        `Bare admin service-call detected outside DEFERRED_ADMIN_LOW_RISK — either route the call through a new *FromEnvelope on the underlying service, OR add an entry to DEFERRED_ADMIN_LOW_RISK with a rationale (see W7-DECISIONS-admin.md §"Follow-up triggers").\n\nNew bare-call sites (${orphans.length}):\n${lines}`,
+      )
+    }
+    expect(orphans).toEqual([])
+  })
+
+  it("every DEFERRED_ADMIN_LOW_RISK entry actually appears in its referenced file (sentinel)", () => {
+    // Sentinel: if a route is migrated to *FromEnvelope but the
+    // allowlist entry is left behind, the entry rots and a future
+    // developer can't tell whether the deferral is still live. Force
+    // every allowlist entry to map to a real call site OR be removed
+    // from the allowlist.
+    const stale: Array<{ file: string; pattern: string; rationale: string }> =
+      []
+    for (const entry of DEFERRED_ADMIN_LOW_RISK) {
+      const abs = join(REPO_ROOT, entry.file)
+      let content: string
+      try {
+        content = readFileSync(abs, "utf8")
+      } catch {
+        stale.push({
+          file: entry.file,
+          pattern: entry.pattern.source,
+          rationale: `file missing: ${entry.rationale}`,
+        })
+        continue
+      }
+      if (!entry.pattern.test(content)) {
+        stale.push({
+          file: entry.file,
+          pattern: entry.pattern.source,
+          rationale: entry.rationale,
+        })
+      }
+    }
+    if (stale.length > 0) {
+      const lines = stale
+        .map(
+          (s) =>
+            `  • ${s.file}  →  pattern /${s.pattern}/  (rationale: ${s.rationale})`,
+        )
+        .join("\n")
+      throw new Error(
+        `DEFERRED_ADMIN_LOW_RISK contains stale entries — the bare-call pattern no longer appears in the referenced file. Either remove the entry (because the route was migrated to *FromEnvelope), or fix the test if the pattern needs adjustment.\n\nStale entries (${stale.length}):\n${lines}`,
+      )
+    }
+    expect(stale).toEqual([])
+  })
+
+  it("DEFERRED_ADMIN_LOW_RISK size matches the W7-P2 baseline (10 entries — promotion sentinel)", () => {
+    // W7-P2 baseline: 10 bare-call sites — the 6 P0/P1 sites enumerated
+    // in `wave6-governance-coverage.md` §"10 — New bypasses discovered"
+    // rows 6–11, PLUS 4 additional delete/holiday-add/holiday-remove
+    // sites the W6 inventory under-counted (they share the same
+    // operator-only, low-blast risk profile as the 6 P0/P1 sites — see
+    // W7-DECISIONS-admin.md §"What this commit changes" for the full
+    // 10-site enumeration with rationale per site).
+    //
+    // If this number changes WITHOUT a corresponding update to
+    // W7-DECISIONS-admin.md, the change is suspect. Two failure modes:
+    //
+    //   - Size grows: a new admin mutation was added with a deferral
+    //     entry but the trade-off was not re-evaluated. The W7-DECISIONS
+    //     doc captured the rationale for THIS specific 10-site surface;
+    //     an 11th site should be evaluated against the same criteria,
+    //     and ideally either routed through an envelope OR documented
+    //     in a follow-up W8-DECISIONS-admin.md.
+    //   - Size shrinks: a site was migrated to *FromEnvelope (good!)
+    //     but the test acceptance criteria need to be updated to lock
+    //     in the new baseline. Drop the size to the new count and
+    //     update W7-DECISIONS-admin.md with a "migration progress" note.
+    //
+    // The sentinel is intentionally strict (equality, not "≤ 10") to
+    // catch silent additions.
+    expect(DEFERRED_ADMIN_LOW_RISK.length).toBe(10)
+  })
+})
+
 // ── Runtime smoke: dispatcher refuses to dispatch unknown tool ────────────
 
 describe("Bypass detection — runtime smoke: dispatcher refuses unknown tool", () => {
