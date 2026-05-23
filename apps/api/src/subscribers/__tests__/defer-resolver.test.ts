@@ -629,4 +629,97 @@ describe("defer-resolver subscriber", () => {
 
     setResumeIntentDispatcher(null)
   })
+
+  // ── P1-D: Distinguish transient Redis errors from null ──────────────────
+
+  it("[P1-D] transient Redis error on GET is retried then DLQ'd; result is transient_error (NOT no_park)", async () => {
+    const sessionId = "sess_redis_err"
+    const { resolveDeferredSession } = await import("../defer-resolver.js")
+
+    // Override the get method to throw — covers all retry attempts.
+    let getCalls = 0
+    const originalGet = redisStub.get.bind(redisStub)
+    redisStub.get = vi.fn(async (key: string) => {
+      getCalls++
+      throw new Error("ECONNRESET — Redis connection lost")
+    }) as typeof redisStub.get
+
+    const result = await resolveDeferredSession({
+      sessionId,
+      signal: "payment.confirmed",
+      event: paymentConfirmedEvent(),
+      log: makeLogger(),
+    })
+
+    // Should NOT be no_park — that would silently drop the PIX confirmation.
+    expect(result.kind).toBe("transient_error")
+    if (result.kind === "transient_error") {
+      expect(result.reason).toMatch(/redis_get_failed/i)
+    }
+    // 3 retry attempts.
+    expect(getCalls).toBe(3)
+    // DLQ side: Sentry captureMessage fired + dlq:* list was written.
+    const dlqKeys = [...store.keys()].filter((k) => k.includes("dlq:"))
+    expect(dlqKeys.length).toBeGreaterThanOrEqual(1)
+
+    redisStub.get = originalGet
+  })
+
+  it("[P1-D] real null (no parked envelope) still returns no_park (not transient_error)", async () => {
+    const sessionId = "sess_real_null"
+    const { resolveDeferredSession } = await import("../defer-resolver.js")
+
+    // No park exists. redisStub.get returns null cleanly.
+    const result = await resolveDeferredSession({
+      sessionId,
+      signal: "payment.confirmed",
+      event: paymentConfirmedEvent(),
+      log: makeLogger(),
+    })
+
+    expect(result.kind).toBe("no_park")
+    // No DLQ on a legitimate "no park found" — only on transient errors.
+    const dlqKeys = [...store.keys()].filter((k) => k.includes("dlq:"))
+    expect(dlqKeys.length).toBe(0)
+  })
+
+  it("[P1-D] transient error on first 2 attempts then success on 3rd — does NOT DLQ", async () => {
+    const sessionId = "sess_redis_retry_success"
+    const { envelope, parkedBlob } = buildVerifiableParkedBlob({ sessionId })
+    store.set(`test:defer:pending:${sessionId}`, { value: parkedBlob, ttl: 800 })
+
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
+
+    let attemptCount = 0
+    const originalGet = redisStub.get.bind(redisStub)
+    redisStub.get = vi.fn(async (key: string) => {
+      attemptCount++
+      if (attemptCount <= 2 && key.includes("defer:pending")) {
+        throw new Error("transient blip")
+      }
+      return originalGet(key)
+    }) as typeof redisStub.get
+
+    const dispatcher = vi.fn(async () => undefined)
+    const { setResumeIntentDispatcher, resolveDeferredSession } =
+      await import("../defer-resolver.js")
+    setResumeIntentDispatcher(dispatcher)
+
+    const result = await resolveDeferredSession({
+      sessionId,
+      signal: "payment.confirmed",
+      event: paymentConfirmedEvent(),
+      log: makeLogger(),
+    })
+
+    expect(result.kind).toBe("re_adjudicated")
+    expect(dispatcher).toHaveBeenCalledOnce()
+    expect(envelope.intentHash).toBeTruthy()
+    // No DLQ when the retry eventually succeeded.
+    const dlqKeys = [...store.keys()].filter((k) => k.includes("dlq:"))
+    expect(dlqKeys.length).toBe(0)
+
+    redisStub.get = originalGet
+    setResumeIntentDispatcher(null)
+  })
 })

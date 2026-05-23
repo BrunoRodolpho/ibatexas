@@ -221,12 +221,75 @@ export type ResolveResult =
   | { readonly kind: "cycle_cap_exceeded"; readonly intentHash: string }
   | { readonly kind: "signal_mismatch" }
   | { readonly kind: "resume_failed"; readonly reason: string }
+  // P1-D: distinguish transient Redis errors from null. A real "no park"
+  // is `kind: "no_park"`; a Redis IOError / connection drop / timeout
+  // surfaces here so the subscriber can DLQ (and ops can detect dropped
+  // PIX confirmations).
+  | { readonly kind: "transient_error"; readonly reason: string }
   | {
       readonly kind: "re_adjudicated"
       readonly intentHash: string
       readonly decision: Decision
       readonly dispatched: boolean
     }
+
+// P1-D — Redis IOError retry policy.
+//
+// Pre-W2 the defer-resolver's `redis.get(parkedKey).catch(() => null)`
+// collapsed transient errors into "no parked envelope", silently dropping
+// PIX confirmations during Redis blips. The fix: retry with exponential
+// backoff (3 attempts), distinguish real null from caught errors, and
+// surface a transient_error result that the subscriber can DLQ.
+const REDIS_GET_MAX_RETRIES = 3
+const REDIS_GET_BASE_BACKOFF_MS = 50
+
+/**
+ * Robust Redis GET with retry and error/null distinction.
+ *
+ * Returns:
+ *   - `{kind: "value", value: string}` — key found with non-null value
+ *   - `{kind: "missing"}` — key truly does not exist (null)
+ *   - `{kind: "error", err}` — all retries exhausted; transient Redis
+ *      failure that the caller should treat as "we don't know" — NOT as
+ *      "no parked envelope".
+ */
+async function robustRedisGet(
+  redis: { get(key: string): Promise<string | null> },
+  key: string,
+  log?: FastifyBaseLogger,
+): Promise<
+  | { readonly kind: "value"; readonly value: string }
+  | { readonly kind: "missing" }
+  | { readonly kind: "error"; readonly err: unknown }
+> {
+  let lastErr: unknown = null
+  for (let attempt = 1; attempt <= REDIS_GET_MAX_RETRIES; attempt++) {
+    try {
+      const raw = await redis.get(key)
+      if (raw === null) {
+        return { kind: "missing" }
+      }
+      return { kind: "value", value: raw }
+    } catch (err) {
+      lastErr = err
+      log?.warn(
+        {
+          key,
+          attempt,
+          maxAttempts: REDIS_GET_MAX_RETRIES,
+          err: (err as Error).message,
+        },
+        "[defer-resolver] redis.get failed — retrying",
+      )
+      if (attempt < REDIS_GET_MAX_RETRIES) {
+        // Exponential backoff: 50ms, 100ms, 200ms.
+        const backoff = REDIS_GET_BASE_BACKOFF_MS * Math.pow(2, attempt - 1)
+        await new Promise<void>((resolve) => setTimeout(resolve, backoff))
+      }
+    }
+  }
+  return { kind: "error", err: lastErr }
+}
 
 // P0-8 — Two-phase commit constants.
 //
@@ -261,11 +324,34 @@ export async function resolveDeferredSession(
   // Pre-flight tamper check. We read the raw blob ourselves so we can DLQ
   // a tampered envelope before calling resumeDeferredIntent (which would
   // consume the cycle counter and fail with a logger-only warning).
+  //
+  // P1-D — distinguish transient Redis errors from a real "no parked
+  // envelope". The pre-W2 `.catch(() => null)` collapsed both into "no
+  // park", silently dropping PIX confirmations during Redis IOErrors.
   const rawKey = rk(`defer:pending:${sessionId}`)
-  const raw = await redis.get(rawKey).catch(() => null)
-  if (raw === null) {
+  const getResult = await robustRedisGet(redis, rawKey, log)
+  if (getResult.kind === "error") {
+    log?.error(
+      { sessionId, signal, err: (getResult.err as Error)?.message },
+      "[defer-resolver] redis.get exhausted retries — DLQ + skip",
+    )
+    await pushToDlq(
+      "intent.defer.resume",
+      { sessionId, signal, reason: "redis_get_failed" },
+      getResult.err,
+      log,
+    )
+    return {
+      kind: "transient_error",
+      reason: `redis_get_failed: ${
+        (getResult.err as Error)?.message ?? "unknown"
+      }`,
+    }
+  }
+  if (getResult.kind === "missing") {
     return { kind: "no_park" }
   }
+  const raw = getResult.value
   let parked: ParkedEnvelope
   try {
     parked = JSON.parse(raw) as ParkedEnvelope
@@ -643,6 +729,13 @@ export async function startDeferResolverSubscriber(
           log?.warn(
             { sessionId, paymentId, intentHash: result.intentHash },
             "[defer-resolver] tampered park blob — see DLQ intent.defer.resume",
+          )
+        } else if (result.kind === "transient_error") {
+          // P1-D — Redis IOError exhausted retries; the resume was DLQ'd
+          // in resolveDeferredSession. Log at ERROR level for ops alerting.
+          log?.error(
+            { sessionId, paymentId, orderId, reason: result.reason },
+            "[defer-resolver] transient Redis error — PIX confirmation queued in DLQ",
           )
         }
       } catch (err) {
