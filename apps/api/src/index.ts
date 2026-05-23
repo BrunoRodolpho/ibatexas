@@ -8,7 +8,11 @@ import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligenc
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
-import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
+import {
+  setResumeIntentDispatcher,
+  startDeferResolverSubscriber,
+} from "./subscribers/defer-resolver.js";
+import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
 import logger from "./lib/logger.js";
@@ -93,6 +97,13 @@ const start = async (): Promise<void> => {
       // subscriber has already settled the payment row before defer-resolver
       // re-executes the parked envelope. See docs/adjudicate-migration/tasks/03-*.
       await startDeferResolverSubscriber(server.log);
+      // [F1 follow-up] Bridge the resume-path subscriber to the responder's
+      // intent-dispatcher (task 02). Without this wire, resumed EXECUTE
+      // decisions only emit audit records — handlers (handoff_to_human,
+      // schedule_follow_up, set_pix_details) never fire on the resume side.
+      // The adapter is fail-closed: any thrown exception is logged and
+      // swallowed so the subscriber's SCAN loop is never broken.
+      setResumeIntentDispatcher(createResumeDispatcherAdapter({ log: server.log }));
 
       // Start all BullMQ background workers
       registerWorkers(server.log);

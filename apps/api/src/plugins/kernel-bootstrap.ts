@@ -27,6 +27,7 @@
 import { installPack, PackConformanceError } from "@adjudicate/core"
 import { setMetricsSink, validateEnforceConfig } from "@adjudicate/core/kernel"
 import { ordersPack } from "@ibatexas/pack-orders"
+import { KNOWN_INTENT_KINDS } from "@ibatexas/llm-provider"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { Registry } from "prom-client"
@@ -124,20 +125,6 @@ export function installFirstPartyPacks() {
   return { orders }
 }
 
-// ── Known intent kinds (stub) ──────────────────────────────────────────────
-//
-// TODO(task-08-followup): replace this empty Set with the authoritative
-// `KNOWN_INTENT_KINDS` constant exported from `@ibatexas/llm-provider`.
-// Task 08 ships `@ibatexas/pack-orders` but the cross-package `KNOWN_INTENT_KINDS`
-// union still needs to be assembled (PIX Pack intents + each Pack's
-// intent surface). With the stub empty, `validateEnforceConfig` will
-// treat EVERY token in `IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE` as a
-// typo — fine, since both env vars default to empty until staged rollout
-// begins in M5.
-function getKnownIntentKinds(): ReadonlySet<string> {
-  return new Set<string>()
-}
-
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
 
 /**
@@ -168,15 +155,19 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
   // lines via the pino logger AND records a sink failure with
   // `errorClass: "enforce_config_typo"` (see
   // `@adjudicate/core/kernel/enforce-config.ts:94-135`).
-  const knownIntents = getKnownIntentKinds()
-  validateEnforceConfig(knownIntents, process.env, (msg) => {
+  //
+  // `KNOWN_INTENT_KINDS` is assembled in `@ibatexas/llm-provider/intent-kinds.ts`
+  // from each first-party Pack's intent surface. Future Packs (reservations /
+  // whatsapp / customer-onboarding) extend it from inside that module — no
+  // change here is needed when those packs land.
+  validateEnforceConfig(KNOWN_INTENT_KINDS, process.env, (msg) => {
     server.log.warn({ msg }, "[kernel-bootstrap] enforce-config validation")
   })
 
   server.log.info(
     {
       event: "kernel.bootstrap.enforce_config_validated",
-      knownIntentCount: knownIntents.size,
+      knownIntentCount: KNOWN_INTENT_KINDS.size,
     },
     "[kernel-bootstrap] enforce-config validated",
   )
