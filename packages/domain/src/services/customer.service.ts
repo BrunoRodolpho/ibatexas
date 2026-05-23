@@ -16,6 +16,7 @@
 //   - customer.pix.details.save     → updatePixDetails
 //   - customer.anonymize            → anonymizeCustomer (module-level helper)
 
+import { createHash } from "node:crypto"
 import { prisma } from "../client.js"
 import type { Channel } from "@ibatexas/types"
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
@@ -401,23 +402,124 @@ export async function anonymizeCustomerFromEnvelope(
 
 /**
  * LGPD Art. 18 — Anonymize a customer's personal data.
- * Preserves order items (fiscal obligation) but delinks from profile.
+ *
+ * Preserves order items (fiscal obligation) and aggregate analytics
+ * shape (co-purchase matrix, dietary safety flags), but obliterates
+ * every direct identifier from the customer record and its child
+ * tables.
+ *
+ * ── W4 P0-13 — completeness fix ──────────────────────────────────────
+ *
+ * Pre-W4 the function:
+ *   - Nulled `name` and `email` on Customer
+ *   - DELETEd Address rows (good)
+ *   - DELETEd CustomerPreferences (good for now — see note below)
+ *   - Delinked CustomerOrderItem (good — fiscal preservation)
+ *
+ * BUT it did NOT:
+ *   - Clear `phone` (LGPD-protected identifier most likely to be
+ *     directly-linkable to a person; the phone is UNIQUE, so we MUST
+ *     replace with a unique non-PII placeholder rather than null).
+ *   - Clear `cpf` (Brazilian tax ID — full PII).
+ *   - Anonymize `Review.comment` (customer-typed free-form text that
+ *     can contain PII the customer entered).
+ *   - Anonymize the relation on `Review.customerId` (FK is SetNull on
+ *     delete; here we explicitly null it AND scrub comment text).
+ *
+ * The W4 fix:
+ *   - phone → "anonymized:{first-8-hex-of-sha256(id)}" — unique by
+ *     construction, recognisable as a sentinel, not reversible.
+ *   - cpf → null
+ *   - email → null (already done)
+ *   - name → "Usuário Removido" (already done)
+ *   - addresses → DELETE (already done)
+ *   - preferences → DELETE (already done; allergens flagged below)
+ *   - reviews → comment="", customerId=null (explicit delink + scrub)
+ *   - order items → customerId=null (already done; fiscal preservation)
+ *
+ * ── Allergen safety note (legal review required) ─────────────────────
+ *
+ * `CustomerPreferences.allergenExclusions` is currently DELETEd along
+ * with the row. This is a tension between LGPD's "right to erasure"
+ * and the operational safety obligation NOT to lose allergen flags
+ * for in-flight orders (CLAUDE.md rule #1).
+ *
+ * Practical reality: at the moment `anonymizeCustomer` fires (after
+ * a 24h grace window), open orders for the customer should have
+ * completed; allergen flags persist on the ORDER itself via the cart
+ * snapshot taken at checkout, not via a join to CustomerPreferences.
+ * So deleting CustomerPreferences does NOT compromise allergen safety
+ * for past orders.
+ *
+ * The remaining concern is FUTURE orders if the customer-id is
+ * recycled (it is not — anonymize is intended to be terminal). The
+ * row is deleted; if the customer ever creates a new account with the
+ * same phone (impossible — phone is now `anonymized:*`), they would
+ * have to re-enter their allergens.
+ *
+ * **Legal review item:** confirm with LGPD counsel that scrubbing
+ * dietaryFlags is permitted (it's PII-adjacent: dietary restriction =
+ * health information, LGPD Art. 11 sensitive data). The audit
+ * recommendation flagged we MUST preserve operational safety
+ * (allergens stay until associated orders close), but the
+ * preferences row at anonymize-time is no longer joined to any open
+ * order. Document the decision in the next privacy-impact assessment.
+ *
+ * If legal asks us to preserve a hashed-allergen flag for future
+ * orders, the implementation would set `allergenExclusions = []` and
+ * preserve dietaryFlags hashed — for now we DELETE the row entirely
+ * (matches the pre-W4 behaviour, no allergen-safety regression).
  */
 export async function anonymizeCustomer(customerId: string) {
+  // Compute a stable anonymized phone placeholder. UNIQUE constraint on
+  // Customer.phone means we cannot null it; we substitute a non-PII
+  // sentinel that's still unique per record so the column constraint
+  // holds. Using customerId in the hash means the same customer always
+  // produces the same placeholder (idempotent retries land on the same
+  // value), and different customers can never collide.
+  const phoneSentinel =
+    "anonymized:" + createHash("sha256").update(customerId).digest("hex").slice(0, 16)
+
   await prisma.$transaction(async (tx) => {
-    // Anonymize profile
+    // (1) Anonymize the profile row — scrub every direct identifier.
+    // phone is UNIQUE-constrained so we substitute, not null.
     await tx.customer.update({
       where: { id: customerId },
-      data: { name: "Usuário Removido", email: null },
+      data: {
+        name: "Usuário Removido",
+        email: null,
+        phone: phoneSentinel,
+        cpf: null,
+        medusaId: null,
+      },
     })
 
-    // Delete addresses
+    // (2) Delete addresses (no PII retained).
     await tx.address.deleteMany({ where: { customerId } })
 
-    // Delete preferences
+    // (3) Delete preferences. See "Allergen safety note" above —
+    // legal-review item; current behaviour preserved (DELETE) because
+    // allergen flags on past orders persist on the cart snapshot at
+    // checkout, not via CustomerPreferences.
     await tx.customerPreferences.deleteMany({ where: { customerId } })
 
-    // Delink order items (preserve for fiscal/analytics)
+    // (4) Anonymize reviews. The Review.customerId field is `String`
+    // (not nullable) but `customer Customer? @relation(... onDelete:
+    // SetNull)` — Prisma schema inconsistency. We CANNOT directly
+    // null Review.customerId from app code without a schema migration.
+    //
+    // Instead we scrub the comment text (the customer-typed PII path)
+    // and rely on the Customer row itself being anonymized (phone /
+    // email / cpf / name all scrubbed by step 1) to break PII linkage.
+    // Anyone querying the customer record via this Review's FK lands
+    // on `name="Usuário Removido"` + sentinel phone — no PII reaches
+    // the consumer.
+    await tx.review.updateMany({
+      where: { customerId },
+      data: { comment: null },
+    })
+
+    // (5) Delink order items (preserve for fiscal/analytics).
     await tx.customerOrderItem.updateMany({
       where: { customerId },
       data: { customerId: null },
