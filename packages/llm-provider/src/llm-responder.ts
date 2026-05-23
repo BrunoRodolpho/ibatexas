@@ -315,6 +315,12 @@ async function processToolCalls(
         const orderState: OrderState = { ctx: machineCtx }
         const startedAt = Date.now()
         let decision: Decision
+        // Investigation 01 §"P2 #7" / governance 05 §"Audit emit invariants" #2:
+        // The pure-legacy EXECUTE branch must NOT emit an audit record — those
+        // low-signal records were polluting audit.intent.decision.v1 without
+        // adding any forensic value (no kernel involvement, no policy basis).
+        // Only shadow/enforce paths emit; pure legacy is silent.
+        let isPureLegacy = false
         if (envelope && isEnforced(intentKind, process.env)) {
           decision = adjudicate(envelope, orderState, orderPolicyBundle)
         } else if (envelope && isShadowed(intentKind, process.env)) {
@@ -329,12 +335,16 @@ async function processToolCalls(
           })
           decision = legacyDecisionAsKernelDecision(shadow.legacyDecision)
         } else {
-          // Pure legacy — preserve v1.0 behavior exactly.
+          // Pure legacy — preserve v1.0 behavior exactly. No audit emission.
           decision = legacyDecisionAsKernelDecision({ kind: "EXECUTE" })
+          isPureLegacy = true
         }
 
         // Audit emit — the real Decision now drives the record (no more stub).
-        if (envelope) {
+        // Suppressed for the pure-legacy branch to keep the audit stream
+        // signal-dense (shadow/enforce records remain load-bearing for the
+        // operator console and the nightly replay harness).
+        if (envelope && !isPureLegacy) {
           try {
             const record = buildAuditRecord({
               envelope,
