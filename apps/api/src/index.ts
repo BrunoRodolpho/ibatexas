@@ -8,6 +8,7 @@ import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligenc
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
+import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
 import logger from "./lib/logger.js";
@@ -88,6 +89,10 @@ const start = async (): Promise<void> => {
       await startHandoffSubscriber(server.log);
       await startConversationArchiver(server.log);
       await startPaymentLifecycleSubscriber(server.log);
+      // [task 03] defer-resolver wired after payment-lifecycle so the lifecycle
+      // subscriber has already settled the payment row before defer-resolver
+      // re-executes the parked envelope. See docs/adjudicate-migration/tasks/03-*.
+      await startDeferResolverSubscriber(server.log);
 
       // Start all BullMQ background workers
       registerWorkers(server.log);
