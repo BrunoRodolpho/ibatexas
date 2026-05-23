@@ -100,6 +100,15 @@ export { LedgerUnavailableError } from "./intent-ledger.js"
 // outside the responder hot path (e.g. defer-resolver on resume).
 export { getAuditSink } from "./intent-audit-wiring.js"
 
+// Audit redactor (task 18 / M4). Exposed so future Packs or operator tools
+// can construct a custom redactor (e.g. for replay-with-extra-rules) without
+// reaching into the internal module path.
+export {
+  createAuditRedactor,
+  type AuditRedactor,
+  type AuditRedactorOptions,
+} from "./audit-redactor.js"
+
 // Re-export agent types for consumers
 export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
 
