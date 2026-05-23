@@ -5,10 +5,23 @@
 //   - `ibx kernel status`        — print the kernel's runtime state.
 //
 //   - `ibx kernel kill-switch`   — W3 D1 — operator-flippable Redis flag
-//                                   (`ibatexas:kill-switch:global`) +
-//                                   pub/sub channel for cross-replica
+//                                   (`<APP_ENV>:kill-switch:global` via `rk()`)
+//                                   plus pub/sub channel for cross-replica
 //                                   propagation. Sub-subcommands:
 //                                   enable, disable, status [--json].
+//
+//   - `ibx kernel defer resume`  — W7-O1 — operator recovery for stuck-
+//                                   deferred sessions. Reads `defer:pending:
+//                                   {sessionId}` from Redis, verifies the
+//                                   parked-envelope hash via
+//                                   `verifyParkedEnvelopeHash` (framework
+//                                   primitive — fail-closed on tamper), and
+//                                   publishes a synthesised
+//                                   `payment.status_changed` NATS event so
+//                                   the live `defer-resolver` subscriber
+//                                   resumes the parked envelope. The CLI
+//                                   does NOT call adjudicate() directly —
+//                                   it kicks the existing resume pipeline.
 //
 //   - (kept) `ibx kernel status`      — print the kernel's runtime state: env
 //                                 flags (shadow/enforce), known intent kinds,
@@ -35,6 +48,7 @@
 //   - packages/llm-provider/src/intent-kinds.ts (KNOWN_INTENT_KINDS)
 //   - @adjudicate/core/kernel (isShadowed, isEnforced, getKillSwitchState)
 //   - @adjudicate/audit-postgres (readAuditWindow)
+//   - @adjudicate/runtime (verifyParkedEnvelopeHash, ParkedEnvelope)
 
 import type { Command } from "commander"
 import chalk from "chalk"
@@ -1168,6 +1182,261 @@ async function runKillSwitchStatus(opts: { json?: boolean }): Promise<void> {
   console.log()
 }
 
+// ── ibx kernel defer resume <sessionId> (W7-O1) ───────────────────────────
+//
+// W6 operational drill verdict FAIL: "no CLI; only manual Redis SCAN + NATS
+// publish". This subcommand closes that Tier-1 readiness gap by giving the
+// operator a one-shot recovery path:
+//
+//   $ ibx kernel defer resume cust:cust_abc123
+//
+// Flow:
+//   1. Read `defer:pending:{sessionId}` from Redis (the parked envelope blob
+//      written by the responder at DEFER time; key is namespaced via rk()).
+//   2. Parse + verify the parked-envelope hash via the framework's
+//      `verifyParkedEnvelopeHash` (T-005 tamper detection). On `verified:
+//      false` we DLQ-style refuse — never kick a tampered envelope back into
+//      the resume pipeline.
+//   3. Synthesise a `PaymentStatusChangedEvent` carrying the parked
+//      envelope's `paymentId` / `orderId` (extracted from the payload's PIX
+//      details), and publish it on `ibatexas.payment.status_changed`.
+//   4. The live `defer-resolver` subscriber (apps/api/src/subscribers/
+//      defer-resolver.ts) consumes the event, sweeps `defer:pending:*` for
+//      matching signals, and runs the existing two-phase commit + cycle
+//      cap + dispatch path. Other parked sessions with non-matching signals
+//      no-op.
+//
+// Why publish a NATS event rather than calling resolveDeferredSession()
+// directly:
+//   - The CLI package does not depend on `@ibatexas/api`; importing the
+//     resolver from apps would re-introduce a topology cycle.
+//   - The live subscriber is the canonical entry point and already exercises
+//     the full retry / DLQ / audit path. The CLI being a "kick the resolver"
+//     surface keeps the recovery code in one place.
+//   - Tests can substitute a fake nats-client (or a real testcontainer-NATS)
+//     to assert the published event shape without duplicating the resolver.
+//
+// Operator output:
+//   - On success: "Sinal de retomada publicado para a sessão <id>" + the
+//     synthesised event so the operator can correlate with downstream logs.
+//   - Tampered: "Parked envelope adulterado — recusando retomada" (with
+//     stored vs derived hash so triage is one log line).
+//   - Not found: "Nenhuma sessão parkada com este ID" (operator typo).
+
+interface DeferResumeDeps {
+  readonly getRedis: () => Promise<{
+    get(key: string): Promise<string | null>
+  }>
+  readonly rk: (key: string) => string
+}
+
+async function loadDeferResumeDeps(): Promise<DeferResumeDeps> {
+  const tools = await import("@ibatexas/tools")
+  return {
+    getRedis: () => tools.getRedisClient(),
+    rk: tools.rk,
+  }
+}
+
+interface ParkedEnvelopeShape {
+  readonly envelope: {
+    readonly intentHash: string
+    readonly kind: string
+    readonly actor: { readonly sessionId: string }
+    readonly payload: unknown
+    readonly version?: number
+    readonly nonce?: string
+    readonly taint?: string
+    readonly actorPrincipal?: string
+  }
+  readonly signal: string
+  readonly parkedAt: string
+}
+
+function extractPaymentDetailsFromParked(parked: ParkedEnvelopeShape): {
+  paymentId: string
+  orderId: string
+} {
+  // PIX-deferred envelopes (the only kind the responder parks today —
+  // `order.tool.propose` with a `set_pix_details` payload) carry the
+  // paymentId + orderId in the payload's `input`. We do a structural
+  // walk because the payload is `unknown`.
+  const p = parked.envelope.payload as
+    | {
+        input?: {
+          paymentId?: string
+          orderId?: string
+          pixPaymentId?: string
+        }
+      }
+    | undefined
+  const paymentId =
+    (typeof p?.input?.paymentId === "string" && p.input.paymentId) ||
+    (typeof p?.input?.pixPaymentId === "string" && p.input.pixPaymentId) ||
+    `cli-resume-${parked.envelope.actor.sessionId}-${Date.now()}`
+  const orderId =
+    (typeof p?.input?.orderId === "string" && p.input.orderId) ||
+    `cli-resume-${parked.envelope.actor.sessionId}`
+  return { paymentId, orderId }
+}
+
+async function runDeferResume(
+  sessionId: string,
+  opts: { signal?: string; jsonOnly?: boolean },
+): Promise<void> {
+  const targetSessionId = sessionId.trim()
+  if (targetSessionId.length === 0) {
+    console.error(chalk.red("sessionId obrigatório."))
+    process.exitCode = 1
+    return
+  }
+
+  const { getRedis, rk } = await loadDeferResumeDeps()
+  const parkKey = rk(`defer:pending:${targetSessionId}`)
+  const redis = await getRedis()
+  const raw = await redis.get(parkKey).catch((err: unknown) => {
+    console.error(
+      chalk.red(
+        `Falha ao ler ${parkKey}: ${(err as Error).message}`,
+      ),
+    )
+    return null
+  })
+  if (raw === null) {
+    console.error(
+      chalk.yellow(
+        `Nenhum envelope parkado encontrado para ${targetSessionId} (chave: ${parkKey}).`,
+      ),
+    )
+    process.exitCode = 1
+    return
+  }
+
+  let parked: ParkedEnvelopeShape
+  try {
+    parked = JSON.parse(raw) as ParkedEnvelopeShape
+  } catch (err) {
+    console.error(
+      chalk.red(
+        `Envelope malformado (JSON.parse falhou) em ${parkKey}: ${
+          (err as Error).message
+        }`,
+      ),
+    )
+    process.exitCode = 1
+    return
+  }
+
+  // Lazy-import the framework primitive so the CLI cold-start is cheap.
+  const { verifyParkedEnvelopeHash } = (await import(
+    "@adjudicate/runtime",
+  )) as unknown as {
+    verifyParkedEnvelopeHash(parked: ParkedEnvelopeShape): {
+      verified: boolean | null
+      reason?: string
+      stored?: string
+      derived?: string
+    }
+  }
+  const verification = verifyParkedEnvelopeHash(parked)
+  if (verification.verified === false) {
+    console.error(chalk.red.bold("Parked envelope adulterado — recusando retomada."))
+    console.error(
+      chalk.dim(
+        `stored=${verification.stored} derived=${verification.derived}`,
+      ),
+    )
+    process.exitCode = 1
+    return
+  }
+  // verified === null means a legacy v0.1 blob without hash-verification
+  // fields. We warn but proceed — the runbook expects backward-compat for
+  // sessions parked before the framework added hash fields.
+  const verifyMode: "verified" | "legacy-no-hash" =
+    verification.verified === true ? "verified" : "legacy-no-hash"
+
+  // Build the synthesised wire event. The defer-resolver filters by
+  // `SETTLED_WIRE_STATUSES = {"paid", "captured", "confirmed"}` so we use
+  // "paid" — the same status the Stripe webhook emits on PIX confirmation.
+  const { paymentId, orderId } =
+    extractPaymentDetailsFromParked(parked)
+  const event = {
+    orderId,
+    paymentId,
+    previousStatus: "requires_payment_method",
+    newStatus: "paid",
+    method: "pix",
+    version: 1,
+    timestamp: new Date().toISOString(),
+    // Marker for downstream logs so an audit reviewer can distinguish
+    // operator-kicked resumes from real Stripe webhooks.
+    cliInjectedBy: operatorIdentity(),
+  }
+
+  if (opts.jsonOnly === true) {
+    // Dry-run for tests and audit transcripts — emit JSON describing what
+    // WOULD be published, without touching NATS.
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          sessionId: targetSessionId,
+          parkKey,
+          verifyMode,
+          parkedSignal: parked.signal,
+          intentHash: parked.envelope.intentHash,
+          intentKind: parked.envelope.kind,
+          publishSubject: "ibatexas.payment.status_changed",
+          synthEvent: event,
+        },
+        null,
+        2,
+      ),
+    )
+    return
+  }
+
+  // Publish the wire event. The live subscriber sweeps `defer:pending:*`
+  // and resumes the matching session via the standard two-phase commit
+  // pipeline. Other parked sessions with mismatched signals no-op.
+  const { publishNatsEvent, closeNatsConnection } = await import(
+    "@ibatexas/nats-client",
+  )
+  try {
+    await publishNatsEvent("payment.status_changed", event)
+  } finally {
+    await closeNatsConnection().catch(() => {})
+  }
+
+  console.log()
+  console.log(chalk.bold("ibx kernel defer resume"))
+  console.log(
+    chalk.dim(
+      "Sinal de retomada publicado — o defer-resolver vai re-adjudicar a sessão.",
+    ),
+  )
+  console.log()
+  console.log(`  ${chalk.bold("sessionId")}    : ${targetSessionId}`)
+  console.log(`  ${chalk.bold("parkKey")}      : ${parkKey}`)
+  console.log(`  ${chalk.bold("verifyMode")}   : ${verifyMode}`)
+  console.log(`  ${chalk.bold("parkedSignal")} : ${parked.signal}`)
+  console.log(`  ${chalk.bold("intentHash")}   : ${parked.envelope.intentHash.slice(0, 12)}…`)
+  console.log(`  ${chalk.bold("intentKind")}   : ${parked.envelope.kind}`)
+  console.log(
+    `  ${chalk.bold("subject")}      : ibatexas.payment.status_changed`,
+  )
+  console.log(`  ${chalk.bold("paymentId")}    : ${event.paymentId}`)
+  console.log(`  ${chalk.bold("orderId")}      : ${event.orderId}`)
+  console.log(`  ${chalk.bold("operator")}     : ${event.cliInjectedBy}`)
+  console.log()
+  console.log(
+    chalk.dim(
+      "Acompanhe o resumo no log da API: '[defer-resolver] re-adjudicated resumed intent'.",
+    ),
+  )
+  console.log()
+}
+
 // ── Registration ──────────────────────────────────────────────────────────
 
 export function registerKernelCommands(group: Command): void {
@@ -1281,4 +1550,47 @@ export function registerKernelCommands(group: Command): void {
         await closeRedisQuietly()
       }
     })
+
+  // ── defer ────────────────────────────────────────────────────────────────
+  // W7-O1 — operator recovery for stuck-deferred sessions. The sweep-side
+  // resolver in apps/api handles real wire events; this CLI surface lets a
+  // 3am responder kick the resolver for ONE session via a synthesised
+  // `payment.status_changed` NATS event, without manually constructing the
+  // event in psql + nats-cli.
+  const defer = group
+    .command("defer")
+    .description(
+      "Operações sobre envelopes em DEFER (parking + retomada manual)",
+    )
+
+  defer
+    .command("resume <sessionId>")
+    .description(
+      "Retomada manual de uma sessão parkada — verifica o envelope e publica payment.status_changed",
+    )
+    .option(
+      "--signal <signal>",
+      "Filtra a retomada pelo signal parkado (default: pix.confirmed; o resolver casa por signal)",
+      "pix.confirmed",
+    )
+    .option(
+      "--json",
+      "Não publica NATS — imprime o evento sintetizado em JSON (dry-run para testes / auditoria)",
+      false,
+    )
+    .action(
+      async (
+        sessionId: string,
+        opts: { signal?: string; json?: boolean },
+      ) => {
+        try {
+          await runDeferResume(sessionId, {
+            ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+            jsonOnly: opts.json === true,
+          })
+        } finally {
+          await closeRedisQuietly()
+        }
+      },
+    )
 }

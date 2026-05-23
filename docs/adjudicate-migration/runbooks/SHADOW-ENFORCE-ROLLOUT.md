@@ -248,6 +248,31 @@ REWRITE is acceptable when the Pack is designed to clamp values (e.g., quantity-
 
 ---
 
+## Stuck-DEFER recovery (W7-O1)
+
+If a customer reports "Estou aguardando confirmação" for hours and a `defer:pending:{sessionId}` key exists in Redis with TTL > 0 but no matching wire signal arrived (e.g. Stripe webhook lost, NATS subscriber crashed), the on-call operator runs:
+
+```bash
+# 1. Identify the session (substitute APP_ENV: e.g. production):
+redis-cli SCAN 0 MATCH "${APP_ENV}:defer:pending:*"
+# 2. Optional dry-run — emit the synth event in JSON without publishing:
+ibx kernel defer resume <sessionId> --json
+# 3. Live resume — publish payment.status_changed; the live defer-resolver
+#    subscriber picks it up, verifies the parked-envelope hash, runs the
+#    standard two-phase commit + cycle cap + dispatch path:
+ibx kernel defer resume <sessionId>
+```
+
+The CLI:
+- Reads `<APP_ENV>:defer:pending:{sessionId}` directly from Redis.
+- Calls the framework's `verifyParkedEnvelopeHash` BEFORE publishing — tampered envelopes refuse with exit 1 and emit `stored=… derived=…` so triage is one log line.
+- Lifts `paymentId` + `orderId` from the parked payload's `input` (PIX-deferred `set_pix_details` shape today) and synthesises a `PaymentStatusChangedEvent` with `newStatus="paid"`, `method="pix"`. The event carries `cliInjectedBy: <operator>` so audit reviewers can distinguish operator-kicked resumes from real Stripe webhooks.
+- Publishes on `ibatexas.payment.status_changed`. The live `defer-resolver` (apps/api/src/subscribers/defer-resolver.ts) sweeps `defer:pending:*` and resumes the matching session via the standard pipeline. Other parked sessions with non-matching signals no-op.
+
+The CLI does NOT call `adjudicate()` directly — it kicks the existing resume pipeline. See `docs/adjudicate-migration/correctness-remediation/W7-DECISIONS-ops.md` §O1 for the design rationale (CLI as resolver-kicker rather than resume-reimplementation).
+
+---
+
 ## Audit trail
 
 Every flip MUST be recorded in the rollout ticket with:

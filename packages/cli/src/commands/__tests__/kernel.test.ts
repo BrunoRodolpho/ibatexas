@@ -668,3 +668,186 @@ describe("ibx kernel kill-switch", () => {
     })
   })
 })
+
+// ── ibx kernel defer resume <sessionId> (W7-O1) ───────────────────────────
+//
+// The CLI reads the parked envelope from Redis, verifies the hash via the
+// framework primitive, and publishes a synthesised NATS event. Unit tests
+// cover:
+//   - parked envelope not found → exit 1 with operator-readable error
+//   - tampered envelope → exit 1 with stored vs derived hashes
+//   - happy path with --json dry-run → emits the synth event without
+//     touching NATS, with verifyMode = "verified" | "legacy-no-hash"
+//
+// We use the same in-memory fake redis pattern the kill-switch tests use,
+// extended with the defer:pending:* keyspace shape. A separate integration
+// run against real Docker Redis is captured as O1-evidence (RULE H).
+
+describe("ibx kernel defer resume (W7-O1)", () => {
+  beforeEach(() => {
+    killSwitchFakeRedis.reset()
+  })
+
+  it("refuses with exit 1 when no parked envelope exists for the sessionId", async () => {
+    await cmd.parseAsync(
+      ["defer", "resume", "cust:does_not_exist", "--json"],
+      { from: "user" },
+    )
+    const out = stdout.getOutput()
+    expect(out).toMatch(/Nenhum envelope parkado/)
+    expect(process.exitCode).toBe(1)
+    process.exitCode = 0
+  })
+
+  it("refuses with exit 1 when the parked blob is malformed JSON", async () => {
+    killSwitchFakeRedis.store.set(
+      "test-cli:defer:pending:cust:broken",
+      "{not json",
+    )
+    await cmd.parseAsync(
+      ["defer", "resume", "cust:broken", "--json"],
+      { from: "user" },
+    )
+    const out = stdout.getOutput()
+    expect(out).toMatch(/JSON\.parse falhou|malformado/)
+    expect(process.exitCode).toBe(1)
+    process.exitCode = 0
+  })
+
+  it("--json emits the synth event for a verified parked envelope (no NATS publish)", async () => {
+    // Hash-verification is satisfied by re-using the framework's actual
+    // sha256Canonical. We import the hash here (in the test) so the
+    // fixture's intentHash matches what verifyParkedEnvelopeHash recomputes.
+    const { sha256Canonical } = await import("@adjudicate/core")
+    const sessionId = "cust:o1_happy"
+    const envelopeMeta = {
+      version: 4,
+      kind: "order.tool.propose",
+      payload: {
+        toolName: "set_pix_details",
+        input: { paymentId: "pi_test_123", orderId: "ord_test_456" },
+        toolUseId: "tu_test",
+      },
+      nonce: "fixture-nonce-o1",
+      actor: { principal: "user", sessionId },
+      taint: "UNTRUSTED",
+    } as const
+    const intentHash = (
+      sha256Canonical as (input: unknown) => string
+    )(envelopeMeta)
+    const parked = {
+      envelope: {
+        intentHash,
+        kind: envelopeMeta.kind,
+        actor: { sessionId },
+        payload: envelopeMeta.payload,
+        version: envelopeMeta.version,
+        nonce: envelopeMeta.nonce,
+        taint: envelopeMeta.taint,
+        actorPrincipal: envelopeMeta.actor.principal,
+      },
+      signal: "pix.confirmed",
+      parkedAt: "2026-05-23T18:00:00.000Z",
+    }
+    killSwitchFakeRedis.store.set(
+      `test-cli:defer:pending:${sessionId}`,
+      JSON.stringify(parked),
+    )
+
+    await cmd.parseAsync(
+      ["defer", "resume", sessionId, "--json"],
+      { from: "user" },
+    )
+    const out = stdout.getOutput()
+    // The dry-run output is JSON.
+    const parsed = JSON.parse(out) as {
+      ok: boolean
+      sessionId: string
+      parkKey: string
+      verifyMode: string
+      parkedSignal: string
+      synthEvent: {
+        paymentId: string
+        orderId: string
+        newStatus: string
+        cliInjectedBy: string
+      }
+    }
+    expect(parsed.ok).toBe(true)
+    expect(parsed.sessionId).toBe(sessionId)
+    expect(parsed.parkKey).toBe(`test-cli:defer:pending:${sessionId}`)
+    expect(parsed.verifyMode).toBe("verified")
+    expect(parsed.parkedSignal).toBe("pix.confirmed")
+    // The synth event lifts the PIX paymentId / orderId from the payload.
+    expect(parsed.synthEvent.paymentId).toBe("pi_test_123")
+    expect(parsed.synthEvent.orderId).toBe("ord_test_456")
+    expect(parsed.synthEvent.newStatus).toBe("paid")
+    expect(parsed.synthEvent.cliInjectedBy).toMatch(/^cli:/)
+  })
+
+  it("refuses with exit 1 when verifyParkedEnvelopeHash detects tamper", async () => {
+    // We supply a parked envelope where the stored intentHash does not
+    // match the canonical hash of the (version, kind, payload, nonce, actor,
+    // taint) tuple. The framework primitive should flag verified=false.
+    const sessionId = "cust:o1_tampered"
+    const parked = {
+      envelope: {
+        intentHash: "deadbeef".repeat(8), // bogus 64-char hex
+        kind: "order.tool.propose",
+        actor: { sessionId },
+        payload: { toolName: "set_pix_details", input: {}, toolUseId: "x" },
+        version: 4,
+        nonce: "tampered-nonce",
+        taint: "UNTRUSTED",
+        actorPrincipal: "user",
+      },
+      signal: "pix.confirmed",
+      parkedAt: "2026-05-23T18:00:00.000Z",
+    }
+    killSwitchFakeRedis.store.set(
+      `test-cli:defer:pending:${sessionId}`,
+      JSON.stringify(parked),
+    )
+
+    await cmd.parseAsync(
+      ["defer", "resume", sessionId, "--json"],
+      { from: "user" },
+    )
+    const out = stdout.getOutput()
+    expect(out).toMatch(/adulterado/i)
+    expect(process.exitCode).toBe(1)
+    process.exitCode = 0
+  })
+
+  it("--json supports a legacy v0.1 blob without hash-verification fields (verifyMode=legacy-no-hash)", async () => {
+    // Pre-T-005 blobs are missing version/nonce/taint/actorPrincipal.
+    // verifyParkedEnvelopeHash returns `verified: null` and the CLI proceeds
+    // with a degraded-trust marker so the runbook is honest about the
+    // backward-compat path.
+    const sessionId = "cust:o1_legacy"
+    const parked = {
+      envelope: {
+        intentHash: "1".repeat(64),
+        kind: "order.tool.propose",
+        actor: { sessionId },
+        payload: { toolName: "set_pix_details", input: {}, toolUseId: "x" },
+        // No version/nonce/taint/actorPrincipal — legacy shape.
+      },
+      signal: "pix.confirmed",
+      parkedAt: "2026-05-23T18:00:00.000Z",
+    }
+    killSwitchFakeRedis.store.set(
+      `test-cli:defer:pending:${sessionId}`,
+      JSON.stringify(parked),
+    )
+
+    await cmd.parseAsync(
+      ["defer", "resume", sessionId, "--json"],
+      { from: "user" },
+    )
+    const out = stdout.getOutput()
+    const parsed = JSON.parse(out) as { verifyMode: string; ok: boolean }
+    expect(parsed.ok).toBe(true)
+    expect(parsed.verifyMode).toBe("legacy-no-hash")
+  })
+})
