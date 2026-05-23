@@ -215,7 +215,7 @@ groups:
 
       # ── 13 ─────────────────────────────────────────────────────────────────
       - alert: KernelAuditSpillOverflow
-        expr: max(kernel_audit_spill_bytes) > 1073741824
+        expr: max(kernel_audit_sink_spill_size) > 1073741824
         for: 2m
         labels:
           severity: S1

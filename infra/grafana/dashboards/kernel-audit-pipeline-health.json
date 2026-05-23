@@ -249,7 +249,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(kernel_audit_spill_bytes{env=\"$env\"})",
+          "expr": "max(kernel_audit_sink_spill_size{env=\"$env\"})",
           "legendFormat": "spill bytes",
           "range": true,
           "refId": "A"

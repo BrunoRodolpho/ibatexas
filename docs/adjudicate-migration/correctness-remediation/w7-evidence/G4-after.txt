@@ -1,0 +1,44 @@
+# G4 — kernel_audit_spill_bytes metric reconciliation (AFTER fix)
+#
+# Fix:
+#   (a) infra/grafana/dashboards/kernel-audit-pipeline-health.json:252
+#       renamed kernel_audit_spill_bytes → kernel_audit_sink_spill_size
+#   (b) infra/alerts/kernel.yaml:218
+#       renamed kernel_audit_spill_bytes → kernel_audit_sink_spill_size
+#   (c) packages/cli/src/__tests__/infra-grafana-alerts.test.ts:48-90
+#       hardcoded allowlist replaced with `deriveCanonicalMetricsFromSink()`
+#       which parses `apps/api/src/plugins/kernel-metrics-sink.ts` at test
+#       load time and extracts every `name: "kernel_..."` literal.
+#
+# Per RULE I: the allowlist is now PROGRAMMATICALLY derived from the
+# canonical sink file. If the dashboard/alert reference a name the sink
+# doesn't emit (or the sink renames/removes a metric the dashboard still
+# references), the test FAILS — no more theatre of "metric in static
+# allow-list".
+#
+# Command (run from /Users/thaisrodolpho/projects/ibatexas/packages/cli):
+#   pnpm vitest run src/__tests__/infra-grafana-alerts.test.ts
+#
+# Two regression demonstrations:
+#
+# 1. After-fix run (clean state): all 42 tests pass.
+# 2. Mid-fix verification: temporarily mutating the dashboard back to
+#    kernel_audit_spill_bytes (the broken state) caused the test to FAIL
+#    with offender list including:
+#      "panel 3 (Persistent buffered-sink spill size (threshold 1GB)):
+#       kernel_audit_spill_bytes"
+#    — proving the test now structurally detects mismatches via the
+#    programmatic sink derivation (not a static allow-list).
+#
+# Raw vitest output (clean post-fix run):
+
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/packages/cli
+
+ ✓ src/__tests__/infra-grafana-alerts.test.ts (42 tests) 5ms
+
+ Test Files  1 passed (1)
+      Tests  42 passed (42)
+   Start at  18:04:22
+   Duration  378ms (transform 26ms, setup 0ms, collect 52ms, tests 5ms, environment 0ms, prepare 46ms)
+

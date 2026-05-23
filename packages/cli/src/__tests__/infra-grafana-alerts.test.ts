@@ -29,43 +29,71 @@ const REPO_ROOT = resolve(HERE, "..", "..", "..", "..")
 const DASHBOARDS_DIR = join(REPO_ROOT, "infra", "grafana", "dashboards")
 const ALERTS_FILE = join(REPO_ROOT, "infra", "alerts", "kernel.yaml")
 
-// ── Canonical metric list ────────────────────────────────────────────────────
+// ── Canonical metric list (W7-G4: programmatically derived) ────────────────
 //
-// Mirrors the set registered in
-// `apps/api/src/plugins/kernel-metrics-sink.ts` (W1 baseline) plus the new
-// metrics the W3 metrics agent is adding in parallel:
-//   • kernel_defer_pending_gauge        — DEFER backlog gauge
-//   • kernel_defer_quota_exceeded_total — quota counter
-//   • kernel_defer_timeout_total        — sweeper timeout counter
-//   • kernel_audit_lag_seconds          — per-sink audit lag histogram
-//   • kernel_audit_spill_bytes          — persistent buffered sink size
-//   • kernel_replay_drift_total         — replay job classification counter
-//   • kernel_kill_switch_state          — kill-switch active gauge
+// RULE I (Wave 7 G4): the canonical list MUST be derived from the source
+// of truth — `apps/api/src/plugins/kernel-metrics-sink.ts`. The previous
+// hardcoded list silently admitted dashboard/alert references to metric
+// names the sink never emitted (e.g., `kernel_audit_spill_bytes` was in
+// the allow-set, masking the fact that the sink emits
+// `kernel_audit_sink_spill_size`). A static allow-list is theatre — it
+// only catches names that aren't in IT, not names that drift from the
+// sink.
 //
-// If a metric appears in a Grafana JSON or alert YAML but NOT here, the test
-// fails — that is the anti-theater guarantee.
+// Mechanism: parse the sink file at test load time and extract every
+// `name: "kernel_..."` literal. Each metric definition in the sink uses
+// the shape:
+//
+//     { name: "kernel_<thing>_total", help: "...", labelNames: [...] }
+//
+// so a regex over the file source recovers the canonical set. If the
+// sink adds, removes, or renames a metric, this set updates automatically
+// on the next test run.
+//
+// If a metric appears in a Grafana JSON or alert YAML but NOT in the
+// programmatically-derived sink set, the test fails — that is the
+// anti-theater guarantee.
 
-const CANONICAL_METRICS: ReadonlySet<string> = new Set([
-  // Already emitted (W1):
-  "kernel_decision_total",
-  "kernel_refusal_total",
-  "kernel_decision_duration_seconds",
-  "kernel_shadow_divergence_total",
-  "kernel_ledger_op_total",
-  "kernel_audit_sink_failure_total",
-  "kernel_defer_resume_duration_seconds",
-  "kernel_intent_kind_coverage",
-  "kernel_distinct_intent_kinds_observed",
-  "kernel_known_intent_kinds_total",
-  // W3 new metrics (parallel agent — referenced by the artifacts):
-  "kernel_defer_pending_gauge",
-  "kernel_defer_quota_exceeded_total",
-  "kernel_defer_timeout_total",
-  "kernel_audit_lag_seconds",
-  "kernel_audit_spill_bytes",
-  "kernel_replay_drift_total",
-  "kernel_kill_switch_state",
-])
+const KERNEL_METRICS_SINK_PATH = resolve(
+  REPO_ROOT,
+  "apps",
+  "api",
+  "src",
+  "plugins",
+  "kernel-metrics-sink.ts",
+)
+
+function deriveCanonicalMetricsFromSink(): ReadonlySet<string> {
+  const source = readFileSync(KERNEL_METRICS_SINK_PATH, "utf-8")
+  // Match `name: "kernel_..."` — captures any kernel_ metric name declared
+  // as a string literal in the file. Comment lines containing the same
+  // shape are excluded by the leading non-`//` constraint (the regex is
+  // applied after a comment-strip pass).
+  const stripped = stripLineComments(source)
+  const matches = stripped.matchAll(/\bname:\s*"(kernel_[a-zA-Z0-9_]+)"/g)
+  const names = new Set<string>()
+  for (const m of matches) {
+    if (m[1]) names.add(m[1])
+  }
+  if (names.size === 0) {
+    throw new Error(
+      `kernel-metrics-sink.ts produced ZERO canonical metric names — parser broken or file moved?\n  path: ${KERNEL_METRICS_SINK_PATH}`,
+    )
+  }
+  return names
+}
+
+/**
+ * Strip `// ...` line comments from a TS source so regex-based metric-name
+ * extraction doesn't accidentally pick up names mentioned in code comments.
+ * Block comments (`/* ... *\/`) are left intact — the sink's metric-name
+ * literals are never inside block comments.
+ */
+function stripLineComments(src: string): string {
+  return src.replace(/^\s*\/\/.*$/gm, "")
+}
+
+const CANONICAL_METRICS: ReadonlySet<string> = deriveCanonicalMetricsFromSink()
 
 /** Histogram metrics produce auto-generated _bucket / _count / _sum series. */
 function isHistogramSuffix(name: string): boolean {
