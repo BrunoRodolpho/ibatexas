@@ -161,13 +161,40 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
   // `errorClass: "enforce_config_typo"` (see
   // `@adjudicate/core/kernel/enforce-config.ts:94-135`).
   //
+  // P0-9: a typo such as `IBX_KERNEL_ENFORCE=order.cart.adddd` would warn
+  // and proceed — enforcement silently disabled while the ops dashboard
+  // showed green. We now treat any non-empty `unknownShadow`/`unknownEnforce`
+  // list as fatal: throw a structured error so the bootstrap promise rejects
+  // and `start().catch(...)` (P0-6) triggers `process.exit(1)`.
+  //
   // `KNOWN_INTENT_KINDS` is assembled in `@ibatexas/llm-provider/intent-kinds.ts`
   // from each first-party Pack's intent surface. Future Packs (reservations /
   // whatsapp / customer-onboarding) extend it from inside that module — no
   // change here is needed when those packs land.
-  validateEnforceConfig(KNOWN_INTENT_KINDS, process.env, (msg) => {
+  const enforceConfig = validateEnforceConfig(KNOWN_INTENT_KINDS, process.env, (msg) => {
     server.log.warn({ msg }, "[kernel-bootstrap] enforce-config validation")
   })
+
+  if (
+    enforceConfig.unknownShadow.length > 0 ||
+    enforceConfig.unknownEnforce.length > 0
+  ) {
+    server.log.fatal(
+      {
+        event: "kernel.bootstrap.enforce_config_typo",
+        unknownShadow: enforceConfig.unknownShadow,
+        unknownEnforce: enforceConfig.unknownEnforce,
+      },
+      "[kernel-bootstrap] enforce-config contains unrecognized intent kinds — refusing to boot",
+    )
+    throw new Error(
+      `[kernel-bootstrap] enforce-config typo: unknownShadow=${JSON.stringify(
+        enforceConfig.unknownShadow,
+      )} unknownEnforce=${JSON.stringify(
+        enforceConfig.unknownEnforce,
+      )}. Fix env vars IBX_KERNEL_SHADOW / IBX_KERNEL_ENFORCE before retry.`,
+    )
+  }
 
   server.log.info(
     {
