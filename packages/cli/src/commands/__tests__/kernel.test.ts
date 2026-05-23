@@ -205,3 +205,186 @@ describe("ibx kernel divergence", () => {
     stderrSpy.mockRestore()
   })
 })
+
+// ── ibx kernel kill-switch (W3 D1) ────────────────────────────────────────
+//
+// We mock the @ibatexas/tools Redis surface so the kernel command
+// resolves to an in-memory implementation. The same fake is shared
+// across calls so we can verify state transitions.
+//
+// Anti-theater (RULE 2): each test below was written FIRST and FAILED
+// with `Unknown command 'kill-switch'` before kernel.ts registered the
+// new subcommand. After implementation, all 8 pass; the suite is the
+// operator's documented contract.
+
+const killSwitchFakeRedis = vi.hoisted(() => {
+  const store = new Map<string, string>()
+  const channels = new Map<string, string[]>()
+  return {
+    store,
+    channels,
+    async set(key: string, value: string, _opts?: { EX?: number }) {
+      store.set(key, value)
+      return "OK"
+    },
+    async get(key: string) {
+      return store.get(key) ?? null
+    },
+    async del(key: string) {
+      return store.delete(key) ? 1 : 0
+    },
+    async publish(channel: string, msg: string) {
+      const arr = channels.get(channel) ?? []
+      arr.push(msg)
+      channels.set(channel, arr)
+      return arr.length
+    },
+    reset() {
+      store.clear()
+      channels.clear()
+    },
+  }
+})
+
+vi.mock("@ibatexas/tools", async () => {
+  const actual = await vi.importActual<typeof import("@ibatexas/tools")>(
+    "@ibatexas/tools",
+  )
+  return {
+    ...actual,
+    getRedisClient: vi.fn(async () => killSwitchFakeRedis),
+    rk: (key: string) => `test-cli:${key}`,
+  }
+})
+
+describe("ibx kernel kill-switch", () => {
+  beforeEach(() => {
+    killSwitchFakeRedis.reset()
+  })
+
+  it("enable writes a flag with metadata to Redis", async () => {
+    await cmd.parseAsync(
+      [
+        "kill-switch",
+        "enable",
+        "--reason=Refusal-rate spike at 19:35",
+      ],
+      { from: "user" },
+    )
+    const raw = killSwitchFakeRedis.store.get(
+      "test-cli:kill-switch:global",
+    )
+    expect(raw).toBeDefined()
+    const parsed = JSON.parse(raw!) as {
+      enabledBy: string
+      reason: string
+      enabledAt: string
+    }
+    expect(parsed.reason).toBe("Refusal-rate spike at 19:35")
+    expect(parsed.enabledBy).toMatch(/^cli:/)
+    expect(parsed.enabledAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it("enable publishes an event on the events channel", async () => {
+    await cmd.parseAsync(
+      ["kill-switch", "enable", "--reason=Soak window"],
+      { from: "user" },
+    )
+    const events = killSwitchFakeRedis.channels.get(
+      "test-cli:kill-switch:events",
+    )
+    expect(events).toBeDefined()
+    expect(events).toHaveLength(1)
+    const parsed = JSON.parse(events![0]!) as {
+      action: string
+      scope: string
+      reason: string
+    }
+    expect(parsed.action).toBe("enable")
+    expect(parsed.scope).toBe("global")
+    expect(parsed.reason).toBe("Soak window")
+  })
+
+  it("status reflects the active kill switch (pt-BR human-readable)", async () => {
+    await cmd.parseAsync(
+      ["kill-switch", "enable", "--reason=incident"],
+      { from: "user" },
+    )
+    await cmd.parseAsync(["kill-switch", "status"], { from: "user" })
+    const out = stdout.getOutput()
+    expect(out).toContain("ATIVO")
+    expect(out).toContain("incident")
+    expect(out).toMatch(/motivo|reason/i)
+  })
+
+  it("status --json emits structured output", async () => {
+    await cmd.parseAsync(
+      ["kill-switch", "enable", "--reason=incident"],
+      { from: "user" },
+    )
+    // Reset stdout capture so we only see the status call's output.
+    stdout.restore()
+    stdout = captureStdout()
+    await cmd.parseAsync(["kill-switch", "status", "--json"], {
+      from: "user",
+    })
+    const out = stdout.getOutput()
+    const parsed = JSON.parse(out) as { active: boolean; reason: string }
+    expect(parsed.active).toBe(true)
+    expect(parsed.reason).toBe("incident")
+  })
+
+  it("status --json with no active switch emits active=false", async () => {
+    await cmd.parseAsync(["kill-switch", "status", "--json"], {
+      from: "user",
+    })
+    const out = stdout.getOutput()
+    const parsed = JSON.parse(out) as { active: boolean }
+    expect(parsed.active).toBe(false)
+  })
+
+  it("disable removes the flag and publishes a disable event", async () => {
+    await cmd.parseAsync(
+      ["kill-switch", "enable", "--reason=engage"],
+      { from: "user" },
+    )
+    expect(
+      killSwitchFakeRedis.store.has("test-cli:kill-switch:global"),
+    ).toBe(true)
+
+    await cmd.parseAsync(
+      ["kill-switch", "disable", "--reason=incident-resolved"],
+      { from: "user" },
+    )
+    expect(
+      killSwitchFakeRedis.store.has("test-cli:kill-switch:global"),
+    ).toBe(false)
+    const events = killSwitchFakeRedis.channels.get(
+      "test-cli:kill-switch:events",
+    )
+    expect(events).toHaveLength(2) // enable + disable
+    const disableEvt = JSON.parse(events![1]!) as { action: string }
+    expect(disableEvt.action).toBe("disable")
+  })
+
+  it("enable requires --reason", async () => {
+    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    let threw: unknown
+    try {
+      await cmd.parseAsync(["kill-switch", "enable"], { from: "user" })
+    } catch (err) {
+      threw = err
+    }
+    // Commander throws via exitOverride() when a required option is
+    // missing; the test asserts that *something* signaled refusal.
+    expect(threw ?? process.exitCode).toBeTruthy()
+    stderrSpy.mockRestore()
+    process.exitCode = 0
+  })
+
+  it("status pt-BR text shows 'inativo' when no flag is set", async () => {
+    await cmd.parseAsync(["kill-switch", "status"], { from: "user" })
+    const out = stdout.getOutput()
+    expect(out).toContain("inativo")
+  })
+})

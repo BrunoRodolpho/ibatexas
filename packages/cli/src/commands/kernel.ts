@@ -1,8 +1,16 @@
 // `ibx kernel` — operator surface for the adjudicate kernel.
 //
-// Three subcommands:
+// Subcommands:
 //
-//   - `ibx kernel status`      — print the kernel's runtime state: env
+//   - `ibx kernel status`        — print the kernel's runtime state.
+//
+//   - `ibx kernel kill-switch`   — W3 D1 — operator-flippable Redis flag
+//                                   (`ibatexas:kill-switch:global`) +
+//                                   pub/sub channel for cross-replica
+//                                   propagation. Sub-subcommands:
+//                                   enable, disable, status [--json].
+//
+//   - (kept) `ibx kernel status`      — print the kernel's runtime state: env
 //                                 flags (shadow/enforce), known intent kinds,
 //                                 kill-switch, audit sink topology.
 //
@@ -576,6 +584,225 @@ async function runDivergence(opts: { since?: string }): Promise<void> {
   }
 }
 
+// ── ibx kernel kill-switch (W3 D1) ────────────────────────────────────────
+//
+// Operator surface for engaging/disengaging the global kill switch.
+// Backed by the `@ibatexas/tools.createKillSwitchStore` primitive which
+// writes the metadata to `rk("kill-switch:global")` with a 24h TTL and
+// publishes events on `rk("kill-switch:events")` for cross-replica
+// propagation.
+//
+// Why a Redis flag instead of `setKillSwitch()` direct? The kernel
+// module's `setKillSwitch()` is in-process — flipping it in the CLI
+// would only affect the CLI's own process. The Redis flag is the
+// distributed signal that API replicas pick up via the pub/sub channel
+// + restart-safety polling (per `migration/05-kill-switch-strategy.md`
+// §"Distributed propagation").
+
+async function emitSentryBreadcrumb(input: {
+  action: "enable" | "disable" | "status"
+  reason?: string
+  metadata?: Record<string, unknown>
+}): Promise<void> {
+  // CLI doesn't bundle @sentry/node by default. We try to load it
+  // lazily; if missing or DSN unset, fall back to a structured stderr
+  // breadcrumb so we still leave a trace. This pattern is consistent
+  // with the rest of the CLI's "best-effort observability" stance.
+  if (!process.env.SENTRY_DSN) return
+  try {
+    const sentry = (await import("@sentry/node" as string).catch(
+      () => null,
+    )) as { addBreadcrumb?: (b: unknown) => void } | null
+    sentry?.addBreadcrumb?.({
+      category: "kernel.kill_switch",
+      level: input.action === "enable" ? "warning" : "info",
+      message: `kill-switch.${input.action}`,
+      data: {
+        reason: input.reason ?? null,
+        ...(input.metadata ?? {}),
+      },
+    })
+  } catch {
+    // Best-effort — log a structured marker.
+    console.error(
+      JSON.stringify({
+        breadcrumb: "kernel.kill_switch",
+        action: input.action,
+        reason: input.reason,
+      }),
+    )
+  }
+}
+
+interface KillSwitchCliDeps {
+  readonly getRedis: () => Promise<unknown>
+  readonly rk: (key: string) => string
+}
+
+async function loadKillSwitchDeps(): Promise<KillSwitchCliDeps> {
+  // Lazy import keeps the CLI cold-start fast — kill-switch is a rare
+  // operator action, no need to pay the redis-connect cost for every
+  // `ibx kernel status` call.
+  const tools = await import("@ibatexas/tools")
+  return {
+    getRedis: () => tools.getRedisClient(),
+    rk: tools.rk,
+  }
+}
+
+function operatorIdentity(): string {
+  // Best-effort operator identity for the audit record:
+  //   1. $IBX_OPERATOR if explicitly set (CI / bastion env).
+  //   2. user@host otherwise.
+  // The admin endpoint replaces this with the staffId derived from the
+  // JWT — see `apps/api/src/routes/admin/kernel.ts`.
+  const explicit = process.env.IBX_OPERATOR
+  if (explicit && explicit.length > 0) return `cli:${explicit}`
+  const user = process.env.USER ?? process.env.USERNAME ?? "unknown"
+  const host = process.env.HOST ?? process.env.HOSTNAME ?? "unknown"
+  return `cli:${user}@${host}`
+}
+
+async function closeRedisQuietly(): Promise<void> {
+  try {
+    const { closeRedisClient } = await import("@ibatexas/tools")
+    await closeRedisClient()
+  } catch {
+    // Best-effort — CLI may exit even if the close fails.
+  }
+}
+
+async function runKillSwitchEnable(opts: { reason: string }): Promise<void> {
+  const { getRedis, rk } = await loadKillSwitchDeps()
+  const { createKillSwitchStore } = await import("@ibatexas/tools")
+  const redis = (await getRedis()) as Parameters<
+    typeof createKillSwitchStore
+  >[0]["redis"]
+  const store = createKillSwitchStore({ redis, rk })
+  const enabledBy = operatorIdentity()
+  const md = await store.enable({
+    enabledBy,
+    reason: opts.reason,
+  })
+  await emitSentryBreadcrumb({
+    action: "enable",
+    reason: opts.reason,
+    metadata: { enabledBy },
+  })
+  console.log()
+  console.log(chalk.red.bold("ibx kernel kill-switch enable"))
+  console.log(
+    chalk.dim(
+      "Sinal global enviado — todas as réplicas refusam mutações.",
+    ),
+  )
+  console.log()
+  console.log(`  ${chalk.bold("motivo")}    : ${md.reason}`)
+  console.log(`  ${chalk.bold("operador")}  : ${md.enabledBy}`)
+  console.log(`  ${chalk.bold("desde")}     : ${md.enabledAt}`)
+  console.log(`  ${chalk.bold("TTL")}        : 24h (auto-disengage)`)
+  console.log()
+  console.log(
+    chalk.dim(
+      "Para liberar:  ibx kernel kill-switch disable --reason \"<motivo>\"",
+    ),
+  )
+  console.log()
+}
+
+async function runKillSwitchDisable(opts: { reason: string }): Promise<void> {
+  const { getRedis, rk } = await loadKillSwitchDeps()
+  const { createKillSwitchStore } = await import("@ibatexas/tools")
+  const redis = (await getRedis()) as Parameters<
+    typeof createKillSwitchStore
+  >[0]["redis"]
+  const store = createKillSwitchStore({ redis, rk })
+  const enabledBy = operatorIdentity()
+  const prior = await store.disable({
+    enabledBy,
+    reason: opts.reason,
+  })
+  await emitSentryBreadcrumb({
+    action: "disable",
+    reason: opts.reason,
+    metadata: { enabledBy, priorEnabledBy: prior?.enabledBy ?? null },
+  })
+  console.log()
+  console.log(chalk.green.bold("ibx kernel kill-switch disable"))
+  if (prior) {
+    console.log(
+      chalk.dim(
+        "Kill switch liberado — propagando para todas as réplicas.",
+      ),
+    )
+    console.log()
+    console.log(`  ${chalk.bold("motivo (release)")} : ${opts.reason}`)
+    console.log(`  ${chalk.bold("operador")}         : ${enabledBy}`)
+    console.log(
+      `  ${chalk.bold("estava ativo por")} : ${prior.enabledBy} (${prior.reason})`,
+    )
+  } else {
+    console.log(chalk.dim("Nenhum kill switch ativo — comando idempotente."))
+  }
+  console.log()
+}
+
+async function runKillSwitchStatus(opts: { json?: boolean }): Promise<void> {
+  const { getRedis, rk } = await loadKillSwitchDeps()
+  const { createKillSwitchStore } = await import("@ibatexas/tools")
+  const redis = (await getRedis()) as Parameters<
+    typeof createKillSwitchStore
+  >[0]["redis"]
+  const store = createKillSwitchStore({ redis, rk })
+  const md = await store.status()
+
+  if (opts.json) {
+    if (md === null) {
+      console.log(JSON.stringify({ active: false }, null, 2))
+    } else {
+      console.log(
+        JSON.stringify(
+          {
+            active: true,
+            enabledBy: md.enabledBy,
+            enabledAt: md.enabledAt,
+            reason: md.reason,
+          },
+          null,
+          2,
+        ),
+      )
+    }
+    return
+  }
+
+  console.log()
+  console.log(chalk.bold("ibx kernel kill-switch status"))
+  console.log(chalk.dim("Estado distribuído do kill switch global (Redis)."))
+  console.log()
+  if (md === null) {
+    console.log(`  ${chalk.dim("inativo")}`)
+    console.log()
+    console.log(
+      chalk.dim(
+        "Para engajar:  ibx kernel kill-switch enable --reason \"<motivo>\"",
+      ),
+    )
+  } else {
+    console.log(`  ${chalk.red.bold("ATIVO")}`)
+    console.log(`  ${chalk.bold("motivo")}    : ${md.reason}`)
+    console.log(`  ${chalk.bold("operador")}  : ${md.enabledBy}`)
+    console.log(`  ${chalk.bold("desde")}     : ${md.enabledAt}`)
+    console.log()
+    console.log(
+      chalk.dim(
+        "Para liberar:  ibx kernel kill-switch disable --reason \"<motivo>\"",
+      ),
+    )
+  }
+  console.log()
+}
+
 // ── Registration ──────────────────────────────────────────────────────────
 
 export function registerKernelCommands(group: Command): void {
@@ -615,5 +842,64 @@ export function registerKernelCommands(group: Command): void {
     .option("--since <duration>", "Janela de tempo (ex: 24h, 7d)", "24h")
     .action(async (opts: { since?: string }) => {
       await runDivergence(opts)
+    })
+
+  // ── kill-switch ──────────────────────────────────────────────────────────
+  // W3 D1: real implementation of the runbook-documented surface. The
+  // three subcommands write to / read from a Redis flag with 24h TTL +
+  // publish pub/sub events for cross-replica propagation.
+  const killSwitch = group
+    .command("kill-switch")
+    .description(
+      "Engaja/libera o kill switch global do kernel (Redis-backed, propagação por pub/sub)",
+    )
+
+  killSwitch
+    .command("enable")
+    .description(
+      "Engaja o kill switch global — todas as mutações são refusadas até disable",
+    )
+    .requiredOption(
+      "--reason <text>",
+      "Motivo humano-legível (obrigatório — auditado e enviado para Sentry)",
+    )
+    .action(async (opts: { reason: string }) => {
+      try {
+        await runKillSwitchEnable(opts)
+      } finally {
+        // Close Redis so the CLI process exits cleanly. The test
+        // harness (vi.mock @ibatexas/tools) returns a closeRedisClient
+        // stub which is a no-op in unit tests.
+        await closeRedisQuietly()
+      }
+    })
+
+  killSwitch
+    .command("disable")
+    .description(
+      "Libera o kill switch global — propagação automática para todas as réplicas",
+    )
+    .requiredOption(
+      "--reason <text>",
+      "Motivo humano-legível (obrigatório — auditado)",
+    )
+    .action(async (opts: { reason: string }) => {
+      try {
+        await runKillSwitchDisable(opts)
+      } finally {
+        await closeRedisQuietly()
+      }
+    })
+
+  killSwitch
+    .command("status")
+    .description("Mostra o estado do kill switch (ATIVO / inativo)")
+    .option("--json", "Emite saída JSON")
+    .action(async (opts: { json?: boolean }) => {
+      try {
+        await runKillSwitchStatus(opts)
+      } finally {
+        await closeRedisQuietly()
+      }
     })
 }

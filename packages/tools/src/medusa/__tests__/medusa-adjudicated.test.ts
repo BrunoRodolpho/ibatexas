@@ -187,6 +187,34 @@ describe("detectMedusaIntentKind", () => {
     )
   })
 
+  // P0-X9 follow-up — additional kinds needed by route-level migrations.
+  it("maps bare POST /admin/products/<id> to medusa.admin.product.update", () => {
+    expect(detectMedusaIntentKind("POST", "/admin/products/prod_01")).toBe(
+      "medusa.admin.product.update",
+    )
+  })
+
+  it("maps POST /store/payment-collections/<id>/payment-sessions to medusa.payment_session.create", () => {
+    expect(
+      detectMedusaIntentKind(
+        "POST",
+        "/store/payment-collections/pc_01/payment-sessions",
+      ),
+    ).toBe("medusa.payment_session.create")
+  })
+
+  it("differentiates POST /store/payment-collections (collection.create) from /<id>/payment-sessions (session.create)", () => {
+    expect(
+      detectMedusaIntentKind("POST", "/store/payment-collections"),
+    ).toBe("medusa.payment_collection.create")
+    expect(
+      detectMedusaIntentKind(
+        "POST",
+        "/store/payment-collections/pc_01/payment-sessions",
+      ),
+    ).toBe("medusa.payment_session.create")
+  })
+
   it("ignores query strings on the path", () => {
     expect(
       detectMedusaIntentKind("POST", "/store/carts?fields=id,total"),
@@ -209,10 +237,14 @@ describe("detectMedusaIntentKind", () => {
 // ── MEDUSA_INTENT_KINDS sanity check ────────────────────────────────────
 
 describe("MEDUSA_INTENT_KINDS", () => {
-  it("exposes the 13 mapped kinds plus medusa.unknown", () => {
-    expect(MEDUSA_INTENT_KINDS).toHaveLength(14)
-    expect(new Set(MEDUSA_INTENT_KINDS).size).toBe(14)
+  it("exposes the 15 mapped kinds plus medusa.unknown", () => {
+    // P0-X9 follow-up added medusa.admin.product.update +
+    // medusa.payment_session.create to the union → 16 total.
+    expect(MEDUSA_INTENT_KINDS).toHaveLength(16)
+    expect(new Set(MEDUSA_INTENT_KINDS).size).toBe(16)
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.unknown")
+    expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.product.update")
+    expect(MEDUSA_INTENT_KINDS).toContain("medusa.payment_session.create")
   })
 })
 

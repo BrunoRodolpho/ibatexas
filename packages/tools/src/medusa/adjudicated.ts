@@ -92,11 +92,13 @@ export type MedusaIntentKind =
   | "medusa.cart.promotion.apply"
   | "medusa.cart.complete"
   | "medusa.payment_collection.create"
+  | "medusa.payment_session.create"
   | "medusa.admin.order.update_metadata"
   | "medusa.admin.order.edit.create"
   | "medusa.admin.order.edit.items"
   | "medusa.admin.order.edit.confirm"
   | "medusa.admin.order.cancel"
+  | "medusa.admin.product.update"
   | "medusa.unknown"
 
 // Convenience for tests / introspection.
@@ -109,11 +111,13 @@ export const MEDUSA_INTENT_KINDS: ReadonlyArray<MedusaIntentKind> = [
   "medusa.cart.promotion.apply",
   "medusa.cart.complete",
   "medusa.payment_collection.create",
+  "medusa.payment_session.create",
   "medusa.admin.order.update_metadata",
   "medusa.admin.order.edit.create",
   "medusa.admin.order.edit.items",
   "medusa.admin.order.edit.confirm",
   "medusa.admin.order.cancel",
+  "medusa.admin.product.update",
   "medusa.unknown",
 ]
 
@@ -161,6 +165,12 @@ const PATH_RULES: ReadonlyArray<PathRule> = [
     pattern: /^\/admin\/orders\/[^/]+\/?$/,
     kind: "medusa.admin.order.update_metadata",
   },
+  // Admin product update — bare POST against /admin/products/:id.
+  {
+    method: "POST",
+    pattern: /^\/admin\/products\/[^/]+\/?$/,
+    kind: "medusa.admin.product.update",
+  },
   // Store cart line-items — update / remove (item-scoped) before bare add.
   {
     method: "POST",
@@ -200,6 +210,14 @@ const PATH_RULES: ReadonlyArray<PathRule> = [
     method: "POST",
     pattern: /^\/store\/carts\/?$/,
     kind: "medusa.cart.create",
+  },
+  // Payment session create on an existing payment collection — must
+  // appear BEFORE the bare payment-collections create rule so the
+  // longer path wins.
+  {
+    method: "POST",
+    pattern: /^\/store\/payment-collections\/[^/]+\/payment-sessions\/?$/,
+    kind: "medusa.payment_session.create",
   },
   // Payment collection create.
   {
