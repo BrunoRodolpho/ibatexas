@@ -275,7 +275,11 @@ describe("runCustomerIntent — enforce/shadow switch", () => {
     expect(mockAdjudicate).toHaveBeenCalledTimes(1);
   });
 
-  it("kind not enforced + not shadowed → pure legacy (no adjudicate call)", async () => {
+  it("[NEW-P0-X2] kind not enforced + not shadowed → default-REFUSE (no adjudicate call, executor NOT run)", async () => {
+    // Pre-W1 fix: this test expected statusCode 200 (silent default-EXECUTE).
+    // That was the documented default-deny invariant inverted. After
+    // NEW-P0-X2 the gateway default-REFUSES any kind ops hasn't put on
+    // shadow/enforce and that isn't in ALWAYS_ENFORCE.
     const executor = vi.fn(async () => ({ ok: true }));
 
     const out = await runCustomerIntent({
@@ -287,9 +291,11 @@ describe("runCustomerIntent — enforce/shadow switch", () => {
       auditSink: noopAuditSink,
     });
 
-    expect(out.statusCode).toBe(200);
-    // adjudicate was NOT called in pure-legacy mode.
+    expect(out.statusCode).toBe(403);
+    expect(out.decision.kind).toBe("REFUSE");
+    // adjudicate was NOT called — default-REFUSE bypasses the kernel.
     expect(mockAdjudicate).not.toHaveBeenCalled();
+    expect(executor).not.toHaveBeenCalled();
   });
 
   it("kind in IBX_KERNEL_ENFORCE → adjudicates and surfaces kernel decision", async () => {

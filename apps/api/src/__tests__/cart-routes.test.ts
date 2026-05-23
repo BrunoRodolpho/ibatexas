@@ -3,7 +3,7 @@
 // PATCH /api/cart/:id/line-items/:itemId, DELETE /api/cart/:id/line-items/:itemId,
 // POST /api/cart/:id/promotions, POST /api/cart/:id/payment-sessions
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Fastify from "fastify";
 import {
   serializerCompiler,
@@ -564,6 +564,14 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // NEW-P0-X2: order.checkout.create is not in ALWAYS_ENFORCE; without
+    // shadow/enforce env the gateway now default-REFUSES. Tests that
+    // exercise the legacy checkout path must opt in to shadow telemetry
+    // mode (or enforce mode); shadow preserves the legacy EXECUTE.
+    vi.stubEnv("IBX_KERNEL_SHADOW", "order.checkout.create");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("guest checkout with card → 200 OK", async () => {

@@ -152,7 +152,11 @@ describe("POST /api/orders/:id/cancel — envelope governance", () => {
     vi.unstubAllEnvs();
   });
 
-  it("pure-legacy mode (no env) → executor runs, returns 200 + success body", async () => {
+  it("[NEW-P0-X2] pure-legacy mode (no env) → default-REFUSE 403, executor NOT called", async () => {
+    // Pre-W1 fix: this asserted statusCode 200 (silent default-EXECUTE).
+    // After NEW-P0-X2 the gateway default-REFUSES kinds outside
+    // shadow/enforce/ALWAYS_ENFORCE. order.cancel is not in
+    // ALWAYS_ENFORCE; without env wiring it surfaces 403.
     const app = await buildTestServer();
     try {
       const res = await app.inject({
@@ -162,14 +166,15 @@ describe("POST /api/orders/:id/cancel — envelope governance", () => {
         payload: { reason: "Mudei de ideia" },
       });
 
-      expect(res.statusCode).toBe(200);
-      const body = res.json() as { success: boolean; fulfillmentStatus: string };
-      expect(body.success).toBe(true);
-      expect(body.fulfillmentStatus).toBe("canceled");
-
-      // The legacy command-service was called.
-      expect(mockTransitionStatus).toHaveBeenCalledTimes(1);
-      // adjudicate was NOT called in pure-legacy mode (not in ALWAYS_ENFORCE, no env).
+      expect(res.statusCode).toBe(403);
+      const body = res.json() as { error: string };
+      // Either the gateway's userFacing copy OR the pack-localized
+      // fallback ("Essa ação não é permitida…") satisfies the contract —
+      // both mean pt-BR REFUSE, both block the destructive call.
+      expect(body.error).toMatch(/(indispon|suporte|Tente novamente|permitida neste)/i);
+      // Legacy command-service NOT called — default-REFUSE blocked it.
+      expect(mockTransitionStatus).not.toHaveBeenCalled();
+      // adjudicate NOT called either — REFUSE happens before kernel dispatch.
       expect(mockAdjudicate).not.toHaveBeenCalled();
     } finally {
       await app.close();
