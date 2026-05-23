@@ -1546,3 +1546,216 @@ describe("AdminConfirmationStore — concurrent consume Lua atomicity (W6-5)", (
     expect(misses).toHaveLength(1);
   });
 });
+
+// ── P0-5-TRUE — null/empty/actor-type-mismatch refusals ────────────────────
+
+describe("consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed", () => {
+  beforeEach(() => {
+    confirmationStorage.clear();
+  });
+
+  async function makePending(overrides?: {
+    staffId?: string | null;
+    actorPrincipal?: "user" | "system";
+  }) {
+    const { createAdminConfirmationStore } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const store = createAdminConfirmationStore();
+    const { confirmationId } = await store.create({
+      kind: "order.status.transition",
+      payload: { orderId: "order_p0_5_true", newStatus: "canceled" },
+      nonce: `n-${Math.random()}`,
+      staffId: overrides?.staffId === undefined ? "staff:A" : overrides.staffId,
+      staffRole: "MANAGER",
+      actorPrincipal: overrides?.actorPrincipal ?? "user",
+      requestorIp: null,
+      prompt: "t",
+      route: "force-cancel",
+      createdAt: new Date().toISOString(),
+      orderId: "order_p0_5_true",
+    });
+    return { store, confirmationId };
+  }
+
+  it("refuses when step-1 staffId is non-null and step-2 staffId is null (API-key path)", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending({
+      staffId: "staff:A",
+      actorPrincipal: "user",
+    });
+    // Step-2 comes via API key: staffId=null, requestActorPrincipal="system".
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      null,
+      "system",
+    );
+    expect(outcome.kind).toBe("null_staff_violation");
+    if (outcome.kind === "null_staff_violation") {
+      expect(outcome.reason).toBe("request_staff_null");
+    }
+  });
+
+  it("refuses when step-1 staffId is null (API-key path) and step-2 has a JWT", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending({
+      staffId: null,
+      actorPrincipal: "system",
+    });
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:B",
+      "user",
+    );
+    expect(outcome.kind).toBe("null_staff_violation");
+    if (outcome.kind === "null_staff_violation") {
+      expect(outcome.reason).toBe("pending_staff_null");
+    }
+  });
+
+  it("refuses when BOTH sides are null (two API-key calls)", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending({
+      staffId: null,
+      actorPrincipal: "system",
+    });
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      null,
+      "system",
+    );
+    expect(outcome.kind).toBe("null_staff_violation");
+    if (outcome.kind === "null_staff_violation") {
+      expect(outcome.reason).toBe("both_staff_null");
+    }
+  });
+
+  it("refuses when step-2 staffId is empty string (forged JWT defense)", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending({
+      staffId: "staff:A",
+      actorPrincipal: "user",
+    });
+    // Empty/whitespace string normalises to null.
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "",
+      "user",
+    );
+    expect(outcome.kind).toBe("null_staff_violation");
+  });
+
+  it("refuses when step-2 staffId is whitespace only", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending({
+      staffId: "staff:A",
+      actorPrincipal: "user",
+    });
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "   ",
+      "user",
+    );
+    expect(outcome.kind).toBe("null_staff_violation");
+  });
+
+  it("refuses actor-type mismatch when both sides have non-null staffId but different actor types", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    // Pending was created via API key (improbable but defense-in-depth)
+    // with a staffId attached by the route. Step-2 comes in via JWT.
+    const { store, confirmationId } = await makePending({
+      staffId: "staff:A",
+      actorPrincipal: "system",
+    });
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:B",
+      "user",
+    );
+    expect(outcome.kind).toBe("actor_type_mismatch");
+    if (outcome.kind === "actor_type_mismatch") {
+      expect(outcome.pendingActor).toBe("system");
+      expect(outcome.requestActor).toBe("user");
+    }
+  });
+
+  it("accepts the legitimate two-person flow (both JWT, different staffIds)", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending({
+      staffId: "staff:A",
+      actorPrincipal: "user",
+    });
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:B",
+      "user",
+    );
+    expect(outcome.kind).toBe("ok");
+  });
+
+  it("still flags same-actor violation (both JWT, same staffId)", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending({
+      staffId: "staff:A",
+      actorPrincipal: "user",
+    });
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "staff:A",
+      "user",
+    );
+    expect(outcome.kind).toBe("same_actor_violation");
+  });
+
+  it("treats trimmed-equal staffIds as same actor (defense against whitespace bypass)", async () => {
+    const { consumeWithSameActorCheck } = await import(
+      "../admin-confirmation-store.js"
+    );
+    const { store, confirmationId } = await makePending({
+      staffId: "staff:A",
+      actorPrincipal: "user",
+    });
+    // Step-2 sends "  staff:A  " — should still be flagged as same actor.
+    const outcome = await consumeWithSameActorCheck(
+      store,
+      confirmationId,
+      "  staff:A  ",
+      "user",
+    );
+    expect(outcome.kind).toBe("same_actor_violation");
+  });
+
+  it("exports pt-BR refusal text constants for both new outcomes", async () => {
+    const mod = await import("../admin-confirmation-store.js");
+    expect(mod.NULL_STAFF_REFUSAL_PT_BR).toMatch(
+      /dois operadores|identidades de equipe/i,
+    );
+    expect(mod.ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR).toMatch(
+      /tipo de credencial|credencial da etapa 1/i,
+    );
+  });
+});

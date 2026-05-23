@@ -56,8 +56,10 @@ import {
 } from "@ibatexas/types";
 import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js";
 import {
+  ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR,
   consumeWithSameActorCheck,
   createAdminConfirmationStore,
+  NULL_STAFF_REFUSAL_PT_BR,
   SAME_ACTOR_REFUSAL_PT_BR,
   type PendingAdminAction,
 } from "./admin-confirmation-store.js";
@@ -647,16 +649,50 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const { id } = request.params;
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
+      const { actorPrincipal: requestActorPrincipal } = principalFor(staffId);
 
       const consumed = await consumeWithSameActorCheck(
         confirmationStore,
         confirmationId,
         staffId,
+        requestActorPrincipal,
       );
       if (consumed.kind === "missing") {
         return reply.code(410).send({
           error: "Confirmação inválida, expirada ou já utilizada.",
         });
+      }
+      if (consumed.kind === "null_staff_violation") {
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.refund.null_staff_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingStaffId: consumed.pending.staffId,
+            reason: consumed.reason,
+          },
+          timestamp: new Date(),
+        });
+        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
+      }
+      if (consumed.kind === "actor_type_mismatch") {
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.refund.actor_type_mismatch_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingActor: consumed.pendingActor,
+            requestActor: consumed.requestActor,
+          },
+          timestamp: new Date(),
+        });
+        return reply
+          .code(403)
+          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
       }
       if (consumed.kind === "same_actor_violation") {
         // P0-5: refund is a money path — another operator must confirm.
@@ -918,16 +954,50 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const { id } = request.params;
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
+      const { actorPrincipal: requestActorPrincipal } = principalFor(staffId);
 
       const consumed = await consumeWithSameActorCheck(
         confirmationStore,
         confirmationId,
         staffId,
+        requestActorPrincipal,
       );
       if (consumed.kind === "missing") {
         return reply.code(410).send({
           error: "Confirmação inválida, expirada ou já utilizada.",
         });
+      }
+      if (consumed.kind === "null_staff_violation") {
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.force_status.null_staff_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingStaffId: consumed.pending.staffId,
+            reason: consumed.reason,
+          },
+          timestamp: new Date(),
+        });
+        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
+      }
+      if (consumed.kind === "actor_type_mismatch") {
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.force_status.actor_type_mismatch_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingActor: consumed.pendingActor,
+            requestActor: consumed.requestActor,
+          },
+          timestamp: new Date(),
+        });
+        return reply
+          .code(403)
+          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
       }
       if (consumed.kind === "same_actor_violation") {
         // P0-5: force-status is OWNER-only; still requires a second

@@ -73,8 +73,10 @@ import {
 } from "@ibatexas/types";
 import { requireStaff, requireManager } from "../../middleware/staff-auth.js";
 import {
+  ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR,
   consumeWithSameActorCheck,
   createAdminConfirmationStore,
+  NULL_STAFF_REFUSAL_PT_BR,
   SAME_ACTOR_REFUSAL_PT_BR,
   type PendingAdminAction,
 } from "./admin-confirmation-store.js";
@@ -231,16 +233,54 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       const { id } = request.params;
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
+      const { actorPrincipal: requestActorPrincipal } = principalFor(staffId);
 
       const consumed = await consumeWithSameActorCheck(
         confirmationStore,
         confirmationId,
         staffId,
+        requestActorPrincipal,
       );
       if (consumed.kind === "missing") {
         return reply.code(410).send({
           error: "Confirmação inválida, expirada ou já utilizada.",
         });
+      }
+      if (consumed.kind === "null_staff_violation") {
+        // P0-5-TRUE: two-person rule requires two identifiable staff
+        // members. An API-key step on either side cannot satisfy it.
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.force_cancel.null_staff_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingStaffId: consumed.pending.staffId,
+            reason: consumed.reason,
+          },
+          timestamp: new Date(),
+        });
+        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
+      }
+      if (consumed.kind === "actor_type_mismatch") {
+        // P0-5-TRUE: actor-type mismatch — same human bouncing between
+        // credential paths defeats separation-of-duty.
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.force_cancel.actor_type_mismatch_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingActor: consumed.pendingActor,
+            requestActor: consumed.requestActor,
+          },
+          timestamp: new Date(),
+        });
+        return reply
+          .code(403)
+          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
       }
       if (consumed.kind === "same_actor_violation") {
         // P0-5: another operator must confirm step 2. Receipt is
@@ -589,16 +629,50 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       const { id } = request.params;
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
+      const { actorPrincipal: requestActorPrincipal } = principalFor(staffId);
 
       const consumed = await consumeWithSameActorCheck(
         confirmationStore,
         confirmationId,
         staffId,
+        requestActorPrincipal,
       );
       if (consumed.kind === "missing") {
         return reply.code(410).send({
           error: "Confirmação inválida, expirada ou já utilizada.",
         });
+      }
+      if (consumed.kind === "null_staff_violation") {
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.waive.null_staff_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingStaffId: consumed.pending.staffId,
+            reason: consumed.reason,
+          },
+          timestamp: new Date(),
+        });
+        return reply.code(403).send({ error: NULL_STAFF_REFUSAL_PT_BR });
+      }
+      if (consumed.kind === "actor_type_mismatch") {
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.waive.actor_type_mismatch_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingActor: consumed.pendingActor,
+            requestActor: consumed.requestActor,
+          },
+          timestamp: new Date(),
+        });
+        return reply
+          .code(403)
+          .send({ error: ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR });
       }
       if (consumed.kind === "same_actor_violation") {
         // P0-5: another operator must confirm step 2.

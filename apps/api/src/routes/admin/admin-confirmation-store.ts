@@ -137,14 +137,23 @@ export interface AdminConfirmationStore {
 /**
  * Outcome of `consumeWithSameActorCheck` — discriminated by `kind`.
  *
- * - `ok`: the receipt matched, the consuming staff is different from the
- *   step-1 staff, and the caller should proceed with the pending action.
+ * - `ok`: the receipt matched, the consuming staff is a DIFFERENT
+ *   identifiable staff member from the step-1 staff, and the caller
+ *   should proceed with the pending action.
  * - `missing`: receipt unknown / expired / already consumed. Caller
  *   surfaces 410 Gone (uniform with current consumer behavior).
  * - `same_actor_violation`: P0-5 — the receipt was created by the same
  *   staffId that's now consuming it. Two-person separation-of-duty
  *   requires a different operator to execute step 2. Caller surfaces
  *   403 with a pt-BR refusal.
+ * - `null_staff_violation`: P0-5-TRUE — either step's staffId is null
+ *   (or empty). API-key flow on either side means the operator cannot
+ *   be identified; the two-person rule cannot be enforced. Receipt is
+ *   drained; caller surfaces 403.
+ * - `actor_type_mismatch`: P0-5-TRUE — both sides have a non-null
+ *   staffId but the actor types differ (one JWT-user, one API-key
+ *   system). The same human acting via two different credential paths
+ *   defeats separation of duty. Receipt is drained; caller surfaces 403.
  */
 export type ConsumeWithSameActorOutcome =
   | { readonly kind: "ok"; readonly pending: PendingAdminAction }
@@ -152,7 +161,27 @@ export type ConsumeWithSameActorOutcome =
   | {
       readonly kind: "same_actor_violation";
       readonly pending: PendingAdminAction;
+    }
+  | {
+      readonly kind: "null_staff_violation";
+      readonly pending: PendingAdminAction;
+      readonly reason:
+        | "pending_staff_null"
+        | "request_staff_null"
+        | "both_staff_null";
+    }
+  | {
+      readonly kind: "actor_type_mismatch";
+      readonly pending: PendingAdminAction;
+      readonly pendingActor: "user" | "system";
+      readonly requestActor: "user" | "system";
     };
+
+function normalizeStaffId(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null;
+  const trimmed = raw.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
 
 /**
  * Consume a receipt and enforce the two-person rule.
@@ -163,32 +192,94 @@ export type ConsumeWithSameActorOutcome =
  * click protection, not separation-of-duty. This helper centralizes the
  * comparison so all four force-action routes share the gate.
  *
- * Comparison rules:
- *   - If `requestStaffId` is null AND `pending.staffId` is null →
- *     `ok`. (API-key flow is system-actor; the audit captures
- *     `sessionId: "admin:api-key"` and the two-step UX is moot.)
- *   - If `requestStaffId === pending.staffId` (both non-null) →
- *     `same_actor_violation`. The receipt is consumed (drained from
- *     Redis) regardless so the operator must restart from step 1.
+ * P0-5-TRUE (deep-audit) — the original implementation skipped the
+ * equality check whenever either side was null, which:
+ *   - Let a single attacker holding JWT + API key satisfy both steps
+ *     (one side becomes null on the API-key path).
+ *   - Treated "operator unidentifiable" as ok, the OPPOSITE of fail-
+ *     closed.
+ *
+ * New fail-closed rules:
+ *   - If EITHER `requestStaffId` or `pending.staffId` is null/empty →
+ *     `null_staff_violation`. The two-person rule REQUIRES two
+ *     identifiable humans; an API-key step satisfies neither side.
+ *   - If both staffIds are non-null but `requestActorPrincipal !==
+ *     pending.actorPrincipal` → `actor_type_mismatch`. The same human
+ *     cannot mix a JWT step with an API-key step.
+ *   - If `requestStaffId === pending.staffId` (after both pass the
+ *     null/empty checks) → `same_actor_violation`. The receipt is
+ *     consumed (drained from Redis) regardless so the operator must
+ *     restart from step 1.
  *   - Otherwise → `ok` with the pending payload.
  *
- * Returning the consumed pending on `same_actor_violation` lets the
- * caller emit an audit/event-log entry for the refusal.
+ * Returning the consumed pending on every refusal lets the caller emit
+ * an audit/event-log entry for the refusal.
+ *
+ * `requestActorPrincipal` is required (no longer defaults to "user")
+ * because the actor-type-mismatch check needs to know which credential
+ * path the step-2 request came in on. Callers MUST pass the value they
+ * derived from `principalFor(staffId)` at the route layer.
  */
 export async function consumeWithSameActorCheck(
   store: AdminConfirmationStore,
   confirmationId: string,
   requestStaffId: string | null,
+  requestActorPrincipal?: "user" | "system",
 ): Promise<ConsumeWithSameActorOutcome> {
   const pending = await store.consume(confirmationId);
   if (!pending) {
     return { kind: "missing" };
   }
-  if (
-    requestStaffId !== null &&
-    pending.staffId !== null &&
-    requestStaffId === pending.staffId
-  ) {
+
+  // Normalize so an empty-or-whitespace staffId is treated as null. A
+  // forged JWT with `staffId: ""` would otherwise pass the strict-null
+  // checks below.
+  const normalizedRequest = normalizeStaffId(requestStaffId);
+  const normalizedPending = normalizeStaffId(pending.staffId);
+
+  // P0-5-TRUE: null on either side -> refuse. The two-person rule
+  // requires two identifiable humans. API-key paths (system actor) do
+  // not satisfy either step.
+  if (normalizedRequest === null && normalizedPending === null) {
+    return {
+      kind: "null_staff_violation",
+      pending,
+      reason: "both_staff_null",
+    };
+  }
+  if (normalizedRequest === null) {
+    return {
+      kind: "null_staff_violation",
+      pending,
+      reason: "request_staff_null",
+    };
+  }
+  if (normalizedPending === null) {
+    return {
+      kind: "null_staff_violation",
+      pending,
+      reason: "pending_staff_null",
+    };
+  }
+
+  // P0-5-TRUE: actor-type mismatch -> refuse. A staff member who
+  // authenticated via JWT in step 1 cannot use the API-key path for
+  // step 2 (and vice versa). When the caller passes
+  // `requestActorPrincipal` we cross-check; if the caller omits it
+  // (legacy callers), we default the request side to "user" — which
+  // matches the previous behaviour for the user-auth code paths but
+  // does NOT weaken the null-staff check above.
+  const effectiveRequestActor = requestActorPrincipal ?? "user";
+  if (effectiveRequestActor !== pending.actorPrincipal) {
+    return {
+      kind: "actor_type_mismatch",
+      pending,
+      pendingActor: pending.actorPrincipal,
+      requestActor: effectiveRequestActor,
+    };
+  }
+
+  if (normalizedRequest === normalizedPending) {
     return { kind: "same_actor_violation", pending };
   }
   return { kind: "ok", pending };
@@ -197,6 +288,23 @@ export async function consumeWithSameActorCheck(
 /** pt-BR refusal text emitted on the same-actor violation path (P0-5). */
 export const SAME_ACTOR_REFUSAL_PT_BR =
   "Outro operador precisa confirmar — você iniciou a etapa 1 desta ação.";
+
+/**
+ * P0-5-TRUE — pt-BR refusal text emitted when either step's staffId is
+ * null (or empty). Two-person rule requires two identifiable operators;
+ * an API-key step on either side cannot satisfy it.
+ */
+export const NULL_STAFF_REFUSAL_PT_BR =
+  "Confirmação rejeitada: a regra de dois operadores exige duas identidades de equipe — uma chamada via chave de API não satisfaz nenhuma das etapas.";
+
+/**
+ * P0-5-TRUE — pt-BR refusal text emitted when both steps carry a
+ * non-null staffId but the actor types differ (one JWT-user, one
+ * API-key system). The same person bouncing between credential paths
+ * defeats separation-of-duty.
+ */
+export const ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR =
+  "Confirmação rejeitada: a etapa 2 precisa usar o mesmo tipo de credencial da etapa 1 (JWT de equipe ou chave de API) e ser executada por um operador diferente.";
 
 /**
  * Build an admin confirmation store wired to the default Redis client.
