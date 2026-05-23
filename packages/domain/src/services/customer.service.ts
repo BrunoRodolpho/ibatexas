@@ -470,6 +470,53 @@ export async function anonymizeCustomerFromEnvelope(
  * preserve dietaryFlags hashed — for now we DELETE the row entirely
  * (matches the pre-W4 behaviour, no allergen-safety regression).
  */
+// ── NEW-P0-X7: explicit transaction timeouts + review batching ─────────
+//
+// Pre-fix: `prisma.$transaction(async (tx) => { ... })` used Prisma's
+// default 5 s interactive-transaction timeout. A customer with 10k+
+// reviews would time out on the `tx.review.updateMany` step, Prisma
+// would roll the whole transaction back, the customer row would stay
+// un-anonymized — and the LGPD intake receipt (already in Redis) would
+// outlive the rollback. From the operator console: queued. From the DB:
+// nothing happened. The 15-day LGPD deadline starts ticking with no
+// signal.
+//
+// Post-fix:
+//   1. The core (small, deterministic) transaction handles the customer
+//      profile + addresses + preferences + small review batch + order
+//      items in a single 60 s `prisma.$transaction(..., { timeout, maxWait })`.
+//   2. If the customer has > REVIEW_BATCH_HEAVY_THRESHOLD reviews, the
+//      review scrub is split into REVIEW_BATCH_SIZE-sized batches
+//      processed OUTSIDE the main transaction. Each batch is a small
+//      `updateMany` with a `LIMIT` simulated via primary-key chunking.
+//   3. The caller's "receipt cleanup" obligation lives in
+//      `anonymizeCustomerFromEnvelope`'s adopter site (the route layer).
+//      Returning `{ success: true }` only after every batch succeeds
+//      preserves the contract that the Redis receipt is dropped only on
+//      complete success.
+
+/**
+ * Heavy-customer threshold. Below this we keep the original single-tx
+ * shape (one round trip, one Prisma tx). At/above this, we offload the
+ * review scrub to batches outside the main tx so a long-running write
+ * does not hold locks for ~minutes.
+ */
+const REVIEW_BATCH_HEAVY_THRESHOLD = 1000
+
+/** Per-batch chunk size for the heavy path. */
+const REVIEW_BATCH_SIZE = 500
+
+/**
+ * Prisma interactive-transaction timeout for the main anonymize tx.
+ * 60 s covers a customer with ~5k reviews + addresses/preferences on a
+ * normally-loaded primary. Heavier customers route through the batched
+ * review path below.
+ */
+const ANONYMIZE_TX_TIMEOUT_MS = 60_000
+
+/** Prisma maxWait — how long the client waits for a free connection. */
+const ANONYMIZE_TX_MAX_WAIT_MS = 5_000
+
 export async function anonymizeCustomer(customerId: string) {
   // Compute a stable anonymized phone placeholder. UNIQUE constraint on
   // Customer.phone means we cannot null it; we substitute a non-PII
@@ -480,54 +527,133 @@ export async function anonymizeCustomer(customerId: string) {
   const phoneSentinel =
     "anonymized:" + createHash("sha256").update(customerId).digest("hex").slice(0, 16)
 
-  await prisma.$transaction(async (tx) => {
-    // (1) Anonymize the profile row — scrub every direct identifier.
-    // phone is UNIQUE-constrained so we substitute, not null.
-    await tx.customer.update({
-      where: { id: customerId },
-      data: {
-        name: "Usuário Removido",
-        email: null,
-        phone: phoneSentinel,
-        cpf: null,
-        medusaId: null,
-      },
-    })
+  // Count reviews so we know whether to take the heavy-customer path.
+  // `prisma.review.count` is cheap (covered by the customerId index).
+  const reviewCount = await prisma.review.count({ where: { customerId } })
 
-    // (2) Delete addresses (no PII retained).
-    await tx.address.deleteMany({ where: { customerId } })
-
-    // (3) Delete preferences. See "Allergen safety note" above —
-    // legal-review item; current behaviour preserved (DELETE) because
-    // allergen flags on past orders persist on the cart snapshot at
-    // checkout, not via CustomerPreferences.
-    await tx.customerPreferences.deleteMany({ where: { customerId } })
-
-    // (4) Anonymize reviews. The Review.customerId field is `String`
-    // (not nullable) but `customer Customer? @relation(... onDelete:
-    // SetNull)` — Prisma schema inconsistency. We CANNOT directly
-    // null Review.customerId from app code without a schema migration.
+  if (reviewCount > REVIEW_BATCH_HEAVY_THRESHOLD) {
+    // ── Heavy path ────────────────────────────────────────────────
     //
-    // Instead we scrub the comment text (the customer-typed PII path)
-    // and rely on the Customer row itself being anonymized (phone /
-    // email / cpf / name all scrubbed by step 1) to break PII linkage.
-    // Anyone querying the customer record via this Review's FK lands
-    // on `name="Usuário Removido"` + sentinel phone — no PII reaches
-    // the consumer.
-    await tx.review.updateMany({
-      where: { customerId },
-      data: { comment: null },
-    })
+    // Strategy:
+    //   1. Scrub review comments in batches OUTSIDE the main tx.
+    //      Each batch is a small updateMany filtered to reviews that
+    //      still carry a non-null comment for this customer, capped
+    //      at REVIEW_BATCH_SIZE rows. This avoids holding locks for
+    //      the duration of the long write.
+    //   2. After every comment is scrubbed, run the core anonymize
+    //      transaction (customer + address + preferences + a
+    //      cleanup pass on reviews + order items) with the explicit
+    //      60 s timeout. The cleanup pass is a no-op `updateMany`
+    //      that catches any reviews inserted while batching was in
+    //      flight — small operation, no timeout risk.
+    //
+    // If ANY batch fails the function throws — the caller MUST NOT
+    // clean up the Redis receipt. A retry repeats the remaining
+    // batches (the scrub is idempotent: comment=null updates remain
+    // null) and reaches the core tx on success.
 
-    // (5) Delink order items (preserve for fiscal/analytics).
-    await tx.customerOrderItem.updateMany({
-      where: { customerId },
-      data: { customerId: null },
-    })
-  })
+    let scrubbedSoFar = 0
+    // Safety cap: at REVIEW_BATCH_SIZE per loop we visit at most
+    // ceil(reviewCount / REVIEW_BATCH_SIZE) iterations before all
+    // not-yet-scrubbed comments are null. Loop exits as soon as a
+    // batch reports zero rows updated.
+    const maxLoops = Math.ceil(reviewCount / REVIEW_BATCH_SIZE) + 1
+    for (let i = 0; i < maxLoops; i++) {
+      // Find the next batch by primary-key chunk. We re-query rather
+      // than tracking offsets so concurrent inserts don't shift the
+      // window — updateMany with a LIMIT can't express that in
+      // Prisma directly, so we fetch ids first.
+      const nextBatch = await prisma.review.findMany({
+        where: { customerId, comment: { not: null } },
+        select: { id: true },
+        take: REVIEW_BATCH_SIZE,
+        orderBy: { id: "asc" },
+      })
+      if (nextBatch.length === 0) break
+      const ids = nextBatch.map((r) => r.id)
+      const result = await prisma.review.updateMany({
+        where: { id: { in: ids } },
+        data: { comment: null },
+      })
+      scrubbedSoFar += result.count
+      if (result.count === 0) break
+    }
+    void scrubbedSoFar
+  }
+
+  // ── Core anonymize transaction ─────────────────────────────────
+  //
+  // The core tx is small + deterministic. We pass an explicit
+  // `timeout` (60 s) so a moderately-loaded primary can finish; the
+  // heavy-customer review path above keeps the per-tx work small even
+  // for 10k-review customers.
+
+  await prisma.$transaction(
+    async (tx) => {
+      // (1) Anonymize the profile row — scrub every direct identifier.
+      // phone is UNIQUE-constrained so we substitute, not null.
+      await tx.customer.update({
+        where: { id: customerId },
+        data: {
+          name: "Usuário Removido",
+          email: null,
+          phone: phoneSentinel,
+          cpf: null,
+          medusaId: null,
+        },
+      })
+
+      // (2) Delete addresses (no PII retained).
+      await tx.address.deleteMany({ where: { customerId } })
+
+      // (3) Delete preferences. See "Allergen safety note" above —
+      // legal-review item; current behaviour preserved (DELETE) because
+      // allergen flags on past orders persist on the cart snapshot at
+      // checkout, not via CustomerPreferences.
+      await tx.customerPreferences.deleteMany({ where: { customerId } })
+
+      // (4) Anonymize reviews. The Review.customerId field is `String`
+      // (not nullable) but `customer Customer? @relation(... onDelete:
+      // SetNull)` — Prisma schema inconsistency. We CANNOT directly
+      // null Review.customerId from app code without a schema migration.
+      //
+      // Instead we scrub the comment text (the customer-typed PII path)
+      // and rely on the Customer row itself being anonymized (phone /
+      // email / cpf / name all scrubbed by step 1) to break PII linkage.
+      // Anyone querying the customer record via this Review's FK lands
+      // on `name="Usuário Removido"` + sentinel phone — no PII reaches
+      // the consumer.
+      //
+      // For the heavy path the bulk of comments are already null after
+      // the batched pre-scrub; this updateMany cleans up any reviews
+      // inserted during batching. Small operation, no timeout risk.
+      await tx.review.updateMany({
+        where: { customerId },
+        data: { comment: null },
+      })
+
+      // (5) Delink order items (preserve for fiscal/analytics).
+      await tx.customerOrderItem.updateMany({
+        where: { customerId },
+        data: { customerId: null },
+      })
+    },
+    {
+      timeout: ANONYMIZE_TX_TIMEOUT_MS,
+      maxWait: ANONYMIZE_TX_MAX_WAIT_MS,
+    },
+  )
 
   return { success: true }
 }
+
+/** @internal — exported for unit tests. */
+export const _anonymizeCustomerInternals = {
+  REVIEW_BATCH_HEAVY_THRESHOLD,
+  REVIEW_BATCH_SIZE,
+  ANONYMIZE_TX_TIMEOUT_MS,
+  ANONYMIZE_TX_MAX_WAIT_MS,
+} as const
 
 /**
  * LGPD Art. 18 — Export all personal data for a customer (portability).
