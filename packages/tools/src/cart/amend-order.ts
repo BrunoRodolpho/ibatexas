@@ -4,11 +4,38 @@
 // - add: Always allowed unless order is in delivery
 // - remove / update_qty: Subject to per-item AMEND_PONR window
 // - Escalates to admin when PONR has expired
+//
+// ── W3 P0-3 (audit remediation) ────────────────────────────────────────
+//
+// The previous implementation chained five+ bypasses:
+//   - Stripe PI create outside any envelope
+//   - direct medusaAdmin POSTs to /admin/orders/:id, /edits, /edits/items,
+//     /edits/confirm
+//   - deprecated bare-arg `paymentCmdSvc.transitionStatus` + `.create`
+//
+// All writes now route through `medusaAdjudicated()` (Task 17 wrapper)
+// or `paymentCmdSvc.*FromEnvelope` (Task 15 envelope surface). Stripe
+// PI creation stays inside the IbateXas process but the resulting
+// `stripePaymentIntentId` is now carried in the kernel-adjudicated
+// `payment.create` envelope payload — the kernel signs off on the
+// new Payment row and its association with the Stripe charge.
+//
+// Removed from `ALLOWED_MEDUSA_DIRECT` (bypass-detection.test.ts) in
+// W3 P1-L. amend-order.ts no longer needs the carve-out.
+//
+// Wave 5 will fold the multi-envelope decomposition into a single
+// composite `order.amend.batch` kind in pack-orders OR granular
+// `order.amend.add_item` / `order.amend.update_qty` /
+// `order.amend.remove_item` kinds. See
+// `migration/remediation/W3-INTENT-GAPS.md`.
 
+import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
 import { AmendOrderInputSchema, NonRetryableError, canPerformAction, type AmendOrderInput, type AmendOrderResult, type AgentContext, type CustomerAction, type OrderFulfillmentStatus } from "@ibatexas/types";
-import { createOrderService, createOrderQueryService, createPaymentQueryService, createPaymentCommandService } from "@ibatexas/domain";
+import { buildEnvelope } from "@adjudicate/core";
+import { createOrderService, createOrderQueryService, createPaymentQueryService, createPaymentCommandService, type PaymentCreatePayload, type PaymentStatusTransitionPayload } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { medusaAdjudicated } from "../medusa/adjudicated.js";
 import { medusaAdmin } from "../medusa/client.js";
 import { withLock } from "../redis/distributed-lock.js";
 import { cancelStalePaymentIntent, getStripe } from "./_stripe-helpers.js";
@@ -16,11 +43,16 @@ import { cancelStalePaymentIntent, getStripe } from "./_stripe-helpers.js";
 /**
  * After a successful amendment, cancel the old Stripe PI and create a new one
  * with the updated total. Returns PIX data for the customer if applicable.
+ *
+ * The Stripe PI create stays inline (Stripe SDK is not adjudicated — it's
+ * an external egress). The PI ID is carried into the kernel-adjudicated
+ * `payment.create` envelope by `syncPaymentAfterAmendment`.
  */
 async function regeneratePixIfNeeded(
   orderId: string,
   oldPiId: string | undefined,
   svc: ReturnType<typeof createOrderService>,
+  sessionId: string,
 ): Promise<{ newPixQrCodeText?: string; newPixQrCodeUrl?: string; newStripePaymentIntentId?: string } | null> {
   if (!oldPiId) return null;
 
@@ -41,12 +73,13 @@ async function regeneratePixIfNeeded(
     next_action?: { pix_display_qr_code?: { data?: string; image_url_svg?: string } };
   };
 
-  // Update order metadata with new PI ID
-  await medusaAdmin(`/admin/orders/${orderId}`, {
+  // Update order metadata with new PI ID — kernel-adjudicated egress.
+  await medusaAdjudicated<{ metadata: Record<string, string> }, unknown>({
+    scope: "admin",
     method: "POST",
-    body: JSON.stringify({
-      metadata: { stripePaymentIntentId: newPi.id },
-    }),
+    path: `/admin/orders/${orderId}`,
+    payload: { metadata: { stripePaymentIntentId: newPi.id } },
+    sourceSubject: `tool:amend-order:${sessionId}`,
   });
 
   const pixData = newPi.next_action?.pix_display_qr_code;
@@ -59,13 +92,17 @@ async function regeneratePixIfNeeded(
 
 /**
  * After an amendment changes the order total, sync the Payment table:
- * 1. Cancel the old Payment row (best effort)
- * 2. Create a new Payment row with the updated amount and new Stripe PI
+ * 1. Cancel the old Payment row via `transitionStatusFromEnvelope`
+ * 2. Create a new Payment row via `createFromEnvelope`
+ *
+ * Both calls are kernel-adjudicated. REFUSE on either side stops the
+ * sync (the executor's defensive throw becomes a kernel REFUSE).
  */
 async function syncPaymentAfterAmendment(
   orderId: string,
   newStripePaymentIntentId: string | undefined,
   updatedTotal: number,
+  customerId: string,
 ): Promise<void> {
   if (!newStripePaymentIntentId) return;
 
@@ -75,26 +112,57 @@ async function syncPaymentAfterAmendment(
   const activePayment = await paymentQuerySvc.getActiveByOrderId(orderId).catch(() => null);
   if (!activePayment) return;
 
-  // Cancel old Payment row (best effort — may already be terminal)
-  try {
-    await paymentCmdSvc.transitionStatus(activePayment.id, {
-      newStatus: "canceled",
-      actor: "system",
-      actorId: "amendment",
-      reason: "order_amended_total_changed",
-      expectedVersion: activePayment.version,
-    });
-  } catch {
-    // Already terminal or concurrent modification — non-critical
-  }
+  // 1. Cancel old Payment row — kernel-adjudicated.
+  const cancelPayload: PaymentStatusTransitionPayload = {
+    paymentId: activePayment.id,
+    newStatus: "canceled",
+    actor: "system",
+    actorId: "amendment",
+    reason: "order_amended_total_changed",
+    expectedVersion: activePayment.version,
+  };
+  const cancelEnv = buildEnvelope<
+    "payment.status.transition",
+    PaymentStatusTransitionPayload
+  >({
+    kind: "payment.status.transition",
+    payload: cancelPayload,
+    nonce: randomUUID(),
+    actor: { principal: "system", sessionId: `tool:amend-order:${customerId}` },
+    taint: "SYSTEM",
+  });
+  // Tolerate REFUSE (already terminal) — same semantics as the legacy
+  // try/catch that swallowed concurrent-modification errors.
+  await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnv).catch(() => undefined);
 
-  // Create new Payment row with updated amount
-  await paymentCmdSvc.create({
+  // 2. Create new Payment row — kernel-adjudicated.
+  const createPayload: PaymentCreatePayload = {
     orderId,
     method: activePayment.method as "pix" | "card" | "cash",
     amountInCentavos: updatedTotal,
     stripePaymentIntentId: newStripePaymentIntentId,
+  };
+  const createEnv = buildEnvelope<"payment.create", PaymentCreatePayload>({
+    kind: "payment.create",
+    payload: createPayload,
+    nonce: randomUUID(),
+    actor: { principal: "system", sessionId: `tool:amend-order:${customerId}` },
+    taint: "SYSTEM",
   });
+  const outcome = await paymentCmdSvc.createFromEnvelope(createEnv);
+  if (
+    outcome.decision.kind !== "EXECUTE" &&
+    outcome.decision.kind !== "REWRITE"
+  ) {
+    // Surface to the caller as a thrown error — preserves the legacy
+    // crash-on-failure semantics that the swap was wrapped in
+    // try/catch upstream.
+    const msg =
+      outcome.decision.kind === "REFUSE"
+        ? outcome.decision.refusal.userFacing
+        : "Não foi possível criar pagamento atualizado.";
+    throw new NonRetryableError(msg);
+  }
 }
 
 export async function amendOrder(
@@ -107,6 +175,8 @@ export async function amendOrder(
     throw new NonRetryableError("Autenticação necessária para modificar pedido.");
   }
 
+  // medusaAdmin used here only for GET (svc reads). All writes via
+  // medusaAdjudicated().
   const svc = createOrderService(medusaAdmin);
   const { order, ownershipValid } = await svc.getOrder(parsed.orderId, ctx.customerId);
 
@@ -147,28 +217,44 @@ export async function amendOrder(
       return { success: false, message: "ID da variante necessário para adicionar item." };
     }
     try {
-      // Create order edit → add item → confirm
-      const editData = await medusaAdmin(`/admin/orders/${parsed.orderId}/edits`, {
+      // Create order edit → add item → confirm — all kernel-adjudicated.
+      const editData = await medusaAdjudicated<undefined, { order_edit: { id: string } }>({
+        scope: "admin",
         method: "POST",
-      }) as { order_edit: { id: string } };
+        path: `/admin/orders/${parsed.orderId}/edits`,
+        sourceSubject: `tool:amend-order:${ctx.customerId}`,
+      });
       const editId = editData.order_edit.id;
 
-      await medusaAdmin(`/admin/orders/${parsed.orderId}/edits/${editId}/items`, {
+      await medusaAdjudicated<{ variant_id: string; quantity: number }, unknown>({
+        scope: "admin",
         method: "POST",
-        body: JSON.stringify({
-          variant_id: parsed.variantId,
-          quantity: parsed.quantity ?? 1,
-        }),
+        path: `/admin/orders/${parsed.orderId}/edits/${editId}/items`,
+        payload: { variant_id: parsed.variantId, quantity: parsed.quantity ?? 1 },
+        sourceSubject: `tool:amend-order:${ctx.customerId}`,
       });
 
-      await medusaAdmin(`/admin/orders/${parsed.orderId}/edits/${editId}/confirm`, {
+      await medusaAdjudicated<undefined, unknown>({
+        scope: "admin",
         method: "POST",
+        path: `/admin/orders/${parsed.orderId}/edits/${editId}/confirm`,
+        sourceSubject: `tool:amend-order:${ctx.customerId}`,
       });
 
-      const pixResult = await regeneratePixIfNeeded(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
+      const pixResult = await regeneratePixIfNeeded(
+        parsed.orderId,
+        order.metadata?.["stripePaymentIntentId"],
+        svc,
+        ctx.customerId,
+      );
       if (pixResult?.newStripePaymentIntentId) {
         const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(parsed.orderId, pixResult.newStripePaymentIntentId, updated.total ?? 0);
+        await syncPaymentAfterAmendment(
+          parsed.orderId,
+          pixResult.newStripePaymentIntentId,
+          updated.total ?? 0,
+          ctx.customerId,
+        );
       }
       return {
         success: true,
@@ -204,10 +290,20 @@ export async function amendOrder(
 
     // Regenerate PIX if item was removed successfully (total changed)
     if (result.success) {
-      const pixResult = await regeneratePixIfNeeded(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
+      const pixResult = await regeneratePixIfNeeded(
+        parsed.orderId,
+        order.metadata?.["stripePaymentIntentId"],
+        svc,
+        ctx.customerId,
+      );
       if (pixResult?.newStripePaymentIntentId) {
         const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(parsed.orderId, pixResult.newStripePaymentIntentId, updated.total ?? 0);
+        await syncPaymentAfterAmendment(
+          parsed.orderId,
+          pixResult.newStripePaymentIntentId,
+          updated.total ?? 0,
+          ctx.customerId,
+        );
       }
       if (pixResult?.newPixQrCodeText) {
         return {
@@ -258,26 +354,45 @@ export async function amendOrder(
       }
     }
 
-    // Update quantity via order edit
+    // Update quantity via order edit — kernel-adjudicated.
     try {
-      const editData = await medusaAdmin(`/admin/orders/${parsed.orderId}/edits`, {
+      const editData = await medusaAdjudicated<undefined, { order_edit: { id: string } }>({
+        scope: "admin",
         method: "POST",
-      }) as { order_edit: { id: string } };
+        path: `/admin/orders/${parsed.orderId}/edits`,
+        sourceSubject: `tool:amend-order:${ctx.customerId}`,
+      });
       const editId = editData.order_edit.id;
 
-      await medusaAdmin(`/admin/orders/${parsed.orderId}/edits/${editId}/items/${item.id}`, {
+      await medusaAdjudicated<{ quantity: number }, unknown>({
+        scope: "admin",
         method: "POST",
-        body: JSON.stringify({ quantity: parsed.quantity }),
+        path: `/admin/orders/${parsed.orderId}/edits/${editId}/items/${item.id}`,
+        payload: { quantity: parsed.quantity },
+        sourceSubject: `tool:amend-order:${ctx.customerId}`,
       });
 
-      await medusaAdmin(`/admin/orders/${parsed.orderId}/edits/${editId}/confirm`, {
+      await medusaAdjudicated<undefined, unknown>({
+        scope: "admin",
         method: "POST",
+        path: `/admin/orders/${parsed.orderId}/edits/${editId}/confirm`,
+        sourceSubject: `tool:amend-order:${ctx.customerId}`,
       });
 
-      const pixResult = await regeneratePixIfNeeded(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
+      const pixResult = await regeneratePixIfNeeded(
+        parsed.orderId,
+        order.metadata?.["stripePaymentIntentId"],
+        svc,
+        ctx.customerId,
+      );
       if (pixResult?.newStripePaymentIntentId) {
         const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(parsed.orderId, pixResult.newStripePaymentIntentId, updated.total ?? 0);
+        await syncPaymentAfterAmendment(
+          parsed.orderId,
+          pixResult.newStripePaymentIntentId,
+          updated.total ?? 0,
+          ctx.customerId,
+        );
       }
       return {
         success: true,
@@ -322,33 +437,78 @@ export async function amendOrder(
       return { success: false, message: "Já está usando este método de pagamento." };
     }
 
-    // Atomic switch via distributed lock on payment
+    const sessionTag = `tool:amend-order:${ctx.customerId}`;
+
+    // Atomic switch via distributed lock on payment.
+    // Every payment mutation now flows through *FromEnvelope.
     const switchResult = await withLock<AmendOrderResult>(`payment:${activePayment.id}`, async () => {
-      // 1. Transition → switching_method
-      await paymentCmdSvc.transitionStatus(activePayment.id, {
-        newStatus: "switching_method",
-        actor: "customer",
-        actorId: ctx.customerId,
-        reason: `switch_to_${parsed.paymentMethod}`,
-        expectedVersion: activePayment.version,
+      // 1. Transition → switching_method (kernel-adjudicated)
+      const toSwitchingEnv = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: {
+          paymentId: activePayment.id,
+          newStatus: "switching_method",
+          actor: "customer",
+          actorId: ctx.customerId,
+          reason: `switch_to_${parsed.paymentMethod}`,
+          expectedVersion: activePayment.version,
+        },
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: ctx.customerId! },
+        taint: "TRUSTED",
       });
+      const toSwitchOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(toSwitchingEnv);
+      if (
+        toSwitchOutcome.decision.kind !== "EXECUTE" &&
+        toSwitchOutcome.decision.kind !== "REWRITE"
+      ) {
+        const msg =
+          toSwitchOutcome.decision.kind === "REFUSE"
+            ? toSwitchOutcome.decision.refusal.userFacing
+            : "Não foi possível iniciar a troca de método.";
+        return { success: false, message: msg };
+      }
 
       // 2. Cancel old Stripe PI
       if (activePayment.stripePaymentIntentId) {
         await cancelStalePaymentIntent(activePayment.stripePaymentIntentId);
       }
 
-      // 3. Transition old payment → canceled
+      // 3. Transition old payment → canceled (kernel-adjudicated)
       const afterSwitch = await paymentQuerySvc.getById(activePayment.id);
-      await paymentCmdSvc.transitionStatus(activePayment.id, {
-        newStatus: "canceled",
-        actor: "customer",
-        actorId: ctx.customerId,
-        reason: "method_switch_completed",
-        expectedVersion: afterSwitch?.version ?? activePayment.version + 1,
+      const cancelEnv = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: {
+          paymentId: activePayment.id,
+          newStatus: "canceled",
+          actor: "customer",
+          actorId: ctx.customerId,
+          reason: "method_switch_completed",
+          expectedVersion: afterSwitch?.version ?? activePayment.version + 1,
+        },
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: ctx.customerId! },
+        taint: "TRUSTED",
       });
+      const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnv);
+      if (
+        cancelOutcome.decision.kind !== "EXECUTE" &&
+        cancelOutcome.decision.kind !== "REWRITE"
+      ) {
+        const msg =
+          cancelOutcome.decision.kind === "REFUSE"
+            ? cancelOutcome.decision.refusal.userFacing
+            : "Não foi possível cancelar o pagamento anterior.";
+        return { success: false, message: msg };
+      }
 
-      // 4. Create new Payment row with new method
+      // 4. Create new Payment row (kernel-adjudicated)
       let newStripePI: Stripe.PaymentIntent | null = null;
       let pixExpiresAt: Date | undefined;
 
@@ -371,13 +531,32 @@ export async function amendOrder(
         }
       }
 
-      const newPayment = await paymentCmdSvc.create({
+      const createPayload: PaymentCreatePayload = {
         orderId: parsed.orderId,
         method: parsed.paymentMethod!,
         amountInCentavos: activePayment.amountInCentavos,
-        stripePaymentIntentId: newStripePI?.id ?? undefined,
-        pixExpiresAt,
+        ...(newStripePI?.id ? { stripePaymentIntentId: newStripePI.id } : {}),
+        ...(pixExpiresAt ? { pixExpiresAt: pixExpiresAt.toISOString() } : {}),
+      };
+      const createEnv = buildEnvelope<"payment.create", PaymentCreatePayload>({
+        kind: "payment.create",
+        payload: createPayload,
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: sessionTag },
+        taint: "SYSTEM",
       });
+      const createOutcome = await paymentCmdSvc.createFromEnvelope(createEnv);
+      if (
+        createOutcome.decision.kind !== "EXECUTE" &&
+        createOutcome.decision.kind !== "REWRITE"
+      ) {
+        const msg =
+          createOutcome.decision.kind === "REFUSE"
+            ? createOutcome.decision.refusal.userFacing
+            : "Não foi possível criar pagamento com novo método.";
+        return { success: false, message: msg };
+      }
+      const newPayment = createOutcome.result!;
 
       // 5. Publish events
       void publishNatsEvent("payment.method_changed", {
