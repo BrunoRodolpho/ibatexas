@@ -70,6 +70,10 @@ import {
   createPostgresAuditWriter,
   type PrismaRawExecutor,
 } from "./postgres-audit-writer.js"
+// W6-10 (P2-C): allow callers to inject a pino-shaped logger so audit-
+// pipeline warnings carry the per-request reqId when invoked from a
+// route handler. Defaults to the console-passthrough.
+import { resolveLogger, type IbxLogger } from "./logger.js"
 
 // ── Module-level lazy singletons ────────────────────────────────────────────
 
@@ -108,6 +112,8 @@ function postgresEnabled(): boolean {
 interface SinkDependencies {
   readonly redis: RedisListClient | null
   readonly prismaWriter: PrismaRawExecutor | null
+  /** W6-10: optional pino-shaped logger for reqId-carrying log lines. */
+  readonly logger: IbxLogger | null
 }
 
 let _depsOverride: Partial<SinkDependencies> | null = null
@@ -194,7 +200,7 @@ function lazyRedisClient(): RedisListClient {
   }
 }
 
-function loadInnerSink(): AuditSink {
+function loadInnerSink(log: IbxLogger): AuditSink {
   // ConsoleSink for visibility in dev; NatsSink for the durable streaming
   // trail consumed by the audit-consumer subscriber (Task 19) and any
   // future observability sidecars. Falls open: failure in any one of the
@@ -229,9 +235,10 @@ function loadInnerSink(): AuditSink {
         writer,
         onError: (err: Error) => {
           // Fail-open: log once and let the buffered sink handle retry.
-          console.warn(
-            `[intent-audit-wiring] postgres sink emit failed — falling back to spill storage`,
-            err,
+          // W6-10: structured log carries reqId via injected `log`.
+          log.warn(
+            { err: err.message },
+            "[intent-audit-wiring] postgres sink emit failed — falling back to spill storage",
           )
         },
       }),
@@ -244,7 +251,11 @@ function loadInnerSink(): AuditSink {
 function loadSink(): AuditSink {
   if (_sink) return _sink
 
-  const innerSink = loadInnerSink()
+  // W6-10: resolve the structured logger. Defaults to console-passthrough
+  // unless the test/adopter injected one via _setAuditSinkDependencies.
+  const log = resolveLogger(_depsOverride?.logger ?? null)
+
+  const innerSink = loadInnerSink(log)
   const spillStorage = loadSpillStorage()
   const redactor = loadRedactor()
 
@@ -257,18 +268,18 @@ function loadSink(): AuditSink {
     storage: spillStorage,
     capacity: bufferCapacity(),
     onOverflow: (record) => {
-      console.warn(
-        `[intent-audit-wiring] audit buffer overflow — record spilled to durable storage`,
+      log.warn(
         { intentKind: record.envelope.kind, intentHash: record.intentHash },
+        "[intent-audit-wiring] audit buffer overflow — record spilled to durable storage",
       )
     },
     onSpill: (record, reason) => {
       // Log only on failure/drain-failure (capacity is the expected steady
       // state at high load). Tests assert via the onOverflow hook above.
       if (reason !== "capacity") {
-        console.warn(
-          `[intent-audit-wiring] audit spill (${reason})`,
-          { intentKind: record.envelope.kind, intentHash: record.intentHash },
+        log.warn(
+          { intentKind: record.envelope.kind, intentHash: record.intentHash, reason },
+          "[intent-audit-wiring] audit spill",
         )
       }
     },
@@ -287,9 +298,9 @@ function loadSink(): AuditSink {
         // PersistentBufferedSinkOptions contract). We intentionally swallow
         // here so audit emission is fail-open at the IbateXas boundary: a
         // broken Postgres connection MUST NOT block an adjudicate() call.
-        console.warn(
-          `[intent-audit-wiring] audit emit failed — record buffered for retry`,
+        log.warn(
           { intentKind: record.envelope.kind, err: String(err) },
+          "[intent-audit-wiring] audit emit failed — record buffered for retry",
         )
       }
     },

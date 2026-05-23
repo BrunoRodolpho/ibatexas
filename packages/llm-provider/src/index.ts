@@ -98,7 +98,15 @@ export { LedgerUnavailableError } from "./intent-ledger.js"
 
 // Audit sink (Phase H) — needed by subscribers that emit audit records
 // outside the responder hot path (e.g. defer-resolver on resume).
-export { getAuditSink } from "./intent-audit-wiring.js"
+export {
+  getAuditSink,
+  // Internal-only — exported for cross-package integration tests that
+  // need to inject failing Postgres writers / Redis stubs. Don't call
+  // these from production code paths.
+  _resetAuditSink,
+  _setAuditSinkDependencies,
+  _getAuditRedactor,
+} from "./intent-audit-wiring.js"
 
 // Audit Postgres writer adapter (task 19 / M4). Exposed so the NATS audit
 // archiver subscriber (`apps/api/src/subscribers/audit-consumer.ts`) can
@@ -130,6 +138,10 @@ export {
 
 // Re-export agent types for consumers
 export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
+
+// Logger shim (W6-10 / P2-C) — apps/api can pass `req.log` for reqId
+// correlation. Default passthrough preserves dev console-log behaviour.
+export { defaultLogger, resolveLogger, type IbxLogger } from "./logger.js"
 
 // Intent-kind union (Phase M / task-08 follow-up) — consumed by
 // `validateEnforceConfig` from `@adjudicate/core/kernel` so typos in

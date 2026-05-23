@@ -357,6 +357,215 @@ describe("Bypass detection — ALLOWED_MEDUSA_DIRECT carve-out audit (W3 P1-L)",
   })
 })
 
+// ── Extensions (W6-8) — closing the audit-08 §"Bypass-detection extension opportunities" gaps ──
+
+/**
+ * Files allowed to call `redis.del(lockKey)` without a UUID-Lua release
+ * script. These are NOT lock releases — they're cache deletes, dedup-
+ * cleanup, or other non-ownership writes that the CLAUDE.md rule #10
+ * pattern doesn't apply to.
+ *
+ * Each entry is a deliberate allow-list. Adding a new entry MUST come
+ * with a comment explaining why the redis.del is NOT a lock release.
+ */
+const ALLOWED_REDIS_DEL_LOCK = new Set<string>([
+  // Listed deliberately: these files use `del()` for non-lock cleanup
+  // (cache invalidation, receipt drain, etc.). The grep below targets
+  // "lock" specifically; cache-like keys are caught by a separate check.
+])
+
+/**
+ * `redis.del(...)` calls that name a "lock" key without the corresponding
+ * Lua ownership-check release. CLAUDE.md rule #10 forbids plain `del()`
+ * for lock release — the release MUST validate the UUID lock owner via a
+ * Lua conditional. A regression here would silently release another
+ * holder's lock.
+ *
+ * The pattern looks for `redis.del(...lock...)` shapes — false-positive
+ * risk is moderate (a cache key named `cart-lock-screen` could trigger).
+ * Mitigation: allow-list false positives in `ALLOWED_REDIS_DEL_LOCK`.
+ */
+const FORBIDDEN_REDIS_DEL_LOCK = [
+  /redis(?:Client)?\.del\([^)]*\b[Ll]ock\b[^)]*\)/,
+] as const
+
+/**
+ * `prisma.$executeRaw` / `$executeRawUnsafe` outside `packages/domain/src/services/`.
+ * These calls bypass type-checking AND the envelope flow.
+ *
+ * Allow-list:
+ *   - apps/api/src/subscribers/audit-consumer.ts — Task 19 audit insert
+ *     via raw SQL (uses ON CONFLICT to dedupe).
+ *   - packages/llm-provider/src/postgres-audit-writer.ts — Task 19 audit
+ *     INSERT helper, paired with audit-consumer.
+ */
+const ALLOWED_EXECUTE_RAW = new Set<string>([
+  "apps/api/src/subscribers/audit-consumer.ts",
+  "packages/llm-provider/src/postgres-audit-writer.ts",
+])
+
+const FORBIDDEN_EXECUTE_RAW = [
+  /\$executeRaw(Unsafe)?\s*[`(]/,
+] as const
+
+const EXECUTE_RAW_SCAN_DIRS = [
+  "apps/api/src",
+  "packages/tools/src",
+  "packages/llm-provider/src",
+]
+
+/**
+ * Direct `twilio.messages.create` / Twilio SDK send. WhatsApp messaging
+ * should go through `whatsappPack` adjudication for pt-BR validation,
+ * rate limiting, and audit. The OTP path uses Twilio Verify (a different
+ * surface) which is allowed.
+ *
+ * Allow-list: WhatsApp Pack + admin/auth OTP modules.
+ */
+const ALLOWED_TWILIO_MESSAGES = new Set<string>([
+  // Twilio SDK wrapper modules (the only legitimate clients).
+  "apps/api/src/whatsapp/sender.ts",
+  "apps/api/src/whatsapp/init.ts",
+])
+
+const FORBIDDEN_TWILIO_MESSAGES = [
+  /\.messages\.create\s*\(/,
+] as const
+
+const TWILIO_SCAN_DIRS = [
+  "apps/api/src/routes",
+  "apps/api/src/subscribers",
+  "apps/api/src/jobs",
+  "packages/tools/src",
+]
+
+/**
+ * `console.log(envelope|payload|intent)` patterns that risk PII leak via
+ * stdout. Per audit-08 §"Bypass-detection extension": stdout in
+ * Docker/k8s logs is non-redacted; a console.log of an envelope dumps
+ * CPF/CVV/email/phone to the log aggregator.
+ *
+ * False-positive risk is high (a `console.log("intent registered")`
+ * trivially matches), so the gate is WARN-only — we log offenders to
+ * stderr and proceed. A future PR can tighten to fail-the-build once
+ * the false-positive surface is bounded.
+ */
+const SUSPICIOUS_CONSOLE_PII = [
+  /console\.log\s*\([^)]*\b(envelope|payload|intent|cpf|email|phone)\b/i,
+] as const
+
+const CONSOLE_PII_SCAN_DIRS = [
+  "apps/api/src",
+  "packages/llm-provider/src",
+  "packages/tools/src",
+  "packages/domain/src",
+]
+
+// ── Tests: bypass-detection extensions ────────────────────────────────────
+
+describe("Bypass detection — W6-8 extension: redis.del lock release without Lua", () => {
+  for (const pattern of FORBIDDEN_REDIS_DEL_LOCK) {
+    it(`no production redis.del("...lock...") match for /${pattern.source}/`, () => {
+      const offenders = scan(
+        ["apps/api/src", "packages/llm-provider/src", "packages/tools/src"],
+        [pattern],
+        ALLOWED_REDIS_DEL_LOCK,
+      )
+      // Filter out lines that are clearly NOT lock releases:
+      //   - lines mentioning "cooldown", "cache", "marker" — these are
+      //     not lock semantics even if they happen to include "lock".
+      //   - lines inside a release Lua script string literal (already
+      //     contains "if redis.call('GET'..." — those are correct).
+      const real = offenders.filter((o) => {
+        const t = o.text.toLowerCase()
+        if (t.includes("cooldown")) return false
+        if (t.includes("cache")) return false
+        if (t.includes("marker")) return false
+        if (t.includes("script")) return false
+        if (t.includes("lua")) return false
+        return true
+      })
+      if (real.length > 0) {
+        const lines = real
+          .map((o) => `  • ${o.file}:${o.line}  →  ${o.text}`)
+          .join("\n")
+        throw new Error(
+          `CLAUDE.md rule #10 violated — redis.del(lockKey) without a UUID-Lua ownership-check release.\n\nOffending sites (${real.length}):\n${lines}\n\nUse the Lua conditional release pattern from apps/api/src/whatsapp/session.ts.`,
+        )
+      }
+      expect(real).toEqual([])
+    })
+  }
+})
+
+describe("Bypass detection — W6-8 extension: $executeRaw outside command services", () => {
+  for (const pattern of FORBIDDEN_EXECUTE_RAW) {
+    it(`no $executeRaw match outside packages/domain/src/services/ for /${pattern.source}/`, () => {
+      const offenders = scan(EXECUTE_RAW_SCAN_DIRS, [pattern], ALLOWED_EXECUTE_RAW)
+      if (offenders.length > 0) {
+        const lines = offenders
+          .map((o) => `  • ${o.file}:${o.line}  →  ${o.text}`)
+          .join("\n")
+        throw new Error(
+          `Raw SQL (\$executeRaw / \$executeRawUnsafe) detected outside the audit/services allow-list — route through OrderCommandService.*FromEnvelope / PaymentCommandService.*FromEnvelope.\n\nOffenders (${offenders.length}):\n${lines}\n\nAdd to ALLOWED_EXECUTE_RAW only with a justification comment if this is intentional.`,
+        )
+      }
+      expect(offenders).toEqual([])
+    })
+  }
+})
+
+describe("Bypass detection — W6-8 extension: direct twilio.messages.create outside allow-list", () => {
+  for (const pattern of FORBIDDEN_TWILIO_MESSAGES) {
+    it(`no direct twilio.messages.create match for /${pattern.source}/`, () => {
+      const offenders = scan(TWILIO_SCAN_DIRS, [pattern], ALLOWED_TWILIO_MESSAGES)
+      // Filter false positives: `verifications.create` and
+      // `verificationChecks.create` are Twilio Verify (OTP), allowed.
+      // Also filter shape constructions like `Messages.create` (Medusa
+      // resource builders) which match the regex by accident.
+      const real = offenders.filter((o) => {
+        const t = o.text
+        if (/verifications?\.create/.test(t)) return false
+        if (/verificationChecks?\.create/.test(t)) return false
+        // Medusa workflow messages — out of scope.
+        if (/inboxMessages|workflowMessages/.test(t)) return false
+        return true
+      })
+      if (real.length > 0) {
+        const lines = real
+          .map((o) => `  • ${o.file}:${o.line}  →  ${o.text}`)
+          .join("\n")
+        throw new Error(
+          `Direct twilio.messages.create detected outside the WhatsApp Pack allow-list — route WhatsApp sends through whatsappPack adjudication.\n\nOffenders (${real.length}):\n${lines}`,
+        )
+      }
+      expect(real).toEqual([])
+    })
+  }
+})
+
+describe("Bypass detection — W6-8 extension: console.log of envelope/payload (PII leak risk)", () => {
+  // WARN-ONLY — false-positive risk is high. We log offenders to stderr
+  // so the CI signal is visible but the build doesn't fail. A future PR
+  // can tighten to fail once the false-positive surface is bounded.
+  for (const pattern of SUSPICIOUS_CONSOLE_PII) {
+    it(`logs suspicious console.log matches for /${pattern.source}/ (warning only)`, () => {
+      const offenders = scan(CONSOLE_PII_SCAN_DIRS, [pattern])
+      if (offenders.length > 0) {
+        const lines = offenders
+          .map((o) => `  • ${o.file}:${o.line}  →  ${o.text}`)
+          .join("\n")
+        // Warning to stderr — does NOT fail the test.
+        process.stderr.write(
+          `\n[W6-8 WARN] Suspicious console.log of PII-bearing field (${offenders.length} match${offenders.length === 1 ? "" : "es"}):\n${lines}\n\n`,
+        )
+      }
+      // Always passes — this is a warning gate.
+      expect(true).toBe(true)
+    })
+  }
+})
+
 // ── Runtime smoke: dispatcher refuses to dispatch unknown tool ────────────
 
 describe("Bypass detection — runtime smoke: dispatcher refuses unknown tool", () => {

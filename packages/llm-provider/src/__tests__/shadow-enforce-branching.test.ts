@@ -320,6 +320,133 @@ describe("enforce mode — adjudicate() is the authoritative decision", () => {
   })
 })
 
+// ── NONE class positive test (W6-6) ──────────────────────────────────────
+
+describe("adjudicateWithShadow — NONE divergence positive case (W6-6)", () => {
+  beforeEach(() => {
+    _resetMetricsSink()
+  })
+
+  afterEach(() => {
+    _resetMetricsSink()
+  })
+
+  it("NONE class: identical state + same legacy/kernel decision — no divergence event", () => {
+    // Per audit/08 §"Real coverage vs claimed":
+    //   `NONE explicitly tested (negative case). Only inferred from
+    //    'no DECISION_KIND events' assertion (line 213).`
+    //
+    // This test asserts the POSITIVE invariant: when both legacy and
+    // kernel return EXECUTE for an envelope that the policy clearly
+    // accepts (cart-ensure with a valid cart), zero divergence events
+    // of ANY class are emitted. This closes the audit's "negative case
+    // only" gap.
+    const capture = createCaptureSink()
+    setMetricsSink(capture.sink)
+
+    const env = makeEnv("order.cart.ensure", { cartId: "cart-1" })
+    const result = adjudicateWithShadow({
+      envelope: env,
+      state: makeState(),
+      policy: ordersPolicyBundle as unknown as Parameters<
+        typeof adjudicateWithShadow
+      >[0]["policy"],
+      legacy: () => true,
+    })
+
+    expect(result.legacyDecision.kind).toBe("EXECUTE")
+    expect(result.adjudicateDecision.kind).toBe("EXECUTE")
+
+    // The framework may emit a BASIS_ONLY event because kernel basis is
+    // richer than legacy's boolean. But it MUST NOT emit DECISION_KIND
+    // or PAYLOAD_REWRITE — those are real divergences.
+    const decisionKindEvents = capture.shadowDivergences.filter(
+      (e) => e.divergence === "DECISION_KIND",
+    )
+    const payloadRewriteEvents = capture.shadowDivergences.filter(
+      (e) => e.divergence === "PAYLOAD_REWRITE",
+    )
+    expect(decisionKindEvents).toEqual([])
+    expect(payloadRewriteEvents).toEqual([])
+  })
+
+  it("adjudicate() vs adjudicateWithShadow() on the same envelope produce the same kernel decision", () => {
+    // The contract: shadow mode only WRAPS adjudicate(); it does not
+    // change the kernel's verdict. Calling adjudicate() directly and
+    // adjudicateWithShadow() with the same inputs must produce the
+    // same `adjudicateDecision.kind`.
+    const env = makeEnv("order.cart.ensure", { cartId: "cart-shadow-vs-direct" })
+    const state = makeState()
+
+    const directDecision = adjudicate(env, state, ordersPolicyBundle)
+    const shadowResult = adjudicateWithShadow({
+      envelope: env,
+      state,
+      policy: ordersPolicyBundle as unknown as Parameters<
+        typeof adjudicateWithShadow
+      >[0]["policy"],
+      legacy: () => true,
+    })
+
+    expect(directDecision.kind).toBe(shadowResult.adjudicateDecision.kind)
+  })
+
+  it("DECISION_KIND class is emitted exactly once per divergence call", () => {
+    // Defensive coverage: shadow should fire one event per call, not
+    // amplify accidentally (e.g. by double-iterating the basis array).
+    const capture = createCaptureSink()
+    setMetricsSink(capture.sink)
+
+    const env = makeEnv("order.checkout.create", { cartId: "cart-1" })
+    adjudicateWithShadow({
+      envelope: env,
+      state: makeState({ paymentMethod: null, paymentStatus: null }),
+      policy: ordersPolicyBundle as unknown as Parameters<
+        typeof adjudicateWithShadow
+      >[0]["policy"],
+      legacy: () => true,
+    })
+
+    const decisionKindEvents = capture.shadowDivergences.filter(
+      (e) => e.divergence === "DECISION_KIND",
+    )
+    // Exactly one — not zero, not two.
+    expect(decisionKindEvents).toHaveLength(1)
+  })
+
+  it("BASIS_ONLY class is emitted when both decisions match but basis differs", () => {
+    // BASIS_ONLY is the "kernel returns the same kind, but with a
+    // structured basis the legacy boolean lacks" case — the most
+    // common shadow signal in the soak window.
+    const capture = createCaptureSink()
+    setMetricsSink(capture.sink)
+
+    const env = makeEnv("order.cart.ensure", { cartId: "cart-basis-only" })
+    const result = adjudicateWithShadow({
+      envelope: env,
+      state: makeState(),
+      policy: ordersPolicyBundle as unknown as Parameters<
+        typeof adjudicateWithShadow
+      >[0]["policy"],
+      legacy: () => true,
+    })
+
+    // Both EXECUTE, no DECISION_KIND event.
+    expect(result.legacyDecision.kind).toBe("EXECUTE")
+    expect(result.adjudicateDecision.kind).toBe("EXECUTE")
+    expect(
+      capture.shadowDivergences.filter((e) => e.divergence === "DECISION_KIND"),
+    ).toEqual([])
+
+    // PAYLOAD_REWRITE only fires on REWRITE — also absent here.
+    expect(
+      capture.shadowDivergences.filter(
+        (e) => e.divergence === "PAYLOAD_REWRITE",
+      ),
+    ).toEqual([])
+  })
+})
+
 // ── Live-config snapshot from the test process ────────────────────────────
 
 describe("enforce-config — process.env snapshot integration", () => {

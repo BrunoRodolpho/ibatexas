@@ -42,6 +42,10 @@ import {
 } from "./intent-ledger.js"
 import { getAuditSink } from "./intent-audit-wiring.js"
 import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
+// W6-10 (P2-C): pino-shaped logger correlation. The responder accepts
+// an optional logger via GenerateResponseOptions; when apps/api passes
+// `req.log`, every warning/error here carries the per-request reqId.
+import { resolveLogger, type IbxLogger } from "./logger.js"
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -716,6 +720,14 @@ export interface GenerateResponseOptions {
    * the pre-Task-02 behavior (audit emit only).
    */
   onToolIntent?: (intent: ToolIntent) => Promise<DispatchResult | void> | DispatchResult | void
+  /**
+   * Pino-shaped logger for reqId-correlated structured logging.
+   * apps/api passes `req.log` here; the responder defaults to a
+   * console-passthrough when unset (preserves dev behaviour). All
+   * warn/error emissions in the responder + the audit-wiring sink path
+   * route through this logger.
+   */
+  logger?: IbxLogger
 }
 
 /**
@@ -727,6 +739,9 @@ export async function* generateResponse(
 ): AsyncGenerator<StreamChunk> {
   const { synthesized, message, history, agentContext, machineCtx, isPostCheckout } = opts
   const { stateValue } = opts
+  // W6-10: resolve logger once. Default is the console-passthrough;
+  // apps/api passes `req.log` so all responder warnings carry reqId.
+  const log = resolveLogger(opts.logger)
   const hasTools = synthesized.availableTools.length > 0
   const bufferMode = shouldBufferText(stateValue, hasTools)
 
@@ -755,9 +770,16 @@ export async function* generateResponse(
         max_tokens: synthesized.maxTokens,
       })
     } catch (err) {
-      console.error("[agent] Failed to start stream:", (err as Error).message)
+      // W6-10: structured log → carries reqId when apps/api passes req.log.
+      log.error(
+        { err: (err as Error).message, sessionId: agentContext.sessionId },
+        "[agent] Failed to start stream",
+      )
       if (isPostCheckout) {
-        console.warn("[agent] LLM failed post-checkout — yielding deterministic confirmation")
+        log.warn(
+          { sessionId: agentContext.sessionId },
+          "[agent] LLM failed post-checkout — yielding deterministic confirmation",
+        )
         yield { type: "text_delta", delta: buildConfirmationFallback(machineCtx) }
         yield { type: "done" }
         return
@@ -781,9 +803,15 @@ export async function* generateResponse(
         yield* streamTextDeltas(stream)
       }
     } catch (err) {
-      console.error("[agent] Stream error:", (err as Error).message)
+      log.error(
+        { err: (err as Error).message, sessionId: agentContext.sessionId },
+        "[agent] Stream error",
+      )
       if (isPostCheckout) {
-        console.warn("[agent] LLM stream failed post-checkout — yielding deterministic confirmation")
+        log.warn(
+          { sessionId: agentContext.sessionId },
+          "[agent] LLM stream failed post-checkout — yielding deterministic confirmation",
+        )
         yield { type: "text_delta", delta: buildConfirmationFallback(machineCtx) }
         yield { type: "done" }
         return
@@ -802,10 +830,13 @@ export async function* generateResponse(
     if (bufferMode && turnBuffer.length > 0) {
       if (stop_reason === "tool_use") {
         // Pre-tool text — discard to prevent premature confirmations
-        console.warn(
-          "[agent] Discarded pre-tool text in %s: %s",
-          stateValue,
-          turnBuffer.join("").slice(0, 100),
+        log.warn(
+          {
+            stateValue,
+            preview: turnBuffer.join("").slice(0, 100),
+            sessionId: agentContext.sessionId,
+          },
+          "[agent] Discarded pre-tool text",
         )
       } else {
         // end_turn — validate and flush.
@@ -840,15 +871,15 @@ export async function* generateResponse(
               durationMs: 0,
             })
             void getAuditSink().emit(record).catch((err: unknown) => {
-              console.error(
-                "[llm-responder] REWRITE audit emit failed:",
-                (err as Error).message,
+              log.error(
+                { err: (err as Error).message, sessionId: agentContext.sessionId },
+                "[llm-responder] REWRITE audit emit failed",
               )
             })
           } catch (err) {
-            console.error(
-              "[llm-responder] REWRITE audit build failed:",
-              (err as Error).message,
+            log.error(
+              { err: (err as Error).message, sessionId: agentContext.sessionId },
+              "[llm-responder] REWRITE audit build failed",
             )
           }
           if (outcome.rewritten.length > 0) {
@@ -872,9 +903,21 @@ export async function* generateResponse(
               decision: { kind: "REFUSE", refusal: outcome.refusal, basis: outcome.basis },
               durationMs: 0,
             })
-            void getAuditSink().emit(record).catch(() => {})
-          } catch {
-            /* best-effort */
+            void getAuditSink().emit(record).catch((err: unknown) => {
+              // P1 (audit/06): REFUSE audit emit had no .catch logging —
+              // refusals reached the user but the audit gap was invisible.
+              // W6-10 now plumbs the failure through the structured logger
+              // so on-call has reqId-correlated evidence.
+              log.warn(
+                { err: (err as Error).message, sessionId: agentContext.sessionId },
+                "[llm-responder] REFUSE audit emit failed",
+              )
+            })
+          } catch (err) {
+            log.warn(
+              { err: (err as Error).message, sessionId: agentContext.sessionId },
+              "[llm-responder] REFUSE audit build failed",
+            )
           }
           yield { type: "text_delta", delta: outcome.refusal.userFacing }
         }

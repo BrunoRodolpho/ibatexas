@@ -4,23 +4,80 @@
 // ibx dlq replay <event>      — re-publish events from DLQ back to NATS
 // ibx dlq peek <event>        — show the most recent DLQ entries without consuming
 // ibx dlq purge <event>       — delete all entries for an event (destructive)
+//
+// ── W6-9 (P2-A) — dynamic event discovery ────────────────────────────────
+//
+// Pre-W6 the `ibx dlq list` command hardcoded 5 event names; new DLQ
+// subjects added by audit-consumer (`audit.intent.decision.v1`) and
+// defer-resolver (`intent.defer.resume`) — both per Task 19 + Task 03
+// follow-up — were invisible to the operator dashboard.
+//
+// We now SCAN `{prefix}:dlq:*` keys at runtime so every DLQ subject is
+// discovered automatically. The hardcoded list survives as a fallback
+// hint when SCAN is empty (helpful in dev where no real DLQs exist).
 
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
 
-const DLQ_EVENTS = [
+/**
+ * Fallback hint list for empty environments. The real source-of-truth
+ * is the Redis SCAN below — adding a new subject here is a docs hint,
+ * not a security gate. Audit-consumer (`audit.intent.decision.v1`),
+ * defer-resolver (`intent.defer.resume`), and the defer-timeout
+ * sweeper (`intent.defer.timeout`) are included so an operator running
+ * `ibx dlq list` on a fresh-install sees the complete potential set.
+ */
+const KNOWN_DLQ_EVENT_HINTS = [
   "order.status_changed",
   "order.placed",
   "notification.send",
   "support.handoff_requested",
   "conversation.message.appended",
+  "audit.intent.decision.v1",
+  "intent.defer.resume",
+  "intent.defer.timeout",
+  "payment.status_changed",
 ]
 
 async function getRedisAndRk() {
   const { getRedisClient, rk } = await import("@ibatexas/tools")
   const redis = await getRedisClient()
   return { redis, rk }
+}
+
+/**
+ * Discover DLQ event names by SCANning `{prefix}:dlq:*` keys in Redis.
+ * Returns the event names (the bit AFTER the `dlq:` segment). Falls
+ * back to the static hint list when SCAN yields zero keys — useful in
+ * dev environments where no DLQs have been populated yet.
+ */
+async function discoverDlqEvents(
+  redis: { scanIterator: (opts: { MATCH: string; COUNT: number }) => AsyncIterable<string> },
+  rk: (key: string) => string,
+): Promise<string[]> {
+  const prefix = rk("dlq:")
+  const found = new Set<string>()
+  try {
+    for await (const key of redis.scanIterator({
+      MATCH: `${prefix}*`,
+      COUNT: 100,
+    })) {
+      // The key shape is `{rk-prefix}:dlq:{eventName}` — strip the
+      // prefix to recover the eventName.
+      const idx = key.indexOf(":dlq:")
+      if (idx >= 0) {
+        const event = key.slice(idx + ":dlq:".length)
+        if (event.length > 0) found.add(event)
+      }
+    }
+  } catch {
+    // SCAN unsupported on the client (some adapters expose lower-case
+    // `scanIterator` only). Fall through to the hint list.
+  }
+  return found.size > 0
+    ? Array.from(found).sort()
+    : KNOWN_DLQ_EVENT_HINTS.slice()
 }
 
 export function registerDlqCommands(group: Command): void {
@@ -34,10 +91,16 @@ export function registerDlqCommands(group: Command): void {
       const spinner = ora("Scanning DLQ keys…").start()
       try {
         const { redis, rk } = await getRedisAndRk()
+        // W6-9: dynamic discovery via SCAN — closes audit/06 P2-A
+        // "DLQ CLI omits audit.intent.decision.v1 and intent.defer.resume".
+        const events = await discoverDlqEvents(
+          redis as Parameters<typeof discoverDlqEvents>[0],
+          rk,
+        )
         let total = 0
         const rows: { event: string; count: number }[] = []
 
-        for (const event of DLQ_EVENTS) {
+        for (const event of events) {
           const len = await redis.lLen(rk(`dlq:${event}`))
           if (len > 0) {
             rows.push({ event, count: len })
