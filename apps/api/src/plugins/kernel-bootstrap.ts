@@ -1,74 +1,102 @@
 // kernel-bootstrap.ts — wires `@adjudicate/core/kernel` into the API boot
-// sequence. After this plugin runs, the kernel becomes addressable from
-// Fastify: a `MetricsSink` slot is populated (stub for now; real PostHog +
-// Sentry sink lands in task 05), `validateEnforceConfig(...)` audits
-// `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` for typos, and (once task 08
-// lands) the orders Pack is registered via `installPack(...)`.
+// sequence. Two entry points:
 //
-// Investigation 06 (Runtime Config & Governance Plumbing) flagged that
-// the kernel is "dormant by accident, not by design" — every framework
-// hook exists in `@adjudicate/core/kernel` but no IbateXas startup site
-// calls `installPack()`, `validateEnforceConfig()`, or
-// `setMetricsSink()`. This plugin is the smallest cut that gives the
-// rest of the migration a boot anchor to attach to.
+//   1. `installKernelMetricsSink()` — called from `buildServer()` (server.ts)
+//      BEFORE routes are registered. Installs the real MetricsSink (PostHog
+//      via NATS + Sentry breadcrumbs + Prometheus counters) and returns the
+//      shared prom-client Registry so the `/metrics` route can scrape it.
 //
-// Scope of THIS file (task 01 of the adjudicate migration):
-//   • Call `setMetricsSink(noopMetricsSink)` — install a stub so the
-//     kernel's record* helpers have a target. Real PostHog/Sentry sink
-//     in task 05 (see docs/adjudicate-migration/tasks/05-*).
-//   • Call `validateEnforceConfig(knownIntents, env, warn)` — even with
-//     an empty `knownIntents` set, this surfaces shadow/enforce config
-//     typos as a structured warn line. Task 08+ supply the real intent
-//     union via `KNOWN_INTENT_KINDS` from `@ibatexas/llm-provider`.
-//   • Stub `installPack(...)` until `@ibatexas/pack-orders` exists
-//     (task 08). The TODO below is the integration point.
+//   2. `bootstrapKernel(server)` — called from `index.ts` AFTER buildServer
+//      returns, before `server.listen()`. Validates `IBX_KERNEL_SHADOW` /
+//      `IBX_KERNEL_ENFORCE` against the known-intent set (typo-guard), will
+//      register first-party Packs via `installPack(...)` once task 08 lands.
+//      No metrics installation here — that already happened in step 1.
+//
+// Investigation 06 (Runtime Config & Governance Plumbing) flagged that the
+// kernel is "dormant by accident, not by design" — every framework hook
+// exists in `@adjudicate/core/kernel` but no IbateXas startup site calls
+// `installPack()`, `validateEnforceConfig()`, or `setMetricsSink()`. This
+// file is the boot anchor for all three.
 //
 // Out of scope for THIS file:
-//   • LearningSink wiring (deferred to task 05/06).
-//   • Kill-switch admin endpoint (deferred to task 07).
-//   • Real Pack registration with `withBasisAudit` + conformance
-//     assertion (deferred to task 08).
+//   • Kill-switch admin endpoint (deferred to a follow-up task).
+//   • Real Pack registration with `withBasisAudit` + conformance assertion
+//     (deferred to task 08 — see TODO inside `bootstrapKernel`).
 
+import { setMetricsSink, validateEnforceConfig } from "@adjudicate/core/kernel"
+import * as Sentry from "@sentry/node"
+import { publishNatsEvent } from "@ibatexas/nats-client"
+import { Registry } from "prom-client"
+import type { FastifyInstance } from "fastify"
+import { logger } from "../lib/logger.js"
 import {
-  setMetricsSink,
-  validateEnforceConfig,
-  type MetricsSink,
-} from "@adjudicate/core/kernel";
-import type { FastifyInstance } from "fastify";
+  createKernelMetricsSink,
+  type KernelMetricsSinkDeps,
+  type TrackAnalytics,
+} from "./kernel-metrics-sink.js"
 
-// ── Stub MetricsSink ────────────────────────────────────────────────────────
+// ── Shared registry singleton ────────────────────────────────────────────────
 //
-// TODO(task-05): replace with the real `MetricsSink` adapter that
-// fans out to PostHog (`audit_kernel_shadow_diverged_*`,
-// `audit_decision_*`, `audit_ledger_hit`) + Sentry breadcrumbs.
-// `@adjudicate/core` exports `createConsoleMetricsSink()` for dev
-// visibility, but we install a no-op here so test/CI runs don't
-// pollute stdout. Verify the real sink against the event union in
-// `apps/web/src/domains/analytics/events.ts:107-114`.
-function createNoopMetricsSink(server: FastifyInstance): MetricsSink {
-  // The pino logger is captured here so task 05 can swap the stub for
-  // a logging sink without changing the call site if desired.
-  const log = server.log;
-  return {
-    recordLedgerOp(event) {
-      log.debug({ event }, "[kernel-bootstrap] recordLedgerOp (stub)");
-    },
-    recordDecision(event) {
-      log.debug({ event }, "[kernel-bootstrap] recordDecision (stub)");
-    },
-    recordRefusal(event) {
-      log.debug({ event }, "[kernel-bootstrap] recordRefusal (stub)");
-    },
-    recordSinkFailure(event) {
-      log.debug({ event }, "[kernel-bootstrap] recordSinkFailure (stub)");
-    },
-    recordShadowDivergence(event) {
-      log.debug({ event }, "[kernel-bootstrap] recordShadowDivergence (stub)");
-    },
-    recordResourceLimit(event) {
-      log.debug({ event }, "[kernel-bootstrap] recordResourceLimit (stub)");
-    },
-  };
+// One process-wide Registry. The /metrics route reads from this; the
+// MetricsSink writes to it. Held as a module-level lazy singleton so tests
+// can `_resetKernelRegistry()` between cases.
+
+let _registry: Registry | null = null
+
+/**
+ * Lazy-construct (or return) the shared prom-client Registry. Both
+ * `createKernelMetricsSink()` and `metricsRoutes()` MUST use the same
+ * instance — otherwise the scrape endpoint will return an empty body.
+ */
+export function getKernelRegistry(): Registry {
+  if (_registry === null) {
+    _registry = new Registry()
+  }
+  return _registry
+}
+
+/** @internal — tests only. Drops the registry so the next call rebuilds it. */
+export function _resetKernelRegistry(): void {
+  _registry = null
+}
+
+// ── Default trackAnalytics wire ──────────────────────────────────────────────
+//
+// Server-side PostHog wire: publish to `analytics.event` on NATS — the same
+// pipeline `routes/analytics.ts:82` uses for web-originated events. The
+// downstream PostHog ingester subscribes there. Fire-and-forget: any rejected
+// promise is swallowed by `createKernelMetricsSink` itself.
+
+const defaultTrackAnalytics: TrackAnalytics = (eventType, properties) => {
+  return publishNatsEvent("analytics.event", {
+    eventType,
+    properties,
+    timestamp: new Date().toISOString(),
+    source: "kernel",
+  } as Record<string, unknown>)
+}
+
+// ── installKernelMetricsSink ─────────────────────────────────────────────────
+
+/**
+ * Build the real MetricsSink and install it via `setMetricsSink`. Returns
+ * the registry so callers can pass it to `metricsRoutes({ register })`.
+ *
+ * Idempotent — calling twice replaces the sink and re-registers metrics on
+ * the cached registry.
+ */
+export function installKernelMetricsSink(
+  overrides?: Partial<KernelMetricsSinkDeps>,
+): Registry {
+  const register = overrides?.register ?? getKernelRegistry()
+  const sink = createKernelMetricsSink({
+    trackAnalytics: overrides?.trackAnalytics ?? defaultTrackAnalytics,
+    sentry: overrides?.sentry ?? Sentry,
+    log: overrides?.log ?? logger,
+    register,
+  })
+  setMetricsSink(sink)
+  return register
 }
 
 // ── Known intent kinds (stub) ──────────────────────────────────────────────
@@ -83,19 +111,19 @@ function createNoopMetricsSink(server: FastifyInstance): MetricsSink {
 // `IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE` as a typo — which is fine,
 // because both env vars default to empty until staged rollout begins.
 function getKnownIntentKinds(): ReadonlySet<string> {
-  return new Set<string>();
+  return new Set<string>()
 }
 
-// ── Public API ─────────────────────────────────────────────────────────────
+// ── bootstrapKernel ─────────────────────────────────────────────────────────
 
+/**
+ * Post-`buildServer()` kernel boot anchor. Called from `apps/api/src/index.ts`
+ * before `server.listen()`. Responsible for validateEnforceConfig + (future)
+ * installPack. Metrics sink is already wired by `installKernelMetricsSink()`
+ * which runs earlier inside buildServer.
+ */
 export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
-  // 1. Install the MetricsSink slot. Per `@adjudicate/core/kernel/metrics.ts`,
-  //    `setMetricsSink` also wires `setShadowTelemetrySink` so the four
-  //    DivergenceClass routes share the same pipeline.
-  const sink = createNoopMetricsSink(server);
-  setMetricsSink(sink);
-
-  // 2. TODO(task-08): installPack(ordersPack, { warn: server.log.warn.bind(server.log) })
+  // TODO(task-08): installPack(ordersPack, { warn: server.log.warn.bind(server.log) })
   //    — currently using no-op pack. `@ibatexas/pack-orders` does not exist
   //    yet (task 08 creates it). When it lands, replace this comment with:
   //
@@ -111,28 +139,28 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
   //        throw err;
   //      }
 
-  // 3. Validate enforce-config against the known intent set. Surfaces
-  //    typos in `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` as one-time
-  //    structured warn lines via the pino logger AND records a sink
-  //    failure with `errorClass: "enforce_config_typo"` (see
-  //    `@adjudicate/core/kernel/enforce-config.ts:94-135`).
-  const knownIntents = getKnownIntentKinds();
+  // Validate enforce-config against the known intent set. Surfaces typos in
+  // `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` as one-time structured warn
+  // lines via the pino logger AND records a sink failure with
+  // `errorClass: "enforce_config_typo"` (see
+  // `@adjudicate/core/kernel/enforce-config.ts:94-135`).
+  const knownIntents = getKnownIntentKinds()
   validateEnforceConfig(knownIntents, process.env, (msg) => {
-    server.log.warn({ msg }, "[kernel-bootstrap] enforce-config validation");
-  });
+    server.log.warn({ msg }, "[kernel-bootstrap] enforce-config validation")
+  })
 
-  // 4. Two structured info lines so operators can verify the bootstrap
-  //    fired at startup. Names match the docs/adjudicate-migration spec:
-  //    `kernel.bootstrap.*`.
+  // Structured info lines so operators can verify the bootstrap fired at
+  // startup. Names match the docs/adjudicate-migration spec:
+  // `kernel.bootstrap.*`.
   server.log.info(
     { event: "kernel.bootstrap.pack_installed", pack: "noop-stub" },
     "[kernel-bootstrap] pack installed (stub — replace in task 08)",
-  );
+  )
   server.log.info(
     {
       event: "kernel.bootstrap.enforce_config_validated",
       knownIntentCount: knownIntents.size,
     },
     "[kernel-bootstrap] enforce-config validated",
-  );
+  )
 }
