@@ -1,0 +1,42 @@
+
+> @ibatexas/api@0.0.1 test /Users/thaisrodolpho/projects/ibatexas/apps/api
+> vitest run src/__tests__/bypass-detection/bypass-detection.test.ts
+
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+
+[W6-8 WARN] Suspicious console.log of PII-bearing field (4 matches):
+  • packages/domain/src/seed-delivery.ts:167  →  console.log(`  ⚠️  Customer ${phone} not found, skipping address`)
+  • packages/domain/src/seed-delivery.ts:190  →  console.log(`  ⚠️  Customer ${phone} not found, skipping preferences`)
+  • packages/domain/src/seed-orders.ts:367  →  console.log(`  ⚠️  Customer ${order.phone} not found, skipping order ${order.orderId}`)
+  • packages/domain/src/seed-orders.ts:441  →  console.log(`  ⚠️  Customer ${template.phone} not found, skipping reservation`)
+
+stderr | src/__tests__/bypass-detection/bypass-detection.test.ts > Bypass detection — runtime smoke: dispatcher refuses unknown tool > returns kind:'failed' when no handler is registered for a tool name
+[intent-dispatcher] No handler for definitely_not_a_real_tool_12345 — returning failed
+
+ ✓ src/__tests__/bypass-detection/bypass-detection.test.ts (25 tests) 1172ms
+   ✓ Bypass detection — runtime smoke: dispatcher refuses unknown tool > returns kind:'failed' when no handler is registered for a tool name  951ms
+
+ Test Files  1 passed (1)
+      Tests  25 passed (25)
+   Start at  15:23:11
+   Duration  1.45s (transform 441ms, setup 0ms, collect 28ms, tests 1.17s, environment 0ms, prepare 50ms)
+
+---
+Multi-line scan offender list (current state, DEFERRED list excludes them from build failure):
+---
+Found 13 offenders:
+  • apps/api/src/routes/admin/products.ts:127  →  medusaAdmin(`/admin/products/${id}`, { method: "POST", body: JSON.stringify(body
+  • apps/api/src/routes/cart.ts:166  →  medusaStore("/store/carts", { method: "POST", body: JSON.stringify(cartBody), he
+  • apps/api/src/routes/cart.ts:214  →  medusaStore(`/store/carts/${request.params.id}/line-items`, { method: "POST", bo
+  • apps/api/src/routes/cart.ts:242  →  medusaStore( `/store/carts/${request.params.id}/line-items/${request.params.item
+  • apps/api/src/routes/cart.ts:272  →  medusaStore( `/store/carts/${request.params.id}/line-items/${request.params.item
+  • apps/api/src/routes/cart.ts:312  →  medusaStore(`/store/carts/${id}/line-items`, { method: "POST", body: JSON.string
+  • apps/api/src/routes/cart.ts:341  →  medusaStore(`/store/carts/${request.params.id}/promotions`, { method: "POST", bo
+  • apps/api/src/routes/cart.ts:368  →  medusaStore(`/store/payment-collections`, { method: "POST", headers: { "Content-
+  • apps/api/src/routes/cart.ts:379  →  medusaStore(`/store/payment-collections/${pcId}/payment-sessions`, { method: "PO
+  • apps/api/src/routes/cart.ts:512  →  medusaStore(`/store/carts/${cartId}/line-items/${item.id}`, { method: "DELETE", 
+  • apps/api/src/routes/cart.ts:540  →  medusaStore("/store/carts", { method: "POST", body: JSON.stringify(newCartBody),
+  • apps/api/src/routes/cart.ts:554  →  medusaStore(`/store/carts/${cartId}/line-items`, { method: "POST", headers: { "C
+  • apps/api/src/routes/stripe-webhook.ts:267  →  medusaStore(`/store/carts/${cartId}/complete`, { method: "POST", body: JSON.stri

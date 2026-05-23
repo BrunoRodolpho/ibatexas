@@ -392,26 +392,19 @@ describe("Bypass detection — Scenario 1: direct prisma writes for kernel-owned
 /**
  * NEW-P0-X9 — known-bypass migration backlog.
  *
- * The multi-line scan (added in this commit) surfaces 13 production
- * call sites in `apps/api/src/routes/cart.ts`, `routes/admin/products.ts`,
- * and `subscribers/stripe-webhook.ts` that bypass `medusaAdjudicated()`.
- * These are PRE-EXISTING bypasses the old line-by-line scan missed.
- * Migrating them is OUT OF SCOPE for cluster B (W1 correctness
- * remediation) — they are tracked here so the scan can run green while
- * follow-up work lands the migrations.
+ * Originally surfaced 13 production call sites in `routes/admin/products.ts`,
+ * `routes/cart.ts`, and `routes/stripe-webhook.ts` that bypassed
+ * `medusaAdjudicated()`. All 13 sites were migrated to the wrapper in
+ * the P0-X9 follow-up commits — the allow-list is now empty.
  *
- * RULE: this set is APPEND-ONLY only via a paired comment naming the
+ * RULE: any future entry MUST come with a paired comment naming the
  * follow-up ticket. Removing an entry requires the file to actually be
- * clean. Adding a new entry without a comment WILL be caught by a
- * companion CI check (todo: add) — for now reviewers must scrutinise.
+ * clean (the main `no NEW multi-line medusa write patterns` test will
+ * fail otherwise). Adding a new entry without a comment WILL be caught
+ * by a companion CI check (todo: add) — for now reviewers must scrutinise.
  */
 const DEFERRED_MEDUSA_MIGRATIONS: ReadonlySet<string> = new Set<string>([
-  // NEW-P0-X9: pre-existing bypasses surfaced by enabling multi-line scan.
-  // Tracked for migration in a follow-up to W1 — these route writes must
-  // move to `medusaAdjudicated()` (task 17 pattern).
-  "apps/api/src/routes/admin/products.ts",
-  "apps/api/src/routes/cart.ts",
-  "apps/api/src/routes/stripe-webhook.ts",
+  // empty — all P0-X9 entries migrated.
 ])
 
 describe("Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated()", () => {
@@ -436,26 +429,24 @@ describe("Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside
     expect(offenders).toEqual([])
   })
 
-  // Sentinel: confirm the multi-line scan DOES surface the deferred
-  // sites (proves the scan is working even though we're carving them
-  // out for the green-build pass). Without this, an accidental change
-  // to the scan that silently drops detection would go unnoticed.
-  it("multi-line scan DOES surface the deferred bypass set (sentinel)", () => {
-    const allHits = scanMultiLine(
-      MEDUSA_SCAN_DIRS,
-      FORBIDDEN_MEDUSA_MULTILINE,
-      ALLOWED_MEDUSA_DIRECT,
-    )
-    const deferredHitFiles = new Set(
-      allHits
-        .filter((o) => DEFERRED_MEDUSA_MIGRATIONS.has(o.file))
-        .map((o) => o.file),
-    )
-    // Every file in DEFERRED_MEDUSA_MIGRATIONS that exists in tree
-    // should produce at least one hit. (We don't assert the inverse
-    // because a migration may remove all hits in a single file before
-    // the entry is removed from the deferred set.)
-    expect(deferredHitFiles.size).toBeGreaterThan(0)
+  // P0-X9 sentinel — invariant: the scan still works even when no files
+  // are on the deferred allow-list. Two checks:
+  //
+  //   1. The fixture-based multi-line scan still detects 4-of-4 cases
+  //      (covered by the "detects all 4 multi-line bypass cases" test
+  //      below — pinned via the fixture, independent of production tree
+  //      state).
+  //   2. DEFERRED_MEDUSA_MIGRATIONS is empty in steady state. If it
+  //      grows, every entry MUST be paired with a follow-up ticket
+  //      comment (rule above the set).
+  //
+  // The original sentinel ("surface the deferred set") was tied to the
+  // existence of pre-migration bypasses and stopped making sense once
+  // the migrations landed — replacing it with this empty-set invariant
+  // keeps the spirit of the original guard (the scan must not silently
+  // degrade) while reflecting post-P0-X9-follow-up reality.
+  it("DEFERRED_MEDUSA_MIGRATIONS is empty in steady state (sentinel)", () => {
+    expect(DEFERRED_MEDUSA_MIGRATIONS.size).toBe(0)
   })
 
   // Keep the original single-line scan running too — defense in depth
