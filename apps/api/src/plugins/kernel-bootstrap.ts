@@ -28,6 +28,7 @@ import { installPack, PackConformanceError } from "@adjudicate/core"
 import { setMetricsSink, validateEnforceConfig } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { ordersPack } from "@ibatexas/pack-orders"
+import { paymentsPack } from "@ibatexas/pack-payments"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS } from "@ibatexas/llm-provider"
@@ -124,7 +125,8 @@ export function installFirstPartyPacks() {
   const reservations = installPack(reservationsPack)
   const whatsapp = installPack(whatsappPack)
   const customerOnboarding = installPack(customerOnboardingPack)
-  return { orders, reservations, whatsapp, customerOnboarding }
+  const payments = installPack(paymentsPack)
+  return { orders, reservations, whatsapp, customerOnboarding, payments }
 }
 
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
@@ -144,7 +146,13 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     server.log.info(
       {
         event: "kernel.bootstrap.pack_installed",
-        packs: ["orders", "reservations", "whatsapp", "customer-onboarding"],
+        packs: [
+          "orders",
+          "reservations",
+          "whatsapp",
+          "customer-onboarding",
+          "payments",
+        ],
       },
       "[kernel-bootstrap] first-party packs installed",
     )
