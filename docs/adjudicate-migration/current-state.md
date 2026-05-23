@@ -1,8 +1,9 @@
 # Overnight Run — Live Status
 
 **Started:** 2026-05-22 (user signed off for the night, full autonomous authority)
-**Branch:** `feat/consume-adjudicate-from-platform-repo`
-**Last update:** at start
+**Finished:** 2026-05-23 (all coding tasks complete or cleanly-deferred)
+**Branch:** `feat/consume-adjudicate-from-platform-repo` (50 commits ahead of origin)
+**Final summary:** see [`OVERNIGHT-RUN-SUMMARY.md`](./OVERNIGHT-RUN-SUMMARY.md)
 
 ## Legend
 - ✅ Complete (merged + tests passing)
