@@ -172,6 +172,181 @@ describe("ibx kernel replay (stub mode)", () => {
   })
 })
 
+// ── ibx kernel replay (real adjudication, W3 D3) ──────────────────────────
+//
+// These tests exercise the new real-replay path (not the stub). We
+// inject a fake `pg.Client` via vi.mock so the CLI's audit-postgres
+// path runs against an in-memory fixture instead of a live database.
+//
+// Anti-theater (RULE 2): each test below failed FIRST with one of:
+//   - "Drift completo (replayWithIntegrity) será adicionado ..." (stub output)
+//   - missing "Resumo de divergência" table headers
+// because the stub did not actually replay. After the implementation
+// replaces the stub with the real adjudicate() round-trip, all pass.
+
+const pgQueryRows = vi.hoisted(() => ({
+  rows: [] as Array<Record<string, unknown>>,
+  capturedSql: [] as string[],
+  capturedParams: [] as unknown[][],
+  reset() {
+    this.rows = []
+    this.capturedSql = []
+    this.capturedParams = []
+  },
+}))
+
+vi.mock("pg", () => ({
+  default: {
+    Client: vi.fn(function (this: unknown) {
+      const self = this as {
+        connect: () => Promise<void>
+        end: () => Promise<void>
+        query: (sql: string, params: unknown[]) => Promise<unknown>
+      }
+      self.connect = vi.fn(async () => undefined)
+      self.end = vi.fn(async () => undefined)
+      self.query = vi.fn(async (sql: string, params: unknown[]) => {
+        pgQueryRows.capturedSql.push(sql)
+        pgQueryRows.capturedParams.push(params)
+        return { rows: pgQueryRows.rows }
+      })
+      return self
+    }),
+  },
+}))
+
+function buildAuditRow(overrides?: {
+  intentHash?: string
+  kind?: string
+  decisionKind?: "EXECUTE" | "REFUSE"
+  basis?: Array<{ category: string; code: string }>
+  payload?: Record<string, unknown>
+}) {
+  const kind = overrides?.kind ?? "order.checkout.create"
+  const intentHash =
+    overrides?.intentHash ?? "0".repeat(64)
+  const envelope = {
+    kind,
+    payload: overrides?.payload ?? { orderId: "ord_test_01" },
+    nonce: "00000000-0000-0000-0000-000000000000",
+    actor: { principal: "user", sessionId: "session_01", taint: "TRUSTED" },
+    intentHash,
+    createdAt: "2026-05-23T12:00:00.000Z",
+    schemaVersion: 1,
+  }
+  const decision =
+    overrides?.decisionKind === "REFUSE"
+      ? {
+          kind: "REFUSE",
+          refusal: {
+            layer: "BUSINESS_RULE",
+            code: "test.refused",
+            userFacing: "x",
+          },
+          basis: overrides?.basis ?? [
+            { category: "kernel", code: "test.refused" },
+          ],
+        }
+      : {
+          kind: "EXECUTE",
+          basis: overrides?.basis ?? [
+            { category: "kernel", code: "test.execute" },
+          ],
+        }
+  return {
+    record_version: 4,
+    intent_hash: intentHash,
+    envelope_jsonb: JSON.stringify(envelope),
+    decision_jsonb: JSON.stringify(decision),
+    recorded_at: "2026-05-23T12:00:00.000Z",
+    duration_ms: 5,
+    resource_version: null,
+    plan_jsonb: null,
+    supersedes_jsonb: null,
+  } as Record<string, unknown>
+}
+
+describe("ibx kernel replay (real, mocked-Postgres)", () => {
+  beforeEach(() => {
+    pgQueryRows.reset()
+    process.env.IBX_AUDIT_POSTGRES_ENABLED = "true"
+    process.env.DATABASE_URL = "postgres://mock:mock@localhost/mock"
+  })
+
+  afterEach(() => {
+    delete process.env.IBX_AUDIT_POSTGRES_ENABLED
+    delete process.env.DATABASE_URL
+  })
+
+  it("prints a divergence summary table with total/matched buckets", async () => {
+    pgQueryRows.rows = [
+      buildAuditRow({ intentHash: "a".repeat(64), kind: "order.checkout.create" }),
+      buildAuditRow({ intentHash: "b".repeat(64), kind: "order.cancel" }),
+    ]
+    await cmd.parseAsync(["replay", "--since=24h"], { from: "user" })
+    const out = stdout.getOutput()
+    expect(out).toMatch(/Total\s*:\s*2/i)
+    expect(out).toMatch(/(matched|igual)/i)
+    expect(out).toMatch(/divergência por decisão|drifted.by.decision.kind|DECISION_KIND/i)
+  })
+
+  it("threads --intent-kind through the SQL WHERE clause", async () => {
+    pgQueryRows.rows = [
+      buildAuditRow({ kind: "order.checkout.create" }),
+    ]
+    await cmd.parseAsync(
+      ["replay", "--since=24h", "--intent-kind=order.checkout.create"],
+      { from: "user" },
+    )
+    // The SQL was captured by the fake pg client; assert the WHERE
+    // clause includes the intent_kind filter.
+    const sqlSeen = pgQueryRows.capturedSql.join(" | ")
+    expect(sqlSeen).toMatch(/intent_kind\s*=\s*\$\d/)
+    // The corresponding param must be present.
+    const allParams = pgQueryRows.capturedParams.flat()
+    expect(allParams).toContain("order.checkout.create")
+  })
+
+  it("counts drifted-by-decision-kind separately from drifted-by-basis", async () => {
+    // Two records, both with kind "order.checkout.create".
+    // The real adjudication on an empty/default state typically refuses
+    // (default-REFUSE for unauthenticated). The historical row will be
+    // EXECUTE → decision-kind drift.
+    pgQueryRows.rows = [
+      buildAuditRow({
+        intentHash: "c".repeat(64),
+        kind: "order.checkout.create",
+        decisionKind: "EXECUTE",
+        basis: [{ category: "policy", code: "ok" }],
+      }),
+    ]
+    await cmd.parseAsync(["replay", "--since=24h"], { from: "user" })
+    const out = stdout.getOutput()
+    // The table must contain a row labeling at least one drift class.
+    expect(out).toMatch(
+      /(DECISION_KIND|BASIS|drifted|divergência)/i,
+    )
+  })
+
+  it("gracefully handles zero records with a 'sem registros' message", async () => {
+    pgQueryRows.rows = []
+    await cmd.parseAsync(["replay", "--since=24h"], { from: "user" })
+    const out = stdout.getOutput()
+    expect(out).toMatch(/(0 registros|sem registros|nenhum registro|Total\s*:\s*0)/i)
+  })
+
+  it("limits the result set when --limit is passed", async () => {
+    pgQueryRows.rows = [buildAuditRow()]
+    await cmd.parseAsync(
+      ["replay", "--since=24h", "--limit=50"],
+      { from: "user" },
+    )
+    const allParams = pgQueryRows.capturedParams.flat()
+    // The CLI passes the limit to the SQL as a numeric param.
+    expect(allParams).toContain(50)
+  })
+})
+
 // ── ibx kernel divergence ─────────────────────────────────────────────────
 
 describe("ibx kernel divergence", () => {

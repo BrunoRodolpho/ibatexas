@@ -317,32 +317,238 @@ async function runReplay(opts: {
         return
       }
 
-      // TODO(audit-replay): re-feed records through adjudicate() with the
-      // matching policy bundle, then call replayWithIntegrity +
-      // explainReplayReport. Today the CLI prints a summary; the full
-      // re-adjudication harness requires composing the right PolicyBundle
-      // per intent kind (orders/reservations/whatsapp/customer/pix) which
-      // we defer until the rollout playbook needs it. See
-      // docs/adjudicate-migration/tasks/20-test-coverage-baseline.md
-      // §"ibx kernel replay CLI" for the full surface.
-      console.log()
-      console.log(chalk.bold("Resumo por intent kind:"))
-      const counts: Record<string, number> = {}
-      for (const r of records) {
-        const k = r.envelope.kind
-        counts[k] = (counts[k] ?? 0) + 1
-      }
-      for (const [k, n] of Object.entries(counts).sort((a, b) => b[1] - a[1])) {
-        console.log(`  ${chalk.cyan(String(n).padStart(5))}  ${k}`)
-      }
-      console.log()
-      console.log(chalk.dim("Drift completo (replayWithIntegrity) será adicionado quando o postgres adopter shipping completar — veja TODO inline."))
+      // W3 D3 — real re-adjudication path. For each audit record we:
+      //   1. Reconstruct the envelope (already done by readAuditWindow).
+      //   2. Look up the appropriate first-party Pack for the intent kind.
+      //   3. Re-call adjudicate(envelope, defaultState, pack.policy).
+      //   4. Compare the new Decision against the historical one and
+      //      classify the drift (DECISION_KIND / BASIS_DRIFT /
+      //      REWRITE-payload).
+      //
+      // State rehydration is deliberately minimal — we cannot reconstruct
+      // the order/customer projections at the historical moment without
+      // a point-in-time DB read. Instead we adjudicate against the empty
+      // default state and accept that "no-state-context" drift will
+      // appear on a subset of guards. Operators interpret the divergence
+      // summary against the runbook's threshold list, not as an absolute.
+      // AuditRecord is a structural type with no string index signature;
+      // we cast to the loose shape the helper consumes. The helper itself
+      // narrows fields by name (envelope.kind, decision, basis) so the
+      // runtime contract is preserved.
+      const report = await reAdjudicateRecords(
+        records as unknown as readonly Record<string, unknown>[],
+      )
+      printReplayReport(report)
     } finally {
       await client.end()
     }
   } catch (err) {
     spinner.fail(chalk.red(`Falhou: ${(err as Error).message}`))
     process.exitCode = 1
+  }
+}
+
+// ── replay implementation helpers ─────────────────────────────────────────
+
+interface ReplayReport {
+  total: number
+  matched: number
+  driftedByDecisionKind: number
+  driftedByBasis: number
+  driftedByPayload: number
+  errors: number
+  byKind: Record<string, { total: number; drifted: number }>
+}
+
+async function reAdjudicateRecords(
+  records: readonly Record<string, unknown>[],
+): Promise<ReplayReport> {
+  const report: ReplayReport = {
+    total: records.length,
+    matched: 0,
+    driftedByDecisionKind: 0,
+    driftedByBasis: 0,
+    driftedByPayload: 0,
+    errors: 0,
+    byKind: {},
+  }
+  if (records.length === 0) return report
+
+  // Lazy-load adjudicate + packs only when there's work to do.
+  const { adjudicate } = await import("@adjudicate/core/kernel")
+  const packIndex = await loadPackIndex()
+
+  for (const record of records) {
+    const envelope = (record as { envelope?: { kind?: string } }).envelope
+    const historical = (record as { decision?: { kind?: string; basis?: unknown } })
+      .decision
+    if (!envelope || !envelope.kind || !historical) {
+      report.errors += 1
+      continue
+    }
+    const kind = envelope.kind
+    report.byKind[kind] = report.byKind[kind] ?? { total: 0, drifted: 0 }
+    report.byKind[kind]!.total += 1
+
+    const pack = packIndex.get(kind)
+    if (!pack) {
+      // No installed Pack for this kind. Surface as an error bucket so
+      // operators see the coverage gap.
+      report.errors += 1
+      continue
+    }
+
+    let current: { kind: string; basis?: unknown } | null = null
+    try {
+      // Run adjudicate against an empty default state. See the comment
+      // in runReplay about state rehydration — the absence of state
+      // primarily exercises the policy's guards that do NOT read state.
+      current = (await adjudicate(
+        envelope as never,
+        {} as never,
+        pack.policy as never,
+      )) as { kind: string; basis?: unknown }
+    } catch {
+      report.errors += 1
+      continue
+    }
+
+    // ── Classify drift ─────────────────────────────────────────────────
+    if (current.kind !== historical.kind) {
+      report.driftedByDecisionKind += 1
+      report.byKind[kind]!.drifted += 1
+      continue
+    }
+
+    // Same kind — check basis-drift.
+    const histBasis = flattenBasis(
+      (historical as { basis?: ReadonlyArray<{ category?: string; code?: string }> })
+        .basis ?? [],
+    )
+    const currBasis = flattenBasis(
+      (current as { basis?: ReadonlyArray<{ category?: string; code?: string }> })
+        .basis ?? [],
+    )
+    if (
+      histBasis.length !== currBasis.length ||
+      histBasis.some((b, i) => b !== currBasis[i])
+    ) {
+      report.driftedByBasis += 1
+      report.byKind[kind]!.drifted += 1
+      continue
+    }
+
+    // For REWRITE decisions, check payload equality.
+    if (current.kind === "REWRITE") {
+      const histRewritten = JSON.stringify(
+        (historical as { rewritten?: unknown }).rewritten ?? null,
+      )
+      const currRewritten = JSON.stringify(
+        (current as { rewritten?: unknown }).rewritten ?? null,
+      )
+      if (histRewritten !== currRewritten) {
+        report.driftedByPayload += 1
+        report.byKind[kind]!.drifted += 1
+        continue
+      }
+    }
+
+    report.matched += 1
+  }
+  return report
+}
+
+function flattenBasis(
+  basis: ReadonlyArray<{ category?: string; code?: string }>,
+): string[] {
+  return basis
+    .map((b) => `${b.category ?? "_"}:${b.code ?? "_"}`)
+    .sort()
+}
+
+interface InstalledPack {
+  readonly id: string
+  readonly intents: readonly string[]
+  readonly policy: unknown
+}
+
+async function loadPackIndex(): Promise<Map<string, InstalledPack>> {
+  // Lazy import — packs drag the full policy bundles, which is heavy
+  // for a CLI that may not need them. We catch ESM resolution errors
+  // so the CLI degrades gracefully when running outside the monorepo.
+  const map = new Map<string, InstalledPack>()
+  const packs: InstalledPack[] = []
+  const safeImport = async (
+    spec: string,
+    namedExport: string,
+  ): Promise<InstalledPack | null> => {
+    try {
+      const mod = (await import(spec as string)) as Record<
+        string,
+        InstalledPack | undefined
+      >
+      return mod[namedExport] ?? null
+    } catch {
+      return null
+    }
+  }
+  for (const [spec, exp] of [
+    ["@ibatexas/pack-orders", "ordersPack"],
+    ["@ibatexas/pack-reservations", "reservationsPack"],
+    ["@ibatexas/pack-whatsapp", "whatsappPack"],
+    ["@ibatexas/pack-customer-onboarding", "customerOnboardingPack"],
+    ["@ibatexas/pack-payments", "paymentsPack"],
+    ["@adjudicate/pack-payments-pix", "pixChargeLifecyclePack"],
+  ] as const) {
+    const pack = await safeImport(spec, exp)
+    if (pack) packs.push(pack)
+  }
+  for (const pack of packs) {
+    for (const intent of pack.intents ?? []) {
+      map.set(intent, pack)
+    }
+  }
+  return map
+}
+
+function printReplayReport(report: ReplayReport): void {
+  console.log()
+  console.log(chalk.bold("Resumo de divergência (replay)"))
+  console.log()
+  console.log(`  Total                          : ${chalk.cyan(String(report.total))}`)
+  console.log(`  Matched (igual)                : ${chalk.green(String(report.matched))}`)
+  console.log(`  Drifted by DECISION_KIND       : ${chalk.yellow(String(report.driftedByDecisionKind))}`)
+  console.log(`  Drifted by BASIS               : ${chalk.yellow(String(report.driftedByBasis))}`)
+  console.log(`  Drifted by PAYLOAD (REWRITE)   : ${chalk.yellow(String(report.driftedByPayload))}`)
+  if (report.errors > 0) {
+    console.log(`  Erros (pack ausente / parse)   : ${chalk.red(String(report.errors))}`)
+  }
+  console.log()
+
+  if (report.total === 0) {
+    console.log(chalk.dim("0 registros na janela — nenhum replay executado."))
+    console.log()
+    return
+  }
+
+  // Per-kind breakdown for the top 10 drifters.
+  const sorted = Object.entries(report.byKind)
+    .filter(([, v]) => v.drifted > 0)
+    .sort((a, b) => b[1].drifted - a[1].drifted)
+    .slice(0, 10)
+  if (sorted.length > 0) {
+    console.log(chalk.bold("Top intent kinds com drift:"))
+    console.log()
+    for (const [kind, stats] of sorted) {
+      const pct = stats.total > 0 ? ((stats.drifted / stats.total) * 100).toFixed(1) : "0.0"
+      console.log(
+        `  ${chalk.cyan(String(stats.drifted).padStart(5))} / ${String(stats.total).padStart(5)}  ${chalk.dim(`(${pct}%)`)}  ${kind}`,
+      )
+    }
+    console.log()
+  } else if (report.matched === report.total) {
+    console.log(chalk.green("Todos os registros reproduziram exatamente o histórico — sem drift."))
+    console.log()
   }
 }
 
