@@ -3,18 +3,20 @@
 // Tests call the exported checkNoShows() processor directly (BullMQ is mocked).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import type { IntentEnvelope } from "@adjudicate/core"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { checkNoShows, startNoShowChecker, stopNoShowChecker } from "../jobs/no-show-checker.js"
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const mockFindConfirmedForDate = vi.fn()
-const mockTransition = vi.fn()
+const mockTransitionFromEnvelope = vi.fn()
 
 vi.mock("@ibatexas/domain", () => ({
   createReservationService: () => ({
     findConfirmedForDate: (...args: unknown[]) => mockFindConfirmedForDate(...args),
-    transition: (...args: unknown[]) => mockTransition(...args),
+    transitionFromEnvelope: (...args: unknown[]) =>
+      mockTransitionFromEnvelope(...args),
   }),
 }))
 
@@ -54,7 +56,7 @@ describe("no-show checker", () => {
     expect(() => startNoShowChecker()).not.toThrow() // second call should be a no-op
   })
 
-  it("marks past confirmed reservations as no_show", async () => {
+  it("marks past confirmed reservations as no_show via envelope (P1-J)", async () => {
     // Set timezone to UTC for predictable testing
     process.env.RESTAURANT_TIMEZONE = "UTC"
 
@@ -77,14 +79,34 @@ describe("no-show checker", () => {
     }
 
     mockFindConfirmedForDate.mockResolvedValue([reservation])
-    mockTransition.mockResolvedValue(undefined)
+    mockTransitionFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: undefined,
+    })
 
     // Set "now" well past 11:30 + even worst-case TZ offset + 15 min grace
     vi.setSystemTime(new Date("2026-03-15T23:59:00Z"))
 
     await checkNoShows()
 
-    expect(mockTransition).toHaveBeenCalledWith("res_01", "no_show")
+    expect(mockTransitionFromEnvelope).toHaveBeenCalledOnce()
+    const [envelope, state] = mockTransitionFromEnvelope.mock.calls[0] as [
+      IntentEnvelope,
+      { ctx: Record<string, unknown> },
+    ]
+    expect(envelope.kind).toBe("reservation.no_show.mark")
+    expect(envelope.actor.principal).toBe("system")
+    expect(envelope.taint).toBe("SYSTEM")
+    // nonce is deterministic per reservation — idempotent across retries.
+    expect(envelope.nonce).toBe("noshow:res_01")
+    expect(envelope.payload).toEqual({ reservationId: "res_01" })
+    expect(state.ctx.reservation).toMatchObject({
+      id: "res_01",
+      status: "confirmed",
+      partySize: 4,
+      timeSlotId: "slot_01",
+    })
+
     expect(publishNatsEvent).toHaveBeenCalledWith(
       "reservation.no_show",
       expect.objectContaining({
@@ -93,6 +115,42 @@ describe("no-show checker", () => {
       }),
     )
 
+    delete process.env.RESTAURANT_TIMEZONE
+  })
+
+  it("skips the NATS publish when kernel does not authorize the mark", async () => {
+    process.env.RESTAURANT_TIMEZONE = "UTC"
+    const pastSlotDate = new Date("2026-03-15T00:00:00.000Z")
+    const reservation = {
+      id: "res_refused",
+      customerId: "cust_05",
+      partySize: 2,
+      status: "confirmed",
+      timeSlotId: "slot_05",
+      timeSlot: {
+        id: "slot_05",
+        date: pastSlotDate,
+        startTime: "11:30",
+        durationMinutes: 90,
+        maxCovers: 80,
+        reservedCovers: 2,
+      },
+    }
+    mockFindConfirmedForDate.mockResolvedValue([reservation])
+    mockTransitionFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE",
+        refusal: { code: "reservation.not_modifiable", userFacing: "..." },
+        basis: [],
+      },
+    })
+    vi.setSystemTime(new Date("2026-03-15T23:59:00Z"))
+
+    await checkNoShows()
+
+    // Kernel was invoked but the no-show publish must NOT have fired.
+    expect(mockTransitionFromEnvelope).toHaveBeenCalledOnce()
+    expect(publishNatsEvent).not.toHaveBeenCalled()
     delete process.env.RESTAURANT_TIMEZONE
   })
 
@@ -123,8 +181,8 @@ describe("no-show checker", () => {
 
     await checkNoShows()
 
-    // Should NOT mark as no_show
-    expect(mockTransition).not.toHaveBeenCalled()
+    // Should NOT mark as no_show — envelope path NOT invoked.
+    expect(mockTransitionFromEnvelope).not.toHaveBeenCalled()
 
     delete process.env.RESTAURANT_TIMEZONE
   })
