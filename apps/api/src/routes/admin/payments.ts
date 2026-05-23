@@ -38,6 +38,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
+import { getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
   createOrderEventLogService,
@@ -76,6 +77,81 @@ const ConfirmationBody = z.object({
  * R$ 200,00 = 20.000 centavos (CLAUDE.md rule #2 — integer centavos).
  */
 export const REFUND_CONFIRMATION_THRESHOLD_CENTAVOS = 20_000;
+
+/**
+ * W3 P1-I — refund drip cap (audit remediation).
+ *
+ * Sub-threshold refunds (< REFUND_CONFIRMATION_THRESHOLD_CENTAVOS) skip
+ * the two-step receipt by design. An insider could drip 100 × R$199 ≈
+ * R$19,900 in a single day with no aggregate gate. Per security audit
+ * §C5, this is a session-window exposure.
+ *
+ * The cap is applied per-staff-day. Each refund EXECUTE increments a
+ * Redis counter keyed by `refund:daily-total:{staffId}:{YYYY-MM-DD}`
+ * with a 25-hour TTL. Before allowing a sub-threshold refund to
+ * direct-execute, the cumulative sum (existing + this) is checked
+ * against the cap. If exceeded, the route falls back to the two-step
+ * receipt protocol (operator-UX gate).
+ *
+ * Env override `REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS`. Default R$2000.
+ *
+ * The API-key path uses sessionId `"api-key"` so all API-key refunds
+ * share a single bucket — a leaked key is treated as a single actor.
+ */
+function getRefundDailyNoConfirmCapCentavos(): number {
+  const raw = process.env["REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS"];
+  if (!raw) return 200_000; // R$2000
+  const n = Number.parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 0) return 200_000;
+  return n;
+}
+
+const REFUND_DAILY_KEY_TTL_SECONDS = 25 * 60 * 60; // 25h to cover DST + clock skew
+
+function refundDailyBucketKey(staffId: string | null, now: Date = new Date()): string {
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  const day = `${yyyy}-${mm}-${dd}`;
+  const actor = staffId ?? "api-key";
+  return rk(`refund:daily-total:${actor}:${day}`);
+}
+
+/**
+ * Return the cumulative refund total for the staff/day bucket. Returns
+ * 0 if the bucket is empty (no refunds yet today).
+ */
+async function readDailyRefundTotal(staffId: string | null): Promise<number> {
+  const redis = await getRedisClient();
+  const raw = await redis.get(refundDailyBucketKey(staffId));
+  if (!raw) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+/**
+ * Add `centavos` to the staff/day bucket. INCRBY + EXPIRE — the EXPIRE
+ * is renewed on every call so a multi-day spree at midnight rolls
+ * cleanly into the next bucket.
+ */
+async function incrementDailyRefundTotal(
+  staffId: string | null,
+  centavos: number,
+): Promise<number> {
+  const redis = await getRedisClient();
+  const key = refundDailyBucketKey(staffId);
+  const next = await redis.incrBy(key, centavos);
+  await redis.expire(key, REFUND_DAILY_KEY_TTL_SECONDS);
+  return next;
+}
+
+/**
+ * pt-BR refusal copy when the drip cap forces a sub-threshold refund
+ * into the two-step receipt protocol. Returned in the 202 body so the
+ * operator UI knows to render the confirmation prompt.
+ */
+const REFUND_DRIP_CAP_PT_BR =
+  "Limite diário de reembolsos sem confirmação atingido. Esta operação requer confirmação de outro operador.";
 
 function principalFor(staffId: string | null): {
   readonly actorPrincipal: "user" | "system";
@@ -271,6 +347,22 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     }
     const result = outcome.result!;
 
+    // W3 P1-I — bump the per-staff-day cumulative refund total. The
+    // counter feeds the drip-cap check for sub-threshold refunds.
+    // Increment AFTER the kernel-adjudicated executor returned EXECUTE,
+    // so refused refunds don't pollute the bucket.
+    try {
+      await incrementDailyRefundTotal(args.staffId, result.refundAmountCentavos);
+    } catch (err) {
+      // Counter failures are non-fatal — the refund already executed.
+      // Log + continue; the worst case is the next refund slips the cap
+      // by one transaction, not silent unbounded spend.
+      server.log.warn(
+        { err: (err as Error).message, staffId: args.staffId },
+        "[refund-drip-cap] failed to increment daily counter",
+      );
+    }
+
     await publishNatsEvent("payment.status_changed", {
       eventType: "payment.status_changed",
       orderId: args.orderId,
@@ -365,6 +457,79 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
 
       // ── Threshold branch ──────────────────────────────────────────
       if (refundAmount < REFUND_CONFIRMATION_THRESHOLD_CENTAVOS) {
+        // W3 P1-I — check the per-staff-day drip cap. If executing this
+        // refund would push the cumulative total above the cap, fall
+        // back to the two-step receipt protocol (operator-UX gate).
+        const dailyCap = getRefundDailyNoConfirmCapCentavos();
+        let currentDailyTotal = 0;
+        try {
+          currentDailyTotal = await readDailyRefundTotal(staffId);
+        } catch (err) {
+          server.log.warn(
+            { err: (err as Error).message, staffId },
+            "[refund-drip-cap] failed to read daily counter — defaulting to 0",
+          );
+        }
+        const projectedTotal = currentDailyTotal + refundAmount;
+        if (projectedTotal > dailyCap) {
+          // Drip cap exceeded — escalate to step-2 receipt protocol.
+          const pending: PendingAdminAction = {
+            kind: "payment.status.transition",
+            payload: {
+              paymentId: payment.id,
+              previousStatus: payment.status,
+              method: payment.method,
+              refundedAmountCentavos: payment.refundedAmountCentavos ?? 0,
+              amountInCentavos: payment.amountInCentavos,
+              refundAmount,
+              reason,
+            },
+            nonce: randomUUID(),
+            staffId,
+            staffRole,
+            actorPrincipal,
+            requestorIp: request.ip ?? null,
+            prompt: `${REFUND_DRIP_CAP_PT_BR} Reembolso de R$ ${(refundAmount / 100).toFixed(2).replace(".", ",")}.`,
+            route: "refund",
+            createdAt: new Date().toISOString(),
+            orderId: id,
+            refundAmountCentavos: refundAmount,
+            reason,
+          };
+
+          const { confirmationId, ttlSeconds } =
+            await confirmationStore.create(pending);
+
+          await eventLogSvc.append({
+            orderId: id,
+            eventType: "admin.refund.drip_cap_exceeded",
+            discriminator: confirmationId,
+            payload: {
+              confirmationId,
+              staffId,
+              staffRole,
+              paymentId: payment.id,
+              refundAmountCentavos: refundAmount,
+              currentDailyTotal,
+              dailyCap,
+              projectedTotal,
+              intentNonce: pending.nonce,
+            },
+            timestamp: new Date(),
+          });
+
+          return reply.code(202).send({
+            confirmationId,
+            prompt: pending.prompt,
+            ttlSeconds,
+            kind: pending.kind,
+            refundAmountCentavos: refundAmount,
+            code: "REFUND_DRIP_CAP",
+            cumulativeTodayCentavos: currentDailyTotal,
+            dailyCapCentavos: dailyCap,
+          });
+        }
+
         // Direct execute — envelope path still adjudicates.
         const result = await executeRefund({
           orderId: id,
