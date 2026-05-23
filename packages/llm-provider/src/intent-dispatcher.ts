@@ -99,20 +99,21 @@ export type IntentDispatcher = (
  *
  * Includes BOTH:
  *   - Tool names emitted by tool-registry today (e.g. "add_to_cart").
- *   - Future intent kinds documented in task 06 (e.g. "order.cart.add") so
- *     this set keeps working once envelopes carry domain-specific kinds.
+ *   - Canonical intent kinds (W5-3 fix; previously misnamed `order.cart.add`
+ *     and `order.pix.regenerate`). Names track the master taxonomy and
+ *     pack-orders / pack-payments surfaces.
  *
- * See investigation 01 §"Bypass paths discovered" #3.
+ * See investigation 01 §"Bypass paths discovered" #3 and audit 07 §"Rename drifts".
  */
 export const DETERMINISTIC_KERNEL_COVERAGE: ReadonlySet<string> = new Set([
-  // Future intent kinds (per task 06 plan)
-  "order.cart.add",
-  "order.cart.update",
-  "order.cart.remove",
-  "order.cart.get_or_create",
+  // Canonical intent kinds (governance taxonomy)
+  "order.item.add",
+  "order.item.update",
+  "order.item.remove",
+  "order.cart.ensure",
   "order.checkout.create",
   "order.cancel",
-  "order.pix.regenerate",
+  "payment.pix.regenerate",
   // Today's tool names (envelope.kind is "order.tool.propose";
   // intent.toolName carries the real identity)
   "add_to_cart",

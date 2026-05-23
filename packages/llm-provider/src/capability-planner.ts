@@ -219,7 +219,7 @@ export const rawOrderCapabilityPlanner: FrameworkCapabilityPlanner<
  * IbateXas LLM-proposed mutating surface is the tool-name set (today's
  * envelope kind is the generic `order.tool.propose` — the real identity is
  * `intent.toolName`). When the planner mapping shifts to domain-specific
- * intent kinds — e.g. `order.cart.add` — wiring the Pack here will
+ * intent kinds — e.g. `order.item.add` — wiring the Pack here will
  * additionally guard the allowedIntents leak path described in
  * `assertPlanSubsetOfPack`.
  *
