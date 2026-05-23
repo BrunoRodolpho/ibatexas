@@ -1,5 +1,15 @@
 // Unit tests for Stripe webhook routes
 // POST /api/webhooks/stripe — payment_intent.succeeded / payment_intent.payment_failed
+//
+// Task 12 (M3) coverage: Stripe-driven payment reconciliation is now
+// envelope-mediated. The `Stripe webhook governance` suite asserts:
+//   - The `payment.status.reconcile` envelope shape (kind, actor, taint, nonce).
+//   - `nonce = event.id` produces a deterministic `intentHash` per Stripe
+//     event (replay-safe).
+//   - REFUSE / DEFER / ESCALATE decisions skip the executor without
+//     surfacing 5xx to Stripe (no retry storm for governance-driven skips).
+//   - The legacy bare-arg `reconcileFromWebhook` is NOT called (bypass-
+//     detection: every webhook reconcile goes through the envelope path).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
@@ -13,6 +23,10 @@ const mockRk = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockCapturePayment = vi.hoisted(() => vi.fn());
+const mockReconcileFromWebhook = vi.hoisted(() => vi.fn());
+const mockReconcileFromWebhookFromEnvelope = vi.hoisted(() => vi.fn());
+const mockGetByStripePaymentIntentId = vi.hoisted(() => vi.fn());
+const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("stripe", () => ({
   default: class MockStripe {
@@ -37,15 +51,20 @@ vi.mock("@ibatexas/domain", () => ({
   createPaymentCommandService: () => ({
     create: vi.fn().mockResolvedValue({ id: "pay_01", version: 1 }),
     transitionStatus: vi.fn().mockResolvedValue({ id: "pay_01", version: 1 }),
-    reconcileFromWebhook: vi.fn().mockResolvedValue({ id: "pay_01", version: 2 }),
+    reconcileFromWebhook: mockReconcileFromWebhook,
+    reconcileFromWebhookFromEnvelope: mockReconcileFromWebhookFromEnvelope,
   }),
   createPaymentQueryService: () => ({
     getActiveByOrderId: vi.fn().mockResolvedValue(null),
-    getByStripePaymentIntentId: vi.fn().mockResolvedValue(null),
+    getByStripePaymentIntentId: mockGetByStripePaymentIntentId,
   }),
   createOrderEventLogService: () => ({
-    append: vi.fn(),
+    append: vi.fn().mockResolvedValue(undefined),
   }),
+}));
+
+vi.mock("@ibatexas/llm-provider", () => ({
+  getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -91,6 +110,9 @@ function createStripeEvent(
   return {
     id,
     type,
+    // Stripe events always carry a unix-seconds `created` timestamp.
+    // Pinned so the envelope's deterministic-hash test sees a stable value.
+    created: 1_700_000_000,
     data: {
       object: {
         id: "pi_test_123",
@@ -109,6 +131,10 @@ describe("POST /api/webhooks/stripe — configuration checks", () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("returns 500 when STRIPE_WEBHOOK_SECRET is not set", async () => {
@@ -176,6 +202,10 @@ describe("POST /api/webhooks/stripe — idempotency", () => {
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("returns 200 with duplicate:true for already-processed event", async () => {
@@ -245,6 +275,10 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("fetches order, captures payment, publishes event", async () => {
@@ -392,6 +426,10 @@ describe("POST /api/webhooks/stripe — payment_intent.payment_failed", () => {
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("publishes order.payment_failed event", async () => {
@@ -458,6 +496,10 @@ describe("POST /api/webhooks/stripe — unknown event type", () => {
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("returns 200 and ignores unknown event types", async () => {
@@ -495,6 +537,10 @@ describe("POST /api/webhooks/stripe — charge.refunded", () => {
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("publishes order.refunded event with correct payload", async () => {
@@ -577,6 +623,10 @@ describe("POST /api/webhooks/stripe — charge.dispute.created", () => {
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("publishes order.disputed event with correct payload", async () => {
@@ -673,6 +723,10 @@ describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("publishes order.canceled event with correct payload", async () => {
@@ -755,6 +809,10 @@ describe("POST /api/webhooks/stripe — processing error", () => {
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // Default: no Payment row found — reconciliation path exits early.
+    // Tests that exercise the envelope path override this explicitly.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
   it("returns 500 and removes idempotency key on processing error", async () => {
@@ -787,5 +845,408 @@ describe("POST /api/webhooks/stripe — processing error", () => {
       expect.stringContaining("evt_test_123"),
       expect.any(Number),
     );
+  });
+});
+
+// ── Task 12 (M3) — kernel-gated webhook governance ─────────────────────────
+//
+// Every Stripe-driven payment reconcile flows through a
+// `payment.status.reconcile` IntentEnvelope adjudicated by the kernel
+// inside PaymentCommandService. These tests pin the envelope shape, the
+// deterministic-hash invariant (replay safety), and the decision-branch
+// behaviour so a future refactor cannot silently bypass the kernel gate.
+
+describe("POST /api/webhooks/stripe — kernel-gated reconciliation (Task 12)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
+  });
+
+  function setupReconcileContext() {
+    // A Payment row exists for the PI — reconcile path engages the envelope.
+    mockGetByStripePaymentIntentId.mockResolvedValue({
+      id: "pay_01",
+      orderId: "order_01",
+      status: "awaiting_payment",
+      method: "pix",
+    });
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    return mockRedis;
+  }
+
+  it("captures envelope with payment.status.reconcile kind, SYSTEM taint, system actor, and nonce = event.id", async () => {
+    setupReconcileContext();
+
+    const event = createStripeEvent(
+      "payment_intent.payment_failed",
+      { last_payment_error: { message: "Declined" } },
+      "evt_envelope_shape_01",
+    );
+    mockConstructEvent.mockReturnValue(event);
+
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 2 },
+    });
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockReconcileFromWebhookFromEnvelope).toHaveBeenCalledTimes(1);
+    const envelope = mockReconcileFromWebhookFromEnvelope.mock.calls[0]?.[0];
+    expect(envelope).toMatchObject({
+      version: 2,
+      kind: "payment.status.reconcile",
+      nonce: "evt_envelope_shape_01",
+      actor: {
+        principal: "system",
+        sessionId: "stripe-webhook:evt_envelope_shape_01",
+      },
+      taint: "SYSTEM",
+    });
+    // intentHash is derived from kind+payload+nonce+actor+taint — present
+    // and stable per the envelope contract.
+    expect(typeof envelope.intentHash).toBe("string");
+    expect(envelope.intentHash.length).toBeGreaterThan(0);
+    // Payload carries Stripe identity for ops traceability + the executor's
+    // ownership / idempotency / out-of-order guards.
+    expect(envelope.payload).toMatchObject({
+      paymentId: "pay_01",
+      newStatus: "payment_failed",
+      stripeEventId: "evt_envelope_shape_01",
+      expectedOrderId: "order_01",
+    });
+    expect(typeof envelope.payload.stripeEventTimestamp).toBe("string");
+  });
+
+  it("EXECUTE decision: publishes payment.status_changed and the legacy bare-arg method is NEVER called", async () => {
+    setupReconcileContext();
+
+    const event = createStripeEvent(
+      "payment_intent.payment_failed",
+      { last_payment_error: { message: "Card declined" } },
+      "evt_execute_01",
+    );
+    mockConstructEvent.mockReturnValue(event);
+
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 5 },
+    });
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // payment.status_changed reflects the kernel-approved reconcile.
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "payment.status_changed",
+      expect.objectContaining({
+        eventType: "payment.status_changed",
+        paymentId: "pay_01",
+        newStatus: "payment_failed",
+        version: 5,
+        stripeEventId: "evt_execute_01",
+      }),
+    );
+
+    // Bypass-detection: the legacy bare-arg method MUST stay dormant. If
+    // a future refactor reroutes through `reconcileFromWebhook`, this
+    // assertion blocks the merge.
+    expect(mockReconcileFromWebhook).not.toHaveBeenCalled();
+  });
+
+  it("REFUSE decision: handler does NOT publish status_changed and still returns 200 to Stripe", async () => {
+    setupReconcileContext();
+
+    const event = createStripeEvent(
+      "payment_intent.payment_failed",
+      { last_payment_error: { message: "Declined" } },
+      "evt_refuse_01",
+    );
+    mockConstructEvent.mockReturnValue(event);
+
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          code: "payment.terminal_state",
+          category: "BUSINESS_RULE",
+          userFacing: "Pagamento já está em estado final.",
+        },
+        basis: [],
+      },
+    });
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    // 200 to Stripe — governance-driven skips MUST NOT trigger Stripe retry storms.
+    expect(res.statusCode).toBe(200);
+
+    // Mutation was NOT executed → no payment.status_changed event.
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+      "payment.status_changed",
+      expect.anything(),
+    );
+    // Legacy bypass guard.
+    expect(mockReconcileFromWebhook).not.toHaveBeenCalled();
+  });
+
+  it("DEFER decision: handler skips the mutation and returns 200", async () => {
+    setupReconcileContext();
+
+    const event = createStripeEvent(
+      "payment_intent.payment_failed",
+      {},
+      "evt_defer_01",
+    );
+    mockConstructEvent.mockReturnValue(event);
+
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "DEFER",
+        signal: "payment.confirmation",
+        timeoutMs: 5 * 60_000,
+        basis: [],
+      },
+    });
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+      "payment.status_changed",
+      expect.anything(),
+    );
+  });
+
+  it("ESCALATE decision: handler skips the mutation and returns 200", async () => {
+    setupReconcileContext();
+
+    const event = createStripeEvent(
+      "payment_intent.payment_failed",
+      {},
+      "evt_escalate_01",
+    );
+    mockConstructEvent.mockReturnValue(event);
+
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "ESCALATE",
+        to: "human",
+        reason: "fraud_signal_detected",
+        basis: [],
+      },
+    });
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+      "payment.status_changed",
+      expect.anything(),
+    );
+  });
+
+  it("EXECUTE with null result (executor's idempotency/terminal/ownership guard): no NATS publish", async () => {
+    setupReconcileContext();
+
+    const event = createStripeEvent(
+      "payment_intent.payment_failed",
+      {},
+      "evt_execute_noop_01",
+    );
+    mockConstructEvent.mockReturnValue(event);
+
+    // EXECUTE but the executor's own guards (terminal / out-of-order /
+    // ownership mismatch / already-at-target) returned null without
+    // writing — matches legacy bare-arg semantics.
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: null,
+    });
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+      "payment.status_changed",
+      expect.anything(),
+    );
+  });
+
+  it("deterministic intentHash: rebuilding the envelope for the same Stripe event produces the same hash (replay-safe)", async () => {
+    setupReconcileContext();
+
+    const event = createStripeEvent(
+      "payment_intent.payment_failed",
+      {},
+      "evt_replay_safe_01",
+    );
+    mockConstructEvent.mockReturnValue(event);
+
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 2 },
+    });
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app1 = await buildTestServer();
+    await app1.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+    const firstEnvelope = mockReconcileFromWebhookFromEnvelope.mock.calls[0]?.[0];
+
+    // Reset and replay the SAME Stripe event through a fresh server. The
+    // envelope is rebuilt from scratch (no in-memory state survives) so
+    // any non-determinism in the envelope construction surfaces here.
+    mockReconcileFromWebhookFromEnvelope.mockClear();
+    mockGetByStripePaymentIntentId.mockResolvedValue({
+      id: "pay_01",
+      orderId: "order_01",
+      status: "awaiting_payment",
+      method: "pix",
+    });
+    mockGetRedisClient.mockResolvedValue(
+      createMockRedis({ set: vi.fn().mockResolvedValue("OK") }),
+    );
+    mockConstructEvent.mockReturnValue(event);
+
+    const app2 = await buildTestServer();
+    await app2.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+    const secondEnvelope = mockReconcileFromWebhookFromEnvelope.mock.calls[0]?.[0];
+
+    expect(firstEnvelope.intentHash).toBe(secondEnvelope.intentHash);
+    expect(firstEnvelope.nonce).toBe("evt_replay_safe_01");
+    expect(secondEnvelope.nonce).toBe("evt_replay_safe_01");
+  });
+
+  it("envelope is built for charge.refunded reconciliation as well (cross-event coverage)", async () => {
+    setupReconcileContext();
+
+    const event = {
+      id: "evt_refund_envelope_01",
+      type: "charge.refunded",
+      created: 1_700_000_000,
+      data: {
+        object: {
+          id: "ch_test_x",
+          amount: 10000,
+          amount_refunded: 10000,
+          payment_intent: "pi_test_123",
+          metadata: { medusaOrderId: "order_01" },
+        },
+      },
+    };
+    mockConstructEvent.mockReturnValue(event);
+
+    mockReconcileFromWebhookFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 3 },
+    });
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockReconcileFromWebhookFromEnvelope).toHaveBeenCalledTimes(1);
+    const envelope = mockReconcileFromWebhookFromEnvelope.mock.calls[0]?.[0];
+    expect(envelope).toMatchObject({
+      kind: "payment.status.reconcile",
+      nonce: "evt_refund_envelope_01",
+      taint: "SYSTEM",
+      actor: {
+        principal: "system",
+        sessionId: "stripe-webhook:evt_refund_envelope_01",
+      },
+    });
+    expect(envelope.payload.newStatus).toBe("refunded");
   });
 });
