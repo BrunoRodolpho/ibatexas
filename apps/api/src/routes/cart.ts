@@ -15,11 +15,25 @@
 // All session cart IDs are tracked in Redis active:carts set for abandoned-cart detection.
 
 import { randomUUID } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
-import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, MedusaRequestError, cancelStalePaymentIntent, loadSchedule, getMealPeriodFromSchedule } from "@ibatexas/tools";
+import {
+  getRedisClient,
+  rk,
+  estimateDelivery,
+  createCheckout,
+  reaisToCentavos,
+  MedusaRequestError,
+  cancelStalePaymentIntent,
+  loadSchedule,
+  getMealPeriodFromSchedule,
+  medusaAdjudicated,
+  MedusaAdjudicateRefusedError,
+  MedusaAdjudicateDeferredError,
+  MedusaAdjudicateNeedsReviewError,
+} from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { createCustomerService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderState } from "@ibatexas/pack-orders";
@@ -28,6 +42,40 @@ import { getAuditSink } from "@ibatexas/llm-provider";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+
+// ── P0-X9 migration helpers ────────────────────────────────────────────────
+//
+// Cart routes go through medusaAdjudicated for every mutating Medusa
+// egress. The wrapper enforces SYSTEM taint internally (per Task 17:
+// every Medusa hop originates inside the IbateXas process). The OUTER
+// customer-intent envelope (UNTRUSTED user actor) is handled by
+// runCustomerIntent on routes that need it (checkout already does).
+//
+// `mapMedusaErrorToReply` translates the wrapper's typed errors into
+// pt-BR HTTP responses: REFUSE → 403, DEFER → 202, NEEDS_REVIEW → 503.
+// Returns true when the error was handled (the caller must NOT send
+// another response).
+function mapMedusaErrorToReply(err: unknown, reply: FastifyReply): boolean {
+  if (err instanceof MedusaAdjudicateRefusedError) {
+    void reply.code(403).send({ error: err.userFacing, code: err.code });
+    return true;
+  }
+  if (err instanceof MedusaAdjudicateDeferredError) {
+    void reply.code(202).send({
+      status: "deferred",
+      signal: err.signal,
+      message: "Operação aguardando confirmação.",
+    });
+    return true;
+  }
+  if (err instanceof MedusaAdjudicateNeedsReviewError) {
+    void reply.code(503).send({
+      error: "Operação requer atendimento humano.",
+    });
+    return true;
+  }
+  return false;
+}
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 
@@ -163,16 +211,28 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         }
       }
 
-      const data = await medusaStore("/store/carts", {
-        method: "POST",
-        body: JSON.stringify(cartBody),
-        headers: { "Content-Type": "application/json" },
-      });
+      try {
+        const data = await medusaAdjudicated<Record<string, unknown>, unknown>({
+          scope: "store",
+          method: "POST",
+          path: "/store/carts",
+          payload: cartBody,
+          intentKind: "medusa.cart.create",
+          idempotencyKey: (request.headers["idempotency-key"] as string | undefined) ?? randomUUID(),
+          sourceSubject: `route:POST /api/cart:cust:${request.customerId ?? "guest"}`,
+          headers: { "Content-Type": "application/json" },
+          auditSink: getAuditSink(),
+          log: server.log,
+        });
 
-      const cartId = (data as { cart?: { id: string } }).cart?.id;
-      if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest");
+        const cartId = (data as { cart?: { id: string } }).cart?.id;
+        if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest");
 
-      return reply.code(201).send(data);
+        return reply.code(201).send(data);
+      } catch (err) {
+        if (mapMedusaErrorToReply(err, reply)) return reply;
+        throw err;
+      }
     },
   );
 
@@ -211,12 +271,24 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       // Ensure cart is tracked for abandoned-cart detection
       await trackCartId(request.params.id, request.customerId ? "customer" : "guest");
 
-      const data = await medusaStore(`/store/carts/${request.params.id}/line-items`, {
-        method: "POST",
-        body: JSON.stringify(request.body),
-        headers: { "Content-Type": "application/json" },
-      });
-      return reply.code(201).send(data);
+      try {
+        const data = await medusaAdjudicated<typeof request.body, unknown>({
+          scope: "store",
+          method: "POST",
+          path: `/store/carts/${request.params.id}/line-items`,
+          payload: request.body,
+          intentKind: "medusa.cart.line_items.add",
+          idempotencyKey: (request.headers["idempotency-key"] as string | undefined) ?? randomUUID(),
+          sourceSubject: `route:POST /api/cart/:id/line-items:cust:${request.customerId ?? "guest"}`,
+          headers: { "Content-Type": "application/json" },
+          auditSink: getAuditSink(),
+          log: server.log,
+        });
+        return reply.code(201).send(data);
+      } catch (err) {
+        if (mapMedusaErrorToReply(err, reply)) return reply;
+        throw err;
+      }
     },
   );
 
@@ -239,15 +311,24 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
-      const data = await medusaStore(
-        `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
-        {
+      try {
+        const data = await medusaAdjudicated<typeof request.body, unknown>({
+          scope: "store",
           method: "POST",
-          body: JSON.stringify(request.body),
+          path: `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
+          payload: request.body,
+          intentKind: "medusa.cart.line_items.update",
+          idempotencyKey: (request.headers["idempotency-key"] as string | undefined) ?? randomUUID(),
+          sourceSubject: `route:PATCH /api/cart/:id/line-items/:itemId:cust:${request.customerId ?? "guest"}`,
           headers: { "Content-Type": "application/json" },
-        },
-      );
-      return reply.send(data);
+          auditSink: getAuditSink(),
+          log: server.log,
+        });
+        return reply.send(data);
+      } catch (err) {
+        if (mapMedusaErrorToReply(err, reply)) return reply;
+        throw err;
+      }
     },
   );
 
@@ -269,11 +350,22 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
-      const data = await medusaStore(
-        `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
-        { method: "DELETE" },
-      );
-      return reply.send(data);
+      try {
+        const data = await medusaAdjudicated<undefined, unknown>({
+          scope: "store",
+          method: "DELETE",
+          path: `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
+          intentKind: "medusa.cart.line_items.remove",
+          idempotencyKey: (request.headers["idempotency-key"] as string | undefined) ?? randomUUID(),
+          sourceSubject: `route:DELETE /api/cart/:id/line-items/:itemId:cust:${request.customerId ?? "guest"}`,
+          auditSink: getAuditSink(),
+          log: server.log,
+        });
+        return reply.send(data);
+      } catch (err) {
+        if (mapMedusaErrorToReply(err, reply)) return reply;
+        throw err;
+      }
     },
   );
 
@@ -309,13 +401,34 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       // Add each item sequentially (Medusa store API doesn't support batch add)
       for (const item of items) {
         try {
-          await medusaStore(`/store/carts/${id}/line-items`, {
+          await medusaAdjudicated<{ variant_id: string; quantity: number }, unknown>({
+            scope: "store",
             method: "POST",
-            body: JSON.stringify({ variant_id: item.variantId, quantity: item.quantity }),
+            path: `/store/carts/${id}/line-items`,
+            payload: { variant_id: item.variantId, quantity: item.quantity },
+            intentKind: "medusa.cart.line_items.add",
+            idempotencyKey: `sync:${id}:${item.variantId}:${randomUUID()}`,
+            sourceSubject: `route:POST /api/cart/:id/sync:cust:${request.customerId ?? "guest"}`,
             headers: { "Content-Type": "application/json" },
+            auditSink: getAuditSink(),
+            log: server.log,
           });
         } catch (err) {
-          server.log.warn({ variantId: item.variantId, err }, "line item Medusa sync failed — skipping");
+          // REFUSE/DEFER/REVIEW for a single item should not abort the
+          // whole sync — log and continue, matching the pre-migration
+          // behaviour of swallowing transport-level errors.
+          if (
+            err instanceof MedusaAdjudicateRefusedError ||
+            err instanceof MedusaAdjudicateDeferredError ||
+            err instanceof MedusaAdjudicateNeedsReviewError
+          ) {
+            server.log.warn(
+              { variantId: item.variantId, kind: err.name },
+              "line item Medusa sync refused/deferred — skipping",
+            );
+          } else {
+            server.log.warn({ variantId: item.variantId, err }, "line item Medusa sync failed — skipping");
+          }
         }
       }
 
@@ -338,12 +451,24 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      const data = await medusaStore(`/store/carts/${request.params.id}/promotions`, {
-        method: "POST",
-        body: JSON.stringify(request.body),
-        headers: { "Content-Type": "application/json" },
-      });
-      return reply.send(data);
+      try {
+        const data = await medusaAdjudicated<typeof request.body, unknown>({
+          scope: "store",
+          method: "POST",
+          path: `/store/carts/${request.params.id}/promotions`,
+          payload: request.body,
+          intentKind: "medusa.cart.promotion.apply",
+          idempotencyKey: (request.headers["idempotency-key"] as string | undefined) ?? randomUUID(),
+          sourceSubject: `route:POST /api/cart/:id/promotions:cust:${request.customerId ?? "guest"}`,
+          headers: { "Content-Type": "application/json" },
+          auditSink: getAuditSink(),
+          log: server.log,
+        });
+        return reply.send(data);
+      } catch (err) {
+        if (mapMedusaErrorToReply(err, reply)) return reply;
+        throw err;
+      }
     },
   );
 
@@ -359,29 +484,50 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      // Medusa v2: payment sessions live on payment collections, not carts
-      const cartData = await medusaStore(`/store/carts/${request.params.id}`) as {
-        cart?: { payment_collection?: { id: string } };
-      };
-      let pcId = cartData.cart?.payment_collection?.id;
-      if (!pcId) {
-        const pcData = await medusaStore(`/store/payment-collections`, {
+      try {
+        // Medusa v2: payment sessions live on payment collections, not carts.
+        // The cart GET stays on bare medusaStore (reads are not governed).
+        const cartData = await medusaStore(`/store/carts/${request.params.id}`) as {
+          cart?: { payment_collection?: { id: string } };
+        };
+        let pcId = cartData.cart?.payment_collection?.id;
+        const subject = `route:POST /api/cart/:id/payment-sessions:cust:${request.customerId ?? "guest"}`;
+        if (!pcId) {
+          const pcData = await medusaAdjudicated<{ cart_id: string }, { payment_collection?: { id: string } }>({
+            scope: "store",
+            method: "POST",
+            path: "/store/payment-collections",
+            payload: { cart_id: request.params.id },
+            intentKind: "medusa.payment_collection.create",
+            idempotencyKey: (request.headers["idempotency-key"] as string | undefined) ?? `pc:${request.params.id}:${randomUUID()}`,
+            sourceSubject: subject,
+            headers: { "Content-Type": "application/json" },
+            auditSink: getAuditSink(),
+            log: server.log,
+          });
+          pcId = pcData.payment_collection?.id;
+        }
+        if (!pcId) {
+          return reply.status(500).send({ error: "Failed to create payment collection" });
+        }
+        const body = (request.body as { provider_id?: string }) ?? {};
+        const data = await medusaAdjudicated<typeof body, unknown>({
+          scope: "store",
           method: "POST",
+          path: `/store/payment-collections/${pcId}/payment-sessions`,
+          payload: body,
+          intentKind: "medusa.payment_session.create",
+          idempotencyKey: (request.headers["idempotency-key"] as string | undefined) ?? `ps:${pcId}:${randomUUID()}`,
+          sourceSubject: subject,
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cart_id: request.params.id }),
-        }) as { payment_collection?: { id: string } };
-        pcId = pcData.payment_collection?.id;
+          auditSink: getAuditSink(),
+          log: server.log,
+        });
+        return reply.send(data);
+      } catch (err) {
+        if (mapMedusaErrorToReply(err, reply)) return reply;
+        throw err;
       }
-      if (!pcId) {
-        return reply.status(500).send({ error: "Failed to create payment collection" });
-      }
-      const body = (request.body as { provider_id?: string }) ?? {};
-      const data = await medusaStore(`/store/payment-collections/${pcId}/payment-sessions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      return reply.send(data);
     },
   );
 
@@ -509,9 +655,25 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
             // Cart is clean — just clear old items before re-adding
             const existingItems = existingCart.cart?.items ?? [];
             for (const item of existingItems) {
-              await medusaStore(`/store/carts/${cartId}/line-items/${item.id}`, {
+              await medusaAdjudicated<undefined, unknown>({
+                scope: "store",
                 method: "DELETE",
-              }).catch(() => {});
+                path: `/store/carts/${cartId}/line-items/${item.id}`,
+                intentKind: "medusa.cart.line_items.remove",
+                idempotencyKey: `checkout-clear:${cartId}:${item.id}`,
+                sourceSubject: `route:POST /api/cart/checkout:cust:${request.customerId ?? "guest"}`,
+                auditSink: getAuditSink(),
+                log: server.log,
+              }).catch((err) => {
+                // Best-effort clear — matches the pre-migration catch(() => {})
+                // semantics. The kernel may REFUSE on a terminal cart; that's
+                // surfaced via the wrapper's typed error and silenced here so
+                // the checkout flow can still create a fresh cart below.
+                server.log.warn(
+                  { err: (err as Error).message ?? String(err), itemId: item.id },
+                  "[cart/checkout] clear-existing-item failed — continuing",
+                );
+              });
             }
           }
         } catch (err) {
@@ -537,11 +699,18 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
               // Fall through — create as guest
             }
           }
-          const newCart = await medusaStore("/store/carts", {
+          const newCart = await medusaAdjudicated<Record<string, unknown>, { cart?: { id: string } }>({
+            scope: "store",
             method: "POST",
-            body: JSON.stringify(newCartBody),
+            path: "/store/carts",
+            payload: newCartBody,
+            intentKind: "medusa.cart.create",
+            idempotencyKey: `checkout-new-cart:${request.body.cartId}:${randomUUID()}`,
+            sourceSubject: `route:POST /api/cart/checkout:cust:${request.customerId ?? "guest"}`,
             headers: { "Content-Type": "application/json" },
-          }) as { cart?: { id: string } };
+            auditSink: getAuditSink(),
+            log: server.log,
+          });
           if (!newCart.cart?.id) {
             return reply.status(500).send({ statusCode: 500, error: "Internal", message: "Não foi possível criar um novo carrinho." });
           }
@@ -551,14 +720,24 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
 
         // Add local items to the (possibly new) cart
         for (const item of localItems) {
-          await medusaStore(`/store/carts/${cartId}/line-items`, {
+          await medusaAdjudicated<
+            { variant_id: string; quantity: number; metadata?: { productType: string } },
+            unknown
+          >({
+            scope: "store",
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+            path: `/store/carts/${cartId}/line-items`,
+            payload: {
               variant_id: item.variantId,
               quantity: item.quantity,
-              metadata: item.productType ? { productType: item.productType } : undefined,
-            }),
+              ...(item.productType ? { metadata: { productType: item.productType } } : {}),
+            },
+            intentKind: "medusa.cart.line_items.add",
+            idempotencyKey: `checkout-add:${cartId}:${item.variantId}:${randomUUID()}`,
+            sourceSubject: `route:POST /api/cart/checkout:cust:${request.customerId ?? "guest"}`,
+            headers: { "Content-Type": "application/json" },
+            auditSink: getAuditSink(),
+            log: server.log,
           });
         }
       }
