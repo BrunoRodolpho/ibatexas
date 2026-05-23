@@ -810,7 +810,7 @@ importers:
         version: 2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6)
       '@medusajs/medusa':
         specifier: ^2.13.5
-        version: 2.13.5(@medusajs/admin-sdk@2.13.5)(@medusajs/cli@2.13.5(@types/node@22.19.15))(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(@medusajs/icons@2.13.5(react@18.3.1))(@medusajs/ui@4.1.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(awilix@8.0.1)(lightningcss@1.32.0)(posthog-node@5.28.11(rxjs@7.8.2))(react-dom@18.3.1(react@18.3.1))(react-router-dom@6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+        version: 2.13.5(@medusajs/admin-sdk@2.13.5)(@medusajs/cli@2.13.5(@types/node@22.19.15))(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(@medusajs/icons@2.13.5(react@18.3.1))(@medusajs/ui@4.1.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(awilix@8.0.1)(lightningcss@1.32.0)(picomatch@4.0.4)(posthog-node@5.28.11(rxjs@7.8.2))(react-dom@18.3.1(react@18.3.1))(react-router-dom@6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
       '@medusajs/payment-stripe':
         specifier: ^2.13.5
         version: 2.13.5(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))
@@ -908,7 +908,7 @@ importers:
         version: 9.39.4(jiti@2.6.1)
       eslint-config-next:
         specifier: ^16.2.0
-        version: 16.2.2(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
+        version: 16.2.2(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
       tailwindcss:
         specifier: ^4.2.0
         version: 4.2.2
@@ -1063,7 +1063,7 @@ importers:
         version: 9.39.4(jiti@2.6.1)
       eslint-plugin-import:
         specifier: ^2.29.0
-        version: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1))
+        version: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
@@ -1277,6 +1277,9 @@ importers:
       '@adjudicate/core':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/core
+      '@adjudicate/primitives':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/primitives
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain
@@ -12452,10 +12455,10 @@ snapshots:
 
   '@lukeed/ms@2.0.2': {}
 
-  '@medusajs/admin-bundler@2.13.5(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)':
+  '@medusajs/admin-bundler@2.13.5(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(lightningcss@1.32.0)(picomatch@4.0.4)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)':
     dependencies:
       '@medusajs/admin-shared': 2.13.5
-      '@medusajs/admin-vite-plugin': 2.13.5(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))
+      '@medusajs/admin-vite-plugin': 2.13.5(picomatch@4.0.4)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))
       '@medusajs/dashboard': 2.13.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(typescript@5.9.3)
       '@vitejs/plugin-react': 4.7.0(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))
       autoprefixer: 10.4.27(postcss@8.5.8)
@@ -12494,14 +12497,14 @@ snapshots:
 
   '@medusajs/admin-shared@2.13.5': {}
 
-  '@medusajs/admin-vite-plugin@2.13.5(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))':
+  '@medusajs/admin-vite-plugin@2.13.5(picomatch@4.0.4)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))':
     dependencies:
       '@babel/parser': 7.25.6
       '@babel/traverse': 7.25.6
       '@babel/types': 7.25.6
       '@medusajs/admin-shared': 2.13.5
       chokidar: 3.6.0
-      fdir: 6.1.1
+      fdir: 6.1.1(picomatch@4.0.4)
       magic-string: 0.30.5
       outdent: 0.8.0
       picocolors: 1.1.1
@@ -12852,11 +12855,11 @@ snapshots:
     dependencies:
       '@medusajs/framework': 2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6)
 
-  '@medusajs/medusa@2.13.5(@medusajs/admin-sdk@2.13.5)(@medusajs/cli@2.13.5(@types/node@22.19.15))(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(@medusajs/icons@2.13.5(react@18.3.1))(@medusajs/ui@4.1.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(awilix@8.0.1)(lightningcss@1.32.0)(posthog-node@5.28.11(rxjs@7.8.2))(react-dom@18.3.1(react@18.3.1))(react-router-dom@6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)':
+  '@medusajs/medusa@2.13.5(@medusajs/admin-sdk@2.13.5)(@medusajs/cli@2.13.5(@types/node@22.19.15))(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(@medusajs/icons@2.13.5(react@18.3.1))(@medusajs/ui@4.1.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(awilix@8.0.1)(lightningcss@1.32.0)(picomatch@4.0.4)(posthog-node@5.28.11(rxjs@7.8.2))(react-dom@18.3.1(react@18.3.1))(react-router-dom@6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)':
     dependencies:
       '@inquirer/checkbox': 2.5.0
       '@inquirer/input': 2.3.0
-      '@medusajs/admin-bundler': 2.13.5(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+      '@medusajs/admin-bundler': 2.13.5(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(lightningcss@1.32.0)(picomatch@4.0.4)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
       '@medusajs/analytics': 2.13.5(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))
       '@medusajs/analytics-local': 2.13.5(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))
       '@medusajs/analytics-posthog': 2.13.5(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(posthog-node@5.28.11(rxjs@7.8.2))
@@ -18621,6 +18624,26 @@ snapshots:
 
   escape-string-regexp@4.0.0: {}
 
+  eslint-config-next@16.2.2(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3):
+    dependencies:
+      '@next/eslint-plugin-next': 16.2.2
+      eslint: 9.39.4(jiti@2.6.1)
+      eslint-import-resolver-node: 0.3.10
+      eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1))
+      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
+      eslint-plugin-jsx-a11y: 6.10.2(eslint@9.39.4(jiti@2.6.1))
+      eslint-plugin-react: 7.37.5(eslint@9.39.4(jiti@2.6.1))
+      eslint-plugin-react-hooks: 7.0.1(eslint@9.39.4(jiti@2.6.1))
+      globals: 16.4.0
+      typescript-eslint: 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
+    optionalDependencies:
+      typescript: 5.9.3
+    transitivePeerDependencies:
+      - '@typescript-eslint/parser'
+      - eslint-import-resolver-webpack
+      - eslint-plugin-import-x
+      - supports-color
+
   eslint-config-next@16.2.2(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3):
     dependencies:
       '@next/eslint-plugin-next': 16.2.2
@@ -18664,13 +18687,29 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  eslint-module-utils@2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint@9.39.4(jiti@2.6.1)):
+  eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1)):
+    dependencies:
+      '@nolyfill/is-core-module': 1.0.39
+      debug: 4.4.3(supports-color@8.1.1)
+      eslint: 9.39.4(jiti@2.6.1)
+      get-tsconfig: 4.13.7
+      is-bun-module: 2.0.0
+      stable-hash: 0.0.5
+      tinyglobby: 0.2.15
+      unrs-resolver: 1.11.1
+    optionalDependencies:
+      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
+    transitivePeerDependencies:
+      - supports-color
+
+  eslint-module-utils@2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1)):
     dependencies:
       debug: 3.2.7
     optionalDependencies:
       '@typescript-eslint/parser': 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
       eslint: 9.39.4(jiti@2.6.1)
       eslint-import-resolver-node: 0.3.10
+      eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0)(eslint@9.39.4(jiti@2.6.1))
     transitivePeerDependencies:
       - supports-color
 
@@ -18684,6 +18723,35 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1)):
+    dependencies:
+      '@rtsao/scc': 1.1.0
+      array-includes: 3.1.9
+      array.prototype.findlastindex: 1.2.6
+      array.prototype.flat: 1.3.3
+      array.prototype.flatmap: 1.3.3
+      debug: 3.2.7
+      doctrine: 2.1.0
+      eslint: 9.39.4(jiti@2.6.1)
+      eslint-import-resolver-node: 0.3.10
+      eslint-module-utils: 2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
+      hasown: 2.0.2
+      is-core-module: 2.16.1
+      is-glob: 4.0.3
+      minimatch: 10.2.4
+      object.fromentries: 2.0.8
+      object.groupby: 1.0.3
+      object.values: 1.2.1
+      semver: 6.3.1
+      string.prototype.trimend: 1.0.9
+      tsconfig-paths: 3.15.0
+    optionalDependencies:
+      '@typescript-eslint/parser': 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
+    transitivePeerDependencies:
+      - eslint-import-resolver-typescript
+      - eslint-import-resolver-webpack
+      - supports-color
+
   eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1)):
     dependencies:
       '@rtsao/scc': 1.1.0
@@ -18695,7 +18763,7 @@ snapshots:
       doctrine: 2.1.0
       eslint: 9.39.4(jiti@2.6.1)
       eslint-import-resolver-node: 0.3.10
-      eslint-module-utils: 2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint@9.39.4(jiti@2.6.1))
+      eslint-module-utils: 2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
       hasown: 2.0.2
       is-core-module: 2.16.1
       is-glob: 4.0.3
@@ -19078,7 +19146,9 @@ snapshots:
       reusify: 1.1.0
       xtend: 4.0.2
 
-  fdir@6.1.1: {}
+  fdir@6.1.1(picomatch@4.0.4):
+    optionalDependencies:
+      picomatch: 4.0.4
 
   fdir@6.5.0(picomatch@4.0.4):
     optionalDependencies:

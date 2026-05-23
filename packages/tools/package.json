@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@adjudicate/core": "workspace:*",
+    "@adjudicate/primitives": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",

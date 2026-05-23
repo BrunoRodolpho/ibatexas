@@ -138,6 +138,18 @@ export { indexProduct, deleteProductFromIndex, indexProductsBatch } from "./type
 
 // ── Medusa HTTP client ────────────────────────────────────────────────────────
 export { medusaAdmin, medusaStore, MedusaRequestError, reaisToCentavos } from "./medusa/client.js"
+export {
+  medusaAdjudicated,
+  detectMedusaIntentKind,
+  medusaWrapperPolicyBundle,
+  MedusaAdjudicateRefusedError,
+  MedusaAdjudicateDeferredError,
+  MedusaAdjudicateNeedsReviewError,
+  MEDUSA_INTENT_KINDS,
+  type MedusaAdjudicatedArgs,
+  type MedusaIntentKind,
+  type MedusaWrapperState,
+} from "./medusa/adjudicated.js"
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"
