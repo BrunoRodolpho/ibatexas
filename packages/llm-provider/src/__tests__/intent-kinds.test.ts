@@ -1,10 +1,9 @@
 // Tests for KNOWN_INTENT_KINDS — the cross-Pack intent union consumed by
 // `validateEnforceConfig` from `@adjudicate/core/kernel`.
 //
-// The set covers four Packs today (pack-orders + pack-reservations +
-// pack-whatsapp + pack-payments-pix). Future Packs land in task 21 and
-// must extend `intent-kinds.ts` — the TODO markers there are the
-// contract.
+// The set covers five Packs today (pack-orders + pack-reservations +
+// pack-whatsapp + pack-payments-pix + pack-customer-onboarding). Future
+// Packs (loyalty, promotions, auth) extend `intent-kinds.ts` further.
 
 import { describe, it, expect } from "vitest"
 import { KNOWN_INTENT_KINDS } from "../intent-kinds.js"
@@ -52,12 +51,26 @@ describe("KNOWN_INTENT_KINDS", () => {
     expect(KNOWN_INTENT_KINDS.has("pix.charge.refund")).toBe(true)
   })
 
+  it("contains every customer.* intent kind from @ibatexas/pack-customer-onboarding", () => {
+    // Mirrors the CustomerOnboardingIntentKind union in
+    // packages/pack-customer-onboarding/src/types.ts.
+    expect(KNOWN_INTENT_KINDS.has("customer.create")).toBe(true)
+    expect(KNOWN_INTENT_KINDS.has("customer.profile.update")).toBe(true)
+    expect(KNOWN_INTENT_KINDS.has("customer.preferences.update")).toBe(true)
+    expect(KNOWN_INTENT_KINDS.has("customer.pix.details.save")).toBe(true)
+    expect(KNOWN_INTENT_KINDS.has("customer.address.add")).toBe(true)
+    expect(KNOWN_INTENT_KINDS.has("customer.address.remove")).toBe(true)
+    expect(KNOWN_INTENT_KINDS.has("customer.anonymize")).toBe(true)
+    expect(KNOWN_INTENT_KINDS.has("customer.anonymize.cancel")).toBe(true)
+  })
+
   it("excludes kinds from packs not yet built", () => {
-    // These will be added in task 21 — see TODO markers in
-    // intent-kinds.ts. Until then, they MUST NOT be in the set.
-    expect(KNOWN_INTENT_KINDS.has("customer.create")).toBe(false)
-    // Whatsapp kinds owned by future tasks (handoff.request,
-    // followup.schedule, outreach.send per governance taxonomy).
+    // Future-pack kinds (session/loyalty/welcome_credit go to subsequent
+    // packs per task-21 scope notes; whatsapp.handoff/followup/outreach
+    // belong to follow-up whatsapp tasks). They MUST NOT be in the set.
+    expect(KNOWN_INTENT_KINDS.has("customer.session.create")).toBe(false)
+    expect(KNOWN_INTENT_KINDS.has("customer.loyalty.redeem")).toBe(false)
+    expect(KNOWN_INTENT_KINDS.has("customer.welcome_credit.grant")).toBe(false)
     expect(KNOWN_INTENT_KINDS.has("whatsapp.handoff.request")).toBe(false)
     expect(KNOWN_INTENT_KINDS.has("whatsapp.followup.schedule")).toBe(false)
     expect(KNOWN_INTENT_KINDS.has("whatsapp.outreach.send")).toBe(false)
@@ -71,15 +84,16 @@ describe("KNOWN_INTENT_KINDS", () => {
     expect(KNOWN_INTENT_KINDS.has("ORDER.CART.ENSURE")).toBe(false)
   })
 
-  it("has the expected size today (10 order + 8 reservation + 3 whatsapp + 3 pix = 24)", () => {
+  it("has the expected size today (10 order + 8 reservation + 3 whatsapp + 3 pix + 8 customer = 32)", () => {
     // This number changes when:
     //   - pack-orders adds/removes an OrderIntentKind
     //   - pack-reservations adds/removes a ReservationIntentKind
     //   - pack-whatsapp adds/removes a WhatsAppIntentKind
     //   - pack-payments-pix adds/removes a PixIntentKind
-    //   - task 21 lands and extends the union
+    //   - pack-customer-onboarding adds/removes a CustomerOnboardingIntentKind
+    //   - a future Pack (auth, loyalty, promotions) extends the union
     // Update the literal below when any of the above happens.
-    expect(KNOWN_INTENT_KINDS.size).toBe(24)
+    expect(KNOWN_INTENT_KINDS.size).toBe(32)
   })
 
   it("returns a Set whose entries are strings", () => {
