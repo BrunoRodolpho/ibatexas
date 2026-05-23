@@ -100,6 +100,25 @@ export { LedgerUnavailableError } from "./intent-ledger.js"
 // outside the responder hot path (e.g. defer-resolver on resume).
 export { getAuditSink } from "./intent-audit-wiring.js"
 
+// Audit Postgres writer adapter (task 19 / M4). Exposed so the NATS audit
+// archiver subscriber (`apps/api/src/subscribers/audit-consumer.ts`) can
+// build its own `PostgresWriter` against the same SQL contract the in-
+// process sink uses. Keeps the INSERT shape in one place.
+export {
+  createPostgresAuditWriter,
+  type PrismaRawExecutor,
+  type CreatePostgresAuditWriterOptions,
+} from "./postgres-audit-writer.js"
+
+// Redis spill storage (task 19 / M4). Exposed for ops tooling that wants
+// to surface `getRedisSpillSize` on a /health route.
+export {
+  createRedisSpillStorage,
+  getRedisSpillSize,
+  type RedisListClient,
+  type RedisSpillStorageOptions,
+} from "./redis-spill-storage.js"
+
 // Audit redactor (task 18 / M4). Exposed so future Packs or operator tools
 // can construct a custom redactor (e.g. for replay-with-extra-rules) without
 // reaching into the internal module path.

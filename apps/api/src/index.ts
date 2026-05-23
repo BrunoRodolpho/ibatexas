@@ -13,6 +13,7 @@ import {
   startDeferResolverSubscriber,
 } from "./subscribers/defer-resolver.js";
 import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
+import { startAuditConsumer } from "./subscribers/audit-consumer.js";
 import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
@@ -104,6 +105,12 @@ const start = async (): Promise<void> => {
       // window. Wired alongside the defer-resolver so both subscribe to
       // the timeout fan-out from `defer-timeout-sweeper`.
       await startAnonymizeGraceResolverSubscriber(server.log);
+      // [task 19] M4 audit-postgres redundancy consumer. Subscribes to
+      // `audit.intent.decision.v1` and writes records durably to Postgres
+      // — decoupled-archiver pattern. No-op when IBX_AUDIT_POSTGRES_ENABLED
+      // is not "true"; pairs with the in-process Postgres sink composed by
+      // `intent-audit-wiring.ts`. Both flip together per runbook 04.
+      await startAuditConsumer(server.log);
       // [F1 follow-up] Bridge the resume-path subscriber to the responder's
       // intent-dispatcher (task 02). Without this wire, resumed EXECUTE
       // decisions only emit audit records — handlers (handoff_to_human,

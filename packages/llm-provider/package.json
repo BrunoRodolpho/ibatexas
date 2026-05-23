@@ -28,6 +28,7 @@
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@adjudicate/audit": "workspace:*",
+    "@adjudicate/audit-postgres": "workspace:*",
     "@adjudicate/core": "workspace:*",
     "@adjudicate/locales-pt-br": "workspace:*",
     "@adjudicate/pack-payments-pix": "workspace:*",
