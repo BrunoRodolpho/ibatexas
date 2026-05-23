@@ -31,6 +31,62 @@ import { adminPaymentRoutes } from "./payments.js";
 import { adminOrderActionRoutes } from "./order-actions.js";
 import { adminBannerRoutes } from "./banner.js";
 
+// ── W4 P1-H — API-key role registry ─────────────────────────────────────
+//
+// `ADMIN_API_KEY_ROLES_JSON` maps an API KEY → role (`"MANAGER"|"OWNER"`).
+// At startup we parse the JSON and pre-compute Buffers for timing-safe
+// compare. The admin guard sets `request.adminApiKeyRole` to the matched
+// role; downstream `requireManagerRole` / `requireOwnerRole` gate on it.
+//
+// An API key NOT in the registry passes the outer admin guard (it's in
+// `ADMIN_API_KEYS`, so the key itself is authentic) but does NOT receive
+// a role. Routes guarded by `requireManagerRole` / `requireOwnerRole`
+// will then return 403, defeating the "one leaked key = full power"
+// failure mode (audit 05 §S2).
+//
+// JSON shape:
+//   { "<api-key-string>": "MANAGER", "<other-key-string>": "OWNER" }
+//
+// Production guidance: every API key listed in `ADMIN_API_KEY` SHOULD
+// also have an entry in `ADMIN_API_KEY_ROLES_JSON`. Keys without a
+// registry entry are downgraded to "no role" → only read-only routes
+// (those without `requireManagerRole`/`requireOwnerRole`) remain
+// accessible.
+type AdminApiKeyRole = "OWNER" | "MANAGER";
+
+function parseApiKeyRolesRegistry(server: FastifyInstance): ReadonlyMap<string, AdminApiKeyRole> {
+  const raw = process.env.ADMIN_API_KEY_ROLES_JSON ?? "";
+  if (raw.length === 0) {
+    return new Map();
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    const out = new Map<string, AdminApiKeyRole>();
+    for (const [key, role] of Object.entries(parsed)) {
+      if (role !== "OWNER" && role !== "MANAGER") {
+        server.log.warn(
+          { key: `${key.slice(0, 4)}...`, role },
+          "ADMIN_API_KEY_ROLES_JSON entry has unsupported role — skipping",
+        );
+        continue;
+      }
+      out.set(key, role);
+    }
+    return out;
+  } catch (err) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        `ADMIN_API_KEY_ROLES_JSON is malformed: ${(err as Error).message}`,
+      );
+    }
+    server.log.warn(
+      { err: (err as Error).message },
+      "ADMIN_API_KEY_ROLES_JSON malformed — proceeding with empty registry",
+    );
+    return new Map();
+  }
+}
+
 export async function adminRoutes(server: FastifyInstance): Promise<void> {
   // Support comma-separated list of valid API keys for rotation
   const ADMIN_API_KEYS = (process.env.ADMIN_API_KEY ?? "")
@@ -44,6 +100,23 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
         throw new Error("ADMIN_API_KEY entries must be at least 32 characters");
       }
       server.log.warn("ADMIN_API_KEY entry shorter than 32 chars — insecure");
+    }
+  }
+
+  // P1-H — parse the API-key role registry. Empty map = no API key
+  // receives a role (all destructive routes fail-closed).
+  const ADMIN_API_KEY_ROLES = parseApiKeyRolesRegistry(server);
+
+  // P1-H production warning: any API key in ADMIN_API_KEYS missing
+  // from the role registry will fail-closed on every Manager / Owner
+  // gated route. Log a one-shot warning at boot so operators notice.
+  for (const key of ADMIN_API_KEYS) {
+    if (!ADMIN_API_KEY_ROLES.has(key)) {
+      server.log.warn(
+        { key: `${key.slice(0, 4)}...` },
+        "ADMIN_API_KEY entry has no ADMIN_API_KEY_ROLES_JSON role mapping — " +
+          "destructive admin routes will refuse this key (W4 P1-H fail-closed).",
+      );
     }
   }
 
@@ -74,13 +147,20 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
     // Timing-safe comparison against all valid keys
     const keyBuf = Buffer.from(key);
-    const isValid = ADMIN_API_KEYS.some((validKey) => {
+    const matched = ADMIN_API_KEYS.find((validKey) => {
       const expectedBuf = Buffer.from(validKey);
       if (keyBuf.length !== expectedBuf.length) return false;
       return timingSafeEqual(keyBuf, expectedBuf);
     });
-    if (!isValid) {
+    if (!matched) {
       return reply.code(401).send({ error: "Unauthorized" });
+    }
+    // P1-H — if the matched key has a role mapping in the registry,
+    // attach it to the request. Otherwise `request.adminApiKeyRole`
+    // stays undefined and downstream role gates fail-closed.
+    const role = ADMIN_API_KEY_ROLES.get(matched);
+    if (role) {
+      request.adminApiKeyRole = role;
     }
   });
 
