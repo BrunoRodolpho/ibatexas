@@ -184,15 +184,21 @@ describe("NATS Client — P0-12 authentication wiring", () => {
     expect(opts.tls).toEqual({})
   })
 
-  it("[P0-12] emits production security warning when no auth + no TLS", async () => {
+  it("[P0-12 / NEW-P0-X3] THROWS in production when no auth + no TLS (fail-closed)", async () => {
+    // Pre-NEW-P0-X3 the function emitted a console.error and proceeded —
+    // leaving audit PII broadcastable to anyone reaching the NATS port.
+    // Post-fix the function throws and the process exits non-zero at boot
+    // so ops must provision creds before deploying.
     process.env.NODE_ENV = "production"
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined)
     try {
-      await getNatsConnection()
+      await expect(getNatsConnection()).rejects.toThrow(
+        /production requires NATS auth/i,
+      )
       const messages = spy.mock.calls
         .map((c) => (c[0] as string) ?? "")
         .join("\n")
-      expect(messages).toContain("NATS connection has no authentication")
+      // The breadcrumb is still written to stderr immediately before throw.
       expect(messages).toContain("NATS-AUTH-REQUIREMENTS")
     } finally {
       spy.mockRestore()

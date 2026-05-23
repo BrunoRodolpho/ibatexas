@@ -110,23 +110,35 @@ export async function getNatsConnection(): Promise<NatsConnection> {
   const authenticator = await resolveAuthenticator()
   const tls = await resolveTls()
 
-  // P0-12: emit a loud warning when production starts without auth.
-  // This does NOT block the connect — flipping the auth on is an
-  // operator step. See docs/adjudicate-migration/remediation/
-  // NATS-AUTH-REQUIREMENTS.md for the runbook.
+  // NEW-P0-X3 — fail-CLOSED in production.
+  //
+  // Pre-fix (W4 P0-12 added the code path but did not flip polarity):
+  // when NODE_ENV=production AND no authenticator AND no TLS, this
+  // function emitted a `console.error` and PROCEEDED with the connect.
+  // Any process reaching the NATS port could:
+  //   (a) subscribe to `ibatexas.audit.intent.decision.v1` → PII exfiltration
+  //   (b) publish forged `payment.status_changed` → forged resume signals
+  //   (c) publish forged `intent.defer.timeout` → forged LGPD anonymize
+  // The console.error was a sentinel an operator could miss in a busy
+  // deploy. The correct posture is to refuse to bring up the connection
+  // until creds (or at minimum TLS) are provisioned.
+  //
+  // Post-fix: throw an Error. The process exits non-zero at boot; ops
+  // sets NATS_CREDS_PATH / NATS_NKEY_SEED and re-deploys. The console.error
+  // is preserved as a breadcrumb in stderr right before the throw.
   if (
     process.env.NODE_ENV === "production" &&
     authenticator === undefined &&
     tls === undefined
   ) {
-    console.error(
-      "[nats][SECURITY] NATS connection has no authentication and no TLS in " +
-        "production. Any process reaching the NATS port can read audit " +
-        "records and publish forged events. Provision credentials and set " +
-        "NATS_CREDS_PATH or NATS_NKEY_SEED, plus NATS_TLS_CA + " +
-        "NATS_TLS_REQUIRED=true. See docs/adjudicate-migration/remediation/" +
-        "NATS-AUTH-REQUIREMENTS.md.",
-    )
+    const securityMessage =
+      "[nats][SECURITY] production requires NATS auth (NATS_CREDS_PATH or " +
+      "NATS_NKEY_SEED) and/or TLS (NATS_TLS_CA + NATS_TLS_REQUIRED=true). " +
+      "Without authentication any process reaching the NATS port can read " +
+      "audit records and publish forged events. See docs/adjudicate-" +
+      "migration/remediation/NATS-AUTH-REQUIREMENTS.md."
+    console.error(securityMessage)
+    throw new Error(securityMessage)
   }
 
   const opts: ConnectionOptions = {

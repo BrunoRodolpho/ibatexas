@@ -1,0 +1,11 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/packages/nats-client
+
+ ✓ src/__tests__/nats-auth-fail-closed.test.ts (5 tests) 4ms
+ ✓ src/__tests__/nats-client.test.ts (14 tests) 6ms
+
+ Test Files  2 passed (2)
+      Tests  19 passed (19)
+   Start at  14:30:11
+   Duration  318ms (transform 58ms, setup 0ms, collect 77ms, tests 10ms, environment 0ms, prepare 97ms)
+
