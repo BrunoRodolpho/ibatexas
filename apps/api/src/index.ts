@@ -3,6 +3,7 @@ import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
+import { bootstrapKernel } from "./plugins/kernel-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
@@ -37,6 +38,15 @@ const PORT = Number(process.env.PORT ?? 3001);
 
 const start = async (): Promise<void> => {
   const server = await buildServer();
+
+  // Bootstrap the @adjudicate/core kernel: install MetricsSink slot,
+  // validate IBX_KERNEL_SHADOW/IBX_KERNEL_ENFORCE for typos, and (post
+  // task 08) register the orders Pack via installPack. Runs after
+  // Sentry init (so any future PackConformanceError surfaces in
+  // Sentry) but before server.listen so a failed conformance check
+  // prevents serving traffic. See
+  // docs/adjudicate-migration/tasks/01-kernel-bootstrap-plugin.md.
+  await bootstrapKernel(server);
 
   // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma
   const shutdown = async (): Promise<void> => {
