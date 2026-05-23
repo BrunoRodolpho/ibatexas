@@ -14,14 +14,20 @@
 //
 // All session cart IDs are tracked in Redis active:carts set for abandoned-cart detection.
 
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { buildEnvelope } from "@adjudicate/core";
 import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, MedusaRequestError, cancelStalePaymentIntent, loadSchedule, getMealPeriodFromSchedule } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { createCustomerService, createPaymentQueryService, prisma } from "@ibatexas/domain";
+import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderState } from "@ibatexas/pack-orders";
+import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
+import { getAuditSink } from "@ibatexas/llm-provider";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
+import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 
@@ -577,12 +583,94 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         };
       }
 
-      const result = await createCheckout({ ...request.body, cartId }, {
-        channel: Channel.Web,
-        sessionId: cartId,
-        customerId: request.customerId,
-        userType: request.userType ?? "guest",
-      }, pixExtra);
+      // ── Task 14 — wrap checkout in adjudicate envelope ────────────────
+      //
+      // Build the `order.checkout.create` envelope with the customer-actor
+      // signature. The kernel may EXECUTE / REWRITE / REFUSE / DEFER (PIX
+      // pending) / REQUEST_CONFIRMATION (large-ticket) / ESCALATE here —
+      // the gateway dispatches `createCheckout` only on EXECUTE / REWRITE.
+      //
+      // For guest carts (no customerId), `sessionId` falls back to the
+      // cartId so envelopes from anonymous flows still have a stable key
+      // for audit + park bookkeeping.
+      const checkoutPayload: OrderCheckoutCreatePayload = {
+        cartId,
+        paymentMethod,
+        ...(paymentMethod === "pix" && pixExtra
+          ? {
+              pixDetails: {
+                name: pixExtra.customerName ?? "",
+                email: pixExtra.customerEmail ?? "",
+                cpf: pixExtra.customerTaxId ?? "",
+              },
+            }
+          : {}),
+      };
+
+      const sessionId = request.customerId ?? cartId;
+      const envelope = buildEnvelope<"order.checkout.create", OrderCheckoutCreatePayload>({
+        kind: "order.checkout.create",
+        payload: checkoutPayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId },
+        taint: "UNTRUSTED",
+      });
+
+      // The order pack adjudicates against this minimal state slice. We
+      // populate the fields that gate the most common decisions
+      // (paymentMethod for PIX-pending DEFER, totalInCentavos for large-
+      // ticket REQUEST_CONFIRMATION). The remaining fields stay defaulted.
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId: request.customerId ?? null,
+          cartId,
+          orderId: null,
+          paymentMethod,
+          // No active order yet — settled status irrelevant. The
+          // PIX-pending guard reads `paymentMethod === "pix"` plus
+          // `paymentStatus` not in confirmed set; we leave status null so
+          // the guard does NOT DEFER at checkout. The checkout's own PIX
+          // pending-flow is owned by the Stripe webhook (task 12).
+          paymentStatus: null,
+          totalInCentavos: 0,
+          lastAction: null,
+        },
+      };
+
+      const out = await runCustomerIntent({
+        envelope,
+        state: orderState,
+        policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          // EXECUTE / REWRITE → call the existing checkout tool function.
+          // (For REWRITE the kernel substitutes a sanitized payload — by
+          // contract the shape is preserved so we still forward the
+          // original `request.body` extras like deliveryType / notes.)
+          return createCheckout({ ...request.body, cartId }, {
+            channel: Channel.Web,
+            sessionId: cartId,
+            customerId: request.customerId,
+            userType: request.userType ?? "guest",
+          }, pixExtra);
+        },
+        ctx: {
+          customerId: sessionId,
+          route: "cart.checkout",
+          log: server.log,
+        },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+      });
+
+      // ── Non-EXECUTE/REWRITE branches — surface the gateway's reply
+      // verbatim (the gateway already mapped pt-BR copy + status code).
+      if (out.decision.kind !== "EXECUTE" && out.decision.kind !== "REWRITE") {
+        return reply.code(out.statusCode).send(out.body);
+      }
+
+      // ── EXECUTE / REWRITE: preserve existing post-checkout side effects
+      const result = out.body as Awaited<ReturnType<typeof createCheckout>>;
 
       if (!result.success) {
         return reply.status(400).send(result);
