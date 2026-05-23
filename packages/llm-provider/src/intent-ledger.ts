@@ -20,6 +20,7 @@ import {
   type Ledger,
   type LedgerHit,
   type LedgerRecordInput,
+  type LedgerRecordOutcome,
 } from "@adjudicate/audit"
 import { rk, safeRedis } from "@ibatexas/tools"
 import { recordLedgerOp } from "@adjudicate/core/kernel"
@@ -127,16 +128,17 @@ function wrapWithFailOpenPolicy(inner: Ledger): Ledger {
         throw new LedgerUnavailableError(err as Error)
       }
     },
-    async recordExecution(entry: LedgerRecordInput): Promise<void> {
+    async recordExecution(entry: LedgerRecordInput): Promise<LedgerRecordOutcome> {
       const startedAt = Date.now()
       try {
-        await inner.recordExecution(entry)
+        const outcome = await inner.recordExecution(entry)
         recordLedgerOp({
           op: "record",
           outcome: "ok",
           intentKind: entry.kind,
           latencyMs: Date.now() - startedAt,
         })
+        return outcome
       } catch (err) {
         recordLedgerOp({
           op: "record",
@@ -149,7 +151,10 @@ function wrapWithFailOpenPolicy(inner: Ledger): Ledger {
             "[intent-ledger] recordExecution failed; fail-open mode → no dedup record:",
             (err as Error).message,
           )
-          return
+          // Fail-open: behave as if no prior record existed (allow + no dedup).
+          // "acquired" matches "we now own this slot" — the kernel proceeds
+          // exactly as it would on a real cache miss.
+          return "acquired"
         }
         throw new LedgerUnavailableError(err as Error)
       }

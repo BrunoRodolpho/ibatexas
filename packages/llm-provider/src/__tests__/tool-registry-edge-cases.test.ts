@@ -176,7 +176,7 @@ describe("tool-registry edge cases", () => {
         input: { reservationId: "r1" },
         toolUseId: "",
         envelope: {
-          version: 1,
+          version: 2,
           kind: "order.tool.propose",
           taint: "UNTRUSTED",
           actor: { principal: "llm" },
