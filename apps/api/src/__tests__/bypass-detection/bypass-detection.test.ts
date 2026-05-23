@@ -98,18 +98,25 @@ const FORBIDDEN_PRISMA = [
 /**
  * Files allowed to bypass the medusaAdjudicated() wrapper. Each entry
  * names the task that introduced the exception.
+ *
+ * ── W3 P1-L (audit remediation) ──────────────────────────────────────
+ *
+ * The original list misclassified `reorder.ts` and `amend-order.ts` as
+ * "read-only fetches" when both POST to Medusa. Per audit `01-bypass-
+ * hunter.md` §"Suspicious carve-outs", they have been refactored to
+ * route writes through `medusaAdjudicated()` and removed from this set.
+ * Each entry below is verified strictly read-only (GET-only calls).
  */
 const ALLOWED_MEDUSA_DIRECT = new Set<string>([
   // task 17 defines the wrapper itself.
   "packages/tools/src/medusa/adjudicated.ts",
   "packages/tools/src/medusa/client.ts",
   // read-only fetches in tool helpers; the medusaAdjudicated() wrapper is
-  // for POST/PUT/DELETE only.
+  // for POST/PUT/DELETE only. Each file below has been audited and only
+  // contains GET calls (W3 P1-L verification, 2026-05-23).
   "packages/tools/src/cart/get-cart.ts",
   "packages/tools/src/cart/assert-cart-ownership.ts",
   "packages/tools/src/cart/_shared.ts",
-  "packages/tools/src/cart/reorder.ts",
-  "packages/tools/src/cart/amend-order.ts",
   "packages/tools/src/catalog/get-nutritional-info.ts",
   "packages/tools/src/catalog/check-inventory.ts",
 ])
@@ -283,6 +290,71 @@ describe("Bypass detection — Scenario 4: setMetricsSink(undefined|null) reset 
       expect(offenders).toEqual([])
     })
   }
+})
+
+// ── ALLOWED_MEDUSA_DIRECT curated list — W3 P1-L assertion ────────────────
+
+describe("Bypass detection — ALLOWED_MEDUSA_DIRECT carve-out audit (W3 P1-L)", () => {
+  it("each allow-listed file is strictly read-only (GET-only)", () => {
+    // For every entry in ALLOWED_MEDUSA_DIRECT, scan the file for any
+    // POST/PUT/PATCH/DELETE method literal on a `medusaStore` /
+    // `medusaAdmin` / `medusaStoreFetch` / `medusaAdminFetch` call.
+    // Pure read-only files have ZERO matches. The check is multi-line:
+    // we scan the file content as a whole (not line-by-line) so the
+    // method literal can appear on a later line than the function name.
+    const offenders: Array<{ file: string; match: string }> = []
+    for (const rel of ALLOWED_MEDUSA_DIRECT) {
+      // Skip the wrapper itself (it owns the multi-method dispatch).
+      if (rel === "packages/tools/src/medusa/adjudicated.ts") continue
+      if (rel === "packages/tools/src/medusa/client.ts") continue
+      // _shared.ts is a re-export only.
+      if (rel === "packages/tools/src/cart/_shared.ts") continue
+
+      const abs = join(REPO_ROOT, rel)
+      let content: string
+      try {
+        content = readFileSync(abs, "utf8")
+      } catch {
+        // Missing file is a separate problem — the gate below catches it.
+        continue
+      }
+      // Multi-line forbidden write pattern: any `medusa*(...)` call
+      // whose options object contains `method: "POST|PUT|PATCH|DELETE"`.
+      const FORBIDDEN_WRITE_RE =
+        /medusa(Store|Admin|StoreFetch|AdminFetch)\s*\([^]*?method\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]/g
+      const matches = content.match(FORBIDDEN_WRITE_RE)
+      if (matches && matches.length > 0) {
+        for (const m of matches) {
+          // Truncate the matched span for readability.
+          offenders.push({ file: rel, match: m.slice(0, 80).replace(/\s+/g, " ") })
+        }
+      }
+    }
+    if (offenders.length > 0) {
+      const lines = offenders
+        .map((o) => `  • ${o.file}  →  ${o.match}…`)
+        .join("\n")
+      throw new Error(
+        `ALLOWED_MEDUSA_DIRECT contains a file that POSTs/PUTs/DELETEs — the carve-out is wrong. Either refactor the file to use medusaAdjudicated() OR remove it from ALLOWED_MEDUSA_DIRECT.\n\nOffenders (${offenders.length}):\n${lines}`,
+      )
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it("does not allow-list files that were removed by W3 P1-L", () => {
+    // Sentinels — these were removed by W3 P1-L. Reintroducing them
+    // would mask new write paths the audit explicitly flagged.
+    const REMOVED_BY_W3 = [
+      "packages/tools/src/cart/reorder.ts",
+      "packages/tools/src/cart/amend-order.ts",
+    ]
+    for (const rel of REMOVED_BY_W3) {
+      expect(
+        ALLOWED_MEDUSA_DIRECT.has(rel),
+        `${rel} must NOT be in ALLOWED_MEDUSA_DIRECT — it POSTs to medusa and must route through medusaAdjudicated().`,
+      ).toBe(false)
+    }
+  })
 })
 
 // ── Runtime smoke: dispatcher refuses to dispatch unknown tool ────────────

@@ -38,6 +38,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
+import { getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
   createOrderEventLogService,
@@ -45,6 +46,7 @@ import {
   createPaymentCommandService,
   createPaymentQueryService,
   prisma,
+  type PaymentRefundIssuePayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/llm-provider";
@@ -75,6 +77,81 @@ const ConfirmationBody = z.object({
  * R$ 200,00 = 20.000 centavos (CLAUDE.md rule #2 — integer centavos).
  */
 export const REFUND_CONFIRMATION_THRESHOLD_CENTAVOS = 20_000;
+
+/**
+ * W3 P1-I — refund drip cap (audit remediation).
+ *
+ * Sub-threshold refunds (< REFUND_CONFIRMATION_THRESHOLD_CENTAVOS) skip
+ * the two-step receipt by design. An insider could drip 100 × R$199 ≈
+ * R$19,900 in a single day with no aggregate gate. Per security audit
+ * §C5, this is a session-window exposure.
+ *
+ * The cap is applied per-staff-day. Each refund EXECUTE increments a
+ * Redis counter keyed by `refund:daily-total:{staffId}:{YYYY-MM-DD}`
+ * with a 25-hour TTL. Before allowing a sub-threshold refund to
+ * direct-execute, the cumulative sum (existing + this) is checked
+ * against the cap. If exceeded, the route falls back to the two-step
+ * receipt protocol (operator-UX gate).
+ *
+ * Env override `REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS`. Default R$2000.
+ *
+ * The API-key path uses sessionId `"api-key"` so all API-key refunds
+ * share a single bucket — a leaked key is treated as a single actor.
+ */
+function getRefundDailyNoConfirmCapCentavos(): number {
+  const raw = process.env["REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS"];
+  if (!raw) return 200_000; // R$2000
+  const n = Number.parseInt(raw, 10);
+  if (Number.isNaN(n) || n < 0) return 200_000;
+  return n;
+}
+
+const REFUND_DAILY_KEY_TTL_SECONDS = 25 * 60 * 60; // 25h to cover DST + clock skew
+
+function refundDailyBucketKey(staffId: string | null, now: Date = new Date()): string {
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  const day = `${yyyy}-${mm}-${dd}`;
+  const actor = staffId ?? "api-key";
+  return rk(`refund:daily-total:${actor}:${day}`);
+}
+
+/**
+ * Return the cumulative refund total for the staff/day bucket. Returns
+ * 0 if the bucket is empty (no refunds yet today).
+ */
+async function readDailyRefundTotal(staffId: string | null): Promise<number> {
+  const redis = await getRedisClient();
+  const raw = await redis.get(refundDailyBucketKey(staffId));
+  if (!raw) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+/**
+ * Add `centavos` to the staff/day bucket. INCRBY + EXPIRE — the EXPIRE
+ * is renewed on every call so a multi-day spree at midnight rolls
+ * cleanly into the next bucket.
+ */
+async function incrementDailyRefundTotal(
+  staffId: string | null,
+  centavos: number,
+): Promise<number> {
+  const redis = await getRedisClient();
+  const key = refundDailyBucketKey(staffId);
+  const next = await redis.incrBy(key, centavos);
+  await redis.expire(key, REFUND_DAILY_KEY_TTL_SECONDS);
+  return next;
+}
+
+/**
+ * pt-BR refusal copy when the drip cap forces a sub-threshold refund
+ * into the two-step receipt protocol. Returned in the 202 body so the
+ * operator UI knows to render the confirmation prompt.
+ */
+const REFUND_DRIP_CAP_PT_BR =
+  "Limite diário de reembolsos sem confirmação atingido. Esta operação requer confirmação de outro operador.";
 
 function principalFor(staffId: string | null): {
   readonly actorPrincipal: "user" | "system";
@@ -195,6 +272,27 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
 
   // ── Refund execution helper — shared between direct-execute (low refund)
   //    and step-2 confirm path.
+  //
+  // ── W3 P0-1 (audit remediation) ──────────────────────────────────────
+  //
+  // The previous version of this helper adjudicated only the status
+  // transition (`payment.status.transition`) and updated
+  // `refundedAmountCentavos` via a direct `prisma.payment.update` AFTER
+  // the kernel returned EXECUTE. The refund MAGNITUDE was never in the
+  // envelope payload — the kernel signed off on the shape but not on
+  // the amount. An attacker (or buggy code) could transition the
+  // payment with a small status-decision basis and then write any
+  // amount to the DB.
+  //
+  // The fix: route through `paymentCmdSvc.issueRefundFromEnvelope`,
+  // which carries `refundAmountCentavos` + `refundableBalanceCentavos`
+  // + `currentRefundedCentavos` in the envelope payload. The
+  // `paymentProjectionPolicyBundle` magnitude guard refuses
+  // out-of-balance / non-positive refunds, REQUEST_CONFIRMATION above
+  // R$500, ESCALATE above R$1000. The executor performs the
+  // `refundedAmountCentavos` update + status transition + history row
+  // in a single Prisma `$transaction`. No more direct
+  // `prisma.payment.update` outside the kernel-adjudicated path.
   async function executeRefund(args: {
     readonly orderId: string;
     readonly paymentId: string;
@@ -212,31 +310,31 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     readonly sessionId: string;
     readonly confirmationId?: string;
   }) {
-    const refundableAmount = args.amountInCentavos - args.refundedAmountCentavos;
-    const isFullRefund = args.refundAmount >= refundableAmount;
-    const targetStatus = isFullRefund
-      ? PaymentStatus.REFUNDED
-      : PaymentStatus.PARTIALLY_REFUNDED;
+    const refundableBalance =
+      args.amountInCentavos - args.refundedAmountCentavos;
 
-    const payload: PaymentStatusTransitionPayload = {
+    const payload: PaymentRefundIssuePayload = {
       paymentId: args.paymentId,
-      newStatus: targetStatus,
-      actor: "admin",
+      refundAmountCentavos: args.refundAmount,
+      refundableBalanceCentavos: refundableBalance,
+      amountInCentavos: args.amountInCentavos,
+      currentRefundedCentavos: args.refundedAmountCentavos,
+      actor: args.actorPrincipal === "system" ? "system" : "admin",
       ...(args.staffId ? { actorId: args.staffId } : {}),
       reason: args.reason,
     };
     const envelope = buildEnvelope<
-      "payment.status.transition",
-      PaymentStatusTransitionPayload
+      "payment.refund.issue",
+      PaymentRefundIssuePayload
     >({
-      kind: "payment.status.transition",
+      kind: "payment.refund.issue",
       payload,
       nonce: args.nonce,
       actor: { principal: args.actorPrincipal, sessionId: args.sessionId },
       taint: args.taint,
     });
 
-    const outcome = await paymentCmdSvc.transitionStatusFromEnvelope(envelope);
+    const outcome = await paymentCmdSvc.issueRefundFromEnvelope(envelope);
     if (
       outcome.decision.kind !== "EXECUTE" &&
       outcome.decision.kind !== "REWRITE"
@@ -249,21 +347,28 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     }
     const result = outcome.result!;
 
-    // Update refunded amount — kept inside the EXECUTE branch.
-    await prisma.payment.update({
-      where: { id: args.paymentId },
-      data: {
-        refundedAmountCentavos:
-          args.refundedAmountCentavos + args.refundAmount,
-      },
-    });
+    // W3 P1-I — bump the per-staff-day cumulative refund total. The
+    // counter feeds the drip-cap check for sub-threshold refunds.
+    // Increment AFTER the kernel-adjudicated executor returned EXECUTE,
+    // so refused refunds don't pollute the bucket.
+    try {
+      await incrementDailyRefundTotal(args.staffId, result.refundAmountCentavos);
+    } catch (err) {
+      // Counter failures are non-fatal — the refund already executed.
+      // Log + continue; the worst case is the next refund slips the cap
+      // by one transaction, not silent unbounded spend.
+      server.log.warn(
+        { err: (err as Error).message, staffId: args.staffId },
+        "[refund-drip-cap] failed to increment daily counter",
+      );
+    }
 
     await publishNatsEvent("payment.status_changed", {
       eventType: "payment.status_changed",
       orderId: args.orderId,
       paymentId: args.paymentId,
       previousStatus: args.previousStatus,
-      newStatus: targetStatus,
+      newStatus: result.newStatus,
       method: args.method,
       version: result.version,
       timestamp: new Date().toISOString(),
@@ -277,9 +382,9 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         confirmationId: args.confirmationId ?? null,
         staffId: args.staffId,
         paymentId: args.paymentId,
-        refundAmountCentavos: args.refundAmount,
-        totalRefunded: args.refundedAmountCentavos + args.refundAmount,
-        newStatus: targetStatus,
+        refundAmountCentavos: result.refundAmountCentavos,
+        totalRefunded: result.totalRefundedCentavos,
+        newStatus: result.newStatus,
         intentHash: envelope.intentHash,
         decision: outcome.decision.kind,
         version: result.version,
@@ -290,9 +395,9 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     return {
       kind: "executed" as const,
       version: result.version,
-      refundAmount: args.refundAmount,
-      totalRefunded: args.refundedAmountCentavos + args.refundAmount,
-      newStatus: targetStatus,
+      refundAmount: result.refundAmountCentavos,
+      totalRefunded: result.totalRefundedCentavos,
+      newStatus: result.newStatus,
       intentHash: envelope.intentHash,
     };
   }
@@ -352,6 +457,79 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
 
       // ── Threshold branch ──────────────────────────────────────────
       if (refundAmount < REFUND_CONFIRMATION_THRESHOLD_CENTAVOS) {
+        // W3 P1-I — check the per-staff-day drip cap. If executing this
+        // refund would push the cumulative total above the cap, fall
+        // back to the two-step receipt protocol (operator-UX gate).
+        const dailyCap = getRefundDailyNoConfirmCapCentavos();
+        let currentDailyTotal = 0;
+        try {
+          currentDailyTotal = await readDailyRefundTotal(staffId);
+        } catch (err) {
+          server.log.warn(
+            { err: (err as Error).message, staffId },
+            "[refund-drip-cap] failed to read daily counter — defaulting to 0",
+          );
+        }
+        const projectedTotal = currentDailyTotal + refundAmount;
+        if (projectedTotal > dailyCap) {
+          // Drip cap exceeded — escalate to step-2 receipt protocol.
+          const pending: PendingAdminAction = {
+            kind: "payment.status.transition",
+            payload: {
+              paymentId: payment.id,
+              previousStatus: payment.status,
+              method: payment.method,
+              refundedAmountCentavos: payment.refundedAmountCentavos ?? 0,
+              amountInCentavos: payment.amountInCentavos,
+              refundAmount,
+              reason,
+            },
+            nonce: randomUUID(),
+            staffId,
+            staffRole,
+            actorPrincipal,
+            requestorIp: request.ip ?? null,
+            prompt: `${REFUND_DRIP_CAP_PT_BR} Reembolso de R$ ${(refundAmount / 100).toFixed(2).replace(".", ",")}.`,
+            route: "refund",
+            createdAt: new Date().toISOString(),
+            orderId: id,
+            refundAmountCentavos: refundAmount,
+            reason,
+          };
+
+          const { confirmationId, ttlSeconds } =
+            await confirmationStore.create(pending);
+
+          await eventLogSvc.append({
+            orderId: id,
+            eventType: "admin.refund.drip_cap_exceeded",
+            discriminator: confirmationId,
+            payload: {
+              confirmationId,
+              staffId,
+              staffRole,
+              paymentId: payment.id,
+              refundAmountCentavos: refundAmount,
+              currentDailyTotal,
+              dailyCap,
+              projectedTotal,
+              intentNonce: pending.nonce,
+            },
+            timestamp: new Date(),
+          });
+
+          return reply.code(202).send({
+            confirmationId,
+            prompt: pending.prompt,
+            ttlSeconds,
+            kind: pending.kind,
+            refundAmountCentavos: refundAmount,
+            code: "REFUND_DRIP_CAP",
+            cumulativeTodayCentavos: currentDailyTotal,
+            dailyCapCentavos: dailyCap,
+          });
+        }
+
         // Direct execute — envelope path still adjudicates.
         const result = await executeRefund({
           orderId: id,
@@ -370,6 +548,20 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           sessionId,
         });
         if (result.kind === "refused") {
+          // W3 P0-1 — surface the kernel's magnitude-decision distinctly.
+          if (result.decision.kind === "ESCALATE") {
+            return reply.code(503).send({
+              error: "Reembolso acima do limite — requer aprovação humana.",
+              reason: result.decision.reason,
+            });
+          }
+          if (result.decision.kind === "REQUEST_CONFIRMATION") {
+            return reply.code(202).send({
+              error: "Reembolso requer confirmação de segundo operador.",
+              prompt: result.decision.prompt,
+              code: "REQUEST_CONFIRMATION",
+            });
+          }
           const refusalText =
             result.decision.kind === "REFUSE"
               ? result.decision.refusal.userFacing
@@ -552,10 +744,14 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         confirmationId,
       });
       if (result.kind === "refused") {
-        const refusalText =
-          result.decision.kind === "REFUSE"
-            ? result.decision.refusal.userFacing
-            : "Operação não permitida pela política do kernel.";
+        // W3 P0-1 — kernel magnitude ladder may bubble up here.
+        // ESCALATE (>R$1000) is terminal; REQUEST_CONFIRMATION on the
+        // step-2 path means the kernel still considers magnitude-confirm
+        // unresolved (the route's operator-receipt is a separate gate
+        // and doesn't satisfy the kernel's adjudicateAndAuditDeps
+        // receipt slot — Wave 5 will bridge these). Surface both as
+        // distinct status codes so the admin UI doesn't silently
+        // execute on a wrong-shape decision.
         await eventLogSvc.append({
           orderId: id,
           eventType: "admin.refund.refused",
@@ -568,6 +764,25 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           },
           timestamp: new Date(),
         });
+        if (result.decision.kind === "ESCALATE") {
+          return reply.code(503).send({
+            error: "Reembolso acima do limite — requer aprovação humana.",
+            reason: result.decision.reason,
+            confirmationId,
+          });
+        }
+        if (result.decision.kind === "REQUEST_CONFIRMATION") {
+          return reply.code(202).send({
+            error: "Reembolso requer confirmação adicional do kernel.",
+            prompt: result.decision.prompt,
+            code: "REQUEST_CONFIRMATION",
+            confirmationId,
+          });
+        }
+        const refusalText =
+          result.decision.kind === "REFUSE"
+            ? result.decision.refusal.userFacing
+            : "Operação não permitida pela política do kernel.";
         return reply.code(403).send({ error: refusalText });
       }
 

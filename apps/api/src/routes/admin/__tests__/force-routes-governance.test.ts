@@ -36,6 +36,8 @@ const mockTransitionStatus = vi.hoisted(() => vi.fn());
 const mockTransitionStatusFromEnvelopeOrder = vi.hoisted(() => vi.fn());
 const mockTransitionStatusFromEnvelopePayment = vi.hoisted(() => vi.fn());
 const mockTransitionStatusLegacyPayment = vi.hoisted(() => vi.fn());
+const mockIssueRefundFromEnvelope = vi.hoisted(() => vi.fn());
+const mockBumpRegenerationCountFromEnvelope = vi.hoisted(() => vi.fn());
 const mockPaymentUpdate = vi.hoisted(() => vi.fn());
 const mockOrderEventLogAppend = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
@@ -60,12 +62,35 @@ const mockRedisEval = vi.hoisted(() =>
   }),
 );
 
+// W3 P1-I — drip cap reads a per-staff-day Redis counter.
+const dripBuckets = vi.hoisted(() => new Map<string, number>());
+const mockRedisGet = vi.hoisted(() =>
+  vi.fn(async (key: string) => {
+    if (key.startsWith("ibatexas:refund:daily-total:")) {
+      const n = dripBuckets.get(key);
+      return n !== undefined ? String(n) : null;
+    }
+    return null;
+  }),
+);
+const mockRedisIncrBy = vi.hoisted(() =>
+  vi.fn(async (key: string, by: number) => {
+    const cur = dripBuckets.get(key) ?? 0;
+    const next = cur + by;
+    dripBuckets.set(key, next);
+    return next;
+  }),
+);
+const mockRedisExpire = vi.hoisted(() => vi.fn(async () => 1));
+
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: vi.fn(async () => ({
     set: mockRedisSet,
     eval: mockRedisEval,
-    get: vi.fn(),
+    get: mockRedisGet,
     del: vi.fn(),
+    incrBy: mockRedisIncrBy,
+    expire: mockRedisExpire,
   })),
   rk: (k: string) => `ibatexas:${k}`,
   reaisToCentavos: (r: number) => Math.round(r * 100),
@@ -85,6 +110,8 @@ vi.mock("@ibatexas/domain", () => ({
   createPaymentCommandService: () => ({
     transitionStatus: mockTransitionStatusLegacyPayment,
     transitionStatusFromEnvelope: mockTransitionStatusFromEnvelopePayment,
+    issueRefundFromEnvelope: mockIssueRefundFromEnvelope,
+    bumpRegenerationCountFromEnvelope: mockBumpRegenerationCountFromEnvelope,
   }),
   createPaymentQueryService: () => ({
     getActiveByOrderId: mockGetActiveByOrderId,
@@ -640,7 +667,47 @@ describe("POST /api/admin/orders/:id/waive — two-step receipt protocol", () =>
 
 // ── Tests: refund ─────────────────────────────────────────────────────────
 
-describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", () => {
+function refundExecuteDecision(overrides?: Partial<{
+  version: number;
+  refundAmountCentavos: number;
+  totalRefundedCentavos: number;
+  previousStatus: string;
+  newStatus: string;
+}>) {
+  return {
+    decision: { kind: "EXECUTE" as const, basis: [] },
+    result: {
+      version: overrides?.version ?? 2,
+      previousStatus: overrides?.previousStatus ?? "paid",
+      newStatus: overrides?.newStatus ?? "refunded",
+      refundAmountCentavos: overrides?.refundAmountCentavos ?? 19_999,
+      totalRefundedCentavos: overrides?.totalRefundedCentavos ?? 19_999,
+    },
+  };
+}
+
+function refundRequestConfirmationDecision(prompt: string) {
+  return {
+    decision: {
+      kind: "REQUEST_CONFIRMATION" as const,
+      prompt,
+      basis: [],
+    },
+  };
+}
+
+function refundEscalateDecision(reason: string) {
+  return {
+    decision: {
+      kind: "ESCALATE" as const,
+      to: "human" as const,
+      reason,
+      basis: [],
+    },
+  };
+}
+
+describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     confirmationStorage.clear();
@@ -649,8 +716,8 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       makePayment({ status: "paid", amountInCentavos: 50_000 }),
     );
     mockOrderEventLogAppend.mockResolvedValue(undefined);
-    mockTransitionStatusFromEnvelopePayment.mockResolvedValue(
-      executeDecision({ newStatus: "refunded" }),
+    mockIssueRefundFromEnvelope.mockResolvedValue(
+      refundExecuteDecision({ newStatus: "refunded" }),
     );
     mockPaymentUpdate.mockResolvedValue(undefined);
     mockPublishNatsEvent.mockResolvedValue(undefined);
@@ -669,12 +736,21 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       expect(body.success).toBe(true);
       expect(body.refundedAmount).toBe(19_999);
 
-      expect(mockTransitionStatusFromEnvelopePayment).toHaveBeenCalledTimes(1);
-      const env = mockTransitionStatusFromEnvelopePayment.mock.calls[0][0] as {
+      // W3 P0-1: refund flows through issueRefundFromEnvelope with the
+      // magnitude in the payload — kernel sees the amount, not just
+      // the status transition.
+      expect(mockIssueRefundFromEnvelope).toHaveBeenCalledTimes(1);
+      const env = mockIssueRefundFromEnvelope.mock.calls[0][0] as {
         kind: string;
+        payload: { refundAmountCentavos: number };
       };
-      expect(env.kind).toBe("payment.status.transition");
-      expect(mockPaymentUpdate).toHaveBeenCalledTimes(1);
+      expect(env.kind).toBe("payment.refund.issue");
+      expect(env.payload.refundAmountCentavos).toBe(19_999);
+      // The legacy status-transition path MUST NOT have been called.
+      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
+      // The direct prisma.payment.update for refundedAmountCentavos
+      // is GONE — it now lives inside issueRefundFromEnvelope's executor.
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
@@ -695,14 +771,21 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       };
       expect(body.refundAmountCentavos).toBe(25_000);
 
-      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
+      expect(mockIssueRefundFromEnvelope).not.toHaveBeenCalled();
       expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
   });
 
-  it("step 2 dispatches transitionStatusFromEnvelope and updates payment", async () => {
+  it("step 2 dispatches issueRefundFromEnvelope (kernel-adjudicated magnitude)", async () => {
+    mockIssueRefundFromEnvelope.mockResolvedValue(
+      refundExecuteDecision({
+        newStatus: "refunded",
+        refundAmountCentavos: 25_000,
+        totalRefundedCentavos: 25_000,
+      }),
+    );
     const server = await buildPaymentsServer(MANAGER);
     try {
       const step1 = await server.inject({
@@ -721,14 +804,28 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       });
       expect(step2.statusCode).toBe(200);
 
-      expect(mockTransitionStatusFromEnvelopePayment).toHaveBeenCalledTimes(1);
-      expect(mockPaymentUpdate).toHaveBeenCalledTimes(1);
+      expect(mockIssueRefundFromEnvelope).toHaveBeenCalledTimes(1);
+      const env = mockIssueRefundFromEnvelope.mock.calls[0][0] as {
+        kind: string;
+        payload: {
+          refundAmountCentavos: number;
+          refundableBalanceCentavos: number;
+        };
+      };
+      expect(env.kind).toBe("payment.refund.issue");
+      expect(env.payload.refundAmountCentavos).toBe(25_000);
+      expect(env.payload.refundableBalanceCentavos).toBe(50_000);
+      // P0-1: no more out-of-band prisma.payment.update.
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
   });
 
   it("step 2 replay returns 410 on second attempt", async () => {
+    mockIssueRefundFromEnvelope.mockResolvedValue(
+      refundExecuteDecision({ refundAmountCentavos: 25_000 }),
+    );
     const server = await buildPaymentsServer(MANAGER);
     try {
       const step1 = await server.inject({
@@ -754,8 +851,7 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       });
       expect(second.statusCode).toBe(410);
 
-      expect(mockTransitionStatusFromEnvelopePayment).toHaveBeenCalledTimes(1);
-      expect(mockPaymentUpdate).toHaveBeenCalledTimes(1);
+      expect(mockIssueRefundFromEnvelope).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();
     }
@@ -780,7 +876,7 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       expect(step2.statusCode).toBe(403);
       expect(step2.json().error).toMatch(/Outro operador/i);
       // Money path MUST NOT have been called.
-      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
+      expect(mockIssueRefundFromEnvelope).not.toHaveBeenCalled();
       expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
@@ -788,7 +884,7 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
   });
 
   it("refund REFUSE from kernel returns 403", async () => {
-    mockTransitionStatusFromEnvelopePayment.mockResolvedValueOnce(
+    mockIssueRefundFromEnvelope.mockResolvedValueOnce(
       refuseDecision("Pagamento já está em estado terminal."),
     );
 
@@ -803,6 +899,225 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       const body = res.json() as { error: string };
       expect(body.error).toMatch(/Pagamento já está em estado terminal/);
       expect(mockPaymentUpdate).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  // W3 P0-1 — kernel magnitude ladder
+  it("W3 P0-1: kernel REQUEST_CONFIRMATION surfaces as 202 (refund > R$500)", async () => {
+    mockIssueRefundFromEnvelope.mockResolvedValueOnce(
+      refundRequestConfirmationDecision(
+        "Confirmar reembolso de R$ 6,00? Esta ação envia dinheiro de volta ao cliente.",
+      ),
+    );
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 600, reason: "x" },
+      });
+      // Below the route's R$200 threshold → direct-execute branch.
+      // The kernel sees the magnitude and returns REQUEST_CONFIRMATION
+      // for amounts > R$500. The route surfaces 202 with the kernel's
+      // pt-BR prompt.
+      expect(res.statusCode).toBe(202);
+      const body = res.json() as { code: string; prompt: string };
+      expect(body.code).toBe("REQUEST_CONFIRMATION");
+      expect(body.prompt).toMatch(/Confirmar reembolso/);
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("W3 P0-1: kernel ESCALATE surfaces as 503 (refund > R$1000)", async () => {
+    mockIssueRefundFromEnvelope.mockResolvedValueOnce(
+      refundEscalateDecision("refund_above_escalate_threshold"),
+    );
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 1_500, reason: "x" },
+      });
+      expect(res.statusCode).toBe(503);
+      const body = res.json() as { reason: string; error: string };
+      expect(body.reason).toBe("refund_above_escalate_threshold");
+      expect(body.error).toMatch(/aprovação humana/);
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+// ── Tests: refund drip cap (W3 P1-I) ──────────────────────────────────────
+
+describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    confirmationStorage.clear();
+    dripBuckets.clear();
+    mockGetById.mockResolvedValue(makeOrder());
+    mockGetActiveByOrderId.mockResolvedValue(
+      makePayment({ status: "paid", amountInCentavos: 500_000 }),
+    );
+    mockOrderEventLogAppend.mockResolvedValue(undefined);
+    mockIssueRefundFromEnvelope.mockResolvedValue(
+      refundExecuteDecision({
+        newStatus: "partially_refunded",
+        refundAmountCentavos: 10_000,
+        totalRefundedCentavos: 10_000,
+      }),
+    );
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+  });
+
+  it("EXECUTE + increments daily bucket on sub-threshold refund", async () => {
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 10_000, reason: "small" },
+      });
+      expect(res.statusCode).toBe(200);
+      // The bucket holds R$100 (10000 centavos).
+      const bucketKey =
+        [...dripBuckets.keys()].find((k) =>
+          k.startsWith("ibatexas:refund:daily-total:staff_mgr_01:"),
+        ) ?? "";
+      expect(dripBuckets.get(bucketKey)).toBe(10_000);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("falls back to two-step receipt when cumulative + this > daily cap (R$2000 default)", async () => {
+    // Pre-seed the bucket close to the cap: R$1950 already refunded today.
+    const bucketKey = (() => {
+      const now = new Date();
+      const yyyy = now.getUTCFullYear();
+      const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(now.getUTCDate()).padStart(2, "0");
+      return `ibatexas:refund:daily-total:staff_mgr_01:${yyyy}-${mm}-${dd}`;
+    })();
+    dripBuckets.set(bucketKey, 195_000);
+
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      // This R$100 refund + existing R$1950 = R$2050 > R$2000 cap.
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 10_000, reason: "drip-cap" },
+      });
+      expect(res.statusCode).toBe(202);
+      const body = res.json() as {
+        confirmationId: string;
+        code: string;
+        cumulativeTodayCentavos: number;
+        dailyCapCentavos: number;
+        refundAmountCentavos: number;
+      };
+      expect(body.code).toBe("REFUND_DRIP_CAP");
+      expect(body.cumulativeTodayCentavos).toBe(195_000);
+      expect(body.dailyCapCentavos).toBe(200_000);
+      expect(body.refundAmountCentavos).toBe(10_000);
+      expect(body.confirmationId.length).toBeGreaterThan(8);
+
+      // The refund executor MUST NOT have been called — drip cap held.
+      expect(mockIssueRefundFromEnvelope).not.toHaveBeenCalled();
+      // The bucket still shows the pre-seeded value (no increment on
+      // the drip-cap-deferred branch).
+      expect(dripBuckets.get(bucketKey)).toBe(195_000);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("respects REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS env override", async () => {
+    vi.stubEnv("REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS", "50000"); // R$500
+    const bucketKey = (() => {
+      const now = new Date();
+      const yyyy = now.getUTCFullYear();
+      const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(now.getUTCDate()).padStart(2, "0");
+      return `ibatexas:refund:daily-total:staff_mgr_01:${yyyy}-${mm}-${dd}`;
+    })();
+    dripBuckets.set(bucketKey, 45_000); // R$450 already
+
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      // R$60 + R$450 = R$510 > R$500 cap → drip cap fires.
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 6_000, reason: "small" },
+      });
+      expect(res.statusCode).toBe(202);
+      const body = res.json() as { code: string; dailyCapCentavos: number };
+      expect(body.code).toBe("REFUND_DRIP_CAP");
+      expect(body.dailyCapCentavos).toBe(50_000);
+    } finally {
+      await server.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does NOT trigger drip cap when below cap (sum stays under)", async () => {
+    const bucketKey = (() => {
+      const now = new Date();
+      const yyyy = now.getUTCFullYear();
+      const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(now.getUTCDate()).padStart(2, "0");
+      return `ibatexas:refund:daily-total:staff_mgr_01:${yyyy}-${mm}-${dd}`;
+    })();
+    dripBuckets.set(bucketKey, 100_000); // R$1000 used today
+
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      // R$100 + R$1000 = R$1100 < R$2000 cap → direct execute.
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 10_000, reason: "small" },
+      });
+      expect(res.statusCode).toBe(200);
+      // Bucket bumped to 110_000.
+      expect(dripBuckets.get(bucketKey)).toBe(110_000);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("API-key actor uses shared 'api-key' bucket", async () => {
+    // When staffId is null (API-key path), the bucket key uses
+    // 'api-key' as the actor — so any leaked key shares one cap.
+    const apiKeyContext: StaffContext = { staffId: null, staffRole: null };
+    const bucketKey = (() => {
+      const now = new Date();
+      const yyyy = now.getUTCFullYear();
+      const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(now.getUTCDate()).padStart(2, "0");
+      return `ibatexas:refund:daily-total:api-key:${yyyy}-${mm}-${dd}`;
+    })();
+    dripBuckets.set(bucketKey, 195_000);
+
+    const server = await buildPaymentsServer(apiKeyContext);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 10_000, reason: "drip" },
+      });
+      // 195k + 10k > 200k cap → drip cap fires.
+      expect(res.statusCode).toBe(202);
+      const body = res.json() as { code: string };
+      expect(body.code).toBe("REFUND_DRIP_CAP");
     } finally {
       await server.close();
     }

@@ -19,8 +19,8 @@ import type { PaymentStatus as PrismaPaymentStatus, OrderActor as PrismaActor } 
 import {
   canTransitionPayment,
   isTerminalPaymentStatus,
+  PaymentStatus,
   TERMINAL_PAYMENT_STATUSES,
-  type PaymentStatus,
 } from "@ibatexas/types"
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
 import {
@@ -30,6 +30,8 @@ import {
 import {
   paymentProjectionPolicyBundle,
   type PaymentCreatePayload,
+  type PaymentRefundIssuePayload,
+  type PaymentRegenerationCountIncrementPayload,
   type PaymentStatusTransitionPayload,
   type PaymentStatusReconcilePayload,
   type PaymentProjectionState,
@@ -157,6 +159,47 @@ export interface PaymentCommandService {
   reconcileFromWebhookFromEnvelope(
     envelope: IntentEnvelope<"payment.status.reconcile", PaymentStatusReconcilePayload>,
   ): Promise<AdjudicatedResult<{ version: number } | null>>
+
+  /**
+   * W3 P0-1 — envelope-typed entry point for `payment.refund.issue`.
+   *
+   * The refund MAGNITUDE is in the payload and is adjudicated by the
+   * payment-projection policy bundle's magnitude guard (REFUSE / EXECUTE
+   * / REQUEST_CONFIRMATION / ESCALATE). On EXECUTE / REWRITE the executor
+   * (a) updates `refundedAmountCentavos`, (b) transitions the payment
+   * status to `partially_refunded` / `refunded` (based on whether the
+   * cumulative refund covers the original amount), and (c) writes a
+   * status-history row — all inside a single Prisma `$transaction`.
+   *
+   * The route layer still owns the two-step receipt UX (the kernel
+   * decision is the structural gate; the receipt is the operator gate).
+   */
+  issueRefundFromEnvelope(
+    envelope: IntentEnvelope<"payment.refund.issue", PaymentRefundIssuePayload>,
+  ): Promise<
+    AdjudicatedResult<{
+      version: number
+      previousStatus: string
+      newStatus: string
+      totalRefundedCentavos: number
+      refundAmountCentavos: number
+    }>
+  >
+
+  /**
+   * W3 P0-2 — envelope-typed entry point for
+   * `payment.regeneration.count.increment`.
+   *
+   * Bumps `regenerationCount` on a Payment row via the kernel-adjudicated
+   * path. SYSTEM-only kind; called after the new payment row has been
+   * created during a regenerate-pix flow.
+   */
+  bumpRegenerationCountFromEnvelope(
+    envelope: IntentEnvelope<
+      "payment.regeneration.count.increment",
+      PaymentRegenerationCountIncrementPayload
+    >,
+  ): Promise<AdjudicatedResult<{ regenerationCount: number }>>
 
   /**
    * Find the active (non-terminal) payment for an order.
@@ -397,8 +440,138 @@ export function createPaymentCommandService(
         version: row.version,
         orderId: row.orderId,
         isTerminal: isTerminalPaymentStatus(row.status as PaymentStatus),
+        refundedAmountCentavos: row.refundedAmountCentavos ?? 0,
+        amountInCentavos: row.amountInCentavos,
+        regenerationCount: row.regenerationCount ?? 0,
       },
     }
+  }
+
+  // ── W3 P0-1 executor: refund.issue ────────────────────────────────
+  //
+  // Atomic transaction: update refundedAmountCentavos + transition
+  // status (PAID → PARTIALLY_REFUNDED, or PAID → REFUNDED on full
+  // refund) + status-history row.
+  const executeRefundIssue = async (
+    payload: PaymentRefundIssuePayload,
+  ): Promise<{
+    version: number
+    previousStatus: string
+    newStatus: string
+    totalRefundedCentavos: number
+    refundAmountCentavos: number
+  }> => {
+    return prisma.$transaction(async (tx: TxClient) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: payload.paymentId },
+      })
+
+      if (!payment) {
+        throw new PaymentNotFoundError(payload.paymentId)
+      }
+
+      if (isTerminalPaymentStatus(payment.status as PaymentStatus)) {
+        throw new InvalidPaymentTransitionError(
+          payload.paymentId,
+          payment.status,
+          "refund.issue",
+        )
+      }
+
+      const currentRefunded = payment.refundedAmountCentavos ?? 0
+      const refundable = payment.amountInCentavos - currentRefunded
+      if (payload.refundAmountCentavos > refundable) {
+        // Defensive: the kernel guard already refuses this, but the
+        // executor is a final source of truth on the DB invariant.
+        throw new InvalidPaymentTransitionError(
+          payload.paymentId,
+          payment.status,
+          "refund.over_balance",
+        )
+      }
+
+      const newTotalRefunded = currentRefunded + payload.refundAmountCentavos
+      const isFullRefund = newTotalRefunded >= payment.amountInCentavos
+      const targetStatus = (
+        isFullRefund ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED
+      ) as PrismaPaymentStatus
+
+      const from = payment.status as PaymentStatus
+      if (!canTransitionPayment(from, targetStatus as PaymentStatus)) {
+        throw new InvalidPaymentTransitionError(
+          payload.paymentId,
+          from,
+          targetStatus,
+        )
+      }
+
+      const newVersion = payment.version + 1
+
+      await tx.payment.update({
+        where: { id: payload.paymentId },
+        data: {
+          status: targetStatus,
+          refundedAmountCentavos: newTotalRefunded,
+          version: newVersion,
+        },
+      })
+
+      await tx.paymentStatusHistory.create({
+        data: {
+          paymentId: payload.paymentId,
+          fromStatus: from as PrismaPaymentStatus,
+          toStatus: targetStatus,
+          actor: payload.actor as PrismaActor,
+          actorId: payload.actorId,
+          reason:
+            payload.reason ??
+            `refund_issued:${payload.refundAmountCentavos}cent`,
+          version: newVersion,
+        },
+      })
+
+      log?.info?.(
+        {
+          paymentId: payload.paymentId,
+          orderId: payment.orderId,
+          from,
+          to: targetStatus,
+          version: newVersion,
+          refundAmount: payload.refundAmountCentavos,
+          totalRefunded: newTotalRefunded,
+        },
+        "Refund issued (kernel-adjudicated)",
+      )
+
+      return {
+        version: newVersion,
+        previousStatus: from,
+        newStatus: targetStatus,
+        totalRefundedCentavos: newTotalRefunded,
+        refundAmountCentavos: payload.refundAmountCentavos,
+      }
+    })
+  }
+
+  // ── W3 P0-2 executor: regeneration count increment ────────────────
+  const executeRegenerationCountIncrement = async (
+    payload: PaymentRegenerationCountIncrementPayload,
+  ): Promise<{ regenerationCount: number }> => {
+    return prisma.$transaction(async (tx: TxClient) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: payload.paymentId },
+      })
+      if (!payment) {
+        throw new PaymentNotFoundError(payload.paymentId)
+      }
+      const current = payment.regenerationCount ?? 0
+      const next = current + 1
+      await tx.payment.update({
+        where: { id: payload.paymentId },
+        data: { regenerationCount: next },
+      })
+      return { regenerationCount: next }
+    })
   }
 
   return {
@@ -497,6 +670,28 @@ export function createPaymentCommandService(
           }
           return executeReconcile(payload.paymentId, input)
         },
+        adjudicateOptions,
+      )
+    },
+
+    async issueRefundFromEnvelope(envelope) {
+      const state = await snapshotPayment(envelope.payload.paymentId)
+      return withAdjudicate(
+        envelope,
+        state,
+        paymentProjectionPolicyBundle,
+        async (payload) => executeRefundIssue(payload),
+        adjudicateOptions,
+      )
+    },
+
+    async bumpRegenerationCountFromEnvelope(envelope) {
+      const state = await snapshotPayment(envelope.payload.paymentId)
+      return withAdjudicate(
+        envelope,
+        state,
+        paymentProjectionPolicyBundle,
+        async (payload) => executeRegenerationCountIncrement(payload),
         adjudicateOptions,
       )
     },

@@ -118,6 +118,9 @@ export {
 export {
   paymentProjectionPolicyBundle,
   paymentProjectionTaintPolicy,
+  getRefundConfirmThresholdCentavos,
+  getRefundEscalateThresholdCentavos,
+  getMaxPixRegenerationsPerPayment,
   type PaymentProjectionIntentKind,
   type PaymentProjectionPayload,
   type PaymentProjectionState,
@@ -125,6 +128,8 @@ export {
   type PaymentStatusTransitionPayload,
   type PaymentStatusReconcilePayload,
   type PaymentMethodSwitchPayload,
+  type PaymentRefundIssuePayload,
+  type PaymentRegenerationCountIncrementPayload,
 } from "./services/__shared__/payment-projection-policy.js"
 export {
   createPaymentQueryService,
