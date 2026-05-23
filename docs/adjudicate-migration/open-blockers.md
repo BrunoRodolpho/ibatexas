@@ -24,6 +24,30 @@ Task 15 landed the chokepoint helper (`withAdjudicate`) plus envelope-typed entr
 - Customer: `customer.address.add` and `customer.address.remove` from `pack-customer-onboarding` were not wired up — the existing `customer.service.ts` has no corresponding methods (addresses live in `apps/api/src/routes/me.ts` direct Prisma writes). Future task: add `addAddressFromEnvelope` / `removeAddressFromEnvelope` once a service-level abstraction exists.
 - Payments: `payment.method.switch` intent kind is declared in `paymentProjectionPolicyBundle` but the executor side is out of scope (the method-switch lives in `packages/tools/src/cart/amend-order.ts` today). Wiring it in is a follow-up — add to task 14's customer-route migration if it becomes a dependency.
 
+## Task 16 follow-up — remaining subscribers + jobs (scope cuts)
+
+Task 16 landed the system-actor-envelope helper (`apps/api/src/subscribers/__shared__/system-actor-envelope.ts`) plus kernel-gated mutation paths in the highest-priority subscribers and jobs:
+
+- `apps/api/src/subscribers/payment-lifecycle.ts` — auto-confirm + auto-cancel through `orderCmdSvc.transitionStatusFromEnvelope` (intent kind `order.status.transition`, SYSTEM taint).
+- `apps/api/src/subscribers/cart-intelligence.ts` — `order.placed` order-projection create and payment create through `*FromEnvelope` (kinds `order.projection.create`, `payment.create`); `order.status_changed` reconcile through `reconcileStatusFromEnvelope` (kind `order.status.reconcile`).
+- `apps/api/src/subscribers/conversation-archiver.ts` — per-message append through `appendMessageFromEnvelope` (kind `conversation.message.append`).
+- `apps/api/src/jobs/stale-order-checker.ts` — order cancel + payment cancel through `*FromEnvelope` (kinds `order.status.transition`, `payment.status.transition`).
+- `apps/api/src/jobs/pix-expiry-checker.ts` — PIX expiry through `transitionStatusFromEnvelope` (kind `payment.status.transition`).
+
+All envelopes carry `actor.principal = "system"`, `taint = "SYSTEM"`, and a deterministic `nonce` derived from the upstream event id / job tick (`stale:${orderId}`, `pix:expiry:${paymentId}`, `${sessionId}:${sentAt}:${idx}`, etc.) so replay produces a byte-identical intentHash. REFUSE decisions push the original NATS payload to the existing DLQ via `pushToDlq()`. EXECUTE and REWRITE proceed to the legacy NATS publishes and Redis side-effects.
+
+**Out-of-scope from task 16 (deliberately deferred — not BLOCKED):**
+
+- `cart-intelligence.ts:notification.send` — wraps the universal WhatsApp egress under `whatsapp.message.send`. The pack-whatsapp policy needs `WhatsAppState` (with `lastCustomerMessageAt` from the session store) to fire the 24h-window guard, and the subscriber currently has no state-builder for it. Wiring this in requires a session/customer-resolver helper and is a separate ~1-2d task. Until that lands, the legacy direct WhatsApp send path remains.
+- `cart-intelligence.ts:order.placed` — 7 other mutations in the same handler (loyalty stamp, copurchase sorted sets, global score, profile counters, daily WA metrics, recently-viewed) were NOT wrapped. These are pure Redis analytics counters — there is no order/payment state machine being mutated, and the pack-orders / projection policy bundles have no corresponding intent kinds. Documenting as analytics-only is sufficient; they don't carry the same blast radius as the projection + payment row creates.
+- `cart-intelligence.ts:cart.abandoned` tier-escalation, `cart-intelligence.ts:order.refunded` / `order.disputed` / `order.canceled` profile-counter updates, `cart-intelligence.ts:reservation.{created,modified,cancelled,no_show}` profile updates, `cart-intelligence.ts:review.{prompt.schedule,submitted}`, `cart-intelligence.ts:outreach.sent`, `cart-intelligence.ts:product.intelligence.purge` — all analytics-only Redis mutations. Same reasoning as above.
+- `handoff-subscriber.ts` — staff WhatsApp message send via `whatsapp.session.handover` envelope. Same `WhatsAppState` blocker as `notification.send`; deferred to the same follow-up.
+- `defer-resolver.ts` — already envelope-aware per task 03; verified alignment (it adjudicates the parked envelope itself, not a new system-actor envelope).
+- Other BullMQ jobs (`abandoned-cart-checker`, `proactive-engagement`, `pix-expiry-monitor`, `reservation-reminder`, `no-show-checker`, `outbox-retry`, `outreach-messages`, `follow-up-poller`, `defer-timeout-sweeper`, `cart-recovery-messages`, `hesitation-nudge`, `review-prompt-poller`, `review-prompt`, `weather-helper`) — most are NATS publishes or WhatsApp egress (same `WhatsAppState` blocker); a few are analytics-only. `no-show-checker` is the only one that mutates a state machine (reservation), and the reservation policy bundle already exists — wrapping it is a clean ~30min follow-up.
+- Tests for the wrapped subscribers/jobs live under `apps/api/src/__tests__/subscribers/` and `apps/api/src/__tests__/jobs/` with the `-governance.test.ts` suffix.
+
+**Pure-legacy posture:** the wrapped subscribers/jobs do NOT consult `IBX_KERNEL_ENFORCE`/`IBX_KERNEL_SHADOW` — they call `*FromEnvelope` unconditionally because the kernel adjudication IS the safety model for these system-actor intents (the system-only taint floor is the primary gate; there is no "fallback legacy" path that would be safer than the kernel review). The 24h-window guards on the WhatsApp pack are the case where a shadow/enforce ramp would matter — those land with the deferred `notification.send` follow-up.
+
 ## Task 14 follow-up — remaining customer routes (scope cuts)
 
 Task 14 landed the customer-intent gateway (`apps/api/src/routes/__shared__/customer-intent-gateway.ts`), the LGPD anonymize 3-endpoint flow with 24h grace + resolver subscriber, and wrapped three high-value routes: `POST /api/cart/checkout`, `POST /api/orders/:id/cancel`, `POST /api/orders/:id/amend`. The remaining customer routes from the task spec were deliberately deferred (not blocked — they have working legacy paths and the gateway pattern is now in place):
