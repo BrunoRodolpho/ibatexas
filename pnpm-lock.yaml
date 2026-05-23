@@ -1043,6 +1043,9 @@ importers:
       '@adjudicate/core':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/core
+      '@adjudicate/locales-pt-br':
+        specifier: workspace:*
+        version: link:../../../adjudicate/packages/locales-pt-BR
       '@adjudicate/pack-payments-pix':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/pack-payments-pix
