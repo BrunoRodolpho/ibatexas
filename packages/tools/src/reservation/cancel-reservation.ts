@@ -1,10 +1,40 @@
 // cancel_reservation tool
 // Cancels a reservation and notifies the next waitlist entry if applicable.
 // Auth: customer
+//
+// ── W7 P1 — kernel-routed via reservation.cancelFromEnvelope ──────────────
+//
+// Previously this tool invoked `svc.cancel(...)` directly, bypassing the
+// adjudicate kernel. Per CLAUDE.md rule #9 (LLM authority) every mutating
+// tool dispatch must flow through an IntentEnvelope. We now build a
+// `reservation.cancel` envelope (UNTRUSTED, principal=llm) and route via
+// `cancelFromEnvelope`, which:
+//   - Adjudicates against `reservationsPolicyBundle`
+//   - Runs the reservation-present / cancellable / last-minute-confirm
+//     guards (REQUEST_CONFIRMATION when within RESERVATION_CANCEL_CONFIRM_HOURS
+//     of the slot start)
+//   - Emits a governance audit record via the configured AuditSink
+//   - Delegates to the existing `cancel()` for the Prisma writes
+//
+// The post-cancel side effects (waitlist promotion + NATS publish +
+// customer notification) remain in the tool layer because they are not
+// part of the cancel mutation itself — they react to the EXECUTE outcome.
+//
+// State projection: the pack's `requireReservationPresent` /
+// `requireReservationCancellable` guards inspect `state.ctx.reservation`.
+// The `confirmLastMinuteCancel` guard reads `state.ctx.slot` + `now` —
+// we project the slot so the REQUEST_CONFIRMATION semantics apply for
+// LLM-proposed cancels (the existing service.cancel() does no such check).
 
-import { createReservationService } from "@ibatexas/domain"
+import { randomUUID } from "node:crypto"
+import { createReservationService, prisma } from "@ibatexas/domain"
 import { CancelReservationInputSchema, type CancelReservationInput, type CancelReservationOutput } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
+import { buildEnvelope } from "@adjudicate/core"
+import type {
+  ReservationCancelPayload,
+  ReservationState,
+} from "@ibatexas/pack-reservations"
 import { withReservationOwnership } from "../guards/with-ownership.js"
 import { notifyWaitlistSpotAvailable, sendReservationCancelled } from "./notifications.js"
 
@@ -19,10 +49,80 @@ async function cancelReservationImpl(
   const svc = createReservationService()
 
   try {
-    // Fetch reservation details before cancelling (for notification)
+    // Fetch reservation details before cancelling (for notification + state projection).
+    // `getById` does its own ownership check; the result also feeds state below.
     const reservationDetails = await svc.getById(parsed.reservationId, parsed.customerId)
 
-    const { timeSlotId } = await svc.cancel(parsed.reservationId, parsed.customerId)
+    // Hydrate the timeslot row for the last-minute-confirm guard.
+    const slotRow = await prisma.timeSlot.findUnique({
+      where: { id: reservationDetails.timeSlot.id },
+    })
+
+    const state: ReservationState = {
+      ctx: {
+        channel: "whatsapp",
+        customerId: parsed.customerId,
+        staffId: null,
+        now: new Date(),
+        reservation: {
+          id: reservationDetails.id,
+          status: reservationDetails.status as
+            | "pending"
+            | "confirmed"
+            | "seated"
+            | "completed"
+            | "cancelled"
+            | "no_show",
+          partySize: reservationDetails.partySize,
+          timeSlotId: reservationDetails.timeSlot.id,
+        },
+        slot: slotRow
+          ? {
+              timeSlotId: slotRow.id,
+              startAt: new Date(
+                `${slotRow.date.toISOString().split("T")[0]}T${slotRow.startTime}:00`,
+              ),
+              maxCovers: slotRow.maxCovers,
+              reservedCovers: slotRow.reservedCovers,
+            }
+          : null,
+      },
+    }
+
+    // ── Build the IntentEnvelope ──────────────────────────────────────
+    const payload: ReservationCancelPayload = {
+      reservationId: parsed.reservationId,
+      ...(parsed.reason !== undefined ? { reason: parsed.reason } : {}),
+    }
+    const envelope = buildEnvelope<"reservation.cancel", ReservationCancelPayload>({
+      kind: "reservation.cancel",
+      payload,
+      nonce: randomUUID(),
+      actor: {
+        principal: "llm",
+        sessionId: `customer:${parsed.customerId}`,
+      },
+      taint: "UNTRUSTED",
+    })
+
+    const outcome = await svc.cancelFromEnvelope(envelope, state, {
+      customerId: parsed.customerId,
+    })
+
+    if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+      const message =
+        outcome.decision.kind === "REFUSE"
+          ? outcome.decision.refusal.userFacing
+          : outcome.decision.kind === "REQUEST_CONFIRMATION"
+            ? outcome.decision.prompt
+            : "Não foi possível cancelar a reserva no momento."
+      return {
+        success: false,
+        message,
+      }
+    }
+
+    const { timeSlotId } = outcome.result!
 
     // Notify customer of cancellation (fire-and-forget)
     void sendReservationCancelled(

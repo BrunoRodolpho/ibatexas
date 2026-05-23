@@ -1,13 +1,11 @@
-// Tests for modify_reservation tool
+// Tests for modify_reservation tool (W7 P1 — envelope-routed)
 // Mock-based; no database required.
 //
 // Scenarios:
-// - Not found → {success: false}
-// - Wrong owner → {success: false}
-// - Terminal status (cancelled/no_show/completed) → {success: false}
-// - New time slot not found → {success: false}
-// - New slot insufficient capacity → {success: false}
-// - Happy path → {success: true, reservation: dto}, NATS published
+// - Ownership guard rejects unknown reservation / wrong owner (pre-kernel)
+// - Kernel REFUSE on terminal status → {success: false} with refusal copy
+// - Kernel REFUSE on new slot not found / no capacity → {success: false}
+// - Happy path → {success: true, reservation: dto}, NATS published, envelope routed
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { modifyReservation } from "../modify-reservation.js"
@@ -16,51 +14,17 @@ import { modifyReservation } from "../modify-reservation.js"
 
 const mockReservationFindUnique = vi.hoisted(() => vi.fn())
 const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn())
-const mockTransaction = vi.hoisted(() => vi.fn())
+const mockModifyFromEnvelope = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
-const mockAssignTables = vi.hoisted(() => vi.fn())
-const mockReleaseReservation = vi.hoisted(() => vi.fn())
-const mockReservationToDTO = vi.hoisted(() => vi.fn())
+const mockSendReservationModified = vi.hoisted(() => vi.fn())
 
 vi.mock("@ibatexas/domain", () => ({
   prisma: {
     reservation: { findUnique: mockReservationFindUnique },
     timeSlot: { findUnique: mockTimeSlotFindUnique },
-    $transaction: mockTransaction,
   },
   createReservationService: () => ({
-    modify: async (
-      id: string,
-      customerId: string,
-      changes: { newTimeSlotId?: string; newPartySize?: number; specialRequests?: unknown[] },
-    ) => {
-      const existing = await mockReservationFindUnique({ where: { id }, include: { timeSlot: true, tables: { include: { table: true } } } })
-      if (!existing) throw new Error("Reserva não encontrada.")
-      if (existing.customerId !== customerId) throw new Error("Você não tem permissão para modificar esta reserva.")
-      if (["cancelled", "no_show", "completed"].includes(existing.status)) {
-        throw new Error(`Não é possível modificar reserva com status "${existing.status}".`)
-      }
-      const newTimeSlotId = changes.newTimeSlotId ?? existing.timeSlotId
-      const newPartySize = changes.newPartySize ?? existing.partySize
-      const isChangingSlot = newTimeSlotId !== existing.timeSlotId
-      if (isChangingSlot) {
-        const newSlot = await mockTimeSlotFindUnique({ where: { id: newTimeSlotId } })
-        if (!newSlot) throw new Error("Novo horário não encontrado.")
-        const available = newSlot.maxCovers - newSlot.reservedCovers
-        if (available < newPartySize) throw new Error(`O horário solicitado não tem vagas para ${newPartySize} pessoa(s).`)
-      }
-      const updated = await mockTransaction(async (tx: Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>) => {
-        await tx.timeSlot.update({ where: { id: existing.timeSlotId }, data: { reservedCovers: { decrement: existing.partySize } } })
-        await tx.reservationTable.deleteMany({ where: { reservationId: existing.id } })
-        await tx.timeSlot.update({ where: { id: newTimeSlotId }, data: { reservedCovers: { increment: newPartySize } } })
-        return tx.reservation.update({
-          where: { id: existing.id },
-          data: { timeSlotId: newTimeSlotId, partySize: newPartySize, specialRequests: changes.specialRequests ?? existing.specialRequests ?? [] },
-          include: { timeSlot: true, tables: { include: { table: true } } },
-        })
-      })
-      return mockReservationToDTO(updated)
-    },
+    modifyFromEnvelope: mockModifyFromEnvelope,
   }),
 }))
 
@@ -68,14 +32,8 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }))
 
-vi.mock("../utils.js", () => ({
-  assignTables: mockAssignTables,
-  releaseReservation: mockReleaseReservation,
-  reservationToDTO: mockReservationToDTO,
-}))
-
 vi.mock("../notifications.js", () => ({
-  sendReservationModified: vi.fn().mockResolvedValue(undefined),
+  sendReservationModified: mockSendReservationModified,
   sendReservationConfirmation: vi.fn(),
   sendReservationCancelled: vi.fn(),
   notifyWaitlistSpotAvailable: vi.fn(),
@@ -88,15 +46,17 @@ const EXISTING_RESERVATION = {
   customerId: "cus_01",
   partySize: 4,
   status: "confirmed",
-  specialRequests: [],
   timeSlotId: "ts_01",
+}
+
+const EXISTING_RESERVATION_FULL = {
+  ...EXISTING_RESERVATION,
+  specialRequests: [],
   timeSlot: {
     id: "ts_01",
     date: new Date("2026-03-15T00:00:00.000Z"),
     startTime: "19:30",
     durationMinutes: 90,
-    maxCovers: 40,
-    reservedCovers: 4,
   },
   tables: [],
   confirmedAt: new Date(),
@@ -132,18 +92,15 @@ const MOCK_DTO = {
 }
 
 function setupHappyPath() {
-  mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION)
+  // withReservationOwnership uses prisma.reservation.findUnique to assert ownership BEFORE the impl runs.
+  mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION_FULL)
   mockTimeSlotFindUnique.mockResolvedValue(NEW_SLOT)
-  mockAssignTables.mockResolvedValue(["tbl_01"])
-  mockReservationToDTO.mockReturnValue(MOCK_DTO)
-  mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
-    const mockTx = {
-      timeSlot: { update: vi.fn().mockResolvedValue(undefined) },
-      reservationTable: { deleteMany: vi.fn().mockResolvedValue(undefined) },
-      reservation: { update: vi.fn().mockResolvedValue({ ...EXISTING_RESERVATION, timeSlotId: "ts_02" }) },
-    }
-    return cb(mockTx)
+  mockModifyFromEnvelope.mockResolvedValue({
+    decision: { kind: "EXECUTE" },
+    result: MOCK_DTO,
   })
+  mockSendReservationModified.mockResolvedValue(undefined)
+  mockPublishNatsEvent.mockResolvedValue(undefined)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -151,7 +108,6 @@ function setupHappyPath() {
 describe("modifyReservation", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockPublishNatsEvent.mockResolvedValue(undefined)
   })
 
   it("throws 'não encontrada' when reservation not found (SEC-002 guard)", async () => {
@@ -163,15 +119,25 @@ describe("modifyReservation", () => {
   })
 
   it("throws 'Acesso negado' for wrong owner (SEC-002 guard)", async () => {
-    mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION)
+    mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION_FULL)
 
     await expect(
       modifyReservation({ customerId: "cus_WRONG", reservationId: "res_01" }),
     ).rejects.toThrow("Acesso negado")
   })
 
-  it("returns success:false when status is cancelled", async () => {
-    mockReservationFindUnique.mockResolvedValue({ ...EXISTING_RESERVATION, status: "cancelled" })
+  it("returns success:false when kernel REFUSEs (e.g. terminal status)", async () => {
+    mockReservationFindUnique.mockResolvedValue({ ...EXISTING_RESERVATION_FULL, status: "cancelled" })
+    mockTimeSlotFindUnique.mockResolvedValue(null)
+    mockModifyFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          code: "reservation_not_modifiable",
+          userFacing: 'Não é possível modificar reserva com status "cancelled".',
+        },
+      },
+    })
 
     const result = await modifyReservation({
       customerId: "cus_01",
@@ -183,23 +149,18 @@ describe("modifyReservation", () => {
     expect(result.reservation).toBeNull()
   })
 
-  it("returns success:false when new slot not found", async () => {
-    mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION)
-    mockTimeSlotFindUnique.mockResolvedValue(null)
-
-    const result = await modifyReservation({
-      customerId: "cus_01",
-      reservationId: "res_01",
-      newTimeSlotId: "ts_NONEXISTENT",
+  it("returns success:false when kernel REFUSEs new-slot-full", async () => {
+    mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION_FULL)
+    mockTimeSlotFindUnique.mockResolvedValue({ ...NEW_SLOT, maxCovers: 10, reservedCovers: 10 })
+    mockModifyFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          code: "reservation_slot_full",
+          userFacing: "O horário solicitado não tem vagas suficientes.",
+        },
+      },
     })
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain("Novo horário não encontrado")
-  })
-
-  it("returns success:false when new slot has no capacity", async () => {
-    mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION)
-    mockTimeSlotFindUnique.mockResolvedValue({ ...NEW_SLOT, maxCovers: 10, reservedCovers: 9 })
 
     const result = await modifyReservation({
       customerId: "cus_01",
@@ -241,7 +202,7 @@ describe("modifyReservation", () => {
     )
   })
 
-  it("runs changes inside a transaction", async () => {
+  it("routes through modifyFromEnvelope with the correct envelope shape", async () => {
     setupHappyPath()
 
     await modifyReservation({
@@ -250,6 +211,24 @@ describe("modifyReservation", () => {
       newTimeSlotId: "ts_02",
     })
 
-    expect(mockTransaction).toHaveBeenCalledOnce()
+    expect(mockModifyFromEnvelope).toHaveBeenCalledOnce()
+    const [envelope, state, extras] = mockModifyFromEnvelope.mock.calls[0] as [
+      { kind: string; taint: string; actor: { principal: string; sessionId: string }; payload: { reservationId: string; newTimeSlotId?: string } },
+      { ctx: { reservation: { id: string; status: string; timeSlotId: string } | null; newSlot: unknown } },
+      { customerId: string },
+    ]
+
+    expect(envelope.kind).toBe("reservation.modify")
+    expect(envelope.taint).toBe("UNTRUSTED")
+    expect(envelope.actor.principal).toBe("llm")
+    expect(envelope.payload.reservationId).toBe("res_01")
+    expect(envelope.payload.newTimeSlotId).toBe("ts_02")
+
+    expect(state.ctx.reservation).not.toBeNull()
+    expect(state.ctx.reservation!.id).toBe("res_01")
+    expect(state.ctx.reservation!.status).toBe("confirmed")
+    expect(state.ctx.newSlot).not.toBeNull()
+
+    expect(extras.customerId).toBe("cus_01")
   })
 })

@@ -1,11 +1,12 @@
-// Tests for create_reservation tool
+// Tests for create_reservation tool (W7 P1 — envelope-routed)
 // Mock-based; no database required.
 //
 // Scenarios:
-// - Slot not found → throws
-// - Insufficient capacity → throws
-// - Happy path → creates reservation, publishes NATS, returns confirmation
+// - Slot not found → kernel REFUSE → throws with refusal copy
+// - Kernel REFUSE on insufficient capacity → throws
+// - Happy path → routes through createFromEnvelope, publishes NATS, returns confirmation
 // - WhatsApp stub is called with correct reservation DTO
+// - Envelope shape: kind="reservation.create", taint="UNTRUSTED", principal="llm"
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { createReservation } from "../create-reservation.js"
@@ -13,82 +14,16 @@ import { createReservation } from "../create-reservation.js"
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn())
-const mockTableFindMany = vi.hoisted(() => vi.fn())
-const mockReservationTableFindMany = vi.hoisted(() => vi.fn())
-const mockTransaction = vi.hoisted(() => vi.fn())
+const mockCreateFromEnvelope = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 const mockSendReservationConfirmation = vi.hoisted(() => vi.fn())
 
 vi.mock("@ibatexas/domain", () => ({
   prisma: {
     timeSlot: { findUnique: mockTimeSlotFindUnique },
-    table: { findMany: mockTableFindMany },
-    reservationTable: { findMany: mockReservationTableFindMany },
-    $transaction: mockTransaction,
   },
   createReservationService: () => ({
-    create: async (input: { customerId: string; timeSlotId: string; partySize: number; specialRequests?: unknown[] }) => {
-      const slot = await mockTimeSlotFindUnique({ where: { id: input.timeSlotId } })
-      if (!slot) throw new Error("Horário não encontrado. Verifique o ID do horário.")
-      const availableCovers = slot.maxCovers - slot.reservedCovers
-      if (availableCovers < input.partySize) {
-        throw new Error(`Este horário está esgotado para ${input.partySize} pessoa(s). Tente outro horário ou entre na lista de espera.`)
-      }
-      const reserved = await mockReservationTableFindMany({
-        where: { reservation: { timeSlotId: input.timeSlotId, status: { notIn: ["cancelled", "no_show"] } } },
-        select: { tableId: true },
-      })
-      const reservedIds = new Set(reserved.map((rt: { tableId: string }) => rt.tableId))
-      const available = await mockTableFindMany({
-        where: { active: true, id: { notIn: Array.from(reservedIds) } },
-        orderBy: { capacity: "desc" },
-      })
-      const tableIds: string[] = []
-      let covered = 0
-      for (const table of available) {
-        if (covered >= input.partySize) break
-        tableIds.push(table.id)
-        covered += table.capacity
-      }
-      const tableLocation = available[0]?.location ?? null
-      const reservation = await mockTransaction(async (tx: Record<string, Record<string, (...args: unknown[]) => Promise<unknown>>>) => {
-        const r = await tx.reservation.create({
-          data: {
-            customerId: input.customerId,
-            partySize: input.partySize,
-            status: "confirmed",
-            specialRequests: input.specialRequests ?? [],
-            confirmedAt: new Date(),
-            timeSlotId: input.timeSlotId,
-            tables: { create: tableIds.map((tableId: string) => ({ tableId })) },
-          },
-          include: { timeSlot: true, tables: { include: { table: true } } },
-        })
-        await tx.timeSlot.update({
-          where: { id: input.timeSlotId },
-          data: { reservedCovers: { increment: input.partySize } },
-        })
-        return r
-      })
-      const toDTO = (r: Record<string, unknown>) => {
-        const ts = r.timeSlot as Record<string, unknown>
-        const tables = r.tables as Array<{ table: { location: string } }>
-        return {
-          id: r.id, customerId: r.customerId, partySize: r.partySize,
-          status: r.status, specialRequests: r.specialRequests ?? [],
-          timeSlot: {
-            id: ts.id, date: (ts.date as Date).toISOString().split("T")[0] ?? "",
-            startTime: ts.startTime, durationMinutes: ts.durationMinutes,
-          },
-          tableLocation: tables?.[0]?.table?.location ?? null,
-          confirmedAt: r.confirmedAt ? (r.confirmedAt as Date).toISOString() : null,
-          checkedInAt: null, cancelledAt: null,
-          createdAt: (r.createdAt as Date).toISOString(),
-          updatedAt: (r.updatedAt as Date).toISOString(),
-        }
-      }
-      return { reservation: toDTO(reservation as Record<string, unknown>), tableLocation }
-    },
+    createFromEnvelope: mockCreateFromEnvelope,
   }),
 }))
 
@@ -113,27 +48,28 @@ const SLOT = {
   createdAt: new Date(),
 }
 
-const TABLES = [
-  { id: "tbl_01", number: "1", capacity: 4, location: "indoor", accessible: false, active: true, createdAt: new Date() },
-  { id: "tbl_02", number: "2", capacity: 4, location: "outdoor", accessible: false, active: true, createdAt: new Date() },
-]
+const TABLE_LOCATION = "indoor"
 
-function makeCreatedReservation(overrides = {}) {
+function makeReservationDTO() {
   return {
     id: "res_01",
+    displayId: 1,
     customerId: "cus_01",
     partySize: 4,
-    status: "confirmed",
+    status: "confirmed" as const,
     specialRequests: [],
-    confirmedAt: new Date(),
+    timeSlot: {
+      id: "ts_01",
+      date: "2026-03-15",
+      startTime: "19:30",
+      durationMinutes: 90,
+    },
+    tableLocation: TABLE_LOCATION,
+    confirmedAt: new Date().toISOString(),
     checkedInAt: null,
     cancelledAt: null,
-    timeSlotId: "ts_01",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    timeSlot: SLOT,
-    tables: [{ reservationId: "res_01", tableId: "tbl_01", table: TABLES[0] }],
-    ...overrides,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   }
 }
 
@@ -144,48 +80,56 @@ const BASE_INPUT = {
   specialRequests: [],
 }
 
+function setupHappyPath() {
+  mockTimeSlotFindUnique.mockResolvedValue(SLOT)
+  mockCreateFromEnvelope.mockResolvedValue({
+    decision: { kind: "EXECUTE" },
+    result: { reservation: makeReservationDTO(), tableLocation: TABLE_LOCATION },
+  })
+  mockPublishNatsEvent.mockResolvedValue(undefined)
+  mockSendReservationConfirmation.mockResolvedValue(undefined)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe("createReservation", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockPublishNatsEvent.mockResolvedValue(undefined)
-    mockSendReservationConfirmation.mockResolvedValue(undefined)
-    // Default: tables available, none reserved currently
-    mockTableFindMany.mockResolvedValue(TABLES)
-    mockReservationTableFindMany.mockResolvedValue([])
-    // Default transaction: return created reservation
-    mockTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
-      const mockTx = {
-        reservation: {
-          create: vi.fn().mockResolvedValue(makeCreatedReservation()),
-        },
-        timeSlot: {
-          update: vi.fn().mockResolvedValue(undefined),
-        },
-      }
-      return cb(mockTx)
-    })
   })
 
-  it("throws when time slot is not found", async () => {
+  it("throws with kernel REFUSE copy when slot is not found", async () => {
     mockTimeSlotFindUnique.mockResolvedValue(null)
+    mockCreateFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          code: "reservation_slot_not_found",
+          userFacing: "Horário não encontrado. Verifique o ID do horário.",
+        },
+      },
+    })
 
     await expect(createReservation(BASE_INPUT)).rejects.toThrow("Horário não encontrado")
   })
 
-  it("throws when slot has insufficient capacity", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue({
-      ...SLOT,
-      maxCovers: 10,
-      reservedCovers: 8, // only 2 available, need 4
+  it("throws with kernel REFUSE copy when slot has insufficient capacity", async () => {
+    mockTimeSlotFindUnique.mockResolvedValue({ ...SLOT, maxCovers: 10, reservedCovers: 8 })
+    mockCreateFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          code: "reservation_slot_full",
+          userFacing:
+            "Este horário está esgotado para 4 pessoa(s). Tente outro horário ou entre na lista de espera.",
+        },
+      },
     })
 
     await expect(createReservation(BASE_INPUT)).rejects.toThrow("esgotado")
   })
 
   it("returns confirmation DTO on success", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(SLOT)
+    setupHappyPath()
 
     const result = await createReservation(BASE_INPUT)
 
@@ -196,7 +140,7 @@ describe("createReservation", () => {
   })
 
   it("publishes reservation.created NATS event", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(SLOT)
+    setupHappyPath()
 
     await createReservation(BASE_INPUT)
 
@@ -211,7 +155,7 @@ describe("createReservation", () => {
   })
 
   it("calls sendReservationConfirmation with correct data", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(SLOT)
+    setupHappyPath()
 
     await createReservation(BASE_INPUT)
 
@@ -221,11 +165,35 @@ describe("createReservation", () => {
     expect(dto.partySize).toBe(4)
   })
 
-  it("runs db changes inside a transaction", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(SLOT)
+  it("routes through createFromEnvelope with the correct envelope shape", async () => {
+    setupHappyPath()
 
     await createReservation(BASE_INPUT)
 
-    expect(mockTransaction).toHaveBeenCalledOnce()
+    expect(mockCreateFromEnvelope).toHaveBeenCalledOnce()
+    const [envelope, state, extras] = mockCreateFromEnvelope.mock.calls[0] as [
+      { kind: string; taint: string; actor: { principal: string; sessionId: string }; payload: { timeSlotId: string; partySize: number } },
+      { ctx: { customerId: string; slot: { timeSlotId: string; maxCovers: number; reservedCovers: number } | null } },
+      { customerId: string },
+    ]
+
+    // Envelope: kernel-gated mutation. UNTRUSTED + principal=llm is the
+    // canonical LLM-tool dispatch shape per CLAUDE.md rule #9.
+    expect(envelope.kind).toBe("reservation.create")
+    expect(envelope.taint).toBe("UNTRUSTED")
+    expect(envelope.actor.principal).toBe("llm")
+    expect(envelope.actor.sessionId).toBe("customer:cus_01")
+    expect(envelope.payload.timeSlotId).toBe("ts_01")
+    expect(envelope.payload.partySize).toBe(4)
+
+    // State projection: the pack's `requireSlotWithCapacity` reads
+    // state.ctx.slot. Without it, the kernel would REFUSE before the
+    // executor ever runs.
+    expect(state.ctx.customerId).toBe("cus_01")
+    expect(state.ctx.slot).not.toBeNull()
+    expect(state.ctx.slot!.maxCovers).toBe(40)
+    expect(state.ctx.slot!.reservedCovers).toBe(0)
+
+    expect(extras.customerId).toBe("cus_01")
   })
 })

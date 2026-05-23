@@ -1,0 +1,89 @@
+W7 — P1 Reservation tool layer migration — AFTER state
+========================================================
+
+Date: 2026-05-23
+Branch: feat/correctness-w7-close-w6-findings
+Agent: W7-Govern-Customer
+
+Changes:
+  - packages/tools/src/reservation/create-reservation.ts
+      • Now builds `reservation.create` IntentEnvelope (UNTRUSTED, principal="llm")
+      • Projects ReservationState with slot snapshot for the pack's
+        `requireSlotWithCapacity` + `requireSlotInFuture` guards
+      • Routes via `svc.createFromEnvelope(envelope, state, { customerId })`
+      • Surfaces REFUSE refusal.userFacing as the thrown error message
+      • Preserves all downstream side effects (NATS publish + customer
+        notification + DTO shape) on EXECUTE/REWRITE
+
+  - packages/tools/src/reservation/modify-reservation.ts
+      • Now builds `reservation.modify` IntentEnvelope (UNTRUSTED, principal="llm")
+      • Projects state with existing reservation snapshot + optional
+        newSlot (for `refuseModifyOnFullNewSlot` guard)
+      • Routes via `svc.modifyFromEnvelope(envelope, state, { customerId })`
+      • Preserves SEC-002 ownership guard (`withReservationOwnership`)
+        as the pre-kernel boundary so unauthenticated/cross-tenant
+        attempts still throw with the canonical SEC-002 copy
+      • Maps REFUSE to `{ success: false, message: refusal.userFacing }`
+
+  - packages/tools/src/reservation/cancel-reservation.ts
+      • Now builds `reservation.cancel` IntentEnvelope (UNTRUSTED, principal="llm")
+      • Projects state with reservation + slot snapshot so the pack's
+        `confirmLastMinuteCancel` REQUEST_CONFIRMATION guard fires for
+        LLM-proposed cancels within RESERVATION_CANCEL_CONFIRM_HOURS
+      • Routes via `svc.cancelFromEnvelope(envelope, state, { customerId })`
+      • Post-cancel side effects (waitlist promotion, NATS publish,
+        customer notification) preserved on EXECUTE/REWRITE
+      • SEC-002 ownership guard preserved
+
+  - packages/tools/src/reservation/join-waitlist.ts
+      • NOT MIGRATED — surfaced as sub-finding (see below).
+      • Added doc comment explaining the block and pointing at the
+        service-side TODO (out of W7-Govern-Customer scope).
+
+  - packages/tools/package.json
+      • Added `@ibatexas/pack-reservations: workspace:*` dep so the
+        envelope payload + state types can be imported.
+
+Test files updated:
+  - packages/tools/src/reservation/__tests__/create-reservation.test.ts
+  - packages/tools/src/reservation/__tests__/modify-reservation.test.ts
+  - packages/tools/src/reservation/__tests__/cancel-reservation.test.ts
+
+  Each test file now mocks `createFromEnvelope` / `modifyFromEnvelope` /
+  `cancelFromEnvelope` (not the legacy bare-arg methods) and adds a
+  dedicated "routes through *FromEnvelope with the correct envelope shape"
+  test that asserts:
+    - envelope.kind matches the intent
+    - envelope.taint === "UNTRUSTED"
+    - envelope.actor.principal === "llm"
+    - envelope.actor.sessionId === `customer:<id>`
+    - state.ctx fields the pack's guards inspect are populated
+
+Sub-finding (residual risk — out of W7-Govern-Customer scope):
+  - join-waitlist tool cannot be migrated without adding a
+    `joinWaitlistFromEnvelope` method to packages/domain/src/services/
+    reservation.service.ts. The pack already declares the
+    `reservation.waitlist.join` intent kind; the service-side wrapper
+    does not exist. Recommendation: open a follow-up task for the
+    packages/domain owner to add the entry point.
+
+Vitest output (final):
+
+  RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas
+
+   ✓ packages/tools/src/reservation/__tests__/utils.test.ts (10 tests) 17ms
+   ✓ packages/tools/src/reservation/__tests__/check-availability.test.ts (6 tests) 7ms
+   ✓ packages/tools/src/reservation/__tests__/get-my-reservations.test.ts (5 tests) 5ms
+   ✓ packages/tools/src/reservation/__tests__/notifications.test.ts (6 tests) 18ms
+   ✓ packages/tools/src/reservation/__tests__/join-waitlist.test.ts (5 tests) 3ms
+   ✓ packages/tools/src/reservation/__tests__/modify-reservation.test.ts (7 tests) 8ms
+   ✓ packages/tools/src/reservation/__tests__/cancel-reservation.test.ts (8 tests) 7ms
+   ✓ packages/tools/src/reservation/__tests__/create-reservation.test.ts (6 tests) 20ms
+
+   Test Files  8 passed (8)
+        Tests  53 passed (53)
+
+3 reservation tool sites migrated (create / modify / cancel).
+1 site documented + blocked on service-side prerequisite (join-waitlist).
+TypeScript: my files compile clean. Pre-existing TS error in
+packages/tools/src/cart/create-checkout.ts is OUT OF MY SCOPE.
