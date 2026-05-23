@@ -4,6 +4,7 @@
 // and post-checkout fallback confirmation. The LLM only generates customer-facing
 // text from the synthesized prompt — it NEVER makes business decisions.
 
+import { randomUUID } from "node:crypto"
 import Anthropic from "@anthropic-ai/sdk"
 import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropic-ai/sdk/resources/messages.js"
 import { NonRetryableError, type AgentContext, type StreamChunk } from "@ibatexas/types"
@@ -707,6 +708,10 @@ export async function* generateResponse(
               payload: { stateValue, originalLength: rawText.length },
               actor: { principal: "system", sessionId: agentContext.sessionId },
               taint: "SYSTEM",
+              // v2 envelope: nonce is the idempotency key (not createdAt).
+              // Validation events are post-hoc audit records — never retried —
+              // so a fresh UUID per emit is correct.
+              nonce: randomUUID(),
             })
             const record = buildAuditRecord({
               envelope: validationEnvelope,
@@ -736,6 +741,10 @@ export async function* generateResponse(
               payload: { stateValue, originalLength: rawText.length },
               actor: { principal: "system", sessionId: agentContext.sessionId },
               taint: "SYSTEM",
+              // v2 envelope: nonce is the idempotency key (not createdAt).
+              // Validation events are post-hoc audit records — never retried —
+              // so a fresh UUID per emit is correct.
+              nonce: randomUUID(),
             })
             const record = buildAuditRecord({
               envelope: refuseEnvelope,

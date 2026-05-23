@@ -120,6 +120,10 @@ export function allowedIntentsFor(stateValue: string): ReadonlyArray<string> {
  * Adapter conforming to the generic `@adjudicate/core/llm.CapabilityPlanner<S, C>`
  * interface. Consumers of the framework interface can swap this implementation
  * without touching the renderer.
+ *
+ * Note: `forbiddenConcepts` is intentionally not part of the framework `Plan`
+ * shape — it's a cosmetic prompt-rendering concern, not a security boundary.
+ * The PromptRenderer calls `getForbiddenConceptsFor(stateValue)` directly.
  */
 export const orderCapabilityPlanner: FrameworkCapabilityPlanner<
   string,
@@ -129,7 +133,6 @@ export const orderCapabilityPlanner: FrameworkCapabilityPlanner<
     return {
       visibleReadTools: resolveTools(stateValue, ctx),
       allowedIntents: allowedIntentsFor(stateValue),
-      forbiddenConcepts: getForbiddenConceptsFor(stateValue),
     }
   },
 }

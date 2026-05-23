@@ -227,7 +227,7 @@ describe("withCustomerId injection", () => {
         input: { timeSlotId: "slot_01", partySize: 2 },
         toolUseId: "",
         envelope: {
-          version: 1,
+          version: 2,
           kind: "order.tool.propose",
           taint: "UNTRUSTED",
           actor: { principal: "llm" },

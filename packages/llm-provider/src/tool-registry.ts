@@ -115,6 +115,7 @@ import {
 } from "@ibatexas/types"
 import { z } from "zod"
 import type { Tool } from "@anthropic-ai/sdk/resources/index.js"
+import { randomUUID } from "node:crypto"
 import { buildEnvelope } from "@adjudicate/core"
 import {
   TOOL_CLASSIFICATION,
@@ -389,6 +390,10 @@ export async function executeTool(
     // User message is the ultimate source of the LLM's tool proposal.
     // v1.0 payload-level taint; field-level ships in v1.1 per docs/taint.md.
     taint: "UNTRUSTED",
+    // v2 envelope: nonce is the idempotency key for ledger dedup.
+    // First-attempt proposals get a fresh UUID; on retry the caller must
+    // reuse the same envelope (not rebuild it) so the ledger dedups correctly.
+    nonce: randomUUID(),
   })
   return {
     kind: "intent",
