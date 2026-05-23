@@ -99,3 +99,8 @@ export { getAuditSink } from "./intent-audit-wiring.js"
 
 // Re-export agent types for consumers
 export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"
+
+// Intent-kind union (Phase M / task-08 follow-up) — consumed by
+// `validateEnforceConfig` from `@adjudicate/core/kernel` so typos in
+// `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` surface at boot.
+export { KNOWN_INTENT_KINDS } from "./intent-kinds.js"
