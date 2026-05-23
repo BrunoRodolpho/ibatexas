@@ -1,0 +1,37 @@
+// NEW-P0-X9 fixture — multi-line bypass patterns the bypass-detection
+// scan MUST catch. The pre-fix scan (line-by-line regex) silently passed
+// every variant below. The post-fix multi-line/AST scan detects them.
+//
+// These are NOT real code paths; they are synthetic samples used by the
+// fixture-based unit test (multi-line-bypass-scan.test.ts).
+
+// ── Case 1: medusaStore with method on a later line ──────────────────────
+await medusaStore("/store/carts/cart_01", {
+  method: "POST",
+  body: { quantity: 1 },
+})
+
+// ── Case 2: medusaAdmin with method on a separate line, indented heavily ─
+const res = await medusaAdmin(
+  "/admin/orders/order_01/cancel",
+  {
+    method: "DELETE",
+  },
+)
+
+// ── Case 3: medusaStoreFetch with whitespace + comment between call and method
+const fetched = await medusaStoreFetch(
+  "/store/products",
+  /* options */ {
+    method: "PUT",
+  },
+)
+
+// ── Case 4: medusaAdminFetch with object literal on later line ───────────
+const patched = await medusaAdminFetch(
+  "/admin/payments/pay_01",
+  {
+    method: "PATCH",
+    body: JSON.stringify({ status: "captured" }),
+  },
+)
