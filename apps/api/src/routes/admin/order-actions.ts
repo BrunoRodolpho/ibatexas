@@ -73,7 +73,9 @@ import {
 } from "@ibatexas/types";
 import { requireStaff, requireManager } from "../../middleware/staff-auth.js";
 import {
+  consumeWithSameActorCheck,
   createAdminConfirmationStore,
+  SAME_ACTOR_REFUSAL_PT_BR,
   type PendingAdminAction,
 } from "./admin-confirmation-store.js";
 
@@ -230,8 +232,34 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
 
-      const pending = await confirmationStore.consume(confirmationId);
-      if (!pending || pending.route !== "force-cancel" || pending.orderId !== id) {
+      const consumed = await consumeWithSameActorCheck(
+        confirmationStore,
+        confirmationId,
+        staffId,
+      );
+      if (consumed.kind === "missing") {
+        return reply.code(410).send({
+          error: "Confirmação inválida, expirada ou já utilizada.",
+        });
+      }
+      if (consumed.kind === "same_actor_violation") {
+        // P0-5: another operator must confirm step 2. Receipt is
+        // already drained — operator restarts from step 1.
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.force_cancel.same_actor_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingStaffId: consumed.pending.staffId,
+          },
+          timestamp: new Date(),
+        });
+        return reply.code(403).send({ error: SAME_ACTOR_REFUSAL_PT_BR });
+      }
+      const pending = consumed.pending;
+      if (pending.route !== "force-cancel" || pending.orderId !== id) {
         return reply.code(410).send({
           error: "Confirmação inválida, expirada ou já utilizada.",
         });
@@ -562,8 +590,33 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       const { confirmationId } = request.body;
       const staffId = request.staffId ?? null;
 
-      const pending = await confirmationStore.consume(confirmationId);
-      if (!pending || pending.route !== "waive" || pending.orderId !== id) {
+      const consumed = await consumeWithSameActorCheck(
+        confirmationStore,
+        confirmationId,
+        staffId,
+      );
+      if (consumed.kind === "missing") {
+        return reply.code(410).send({
+          error: "Confirmação inválida, expirada ou já utilizada.",
+        });
+      }
+      if (consumed.kind === "same_actor_violation") {
+        // P0-5: another operator must confirm step 2.
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.waive.same_actor_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            pendingStaffId: consumed.pending.staffId,
+          },
+          timestamp: new Date(),
+        });
+        return reply.code(403).send({ error: SAME_ACTOR_REFUSAL_PT_BR });
+      }
+      const pending = consumed.pending;
+      if (pending.route !== "waive" || pending.orderId !== id) {
         return reply.code(410).send({
           error: "Confirmação inválida, expirada ou já utilizada.",
         });

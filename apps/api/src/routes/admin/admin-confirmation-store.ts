@@ -135,6 +135,70 @@ export interface AdminConfirmationStore {
 }
 
 /**
+ * Outcome of `consumeWithSameActorCheck` — discriminated by `kind`.
+ *
+ * - `ok`: the receipt matched, the consuming staff is different from the
+ *   step-1 staff, and the caller should proceed with the pending action.
+ * - `missing`: receipt unknown / expired / already consumed. Caller
+ *   surfaces 410 Gone (uniform with current consumer behavior).
+ * - `same_actor_violation`: P0-5 — the receipt was created by the same
+ *   staffId that's now consuming it. Two-person separation-of-duty
+ *   requires a different operator to execute step 2. Caller surfaces
+ *   403 with a pt-BR refusal.
+ */
+export type ConsumeWithSameActorOutcome =
+  | { readonly kind: "ok"; readonly pending: PendingAdminAction }
+  | { readonly kind: "missing" }
+  | {
+      readonly kind: "same_actor_violation";
+      readonly pending: PendingAdminAction;
+    };
+
+/**
+ * Consume a receipt and enforce the two-person rule.
+ *
+ * P0-5 audit finding: step 2 read the pending's `staffId` only for audit
+ * — never compared `requestStaffId` against `pending.staffId`. The same
+ * operator could issue both steps; the route was one-person-double-
+ * click protection, not separation-of-duty. This helper centralizes the
+ * comparison so all four force-action routes share the gate.
+ *
+ * Comparison rules:
+ *   - If `requestStaffId` is null AND `pending.staffId` is null →
+ *     `ok`. (API-key flow is system-actor; the audit captures
+ *     `sessionId: "admin:api-key"` and the two-step UX is moot.)
+ *   - If `requestStaffId === pending.staffId` (both non-null) →
+ *     `same_actor_violation`. The receipt is consumed (drained from
+ *     Redis) regardless so the operator must restart from step 1.
+ *   - Otherwise → `ok` with the pending payload.
+ *
+ * Returning the consumed pending on `same_actor_violation` lets the
+ * caller emit an audit/event-log entry for the refusal.
+ */
+export async function consumeWithSameActorCheck(
+  store: AdminConfirmationStore,
+  confirmationId: string,
+  requestStaffId: string | null,
+): Promise<ConsumeWithSameActorOutcome> {
+  const pending = await store.consume(confirmationId);
+  if (!pending) {
+    return { kind: "missing" };
+  }
+  if (
+    requestStaffId !== null &&
+    pending.staffId !== null &&
+    requestStaffId === pending.staffId
+  ) {
+    return { kind: "same_actor_violation", pending };
+  }
+  return { kind: "ok", pending };
+}
+
+/** pt-BR refusal text emitted on the same-actor violation path (P0-5). */
+export const SAME_ACTOR_REFUSAL_PT_BR =
+  "Outro operador precisa confirmar — você iniciou a etapa 1 desta ação.";
+
+/**
  * Build an admin confirmation store wired to the default Redis client.
  * One instance per route registration is fine — the store is stateless,
  * the receipts live in Redis.
