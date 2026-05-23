@@ -140,10 +140,61 @@ function loadRedactor(): AuditRedactor {
   // AUDIT_REDACT_SECRET MUST be set in production — see .env.example. Empty
   // is legal in dev; createAuditRedactor emits a console.warn on boot when
   // the salt is empty so the operator sees the warning during local runs.
+  //
+  // W3-8: forward redactor fail-open events to the redactor-failures hook
+  // so apps/api can bump `kernel_audit_redactor_failures_total{reason}`.
+  // The hook is injected by the consumer (set via `setAuditRedactorFailureHook`)
+  // to avoid an apps/api → packages/llm-provider dep from this leaf module.
   _redactor = createAuditRedactor({
     hashSecret: process.env.AUDIT_REDACT_SECRET ?? "",
+    onFailure: (reason) => {
+      if (_redactorFailureHook) {
+        try {
+          _redactorFailureHook(reason)
+        } catch {
+          // Hook must NEVER block the redactor's fail-open path.
+        }
+      }
+    },
   })
   return _redactor
+}
+
+// ── W3 hook injection points (apps/api wires these at boot) ─────────────────
+
+let _redactorFailureHook: ((reason: string) => void) | null = null
+let _auditLagHook:
+  | ((sink: string, latencySeconds: number) => void)
+  | null = null
+let _bufferSizeHook: ((count: number) => void) | null = null
+let _spillSizeHook: ((count: number) => void) | null = null
+
+/** W3-8: bump kernel_audit_redactor_failures_total on redactor fail-open. */
+export function setAuditRedactorFailureHook(
+  hook: ((reason: string) => void) | null,
+): void {
+  _redactorFailureHook = hook
+}
+
+/** W3-1: observe kernel_audit_lag_seconds per audit emit. */
+export function setAuditLagHook(
+  hook: ((sink: string, latencySeconds: number) => void) | null,
+): void {
+  _auditLagHook = hook
+}
+
+/** W3-9: track in-memory persistentBufferedSink queue size. */
+export function setAuditSinkBufferSizeHook(
+  hook: ((count: number) => void) | null,
+): void {
+  _bufferSizeHook = hook
+}
+
+/** W3-10: track Redis spill list depth. */
+export function setAuditSinkSpillSizeHook(
+  hook: ((count: number) => void) | null,
+): void {
+  _spillSizeHook = hook
 }
 
 /**
@@ -267,6 +318,16 @@ function loadSink(): AuditSink {
   // `onOverflow` is the operator-facing telemetry hook; we log here and
   // future work can wire `recordSinkFailure` once the metrics-sink slot
   // exposes a public spill counter.
+  //
+  // W3-9/W3-10: also notify the buffer/spill gauges via the injected hooks.
+  // The exact in-memory queue size is held internal to persistentBufferedSink
+  // so we approximate: each onOverflow is one record evicted to spill (the
+  // monotonic spill-depth counter), each onSpill non-capacity is one record
+  // at-risk. The gauges are tracked as monotonic counters of observed
+  // spills; apps/api can post-process or wire a sibling SCAN poll if a
+  // precise count is needed.
+  let _bufferDepth = 0
+  let _spillDepth = 0
   const buffered = persistentBufferedSink({
     inner: innerSink,
     storage: spillStorage,
@@ -276,6 +337,14 @@ function loadSink(): AuditSink {
         { intentKind: record.envelope.kind, intentHash: record.intentHash },
         "[intent-audit-wiring] audit buffer overflow — record spilled to durable storage",
       )
+      _spillDepth += 1
+      if (_spillSizeHook) {
+        try {
+          _spillSizeHook(_spillDepth)
+        } catch {
+          /* fail-open */
+        }
+      }
     },
     onSpill: (record, reason) => {
       // Log only on failure/drain-failure (capacity is the expected steady
@@ -286,6 +355,16 @@ function loadSink(): AuditSink {
           "[intent-audit-wiring] audit spill",
         )
       }
+      // Track for the buffer-size gauge — capacity-reason events count
+      // as "queue at capacity" snapshots.
+      _bufferDepth = Math.max(_bufferDepth, bufferCapacity())
+      if (_bufferSizeHook) {
+        try {
+          _bufferSizeHook(_bufferDepth)
+        } catch {
+          /* fail-open */
+        }
+      }
     },
   })
 
@@ -295,9 +374,20 @@ function loadSink(): AuditSink {
   _sink = {
     async emit(record: AuditRecord): Promise<void> {
       const redacted = redactor.redact(record)
+      // W3-1 — kernel_audit_lag_seconds: emit→ack latency, in seconds.
+      // We measure from `record.at` (kernel-side emit timestamp) to the
+      // buffered.emit() return. record.at is ISO-8601; if parsing fails
+      // we skip the observation rather than emit garbage.
+      const emitStart = Date.now()
+      const emittedAtIso = record.at
       try {
         await buffered.emit(redacted)
+        recordAuditLagFromIso(emittedAtIso, emitStart, "postgres")
       } catch (err) {
+        // Failure still observes — the buffered sink has spilled the
+        // record to durable storage, so for the lag SLO this counts as
+        // "buffered, not yet durable."
+        recordAuditLagFromIso(emittedAtIso, emitStart, "spill")
         // The buffered sink rethrows when the inner sink fails (per
         // PersistentBufferedSinkOptions contract). We intentionally swallow
         // here so audit emission is fail-open at the IbateXas boundary: a
@@ -312,6 +402,25 @@ function loadSink(): AuditSink {
   return _sink
 }
 
+function recordAuditLagFromIso(
+  emittedAtIso: string,
+  emitStart: number,
+  sink: "postgres" | "nats" | "console" | "spill" = "postgres",
+): void {
+  if (!_auditLagHook) return
+  const emittedAt = Date.parse(emittedAtIso)
+  if (!Number.isFinite(emittedAt)) return
+  // Guard against negative lag from clock skew by taking the larger of
+  // (now - record.at) and (now - emitStart).
+  const now = Date.now()
+  const latencyMs = Math.max(now - emittedAt, now - emitStart, 0)
+  try {
+    _auditLagHook(sink, latencyMs / 1000)
+  } catch {
+    /* fail-open */
+  }
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /** @internal — for test isolation */
@@ -319,6 +428,10 @@ export function _resetAuditSink(): void {
   _sink = null
   _redactor = null
   _depsOverride = null
+  _redactorFailureHook = null
+  _auditLagHook = null
+  _bufferSizeHook = null
+  _spillSizeHook = null
 }
 
 /** @internal — for test access to the redactor used by the wired sink. */

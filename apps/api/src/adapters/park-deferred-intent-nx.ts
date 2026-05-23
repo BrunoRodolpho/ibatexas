@@ -38,6 +38,21 @@ import type {
   ParkDeferredIntentResult,
 } from "@adjudicate/runtime"
 
+// W3-6: bump kernel_defer_quota_exceeded_total{kind} when the framework
+// returns `quota_exceeded`. Lazy `import()` so this adapter's hot-path
+// tests don't drag the kernel-bootstrap module graph (Packs, llm-provider)
+// into their fixture. Recorder is fail-open by construction.
+async function bumpDeferQuotaExceededMetric(kind: string): Promise<void> {
+  try {
+    const { getKernelMetricsRecorder } = await import(
+      "../plugins/kernel-bootstrap.js"
+    )
+    getKernelMetricsRecorder().recordDeferQuotaExceeded(kind)
+  } catch {
+    // Fail-open.
+  }
+}
+
 /**
  * Result of `parkDeferredIntentWithNxGuard`.
  *
@@ -130,6 +145,10 @@ export async function parkDeferredIntentWithNxGuard(
       await (args.redis as { del?: (k: string) => Promise<unknown> })
         .del?.(parkKey)
         ?.catch(() => {})
+      // W3-6 — bump kernel_defer_quota_exceeded_total{kind} per rejection.
+      if (result.reason === "quota_exceeded") {
+        await bumpDeferQuotaExceededMetric(args.envelope.kind)
+      }
     }
     return result
   } catch (err) {

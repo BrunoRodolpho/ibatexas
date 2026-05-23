@@ -100,6 +100,13 @@ export { LedgerUnavailableError } from "./intent-ledger.js"
 // outside the responder hot path (e.g. defer-resolver on resume).
 export {
   getAuditSink,
+  // W3 — hook injectors for the 4 audit-pipeline ghost metrics. apps/api
+  // wires these during `installKernelMetricsSink` so the redactor /
+  // buffered-sink / spill emit Prometheus mutations.
+  setAuditLagHook,
+  setAuditRedactorFailureHook,
+  setAuditSinkBufferSizeHook,
+  setAuditSinkSpillSizeHook,
   // Internal-only — exported for cross-package integration tests that
   // need to inject failing Postgres writers / Redis stubs. Don't call
   // these from production code paths.

@@ -25,20 +25,32 @@
 // file is the boot anchor for all three.
 
 import { installPack, PackConformanceError } from "@adjudicate/core"
-import { setMetricsSink, validateEnforceConfig } from "@adjudicate/core/kernel"
+import {
+  getKillSwitchState,
+  setMetricsSink,
+  validateEnforceConfig,
+} from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
-import { KNOWN_INTENT_KINDS } from "@ibatexas/llm-provider"
+import {
+  KNOWN_INTENT_KINDS,
+  setAuditLagHook,
+  setAuditRedactorFailureHook,
+  setAuditSinkBufferSizeHook,
+  setAuditSinkSpillSizeHook,
+} from "@ibatexas/llm-provider"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { Registry } from "prom-client"
 import type { FastifyInstance } from "fastify"
 import { logger } from "../lib/logger.js"
 import {
+  createKernelMetricsRecorder,
   createKernelMetricsSink,
+  type KernelMetricsRecorder,
   type KernelMetricsSinkDeps,
   type TrackAnalytics,
 } from "./kernel-metrics-sink.js"
@@ -50,6 +62,7 @@ import {
 // can `_resetKernelRegistry()` between cases.
 
 let _registry: Registry | null = null
+let _recorder: KernelMetricsRecorder | null = null
 
 /**
  * Lazy-construct (or return) the shared prom-client Registry. Both
@@ -63,9 +76,27 @@ export function getKernelRegistry(): Registry {
   return _registry
 }
 
+/**
+ * W3 — public recorder for the 11 ghost metrics. Returns a singleton that
+ * mutates the same Registry the MetricsSink writes to. Callers outside the
+ * sink (defer-timeout-sweeper, audit-redactor wrap, replay CLI) use this to
+ * publish ghost metrics from their respective code paths.
+ *
+ * MUST be called AFTER `installKernelMetricsSink()` so the metrics are
+ * registered. Calling before is harmless — the recorder no-ops and warns —
+ * but the underlying mutation isn't visible until the sink registers.
+ */
+export function getKernelMetricsRecorder(): KernelMetricsRecorder {
+  if (_recorder === null) {
+    _recorder = createKernelMetricsRecorder(getKernelRegistry(), logger)
+  }
+  return _recorder
+}
+
 /** @internal — tests only. Drops the registry so the next call rebuilds it. */
 export function _resetKernelRegistry(): void {
   _registry = null
+  _recorder = null
 }
 
 // ── Default trackAnalytics wire ──────────────────────────────────────────────
@@ -110,6 +141,30 @@ export function installKernelMetricsSink(
     knownIntentKinds: overrides?.knownIntentKinds ?? KNOWN_INTENT_KINDS,
   })
   setMetricsSink(sink)
+
+  // W3 — wire the audit-pipeline hooks against the recorder so the
+  // intent-audit-wiring's redactor / persistentBufferedSink can emit the
+  // 4 audit-adjacent ghost metrics. Failure during these hooks logs and
+  // never blocks the audit emit path.
+  const recorder = createKernelMetricsRecorder(
+    register,
+    overrides?.log ?? logger,
+  )
+  setAuditLagHook((sinkName, latencySeconds) =>
+    recorder.recordAuditLag(sinkName, latencySeconds),
+  )
+  setAuditRedactorFailureHook((reason) =>
+    recorder.recordAuditRedactorFailure(reason),
+  )
+  setAuditSinkBufferSizeHook((count) =>
+    recorder.recordAuditSinkBufferSize(count),
+  )
+  setAuditSinkSpillSizeHook((count) =>
+    recorder.recordAuditSinkSpillSize(count),
+  )
+  // Cache the recorder so `getKernelMetricsRecorder()` returns the same
+  // instance to other call sites (sweeper, NX guard).
+  _recorder = recorder
   return register
 }
 
@@ -125,6 +180,11 @@ export function installKernelMetricsSink(
 /**
  * Install IbateXas's first-party Packs against the kernel. Throws
  * `PackConformanceError` synchronously if any Pack drifts from `PackV0`.
+ *
+ * W3-4: each successful `installPack` bumps `kernel_pack_install_total{pack}`
+ * so dashboards can verify ALL expected packs registered at boot. A missing
+ * pack on the scrape endpoint = a silent installPack failure that
+ * conformance-error handling missed.
  */
 export function installFirstPartyPacks() {
   const orders = installPack(ordersPack)
@@ -132,6 +192,17 @@ export function installFirstPartyPacks() {
   const whatsapp = installPack(whatsappPack)
   const customerOnboarding = installPack(customerOnboardingPack)
   const payments = installPack(paymentsPack)
+
+  // W3-4 — emit one increment per installed pack. Recorder is fail-open;
+  // a missing registry (e.g. in tests that skip installKernelMetricsSink)
+  // logs and no-ops.
+  const recorder = getKernelMetricsRecorder()
+  recorder.recordPackInstall("orders")
+  recorder.recordPackInstall("reservations")
+  recorder.recordPackInstall("whatsapp")
+  recorder.recordPackInstall("customer-onboarding")
+  recorder.recordPackInstall("payments")
+
   return { orders, reservations, whatsapp, customerOnboarding, payments }
 }
 
@@ -279,4 +350,110 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     },
     "[kernel-bootstrap] enforce-config validated",
   )
+
+  // W3-3 — kernel_kill_switch_state. Seed from the env-pre-seeded state
+  // and start a 30s poll so runtime toggles via `setKillSwitch(...)` are
+  // reflected in the gauge.
+  const recorder = getKernelMetricsRecorder()
+  const initialKill = getKillSwitchState(process.env)
+  recorder.recordKillSwitchState("global", initialKill.active)
+  startKillSwitchStatePoll(recorder, server.log)
+
+  // W3-5 — kernel_defer_pending_gauge. Poll every 60s for the count of
+  // `defer:pending:*` Redis keys via SCAN.
+  startDeferPendingGaugePoll(recorder, server.log)
+}
+
+// ── W3-3: kill-switch state poll ────────────────────────────────────────────
+//
+// `setKillSwitch(true)` flips the in-process state immediately but the
+// Prometheus gauge has no `setMetric` hook from the kernel side. We poll
+// `getKillSwitchState()` every 30s. Disabled in tests via NODE_ENV check.
+
+let _killSwitchPoll: ReturnType<typeof setInterval> | null = null
+const KILL_SWITCH_POLL_INTERVAL_MS = 30 * 1000
+
+function startKillSwitchStatePoll(
+  recorder: KernelMetricsRecorder,
+  log: { warn: (obj: Record<string, unknown>, msg?: string) => void },
+): void {
+  if (process.env.NODE_ENV === "test") return
+  if (_killSwitchPoll !== null) return
+  _killSwitchPoll = setInterval(() => {
+    try {
+      const state = getKillSwitchState(process.env)
+      recorder.recordKillSwitchState("global", state.active)
+    } catch (err) {
+      log.warn(
+        { err: String(err) },
+        "[kernel-bootstrap] kill-switch poll threw",
+      )
+    }
+  }, KILL_SWITCH_POLL_INTERVAL_MS)
+  if (typeof _killSwitchPoll.unref === "function") _killSwitchPoll.unref()
+}
+
+/** @internal — tests only. */
+export function _stopKillSwitchStatePoll(): void {
+  if (_killSwitchPoll !== null) {
+    clearInterval(_killSwitchPoll)
+    _killSwitchPoll = null
+  }
+}
+
+// ── W3-5: defer-pending-gauge poll ──────────────────────────────────────────
+//
+// SCAN the `defer:pending:*` namespace periodically and update the gauge.
+// Disabled in tests via NODE_ENV check.
+
+let _deferPendingPoll: ReturnType<typeof setInterval> | null = null
+const DEFER_PENDING_POLL_INTERVAL_MS =
+  Number.parseInt(
+    process.env.IBX_DEFER_PENDING_POLL_SECONDS ?? "60",
+    10,
+  ) * 1000
+const MAX_DEFER_SCAN_KEYS = 10_000
+
+function startDeferPendingGaugePoll(
+  recorder: KernelMetricsRecorder,
+  log: { warn: (obj: Record<string, unknown>, msg?: string) => void },
+): void {
+  if (process.env.NODE_ENV === "test") return
+  if (_deferPendingPoll !== null) return
+  const tick = async () => {
+    try {
+      // Lazy import to keep tools out of the module-graph eval path.
+      const { getRedisClient, rk } = await import("@ibatexas/tools")
+      const redis = await getRedisClient()
+      let count = 0
+      const pattern = rk("defer:pending:*")
+      for await (const key of redis.scanIterator({
+        MATCH: pattern,
+        COUNT: 100,
+      })) {
+        if (Array.isArray(key)) count += key.length
+        else count += 1
+        if (count >= MAX_DEFER_SCAN_KEYS) break
+      }
+      recorder.recordDeferPending(count)
+    } catch (err) {
+      log.warn(
+        { err: String(err) },
+        "[kernel-bootstrap] defer-pending poll threw",
+      )
+    }
+  }
+  void tick()
+  _deferPendingPoll = setInterval(() => {
+    void tick()
+  }, DEFER_PENDING_POLL_INTERVAL_MS)
+  if (typeof _deferPendingPoll.unref === "function") _deferPendingPoll.unref()
+}
+
+/** @internal — tests only. */
+export function _stopDeferPendingGaugePoll(): void {
+  if (_deferPendingPoll !== null) {
+    clearInterval(_deferPendingPoll)
+    _deferPendingPoll = null
+  }
 }

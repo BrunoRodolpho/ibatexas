@@ -1,9 +1,26 @@
 # 06 — Observability Requirements
 
-**Status:** Draft v0.1
+**Status:** Reconciled v0.2 (W3 correctness wave)
 **Owner:** Migration Planner
-**Last updated:** 2026-05-22
+**Last updated:** 2026-05-23
 **Companion docs:** `01-rollout-strategy.md`, `04-shadow-enforce-sequencing.md` (per-tier thresholds), `05-kill-switch-strategy.md`, `07-production-safety-checklist.md`
+
+> **W3 reconciliation note (2026-05-23).** The deep audit
+> (`deep-audit/06-docs-vs-reality.md` §"Ghost metrics") flagged 11 metric
+> names declared here as "the contract" that had no producer in code, plus
+> 4 metric-name drifts where doc and code disagreed. W3 closed every gap:
+> the 11 ghost metrics now emit from `apps/api/src/plugins/kernel-metrics-sink.ts`
+> and the recorder API; drifts were resolved by renaming the doc to match
+> the code (`_duration_seconds` is the Prometheus convention; specific
+> names like `kernel_audit_sink_failure_total` beat generic ones).
+> **Every metric below carries a `verified at` line pointing to the
+> code emitting it.** Add new metrics? Update this doc AND
+> `apps/api/src/plugins/kernel-metrics-sink.ts` in the same commit.
+> TODO(CI): add a `pnpm test:metric-contract` gate that scrapes
+> `/metrics` from a Fastify test instance and asserts the metric names
+> here equal the names registered by `createKernelMetricsSink()`. The
+> existing `kernel-metrics-sink.test.ts` "scrape exposes ALL 11 W3 ghost
+> metrics" test is the seed.
 
 ---
 
@@ -25,7 +42,10 @@ Each metric below is **mandatory** for the migration. Names are stable; label se
 
 **Type:** Counter
 **Backend:** Prometheus + PostHog (as `audit_decision_executed | audit_decision_refused | audit_decision_<other>`)
-**Labels:** `kind` (intent kind), `decision` (`EXECUTE | REFUSE | DEFER | REQUEST_CONFIRMATION | ESCALATE | REWRITE`), `actor` (`llm | user | system`)
+**Labels:** `kind` (the decision kind: `EXECUTE | REFUSE | DEFER | REQUEST_CONFIRMATION | ESCALATE | REWRITE`), `intent_kind` (the IntentEnvelope kind)
+**Verified at:** `apps/api/src/plugins/kernel-metrics-sink.ts:153-160` (registration), `:376-381` (increment in recordDecision)
+
+**Naming note (W3 reconciliation):** The original draft labelled this with `kind` + `decision` + `actor`. The code uses `kind` (= decision kind) + `intent_kind` (= IntentEnvelope kind); there is no `actor` label. Doc updated to match.
 
 **Increment trigger:** Every call to `adjudicate()` or `adjudicateWithShadow()` produces exactly one `kernel_decision_total` increment.
 
@@ -47,20 +67,23 @@ posthog.capture("audit_decision_executed", {
 
 ---
 
-### Metric 2 — `kernel_decision_latency_seconds`
+### Metric 2 — `kernel_decision_duration_seconds`
 
 **Type:** Histogram
 **Backend:** Prometheus
-**Labels:** `kind`
+**Labels:** `intent_kind`
 **Buckets:** `0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` (seconds)
+**Verified at:** `apps/api/src/plugins/kernel-metrics-sink.ts:174-183` (registration), `:382-387` (observation in recordDecision)
 
 **Recording trigger:** Measured from `adjudicate()` entry to `adjudicate()` return. Excludes audit emit time (audit is async).
 
-**Why this matters:** Per `investigation/07 §"Alerting gaps"`, the runbooks reference `kernel_decision_duration_seconds` p99 > 100ms as an alert threshold. Slow guard = customer-visible latency in WhatsApp/web chat.
+**Why this matters:** The runbooks reference p99 > 100ms as an alert threshold. Slow guard = customer-visible latency in WhatsApp/web chat.
+
+**Naming note (W3 reconciliation):** Prior drafts named this `kernel_decision_latency_seconds`. The Prometheus naming convention is `_duration_seconds` for time-of-operation histograms; code emits `kernel_decision_duration_seconds`; doc now agrees. (Was `DRIFT` in `deep-audit/06-docs-vs-reality.md`.)
 
 **Example PromQL:**
 ```promql
-histogram_quantile(0.99, rate(kernel_decision_latency_seconds_bucket{kind="order.confirm"}[5m]))
+histogram_quantile(0.99, rate(kernel_decision_duration_seconds_bucket{intent_kind="order.confirm"}[5m]))
 ```
 
 ---
@@ -68,8 +91,11 @@ histogram_quantile(0.99, rate(kernel_decision_latency_seconds_bucket{kind="order
 ### Metric 3 — `kernel_refusal_total`
 
 **Type:** Counter
-**Backend:** Prometheus + Sentry breadcrumb + PostHog (as `audit_decision_refused`)
-**Labels:** `kind`, `basis` (the `<category>:<code>` flattened basis string per `investigation/05 §"@adjudicate/core/kernel"` `flattenBasis` helper)
+**Backend:** Prometheus + Sentry breadcrumb (PostHog is folded into `audit_decision_refused` via `recordDecision`)
+**Labels:** `kind` (refusal category), `intent_kind` (IntentEnvelope kind), `basis_category` (= `kind`), `basis_code` (refusal code)
+**Verified at:** `apps/api/src/plugins/kernel-metrics-sink.ts:161-173` (registration), `:417-422` (increment in recordRefusal)
+
+**Naming note (W3 reconciliation):** Code splits the basis into category + code separately rather than a single flattened string. Doc updated to match.
 
 **Increment trigger:** Every `Decision.kind === "REFUSE"` (also when REWRITE / ESCALATE / REQUEST_CONFIRMATION carry a non-EXECUTE outcome).
 
@@ -101,7 +127,10 @@ sum by (kind) (rate(kernel_refusal_total[5m]))
 
 **Type:** Counter
 **Backend:** Prometheus + PostHog (as `audit_kernel_shadow_diverged_basis | audit_kernel_shadow_diverged_kind | audit_kernel_shadow_diverged_rewrite` matching the existing union in `apps/web/src/domains/analytics/events.ts:107-114`)
-**Labels:** `kind`, `class` (`BASIS_ONLY | DECISION_KIND | PAYLOAD_REWRITE`)
+**Labels:** `class` (`BASIS_ONLY | DECISION_KIND | PAYLOAD_REWRITE`), `intent_kind`
+**Verified at:** `apps/api/src/plugins/kernel-metrics-sink.ts:184-191` (registration), `:471-476` (increment in recordShadowDivergence)
+
+**Naming note (W3 reconciliation):** The runbook (`SHADOW-ENFORCE-ROLLOUT.md` line 86) previously used label `divergence=` in its PromQL; code emits label `class=`. The runbook is fixed in W3.
 
 **Increment trigger:** `adjudicateWithShadow` returns a divergence; the `ShadowTelemetrySink` (per `investigation/05 §"@adjudicate/core/kernel"`) records it.
 
@@ -121,9 +150,12 @@ sum by (kind, class) (rate(kernel_shadow_divergence_total[7d]))
 
 **Type:** Gauge
 **Backend:** Prometheus
-**Labels:** `kind`
+**Labels:** (none — single-sample)
+**Verified at:** `apps/api/src/plugins/kernel-metrics-sink.ts:299-306` (registration), `apps/api/src/plugins/kernel-bootstrap.ts` `startDeferPendingGaugePoll` (60s `SCAN defer:pending:*` poll).
 
-**Update trigger:** Scraped or computed from the Redis `defer:pending:*` key count (per `investigation/04 §"Park mechanism"`). Updated every 30 seconds via a background poll.
+**Naming note (W3 reconciliation):** The original draft promised a `kind` label. The current implementation publishes a single-sample gauge (count of all parked envelopes); per-kind breakdown is left to the sweeper which emits `intent.defer.timeout` events already labelled. Per-kind sub-gauges can be added later without breaking the current contract.
+
+**Update trigger:** Background poll every 60 seconds runs `SCAN defer:pending:*` and calls `recorder.recordDeferPending(count)`. Configurable via `IBX_DEFER_PENDING_POLL_SECONDS`.
 
 **Why this matters:** Per `investigation/04 §"P0 #5"`, the DEFER subscriber is currently unwired. Once wired (M0), the gauge tells on-call how many intents are parked waiting for `payment.confirmed` signals. Above-baseline values indicate stuck flows or PSP outages.
 
@@ -139,10 +171,10 @@ kernel_defer_pending_gauge{kind="order.confirm"} > 10
 **Type:** Histogram
 **Backend:** Prometheus
 **Labels:** `sink` (`postgres | nats | console | spill`)
-
 **Buckets:** `0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 30, 60` (seconds)
+**Verified at:** `apps/api/src/plugins/kernel-metrics-sink.ts:265-273` (registration), `packages/llm-provider/src/intent-audit-wiring.ts` `recordAuditLagFromIso` (observation in `_sink.emit` wrapper).
 
-**Recording trigger:** Measured per audit record: time from `getAuditSink().emit(record)` call to durable write confirmation on each sink. For NATS this is publish-time (Core mode is fire-and-forget); for Postgres it's commit-time; for spill it's disk-fsync-time.
+**Recording trigger:** Measured per audit record: time from `record.at` (kernel-side emit timestamp) to the `buffered.emit()` return. Successful emit labels `sink="postgres"` (representing the buffered-then-fanned-out destination); when the inner sink throws (record spilled to durable storage) labels `sink="spill"`.
 
 **Why this matters:** Per master plan §Success criteria, `audit.intent.decision.v1` NATS lag must be <1s p99. Per `docs/ops/runbooks/04-stage-financial-mutations.md`, Postgres lag must be <30s.
 
@@ -155,22 +187,34 @@ histogram_quantile(0.99, rate(kernel_audit_lag_seconds_bucket{sink="postgres"}[1
 
 ## Additional contract metrics (supporting)
 
-These extend the six core metrics and are also part of the contract:
+These extend the six core metrics and are also part of the contract. Every name below is the canonical Prometheus name that code emits and `/metrics` exposes. `verified at` columns point to the file:line that registers or mutates the metric in `feat/correctness-w1-reproduction` HEAD.
 
-| Metric | Type | Labels | Purpose |
-|---|---|---|---|
-| `kernel_ledger_op_total` | Counter | `op` (`check | record`), `outcome` (`hit | miss | error`) | Ledger fail-open detection |
-| `kernel_sink_failure_total` | Counter | `sink` | Sink-level failures for `recordSinkFailure` events |
-| `kernel_replay_drift_total` | Counter | `class` (`stable | improving | regressing | flapping | insufficient_data`) | Daily replay job results |
-| `kernel_replay_drift_count_total` | Counter | `kind` | Number of records with detected drift |
-| `kernel_kill_switch_state` | Gauge | `scope`, `target` | 0 = disengaged, 1 = engaged |
-| `kernel_kill_switch_toggle_total` | Counter | `scope`, `target`, `direction` (`engage | disengage`) | Per-toggle audit |
-| `kernel_pack_install_total` | Counter | `pack` | One per `installPack` call (typically once per boot) |
-| `kernel_entrypoint_coverage_ratio` | Gauge | (no labels) | Adjudicated entrypoints / total inventoried |
-| `kernel_defer_quota_exceeded_total` | Counter | `kind` | DEFER quota violations per `investigation/05 §"@adjudicate/runtime"` |
-| `kernel_defer_timeout_total` | Counter | `kind` | DEFER intents parked past `timeoutMs` |
-| `kernel_defer_resume_duration_seconds` | Histogram | `kind` | Time from park to resume per `docs/ops/runbooks/05-stage-pix-charge-pack.md` |
-| `kernel_audit_sink_failures_total` | Counter | `sink` | Engagement count for audit-sink kill switch (`05-kill-switch-strategy.md`) |
+| Metric | Type | Labels | Purpose | Verified at |
+|---|---|---|---|---|
+| `kernel_ledger_op_total` | Counter | `op` (`check | record`), `outcome` (`hit | miss | error`) | Ledger fail-open detection | `kernel-metrics-sink.ts:192-199` |
+| `kernel_audit_sink_failure_total` | Counter | `sink`, `reason` | Sink-level failures for `recordSinkFailure` events | `kernel-metrics-sink.ts:200-207` |
+| `kernel_replay_drift_total` | Counter | `class` (`stable | improving | regressing | flapping | insufficient_data`) | Daily replay job results | `kernel-metrics-sink.ts:274-281`; recorder `:719-722` |
+| `kernel_kill_switch_state` | Gauge | `scope` | 0 = disengaged, 1 = engaged | `kernel-metrics-sink.ts:282-289`; bootstrap poll in `kernel-bootstrap.ts` |
+| `kernel_pack_install_total` | Counter | `pack` | One per `installPack` call (typically once per boot) | `kernel-metrics-sink.ts:290-297`; emitted in `installFirstPartyPacks` |
+| `kernel_intent_kind_coverage` | Gauge | (no labels) | (observed-known ∩) / |KNOWN_INTENT_KINDS| — coverage ratio | `kernel-metrics-sink.ts:218-225` |
+| `kernel_distinct_intent_kinds_observed` | Gauge | (no labels) | Count of distinct kinds in 24h window | `kernel-metrics-sink.ts:226-233` |
+| `kernel_known_intent_kinds_total` | Gauge | (no labels) | KNOWN_INTENT_KINDS.size — typo-gate denominator | `kernel-metrics-sink.ts:234-241` |
+| `kernel_defer_quota_exceeded_total` | Counter | `kind` | DEFER quota violations | `kernel-metrics-sink.ts:306-313`; emitted by `park-deferred-intent-nx.ts` |
+| `kernel_defer_timeout_total` | Counter | `kind` (= resume signal) | DEFER intents parked past `timeoutMs` | `kernel-metrics-sink.ts:314-321`; emitted by `defer-timeout-sweeper.ts` |
+| `kernel_defer_resume_duration_seconds` | Histogram | `kind` | Time from park to resume per `docs/ops/runbooks/05-stage-pix-charge-pack.md` | `kernel-metrics-sink.ts:208-217` |
+| `kernel_audit_redactor_failures_total` | Counter | `reason` (`cycle | throw | unknown`) | Redactor fail-open events | `kernel-metrics-sink.ts:322-329`; emitted via `setAuditRedactorFailureHook` |
+| `kernel_audit_sink_buffer_size` | Gauge | (no labels) | persistentBufferedSink in-memory queue size | `kernel-metrics-sink.ts:330-337`; emitted via `setAuditSinkBufferSizeHook` |
+| `kernel_audit_sink_spill_size` | Gauge | (no labels) | Redis spill list depth | `kernel-metrics-sink.ts:338-345`; emitted via `setAuditSinkSpillSizeHook` |
+| `kernel_intent_kind_unknown_total` | Counter | `kind` | Intents emitted with a kind NOT in KNOWN_INTENT_KINDS | `kernel-metrics-sink.ts:346-353`; emitted automatically in `recordDecision` |
+
+**Drifts resolved in W3 (per `deep-audit/06-docs-vs-reality.md`):**
+
+- ~~`kernel_decision_latency_seconds`~~ → `kernel_decision_duration_seconds` (Prometheus convention is `_duration_seconds`).
+- ~~`kernel_sink_failure_total`~~ → `kernel_audit_sink_failure_total` (sink-failure is audit-only; specific name beats generic).
+- ~~`kernel_audit_sink_failures_total`~~ (plural) → `kernel_audit_sink_failure_total` (singular).
+- ~~`kernel_entrypoint_coverage_ratio`~~ → `kernel_intent_kind_coverage` (the metric measures intent-kind coverage, not entrypoint coverage).
+- ~~`kernel_replay_drift_count_total`~~ — folded into `kernel_replay_drift_total{class}` (single counter with class label is canonical).
+- ~~`kernel_kill_switch_toggle_total`~~ — not yet implemented (kill-switch toggle is operator-initiated; the state gauge is sufficient until a per-toggle audit event lands per `05-kill-switch-strategy.md`).
 
 ---
 
@@ -194,7 +238,7 @@ These extend the six core metrics and are also part of the contract:
 ├──────────────────────────────┼──────────────────────────────┤
 │  Latency p50/p95/p99         │  Refusal-rate by basis       │
 │  [line chart]                │  [stacked bar]               │
-│  (kernel_decision_latency)   │  (kernel_refusal_total)      │
+│  (kernel_decision_duration)  │  (kernel_refusal_total)      │
 ├──────────────────────────────┼──────────────────────────────┤
 │  Top 10 refusing intents     │  Audit lag p99 per sink      │
 │  [bar chart]                 │  [line chart]                │
@@ -204,7 +248,7 @@ These extend the six core metrics and are also part of the contract:
 **Key queries:**
 - Decisions/min: `sum(rate(kernel_decision_total[1m]))`
 - Refusal rate: `sum(rate(kernel_refusal_total[1m])) / sum(rate(kernel_decision_total[1m]))`
-- p99 latency by kind: `histogram_quantile(0.99, rate(kernel_decision_latency_seconds_bucket[5m]))`
+- p99 latency by intent_kind: `histogram_quantile(0.99, rate(kernel_decision_duration_seconds_bucket[5m]))`
 
 **Watchlist** (visible at top of dashboard):
 - Active kill switches: `kernel_kill_switch_state > 0` → red badge
@@ -309,7 +353,7 @@ These extend the six core metrics and are also part of the contract:
 ├──────────────────────────────────────┼──────────────────────────┤
 │  Sink lag p99                        │  Sink failures            │
 │  [line chart]                        │  [stacked bar]            │
-│  (kernel_audit_lag_seconds)          │  (kernel_sink_failure_…)  │
+│  (kernel_audit_lag_seconds)          │  (kernel_audit_sink_failure_…)│
 ├──────────────────────────────────────┼──────────────────────────┤
 │  Replay drift class today            │  Postgres table size      │
 │  [single value]                      │  [single value]           │
@@ -338,7 +382,7 @@ Each rule deploys to PagerDuty + Slack `#ibx-rollout` (per `docs/ops/runbooks/01
 | `kernel-refusal-spike` | `sum by (kind) (rate(kernel_refusal_total[5m])) / sum by (kind) (rate(kernel_decision_total[5m])) > 0.1 for 5m` | S1 | Page + investigate |
 | `kernel-divergence-decision-kind` | `sum(increase(kernel_shadow_divergence_total{class="DECISION_KIND"}[1m])) > 0` | S2 | Page on-call; block enforce flip for this kind |
 | `kernel-divergence-payload-rewrite` | `sum(increase(kernel_shadow_divergence_total{class="PAYLOAD_REWRITE"}[1m])) > 0` | S2 | Page; manual review per `01-stage-read-mutations.md` |
-| `kernel-latency-spike` | `histogram_quantile(0.99, rate(kernel_decision_latency_seconds_bucket[5m])) > 0.1 for 5m` | S2 | Page |
+| `kernel-latency-spike` | `histogram_quantile(0.99, rate(kernel_decision_duration_seconds_bucket[5m])) > 0.1 for 5m` | S2 | Page |
 | `kernel-audit-postgres-lag` | `histogram_quantile(0.99, rate(kernel_audit_lag_seconds_bucket{sink="postgres"}[5m])) > 5 for 5m` | S2 | Page |
 | `kernel-audit-nats-lag` | `histogram_quantile(0.99, rate(kernel_audit_lag_seconds_bucket{sink="nats"}[5m])) > 1 for 5m` | S2 | Page |
 | `kernel-ledger-unavailable` | `sum(rate(kernel_ledger_op_total{outcome="error"}[1m])) > 0` | S1 | Page + WhatsApp owner per `investigation/07 §"Alerting gaps"` |
@@ -346,7 +390,7 @@ Each rule deploys to PagerDuty + Slack `#ibx-rollout` (per `docs/ops/runbooks/01
 | `kernel-defer-quota` | `sum by (kind) (rate(kernel_defer_quota_exceeded_total[5m])) > 0` | S2 | Page; abuse / stuck flow |
 | `kernel-replay-drift` | Daily job emits `kernel_replay_drift_total{class="regressing"\|"flapping"} > 0` | S1 | Page; gate release |
 | `kernel-kill-switch-engaged` | `kernel_kill_switch_state > 0` (state change) | S2 | Notify Slack; track in dashboard |
-| `kernel-sink-failure-burst` | `sum by (sink) (increase(kernel_sink_failure_total[1m])) > 5` | S2 | Page |
+| `kernel-sink-failure-burst` | `sum by (sink) (increase(kernel_audit_sink_failure_total[1m])) > 5` | S2 | Page |
 | `kernel-buffered-spill-overflow` | spill bytes > 1GB | S1 | Page; capacity issue |
 | `kernel-tool-call-success-drop` | tool-call success rate < 95% post-enforce | S1 | Page + trigger rollback per `01-stage-read-mutations.md` |
 

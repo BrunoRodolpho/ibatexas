@@ -125,6 +125,26 @@ interface RegisteredMetrics {
   readonly distinctIntentKindsObserved: Gauge<never>
   /** Companion: the total known intent kinds count (KNOWN_INTENT_KINDS.size). */
   readonly knownIntentKindsTotal: Gauge<never>
+
+  // ── W3 (correctness wave) — the 11 previously-GHOST metrics ──────────
+  //
+  // Declared in `migration/06-observability-requirements.md` as "the
+  // contract" but had no producer in code. Closing the gap surfaces them
+  // on /metrics so the alert rules in the doc become testable.
+  // Source: docs/adjudicate-migration/deep-audit/06-docs-vs-reality.md
+  // §"Ghost metrics".
+
+  readonly auditLagSeconds: Histogram<"sink">
+  readonly replayDriftTotal: Counter<"class">
+  readonly killSwitchState: Gauge<"scope">
+  readonly packInstallTotal: Counter<"pack">
+  readonly deferPendingGauge: Gauge<never>
+  readonly deferQuotaExceededTotal: Counter<"kind">
+  readonly deferTimeoutTotal: Counter<"kind">
+  readonly auditRedactorFailuresTotal: Counter<"reason">
+  readonly auditSinkBufferSize: Gauge<never>
+  readonly auditSinkSpillSize: Gauge<never>
+  readonly intentKindUnknownTotal: Counter<"kind">
 }
 
 function counter<L extends string>(
@@ -236,6 +256,98 @@ function registerMetrics(register: Registry): RegisteredMetrics {
         name: "kernel_known_intent_kinds_total",
         help: "Total intent kinds in KNOWN_INTENT_KINDS — the typo gate's accepted set.",
         labelNames: [] as const,
+      },
+      [register],
+    ),
+
+    // ── W3 — close the 11 ghost metrics ───────────────────────────────
+
+    auditLagSeconds: histogram(
+      {
+        name: "kernel_audit_lag_seconds",
+        help: "Audit pipeline lag: time from emit() call to durable sink acknowledge, per sink.",
+        labelNames: ["sink"] as const,
+        buckets: [0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 30, 60],
+      },
+      [register],
+    ),
+    replayDriftTotal: counter(
+      {
+        name: "kernel_replay_drift_total",
+        help: "Replay-drift verdicts produced by `ibx kernel replay`. One increment per drift event.",
+        labelNames: ["class"] as const,
+      },
+      [register],
+    ),
+    killSwitchState: gauge(
+      {
+        name: "kernel_kill_switch_state",
+        help: "Current kernel kill-switch state. 0 = disengaged, 1 = engaged.",
+        labelNames: ["scope"] as const,
+      },
+      [register],
+    ),
+    packInstallTotal: counter(
+      {
+        name: "kernel_pack_install_total",
+        help: "Number of `installPack` calls at boot, labelled by pack name.",
+        labelNames: ["pack"] as const,
+      },
+      [register],
+    ),
+    deferPendingGauge: gauge(
+      {
+        name: "kernel_defer_pending_gauge",
+        help: "Currently parked deferred intents (count of `defer:pending:*` Redis keys).",
+        labelNames: [] as const,
+      },
+      [register],
+    ),
+    deferQuotaExceededTotal: counter(
+      {
+        name: "kernel_defer_quota_exceeded_total",
+        help: "Per-session DEFER quota-rejection events.",
+        labelNames: ["kind"] as const,
+      },
+      [register],
+    ),
+    deferTimeoutTotal: counter(
+      {
+        name: "kernel_defer_timeout_total",
+        help: "DEFER intents that expired before their resume signal arrived (sweeper-published).",
+        labelNames: ["kind"] as const,
+      },
+      [register],
+    ),
+    auditRedactorFailuresTotal: counter(
+      {
+        name: "kernel_audit_redactor_failures_total",
+        help: "Audit-redactor fail-open events (cyclic refs, throw on traversal).",
+        labelNames: ["reason"] as const,
+      },
+      [register],
+    ),
+    auditSinkBufferSize: gauge(
+      {
+        name: "kernel_audit_sink_buffer_size",
+        help: "Current in-memory capacity usage of persistentBufferedSink (records held before spill).",
+        labelNames: [] as const,
+      },
+      [register],
+    ),
+    auditSinkSpillSize: gauge(
+      {
+        name: "kernel_audit_sink_spill_size",
+        help: "Audit Redis spill list depth (records waiting to drain to inner sinks).",
+        labelNames: [] as const,
+      },
+      [register],
+    ),
+    intentKindUnknownTotal: counter(
+      {
+        name: "kernel_intent_kind_unknown_total",
+        help: "Intents emitted with a kind that is NOT in KNOWN_INTENT_KINDS — signals taxonomy drift.",
+        labelNames: ["kind"] as const,
       },
       [register],
     ),
@@ -390,6 +502,14 @@ export function createKernelMetricsSink(
         observedIntentKinds.set(event.intentKind, Date.now())
         publishCoverageGauges()
       })
+      // W3-11: signal taxonomy drift when an emitted kind isn't in the
+      // typo gate. Only fires when knownIntentKinds is provided — without
+      // the set we can't tell "unknown" from "known but rare".
+      if (knownIntentKinds && !knownIntentKinds.has(event.intentKind)) {
+        safeIncr("kernel_intent_kind_unknown_total", () => {
+          metrics.intentKindUnknownTotal.inc({ kind: event.intentKind })
+        })
+      }
       // PostHog: split on decision kind per task table.
       const phEvent =
         event.decision === "EXECUTE"
@@ -481,10 +601,19 @@ export function createKernelMetricsSink(
     },
 
     // ── recordResourceLimit ──────────────────────────────────────────────────
-    // Prometheus only — no PostHog event allocated. Reserves a slot for a
-    // future `kernel_defer_quota_exceeded_total` counter; today the historgram
-    // bucket is sufficient for alerting.
+    //
+    // W3-6: when the framework signals `resource: "defer_quota"`,
+    // bump `kernel_defer_quota_exceeded_total{kind}`. The framework's
+    // `subject` carries the sessionId; the intent kind isn't on the
+    // event itself, so we label by the resource string here. Adopters
+    // needing per-intent-kind granularity should invoke
+    // `recordDeferQuotaExceeded(kind)` via the recorder API.
     recordResourceLimit(event: ResourceLimitEvent) {
+      if (event.resource === "defer_quota") {
+        safeIncr("kernel_defer_quota_exceeded_total", () => {
+          metrics.deferQuotaExceededTotal.inc({ kind: event.resource })
+        })
+      }
       log.debug?.(
         {
           resource: event.resource,
@@ -494,6 +623,147 @@ export function createKernelMetricsSink(
         },
         "kernel-metrics: resource limit",
       )
+    },
+  }
+}
+
+// ── W3 — Out-of-band recorder for the 11 ghost metrics ──────────────────────
+//
+// The `MetricsSink` interface from `@adjudicate/core/kernel` is fixed at the
+// framework boundary; we can't add new methods to it without a framework
+// change. But the W3 metrics are emitted from IbateXas-side code paths the
+// framework knows nothing about (sweepers, the audit-redactor wrap, Pack
+// installation, the kill-switch toggle, replay CLI). So we expose a separate,
+// ibatexas-internal "recorder" API that reads the same Prometheus Registry
+// and mutates the same metric instances the sink populates.
+//
+// Callers (kernel-bootstrap, defer-timeout-sweeper, audit-redactor wrapping,
+// ibx kernel replay) import `createKernelMetricsRecorder(register)` and
+// invoke `record…` on it. Failure mode is the same as the sink: every
+// mutation is wrapped, errors are logged via the bound logger, and never
+// block the caller's code path.
+//
+// The recorder shares the Registry with the sink — calling registerMetrics
+// twice on the same registry would throw (prom-client rejects duplicate
+// names). The recorder RECOVERS the metric instances by name via
+// `register.getSingleMetric(name)`. The sink constructor is the sole
+// registration site.
+
+export interface KernelMetricsRecorder {
+  /** W3-1: observe audit pipeline lag (emit→ack), seconds. */
+  recordAuditLag(sink: string, latencySeconds: number): void
+  /** W3-2: bump replay-drift counter, labelled by drift class. */
+  recordReplayDrift(driftClass: string): void
+  /** W3-3: set kill-switch state (1 = engaged, 0 = disengaged). */
+  recordKillSwitchState(scope: string, engaged: boolean): void
+  /** W3-4: one-shot at boot — increment per installed pack. */
+  recordPackInstall(pack: string): void
+  /** W3-5: set the parked-envelope count (poll output). */
+  recordDeferPending(count: number): void
+  /** W3-6: per-session DEFER quota rejection. */
+  recordDeferQuotaExceeded(kind: string): void
+  /** W3-7: a sweeper-published `intent.defer.timeout` event. */
+  recordDeferTimeout(kind: string): void
+  /** W3-8: redactor cyclic-ref / unrecoverable error. */
+  recordAuditRedactorFailure(reason: string): void
+  /** W3-9: set the buffered-sink in-memory queue size. */
+  recordAuditSinkBufferSize(count: number): void
+  /** W3-10: set the Redis spill list depth. */
+  recordAuditSinkSpillSize(count: number): void
+  /** W3-11: an intent kind was emitted that's not in KNOWN_INTENT_KINDS. */
+  recordIntentKindUnknown(kind: string): void
+}
+
+/**
+ * Build the W3 recorder against an already-constructed Registry. The Registry
+ * MUST be the same one passed to `createKernelMetricsSink({ register })` so
+ * the recorder mutates the same metric instances the sink published.
+ *
+ * Fail-mode: every operation is wrapped; errors logged via `log` (or
+ * `console.warn`); never throws.
+ */
+export function createKernelMetricsRecorder(
+  register: Registry,
+  log: MetricsSinkLogger = { warn: (o, m) => console.warn(m, o) },
+): KernelMetricsRecorder {
+  function get<T>(name: string): T | null {
+    const m = register.getSingleMetric(name)
+    if (m === undefined) {
+      log.warn(
+        { metric: name },
+        "kernel-metrics-recorder: metric not registered — recorder operation no-op",
+      )
+      return null
+    }
+    return m as unknown as T
+  }
+
+  const safe = (label: string, fn: () => void): void => {
+    try {
+      fn()
+    } catch (err) {
+      log.warn(
+        { err: serializeError(err), metric: label },
+        "kernel-metrics-recorder: mutation threw",
+      )
+    }
+  }
+
+  return {
+    recordAuditLag(sink, latencySeconds) {
+      const h = get<Histogram<"sink">>("kernel_audit_lag_seconds")
+      if (!h) return
+      safe("kernel_audit_lag_seconds", () => h.observe({ sink }, latencySeconds))
+    },
+    recordReplayDrift(driftClass) {
+      const c = get<Counter<"class">>("kernel_replay_drift_total")
+      if (!c) return
+      safe("kernel_replay_drift_total", () => c.inc({ class: driftClass }))
+    },
+    recordKillSwitchState(scope, engaged) {
+      const g = get<Gauge<"scope">>("kernel_kill_switch_state")
+      if (!g) return
+      safe("kernel_kill_switch_state", () => g.set({ scope }, engaged ? 1 : 0))
+    },
+    recordPackInstall(pack) {
+      const c = get<Counter<"pack">>("kernel_pack_install_total")
+      if (!c) return
+      safe("kernel_pack_install_total", () => c.inc({ pack }))
+    },
+    recordDeferPending(count) {
+      const g = get<Gauge<never>>("kernel_defer_pending_gauge")
+      if (!g) return
+      safe("kernel_defer_pending_gauge", () => g.set(count))
+    },
+    recordDeferQuotaExceeded(kind) {
+      const c = get<Counter<"kind">>("kernel_defer_quota_exceeded_total")
+      if (!c) return
+      safe("kernel_defer_quota_exceeded_total", () => c.inc({ kind }))
+    },
+    recordDeferTimeout(kind) {
+      const c = get<Counter<"kind">>("kernel_defer_timeout_total")
+      if (!c) return
+      safe("kernel_defer_timeout_total", () => c.inc({ kind }))
+    },
+    recordAuditRedactorFailure(reason) {
+      const c = get<Counter<"reason">>("kernel_audit_redactor_failures_total")
+      if (!c) return
+      safe("kernel_audit_redactor_failures_total", () => c.inc({ reason }))
+    },
+    recordAuditSinkBufferSize(count) {
+      const g = get<Gauge<never>>("kernel_audit_sink_buffer_size")
+      if (!g) return
+      safe("kernel_audit_sink_buffer_size", () => g.set(count))
+    },
+    recordAuditSinkSpillSize(count) {
+      const g = get<Gauge<never>>("kernel_audit_sink_spill_size")
+      if (!g) return
+      safe("kernel_audit_sink_spill_size", () => g.set(count))
+    },
+    recordIntentKindUnknown(kind) {
+      const c = get<Counter<"kind">>("kernel_intent_kind_unknown_total")
+      if (!c) return
+      safe("kernel_intent_kind_unknown_total", () => c.inc({ kind }))
     },
   }
 }

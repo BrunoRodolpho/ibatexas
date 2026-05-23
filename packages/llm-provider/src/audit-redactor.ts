@@ -300,6 +300,30 @@ export interface AuditRedactorOptions {
    * `hashSecret` is empty.
    */
   readonly warn?: (msg: string) => void
+  /**
+   * W3-8: optional hook called once per redactor fail-open event with a
+   * classification label (cycle, throw, unknown). Adopters wire this to
+   * `kernel_audit_redactor_failures_total{reason}`. The hook MUST be
+   * fail-open itself — exceptions thrown from `onFailure` are swallowed
+   * and never reach the audit pipeline.
+   */
+  readonly onFailure?: (reason: AuditRedactorFailureReason) => void
+}
+
+/** W3-8: classification labels for redactor failures. */
+export type AuditRedactorFailureReason = "cycle" | "throw" | "unknown"
+
+function classifyRedactorError(err: unknown): AuditRedactorFailureReason {
+  if (!(err instanceof Error)) return "unknown"
+  const m = err.message.toLowerCase()
+  if (
+    m.includes("circular") ||
+    m.includes("cycle") ||
+    m.includes("converting circular")
+  )
+    return "cycle"
+  if (m.length > 0) return "throw"
+  return "unknown"
 }
 
 // ── Per-intent-kind field rules ───────────────────────────────────────────────
@@ -433,6 +457,18 @@ export function createAuditRedactor(
           (err as Error).message
         } — replacing payload with stub.`,
       )
+      // W3-8 — kernel_audit_redactor_failures_total. The redactor doesn't
+      // import the recorder directly (it's a package-boundary concern); the
+      // adopter passes an `onFailure` hook in the options. The
+      // `__redactor_error` sentinel still appears in the stub for downstream
+      // sinks to detect; the metric is the operator-facing counterpart.
+      if (opts.onFailure) {
+        try {
+          opts.onFailure(classifyRedactorError(err))
+        } catch {
+          // The metric hook must NEVER block the fail-open path.
+        }
+      }
       // P0-10: stub the actor.sessionId on the fail-open path too so the
       // stub record itself doesn't leak the customerId via a path that
       // bypassed the payload walker.

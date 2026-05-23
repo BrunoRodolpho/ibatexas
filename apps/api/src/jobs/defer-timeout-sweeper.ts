@@ -59,6 +59,21 @@ import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import { createQueue, createWorker, type Job } from "./queue.js";
+// W3-7: bump kernel_defer_timeout_total{kind} per published timeout.
+// Lazy `import()` so the sweeper's hot-path tests don't drag the entire
+// kernel-bootstrap module graph (Packs, llm-provider, tool-registry) into
+// their fixture. The recorder is fail-open so a missing registry
+// (unit tests) is a no-op even when the import resolves.
+async function bumpDeferTimeoutMetric(kind: string): Promise<void> {
+  try {
+    const { getKernelMetricsRecorder } = await import(
+      "../plugins/kernel-bootstrap.js"
+    );
+    getKernelMetricsRecorder().recordDeferTimeout(kind);
+  } catch {
+    // Fail-open — sweeper hot path must never throw on a metric.
+  }
+}
 
 // Repeat cadence. 60s matches the +60s grace the responder adds to the
 // parked-envelope TTL — so any key past its signal timeoutMs is caught
@@ -268,6 +283,12 @@ export async function sweepDeferTimeouts(
         continue;
       }
 
+      // W3-7 — bump kernel_defer_timeout_total{kind} after the publish
+      // succeeded. The resume `signal` is the closest available "kind"
+      // label; the original intent kind isn't part of the parked payload
+      // schema today. Recorder is fail-open by design.
+      await bumpDeferTimeoutMetric(signal || "unknown");
+
       // Idempotent cleanup. DEL the parked key so subsequent sweeps don't
       // re-publish for the same session.
       await redis.del(key).catch(() => {
@@ -448,6 +469,10 @@ export async function runRecoveryScan(
         );
         continue;
       }
+
+      // W3-7 — recovery path bumps kernel_defer_timeout_total too.
+      await bumpDeferTimeoutMetric(signal || "unknown");
+
       await redis.del(key).catch(() => {});
 
       recoveryFiredCount++;

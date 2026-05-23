@@ -24,6 +24,7 @@ import type {
   SinkFailureEvent,
 } from "@adjudicate/core/kernel"
 import {
+  createKernelMetricsRecorder,
   createKernelMetricsSink,
   type KernelMetricsSinkDeps,
   type MetricsSinkLogger,
@@ -535,5 +536,247 @@ describe("metricsRoutes — GET /metrics", () => {
     expect(res.headers["content-type"]).toContain("text/plain")
     expect(res.body).toContain("kernel_decision_total")
     await server.close()
+  })
+})
+
+// ── W3 — the 11 previously-ghost metrics ─────────────────────────────────────
+//
+// Each test asserts: (1) the metric registers with the expected name +
+// labels; (2) the recorder's mutation surfaces on the registry text dump.
+// `createKernelMetricsSink(...)` is what registers the metrics; the
+// recorder reuses the same Registry.
+
+describe("createKernelMetricsSink — W3 ghost metrics registration", () => {
+  const NAMES = [
+    "kernel_audit_lag_seconds",
+    "kernel_replay_drift_total",
+    "kernel_kill_switch_state",
+    "kernel_pack_install_total",
+    "kernel_defer_pending_gauge",
+    "kernel_defer_quota_exceeded_total",
+    "kernel_defer_timeout_total",
+    "kernel_audit_redactor_failures_total",
+    "kernel_audit_sink_buffer_size",
+    "kernel_audit_sink_spill_size",
+    "kernel_intent_kind_unknown_total",
+  ] as const
+
+  it.each(NAMES)("registers %s on the shared registry", async (name) => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const metric = register.getSingleMetric(name)
+    expect(metric).toBeDefined()
+    // prom-client's Metric type doesn't expose `name` on the public
+    // interface; cast through unknown to access it for the assertion.
+    expect((metric as unknown as { name: string } | undefined)?.name).toBe(
+      name,
+    )
+  })
+
+  it("kernel_audit_lag_seconds — recorder.recordAuditLag observes per sink", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordAuditLag("postgres", 0.42)
+    recorder.recordAuditLag("nats", 0.05)
+    const out = await register.getSingleMetricAsString("kernel_audit_lag_seconds")
+    expect(out).toContain(`sink="postgres"`)
+    expect(out).toContain(`sink="nats"`)
+    expect(out).toMatch(/kernel_audit_lag_seconds_sum.*0\.4\d/)
+  })
+
+  it("kernel_replay_drift_total — recorder.recordReplayDrift labels by class", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordReplayDrift("regressing")
+    recorder.recordReplayDrift("regressing")
+    recorder.recordReplayDrift("stable")
+    const out = await register.getSingleMetricAsString("kernel_replay_drift_total")
+    expect(out).toContain(`kernel_replay_drift_total{class="regressing"} 2`)
+    expect(out).toContain(`kernel_replay_drift_total{class="stable"} 1`)
+  })
+
+  it("kernel_kill_switch_state — gauge reflects engaged/disengaged", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordKillSwitchState("global", true)
+    let out = await register.getSingleMetricAsString("kernel_kill_switch_state")
+    expect(out).toContain(`kernel_kill_switch_state{scope="global"} 1`)
+    recorder.recordKillSwitchState("global", false)
+    out = await register.getSingleMetricAsString("kernel_kill_switch_state")
+    expect(out).toContain(`kernel_kill_switch_state{scope="global"} 0`)
+  })
+
+  it("kernel_pack_install_total — recorder.recordPackInstall labels by pack", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordPackInstall("orders")
+    recorder.recordPackInstall("payments")
+    recorder.recordPackInstall("payments")
+    const out = await register.getSingleMetricAsString("kernel_pack_install_total")
+    expect(out).toContain(`kernel_pack_install_total{pack="orders"} 1`)
+    expect(out).toContain(`kernel_pack_install_total{pack="payments"} 2`)
+  })
+
+  it("kernel_defer_pending_gauge — recorder.recordDeferPending sets the value", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordDeferPending(7)
+    let out = await register.getSingleMetricAsString("kernel_defer_pending_gauge")
+    expect(out).toMatch(/kernel_defer_pending_gauge\s+7/)
+    recorder.recordDeferPending(3)
+    out = await register.getSingleMetricAsString("kernel_defer_pending_gauge")
+    expect(out).toMatch(/kernel_defer_pending_gauge\s+3/)
+  })
+
+  it("kernel_defer_quota_exceeded_total — recorder.recordDeferQuotaExceeded labels by kind", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordDeferQuotaExceeded("order.checkout.create")
+    recorder.recordDeferQuotaExceeded("order.checkout.create")
+    recorder.recordDeferQuotaExceeded("payment.pix.regenerate")
+    const out = await register.getSingleMetricAsString(
+      "kernel_defer_quota_exceeded_total",
+    )
+    expect(out).toContain(
+      `kernel_defer_quota_exceeded_total{kind="order.checkout.create"} 2`,
+    )
+    expect(out).toContain(
+      `kernel_defer_quota_exceeded_total{kind="payment.pix.regenerate"} 1`,
+    )
+  })
+
+  it("kernel_defer_timeout_total — recorder.recordDeferTimeout labels by kind", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordDeferTimeout("pix.confirmed")
+    recorder.recordDeferTimeout("pix.confirmed")
+    const out = await register.getSingleMetricAsString(
+      "kernel_defer_timeout_total",
+    )
+    expect(out).toContain(`kernel_defer_timeout_total{kind="pix.confirmed"} 2`)
+  })
+
+  it("kernel_audit_redactor_failures_total — recorder.recordAuditRedactorFailure labels by reason", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordAuditRedactorFailure("cycle")
+    recorder.recordAuditRedactorFailure("throw")
+    recorder.recordAuditRedactorFailure("cycle")
+    const out = await register.getSingleMetricAsString(
+      "kernel_audit_redactor_failures_total",
+    )
+    expect(out).toContain(
+      `kernel_audit_redactor_failures_total{reason="cycle"} 2`,
+    )
+    expect(out).toContain(
+      `kernel_audit_redactor_failures_total{reason="throw"} 1`,
+    )
+  })
+
+  it("kernel_audit_sink_buffer_size — recorder.recordAuditSinkBufferSize sets the value", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordAuditSinkBufferSize(128)
+    const out = await register.getSingleMetricAsString(
+      "kernel_audit_sink_buffer_size",
+    )
+    expect(out).toMatch(/kernel_audit_sink_buffer_size\s+128/)
+  })
+
+  it("kernel_audit_sink_spill_size — recorder.recordAuditSinkSpillSize sets the value", async () => {
+    const { deps, register } = makeDeps()
+    createKernelMetricsSink(deps)
+    const recorder = createKernelMetricsRecorder(register)
+    recorder.recordAuditSinkSpillSize(42)
+    const out = await register.getSingleMetricAsString(
+      "kernel_audit_sink_spill_size",
+    )
+    expect(out).toMatch(/kernel_audit_sink_spill_size\s+42/)
+  })
+
+  it("kernel_intent_kind_unknown_total — sink emits on unknown kind via recordDecision", async () => {
+    const { deps, register } = makeDeps({
+      knownIntentKinds: new Set(["order.item.add", "payment.refund.issue"]),
+    })
+    const sink = createKernelMetricsSink(deps)
+    sink.recordDecision(
+      mkDecision("EXECUTE", { intentKind: "rogue.unknown.kind" }),
+    )
+    sink.recordDecision(
+      mkDecision("EXECUTE", { intentKind: "rogue.unknown.kind" }),
+    )
+    // Known kind doesn't increment.
+    sink.recordDecision(
+      mkDecision("EXECUTE", { intentKind: "order.item.add" }),
+    )
+    const out = await register.getSingleMetricAsString(
+      "kernel_intent_kind_unknown_total",
+    )
+    expect(out).toContain(
+      `kernel_intent_kind_unknown_total{kind="rogue.unknown.kind"} 2`,
+    )
+    expect(out).not.toContain(`kind="order.item.add"`)
+  })
+
+  it("kernel_intent_kind_unknown_total — no emission when knownIntentKinds is absent", async () => {
+    const { deps, register } = makeDeps()
+    const sink = createKernelMetricsSink(deps)
+    sink.recordDecision(
+      mkDecision("EXECUTE", { intentKind: "rogue.unknown.kind" }),
+    )
+    const out = await register.getSingleMetricAsString(
+      "kernel_intent_kind_unknown_total",
+    )
+    // Metric registers (empty), no sample lines for any kind.
+    expect(out).not.toContain(`kernel_intent_kind_unknown_total{kind=`)
+  })
+
+  it("/metrics scrape exposes ALL 11 W3 ghost metrics", async () => {
+    process.env.PROMETHEUS_TOKEN = "secret-w3"
+    const server = Fastify({ logger: false })
+    const register = new Registry()
+    const { deps } = makeDeps({ register })
+    createKernelMetricsSink(deps)
+    await server.register(metricsRoutes({ register }))
+    await server.ready()
+    const res = await server.inject({
+      method: "GET",
+      url: "/metrics",
+      headers: { "x-prometheus-token": "secret-w3" },
+    })
+    expect(res.statusCode).toBe(200)
+    for (const name of NAMES) {
+      expect(res.body).toContain(`# TYPE ${name}`)
+    }
+    await server.close()
+  })
+})
+
+// ── Recorder — fail-open semantics ─────────────────────────────────────────
+
+describe("createKernelMetricsRecorder — fail-open", () => {
+  it("warns and no-ops when called against a Registry without the metric", () => {
+    const register = new Registry()
+    const warn = vi.fn()
+    const recorder = createKernelMetricsRecorder(register, {
+      warn,
+      debug: vi.fn(),
+    })
+    // No sink ever ran, so the metric isn't registered. The recorder
+    // should log a warning and not throw.
+    expect(() => recorder.recordPackInstall("orders")).not.toThrow()
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ metric: "kernel_pack_install_total" }),
+      expect.stringContaining("not registered"),
+    )
   })
 })
