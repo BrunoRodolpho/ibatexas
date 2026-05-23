@@ -22,15 +22,54 @@ const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
+const mockMedusaStore = vi.hoisted(() => vi.fn());
+const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
 const mockCapturePayment = vi.hoisted(() => vi.fn());
 const mockReconcileFromWebhook = vi.hoisted(() => vi.fn());
 const mockReconcileFromWebhookFromEnvelope = vi.hoisted(() => vi.fn());
 const mockGetByStripePaymentIntentId = vi.hoisted(() => vi.fn());
 const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
+// P0-X9: typed errors from medusaAdjudicated. Mocked for instanceof checks.
+const MockRefusedError = vi.hoisted(() =>
+  class extends Error {
+    code: string;
+    userFacing: string;
+    constructor(opts: { code: string; userFacing: string }) {
+      super(`Refused: ${opts.code}`);
+      this.name = "MedusaAdjudicateRefusedError";
+      this.code = opts.code;
+      this.userFacing = opts.userFacing;
+    }
+  },
+);
+const MockDeferredError = vi.hoisted(() =>
+  class extends Error {
+    signal: string;
+    constructor(opts: { signal: string }) {
+      super(`Deferred: ${opts.signal}`);
+      this.name = "MedusaAdjudicateDeferredError";
+      this.signal = opts.signal;
+    }
+  },
+);
+const MockNeedsReviewError = vi.hoisted(() =>
+  class extends Error {
+    constructor() {
+      super("NeedsReview");
+      this.name = "MedusaAdjudicateNeedsReviewError";
+    }
+  },
+);
+
 vi.mock("stripe", () => ({
   default: class MockStripe {
     webhooks = { constructEvent: mockConstructEvent };
+    paymentIntents = {
+      // PIX cart-complete persists the orderId back to the PI's metadata
+      // via this call. The actual return value is ignored by the handler.
+      update: vi.fn(async () => ({})),
+    };
   },
 }));
 
@@ -38,8 +77,12 @@ vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
   medusaAdmin: mockMedusaAdmin,
-  medusaStore: vi.fn(),
+  medusaStore: mockMedusaStore,
   withLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+  medusaAdjudicated: mockMedusaAdjudicated,
+  MedusaAdjudicateRefusedError: MockRefusedError,
+  MedusaAdjudicateDeferredError: MockDeferredError,
+  MedusaAdjudicateNeedsReviewError: MockNeedsReviewError,
 }));
 
 vi.mock("@ibatexas/domain", () => ({
@@ -1248,5 +1291,176 @@ describe("POST /api/webhooks/stripe — kernel-gated reconciliation (Task 12)", 
       },
     });
     expect(envelope.payload.newStatus).toBe("refunded");
+  });
+});
+
+// ── P0-X9: PIX cart-complete via medusaAdjudicated ─────────────────────────
+//
+// The PIX flow's deferred cart-complete (when payment succeeds but the cart
+// was never completed at checkout) was bypassing medusaAdjudicated() —
+// the bare medusaStore POST to /store/carts/<id>/complete escaped audit
+// + kernel governance. Migrated in the P0-X9 follow-up. These tests pin
+// the new envelope shape AND the kernel-skip-without-Stripe-retry contract.
+
+describe("POST /api/webhooks/stripe — PIX cart-complete via medusaAdjudicated (P0-X9)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
+  });
+
+  function createPixEvent(eventId = "evt_pix_complete_01", cartId = "cart_pix_01") {
+    return {
+      id: eventId,
+      type: "payment_intent.succeeded",
+      created: 1_700_000_000,
+      data: {
+        object: {
+          id: "pi_pix_123",
+          metadata: { cartId },
+          // medusaOrderId is intentionally absent — that's what triggers
+          // the cart-complete branch.
+          last_payment_error: null,
+        },
+      },
+    };
+  }
+
+  it("completes the cart via medusaAdjudicated with event.id as idempotencyKey + webhook sourceSubject", async () => {
+    const event = createPixEvent("evt_pix_complete_42");
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    mockMedusaAdjudicated.mockResolvedValue({
+      type: "order",
+      order: { id: "order_pix_01", display_id: 100 },
+    });
+    // capturePayment runs after cart-complete creates orderId. We don't
+    // assert against it in this test; just make sure it doesn't blow up.
+    mockCapturePayment.mockResolvedValue(null);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // medusaAdjudicated WAS called with the expected envelope shape.
+    expect(mockMedusaAdjudicated).toHaveBeenCalledTimes(1);
+    const args = mockMedusaAdjudicated.mock.calls[0]?.[0];
+    expect(args).toMatchObject({
+      scope: "store",
+      method: "POST",
+      path: "/store/carts/cart_pix_01/complete",
+      intentKind: "medusa.cart.complete",
+      idempotencyKey: "evt_pix_complete_42",
+      sourceSubject: "webhook:stripe:evt_pix_complete_42",
+    });
+    expect(args.payload).toEqual({});
+  });
+
+  it("ack to Stripe with 200 + skip order creation when kernel REFUSES (no retry storm)", async () => {
+    const event = createPixEvent("evt_pix_refuse_01");
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    mockMedusaAdjudicated.mockRejectedValue(
+      new MockRefusedError({
+        code: "cart.complete.terminal",
+        userFacing: "Carrinho já finalizado.",
+      }),
+    );
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    // 200 to Stripe — governance-driven skips MUST NOT trigger retries
+    expect(res.statusCode).toBe(200);
+    // No order.placed event because no order was created
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+      "order.placed",
+      expect.anything(),
+    );
+  });
+
+  it("ack with 200 when kernel DEFERS (e.g. inventory replenish wait)", async () => {
+    const event = createPixEvent("evt_pix_defer_01");
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    mockMedusaAdjudicated.mockRejectedValue(
+      new MockDeferredError({ signal: "inventory.replenish" }),
+    );
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+      "order.placed",
+      expect.anything(),
+    );
+  });
+
+  it("the legacy bare medusaStore is NOT called for the cart-complete (bypass-detection sentinel)", async () => {
+    const event = createPixEvent("evt_pix_bypass_check_01");
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    mockMedusaAdjudicated.mockResolvedValue({
+      order: { id: "order_pix_02" },
+    });
+
+    const app = await buildTestServer();
+    await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    // The bare medusaStore transport MUST stay dormant for this mutation.
+    // If a future refactor reverts to medusaStore, this assertion blocks it.
+    expect(mockMedusaStore).not.toHaveBeenCalledWith(
+      expect.stringContaining("/store/carts/"),
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

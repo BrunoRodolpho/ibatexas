@@ -39,7 +39,17 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import Stripe from "stripe";
-import { getRedisClient, rk, medusaAdmin, medusaStore, withLock } from "@ibatexas/tools";
+import {
+  getRedisClient,
+  rk,
+  medusaAdmin,
+  medusaStore,
+  withLock,
+  medusaAdjudicated,
+  MedusaAdjudicateRefusedError,
+  MedusaAdjudicateDeferredError,
+  MedusaAdjudicateNeedsReviewError,
+} from "@ibatexas/tools";
 import {
   createOrderService,
   createPaymentCommandService,
@@ -261,13 +271,32 @@ async function handlePaymentSucceeded(
 
   // PIX flow: cart was not completed at checkout time — complete it now
   // that payment has succeeded, creating the Medusa order.
+  //
+  // ── P0-X9 migration ───────────────────────────────────────────────────
+  // The cart-complete POST is a Medusa write — routes through
+  // medusaAdjudicated for kernel governance + audit. The Stripe event ID
+  // is the deterministic idempotency key (and the envelope's nonce), so a
+  // re-delivered webhook produces a byte-identical intentHash and the
+  // kernel / Execution Ledger can dedupe even if Stripe retries past the
+  // outer Redis 7-day window (matches the Task 12 reconcile pattern).
+  // sourceSubject = "webhook:stripe:<event.id>" surfaces in audit.
   const cartId = paymentIntent.metadata?.["cartId"];
   if (!orderId && cartId) {
     try {
-      const completedData = await medusaStore(`/store/carts/${cartId}/complete`, {
+      const completedData = await medusaAdjudicated<
+        Record<string, unknown>,
+        { type?: string; order?: { id: string; display_id?: number } }
+      >({
+        scope: "store",
         method: "POST",
-        body: JSON.stringify({}),
-      }) as { type?: string; order?: { id: string; display_id?: number } };
+        path: `/store/carts/${cartId}/complete`,
+        payload: {},
+        intentKind: "medusa.cart.complete",
+        idempotencyKey: event.id,
+        sourceSubject: `webhook:stripe:${event.id}`,
+        auditSink: getAuditSink(),
+        log: logger,
+      });
 
       orderId = completedData.order?.display_id
         ? formatOrderId(completedData.order.display_id)
@@ -282,7 +311,28 @@ async function handlePaymentSucceeded(
         logger.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
       }
     } catch (err) {
-      logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
+      // Governance-driven skips (REFUSE / DEFER / NEEDS_REVIEW) are
+      // logged + swallowed — we still ack Stripe with 200 so no retry
+      // storm fires (mirrors the existing Task 12 reconcile branch).
+      // The audit record captures the kernel decision; ops sees the
+      // refusal via metrics.
+      if (
+        err instanceof MedusaAdjudicateRefusedError ||
+        err instanceof MedusaAdjudicateDeferredError ||
+        err instanceof MedusaAdjudicateNeedsReviewError
+      ) {
+        logger.warn(
+          {
+            event_id: event.id,
+            cart_id: cartId,
+            kind: err.name,
+            code: err instanceof MedusaAdjudicateRefusedError ? err.code : undefined,
+          },
+          "PIX: cart-complete refused/deferred by kernel — order not created from this event",
+        );
+      } else {
+        logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
+      }
     }
   }
 
