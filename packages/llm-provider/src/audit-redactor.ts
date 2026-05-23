@@ -38,6 +38,21 @@
 //     The redaction salt (`AUDIT_REDACT_SECRET`) becomes part of the replay
 //     contract — operators MUST snapshot it alongside the audit records.
 //
+// ── P0-10: actor.sessionId leak (Wave 4 security) ─────────────────────────
+//
+// HTTP routes set `actor.sessionId = customerId` verbatim (e.g., me.ts:280
+// passes `customerId` as sessionId for the LGPD anonymize envelope; cart and
+// order-actions follow the same pattern). The redactor previously preserved
+// `envelope.actor` whole, so plaintext customerId shipped to NATS + Postgres.
+//
+// W4 fix: treat `envelope.actor.sessionId` as a HASH field. The full REDACT
+// path was rejected because audit replay correlation needs a deterministic
+// identifier (same customer → same hash across records). The salted SHA-256
+// truncation gives correlation without reversibility.
+//
+// The `actor` object is otherwise preserved (principal stays plaintext —
+// it's a literal "user"|"llm"|"system" enum, no PII).
+//
 // Invariants (do not break under any pull-request):
 //   1. Idempotent — `redact(redact(record))` deep-equals `redact(record)`.
 //   2. Hash-stable post-redaction — `redact(record).auditHash` equals
@@ -50,20 +65,30 @@
 //      the originating envelope's. Ledger dedup remains correct.
 //   4. Shape-preserving — `decision`, `decision_basis`, `at`, `durationMs`,
 //      `version`, `plan`, `supersedes`, `kernelIdentity`, `kernelVersion`,
-//      `policyVersion`, `signature`, and the envelope's `actor` / `taint` /
-//      `kind` / `nonce` / `createdAt` / `version` / `intentHash` fields are
-//      untouched (only `envelope.payload` and `auditHash` change).
+//      `policyVersion`, `signature`, and the envelope's `taint` / `kind` /
+//      `nonce` / `createdAt` / `version` / `intentHash` fields are
+//      untouched. `envelope.payload` and `envelope.actor.sessionId` are
+//      transformed; `envelope.actor.principal` stays verbatim.
+//      `auditHash` is recomputed.
 //   5. Fail-open — if a redaction step throws (e.g. cycle in payload), we
 //      replace the entire payload with `{ __redactor_error: true }` and
 //      log. NEVER block a decision because of a redactor bug. The stub
 //      payload's hash is also recomputed for invariant #2.
+//   6. Correlation-preserving sessionId — the same input sessionId always
+//      hashes to the same output (deterministic with stable hashSecret),
+//      so audit consumers can group records by customer without learning
+//      the customerId.
 //
 // See `docs/adjudicate-migration/tasks/18-audit-redactor.md` and
 // `docs/adjudicate-migration/investigation/08-security-trust-boundaries.md`
 // §"P0 #1" for the full rationale.
 
 import { createHash } from "node:crypto"
-import { sha256Canonical, type AuditRecord } from "@adjudicate/core"
+import {
+  sha256Canonical,
+  type AuditRecord,
+  type IntentActor,
+} from "@adjudicate/core"
 
 // ── Field-name rules ──────────────────────────────────────────────────────────
 //
@@ -350,14 +375,31 @@ export function createAuditRedactor(
         hashSecret,
       })
 
+      // P0-10: hash `actor.sessionId` so HTTP routes that set
+      // `actor.sessionId = customerId` (me.ts, cart.ts, order-actions.ts)
+      // no longer leak plaintext customerId to NATS + Postgres. The hash
+      // is deterministic so audit consumers can correlate records for the
+      // same customer.
+      //
+      // Already-redacted sentinels and WhatsApp's pre-hashed session ids
+      // (sha256-of-phone) are short-circuited via `isSentinelString` and
+      // the `hashed:` prefix detection. The hashed form is idempotent —
+      // a second pass re-hashes the prefix and the result remains stable
+      // because the inputs converge (see `isSentinelString` short-circuit).
+      const redactedActor = redactActorSessionId(
+        record.envelope.actor,
+        hashSecret,
+      )
+
       // Shallow-clone the record and envelope, substituting the redacted
-      // payload. Invariant #3: intentHash is NEVER recomputed — replay uses
-      // it to look up the original envelope and that lookup must remain
-      // stable.
+      // payload and actor. Invariant #3: intentHash is NEVER recomputed —
+      // replay uses it to look up the original envelope and that lookup
+      // must remain stable.
       const redactedRecord: AuditRecord = {
         ...record,
         envelope: {
           ...record.envelope,
+          actor: redactedActor,
           payload: redactedPayload,
         },
       }
@@ -383,10 +425,18 @@ export function createAuditRedactor(
           (err as Error).message
         } — replacing payload with stub.`,
       )
+      // P0-10: stub the actor.sessionId on the fail-open path too so the
+      // stub record itself doesn't leak the customerId via a path that
+      // bypassed the payload walker.
+      const stubbedActor = redactActorSessionId(
+        record.envelope.actor,
+        hashSecret,
+      )
       const stubbed: AuditRecord = {
         ...record,
         envelope: {
           ...record.envelope,
+          actor: stubbedActor,
           payload: { __redactor_error: true },
         },
       }
@@ -398,6 +448,40 @@ export function createAuditRedactor(
   }
 
   return { redact, redactPayload }
+}
+
+// ── P0-10: actor.sessionId hash helper ────────────────────────────────────
+//
+// HTTP routes set `actor.sessionId = customerId` (e.g., LGPD anonymize at
+// me.ts, cart sessionId at cart.ts). Hash it with the same salted SHA-256
+// as the payload HASH_FIELDS path so:
+//
+//   - Audit consumers can group records for the same customer (deterministic)
+//   - No plaintext customerId reaches NATS or Postgres
+//   - WhatsApp pre-hashed session ids (already `sha256-of-phone`) survive
+//     unchanged because the second hash on an already-hashed-shape would
+//     still be deterministic, but more efficiently we short-circuit when
+//     the sessionId is already a sentinel
+//
+// Returns a fresh actor object — never mutates input.
+function redactActorSessionId(
+  actor: IntentActor,
+  hashSecret: string,
+): IntentActor {
+  const sessionId = actor.sessionId
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    return actor
+  }
+  // Idempotent: if the sessionId is already a redactor sentinel (e.g.,
+  // `hashed:xxxxxxxx`), leave it alone so a second redact pass produces
+  // the same record.
+  if (isSentinelString(sessionId)) {
+    return actor
+  }
+  return {
+    ...actor,
+    sessionId: hashValue(sessionId, hashSecret),
+  }
 }
 
 // ── Audit-hash recomputation helper ───────────────────────────────────────────

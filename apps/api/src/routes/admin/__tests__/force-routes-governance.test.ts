@@ -147,6 +147,13 @@ vi.mock("@ibatexas/nats-client", () => ({
 interface StaffContext {
   readonly staffId: string | null;
   readonly staffRole: "OWNER" | "MANAGER" | "ATTENDANT" | null;
+  /**
+   * P1-H: when the test simulates an API-key path (staffId === null),
+   * set the resolved registry role to mimic what the admin guard would
+   * attach after a successful `ADMIN_API_KEY_ROLES_JSON` lookup. Used
+   * by the "API-key actor uses shared bucket" drip-cap test.
+   */
+  readonly adminApiKeyRole?: "OWNER" | "MANAGER";
 }
 
 async function buildOrderActionsServer(staff: StaffContext): Promise<FastifyInstance> {
@@ -167,6 +174,10 @@ async function buildOrderActionsServer(staff: StaffContext): Promise<FastifyInst
     if (effectiveStaffId) {
       (req as unknown as { staffId: string | null }).staffId = effectiveStaffId;
       (req as unknown as { staffRole: string | null }).staffRole = effectiveRole;
+    } else if (staff.adminApiKeyRole) {
+      // P1-H: simulate the admin guard finding a registry-mapped API key.
+      (req as unknown as { adminApiKeyRole: "OWNER" | "MANAGER" }).adminApiKeyRole =
+        staff.adminApiKeyRole;
     }
   });
   await app.register(adminOrderActionRoutes);
@@ -189,6 +200,10 @@ async function buildPaymentsServer(staff: StaffContext): Promise<FastifyInstance
     if (effectiveStaffId) {
       (req as unknown as { staffId: string | null }).staffId = effectiveStaffId;
       (req as unknown as { staffRole: string | null }).staffRole = effectiveRole;
+    } else if (staff.adminApiKeyRole) {
+      // P1-H: simulate the admin guard finding a registry-mapped API key.
+      (req as unknown as { adminApiKeyRole: "OWNER" | "MANAGER" }).adminApiKeyRole =
+        staff.adminApiKeyRole;
     }
   });
   await app.register(adminPaymentRoutes);
@@ -1097,7 +1112,14 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
   it("API-key actor uses shared 'api-key' bucket", async () => {
     // When staffId is null (API-key path), the bucket key uses
     // 'api-key' as the actor — so any leaked key shares one cap.
-    const apiKeyContext: StaffContext = { staffId: null, staffRole: null };
+    // P1-H: the API-key path now requires a registry-mapped role on
+    // the request (set by the admin guard from ADMIN_API_KEY_ROLES_JSON).
+    // We simulate that here with adminApiKeyRole: "MANAGER".
+    const apiKeyContext: StaffContext = {
+      staffId: null,
+      staffRole: null,
+      adminApiKeyRole: "MANAGER",
+    };
     const bucketKey = (() => {
       const now = new Date();
       const yyyy = now.getUTCFullYear();
@@ -1118,6 +1140,27 @@ describe("POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap",
       expect(res.statusCode).toBe(202);
       const body = res.json() as { code: string };
       expect(body.code).toBe("REFUND_DRIP_CAP");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("[P1-H] API-key WITHOUT registry role gets 403 (regression: pre-W4 passed)", async () => {
+    // No JWT, no admin-api-key-role set — pre-W4 this hit the refund
+    // logic anyway. Now requireManagerRole fails-closed.
+    const apiKeyNoRole: StaffContext = {
+      staffId: null,
+      staffRole: null,
+    };
+    const server = await buildPaymentsServer(apiKeyNoRole);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 5_000, reason: "leak attempt" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json().message).toContain("chave de API sem permissão");
     } finally {
       await server.close();
     }

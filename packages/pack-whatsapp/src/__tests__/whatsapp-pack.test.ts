@@ -228,6 +228,97 @@ describe("whatsappPolicyBundle — customer→staff sanitization (REWRITE)", () 
   })
 })
 
+// ── P1-G: auth-phase REFUSE when recipientType is unprojected ───────────
+
+describe("whatsappPolicyBundle — P1-G auth-phase guard for missing recipientType", () => {
+  it("[P1-G] REFUSE customer→? whatsapp.message.send when recipientType is missing", () => {
+    // The upstream command service forgot to project recipientType.
+    // Without the W4 P1-G auth guard the REWRITE silently skips and an
+    // unsanitized body could reach a staff phone. With the guard, the
+    // policy refuses outright.
+    const decision = adjudicate(
+      env("whatsapp.message.send", {
+        to: "+5511888888888",
+        body: "*urgent staff message*",
+        senderRole: "customer",
+      }),
+      baseState({ recipientType: undefined as unknown as null }),
+      whatsappPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("whatsapp.staff.recipient_unknown")
+    expect(decision.refusal.kind).toBe("AUTH")
+    // pt-BR per CLAUDE.md rule #4.
+    expect(decision.refusal.userFacing).toMatch(/recusado/i)
+  })
+
+  it("[P1-G] REFUSE customer→? whatsapp.message.send when recipientType is null", () => {
+    const decision = adjudicate(
+      env("whatsapp.message.send", {
+        to: "+5511888888888",
+        body: "preciso de ajuda",
+        senderRole: "customer",
+      }),
+      baseState({ recipientType: null }),
+      whatsappPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("whatsapp.staff.recipient_unknown")
+  })
+
+  it("[P1-G] EXECUTE system→? whatsapp.message.send when recipientType is missing (guard only fires for customer sender)", () => {
+    // Only the customer-sourced path is fenced — system-initiated
+    // messages (e.g., cart-intelligence notifications) don't carry
+    // customer-controlled content, so the guard skips.
+    const decision = adjudicate(
+      env("whatsapp.message.send", {
+        to: "+5511999999999",
+        body: "Olá! Seu pedido está pronto.",
+        senderRole: "system",
+      }),
+      baseState({ recipientType: undefined as unknown as null }),
+      whatsappPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("[P1-G] still REWRITEs customer→staff when recipientType IS projected (legitimate path)", () => {
+    // The legitimate path still flows through the existing REWRITE.
+    // P1-G doesn't break the happy customer→staff flow.
+    const decision = adjudicate(
+      env("whatsapp.message.send", {
+        to: "+5511888888888",
+        body: "*needs review*",
+        senderRole: "customer",
+      }),
+      baseState({ recipientType: "staff" }),
+      whatsappPolicyBundle,
+    )
+    expect(decision.kind).toBe("REWRITE")
+  })
+
+  it("[P1-G] templated outbound bypasses the auth guard (template path is always safe)", () => {
+    // Templated outbounds carry no free-form customer body; they don't
+    // need recipient classification to be safe.
+    const decision = adjudicate(
+      env("whatsapp.message.send", {
+        to: "+5511999999999",
+        body: "",
+        senderRole: "customer",
+        templateName: "order_ready_v1",
+        templateVariables: { "1": "Maria" },
+      }),
+      baseState({ recipientType: undefined as unknown as null }),
+      whatsappPolicyBundle,
+    )
+    // Templated messages bypass the window guard AND the P1-G guard;
+    // they execute on the producer.
+    expect(decision.kind).toBe("EXECUTE")
+  })
+})
+
 // ── Staff-handover rate limit ───────────────────────────────────────────
 
 describe("whatsappPolicyBundle — staff-handover rate limit", () => {

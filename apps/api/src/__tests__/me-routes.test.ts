@@ -202,9 +202,9 @@ describe("GET /api/me/data — export customer data", () => {
   });
 });
 
-// ── Tests: POST /api/me/data/initiate-deletion ─────────────────────────────────
+// ── Tests: POST /api/me/data/send-otp ───────────────────────────────────────
 
-describe("POST /api/me/data/initiate-deletion — fresh OTP step", () => {
+describe("POST /api/me/data/send-otp — OTP issue step (W4 P0-11)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     redisStorage.clear();
@@ -218,7 +218,7 @@ describe("POST /api/me/data/initiate-deletion — fresh OTP step", () => {
     try {
       const res = await app.inject({
         method: "POST",
-        url: "/api/me/data/initiate-deletion",
+        url: "/api/me/data/send-otp",
       });
       expect(res.statusCode).toBe(401);
     } finally {
@@ -231,7 +231,7 @@ describe("POST /api/me/data/initiate-deletion — fresh OTP step", () => {
     try {
       const res = await app.inject({
         method: "POST",
-        url: "/api/me/data/initiate-deletion",
+        url: "/api/me/data/send-otp",
         headers: { "x-customer-id": "cust_01" },
       });
 
@@ -257,8 +257,238 @@ describe("POST /api/me/data/initiate-deletion — fresh OTP step", () => {
     }
   });
 
+  it("[P0-11] refuses with 429 during cancel-cooldown window", async () => {
+    redisStorage.set("ibatexas:anonymize:cancel-cooldown:cust_01", "1");
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/send-otp",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(429);
+      expect(res.json().message).toContain("cancelou");
+      expect(mockSendOtp).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-11] refuses with 429 when brute-force counter at threshold", async () => {
+    redisStorage.set("ibatexas:anonymize:fail:cust_01", "5");
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/send-otp",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(429);
+      expect(res.json().message).toContain("Excesso de tentativas");
+      expect(mockSendOtp).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   it("returns 502 on Twilio error", async () => {
     mockSendOtp.mockRejectedValueOnce(new Error("twilio failure"));
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/send-otp",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(502);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: POST /api/me/data/verify-otp (W4 P0-11) ─────────────────────────
+
+describe("POST /api/me/data/verify-otp — OTP verify + brute-force counter", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+    mockGetById.mockResolvedValue({ id: "cust_01", phone: "+5511999887766" });
+    mockVerifyOtp.mockResolvedValue({ status: "approved" as string });
+    // Pre-seed the OTP-sent marker so verify-otp doesn't fast-fail.
+    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
+  });
+
+  it("returns 401 when freshness marker missing", async () => {
+    redisStorage.delete("ibatexas:anonymize:otp:cust_01");
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/verify-otp",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { token: "123456" },
+      });
+      expect(res.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("sets the 60s verified-marker on success and resets failure counter", async () => {
+    redisStorage.set("ibatexas:anonymize:fail:cust_01", "3");
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/verify-otp",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { token: "123456" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().status).toBe("verified");
+      expect(res.json().ttlSeconds).toBe(60);
+
+      // Verified-marker present with 60s TTL.
+      const setArgs = mockRedisSet.mock.calls.find(
+        (c) => (c[0] as string).endsWith("anonymize:otp_verified:cust_01"),
+      );
+      expect(setArgs).toBeTruthy();
+      expect(setArgs![2]).toEqual({ EX: 60 });
+
+      // Failure counter cleared.
+      expect(redisStorage.get("ibatexas:anonymize:fail:cust_01")).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-11] increments brute-force counter on failed verify", async () => {
+    mockVerifyOtp.mockResolvedValue({ status: "pending" as string });
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/verify-otp",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { token: "000000" },
+      });
+      expect(res.statusCode).toBe(401);
+
+      // Counter went from missing to 1.
+      expect(redisStorage.get("ibatexas:anonymize:fail:cust_01")).toBe("1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-11] 5 failed verifies → 429 lockout", async () => {
+    mockVerifyOtp.mockResolvedValue({ status: "pending" as string });
+
+    const app = await buildTestServer();
+    try {
+      // 5 failed attempts.
+      let lastRes;
+      for (let i = 0; i < 5; i++) {
+        lastRes = await app.inject({
+          method: "POST",
+          url: "/api/me/data/verify-otp",
+          headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+          payload: { token: "000000" },
+        });
+      }
+      // After the 5th failure the response is 429 (counter just hit threshold).
+      expect(lastRes!.statusCode).toBe(429);
+      expect(lastRes!.json().message).toContain("Excesso de tentativas");
+
+      // 6th attempt → 429 fast-fail (no Twilio round-trip).
+      mockVerifyOtp.mockClear();
+      const res6 = await app.inject({
+        method: "POST",
+        url: "/api/me/data/verify-otp",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { token: "123456" },
+      });
+      expect(res6.statusCode).toBe(429);
+      // Twilio NOT called.
+      expect(mockVerifyOtp).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-11] brute force resets after 30min (TTL expiry simulated)", async () => {
+    mockVerifyOtp.mockResolvedValue({ status: "pending" as string });
+
+    const app = await buildTestServer();
+    try {
+      // 5 failed attempts.
+      for (let i = 0; i < 5; i++) {
+        await app.inject({
+          method: "POST",
+          url: "/api/me/data/verify-otp",
+          headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+          payload: { token: "000000" },
+        });
+      }
+      // Locked out.
+      expect(redisStorage.get("ibatexas:anonymize:fail:cust_01")).toBe("5");
+
+      // Simulate 30min TTL expiry: the redis key vanishes.
+      redisStorage.delete("ibatexas:anonymize:fail:cust_01");
+
+      // Customer can verify again — but we need a successful OTP this time.
+      mockVerifyOtp.mockResolvedValue({ status: "approved" as string });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/verify-otp",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { token: "123456" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().status).toBe("verified");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ── Tests: POST /api/me/data/initiate-deletion (W4 P0-11) ──────────────────
+
+describe("POST /api/me/data/initiate-deletion — requires fresh verify-otp (W4 P0-11)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    setupEnv();
+    mockGetById.mockResolvedValue({ id: "cust_01", phone: "+5511999887766" });
+  });
+
+  it("[P0-11] returns 401 when no verified-otp marker (stolen-JWT defense)", async () => {
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/initiate-deletion",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().message).toContain("Verificação expirada");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-11] returns 429 during cancel-cooldown window", async () => {
+    redisStorage.set("ibatexas:anonymize:cancel-cooldown:cust_01", "1");
+    redisStorage.set("ibatexas:anonymize:otp_verified:cust_01", "1");
 
     const app = await buildTestServer();
     try {
@@ -267,7 +497,63 @@ describe("POST /api/me/data/initiate-deletion — fresh OTP step", () => {
         url: "/api/me/data/initiate-deletion",
         headers: { "x-customer-id": "cust_01" },
       });
-      expect(res.statusCode).toBe(502);
+      expect(res.statusCode).toBe(429);
+      expect(res.json().message).toContain("cancelou");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("parks DEFER + persists receipt + consumes verified-marker", async () => {
+    redisStorage.set("ibatexas:anonymize:otp_verified:cust_01", "1");
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/initiate-deletion",
+        headers: { "x-customer-id": "cust_01" },
+      });
+
+      expect(res.statusCode).toBe(202);
+      const body = res.json();
+      expect(body.status).toBe("deferred");
+      expect(body.message).toContain("24 horas");
+
+      // Parked envelope blob.
+      const parked = redisStorage.get("ibatexas:defer:pending:cust_01");
+      expect(parked).toBeTruthy();
+
+      // Customer-facing receipt.
+      expect(redisStorage.get("ibatexas:anonymize:pending:cust_01")).toBeTruthy();
+
+      // Verified marker was consumed.
+      expect(redisStorage.get("ibatexas:anonymize:otp_verified:cust_01")).toBeUndefined();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("idempotent on existing pending deletion", async () => {
+    redisStorage.set("ibatexas:anonymize:otp_verified:cust_01", "1");
+    redisStorage.set(
+      "ibatexas:anonymize:pending:cust_01",
+      JSON.stringify({
+        parkedAt: Date.now() - 60 * 60 * 1000,
+        intentHash: "deadbeef",
+        otpTokenHint: "verified",
+      }),
+    );
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/initiate-deletion",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(202);
+      expect(res.json().message).toContain("Já existe");
     } finally {
       await app.close();
     }
@@ -385,6 +671,62 @@ describe("DELETE /api/me/data?token= — OTP verify + DEFER park", () => {
       await app.close();
     }
   });
+
+  it("[P0-11] legacy DELETE applies brute-force counter on failed OTP", async () => {
+    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
+    mockVerifyOtp.mockResolvedValueOnce({ status: "pending" as string });
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/me/data?token=000000",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(401);
+      // Counter incremented.
+      expect(redisStorage.get("ibatexas:anonymize:fail:cust_01")).toBe("1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-11] legacy DELETE refuses when locked out", async () => {
+    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
+    redisStorage.set("ibatexas:anonymize:fail:cust_01", "5");
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/me/data?token=123456",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(429);
+      expect(res.json().message).toContain("Excesso de tentativas");
+      expect(mockVerifyOtp).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-11] legacy DELETE refuses during cancel-cooldown", async () => {
+    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
+    redisStorage.set("ibatexas:anonymize:cancel-cooldown:cust_01", "1");
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: "/api/me/data?token=123456",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(429);
+      expect(res.json().message).toContain("cancelou");
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 // ── Tests: POST /api/me/data/cancel-deletion — clear receipt ──────────────────
@@ -439,6 +781,36 @@ describe("POST /api/me/data/cancel-deletion — clear receipt", () => {
 
       // anonymizeCustomer was NEVER called — cancel must abort the destructive op.
       expect(mockAnonymizeCustomer).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-11] sets the 30-min cancel-cooldown after cancel", async () => {
+    redisStorage.set(
+      "ibatexas:anonymize:pending:cust_01",
+      JSON.stringify({
+        parkedAt: Date.now() - 30 * 60 * 1000,
+        intentHash: "abc123",
+        otpTokenHint: "verified",
+      }),
+    );
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/cancel-deletion",
+        headers: { "x-customer-id": "cust_01" },
+      });
+      expect(res.statusCode).toBe(200);
+
+      // The cancel-cooldown marker was set with the 30-min TTL.
+      const setArgs = mockRedisSet.mock.calls.find(
+        (c) => (c[0] as string).endsWith("anonymize:cancel-cooldown:cust_01"),
+      );
+      expect(setArgs).toBeTruthy();
+      expect(setArgs![2]).toEqual({ EX: 30 * 60 });
     } finally {
       await app.close();
     }
