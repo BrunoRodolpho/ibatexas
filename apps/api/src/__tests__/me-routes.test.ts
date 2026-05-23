@@ -69,6 +69,39 @@ const mockRedisDecr = vi.hoisted(() =>
 );
 const mockRedisExpire = vi.hoisted(() => vi.fn(async (_key: string, _seconds: number) => 1));
 
+// P0-X-OTP — Atomic Lua script for acquireOtpAttempt. Emulates the
+// OTP_ACQUIRE_ATTEMPT_LUA script defined in anonymize-otp-gate.ts.
+// Keys: [failKey, lockoutKey]; Args: [failTtl, threshold, lockoutTtl].
+// Returns [allowed, count, fromSentinel].
+const mockRedisEval = vi.hoisted(() =>
+  vi.fn(
+    async (
+      _script: string,
+      opts: { keys: string[]; arguments: string[] },
+    ) => {
+      const failKey = opts.keys[0]!;
+      const lockoutKey = opts.keys[1]!;
+      const threshold = Number.parseInt(opts.arguments[1] ?? "0", 10);
+      const lockoutTtl = Number.parseInt(opts.arguments[2] ?? "0", 10);
+      // Fast-fail: lockout sentinel exists.
+      if (redisStorage.has(lockoutKey)) {
+        const cur = Number.parseInt(redisStorage.get(failKey) ?? "0", 10);
+        return [0, cur, 1];
+      }
+      const cur = Number.parseInt(redisStorage.get(failKey) ?? "0", 10);
+      const next = cur + 1;
+      redisStorage.set(failKey, String(next));
+      if (next > threshold) {
+        // Set the lockout sentinel (TTL irrelevant for Map stub).
+        redisStorage.set(lockoutKey, "1");
+        void lockoutTtl;
+        return [0, next, 0];
+      }
+      return [1, next, 0];
+    },
+  ),
+);
+
 vi.mock("@ibatexas/domain", () => ({
   exportCustomerData: mockExportCustomerData,
   anonymizeCustomer: mockAnonymizeCustomer,
@@ -86,6 +119,7 @@ vi.mock("@ibatexas/tools", () => ({
     incr: mockRedisIncr,
     decr: mockRedisDecr,
     expire: mockRedisExpire,
+    eval: mockRedisEval,
   })),
   rk: (k: string) => `ibatexas:${k}`,
 }));
@@ -390,35 +424,54 @@ describe("POST /api/me/data/verify-otp — OTP verify + brute-force counter", ()
     }
   });
 
-  it("[P0-11] 5 failed verifies → 429 lockout", async () => {
+  it("[P0-11 / P0-X-OTP] 6 failed verifies → 429 lockout (count > threshold)", async () => {
+    // P0-X-OTP semantic: acquireOtpAttempt INCRs the counter FIRST and
+    // refuses when count > THRESHOLD. Attempts 1-5 are allowed (count=
+    // 1..5 each ≤ threshold=5), Twilio is called and rejects → 401.
+    // The 6th attempt INCRs to 6 → locked_out → 429, sentinel set; from
+    // then on every attempt fast-fails without hitting Twilio.
+    //
+    // Pre-P0-X-OTP this assertion was "after 5 → 429" because the OLD
+    // pre-check `failsBefore >= THRESHOLD` tripped on the 5th GET (when
+    // the prior 4 INCRs had landed). The atomic Lua's post-INCR check
+    // is the right semantic: we lock out when count EXCEEDS threshold,
+    // not when it hits it.
     mockVerifyOtp.mockResolvedValue({ status: "pending" as string });
 
     const app = await buildTestServer();
     try {
-      // 5 failed attempts.
-      let lastRes;
+      // 5 failed attempts — all return 401 (count = 1..5, ≤ threshold).
       for (let i = 0; i < 5; i++) {
-        lastRes = await app.inject({
+        const res = await app.inject({
           method: "POST",
           url: "/api/me/data/verify-otp",
           headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
           payload: { token: "000000" },
         });
+        expect(res.statusCode).toBe(401);
       }
-      // After the 5th failure the response is 429 (counter just hit threshold).
-      expect(lastRes!.statusCode).toBe(429);
-      expect(lastRes!.json().message).toContain("Excesso de tentativas");
-
-      // 6th attempt → 429 fast-fail (no Twilio round-trip).
+      // 6th attempt → INCR to 6 → locked_out → 429. Sentinel SET.
       mockVerifyOtp.mockClear();
       const res6 = await app.inject({
         method: "POST",
         url: "/api/me/data/verify-otp",
         headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
-        payload: { token: "123456" },
+        payload: { token: "000000" },
       });
       expect(res6.statusCode).toBe(429);
-      // Twilio NOT called.
+      expect(res6.json().message).toContain("Excesso de tentativas");
+      // Twilio NOT called on the lockout attempt — acquireOtpAttempt
+      // refused before Twilio.
+      expect(mockVerifyOtp).not.toHaveBeenCalled();
+
+      // 7th attempt → sentinel exists → 429 fast-fail.
+      const res7 = await app.inject({
+        method: "POST",
+        url: "/api/me/data/verify-otp",
+        headers: { "x-customer-id": "cust_01", "content-type": "application/json" },
+        payload: { token: "123456" },
+      });
+      expect(res7.statusCode).toBe(429);
       expect(mockVerifyOtp).not.toHaveBeenCalled();
     } finally {
       await app.close();

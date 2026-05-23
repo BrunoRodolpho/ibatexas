@@ -1,0 +1,13 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+stdout | src/__tests__/otp-brute-force-before.test.ts > P0-X-OTP pre-fix race demonstration (real Redis) > DEMONSTRATES the OLD racy pattern allows N attempts past the threshold gate
+[P0-X-OTP pre-fix demo] N=10 threshold=5 proceeded=10 finalCount=10
+
+ ✓ src/__tests__/otp-brute-force-before.test.ts (2 tests) 34ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  14:42:05
+   Duration  393ms (transform 22ms, setup 0ms, collect 94ms, tests 34ms, environment 0ms, prepare 51ms)
+

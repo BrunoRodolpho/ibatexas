@@ -68,12 +68,12 @@ import {
   ANONYMIZE_GRACE_TTL_SECONDS,
   ANONYMIZE_FAIL_THRESHOLD,
   ANONYMIZE_VERIFY_TTL_SECONDS,
+  acquireOtpAttempt,
   consumeOtpMarker,
   consumeOtpVerifiedMarker,
   hasFreshOtp,
   hasFreshVerifiedOtp,
   hasCancelCooldown,
-  incrementOtpFailureCount,
   getOtpFailureCount,
   markOtpFresh,
   markOtpVerified,
@@ -272,9 +272,31 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       const customerId = request.customerId!;
       const { token: otpCode } = request.body;
 
-      // P0-11: brute-force lockout check.
-      const failsBefore = await getOtpFailureCount(customerId);
-      if (failsBefore >= ANONYMIZE_FAIL_THRESHOLD) {
+      // P0-X-OTP — Atomically acquire a brute-force attempt slot.
+      //
+      // Pre-fix (audit 03 R6): getOtpFailureCount → Twilio (~300ms) →
+      // incrementOtpFailureCount on fail. N concurrent attempts in the
+      // ~300ms Twilio window all read the same starting count, all
+      // passed the threshold check, all proceeded. ~30 free attempts
+      // per burst.
+      //
+      // Post-fix: acquireOtpAttempt performs INCR + threshold check +
+      // lockout sentinel SET in a single Lua eval. N concurrent
+      // attempts each see a distinct post-INCR count; the (THRESHOLD+1)
+      // attempt onwards trip the lockout sentinel and refuse without
+      // hitting Twilio at all. On success we reset the counter; the
+      // reservation cost is one attempt slot per try.
+      const attempt = await acquireOtpAttempt(customerId);
+      if (attempt.kind === "locked_out") {
+        request.log.warn(
+          {
+            customerId,
+            attempts: attempt.count,
+            fromSentinel: attempt.fromSentinel,
+            action: "anonymize_otp_locked_out",
+          },
+          "Anonymize OTP locked out",
+        );
         return reply.code(429).send({
           statusCode: 429,
           error: "Too Many Requests",
@@ -307,18 +329,16 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
 
       const otpOk = await verifyAnonymizeOtp(phone, otpCode);
       if (!otpOk) {
-        const failsAfter = await incrementOtpFailureCount(customerId);
+        // Counter is already incremented (atomically) by
+        // acquireOtpAttempt. Just log and refuse.
         request.log.warn(
-          { customerId, attempts: failsAfter, action: "anonymize_otp_failed" },
+          {
+            customerId,
+            attempts: attempt.count,
+            action: "anonymize_otp_failed",
+          },
           "Anonymize OTP verification failed",
         );
-        if (failsAfter >= ANONYMIZE_FAIL_THRESHOLD) {
-          return reply.code(429).send({
-            statusCode: 429,
-            error: "Too Many Requests",
-            message: "Excesso de tentativas. Aguarde 30 min e tente novamente.",
-          });
-        }
         return reply.code(401).send({
           statusCode: 401,
           error: "Unauthorized",
@@ -578,9 +598,19 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
-      // P0-11: brute-force lockout pre-check.
-      const failsBefore = await getOtpFailureCount(customerId);
-      if (failsBefore >= ANONYMIZE_FAIL_THRESHOLD) {
+      // P0-X-OTP — Atomic INCR + threshold check via acquireOtpAttempt.
+      // See verify-otp route above for the race we are closing.
+      const attempt = await acquireOtpAttempt(customerId);
+      if (attempt.kind === "locked_out") {
+        request.log.warn(
+          {
+            customerId,
+            attempts: attempt.count,
+            fromSentinel: attempt.fromSentinel,
+            action: "anonymize_otp_locked_out",
+          },
+          "Anonymize OTP locked out (legacy DELETE path)",
+        );
         return reply.code(429).send({
           statusCode: 429,
           error: "Too Many Requests",
@@ -612,23 +642,19 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
-      // (c) Verify OTP with Twilio. P0-11: failures increment the
-      // brute-force counter and the customer is locked out after
-      // ANONYMIZE_FAIL_THRESHOLD failures.
+      // (c) Verify OTP with Twilio. Counter already incremented by
+      // acquireOtpAttempt. On failure: log and refuse; on success:
+      // reset the counter so honest customers don't accumulate noise.
       const otpOk = await verifyAnonymizeOtp(phone, otpCode);
       if (!otpOk) {
-        const failsAfter = await incrementOtpFailureCount(customerId);
         request.log.warn(
-          { customerId, attempts: failsAfter, action: "anonymize_otp_failed" },
+          {
+            customerId,
+            attempts: attempt.count,
+            action: "anonymize_otp_failed",
+          },
           "Anonymize OTP verification failed (legacy DELETE path)",
         );
-        if (failsAfter >= ANONYMIZE_FAIL_THRESHOLD) {
-          return reply.code(429).send({
-            statusCode: 429,
-            error: "Too Many Requests",
-            message: "Excesso de tentativas. Aguarde 30 min e tente novamente.",
-          });
-        }
         return reply.code(401).send({
           statusCode: 401,
           error: "Unauthorized",
