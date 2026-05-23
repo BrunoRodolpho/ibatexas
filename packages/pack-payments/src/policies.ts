@@ -211,13 +211,21 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
   if (envelope.kind !== "payment.refund.issue") return null
   const payload = envelope.payload as PaymentRefundIssuePayload
 
+  // NEW-P0-X6: `Number.isFinite(NaN) === false` and `Number.isFinite(Infinity)
+  // === false`, so this single predicate rejects all three pathological
+  // cases the audit flagged (NaN, +Infinity, -Infinity) plus the prior
+  // non-number-type and non-positive bands. Without this guard, NaN
+  // silently passes every `>` and `<=` comparison in the ladder below
+  // (NaN comparisons are always false), and EXECUTEs an "invalid"
+  // refund.
   if (
     typeof payload.refundAmountCentavos !== "number" ||
+    !Number.isFinite(payload.refundAmountCentavos) ||
     payload.refundAmountCentavos <= 0
   ) {
     return decisionRefuse(refuseRefundAmountInvalid(payload.refundAmountCentavos), [
       basis("business", BASIS_CODES.business.RULE_VIOLATED, {
-        reason: "refund_amount_non_positive",
+        reason: "refund_amount_invalid",
         amount: payload.refundAmountCentavos,
       }),
     ])
