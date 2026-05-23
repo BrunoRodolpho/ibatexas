@@ -1,7 +1,37 @@
+// Admin reservation routes.
+//
+// GET  /api/admin/reservations
+// POST /api/admin/reservations/:id/checkin
+// POST /api/admin/reservations/:id/complete
+// POST /api/admin/reservations/:id/cancel
+//
+// ── Task 13/15 (M3) — kernel-gated transitions ──────────────────────────
+//
+// `checkin` and `complete` go through `transitionFromEnvelope` against
+// `reservationsPolicyBundle` (staff-only by taint, ownership-checked by
+// state). The envelope carries:
+//   - actor.principal = "user" (staff JWT) | "system" (API key)
+//   - taint            = "TRUSTED" | "SYSTEM"
+//   - sessionId        = `admin:{staffId}` | `admin:api-key`
+//
+// The `cancel` admin endpoint remains a direct Prisma write — the
+// reservation Pack's `cancel` policy is customer-focused (cancel-window
+// guards), and admin-driven cancellation has different semantics (no
+// time window). A follow-up task can introduce a dedicated
+// `reservation.admin.cancel` intent kind if needed.
+
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { buildEnvelope } from "@adjudicate/core";
 import { createReservationService, prisma } from "@ibatexas/domain";
+import type {
+  ReservationCheckinPayload,
+  ReservationCompletePayload,
+  ReservationState,
+} from "@ibatexas/pack-reservations";
+import { getAuditSink } from "@ibatexas/llm-provider";
 import type { ReservationDTO } from "@ibatexas/types";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 
@@ -25,9 +55,38 @@ function toAdminReservation(
   };
 }
 
+/** Build a minimal ReservationState snapshot for the admin transition path. */
+async function snapshotReservationState(
+  reservationId: string,
+  staffId: string | null,
+): Promise<ReservationState> {
+  const reservation = await prisma.reservation.findUnique({
+    where: { id: reservationId },
+    include: { timeSlot: true },
+  });
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId,
+      reservation: reservation
+        ? {
+            id: reservation.id,
+            customerId: reservation.customerId,
+            status: reservation.status,
+            partySize: reservation.partySize,
+          }
+        : null,
+    },
+  } as ReservationState;
+}
+
 export async function reservationRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
-  const svc = createReservationService();
+  const svc = createReservationService({
+    auditSink: getAuditSink(),
+    log: server.log,
+  });
 
   // GET /api/admin/reservations
   app.get(
@@ -102,7 +161,35 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      await svc.transition(id, "seated");
+      const staffId = request.staffId ?? null;
+      const principal: "user" | "system" = staffId ? "user" : "system";
+      const taint: "TRUSTED" | "SYSTEM" = staffId ? "TRUSTED" : "SYSTEM";
+      const sessionId = staffId ? `admin:${staffId}` : "admin:api-key";
+
+      const state = await snapshotReservationState(id, staffId);
+      const payload: ReservationCheckinPayload = { reservationId: id };
+      const envelope = buildEnvelope<
+        "reservation.checkin",
+        ReservationCheckinPayload
+      >({
+        kind: "reservation.checkin",
+        payload,
+        nonce: randomUUID(),
+        actor: { principal, sessionId },
+        taint,
+      });
+
+      const outcome = await svc.transitionFromEnvelope(envelope, state);
+      if (
+        outcome.decision.kind !== "EXECUTE" &&
+        outcome.decision.kind !== "REWRITE"
+      ) {
+        const refusalText =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.userFacing
+            : "Operação não permitida pela política do kernel.";
+        return reply.code(403).send({ error: refusalText });
+      }
       return reply.send({ success: true });
     },
   );
@@ -120,7 +207,35 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      await svc.transition(id, "completed");
+      const staffId = request.staffId ?? null;
+      const principal: "user" | "system" = staffId ? "user" : "system";
+      const taint: "TRUSTED" | "SYSTEM" = staffId ? "TRUSTED" : "SYSTEM";
+      const sessionId = staffId ? `admin:${staffId}` : "admin:api-key";
+
+      const state = await snapshotReservationState(id, staffId);
+      const payload: ReservationCompletePayload = { reservationId: id };
+      const envelope = buildEnvelope<
+        "reservation.complete",
+        ReservationCompletePayload
+      >({
+        kind: "reservation.complete",
+        payload,
+        nonce: randomUUID(),
+        actor: { principal, sessionId },
+        taint,
+      });
+
+      const outcome = await svc.transitionFromEnvelope(envelope, state);
+      if (
+        outcome.decision.kind !== "EXECUTE" &&
+        outcome.decision.kind !== "REWRITE"
+      ) {
+        const refusalText =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.userFacing
+            : "Operação não permitida pela política do kernel.";
+        return reply.code(403).send({ error: refusalText });
+      }
       return reply.send({ success: true });
     },
   );
