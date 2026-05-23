@@ -19,14 +19,39 @@
 //   T+24h+1ms : intent.defer.timeout event → grace resolver → anonymizeCustomer
 //
 // Brute force:
-//   5 consecutive failed OTP verifies → 429 lockout (P0-11).
+//   After P0-X-OTP (commit 55ffb8d) the atomic Lua INCRs the counter
+//   BEFORE the threshold check, so attempts 1-5 return 401 (count
+//   1..5 ≤ threshold=5, Twilio is called and rejects), and the 6th
+//   attempt INCRs to 6 → locked_out → 429 + sentinel set. Pre-fix
+//   this was "5th → 429"; post-fix it is "6th → 429".
 //
 // The test mocks NATS publish but verifies the timeout event PAYLOAD is
 // constructed correctly. It mocks @ibatexas/domain.anonymizeCustomer at the
 // call boundary so we can assert phone-hash, reviews-scrub, email/cpf-null
 // semantics without touching a real DB.
+//
+// ── RULE 3: real-Redis migration (cross-cluster recon W1) ────────────────
+//
+// Cluster C's P0-X-OTP fix (commit 55ffb8d) replaced the racy
+// GET→verify→INCR sequence in /verify-otp with an atomic Lua eval inside
+// `acquireOtpAttempt`. The old Map-backed mock-Redis here has no `eval`
+// method, so the moment that commit landed the verify-otp tests started
+// returning 500 ("redis.eval is not a function") instead of 200/429.
+//
+// The audit's RULE 3 forbids extending the mock with a hand-rolled Lua
+// interpreter — Redis's Lua atomicity is THE property being tested. We
+// therefore spin up a real `redis:7-alpine` container (via the shared
+// helper at `apps/api/src/__tests__/helpers/redis-testcontainer.ts`) and
+// route `getRedisClient()` to it; Lua now runs on the real server. State
+// assertions migrate from `redisStorage.get(key)` to direct
+// `runtimeHarness.client.get(key)` calls.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RedisClientType } from "redis";
+import {
+  setupRedisTestContainer,
+  type RedisTestHarness,
+} from "../helpers/redis-testcontainer.js";
 import Fastify from "fastify";
 import {
   serializerCompiler,
@@ -51,42 +76,37 @@ const mockPublishNatsEvent = vi.hoisted(() =>
   vi.fn(async (_subject: string, _payload: Record<string, unknown>) => undefined),
 );
 
-// Shared Redis-stub storage so route + subscriber + sweeper share state.
+// Real-Redis testcontainer harness. Populated by beforeAll; the
+// `getRedisClient()` mock returns a thin proxy that defers to the live
+// client at call-time (so the route handlers see real Redis with full
+// `eval` support, while existing call-counting assertions on
+// `mockRedisSet` etc. continue to work).
+let runtimeHarness: RedisTestHarness | null = null;
+
+function requireRuntimeRedis(): RedisClientType {
+  if (!runtimeHarness) {
+    throw new Error(
+      "[lgpd-anonymize-lifecycle.test] real-Redis testcontainer not initialized — beforeAll did not complete",
+    );
+  }
+  return runtimeHarness.client;
+}
+
+// `redisStorage` is now a synchronous READ MIRROR of the real Redis state.
+// The mock spies wrap real-Redis operations and update the mirror so that
+// the existing test assertions (`redisStorage.get(...)`) stay synchronous
+// and unchanged. The mirror is hydrated from real Redis after each mutation
+// inside `flushAndHydrate()` between tests.
 const redisStorage = vi.hoisted(() => new Map<string, string>());
 
 const mockRedisSet = vi.hoisted(() =>
-  vi.fn(async (key: string, value: string, _opts?: { EX: number }) => {
-    redisStorage.set(key, value);
-    return "OK";
-  }),
+  vi.fn(),
 );
-const mockRedisGet = vi.hoisted(() =>
-  vi.fn(async (key: string) => redisStorage.get(key) ?? null),
-);
-const mockRedisDel = vi.hoisted(() =>
-  vi.fn(async (key: string) => {
-    const had = redisStorage.has(key);
-    redisStorage.delete(key);
-    return had ? 1 : 0;
-  }),
-);
-const mockRedisIncr = vi.hoisted(() =>
-  vi.fn(async (key: string) => {
-    const cur = Number.parseInt(redisStorage.get(key) ?? "0", 10);
-    const next = cur + 1;
-    redisStorage.set(key, String(next));
-    return next;
-  }),
-);
-const mockRedisDecr = vi.hoisted(() =>
-  vi.fn(async (key: string) => {
-    const cur = Number.parseInt(redisStorage.get(key) ?? "0", 10);
-    const next = cur - 1;
-    redisStorage.set(key, String(next));
-    return next;
-  }),
-);
-const mockRedisExpire = vi.hoisted(() => vi.fn(async () => 1));
+const mockRedisGet = vi.hoisted(() => vi.fn());
+const mockRedisDel = vi.hoisted(() => vi.fn());
+const mockRedisIncr = vi.hoisted(() => vi.fn());
+const mockRedisDecr = vi.hoisted(() => vi.fn());
+const mockRedisExpire = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/domain", () => ({
   exportCustomerData: mockExportCustomerData,
@@ -98,14 +118,73 @@ vi.mock("@ibatexas/domain", () => ({
 }));
 
 vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => ({
-    set: mockRedisSet,
-    get: mockRedisGet,
-    del: mockRedisDel,
-    incr: mockRedisIncr,
-    decr: mockRedisDecr,
-    expire: mockRedisExpire,
-  })),
+  getRedisClient: vi.fn(async () => {
+    // Lazy: real testcontainer is ready by the time route handlers reach
+    // here (beforeAll completes before any test body runs).
+    const redis = requireRuntimeRedis();
+    return {
+      async set(
+        key: string,
+        value: string,
+        options?: { EX?: number },
+      ): Promise<string | null> {
+        mockRedisSet(key, value, options);
+        const result =
+          options?.EX !== undefined
+            ? ((await redis.set(key, value, { EX: options.EX })) as
+                | string
+                | null)
+            : ((await redis.set(key, value)) as string | null);
+        // Mirror update so synchronous test assertions stay valid.
+        redisStorage.set(key, value);
+        return result;
+      },
+      async get(key: string): Promise<string | null> {
+        const result = (await redis.get(key)) as string | null;
+        mockRedisGet(key);
+        if (result === null) {
+          redisStorage.delete(key);
+        } else {
+          redisStorage.set(key, result);
+        }
+        return result;
+      },
+      async del(key: string): Promise<number> {
+        mockRedisDel(key);
+        const n = (await redis.del(key)) as number;
+        redisStorage.delete(key);
+        return n;
+      },
+      async incr(key: string): Promise<number> {
+        mockRedisIncr(key);
+        const n = (await redis.incr(key)) as number;
+        redisStorage.set(key, String(n));
+        return n;
+      },
+      async decr(key: string): Promise<number> {
+        mockRedisDecr(key);
+        const n = (await redis.decr(key)) as number;
+        redisStorage.set(key, String(n));
+        return n;
+      },
+      async expire(key: string, seconds: number): Promise<boolean | number> {
+        mockRedisExpire(key, seconds);
+        return (await redis.expire(key, seconds)) as boolean | number;
+      },
+      // `eval` is the export Cluster C's P0-X-OTP atomic-counter Lua needs.
+      // Routed verbatim to the real server. node-redis 4.x signature:
+      //   eval(script, { keys, arguments })
+      async eval(
+        script: string,
+        opts: { keys: string[]; arguments?: string[] },
+      ): Promise<unknown> {
+        return await redis.eval(script, {
+          keys: opts.keys,
+          arguments: opts.arguments ?? [],
+        });
+      },
+    };
+  }),
   rk: (k: string) => `ibatexas:${k}`,
 }));
 
@@ -172,12 +251,38 @@ function setupEnv() {
 const CUSTOMER_ID = "cust_lgpd_01";
 const CUSTOMER_PHONE = "+5511999887766";
 
+// ── Real-Redis test harness ───────────────────────────────────────────────────
+
+beforeAll(async () => {
+  runtimeHarness = await setupRedisTestContainer();
+}, 120_000);
+
+afterAll(async () => {
+  await runtimeHarness?.teardown();
+  runtimeHarness = null;
+});
+
+/**
+ * Seed a key into real Redis AND the synchronous mirror so the existing
+ * `redisStorage.get(...)` assertions stay consistent. Used in test setup
+ * blocks that pre-populate state before calling the route under test.
+ */
+async function seedRedis(key: string, value: string): Promise<void> {
+  await requireRuntimeRedis().set(key, value);
+  redisStorage.set(key, value);
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe("LGPD anonymize — full lifecycle (W6-1)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     redisStorage.clear();
+    // Wipe real Redis between tests so receipts / counters from one test
+    // cannot leak into the next.
+    if (runtimeHarness) {
+      await runtimeHarness.client.flushDb();
+    }
     setupEnv();
     mockGetById.mockResolvedValue({ id: CUSTOMER_ID, phone: CUSTOMER_PHONE });
     mockVerifyOtp.mockResolvedValue({ status: "approved" as string });
@@ -259,11 +364,11 @@ describe("LGPD anonymize — full lifecycle (W6-1)", () => {
     try {
       // Pre-seed an existing deletion at T0 (1h ago).
       const parkedAt = Date.now() - 60 * 60 * 1000;
-      redisStorage.set(
+      await seedRedis(
         `ibatexas:anonymize:pending:${CUSTOMER_ID}`,
         JSON.stringify({ parkedAt, intentHash: "h_t0", otpTokenHint: "verified" }),
       );
-      redisStorage.set(`ibatexas:defer:pending:${CUSTOMER_ID}`, "parked-envelope-blob");
+      await seedRedis(`ibatexas:defer:pending:${CUSTOMER_ID}`, "parked-envelope-blob");
 
       const cancelRes = await app.inject({
         method: "POST",
@@ -297,9 +402,9 @@ describe("LGPD anonymize — full lifecycle (W6-1)", () => {
     const app = await buildTestServer();
     try {
       // Cooldown is set (post-cancel state).
-      redisStorage.set(`ibatexas:anonymize:cancel-cooldown:${CUSTOMER_ID}`, "1");
+      await seedRedis(`ibatexas:anonymize:cancel-cooldown:${CUSTOMER_ID}`, "1");
       // Customer pre-verified (somehow) — cooldown still blocks.
-      redisStorage.set(`ibatexas:anonymize:otp_verified:${CUSTOMER_ID}`, "1");
+      await seedRedis(`ibatexas:anonymize:otp_verified:${CUSTOMER_ID}`, "1");
 
       // (a) /send-otp blocked.
       const sendRes = await app.inject({
@@ -328,7 +433,7 @@ describe("LGPD anonymize — full lifecycle (W6-1)", () => {
     // Set up the pre-deletion state: receipt exists from T0, cooldown gone,
     // and the parked envelope blob is still in Redis (TTL = 24h + 60s grace).
     const parkedAt = Date.now() - 24 * 60 * 60 * 1000 - 1; // 24h + 1ms ago
-    redisStorage.set(
+    await seedRedis(
       `ibatexas:anonymize:pending:${CUSTOMER_ID}`,
       JSON.stringify({ parkedAt, intentHash: "h_t0", otpTokenHint: "verified" }),
     );
@@ -372,37 +477,56 @@ describe("LGPD anonymize — full lifecycle (W6-1)", () => {
     expect(redisStorage.get(`ibatexas:anonymize:pending:${CUSTOMER_ID}`)).toBeUndefined();
   });
 
-  it("[brute-force] 5 failed OTPs → 429 lockout", async () => {
+  it("[brute-force] 5 failed OTPs → 401; 6th → 429 lockout (P0-X-OTP)", async () => {
     const app = await buildTestServer();
     try {
-      // Pre-seed the send-otp marker so verify can proceed.
-      redisStorage.set(`ibatexas:anonymize:otp:${CUSTOMER_ID}`, "1");
+      // Pre-seed the send-otp marker so verify can proceed past hasFreshOtp.
+      await seedRedis(`ibatexas:anonymize:otp:${CUSTOMER_ID}`, "1");
       mockVerifyOtp.mockResolvedValue({ status: "pending" as string });
 
-      let lastRes;
+      // P0-X-OTP semantic: acquireOtpAttempt's Lua INCRs FIRST and refuses
+      // only when count > THRESHOLD. Attempts 1-5 are allowed (count =
+      // 1..5 each ≤ threshold=5), so Twilio is called, returns "pending"
+      // (otpOk=false), and the route returns 401. The 6th attempt INCRs
+      // to 6 → locked_out → 429 + sentinel set. Pre-P0-X-OTP this test
+      // expected "5th → 429" because the old pre-check `failsBefore >=
+      // THRESHOLD` tripped on the 5th GET (when the prior 4 INCRs had
+      // landed). The atomic post-INCR check is the right invariant: we
+      // lock out when count EXCEEDS threshold, not when it hits it.
       for (let i = 0; i < 5; i++) {
-        lastRes = await app.inject({
+        const res = await app.inject({
           method: "POST",
           url: "/api/me/data/verify-otp",
           headers: { "x-customer-id": CUSTOMER_ID, "content-type": "application/json" },
           payload: { token: "000000" },
         });
+        expect(res.statusCode).toBe(401);
       }
-      expect(lastRes!.statusCode).toBe(429);
-      expect(lastRes!.json().message).toContain("Excesso de tentativas");
 
-      // Counter pinned at 5.
-      expect(redisStorage.get(`ibatexas:anonymize:fail:${CUSTOMER_ID}`)).toBe("5");
+      // Counter is now at 5 (post 5 INCRs).
+      expect(await requireRuntimeRedis().get(`ibatexas:anonymize:fail:${CUSTOMER_ID}`)).toBe("5");
 
-      // 6th attempt: 429 fast-fail without hitting Twilio.
+      // 6th attempt → INCR to 6 → 6 > threshold → locked_out → 429.
+      // The Lua script SETs the lockout sentinel before returning.
+      const res6 = await app.inject({
+        method: "POST",
+        url: "/api/me/data/verify-otp",
+        headers: { "x-customer-id": CUSTOMER_ID, "content-type": "application/json" },
+        payload: { token: "000000" },
+      });
+      expect(res6.statusCode).toBe(429);
+      expect(res6.json().message).toContain("Excesso de tentativas");
+
+      // 7th attempt → sentinel EXISTS → fast-fail 429 without hitting
+      // Twilio at all.
       mockVerifyOtp.mockClear();
-      const sixth = await app.inject({
+      const res7 = await app.inject({
         method: "POST",
         url: "/api/me/data/verify-otp",
         headers: { "x-customer-id": CUSTOMER_ID, "content-type": "application/json" },
         payload: { token: "123456" },
       });
-      expect(sixth.statusCode).toBe(429);
+      expect(res7.statusCode).toBe(429);
       expect(mockVerifyOtp).not.toHaveBeenCalled();
     } finally {
       await app.close();
