@@ -40,6 +40,9 @@ import { PIX_CONFIRMATION_SIGNAL } from "@adjudicate/pack-payments-pix"
 import {
   resumeDeferredIntent as resumeDeferredIntentImpl,
   verifyParkedEnvelopeHash,
+  deferResumeHash,
+  DEFAULT_MAX_RESUME_CYCLES,
+  DEFER_PENDING_TTL_GRACE_SECONDS,
   type DeferResumeResult,
   type ParkedEnvelope,
 } from "@adjudicate/runtime"
@@ -225,6 +228,30 @@ export type ResolveResult =
       readonly dispatched: boolean
     }
 
+// P0-8 — Two-phase commit constants.
+//
+// `defer:resuming:{deferResumeHash}` is the intermediate "claim" marker that
+// prevents concurrent NATS deliveries from racing through dispatch and lets
+// a startup/sweeper recovery scan detect resumes that crashed mid-flight.
+// Short TTL — we trust that a healthy resume completes within seconds; an
+// abandoned marker should free its slot promptly so retry can proceed.
+const DEFER_RESUMING_TTL_SECONDS = 60
+
+/**
+ * Key suffix for the intermediate "resume in-flight" marker. Set BEFORE
+ * dispatch fires; cleared on success or failure. Distinct from the runtime's
+ * `defer:resumed:{hash}` long-term dedup ledger, which is set ONLY AFTER
+ * dispatch completes successfully.
+ *
+ * Naming: keyed by `deferResumeHash(intentHash, signal)` so the namespace
+ * matches the `defer:resumed:*` ledger one-to-one. A crash between the two
+ * leaves the `resuming` marker without a corresponding `resumed` entry —
+ * the recovery contract.
+ */
+function deferResumingKey(intentHash: string, signal: string): string {
+  return `defer:resuming:${deferResumeHash(intentHash, signal)}`
+}
+
 export async function resolveDeferredSession(
   args: ResolveDeferredSessionArgs,
 ): Promise<ResolveResult> {
@@ -265,8 +292,8 @@ export async function resolveDeferredSession(
     return { kind: "signal_mismatch" }
   }
 
-  // T-005: verify hash BEFORE calling resumeDeferredIntent so a tampered
-  // blob never increments the cycle counter.
+  // T-005: verify hash BEFORE doing any resume-state mutations so a tampered
+  // blob never increments the cycle counter or claims a resuming slot.
   const verification = verifyParkedEnvelopeHash(parked)
   if (verification.verified === false) {
     log?.warn(
@@ -298,53 +325,82 @@ export async function resolveDeferredSession(
     }
   }
   // verified === null means a legacy v0.1 blob without verification fields.
-  // The runtime's default verifyMode is "warn", so we let resumeDeferredIntent
-  // log + proceed; we do NOT push to DLQ here.
+  // We let the resume path log + proceed (warn mode); not a DLQ event.
 
-  // Hand off to the runtime for the dedup-ledger + cycle-cap step.
-  const result = await resumeDeferredIntentImpl({
-    sessionId,
-    signal,
-    redis,
-    rk,
-    log,
-  })
+  const intentHash = parked.envelope.intentHash
+  const resumingKey = rk(deferResumingKey(intentHash, signal))
+  const resumedKey = rk(`defer:resumed:${deferResumeHash(intentHash, signal)}`)
 
-  if (!result.resumed) {
-    if (result.reason === "duplicate_resume_suppressed") {
-      log?.debug(
-        { sessionId, signal, intentHash: result.intentHash },
-        "[defer-resolver] duplicate webhook delivery — replay suppressed",
-      )
-      return {
-        kind: "duplicate_suppressed",
-        intentHash: result.intentHash ?? parked.envelope.intentHash,
-      }
-    }
-    if (result.reason === "cycle_cap_exceeded") {
+  // P0-8 — Two-phase commit, step 1: check the long-term dedup ledger BEFORE
+  // claiming a resuming slot. A duplicate webhook delivery for an already-
+  // resumed intent should short-circuit early.
+  const alreadyResumed = await redis.get(resumedKey).catch(() => null)
+  if (alreadyResumed !== null) {
+    log?.debug(
+      { sessionId, signal, intentHash },
+      "[defer-resolver] duplicate webhook delivery — resume already committed",
+    )
+    return { kind: "duplicate_suppressed", intentHash }
+  }
+
+  // P0-8 — Two-phase commit, step 2: SETNX the resuming marker. If acquired,
+  // we own the resume for this (intentHash, signal) pair. If not, another
+  // worker is mid-flight; let them complete.
+  const claimedResumingSlot = await redis
+    .set(
+      resumingKey,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        sessionId,
+        intentHash,
+        signal,
+      }),
+      { NX: true, EX: DEFER_RESUMING_TTL_SECONDS },
+    )
+    .catch(() => null)
+  if (claimedResumingSlot !== "OK") {
+    log?.debug(
+      { sessionId, signal, intentHash },
+      "[defer-resolver] concurrent resume in-flight — duplicate suppressed",
+    )
+    return { kind: "duplicate_suppressed", intentHash }
+  }
+
+  // P0-8 — Two-phase commit, step 3: bump the per-intentHash cycle counter
+  // BEFORE dispatch so a runaway DEFER → resume → DEFER chain refuses past
+  // the cap without dispatching the offending cycle. Mirrors the runtime's
+  // resumeDeferredIntent cycle-cap logic.
+  const cycleKey = rk(`defer:cycle:${intentHash}`)
+  const cap = DEFAULT_MAX_RESUME_CYCLES
+  try {
+    const cycles = await redis.incr(cycleKey)
+    await redis
+      .expire(cycleKey, DEFER_PENDING_TTL_GRACE_SECONDS)
+      .catch(() => {})
+    if (cycles > cap) {
       log?.warn(
-        { sessionId, signal, intentHash: result.intentHash },
+        { sessionId, signal, intentHash, cycles, cap },
         "[defer-resolver] cycle cap exceeded — refusing to re-execute",
       )
-      return {
-        kind: "cycle_cap_exceeded",
-        intentHash: result.intentHash ?? parked.envelope.intentHash,
-      }
+      // Clear the resuming marker so the next attempt isn't blocked by it
+      // even though this attempt is refused.
+      await redis.del(resumingKey).catch(() => {})
+      return { kind: "cycle_cap_exceeded", intentHash }
     }
-    return {
-      kind: "resume_failed",
-      reason: result.reason ?? "unknown",
-    }
+  } catch (err) {
+    log?.error(
+      { sessionId, signal, intentHash, err: (err as Error).message },
+      "[defer-resolver] cycle counter INCR failed — releasing resuming slot",
+    )
+    await redis.del(resumingKey).catch(() => {})
+    return { kind: "resume_failed", reason: "cycle_counter_failed" }
   }
 
   // ── Re-execute through adjudicate() ──────────────────────────────────
-  // `parked` (read above) is the same blob the runtime just consumed.
   // We have to re-adjudicate against fresh state because the wire signal
   // is supposed to flip the kernel's verdict from DEFER → EXECUTE.
-  const resumedParked = result.parked ?? parked
-  const envelope = resumedParked.envelope as IntentEnvelope
-  const intentHash = resumedParked.envelope.intentHash
-  const orderState = buildResumeOrderState(resumedParked, event)
+  const envelope = parked.envelope as IntentEnvelope
+  const orderState = buildResumeOrderState(parked, event)
   const startedAt = Date.now()
   let decision: Decision
   try {
@@ -352,7 +408,7 @@ export async function resolveDeferredSession(
   } catch (err) {
     log?.error(
       { sessionId, intentHash, signal, err: (err as Error).message },
-      "[defer-resolver] adjudicate() threw on resume",
+      "[defer-resolver] adjudicate() threw on resume — releasing resuming slot",
     )
     await pushToDlq(
       "intent.defer.resume",
@@ -360,12 +416,12 @@ export async function resolveDeferredSession(
       err,
       log,
     )
+    // Release the resuming claim so retry can re-enter; leave pending intact.
+    await redis.del(resumingKey).catch(() => {})
     return { kind: "resume_failed", reason: "adjudicate_threw" }
   }
 
   // Emit audit record linking the resumption back to the original park.
-  // The audit stream is the only place a resume becomes visible to ops
-  // (the responder hot path is no longer involved at this point).
   try {
     const record = buildAuditRecord({
       envelope,
@@ -388,6 +444,7 @@ export async function resolveDeferredSession(
   }
 
   let dispatched = false
+  let dispatchFailed = false
   if (decision.kind === "EXECUTE" || decision.kind === "REWRITE") {
     if (_dispatcher) {
       try {
@@ -401,6 +458,7 @@ export async function resolveDeferredSession(
           "[defer-resolver] resumed intent dispatched",
         )
       } catch (err) {
+        dispatchFailed = true
         log?.error(
           {
             sessionId,
@@ -408,7 +466,7 @@ export async function resolveDeferredSession(
             signal,
             err: (err as Error).message,
           },
-          "[defer-resolver] dispatcher threw on resumed intent",
+          "[defer-resolver] dispatcher threw on resumed intent — leaving park intact for retry",
         )
         await pushToDlq(
           "intent.defer.resume",
@@ -427,20 +485,68 @@ export async function resolveDeferredSession(
     }
   } else if (decision.kind === "DEFER") {
     // The kernel still wants to wait — fall through. The park TTL will
-    // eventually trip the timeout sweeper. The cycle counter the runtime
-    // bumped above will eventually trip the cap.
+    // eventually trip the timeout sweeper. Cycle counter still incremented
+    // above so the cap protects against pathological re-DEFER.
     log?.info(
       { sessionId, intentHash, signal: decision.signal },
       "[defer-resolver] re-adjudicate returned DEFER — leaving in-flight",
     )
   } else {
     // REFUSE / REQUEST_CONFIRMATION / ESCALATE — kernel rejected on resume.
-    // No dispatch; the audit record carries the supersession info.
     log?.info(
       { sessionId, intentHash, signal, kind: decision.kind },
       "[defer-resolver] resumed envelope re-adjudicated to non-EXECUTE",
     )
   }
+
+  // P0-8 — Two-phase commit, step 4: COMMIT or ROLLBACK.
+  if (dispatchFailed) {
+    // ROLLBACK path — dispatch threw. The parked envelope must remain in
+    // Redis so the next NATS delivery (or sweeper recovery scan) can retry.
+    // The resuming marker is cleared so retry isn't blocked. The cycle
+    // counter increment from above is retained — a dispatch failure still
+    // counts as one cycle for cap accounting (the alternative is a DECR
+    // that's vulnerable to its own race conditions).
+    await redis.del(resumingKey).catch(() => {})
+    return { kind: "resume_failed", reason: "dispatcher_failed" }
+  }
+
+  // COMMIT path — dispatch succeeded (or there was nothing to dispatch).
+  // Mark the resume as durably committed via the long-term dedup ledger,
+  // delete the parked envelope (so next NATS delivery is a no-op), DECR
+  // the per-session quota counter, and clear the intermediate marker.
+  //
+  // Order matters here:
+  //   1. SETNX defer:resumed:{hash} — once this lands, the resume is durable
+  //   2. DEL defer:pending:{sessionId} — park consumed
+  //   3. DECR defer:count:{sessionId} — quota tracks live state
+  //   4. DEL defer:resuming:{hash} — intermediate state cleared
+  //
+  // A crash after step 1 but before step 2 leaves the pending key alive but
+  // the SETNX dedup ledger will catch any retry as "duplicate_suppressed".
+  // The pending key TTL eventually GCs it. This is the failure mode the
+  // pre-P0-8 code had at EVERY resume; now it's only post-dispatch where
+  // execution is already durable.
+  await redis
+    .set(
+      resumedKey,
+      JSON.stringify({
+        at: new Date().toISOString(),
+        intentHash,
+        signal,
+        sessionId,
+      }),
+      { NX: true, EX: DEFER_PENDING_TTL_GRACE_SECONDS },
+    )
+    .catch((err: unknown) => {
+      log?.warn(
+        { sessionId, intentHash, err: (err as Error).message },
+        "[defer-resolver] commit SETNX failed — duplicate webhook may re-trigger",
+      )
+    })
+  await redis.del(rawKey).catch(() => {})
+  await redis.decr(rk(`defer:count:${sessionId}`)).catch(() => {})
+  await redis.del(resumingKey).catch(() => {})
 
   return {
     kind: "re_adjudicated",

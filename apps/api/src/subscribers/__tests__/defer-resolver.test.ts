@@ -458,4 +458,175 @@ describe("defer-resolver subscriber", () => {
 
     setResumeIntentDispatcher(null)
   })
+
+  // ── P0-8: Two-phase commit (resuming marker + commit ordering) ───────────
+
+  it("[P0-8] writes a defer:resuming marker BEFORE dispatch and deletes it AFTER success", async () => {
+    const sessionId = "sess_two_phase"
+    const { envelope, parkedBlob } = buildVerifiableParkedBlob({ sessionId })
+    store.set(`test:defer:pending:${sessionId}`, { value: parkedBlob, ttl: 800 })
+
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
+
+    // Observe the resuming marker presence at dispatch time. The dispatcher
+    // is invoked AFTER the marker is set, so the assertion checks the
+    // intermediate state DURING dispatch — proving the two-phase ordering.
+    const dispatcher = vi.fn(async () => {
+      const resumingKeys = [...store.keys()].filter((k) =>
+        k.startsWith("test:defer:resuming:"),
+      )
+      expect(resumingKeys.length).toBe(1)
+      // Long-term dedup ledger NOT yet written — commit happens after this.
+      const resumedKeys = [...store.keys()].filter((k) =>
+        k.startsWith("test:defer:resumed:"),
+      )
+      expect(resumedKeys.length).toBe(0)
+    })
+    const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
+      await import("../defer-resolver.js")
+    setResumeIntentDispatcher(dispatcher)
+
+    const callback = await getRegisteredCallback(startDeferResolverSubscriber)
+    await callback(paymentConfirmedEvent())
+
+    expect(dispatcher).toHaveBeenCalledOnce()
+    // After commit: resuming marker cleared, resumed ledger written.
+    const resumingKeysPost = [...store.keys()].filter((k) =>
+      k.startsWith("test:defer:resuming:"),
+    )
+    expect(resumingKeysPost.length).toBe(0)
+    const resumedKeysPost = [...store.keys()].filter((k) =>
+      k.startsWith("test:defer:resumed:"),
+    )
+    expect(resumedKeysPost.length).toBe(1)
+    // Parked key was consumed (commit deletes it).
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeUndefined()
+    // Verify intentHash is consistent.
+    expect(envelope.intentHash).toBeTruthy()
+
+    setResumeIntentDispatcher(null)
+  })
+
+  it("[P0-8] dispatch failure leaves the parked key INTACT for retry + clears resuming marker", async () => {
+    const sessionId = "sess_dispatch_fail"
+    const { envelope, parkedBlob } = buildVerifiableParkedBlob({ sessionId })
+    store.set(`test:defer:pending:${sessionId}`, { value: parkedBlob, ttl: 800 })
+
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
+
+    const dispatcher = vi.fn(async () => {
+      throw new Error("upstream service down")
+    })
+    const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
+      await import("../defer-resolver.js")
+    setResumeIntentDispatcher(dispatcher)
+
+    const callback = await getRegisteredCallback(
+      startDeferResolverSubscriber,
+      makeLogger(),
+    )
+    await callback(paymentConfirmedEvent())
+
+    expect(dispatcher).toHaveBeenCalledOnce()
+    // CRITICAL: parked key MUST remain so retry can re-enter the flow.
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeDefined()
+    // Resuming marker cleared so next attempt isn't blocked.
+    const resumingKeys = [...store.keys()].filter((k) =>
+      k.startsWith("test:defer:resuming:"),
+    )
+    expect(resumingKeys.length).toBe(0)
+    // Long-term dedup ledger NOT written — dispatch failed, this resume
+    // never durably committed.
+    const resumedKeys = [...store.keys()].filter((k) =>
+      k.startsWith("test:defer:resumed:"),
+    )
+    expect(resumedKeys.length).toBe(0)
+    // intentHash sanity check.
+    expect(envelope.intentHash).toBeTruthy()
+
+    setResumeIntentDispatcher(null)
+  })
+
+  it("[P0-8] concurrent NATS deliveries: second delivery sees resuming marker and short-circuits", async () => {
+    const sessionId = "sess_concurrent"
+    const { envelope, parkedBlob } = buildVerifiableParkedBlob({ sessionId })
+    store.set(`test:defer:pending:${sessionId}`, { value: parkedBlob, ttl: 800 })
+
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
+
+    // Hold the dispatcher so we can run a second callback in parallel.
+    let resolveDispatch: () => void = () => undefined
+    const dispatchHeld = new Promise<void>((resolve) => {
+      resolveDispatch = resolve
+    })
+    const dispatcher = vi.fn(async () => {
+      await dispatchHeld
+    })
+    const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
+      await import("../defer-resolver.js")
+    setResumeIntentDispatcher(dispatcher)
+
+    const callback = await getRegisteredCallback(startDeferResolverSubscriber)
+
+    // Fire first delivery — dispatcher is now waiting.
+    const first = callback(paymentConfirmedEvent())
+
+    // Wait a tick so first delivery has installed the resuming marker.
+    await new Promise((r) => setTimeout(r, 0))
+    const resumingMid = [...store.keys()].filter((k) =>
+      k.startsWith("test:defer:resuming:"),
+    )
+    expect(resumingMid.length).toBe(1)
+
+    // Fire second delivery DURING the first dispatcher's wait. It should
+    // see the resuming marker and short-circuit as duplicate_suppressed.
+    await callback(paymentConfirmedEvent())
+    // Only ONE dispatcher call so far (the first; second was suppressed).
+    expect(dispatcher).toHaveBeenCalledTimes(1)
+
+    // Release the first dispatcher — it commits the resume.
+    resolveDispatch()
+    await first
+
+    // Final state: parked deleted, resumed ledger written, resuming cleared.
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeUndefined()
+    expect(envelope.intentHash).toBeTruthy()
+
+    setResumeIntentDispatcher(null)
+  })
+
+  it("[P0-8] simulated restart mid-resume: orphan resuming marker, retry succeeds via cleared marker", async () => {
+    // Simulate the post-crash state: pending key is INTACT (because P0-8
+    // leaves it until commit), and a stale resuming marker exists from the
+    // crashed worker. A live worker should NOT find the marker on retry
+    // because the marker's TTL has expired (or a sweeper cleaned it up).
+    const sessionId = "sess_restart"
+    const { envelope, parkedBlob } = buildVerifiableParkedBlob({ sessionId })
+    store.set(`test:defer:pending:${sessionId}`, { value: parkedBlob, ttl: 800 })
+    // Simulate that the crashed worker's resuming marker has expired
+    // (i.e., it's no longer in the store). The retry flow should:
+    //   1. Find the still-parked envelope
+    //   2. Re-claim the resuming slot (no contention)
+    //   3. Re-dispatch and commit
+
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
+
+    const dispatcher = vi.fn(async () => undefined)
+    const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
+      await import("../defer-resolver.js")
+    setResumeIntentDispatcher(dispatcher)
+
+    const callback = await getRegisteredCallback(startDeferResolverSubscriber)
+    await callback(paymentConfirmedEvent())
+
+    expect(dispatcher).toHaveBeenCalledOnce()
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeUndefined()
+    expect(envelope.intentHash).toBeTruthy()
+    const resumedKeys = [...store.keys()].filter((k) =>
+      k.startsWith("test:defer:resumed:"),
+    )
+    expect(resumedKeys.length).toBe(1)
+
+    setResumeIntentDispatcher(null)
+  })
 })
