@@ -92,8 +92,13 @@ async function buildApp(defaultStaff: StaffContext): Promise<FastifyInstance> {
   app.setSerializerCompiler(serializerCompiler)
 
   // Decoration mimics what auth + admin guard would do in production.
-  app.decorateRequest("staffId", null)
-  app.decorateRequest("staffRole", null)
+  // Fastify's GetterSetter for these optional string fields expects
+  // `undefined` (not `null`) as the "absent" sentinel — matches the
+  // `declare module "fastify"` shapes in `middleware/auth.ts` and
+  // `middleware/staff-auth.ts`. The preHandler below overwrites them
+  // with concrete values from the per-test `defaultStaff` / headers.
+  app.decorateRequest("staffId", undefined)
+  app.decorateRequest("staffRole", undefined)
   app.decorateRequest("adminApiKeyRole", undefined)
 
   // P0-5 — step 2 tests can override the staff via x-staff-id / x-staff-role

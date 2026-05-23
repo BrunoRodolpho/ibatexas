@@ -47,6 +47,11 @@ export async function regeneratePix(
   if (!ctx.customerId) {
     throw new NonRetryableError("Autenticação necessária.");
   }
+  // Narrow ctx.customerId to `string` for the rest of the function.
+  // The auth check above guarantees this, but the closure passed to
+  // `withLock` re-widens narrowed optional property accesses on `ctx`,
+  // so we bind a local `const` for use inside.
+  const customerId: string = ctx.customerId;
 
   const querySvc = createPaymentQueryService();
   const cmdSvc = createPaymentCommandService();
@@ -113,7 +118,7 @@ export async function regeneratePix(
         expectedVersion: freshPayment.version,
       },
       nonce: randomUUID(),
-      actor: { principal: "user", sessionId: ctx.customerId },
+      actor: { principal: "user", sessionId: customerId },
       taint: "TRUSTED",
     });
     const cancelOutcome = await cmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
@@ -161,7 +166,7 @@ export async function regeneratePix(
       kind: "payment.create",
       payload: createPayload,
       nonce: randomUUID(),
-      actor: { principal: "system", sessionId: `customer:${ctx.customerId}` },
+      actor: { principal: "system", sessionId: `customer:${customerId}` },
       taint: "SYSTEM",
     });
     const createOutcome = await cmdSvc.createFromEnvelope(createEnvelope);
