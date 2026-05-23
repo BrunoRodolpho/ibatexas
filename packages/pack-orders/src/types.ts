@@ -37,17 +37,58 @@
 
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
 
+/**
+ * W5-2 expansion: adds the lifecycle / projection / granular-amend
+ * kinds the taxonomy enumerates. See audit 07 §"Domain: order" and
+ * `docs/adjudicate-migration/remediation/W3-INTENT-GAPS.md`.
+ *
+ * # Kinds added in W5-2
+ *
+ *   - `order.cart.sync`            — UNTRUSTED. Bulk sync of cart line items.
+ *   - `order.pix.details.set`      — UNTRUSTED. Save PIX billing details onto
+ *                                     the cart. PII payload.
+ *   - `order.address.change`       — UNTRUSTED. Change delivery address on
+ *                                     a placed order.
+ *   - `order.type.switch`          — UNTRUSTED. Switch fulfillment type
+ *                                     (delivery / takeout).
+ *   - `order.review.submit`        — UNTRUSTED. Customer reviews an order.
+ *   - `order.reorder`              — UNTRUSTED. Re-order a previous purchase
+ *                                     (composite — produces multiple
+ *                                     `order.item.add` envelopes inside the
+ *                                     executor).
+ *   - `order.projection.create`    — SYSTEM. Initial projection row for an
+ *                                     order on cart-intelligence subscriber.
+ *   - `order.status.transition`    — SYSTEM/TRUSTED. Direct status flip
+ *                                     (admin advance / job mark stale).
+ *   - `order.status.reconcile`     — SYSTEM. Reconciliation from a
+ *                                     subscriber event (cart-intelligence).
+ *   - `order.amend.add_item`       — UNTRUSTED. Granular amend — add a line.
+ *   - `order.amend.update_qty`     — UNTRUSTED. Granular amend — change qty.
+ *   - `order.amend.remove_item`    — UNTRUSTED. Granular amend — drop a line.
+ */
 export type OrderIntentKind =
   | "order.cart.ensure"
   | "order.item.add"
   | "order.item.update"
   | "order.item.remove"
+  | "order.cart.sync"
   | "order.coupon.apply"
   | "order.checkout.create"
+  | "order.pix.details.set"
   | "order.cancel"
   | "order.cancel.system"
   | "order.amend.request"
+  | "order.amend.add_item"
+  | "order.amend.update_qty"
+  | "order.amend.remove_item"
+  | "order.address.change"
+  | "order.type.switch"
   | "order.note.add"
+  | "order.review.submit"
+  | "order.reorder"
+  | "order.projection.create"
+  | "order.status.transition"
+  | "order.status.reconcile"
 
 // ── Payloads ────────────────────────────────────────────────────────────
 
@@ -126,6 +167,105 @@ export interface OrderNoteAddPayload {
   readonly isInternal?: boolean
 }
 
+// ── W5-2 payloads ───────────────────────────────────────────────────────
+
+export interface OrderCartSyncPayload {
+  readonly cartId: string
+  readonly items: ReadonlyArray<{
+    readonly variantId: string
+    readonly quantity: number
+    /** Explicit allergens per line — CLAUDE.md rule #1. */
+    readonly allergens: ReadonlyArray<string>
+  }>
+}
+
+/**
+ * PIX billing details — PII payload. The Pack does not log raw values;
+ * the audit redactor handles redaction before sink emit.
+ */
+export interface OrderPixDetailsSetPayload {
+  readonly cartId: string
+  readonly name: string
+  readonly email: string
+  readonly cpf: string
+}
+
+export interface OrderAddressChangePayload {
+  readonly orderId: string
+  readonly address: {
+    readonly street: string
+    readonly number?: string
+    readonly complement?: string
+    readonly neighborhood?: string
+    readonly city: string
+    readonly state: string
+    readonly zip: string
+  }
+}
+
+export interface OrderTypeSwitchPayload {
+  readonly orderId: string
+  readonly newType: "delivery" | "takeout"
+}
+
+export interface OrderReviewSubmitPayload {
+  readonly orderId: string
+  readonly productId: string
+  readonly rating: number
+  readonly comment?: string
+}
+
+export interface OrderReorderPayload {
+  readonly previousOrderId: string
+  readonly paymentMethod: "pix" | "card" | "cash"
+}
+
+export interface OrderProjectionCreatePayload {
+  readonly orderId: string
+  readonly customerId: string
+  readonly totalCentavos: number
+  readonly source: "checkout" | "amendment" | "system_seed"
+}
+
+export interface OrderStatusTransitionPayload {
+  readonly orderId: string
+  readonly newStatus: string
+  readonly expectedVersion?: number
+  readonly actor: "admin" | "system" | "customer"
+  readonly actorId?: string
+  readonly reason?: string
+}
+
+export interface OrderStatusReconcilePayload {
+  readonly orderId: string
+  readonly newStatus: string
+  readonly source: "payment_lifecycle" | "cart_intelligence" | "webhook"
+}
+
+/**
+ * Granular amend payloads. The legacy `order.amend.request` payload
+ * groups all changes; the granular variants let pack-orders adjudicate
+ * each change in isolation (per W3 P0-3 recommendation).
+ */
+export interface OrderAmendAddItemPayload {
+  readonly orderId: string
+  readonly variantId: string
+  readonly quantity: number
+  /** Explicit allergens — CLAUDE.md rule #1. */
+  readonly allergens: ReadonlyArray<string>
+}
+
+export interface OrderAmendUpdateQtyPayload {
+  readonly orderId: string
+  readonly itemId: string
+  readonly quantity: number
+}
+
+export interface OrderAmendRemoveItemPayload {
+  readonly orderId: string
+  readonly itemId: string
+}
+
 /**
  * Discriminated payload union — typed by `kind`. Guards narrow via
  * `envelope.kind` and may cast `envelope.payload` to the matching
@@ -137,12 +277,24 @@ export type OrderPayload =
   | OrderItemAddPayload
   | OrderItemUpdatePayload
   | OrderItemRemovePayload
+  | OrderCartSyncPayload
   | OrderCouponApplyPayload
   | OrderCheckoutCreatePayload
+  | OrderPixDetailsSetPayload
   | OrderCancelPayload
   | OrderCancelSystemPayload
   | OrderAmendRequestPayload
+  | OrderAmendAddItemPayload
+  | OrderAmendUpdateQtyPayload
+  | OrderAmendRemoveItemPayload
+  | OrderAddressChangePayload
+  | OrderTypeSwitchPayload
   | OrderNoteAddPayload
+  | OrderReviewSubmitPayload
+  | OrderReorderPayload
+  | OrderProjectionCreatePayload
+  | OrderStatusTransitionPayload
+  | OrderStatusReconcilePayload
 
 // ── Context (per-turn caller identity / channel surface) ────────────────
 
@@ -205,7 +357,11 @@ export interface OrderState {
  * Future `@ibatexas/pack-payments` carries that mapping.
  */
 export const orderTaintPolicy = createSystemTaintPolicy({
-  systemOnlyKinds: ["order.cancel.system"],
+  systemOnlyKinds: [
+    "order.cancel.system",
+    "order.projection.create",
+    "order.status.reconcile",
+  ],
   userMinimum: "UNTRUSTED",
 })
 
