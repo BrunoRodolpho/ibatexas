@@ -128,4 +128,15 @@ const start = async (): Promise<void> => {
   }
 };
 
-start();
+// P0-6: installPack fail-fast wiring. `start()` invokes `bootstrapKernel`
+// which can throw `PackConformanceError` synchronously. Without an explicit
+// `.catch()`, the rejection only reached `unhandledRejection` (Sentry capture
+// + log) but the process never exited — subscribers never started, no traffic
+// served, yet the pod looked "alive" to a bare `node` orchestrator. Wrap with
+// an explicit catch so bootstrap failures exit non-zero. Sentry still captures
+// via the catch flow (Sentry.captureException is invoked before exit).
+start().catch((err) => {
+  if (process.env.SENTRY_DSN) Sentry.captureException(err);
+  logger.fatal({ err }, "[fatal] startup error");
+  process.exit(1);
+});
