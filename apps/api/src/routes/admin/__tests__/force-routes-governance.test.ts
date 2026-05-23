@@ -36,6 +36,8 @@ const mockTransitionStatus = vi.hoisted(() => vi.fn());
 const mockTransitionStatusFromEnvelopeOrder = vi.hoisted(() => vi.fn());
 const mockTransitionStatusFromEnvelopePayment = vi.hoisted(() => vi.fn());
 const mockTransitionStatusLegacyPayment = vi.hoisted(() => vi.fn());
+const mockIssueRefundFromEnvelope = vi.hoisted(() => vi.fn());
+const mockBumpRegenerationCountFromEnvelope = vi.hoisted(() => vi.fn());
 const mockPaymentUpdate = vi.hoisted(() => vi.fn());
 const mockOrderEventLogAppend = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
@@ -85,6 +87,8 @@ vi.mock("@ibatexas/domain", () => ({
   createPaymentCommandService: () => ({
     transitionStatus: mockTransitionStatusLegacyPayment,
     transitionStatusFromEnvelope: mockTransitionStatusFromEnvelopePayment,
+    issueRefundFromEnvelope: mockIssueRefundFromEnvelope,
+    bumpRegenerationCountFromEnvelope: mockBumpRegenerationCountFromEnvelope,
   }),
   createPaymentQueryService: () => ({
     getActiveByOrderId: mockGetActiveByOrderId,
@@ -640,7 +644,47 @@ describe("POST /api/admin/orders/:id/waive — two-step receipt protocol", () =>
 
 // ── Tests: refund ─────────────────────────────────────────────────────────
 
-describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", () => {
+function refundExecuteDecision(overrides?: Partial<{
+  version: number;
+  refundAmountCentavos: number;
+  totalRefundedCentavos: number;
+  previousStatus: string;
+  newStatus: string;
+}>) {
+  return {
+    decision: { kind: "EXECUTE" as const, basis: [] },
+    result: {
+      version: overrides?.version ?? 2,
+      previousStatus: overrides?.previousStatus ?? "paid",
+      newStatus: overrides?.newStatus ?? "refunded",
+      refundAmountCentavos: overrides?.refundAmountCentavos ?? 19_999,
+      totalRefundedCentavos: overrides?.totalRefundedCentavos ?? 19_999,
+    },
+  };
+}
+
+function refundRequestConfirmationDecision(prompt: string) {
+  return {
+    decision: {
+      kind: "REQUEST_CONFIRMATION" as const,
+      prompt,
+      basis: [],
+    },
+  };
+}
+
+function refundEscalateDecision(reason: string) {
+  return {
+    decision: {
+      kind: "ESCALATE" as const,
+      to: "human" as const,
+      reason,
+      basis: [],
+    },
+  };
+}
+
+describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     confirmationStorage.clear();
@@ -649,8 +693,8 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       makePayment({ status: "paid", amountInCentavos: 50_000 }),
     );
     mockOrderEventLogAppend.mockResolvedValue(undefined);
-    mockTransitionStatusFromEnvelopePayment.mockResolvedValue(
-      executeDecision({ newStatus: "refunded" }),
+    mockIssueRefundFromEnvelope.mockResolvedValue(
+      refundExecuteDecision({ newStatus: "refunded" }),
     );
     mockPaymentUpdate.mockResolvedValue(undefined);
     mockPublishNatsEvent.mockResolvedValue(undefined);
@@ -669,12 +713,21 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       expect(body.success).toBe(true);
       expect(body.refundedAmount).toBe(19_999);
 
-      expect(mockTransitionStatusFromEnvelopePayment).toHaveBeenCalledTimes(1);
-      const env = mockTransitionStatusFromEnvelopePayment.mock.calls[0][0] as {
+      // W3 P0-1: refund flows through issueRefundFromEnvelope with the
+      // magnitude in the payload — kernel sees the amount, not just
+      // the status transition.
+      expect(mockIssueRefundFromEnvelope).toHaveBeenCalledTimes(1);
+      const env = mockIssueRefundFromEnvelope.mock.calls[0][0] as {
         kind: string;
+        payload: { refundAmountCentavos: number };
       };
-      expect(env.kind).toBe("payment.status.transition");
-      expect(mockPaymentUpdate).toHaveBeenCalledTimes(1);
+      expect(env.kind).toBe("payment.refund.issue");
+      expect(env.payload.refundAmountCentavos).toBe(19_999);
+      // The legacy status-transition path MUST NOT have been called.
+      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
+      // The direct prisma.payment.update for refundedAmountCentavos
+      // is GONE — it now lives inside issueRefundFromEnvelope's executor.
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
@@ -695,14 +748,21 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       };
       expect(body.refundAmountCentavos).toBe(25_000);
 
-      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
+      expect(mockIssueRefundFromEnvelope).not.toHaveBeenCalled();
       expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
   });
 
-  it("step 2 dispatches transitionStatusFromEnvelope and updates payment", async () => {
+  it("step 2 dispatches issueRefundFromEnvelope (kernel-adjudicated magnitude)", async () => {
+    mockIssueRefundFromEnvelope.mockResolvedValue(
+      refundExecuteDecision({
+        newStatus: "refunded",
+        refundAmountCentavos: 25_000,
+        totalRefundedCentavos: 25_000,
+      }),
+    );
     const server = await buildPaymentsServer(MANAGER);
     try {
       const step1 = await server.inject({
@@ -721,14 +781,28 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       });
       expect(step2.statusCode).toBe(200);
 
-      expect(mockTransitionStatusFromEnvelopePayment).toHaveBeenCalledTimes(1);
-      expect(mockPaymentUpdate).toHaveBeenCalledTimes(1);
+      expect(mockIssueRefundFromEnvelope).toHaveBeenCalledTimes(1);
+      const env = mockIssueRefundFromEnvelope.mock.calls[0][0] as {
+        kind: string;
+        payload: {
+          refundAmountCentavos: number;
+          refundableBalanceCentavos: number;
+        };
+      };
+      expect(env.kind).toBe("payment.refund.issue");
+      expect(env.payload.refundAmountCentavos).toBe(25_000);
+      expect(env.payload.refundableBalanceCentavos).toBe(50_000);
+      // P0-1: no more out-of-band prisma.payment.update.
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
   });
 
   it("step 2 replay returns 410 on second attempt", async () => {
+    mockIssueRefundFromEnvelope.mockResolvedValue(
+      refundExecuteDecision({ refundAmountCentavos: 25_000 }),
+    );
     const server = await buildPaymentsServer(MANAGER);
     try {
       const step1 = await server.inject({
@@ -754,8 +828,7 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       });
       expect(second.statusCode).toBe(410);
 
-      expect(mockTransitionStatusFromEnvelopePayment).toHaveBeenCalledTimes(1);
-      expect(mockPaymentUpdate).toHaveBeenCalledTimes(1);
+      expect(mockIssueRefundFromEnvelope).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();
     }
@@ -780,7 +853,7 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       expect(step2.statusCode).toBe(403);
       expect(step2.json().error).toMatch(/Outro operador/i);
       // Money path MUST NOT have been called.
-      expect(mockTransitionStatusFromEnvelopePayment).not.toHaveBeenCalled();
+      expect(mockIssueRefundFromEnvelope).not.toHaveBeenCalled();
       expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();
@@ -788,7 +861,7 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
   });
 
   it("refund REFUSE from kernel returns 403", async () => {
-    mockTransitionStatusFromEnvelopePayment.mockResolvedValueOnce(
+    mockIssueRefundFromEnvelope.mockResolvedValueOnce(
       refuseDecision("Pagamento já está em estado terminal."),
     );
 
@@ -802,6 +875,55 @@ describe("POST /api/admin/orders/:id/payment/refund — threshold-driven flow", 
       expect(res.statusCode).toBe(403);
       const body = res.json() as { error: string };
       expect(body.error).toMatch(/Pagamento já está em estado terminal/);
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  // W3 P0-1 — kernel magnitude ladder
+  it("W3 P0-1: kernel REQUEST_CONFIRMATION surfaces as 202 (refund > R$500)", async () => {
+    mockIssueRefundFromEnvelope.mockResolvedValueOnce(
+      refundRequestConfirmationDecision(
+        "Confirmar reembolso de R$ 6,00? Esta ação envia dinheiro de volta ao cliente.",
+      ),
+    );
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 600, reason: "x" },
+      });
+      // Below the route's R$200 threshold → direct-execute branch.
+      // The kernel sees the magnitude and returns REQUEST_CONFIRMATION
+      // for amounts > R$500. The route surfaces 202 with the kernel's
+      // pt-BR prompt.
+      expect(res.statusCode).toBe(202);
+      const body = res.json() as { code: string; prompt: string };
+      expect(body.code).toBe("REQUEST_CONFIRMATION");
+      expect(body.prompt).toMatch(/Confirmar reembolso/);
+      expect(mockPaymentUpdate).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("W3 P0-1: kernel ESCALATE surfaces as 503 (refund > R$1000)", async () => {
+    mockIssueRefundFromEnvelope.mockResolvedValueOnce(
+      refundEscalateDecision("refund_above_escalate_threshold"),
+    );
+    const server = await buildPaymentsServer(MANAGER);
+    try {
+      const res = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/payment/refund",
+        payload: { amountInCentavos: 1_500, reason: "x" },
+      });
+      expect(res.statusCode).toBe(503);
+      const body = res.json() as { reason: string; error: string };
+      expect(body.reason).toBe("refund_above_escalate_threshold");
+      expect(body.error).toMatch(/aprovação humana/);
       expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await server.close();

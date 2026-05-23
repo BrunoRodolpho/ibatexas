@@ -45,6 +45,7 @@ import {
   createPaymentCommandService,
   createPaymentQueryService,
   prisma,
+  type PaymentRefundIssuePayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/llm-provider";
@@ -195,6 +196,27 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
 
   // ── Refund execution helper — shared between direct-execute (low refund)
   //    and step-2 confirm path.
+  //
+  // ── W3 P0-1 (audit remediation) ──────────────────────────────────────
+  //
+  // The previous version of this helper adjudicated only the status
+  // transition (`payment.status.transition`) and updated
+  // `refundedAmountCentavos` via a direct `prisma.payment.update` AFTER
+  // the kernel returned EXECUTE. The refund MAGNITUDE was never in the
+  // envelope payload — the kernel signed off on the shape but not on
+  // the amount. An attacker (or buggy code) could transition the
+  // payment with a small status-decision basis and then write any
+  // amount to the DB.
+  //
+  // The fix: route through `paymentCmdSvc.issueRefundFromEnvelope`,
+  // which carries `refundAmountCentavos` + `refundableBalanceCentavos`
+  // + `currentRefundedCentavos` in the envelope payload. The
+  // `paymentProjectionPolicyBundle` magnitude guard refuses
+  // out-of-balance / non-positive refunds, REQUEST_CONFIRMATION above
+  // R$500, ESCALATE above R$1000. The executor performs the
+  // `refundedAmountCentavos` update + status transition + history row
+  // in a single Prisma `$transaction`. No more direct
+  // `prisma.payment.update` outside the kernel-adjudicated path.
   async function executeRefund(args: {
     readonly orderId: string;
     readonly paymentId: string;
@@ -212,31 +234,31 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     readonly sessionId: string;
     readonly confirmationId?: string;
   }) {
-    const refundableAmount = args.amountInCentavos - args.refundedAmountCentavos;
-    const isFullRefund = args.refundAmount >= refundableAmount;
-    const targetStatus = isFullRefund
-      ? PaymentStatus.REFUNDED
-      : PaymentStatus.PARTIALLY_REFUNDED;
+    const refundableBalance =
+      args.amountInCentavos - args.refundedAmountCentavos;
 
-    const payload: PaymentStatusTransitionPayload = {
+    const payload: PaymentRefundIssuePayload = {
       paymentId: args.paymentId,
-      newStatus: targetStatus,
-      actor: "admin",
+      refundAmountCentavos: args.refundAmount,
+      refundableBalanceCentavos: refundableBalance,
+      amountInCentavos: args.amountInCentavos,
+      currentRefundedCentavos: args.refundedAmountCentavos,
+      actor: args.actorPrincipal === "system" ? "system" : "admin",
       ...(args.staffId ? { actorId: args.staffId } : {}),
       reason: args.reason,
     };
     const envelope = buildEnvelope<
-      "payment.status.transition",
-      PaymentStatusTransitionPayload
+      "payment.refund.issue",
+      PaymentRefundIssuePayload
     >({
-      kind: "payment.status.transition",
+      kind: "payment.refund.issue",
       payload,
       nonce: args.nonce,
       actor: { principal: args.actorPrincipal, sessionId: args.sessionId },
       taint: args.taint,
     });
 
-    const outcome = await paymentCmdSvc.transitionStatusFromEnvelope(envelope);
+    const outcome = await paymentCmdSvc.issueRefundFromEnvelope(envelope);
     if (
       outcome.decision.kind !== "EXECUTE" &&
       outcome.decision.kind !== "REWRITE"
@@ -249,21 +271,12 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     }
     const result = outcome.result!;
 
-    // Update refunded amount — kept inside the EXECUTE branch.
-    await prisma.payment.update({
-      where: { id: args.paymentId },
-      data: {
-        refundedAmountCentavos:
-          args.refundedAmountCentavos + args.refundAmount,
-      },
-    });
-
     await publishNatsEvent("payment.status_changed", {
       eventType: "payment.status_changed",
       orderId: args.orderId,
       paymentId: args.paymentId,
       previousStatus: args.previousStatus,
-      newStatus: targetStatus,
+      newStatus: result.newStatus,
       method: args.method,
       version: result.version,
       timestamp: new Date().toISOString(),
@@ -277,9 +290,9 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         confirmationId: args.confirmationId ?? null,
         staffId: args.staffId,
         paymentId: args.paymentId,
-        refundAmountCentavos: args.refundAmount,
-        totalRefunded: args.refundedAmountCentavos + args.refundAmount,
-        newStatus: targetStatus,
+        refundAmountCentavos: result.refundAmountCentavos,
+        totalRefunded: result.totalRefundedCentavos,
+        newStatus: result.newStatus,
         intentHash: envelope.intentHash,
         decision: outcome.decision.kind,
         version: result.version,
@@ -290,9 +303,9 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
     return {
       kind: "executed" as const,
       version: result.version,
-      refundAmount: args.refundAmount,
-      totalRefunded: args.refundedAmountCentavos + args.refundAmount,
-      newStatus: targetStatus,
+      refundAmount: result.refundAmountCentavos,
+      totalRefunded: result.totalRefundedCentavos,
+      newStatus: result.newStatus,
       intentHash: envelope.intentHash,
     };
   }
@@ -370,6 +383,20 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           sessionId,
         });
         if (result.kind === "refused") {
+          // W3 P0-1 — surface the kernel's magnitude-decision distinctly.
+          if (result.decision.kind === "ESCALATE") {
+            return reply.code(503).send({
+              error: "Reembolso acima do limite — requer aprovação humana.",
+              reason: result.decision.reason,
+            });
+          }
+          if (result.decision.kind === "REQUEST_CONFIRMATION") {
+            return reply.code(202).send({
+              error: "Reembolso requer confirmação de segundo operador.",
+              prompt: result.decision.prompt,
+              code: "REQUEST_CONFIRMATION",
+            });
+          }
           const refusalText =
             result.decision.kind === "REFUSE"
               ? result.decision.refusal.userFacing
@@ -552,10 +579,14 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         confirmationId,
       });
       if (result.kind === "refused") {
-        const refusalText =
-          result.decision.kind === "REFUSE"
-            ? result.decision.refusal.userFacing
-            : "Operação não permitida pela política do kernel.";
+        // W3 P0-1 — kernel magnitude ladder may bubble up here.
+        // ESCALATE (>R$1000) is terminal; REQUEST_CONFIRMATION on the
+        // step-2 path means the kernel still considers magnitude-confirm
+        // unresolved (the route's operator-receipt is a separate gate
+        // and doesn't satisfy the kernel's adjudicateAndAuditDeps
+        // receipt slot — Wave 5 will bridge these). Surface both as
+        // distinct status codes so the admin UI doesn't silently
+        // execute on a wrong-shape decision.
         await eventLogSvc.append({
           orderId: id,
           eventType: "admin.refund.refused",
@@ -568,6 +599,25 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           },
           timestamp: new Date(),
         });
+        if (result.decision.kind === "ESCALATE") {
+          return reply.code(503).send({
+            error: "Reembolso acima do limite — requer aprovação humana.",
+            reason: result.decision.reason,
+            confirmationId,
+          });
+        }
+        if (result.decision.kind === "REQUEST_CONFIRMATION") {
+          return reply.code(202).send({
+            error: "Reembolso requer confirmação adicional do kernel.",
+            prompt: result.decision.prompt,
+            code: "REQUEST_CONFIRMATION",
+            confirmationId,
+          });
+        }
+        const refusalText =
+          result.decision.kind === "REFUSE"
+            ? result.decision.refusal.userFacing
+            : "Operação não permitida pela política do kernel.";
         return reply.code(403).send({ error: refusalText });
       }
 

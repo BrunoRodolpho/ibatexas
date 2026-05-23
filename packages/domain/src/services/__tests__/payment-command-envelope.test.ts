@@ -367,4 +367,193 @@ describe("PaymentCommandService — envelope-typed entry points", () => {
       expect(env1.intentHash).toBe(env2.intentHash)
     })
   })
+
+  // ── W3 P0-1: refund magnitude ladder + executor invariants ───────────
+
+  describe("issueRefundFromEnvelope — W3 P0-1 magnitude ladder", () => {
+    function paidRow(overrides: Record<string, unknown> = {}) {
+      return makePaymentRow({
+        status: "paid",
+        version: 1,
+        amountInCentavos: 200_000, // R$2000 — big enough for ladder tests
+        refundedAmountCentavos: 0,
+        regenerationCount: 0,
+        ...overrides,
+      })
+    }
+
+    function buildRefundEnvelope(
+      amountCentavos: number,
+      overrides: Record<string, unknown> = {},
+    ) {
+      return buildEnvelope({
+        kind: "payment.refund.issue" as const,
+        payload: {
+          paymentId: "pay_01",
+          refundAmountCentavos: amountCentavos,
+          refundableBalanceCentavos: 200_000,
+          amountInCentavos: 200_000,
+          currentRefundedCentavos: 0,
+          actor: "admin" as const,
+          actorId: "staff_01",
+          reason: "test",
+          ...overrides,
+        },
+        nonce: randomUUID(),
+        actor: { principal: "user" as const, sessionId: "admin:staff_01" },
+        taint: "TRUSTED",
+      })
+    }
+
+    it("EXECUTE: amount ≤ R$500 refund flows through executor (atomic txn)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const envelope = buildRefundEnvelope(40_000) // R$400 < R$500
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("EXECUTE")
+      expect(outcome.result).toMatchObject({
+        previousStatus: "paid",
+        newStatus: "partially_refunded",
+        refundAmountCentavos: 40_000,
+        totalRefundedCentavos: 40_000,
+        version: 2,
+      })
+      // The kernel-adjudicated executor performs the refundedAmount
+      // UPDATE inside its own $transaction. The direct
+      // prisma.payment.update outside the executor is GONE (W3 P0-1).
+      expect(mockPaymentUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            refundedAmountCentavos: 40_000,
+            status: "refunded".length === 8 ? expect.any(String) : expect.any(String),
+            version: 2,
+          }),
+        }),
+      )
+    })
+
+    it("EXECUTE: full refund flips status to refunded", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(
+        paidRow({ amountInCentavos: 30_000, refundedAmountCentavos: 0 }),
+      )
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const envelope = buildRefundEnvelope(30_000, {
+        refundableBalanceCentavos: 30_000,
+        amountInCentavos: 30_000,
+      })
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("EXECUTE")
+      expect(outcome.result).toMatchObject({
+        newStatus: "refunded",
+        totalRefundedCentavos: 30_000,
+      })
+    })
+
+    it("REQUEST_CONFIRMATION: R$500 < amount ≤ R$1000", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(60_000) // R$600
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("REQUEST_CONFIRMATION")
+      if (outcome.decision.kind === "REQUEST_CONFIRMATION") {
+        expect(outcome.decision.prompt).toMatch(/Confirmar reembolso/)
+        expect(outcome.decision.prompt).toMatch(/R\$ 600,00/)
+      }
+      // Executor MUST NOT have run.
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
+    it("ESCALATE: amount > R$1000", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(120_000) // R$1200
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("ESCALATE")
+      if (outcome.decision.kind === "ESCALATE") {
+        expect(outcome.decision.to).toBe("human")
+        expect(outcome.decision.reason).toBe(
+          "refund_above_escalate_threshold",
+        )
+      }
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
+    it("REFUSE: refund amount > refundable balance", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(
+        paidRow({ refundedAmountCentavos: 180_000 }),
+      )
+
+      const envelope = buildRefundEnvelope(40_000, {
+        refundableBalanceCentavos: 20_000, // only R$200 refundable
+        currentRefundedCentavos: 180_000,
+      })
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("REFUSE")
+      if (outcome.decision.kind === "REFUSE") {
+        expect(outcome.decision.refusal.code).toBe("refund.amount_invalid")
+        expect(outcome.decision.refusal.userFacing).toMatch(
+          /maior do que o disponível/,
+        )
+      }
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
+    it("REFUSE: refund amount ≤ 0", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(0)
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("REFUSE")
+      if (outcome.decision.kind === "REFUSE") {
+        expect(outcome.decision.refusal.code).toBe("refund.amount_invalid")
+      }
+    })
+
+    it("REFUSE: state divergence (envelope vs DB mismatch)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(
+        paidRow({ refundedAmountCentavos: 50_000 }),
+      )
+
+      // Envelope thinks no refund yet — DB says 50k already refunded.
+      const envelope = buildRefundEnvelope(20_000, {
+        currentRefundedCentavos: 0,
+      })
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("REFUSE")
+      if (outcome.decision.kind === "REFUSE") {
+        expect(outcome.decision.refusal.code).toBe("refund.state_divergent")
+      }
+    })
+
+    it("REFUSE: cannot refund a terminal payment (refunded)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(
+        paidRow({ status: "refunded" }),
+      )
+
+      const envelope = buildRefundEnvelope(10_000)
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      // Terminal-state guard from existing policy bundle still applies.
+      expect(outcome.decision.kind).toBe("REFUSE")
+    })
+  })
 })

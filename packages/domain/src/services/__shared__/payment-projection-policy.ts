@@ -33,7 +33,9 @@ import {
   basis,
   BASIS_CODES,
   decisionExecute,
+  decisionEscalate,
   decisionRefuse,
+  decisionRequestConfirmation,
   refuse,
 } from "@adjudicate/core"
 import {
@@ -49,6 +51,14 @@ export type PaymentProjectionIntentKind =
   | "payment.status.transition"
   | "payment.status.reconcile"
   | "payment.method.switch"
+  // W3 P0-1: refund magnitude carried in the envelope payload so the
+  // kernel adjudicates the AMOUNT, not just the status transition.
+  // Wave 5 will promote this to `@ibatexas/pack-payments`.
+  | "payment.refund.issue"
+  // W3 P0-2: PIX QR regeneration count increment — carried as a
+  // separate envelope so the bump is kernel-visible. Wave 5 will fold
+  // this into a composite `payment.pix.regenerate` kind.
+  | "payment.regeneration.count.increment"
 
 export interface PaymentCreatePayload {
   readonly orderId: string
@@ -85,11 +95,56 @@ export interface PaymentMethodSwitchPayload {
   readonly customerId: string
 }
 
+/**
+ * W3 P0-1: refund magnitude is part of the envelope so the kernel
+ * adjudicates the AMOUNT (not just status). Decision ladder (per
+ * governance §"04-decision-policy.md", aligned with
+ * `ESCALATE_REFUND_THRESHOLD_CENTAVOS = 100_000` in pack-payments-pix):
+ *
+ *   - amount ≤ R$500 (50_000 centavos)              → EXECUTE
+ *   - R$500 < amount ≤ R$1000 (100_000 centavos)    → REQUEST_CONFIRMATION
+ *   - amount > R$1000                               → ESCALATE
+ *
+ * The route layer's two-step receipt protocol gates above the R$200
+ * `REFUND_CONFIRMATION_THRESHOLD_CENTAVOS` operator-experience
+ * threshold separately; the kernel policy is the structural gate, the
+ * route gate is the operator-UX gate. They overlap intentionally.
+ */
+export interface PaymentRefundIssuePayload {
+  readonly paymentId: string
+  /** Centavos integer per CLAUDE.md rule #2. */
+  readonly refundAmountCentavos: number
+  /** Refundable balance snapshot at envelope-build time (centavos). */
+  readonly refundableBalanceCentavos: number
+  /** Total amount of the original payment (centavos). */
+  readonly amountInCentavos: number
+  /** Existing refunded-amount sum (centavos). */
+  readonly currentRefundedCentavos: number
+  readonly actor: "admin" | "system"
+  readonly actorId?: string
+  readonly reason?: string
+}
+
+/**
+ * W3 P0-2: PIX regeneration counter bump — system-actor envelope
+ * issued by the regenerate-pix route after a successful create. Kernel
+ * caps total regenerations per payment via the policy guard (default 5
+ * per payment, configurable env override). Wave 5 will merge this with
+ * `payment.pix.regenerate` as a composite kind.
+ */
+export interface PaymentRegenerationCountIncrementPayload {
+  readonly paymentId: string
+  /** Current value before increment — for optimistic concurrency. */
+  readonly currentCount: number
+}
+
 export type PaymentProjectionPayload =
   | PaymentCreatePayload
   | PaymentStatusTransitionPayload
   | PaymentStatusReconcilePayload
   | PaymentMethodSwitchPayload
+  | PaymentRefundIssuePayload
+  | PaymentRegenerationCountIncrementPayload
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -104,7 +159,55 @@ export interface PaymentProjectionState {
     readonly orderId?: string
     /** True when status is one of the terminal payment statuses. */
     readonly isTerminal?: boolean
+    /** Centavos — current `refundedAmountCentavos` for the payment. */
+    readonly refundedAmountCentavos?: number
+    /** Centavos — original `amountInCentavos` for the payment. */
+    readonly amountInCentavos?: number
+    /** PIX regeneration counter snapshot (W3 P0-2). */
+    readonly regenerationCount?: number
   }
+}
+
+// ── Refund magnitude thresholds (centavos — CLAUDE.md rule #2) ────────────
+
+/**
+ * W3 P0-1 — refund magnitude decision ladder. Matches governance
+ * §"04-decision-policy.md" and pack-payments-pix's
+ * `ESCALATE_REFUND_THRESHOLD_CENTAVOS = 100_000`.
+ *
+ * EXECUTE at or below CONFIRM threshold; REQUEST_CONFIRMATION between
+ * CONFIRM and ESCALATE; ESCALATE above the escalate ceiling.
+ *
+ * Env overrides (set in `.env` or process env):
+ *   REFUND_CONFIRM_THRESHOLD_CENTAVOS  — default 50_000 (R$500)
+ *   REFUND_ESCALATE_THRESHOLD_CENTAVOS — default 100_000 (R$1000)
+ */
+function readEnvCentavos(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const n = Number.parseInt(raw, 10)
+  if (Number.isNaN(n) || n < 0) return fallback
+  return n
+}
+
+export function getRefundConfirmThresholdCentavos(): number {
+  return readEnvCentavos("REFUND_CONFIRM_THRESHOLD_CENTAVOS", 50_000)
+}
+
+export function getRefundEscalateThresholdCentavos(): number {
+  return readEnvCentavos("REFUND_ESCALATE_THRESHOLD_CENTAVOS", 100_000)
+}
+
+/**
+ * W3 P0-2 — per-payment regeneration cap. Default 5 attempts; env
+ * override `MAX_PIX_REGENERATIONS_PER_PAYMENT`.
+ */
+export function getMaxPixRegenerationsPerPayment(): number {
+  const raw = process.env["MAX_PIX_REGENERATIONS_PER_PAYMENT"]
+  if (!raw) return 5
+  const n = Number.parseInt(raw, 10)
+  if (Number.isNaN(n) || n < 1) return 5
+  return n
 }
 
 // ── Taint policy ───────────────────────────────────────────────────────────
@@ -114,11 +217,20 @@ export interface PaymentProjectionState {
  * reconcile or a status flip. Method-switch is the only customer-driven
  * intent, and even there the customer's authority is mediated through
  * the cart/amend tool layer.
+ *
+ * `payment.refund.issue` is staff-driven (admin route). Taint TRUSTED
+ * is required; the route layer attaches `actor.principal = "user"` and
+ * `taint = "TRUSTED"` after `requireManagerRole` succeeds (or SYSTEM
+ * for the API-key path).
+ *
+ * `payment.regeneration.count.increment` is SYSTEM-only — the bump is
+ * issued by the route after a successful regenerate-pix flow.
  */
 export const paymentProjectionTaintPolicy = createSystemTaintPolicy({
   systemOnlyKinds: [
     "payment.create",
     "payment.status.reconcile",
+    "payment.regeneration.count.increment",
   ],
   userMinimum: "UNTRUSTED",
 })
@@ -158,9 +270,18 @@ const requirePaymentExists: PaymentGuard = (envelope, state) => {
  * be resurrected. The webhook reconcile path already enforces this
  * imperatively, but the kernel adjudication adds a uniform audit-visible
  * basis for the refusal.
+ *
+ * W3 P0-1: also refuse `payment.refund.issue` on a terminal payment —
+ * a `refunded` payment cannot be refunded again, and the executor's
+ * defensive throw becomes a kernel REFUSE instead.
  */
 const refuseTerminalTransition: PaymentGuard = (envelope, state) => {
-  if (envelope.kind !== "payment.status.transition") return null
+  if (
+    envelope.kind !== "payment.status.transition" &&
+    envelope.kind !== "payment.refund.issue"
+  ) {
+    return null
+  }
   if (!state.ctx.isTerminal) return null
   return decisionRefuse(
     refuse(
@@ -193,6 +314,190 @@ const executeAll: PaymentGuard = (envelope) => {
   }
 }
 
+/**
+ * W3 P0-1 — refund magnitude guard.
+ *
+ * Validates the refund amount and its relation to the refundable balance,
+ * then emits the decision ladder per governance §"04-decision-policy.md":
+ *
+ *   - amount ≤ 0                                    → REFUSE (invalid)
+ *   - amount > refundable balance                   → REFUSE (over-refund)
+ *   - amount > ESCALATE_REFUND_THRESHOLD_CENTAVOS   → ESCALATE
+ *   - amount > CONFIRM_REFUND_THRESHOLD_CENTAVOS    → REQUEST_CONFIRMATION
+ *   - else                                          → EXECUTE
+ *
+ * The route layer's two-step receipt is a separate UX gate stacked on
+ * top of this structural ladder.
+ */
+const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
+  if (envelope.kind !== "payment.refund.issue") return null
+  const payload = envelope.payload as PaymentRefundIssuePayload
+
+  if (
+    typeof payload.refundAmountCentavos !== "number" ||
+    payload.refundAmountCentavos <= 0
+  ) {
+    return decisionRefuse(
+      refuse(
+        "BUSINESS_RULE",
+        "refund.amount_invalid",
+        "Valor de reembolso inválido.",
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          reason: "refund_amount_non_positive",
+          amount: payload.refundAmountCentavos,
+        }),
+      ],
+    )
+  }
+
+  // Cross-check the snapshot in the payload against the state — the
+  // route layer's payload should mirror what we observe in the projection.
+  // If they diverge (concurrent partial refund), refuse so the operator
+  // re-opens the route with a fresh snapshot.
+  const stateRefunded = state.ctx.refundedAmountCentavos ?? 0
+  if (
+    typeof payload.currentRefundedCentavos === "number" &&
+    payload.currentRefundedCentavos !== stateRefunded
+  ) {
+    return decisionRefuse(
+      refuse(
+        "BUSINESS_RULE",
+        "refund.state_divergent",
+        "Estado de reembolso divergente. Reabra a operação.",
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          reason: "refund_state_divergent",
+          envelope: payload.currentRefundedCentavos,
+          state: stateRefunded,
+        }),
+      ],
+    )
+  }
+
+  const refundable = payload.refundableBalanceCentavos
+  if (
+    typeof refundable === "number" &&
+    payload.refundAmountCentavos > refundable
+  ) {
+    return decisionRefuse(
+      refuse(
+        "BUSINESS_RULE",
+        "refund.amount_invalid",
+        "Esse valor de reembolso é maior do que o disponível.",
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          reason: "refund_over_balance",
+          amount: payload.refundAmountCentavos,
+          refundable,
+        }),
+      ],
+    )
+  }
+
+  const escalateThreshold = getRefundEscalateThresholdCentavos()
+  if (payload.refundAmountCentavos > escalateThreshold) {
+    return decisionEscalate(
+      "human",
+      "refund_above_escalate_threshold",
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          reason: "refund_above_escalate_threshold",
+          amount: payload.refundAmountCentavos,
+          escalateThreshold,
+        }),
+      ],
+    )
+  }
+
+  const confirmThreshold = getRefundConfirmThresholdCentavos()
+  if (payload.refundAmountCentavos > confirmThreshold) {
+    const reais = (payload.refundAmountCentavos / 100)
+      .toFixed(2)
+      .replace(".", ",")
+    return decisionRequestConfirmation(
+      `Confirmar reembolso de R$ ${reais}? Esta ação envia dinheiro de volta ao cliente.`,
+      [
+        basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+          reason: "refund_within_confirm_band",
+          amount: payload.refundAmountCentavos,
+          confirmThreshold,
+          escalateThreshold,
+        }),
+      ],
+    )
+  }
+
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+      amount: payload.refundAmountCentavos,
+    }),
+  ])
+}
+
+/**
+ * W3 P0-2 — regeneration count cap guard.
+ *
+ * Refuses bumps above `getMaxPixRegenerationsPerPayment()`. The current
+ * count is read from the projection state (auth source) and validated
+ * against the payload's `currentCount` snapshot.
+ */
+const regenerationCountCapGuard: PaymentGuard = (envelope, state) => {
+  if (envelope.kind !== "payment.regeneration.count.increment") return null
+  const payload = envelope.payload as PaymentRegenerationCountIncrementPayload
+
+  const stateCount = state.ctx.regenerationCount ?? 0
+  if (
+    typeof payload.currentCount === "number" &&
+    payload.currentCount !== stateCount
+  ) {
+    return decisionRefuse(
+      refuse(
+        "BUSINESS_RULE",
+        "regeneration.state_divergent",
+        "Estado de regeneração divergente. Reabra a operação.",
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          reason: "regen_state_divergent",
+          envelope: payload.currentCount,
+          state: stateCount,
+        }),
+      ],
+    )
+  }
+
+  const cap = getMaxPixRegenerationsPerPayment()
+  if (stateCount + 1 > cap) {
+    return decisionRefuse(
+      refuse(
+        "BUSINESS_RULE",
+        "regeneration.cap_exceeded",
+        "Limite de regenerações para este pagamento atingido.",
+      ),
+      [
+        basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+          reason: "regen_cap_exceeded",
+          current: stateCount,
+          cap,
+        }),
+      ],
+    )
+  }
+
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+      newCount: stateCount + 1,
+      cap,
+    }),
+  ])
+}
+
 // ── PolicyBundle ──────────────────────────────────────────────────────────
 
 export const paymentProjectionPolicyBundle: PolicyBundle<
@@ -203,6 +508,6 @@ export const paymentProjectionPolicyBundle: PolicyBundle<
   stateGuards: [requirePaymentExists, refuseTerminalTransition],
   authGuards: [],
   taint: paymentProjectionTaintPolicy,
-  business: [executeAll],
+  business: [refundMagnitudeGuard, regenerationCountCapGuard, executeAll],
   default: "REFUSE",
 }
