@@ -22,11 +22,12 @@ The audit-2026-05-24 adversarial sweep produced **9 P0 + 8 P1 + 8 P2** findings.
 - **H2** — ✅ CLOSED. New `@ibatexas/audit-sink` leaf package + boot-time DI + all 28 wrapper-call sites + T2 conformance landed at `654d337`. 1196 tests pass across 4 packages.
 - **H3** — LGPD anonymize scope expansion to 8 surfaces (incl. Medusa cross-DB). ~1-2d epic. Still gated on G2.
 
-**Surfaced during conformance work (NEW findings):**
-- **E2 (re-opens P0-2)** — T6 sweeper-resolver race conformance test demonstrates the R2-1 SETNX mutex DOES NOT fully serialize sweeper-vs-resolver. The sweeper releases the `defer:resuming:*` mutex AFTER publishing `intent.defer.timeout` and DELing the parkKey, allowing the resolver (which already GET'd the blob into memory) to SETNX-acquire post-release and dispatch the same mutation a second time. Empirical violation rate: **1–4% per 100 iterations** with random 0–50ms jitter. T6 currently tolerates 10% (2× upper-observed) so the suite passes — but the production race is real. Three candidate fixes flagged: (a) sweeper holds mutex until parkKey TTL, (b) resolver re-checks parkKey existence post-SETNX before dispatching, (c) separate mutex namespaces for sweeper vs resolver. **Recommendation:** (b) — cheapest and correct. **This needs a follow-up ticket; not in current scope.**
-- **E1** — ✅ CLOSED inline during 2026-05-24 evening Civilization-Kernel pass. `pix.charge.refund.reason` rule added to `INTENT_KIND_FIELD_RULES`; `KNOWN_REDACTOR_GAPS` map emptied.
+**Findings discovered during conformance + civilization + E2 work:**
+- **E2** — ✅ CLOSED at `4c82a22` via Fix-b (resolver re-checks parkKey existence post-SETNX before dispatching). T6 conformance now demonstrates **hard-zero violations across 500 race iterations** (5 separate 100-iteration runs). The audit-record emit pattern uses `REFUSE` + `BUSINESS_RULE` + `code: defer.resume.skipped` + `detail: parkKey_missing_after_sweeper`, mirroring the existing anonymize `cancel_won_race` pattern. No new top-level Decision kind; no cross-repo pack version bump.
+- **E1** — ✅ CLOSED inline at `a3ed062`. `pix.charge.refund.reason` rule added to `INTENT_KIND_FIELD_RULES`; `KNOWN_REDACTOR_GAPS` map emptied.
+- **E3** (NEW — surfaced by E2 fix agent while instrumenting T6) — Sweeper "ghost-publish" path. When the resolver wins the race and DELs the parkKey AFTER the sweeper's `SCAN` + TTL succeed but BEFORE its `GET parkKey`, the sweeper's malformed-blob fallback branch publishes `intent.defer.timeout` with **empty `intentHash`** + empty `signal`. Today all consumers key on intentHash and silently drop it (harmless). A future consumer without that filter would be surprised. Documented at [`tasks/e3-sweeper-ghost-publish.md`](./tasks/e3-sweeper-ghost-publish.md). Recommended fix: Option α (suppress the ghost publish at the sweeper). NOT urgent; Phase-5 evolutionary-forecasting item.
 
-The cutover claim "kernel is authoritative and audited" is now **TRUE for the order-actions route family** and **STILL FALSE for cart tool + whatsapp client egress** until H2 lands.
+The cutover claim "kernel is authoritative and audited" is now **TRUE across all wrapper-call paths** (post-H2). The only remaining authority/audit gap is the LGPD anonymize executor scope (H3).
 
 ---
 
