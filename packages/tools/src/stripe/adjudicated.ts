@@ -349,10 +349,13 @@ export interface StripeAdjudicatedArgs<P> {
    */
   readonly sourceSubject: string
   /**
-   * Optional audit sink. When omitted, the wrapper skips audit emit
-   * — same fail-open posture as `medusaAdjudicated`.
+   * Audit sink. REQUIRED post audit-2026-05-24 H2 (A1) — every Stripe
+   * egress now emits an audit record by contract. Wrapper-call sites
+   * pass `auditSink: getAuditSink()` imported from `@ibatexas/audit-sink`.
+   * Fail-closed: calling before `__setAuditSinkDependencies(...)` throws
+   * `AuditSinkNotInitializedError`.
    */
-  readonly auditSink?: AuditSink
+  readonly auditSink: AuditSink
   /** Optional logger used for audit-emit failures (best-effort). */
   readonly log?: {
     readonly warn?: (...args: unknown[]) => void
@@ -390,25 +393,23 @@ async function runKernelAndAudit<P>(
     stripeWrapperPolicyBundle,
   )
 
-  if (args.auditSink) {
-    try {
-      const record = buildAuditRecord({
-        envelope,
-        decision,
-        durationMs: Date.now() - startedAt,
-      })
-      void args.auditSink.emit(record).catch((err: unknown) => {
-        args.log?.error?.(
-          "[stripe-adjudicated] audit emit failed:",
-          (err as Error).message ?? String(err),
-        )
-      })
-    } catch (err) {
+  try {
+    const record = buildAuditRecord({
+      envelope,
+      decision,
+      durationMs: Date.now() - startedAt,
+    })
+    void args.auditSink.emit(record).catch((err: unknown) => {
       args.log?.error?.(
-        "[stripe-adjudicated] audit record build failed:",
+        "[stripe-adjudicated] audit emit failed:",
         (err as Error).message ?? String(err),
       )
-    }
+    })
+  } catch (err) {
+    args.log?.error?.(
+      "[stripe-adjudicated] audit record build failed:",
+      (err as Error).message ?? String(err),
+    )
   }
 
   // Branch on Decision. The dispatch (Stripe SDK call) is the caller's
