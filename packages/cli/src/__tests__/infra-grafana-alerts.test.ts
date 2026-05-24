@@ -283,12 +283,12 @@ describe("Prometheus alert rules", () => {
     expect(parsed.groups!.length).toBeGreaterThan(0)
   })
 
-  it("declares exactly 14 rules (per migration/06 alerting table)", () => {
+  it("declares exactly 13 rules (per migration/06 alerting table, post kill-switch cutover)", () => {
     const totalRules = (parsed.groups ?? []).reduce(
       (acc, g) => acc + (g.rules?.length ?? 0),
       0,
     )
-    expect(totalRules).toBe(14)
+    expect(totalRules).toBe(13)
   })
 
   it("every rule has alert / expr / for / labels / annotations", () => {

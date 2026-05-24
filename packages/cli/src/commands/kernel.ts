@@ -103,12 +103,13 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
     false,
   )
 
-  // Pull KNOWN_INTENT_KINDS + kill switch lazily; the imports drag the
-  // policy bundles into the CLI process which is fine but slow on cold
-  // start.
+  // Pull KNOWN_INTENT_KINDS lazily; the imports drag the policy bundles
+  // into the CLI process which is fine but slow on cold start.
+  //
+  // IBX-IGE v3.0 cutover (commit f3bea43): the kernel is always
+  // authoritative. The legacy `getKillSwitchState()` surface was removed
+  // from this status command — there is no operator kill switch to query.
   const { KNOWN_INTENT_KINDS } = await import("@ibatexas/llm-provider")
-  const { getKillSwitchState } = await import("@adjudicate/core/kernel")
-  const kill = getKillSwitchState()
 
   if (opts.json) {
     const out = {
@@ -126,7 +127,6 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
       audit: {
         postgresEnabled,
       },
-      killSwitch: kill,
     }
     console.log(JSON.stringify(out, null, 2))
     return
@@ -181,16 +181,6 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   console.log(`  postgres  : ${postgresEnabled ? chalk.green("ativo") : chalk.dim("desativado")}`)
   console.log(`  console   : ${chalk.green("sempre ativo")}`)
   console.log(`  nats      : ${chalk.green("sempre ativo")}  ${chalk.dim("(audit.intent.decision.v1)")}`)
-  console.log()
-
-  console.log(chalk.bold("── Kill switch ──────────────────────────────────"))
-  if (kill.active) {
-    console.log(`  ${chalk.red.bold("ATIVO")}`)
-    console.log(`  motivo     : ${kill.reason}`)
-    console.log(`  desde      : ${kill.toggledAt}`)
-  } else {
-    console.log(`  ${chalk.dim("inativo")}`)
-  }
   console.log()
 }
 

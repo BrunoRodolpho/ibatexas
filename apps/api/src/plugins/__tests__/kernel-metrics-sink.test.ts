@@ -539,7 +539,7 @@ describe("metricsRoutes — GET /metrics", () => {
   })
 })
 
-// ── W3 — the 11 previously-ghost metrics ─────────────────────────────────────
+// ── W3 — the 10 previously-ghost metrics ─────────────────────────────────────
 //
 // Each test asserts: (1) the metric registers with the expected name +
 // labels; (2) the recorder's mutation surfaces on the registry text dump.
@@ -550,7 +550,6 @@ describe("createKernelMetricsSink — W3 ghost metrics registration", () => {
   const NAMES = [
     "kernel_audit_lag_seconds",
     "kernel_replay_drift_total",
-    "kernel_kill_switch_state",
     "kernel_pack_install_total",
     "kernel_defer_pending_gauge",
     "kernel_defer_quota_exceeded_total",
@@ -595,18 +594,6 @@ describe("createKernelMetricsSink — W3 ghost metrics registration", () => {
     const out = await register.getSingleMetricAsString("kernel_replay_drift_total")
     expect(out).toContain(`kernel_replay_drift_total{class="regressing"} 2`)
     expect(out).toContain(`kernel_replay_drift_total{class="stable"} 1`)
-  })
-
-  it("kernel_kill_switch_state — gauge reflects engaged/disengaged", async () => {
-    const { deps, register } = makeDeps()
-    createKernelMetricsSink(deps)
-    const recorder = createKernelMetricsRecorder(register)
-    recorder.recordKillSwitchState("global", true)
-    let out = await register.getSingleMetricAsString("kernel_kill_switch_state")
-    expect(out).toContain(`kernel_kill_switch_state{scope="global"} 1`)
-    recorder.recordKillSwitchState("global", false)
-    out = await register.getSingleMetricAsString("kernel_kill_switch_state")
-    expect(out).toContain(`kernel_kill_switch_state{scope="global"} 0`)
   })
 
   it("kernel_pack_install_total — recorder.recordPackInstall labels by pack", async () => {
