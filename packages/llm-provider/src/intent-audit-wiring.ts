@@ -1,37 +1,40 @@
-// Audit sink wiring — Phase H + Task 18 (M4) + Task 19 (M4).
+// Audit sink wiring — Phase H + Task 18 (M4) + Task 19 (M4)
+//                   + audit-2026-05-24 H2 (sub-option A1 cutover).
 //
 // Bridges @ibatexas/nats-client.publishNatsEvent into the framework-agnostic
 // AuditSink interface. Keeps @adjudicate/audit domain-independent — this file
 // is the IbateXas-specific adapter.
 //
-// Every intent capture emits one structured AuditRecord to
-//   subject: "audit.intent.decision.v1"
-// The event is additive — existing NATS consumers ignore it until they
+// ── A1 cutover (audit-2026-05-24 H2) ──────────────────────────────────────
+//
+// The sink CONSTRUCTION moved to `@ibatexas/audit-sink` (a leaf package
+// with zero runtime deps on @ibatexas/tools / @ibatexas/domain) so that
+// the 28 wrapper-call sites in @ibatexas/tools + apps/api/src/whatsapp can
+// import `getAuditSink()` without the @ibatexas/tools → @ibatexas/llm-provider
+// → @ibatexas/tools cycle that blocked them pre-H2.
+//
+// This file remains the central wiring point for the apps/api boot: it
+// owns the (per-process) hook state (Q4 + W3-* metrics) and exposes a
+// `buildAuditSinkDependencies(...)` factory that the bootstrap code in
+// apps/api uses to assemble the leaf's `AuditSinkDependencies` shape from
+// the live Redis client / Prisma client / NATS publisher.
+//
+// Every intent capture emits one structured AuditRecord to subject
+//   "audit.intent.decision.v1"
+// (NATS publisher in @ibatexas/nats-client prepends "ibatexas."). The
+// event is additive — existing NATS consumers ignore it until they
 // subscribe.
 //
 // Task 18 (M4): the exposed sink wraps the fan-out multiSink with an
 // AuditRedactor. Every record passes through the redactor BEFORE any
 // concrete sink (console, NATS, Postgres) sees it.
-// Investigation 08 §"P0 #1" — without this wrap, `set_pix_details` payloads
-// publish plaintext CPF/email/phone to NATS subject
-// `ibatexas.audit.intent.decision.v1` and any subscriber with permission
-// reads PII in cleartext.
 //
-// Task 19 (M4): two additions —
-//   1. `@adjudicate/audit-postgres.createPostgresSink` is added to the
-//      multi-sink fan-out unconditionally. The kernel is always-on and
-//      audit-postgres is part of the durable record — operators run
-//      `ibx kernel migrate` (called by `ibx bootstrap`) to apply the
-//      8 raw-SQL migrations from @adjudicate/audit-postgres. Boot
-//      preflight in kernel-bootstrap.ts fails fast if the `intent_audit`
-//      table is missing.
-//   2. The whole fan-out is wrapped in `persistentBufferedSink`, backed by
-//      a Redis spill storage (`createRedisSpillStorage`). When an inner
-//      sink fails or backpressures, records spill to Redis and drain on
-//      the next successful emit. Records survive a process restart.
+// Task 19 (M4): Postgres is unconditionally part of the fan-out, and the
+// whole fan-out is wrapped in `persistentBufferedSink` backed by a Redis
+// spill list so records survive a process restart.
 //
-// Composition order (top-down):
-//   sink (exported)
+// Composition (top-down, owned by @ibatexas/audit-sink post-H2):
+//   sink (exported via getAuditSink)
 //     └─ redactor.redact(record)                        // Task 18 — PII gate
 //         └─ persistentBufferedSink                     // Task 19 — durability
 //             └─ multiSink(
@@ -40,30 +43,28 @@
 //                 postgresSink                           // always-on
 //               )
 //
-// Order matters: the redactor MUST wrap the buffered sink (not run inside
-// it) so the Redis spill list never holds raw PII. If the redactor ran
-// downstream of the buffer, a process restart with a populated spill list
-// would re-emit unredacted records to NATS and Postgres after recovery.
+// Order matters: the redactor MUST wrap the buffered sink so the Redis
+// spill list never holds raw PII. If the redactor ran downstream of the
+// buffer, a process restart with a populated spill list would re-emit
+// unredacted records to NATS and Postgres after recovery.
 //
-// Bypass-detection: the only public entry point is `getAuditSink()`. Every
-// IbateXas call site routes through this getter, so no caller can construct
-// a raw multiSink and bypass the redactor. The grep-test
+// Bypass-detection: the only public entry point is `getAuditSink()`
+// (re-exported from `@ibatexas/audit-sink`). Every IbateXas call site
+// routes through this getter, so no caller can construct a raw multiSink
+// and bypass the redactor. The grep-test
 // (audit-redaction-contract.test.ts) asserts this invariant.
 
-import type { AuditRecord } from "@adjudicate/core"
+import type {
+  AuditSinkDependencies,
+  AuditSinkLogger,
+  AuditSinkNatsPublisher,
+  AuditSinkFailureEvent,
+} from "@ibatexas/audit-sink"
 import {
-  createConsoleSink,
-  createNatsSink,
-  multiSink,
-  persistentBufferedSink,
   createInMemorySpillStorage,
-  type AuditSink,
   type PersistentSpillStorage,
 } from "@adjudicate/audit"
-import { createPostgresSink } from "@adjudicate/audit-postgres"
 import { publishNatsEvent } from "@ibatexas/nats-client"
-import { getRedisClient } from "@ibatexas/tools"
-import { prisma } from "@ibatexas/domain"
 import { createAuditRedactor, type AuditRedactor } from "./audit-redactor.js"
 import {
   createRedisSpillStorage,
@@ -73,15 +74,25 @@ import {
   createPostgresAuditWriter,
   type PrismaRawExecutor,
 } from "./postgres-audit-writer.js"
-// W6-10 (P2-C): allow callers to inject a pino-shaped logger so audit-
-// pipeline warnings carry the per-request reqId when invoked from a
-// route handler. Defaults to the console-passthrough.
 import { resolveLogger, type IbxLogger } from "./logger.js"
 
-// ── Module-level lazy singletons ────────────────────────────────────────────
-
-let _sink: AuditSink | null = null
-let _redactor: AuditRedactor | null = null
+// Re-export the leaf's public surface so existing consumers (apps/api +
+// the `@ibatexas/llm-provider` re-exports in `index.ts`) keep working
+// across the cutover. The leaf is the single source of truth for the
+// construction; this file keeps its name as the wiring composition point.
+import {
+  __setAuditSinkDependencies as __leafSetDeps,
+  __resetAuditSink as __leafResetSink,
+} from "@ibatexas/audit-sink"
+export {
+  getAuditSink,
+  AuditSinkNotInitializedError,
+} from "@ibatexas/audit-sink"
+export type {
+  AuditSink,
+  AuditSinkDependencies,
+  AuditSinkFailureEvent,
+} from "@ibatexas/audit-sink"
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
@@ -106,29 +117,26 @@ function bufferCapacity(): number {
   return parsed
 }
 
-// ── Test-injectable overrides ──────────────────────────────────────────────
+// ── Module-level hook state ────────────────────────────────────────────────
+//
+// Hooks are populated by `installKernelMetricsSink()` in apps/api during
+// `buildServer()`. The bootstrap code that calls `__setAuditSinkDependencies`
+// reads these slots via `currentAuditHooks()` and threads them through to
+// the leaf at registration time.
 
-interface SinkDependencies {
-  readonly redis: RedisListClient | null
-  readonly prismaWriter: PrismaRawExecutor | null
-  /** W6-10: optional pino-shaped logger for reqId-carrying log lines. */
-  readonly logger: IbxLogger | null
-}
+let _redactorFailureHook: ((reason: string) => void) | null = null
+let _auditLagHook:
+  | ((sink: string, latencySeconds: number) => void)
+  | null = null
+let _bufferSizeHook: ((count: number) => void) | null = null
+let _spillSizeHook: ((count: number) => void) | null = null
+let _sinkFailureHook:
+  | ((event: AuditSinkFailureEvent) => void)
+  | null = null
+let _auditDedupHook: ((path: "in_process" | "consumer") => void) | null = null
 
-let _depsOverride: Partial<SinkDependencies> | null = null
-
-/**
- * @internal — for test isolation. Inject stubs for the Redis spill client
- * and/or the Prisma raw executor used by the Postgres sink. Pass `null` to
- * fall back to the live `@ibatexas/tools` + `@ibatexas/domain` singletons.
- */
-export function _setAuditSinkDependencies(
-  deps: Partial<SinkDependencies> | null,
-): void {
-  _depsOverride = deps
-}
-
-// ── Loaders ────────────────────────────────────────────────────────────────
+// Cached redactor — reuses the same salted-hash configuration across calls.
+let _redactor: AuditRedactor | null = null
 
 function loadRedactor(): AuditRedactor {
   if (_redactor) return _redactor
@@ -155,18 +163,7 @@ function loadRedactor(): AuditRedactor {
   return _redactor
 }
 
-// ── W3 hook injection points (apps/api wires these at boot) ─────────────────
-
-let _redactorFailureHook: ((reason: string) => void) | null = null
-let _auditLagHook:
-  | ((sink: string, latencySeconds: number) => void)
-  | null = null
-let _bufferSizeHook: ((count: number) => void) | null = null
-let _spillSizeHook: ((count: number) => void) | null = null
-// audit-2026-05-24 P1-4 — track ON CONFLICT DO NOTHING events on the
-// in-process Postgres path. Fires zero-times until the upstream UNIQUE
-// constraint on (intent_hash, recorded_at) lands in @adjudicate/audit-postgres.
-let _auditDedupHook: ((path: "in_process" | "consumer") => void) | null = null
+// ── Q4 / W3-* observability event-shape contracts ──────────────────────────
 
 /**
  * Q4: report a downstream-sink failure to the kernel MetricsSink. The hook
@@ -182,9 +179,6 @@ export interface AuditSinkFailureEventLike {
   readonly errorClass: string
   readonly consecutiveFailures: number
 }
-let _sinkFailureHook:
-  | ((event: AuditSinkFailureEventLike) => void)
-  | null = null
 
 /** W3-8: bump kernel_audit_redactor_failures_total on redactor fail-open. */
 export function setAuditRedactorFailureHook(
@@ -241,123 +235,65 @@ export function setAuditSinkFailureHook(
   _sinkFailureHook = hook
 }
 
-/** Internal — fail-open call site for the sink-failure hook. */
-function reportSinkFailure(event: AuditSinkFailureEventLike): void {
-  if (!_sinkFailureHook) return
-  try {
-    _sinkFailureHook(event)
-  } catch {
-    // Telemetry MUST NEVER block audit emission. Swallow.
-  }
-}
+// ── Live-deps wiring (apps/api bootstrap entry) ────────────────────────────
 
-/** Internal — classify an error to a stable label (no PII). */
-function errorClassOf(err: unknown): string {
-  if (err instanceof Error) {
-    return err.constructor.name || "Error"
-  }
-  return "unknown"
+/**
+ * Pre-constructed live clients the audit pipeline depends on. Apps/api
+ * resolves these at boot (Redis from `getRedisClient`, Prisma from the
+ * shared `@ibatexas/domain` client, NATS via `publishNatsEvent`) and
+ * passes them to `buildAuditSinkDependencies`.
+ *
+ * The `redis` and `prismaWriter` slots are typed as the minimal interfaces
+ * (RedisListClient / PrismaRawExecutor) so test rigs can pass fakes
+ * without standing up a full client.
+ */
+export interface AuditSinkLiveDependencies {
+  /** Connected Redis list client. Falls back to in-memory spill when null. */
+  readonly redis: RedisListClient | null
+  /** Prisma `$executeRawUnsafe`-compatible executor for the Postgres sink. */
+  readonly prismaWriter: PrismaRawExecutor
+  /** NATS publisher (the `@ibatexas/nats-client.publishNatsEvent` shape). */
+  readonly natsPublisher: AuditSinkNatsPublisher
+  /** Optional pino-shaped logger for reqId-carrying audit warnings. */
+  readonly logger?: IbxLogger | null
 }
 
 /**
- * Build the durable spill storage. Returns an in-memory fallback if Redis
- * is unavailable (boot-time failure shouldn't kill the kernel) — the spill
- * still works within the process lifetime, it just doesn't survive a
- * restart. The console.warn on the fallback is the operator's signal to
- * investigate the Redis issue.
+ * Build the `AuditSinkDependencies` shape consumed by
+ * `__setAuditSinkDependencies` from `@ibatexas/audit-sink`. Composes the
+ * llm-provider-side adapters (redactor, redis-spill, postgres-writer)
+ * over the live clients and threads the per-process hook state through.
+ *
+ * Usage (apps/api):
+ *
+ *   import {
+ *     __setAuditSinkDependencies,
+ *     buildAuditSinkDependencies,
+ *     publishNatsEvent,
+ *   } from "..."
+ *   const deps = buildAuditSinkDependencies({
+ *     redis: await getRedisClient(),
+ *     prismaWriter: prisma,
+ *     natsPublisher: { publish: (subject, payload) => publishNatsEvent(subject, payload) },
+ *     logger: server.log,
+ *   })
+ *   __setAuditSinkDependencies(deps)
  */
-function loadSpillStorage(): PersistentSpillStorage {
-  const override = _depsOverride?.redis
-  if (override !== undefined) {
-    // Explicit override (test stub or `null` to force in-memory fallback).
-    if (override === null) return createInMemorySpillStorage()
-    return createRedisSpillStorage({ redis: override })
-  }
-  // Live path: try to grab the Redis client. We don't await
-  // `getRedisClient()` here because that would force `getAuditSink()` to be
-  // async, breaking every call site. Instead we wrap the client in a lazy
-  // proxy that resolves the promise on the first call.
-  return createRedisSpillStorage({ redis: lazyRedisClient() })
-}
+export function buildAuditSinkDependencies(
+  live: AuditSinkLiveDependencies,
+): AuditSinkDependencies {
+  const log = resolveLogger(live.logger ?? null)
+  const adapterLogger = adaptLogger(log)
 
-/**
- * Lazy proxy around `getRedisClient()`. The first call to any list operation
- * awaits the singleton; subsequent calls reuse the cached client.
- */
-function lazyRedisClient(): RedisListClient {
-  let cached: RedisListClient | null = null
-  let pending: Promise<RedisListClient> | null = null
-  async function getClient(): Promise<RedisListClient> {
-    if (cached) return cached
-    if (!pending) {
-      pending = getRedisClient().then((c) => {
-        cached = c as unknown as RedisListClient
-        return cached
-      })
-    }
-    return pending
-  }
-  return {
-    async rPush(key, value) {
-      const c = await getClient()
-      return c.rPush(key, value)
-    },
-    async lPop(key) {
-      const c = await getClient()
-      return c.lPop(key)
-    },
-    async lLen(key) {
-      const c = await getClient()
-      return c.lLen(key)
-    },
-    async expire(key, seconds) {
-      const c = await getClient()
-      return c.expire(key, seconds)
-    },
-  }
-}
+  const spillStorage: PersistentSpillStorage = live.redis
+    ? createRedisSpillStorage({ redis: live.redis })
+    : createInMemorySpillStorage()
 
-function loadInnerSink(log: IbxLogger): AuditSink {
-  // ConsoleSink for visibility in dev; NatsSink for the durable streaming
-  // trail consumed by the audit-consumer subscriber (Task 19) and any
-  // future observability sidecars. Falls open: failure in any one of the
-  // sinks is non-blocking via multiSink's Promise.allSettled.
-  const nats = createNatsSink({
-    publisher: {
-      async publish(subject, payload) {
-        // publishNatsEvent prepends "ibatexas." so the resulting subject is
-        // "ibatexas.audit.intent.decision.v1". Subscribers (including the
-        // Task 19 audit-consumer) filter on the full subject.
-        await publishNatsEvent(subject, payload as Record<string, unknown>)
-      },
-    },
-    // Q4: forward per-failure events to the kernel MetricsSink so
-    // `kernel_audit_sink_failure_total{sink="nats"}` increments per event.
-    // The NatsSink already tracks `consecutiveFailures` internally and surfaces
-    // it on every onFailure call — we pass it through unchanged.
-    onFailure: (event) => {
-      reportSinkFailure({
-        sink: "nats",
-        subject: event.subject,
-        errorClass: event.errorClass,
-        consecutiveFailures: event.consecutiveFailures,
-      })
-    },
-  })
-  const console_ = createConsoleSink({ prefix: "[ibx-audit]" })
-
-  // Audit-postgres is always-on. Boot preflight in kernel-bootstrap.ts
-  // verifies the `intent_audit` table exists before serving any traffic;
-  // operators run `ibx kernel migrate` (via `ibx bootstrap`) to apply
-  // the raw-SQL migrations from @adjudicate/audit-postgres.
   const postgresWriter = createPostgresAuditWriter({
-    prisma: (_depsOverride?.prismaWriter ?? prisma) as PrismaRawExecutor,
+    prisma: live.prismaWriter,
     onInsert: (row) => {
       void row
     },
-    // audit-2026-05-24 P1-4: surface ON CONFLICT no-ops via the dedup
-    // observability hook. Fires zero times until the upstream UNIQUE
-    // constraint on (intent_hash, recorded_at) lands.
     onConflictNoOp: () => {
       if (!_auditDedupHook) return
       try {
@@ -367,208 +303,149 @@ function loadInnerSink(log: IbxLogger): AuditSink {
       }
     },
   })
-  // Q4: per-sink consecutive-failure counter. PostgresSinkOptions doesn't
-  // ship one (NatsSink does), so we maintain it here. Reset to 0 on the
-  // next successful emit (signalled by a fresh getAuditSink() emit cycle —
-  // see the increment / reset pattern below where the wrapping emit closes
-  // over `postgresConsecutiveFailures`).
-  let postgresConsecutiveFailures = 0
-  const postgresSink = createPostgresSink({
-    writer: postgresWriter,
-    onError: (err: Error, record) => {
-      // Postgres outage doesn't block adjudicate() — the buffered sink
-      // spills to Redis and the audit-consumer subscriber drains on
-      // recovery. W6-10: structured log carries reqId via injected `log`.
-      postgresConsecutiveFailures += 1
-      log.warn(
-        { err: err.message, intentKind: record.envelope.kind },
-        "[intent-audit-wiring] postgres sink emit failed — falling back to spill storage",
-      )
-      // Q4: bump kernel_audit_sink_failure_total{sink="postgres"}.
-      reportSinkFailure({
-        sink: "postgres",
-        subject: "audit.intent.decision.v1",
-        errorClass: errorClassOf(err),
-        consecutiveFailures: postgresConsecutiveFailures,
-      })
-    },
-  })
-  // Wrap postgresSink to reset the consecutive-failure counter on success.
-  // The reset is part of the "circuit breaker" contract documented in the
-  // NatsSink — postgres has no built-in equivalent so we model it here.
-  const postgresSinkWithReset: AuditSink = {
-    async emit(record) {
-      await postgresSink.emit(record)
-      postgresConsecutiveFailures = 0
-    },
-  }
 
-  return multiSink(console_, nats, postgresSinkWithReset)
-}
-
-function loadSink(): AuditSink {
-  if (_sink) return _sink
-
-  // W6-10: resolve the structured logger. Defaults to console-passthrough
-  // unless the test/adopter injected one via _setAuditSinkDependencies.
-  const log = resolveLogger(_depsOverride?.logger ?? null)
-
-  const innerSink = loadInnerSink(log)
-  const spillStorage = loadSpillStorage()
-  const redactor = loadRedactor()
-
-  // Task 19 — persistent buffer between the redactor and the inner sinks.
-  // `onOverflow` is the operator-facing telemetry hook; Q4 wires the spill-
-  // failure events through to `kernel_audit_sink_failure_total` via the
-  // injected `_sinkFailureHook` (apps/api forwards to recordSinkFailure on
-  // the kernel MetricsSink).
-  //
-  // W3-9/W3-10: also notify the buffer/spill gauges via the injected hooks.
-  // The exact in-memory queue size is held internal to persistentBufferedSink
-  // so we approximate: each onOverflow is one record evicted to spill (the
-  // monotonic spill-depth counter), each onSpill non-capacity is one record
-  // at-risk. The gauges are tracked as monotonic counters of observed
-  // spills; apps/api can post-process or wire a sibling SCAN poll if a
-  // precise count is needed.
-  let _bufferDepth = 0
-  let _spillDepth = 0
-  // Q4: track non-capacity spills as consecutive-failure observations. The
-  // buffer fronts the multiSink fan-out; spill = "an inner sink errored" so
-  // we attribute it to the durable target ("postgres") which is the sink
-  // operators care about when the buffer-spill alert fires.
-  let bufferSpillConsecutiveFailures = 0
-  const buffered = persistentBufferedSink({
-    inner: innerSink,
-    storage: spillStorage,
-    capacity: bufferCapacity(),
-    onOverflow: (record) => {
-      log.warn(
-        { intentKind: record.envelope.kind, intentHash: record.intentHash },
-        "[intent-audit-wiring] audit buffer overflow — record spilled to durable storage",
-      )
-      _spillDepth += 1
-      if (_spillSizeHook) {
-        try {
-          _spillSizeHook(_spillDepth)
-        } catch {
-          /* fail-open */
-        }
-      }
-    },
-    onSpill: (record, reason) => {
-      // Log only on failure/drain-failure (capacity is the expected steady
-      // state at high load). Tests assert via the onOverflow hook above.
-      if (reason !== "capacity") {
-        log.warn(
-          { intentKind: record.envelope.kind, intentHash: record.intentHash, reason },
-          "[intent-audit-wiring] audit spill",
-        )
-        // Q4: bump kernel_audit_sink_failure_total. We attribute to
-        // "postgres" because the durable inner target is what operators
-        // monitor; the `errorClass` carries the spill reason so dashboards
-        // can split between "failure" (sink errored) and "drain-failure"
-        // (spill-drain attempt failed). Intent kind is a stable, low-
-        // cardinality label and contains no PII.
-        bufferSpillConsecutiveFailures += 1
-        reportSinkFailure({
-          sink: "postgres",
-          subject: "audit.intent.decision.v1",
-          errorClass: `spill_${reason}`,
-          consecutiveFailures: bufferSpillConsecutiveFailures,
-        })
-      } else {
-        // Capacity-only spills mean the queue is shedding into durable
-        // storage but no sink errored — reset the streak so the next
-        // failure starts fresh.
-        bufferSpillConsecutiveFailures = 0
-      }
-      // Track for the buffer-size gauge — capacity-reason events count
-      // as "queue at capacity" snapshots.
-      _bufferDepth = Math.max(_bufferDepth, bufferCapacity())
-      if (_bufferSizeHook) {
-        try {
-          _bufferSizeHook(_bufferDepth)
-        } catch {
-          /* fail-open */
-        }
-      }
-    },
-  })
-
-  // Task 18 wrap — redactor MUST run before the buffered sink (and therefore
-  // before fan-out). The Redis spill list never sees raw PII because the
-  // record is redacted before any await on the buffered sink completes.
-  _sink = {
-    async emit(record: AuditRecord): Promise<void> {
-      const redacted = redactor.redact(record)
-      // W3-1 — kernel_audit_lag_seconds: emit→ack latency, in seconds.
-      // We measure from `record.at` (kernel-side emit timestamp) to the
-      // buffered.emit() return. record.at is ISO-8601; if parsing fails
-      // we skip the observation rather than emit garbage.
-      const emitStart = Date.now()
-      const emittedAtIso = record.at
+  return {
+    spillStorage,
+    postgresWriter,
+    natsPublisher: live.natsPublisher,
+    redactor: loadRedactor(),
+    logger: adapterLogger,
+    bufferCapacity: bufferCapacity(),
+    onSinkFailure: (event) => {
+      if (!_sinkFailureHook) return
       try {
-        await buffered.emit(redacted)
-        recordAuditLagFromIso(emittedAtIso, emitStart, "postgres")
-      } catch (err) {
-        // Failure still observes — the buffered sink has spilled the
-        // record to durable storage, so for the lag SLO this counts as
-        // "buffered, not yet durable."
-        recordAuditLagFromIso(emittedAtIso, emitStart, "spill")
-        // The buffered sink rethrows when the inner sink fails (per
-        // PersistentBufferedSinkOptions contract). We intentionally swallow
-        // here so audit emission is fail-open at the IbateXas boundary: a
-        // broken Postgres connection MUST NOT block an adjudicate() call.
-        log.warn(
-          { intentKind: record.envelope.kind, err: String(err) },
-          "[intent-audit-wiring] audit emit failed — record buffered for retry",
-        )
+        _sinkFailureHook(event)
+      } catch {
+        // Telemetry must NEVER block the audit pipeline.
+      }
+    },
+    onConflictNoOp: (path) => {
+      if (!_auditDedupHook) return
+      try {
+        _auditDedupHook(path)
+      } catch {
+        // fail-open
+      }
+    },
+    onLag: (sink, latencySeconds) => {
+      if (!_auditLagHook) return
+      try {
+        _auditLagHook(sink, latencySeconds)
+      } catch {
+        // fail-open
+      }
+    },
+    onBufferSize: (count) => {
+      if (!_bufferSizeHook) return
+      try {
+        _bufferSizeHook(count)
+      } catch {
+        // fail-open
+      }
+    },
+    onSpillSize: (count) => {
+      if (!_spillSizeHook) return
+      try {
+        _spillSizeHook(count)
+      } catch {
+        // fail-open
       }
     },
   }
-  return _sink
 }
 
-function recordAuditLagFromIso(
-  emittedAtIso: string,
-  emitStart: number,
-  sink: "postgres" | "nats" | "console" | "spill" = "postgres",
-): void {
-  if (!_auditLagHook) return
-  const emittedAt = Date.parse(emittedAtIso)
-  if (!Number.isFinite(emittedAt)) return
-  // Guard against negative lag from clock skew by taking the larger of
-  // (now - record.at) and (now - emitStart).
-  const now = Date.now()
-  const latencyMs = Math.max(now - emittedAt, now - emitStart, 0)
-  try {
-    _auditLagHook(sink, latencyMs / 1000)
-  } catch {
-    /* fail-open */
+/**
+ * Map the local `IbxLogger` (warn/error/info/debug) shape to the leaf's
+ * narrower `AuditSinkLogger` (warn/error only). Kept structural so we
+ * never wedge an apps/api-side pino instance into the leaf's contract.
+ */
+function adaptLogger(log: IbxLogger): AuditSinkLogger {
+  return {
+    warn(obj, msg) {
+      log.warn(obj, msg)
+    },
+    error(obj, msg) {
+      log.error(obj, msg)
+    },
   }
 }
 
-// ── Public API ─────────────────────────────────────────────────────────────
+// ── Backward-compat test-injection shim (audit-2026-05-24 H2) ─────────────
+//
+// Pre-H2 the test harness wired `{redis, prismaWriter, logger?}` directly
+// via this file's module-level state. Post-H2 the leaf owns sink deps, but
+// existing tests + the apps/api integration suite still call
+// `_setAuditSinkDependencies({...})` with the old shape. This shim accepts
+// the legacy partial shape, fills in defaults (live NATS publisher), and
+// forwards to the leaf's `__setAuditSinkDependencies`.
 
-/** @internal — for test isolation */
-export function _resetAuditSink(): void {
-  _sink = null
-  _redactor = null
-  _depsOverride = null
-  _redactorFailureHook = null
-  _auditLagHook = null
-  _bufferSizeHook = null
-  _spillSizeHook = null
-  _sinkFailureHook = null
-  _auditDedupHook = null
+export interface LegacyAuditSinkDependencyOverride {
+  readonly redis?: RedisListClient | null
+  readonly prismaWriter?: PrismaRawExecutor | null
+  readonly logger?: IbxLogger | null
 }
+
+/**
+ * @internal — for test isolation. Legacy partial-shape injection point.
+ * Builds the full `AuditSinkDependencies` shape from a `{redis, prismaWriter,
+ * logger?}` triple and registers it with `@ibatexas/audit-sink`. Pass
+ * `null` to either slot to fall back to the in-memory spill / no-op
+ * Postgres path.
+ */
+export function _setAuditSinkDependencies(
+  overrides: LegacyAuditSinkDependencyOverride | null,
+): void {
+  if (!overrides) {
+    __leafResetSink()
+    return
+  }
+  const live: AuditSinkLiveDependencies = {
+    redis: overrides.redis ?? null,
+    prismaWriter:
+      overrides.prismaWriter ?? ({
+        async $executeRawUnsafe() {
+          return 0
+        },
+      } satisfies PrismaRawExecutor),
+    natsPublisher: defaultNatsPublisher(),
+    logger: overrides.logger ?? null,
+  }
+  __leafSetDeps(buildAuditSinkDependencies(live))
+}
+
+/**
+ * Default NATS publisher used by the legacy shim. Calls
+ * `@ibatexas/nats-client.publishNatsEvent` (which prepends the
+ * `ibatexas.` prefix). Tests mock the module to inject a spy.
+ */
+function defaultNatsPublisher(): AuditSinkNatsPublisher {
+  return {
+    async publish(subject, payload) {
+      await publishNatsEvent(subject, payload)
+    },
+  }
+}
+
+// ── Test isolation ────────────────────────────────────────────────────────
 
 /** @internal — for test access to the redactor used by the wired sink. */
 export function _getAuditRedactor(): AuditRedactor {
   return loadRedactor()
 }
 
-/** Return the configured audit sink. Always available; sinks are best-effort. */
-export function getAuditSink(): AuditSink {
-  return loadSink()
+/**
+ * @internal — clears the leaf's registered deps AND every per-process
+ * hook + cached adapter held by this wiring module. Pairs with the
+ * legacy `_setAuditSinkDependencies` shim so a single call resets the
+ * full audit-wiring composition for the next test.
+ */
+export function _resetAuditSink(): void {
+  __leafResetSink()
+  _redactor = null
+  _redactorFailureHook = null
+  _auditLagHook = null
+  _bufferSizeHook = null
+  _spillSizeHook = null
+  _sinkFailureHook = null
+  _auditDedupHook = null
 }

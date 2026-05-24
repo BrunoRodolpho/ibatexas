@@ -96,10 +96,19 @@ export {
 // Ledger error type (P0-g)
 export { LedgerUnavailableError } from "./intent-ledger.js"
 
-// Audit sink (Phase H) — needed by subscribers that emit audit records
-// outside the responder hot path (e.g. defer-resolver on resume).
+// Audit sink (Phase H + audit-2026-05-24 H2 A1 cutover) — needed by
+// subscribers that emit audit records outside the responder hot path
+// (e.g. defer-resolver on resume) and by the kernel-bootstrap step that
+// wires the boot-time DI of the leaf `@ibatexas/audit-sink` package.
 export {
+  // Re-exported from `@ibatexas/audit-sink` via intent-audit-wiring.ts.
   getAuditSink,
+  AuditSinkNotInitializedError,
+  // The audit-sink-bootstrap step in apps/api uses this to construct the
+  // leaf's `AuditSinkDependencies` shape from the live Redis / Prisma /
+  // NATS clients.
+  buildAuditSinkDependencies,
+  type AuditSinkLiveDependencies,
   // W3 — hook injectors for the 4 audit-pipeline ghost metrics. apps/api
   // wires these during `installKernelMetricsSink` so the redactor /
   // buffered-sink / spill emit Prometheus mutations.
@@ -120,6 +129,7 @@ export {
   _resetAuditSink,
   _setAuditSinkDependencies,
   _getAuditRedactor,
+  type LegacyAuditSinkDependencyOverride,
 } from "./intent-audit-wiring.js"
 
 // Audit Postgres writer adapter (task 19 / M4). Exposed so the NATS audit

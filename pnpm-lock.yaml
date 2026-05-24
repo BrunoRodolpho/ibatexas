@@ -591,6 +591,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)
+      '@ibatexas/audit-sink':
+        specifier: workspace:*
+        version: link:../audit-sink
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain
