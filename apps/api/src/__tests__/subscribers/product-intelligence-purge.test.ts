@@ -63,6 +63,10 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createLoyaltyService: () => ({
     addStamp: vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
+    addStampFromEnvelope: vi.fn().mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { stamps: 1, rewarded: false },
+    }),
   }),
   ConcurrencyError: class ConcurrencyError extends Error {},
   ITEMS_SCHEMA_VERSION: 1,

@@ -24,6 +24,7 @@ import {
   createOrderEventLogService,
   createPaymentCommandService,
   ConcurrencyError,
+  type LoyaltyStampAddPayload,
   type OrderProjectionCreatePayload,
   type OrderStatusReconcilePayload,
   type PaymentCreatePayload,
@@ -347,9 +348,41 @@ export async function startCartIntelligenceSubscribers(
       }
 
       // 7. Award loyalty stamp — failure must NOT block order processing
+      //
+      // Audit 2026-05-23 NEW-W9-V4: kernel-gated via loyalty.stamp.add
+      // envelope (SYSTEM-only). The stamp persists to Prisma
+      // `loyaltyAccount`; previously misclassified as Redis-only in
+      // open-blockers.md. The kernel REFUSE path bails before the
+      // Prisma write — falling through to the legacy notification flow
+      // only when EXECUTE/REWRITE is returned.
       try {
-        const loyaltySvc = createLoyaltyService();
-        const { stamps, rewarded } = await loyaltySvc.addStamp(customerId);
+        const loyaltySvc = createLoyaltyService({ auditSink: getAuditSink() });
+        const loyaltyPayload: LoyaltyStampAddPayload = { customerId };
+        const loyaltyEnvelope = buildSystemEnvelope({
+          kind: "loyalty.stamp.add" as const,
+          payload: loyaltyPayload,
+          sourceSubject: "order.placed",
+          eventId: `loyalty:${orderId}`,
+        });
+        const loyaltyOutcome = await loyaltySvc.addStampFromEnvelope(
+          loyaltyEnvelope,
+          { ctx: { customerId } },
+        );
+        if (
+          loyaltyOutcome.decision.kind !== "EXECUTE" &&
+          loyaltyOutcome.decision.kind !== "REWRITE"
+        ) {
+          const refusalCode =
+            loyaltyOutcome.decision.kind === "REFUSE"
+              ? loyaltyOutcome.decision.refusal.code
+              : undefined;
+          log?.warn(
+            { customer_id: customerId, decision: loyaltyOutcome.decision.kind, refusalCode },
+            "[cart-intelligence] loyalty stamp — kernel did not authorize",
+          );
+          throw new Error(`kernel ${loyaltyOutcome.decision.kind}: ${refusalCode ?? "n/a"}`);
+        }
+        const { stamps, rewarded } = loyaltyOutcome.result!;
         log?.info({ customer_id: customerId, stamps, rewarded }, "[cart-intelligence] loyalty stamp awarded");
 
         if (rewarded) {
