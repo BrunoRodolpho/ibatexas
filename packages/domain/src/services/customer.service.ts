@@ -931,6 +931,24 @@ export async function anonymizeCustomer(customerId: string) {
         where: { customerId },
         data: { stamps: 0, totalEarned: 0, redeemed: 0 },
       })
+
+      // (12) Surface 7: Reservation.specialRequests — replace with empty
+      // JSON array.
+      //
+      // Schema deviation from the task prompt: Reservation.specialRequests
+      // is declared `Json @default("[]")` — NOT nullable. We cannot set it
+      // to null. The schema-investigator recommendation (schema.md §"Surface
+      // 7") explicitly handles this: "If empty array is semantically cleaner
+      // than null, use `[]`. If null is preferred, make the field nullable
+      // in a migration first (or just set to empty array)." Empty array is
+      // the column's documented default — same semantic as "no special
+      // requests" — and avoids a migration step that's out of Wave-A1
+      // scope. The free-form pt-BR notes (allergies, accessibility) the
+      // customer entered are obliterated.
+      await tx.reservation.updateMany({
+        where: { customerId },
+        data: { specialRequests: [] },
+      })
     },
     {
       timeout: ANONYMIZE_TX_TIMEOUT_MS,
