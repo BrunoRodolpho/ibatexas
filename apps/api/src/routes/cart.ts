@@ -38,6 +38,10 @@ import { Channel } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
+import {
+  type CustomerOnboardingState,
+  type CustomerPixDetailsSavePayload,
+} from "@ibatexas/pack-customer-onboarding";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
@@ -112,7 +116,10 @@ async function loadCachedPixDetails(
   }
 }
 
-async function cachePixDetailsForCustomer(
+/** Cache PIX details to Redis + persist to Prisma via the kernel-adjudicated
+ *  `customer.pix.details.save` envelope. Exported for unit-test access.
+ *  @internal */
+export async function cachePixDetailsForCustomer(
   customerId: string,
   data: { name?: string; email?: string; cpf?: string },
 ): Promise<void> {
@@ -126,12 +133,42 @@ async function cachePixDetailsForCustomer(
     pipeline.expire(key, PIX_CACHE_TTL);
     await pipeline.exec();
 
-    const svc = createCustomerService();
-    await svc.updatePixDetails(customerId, {
-      name: data.name,
-      email: data.email,
-      cpf: data.cpf,
+    // ── W7 — route DB persist through customer.pix.details.save envelope.
+    //
+    // The PII (name/email/CPF) was submitted by the customer via the
+    // checkout form (or pulled from the cached pre-fill, both UNTRUSTED
+    // origin). The pack's CPF-shape guard runs first; on REFUSE we skip
+    // the DB write but keep the Redis cache (best-effort caching is the
+    // existing semantics — a checkout that completed against Medusa is
+    // already booked).
+    const svc = createCustomerService({ auditSink: getAuditSink() });
+    const payload: CustomerPixDetailsSavePayload = {
+      name: data.name ?? "",
+      email: data.email ?? "",
+      cpf: data.cpf ?? "",
+    };
+    const envelope = buildEnvelope<
+      "customer.pix.details.save",
+      CustomerPixDetailsSavePayload
+    >({
+      kind: "customer.pix.details.save",
+      payload,
+      nonce: randomUUID(),
+      actor: { principal: "user", sessionId: customerId },
+      taint: "UNTRUSTED",
     });
+    const state: CustomerOnboardingState = {
+      ctx: {
+        actor: { principal: "user", id: customerId },
+        customerId,
+        customerExists: true,
+        isAuthenticated: true,
+        otpFresh: false,
+        hasParkedAnonymize: false,
+        now: new Date(),
+      },
+    };
+    await svc.updatePixDetailsFromEnvelope(envelope, state, { customerId });
   } catch (err) {
     console.warn("[cart/checkout] Failed to cache PIX details:", (err as Error).message);
   }
