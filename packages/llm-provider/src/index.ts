@@ -177,3 +177,15 @@ export {
   type DispatcherDeps,
   type DispatcherLogger,
 } from "./intent-dispatcher.js"
+
+// P0-7-TRUE / audit-2026-05-24 P0-1 — NX-guarded DEFER park wrapper.
+// All four production DEFER call sites (kernel-executor, llm-responder,
+// me.ts ×2) route through this single entry point to prevent the silent
+// overwrite that the framework's raw `parkDeferredIntent` admits.
+export {
+  parkDeferredIntentWithNxGuard,
+  setDeferQuotaExceededHook,
+  ParkVerificationFieldsMissingError,
+  PARK_COLLISION_REFUSAL_PT_BR,
+  type ParkDeferredIntentNxResult,
+} from "./park-nx.js"

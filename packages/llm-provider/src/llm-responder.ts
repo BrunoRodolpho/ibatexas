@@ -19,7 +19,10 @@ import {
 import type { Plan } from "@adjudicate/core/llm"
 import { adjudicate } from "@adjudicate/core/kernel"
 import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br"
-import { parkDeferredIntent } from "@adjudicate/runtime"
+import {
+  parkDeferredIntentWithNxGuard,
+  PARK_COLLISION_REFUSAL_PT_BR,
+} from "./park-nx.js"
 import { resolveLocalizedRefusalText } from "./localizer.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 import type { ToolExecutionResult } from "./tool-registry.js"
@@ -446,18 +449,23 @@ async function processToolCalls(
         }
 
         if (decision.kind === "DEFER") {
-          // Park the intent via the runtime's `parkDeferredIntent` primitive.
-          // The primitive enforces a per-session quota and populates the T-005
-          // verification fields (`version`, `nonce`, `taint`, `actorPrincipal`)
-          // so the resume side can detect tamper-at-rest. Without these fields,
-          // `verifyParkedEnvelopeHash` returns `verified: null` and the
-          // defer-resolver's tamper-detection is structurally inert (P0-7).
-          let parkQuotaExceeded = false
+          // Park the intent via the NX-guarded wrapper. The wrapper enforces
+          // a per-session quota AND refuses to overwrite an already-parked
+          // envelope (audit-2026-05-24 P0-1). The framework primitive uses
+          // plain SET without NX, so two DEFERs back-to-back for the same
+          // sessionId would silently drop the first parked payload. We also
+          // populate the T-005 verification fields (version, nonce, taint,
+          // actorPrincipal) so `verifyParkedEnvelopeHash` can detect
+          // tamper-at-rest on resume — without those, the verifier lands in
+          // the missing_fields back-compat branch (P0-7).
+          let parkRefusal:
+            | { code: "quota_exceeded" | "collision"; message: string }
+            | null = null
           if (envelope) {
             try {
               const redis = await getRedisClient()
               const ttlSeconds = Math.ceil(decision.timeoutMs / 1000) + 60
-              const parkResult = await parkDeferredIntent({
+              const parkResult = await parkDeferredIntentWithNxGuard({
                 envelope: {
                   intentHash: envelope.intentHash,
                   kind: envelope.kind,
@@ -474,13 +482,29 @@ async function processToolCalls(
                 rk,
               })
               if (!parkResult.parked) {
-                parkQuotaExceeded = true
-                console.warn(
-                  "[llm-responder] DEFER park quota exceeded:",
-                  parkResult.reason,
-                  "observed:", parkResult.observed,
-                  "limit:", parkResult.limit,
-                )
+                if (parkResult.reason === "quota_exceeded") {
+                  parkRefusal = {
+                    code: "quota_exceeded",
+                    message:
+                      "Você tem muitas operações em espera. Aguarde uma delas concluir antes de tentar novamente.",
+                  }
+                  console.warn(
+                    "[llm-responder] DEFER park quota exceeded:",
+                    parkResult.reason,
+                    "observed:", parkResult.observed,
+                    "limit:", parkResult.limit,
+                  )
+                } else {
+                  parkRefusal = {
+                    code: "collision",
+                    message: PARK_COLLISION_REFUSAL_PT_BR,
+                  }
+                  console.warn(
+                    "[llm-responder] DEFER park collision:",
+                    parkResult.reason,
+                    "sessionId:", parkResult.sessionId,
+                  )
+                }
               }
             } catch (err) {
               console.error(
@@ -489,9 +513,11 @@ async function processToolCalls(
               )
             }
           }
-          if (parkQuotaExceeded) {
+          if (parkRefusal) {
             // Surface as a refusal so the customer learns their additional
-            // DEFER was rejected rather than silently swallowed.
+            // DEFER was rejected rather than silently swallowed or — worse,
+            // for the collision case — silently overwriting an in-flight
+            // parked envelope.
             onChunk({
               type: "tool_result",
               toolName: block.name,
@@ -503,8 +529,8 @@ async function processToolCalls(
               tool_use_id: block.id,
               content: JSON.stringify({
                 status: "refused",
-                message: "Você tem muitas operações em espera. Aguarde uma delas concluir antes de tentar novamente.",
-                reason: "quota_exceeded",
+                message: parkRefusal.message,
+                reason: parkRefusal.code,
                 toolName: block.name,
               }),
             })

@@ -30,6 +30,7 @@ const {
   redisIncrMock,
   redisDecrMock,
   redisExpireMock,
+  redisDelMock,
   auditEmitMock,
 } = vi.hoisted(() => ({
   adjudicateMock: vi.fn(),
@@ -39,6 +40,10 @@ const {
   redisIncrMock: vi.fn(async () => 1),
   redisDecrMock: vi.fn(async () => 0),
   redisExpireMock: vi.fn(async () => 1),
+  // audit-2026-05-24 P0-1: the NX wrapper calls `del` to release its
+  // placeholder when the framework returns quota_exceeded or mid-flight
+  // throws. Stub it so those branches don't blow up.
+  redisDelMock: vi.fn(async () => 1),
   auditEmitMock: vi.fn(async () => undefined),
 }))
 
@@ -53,7 +58,9 @@ vi.mock("@adjudicate/core/kernel", async () => {
 })
 
 // Redis stub for the DEFER park path. We assert against `set` calls.
-// parkDeferredIntent uses INCR/EXPIRE/SET so all four are needed.
+// parkDeferredIntent uses INCR/EXPIRE/SET; the NX wrapper additionally uses
+// SET (NX placeholder) and DEL (placeholder release on quota / mid-flight
+// failure), so the stub covers all five methods.
 vi.mock("@ibatexas/tools", async () => {
   const actual = (await vi.importActual("@ibatexas/tools")) as Record<
     string,
@@ -66,6 +73,7 @@ vi.mock("@ibatexas/tools", async () => {
       incr: redisIncrMock,
       decr: redisDecrMock,
       expire: redisExpireMock,
+      del: redisDelMock,
     })),
     rk: (k: string) => `ibatexas:${k}`,
   }
@@ -210,9 +218,13 @@ function rewriteDecision<K extends string, P>(
 beforeEach(() => {
   adjudicateMock.mockReset()
   redisSetMock.mockReset()
+  redisDelMock.mockReset()
   auditEmitMock.mockReset()
-  // Redis stub returns success by default.
+  // Redis stub returns success by default. Both the NX placeholder SET
+  // and the framework's plain SET return "OK"; default to the happy
+  // path so the wrapper's SETNX claim succeeds and delegation runs.
   redisSetMock.mockResolvedValue("OK")
+  redisDelMock.mockResolvedValue(1)
   auditEmitMock.mockResolvedValue(undefined)
 })
 
@@ -285,7 +297,7 @@ const originalPayload: KernelAddItemPayload = {
     expect(gate.rewrittenPayload).toEqual(cappedPayload)
   })
 
-  it("addItem DEFER → proceed:false + envelope parked in redis via parkDeferredIntent", async () => {
+  it("addItem DEFER → proceed:false + envelope parked in redis via parkDeferredIntentWithNxGuard", async () => {
 adjudicateMock.mockReturnValue(deferDecision())
 
     const envelope = buildAddItemEnvelope(
@@ -300,19 +312,32 @@ adjudicateMock.mockReturnValue(deferDecision())
     )
     expect(gate.proceed).toBe(false)
     expect(gate.parked).toBe(true)
-    // P0-7: park flows through parkDeferredIntent which calls INCR (quota
-    // counter), EXPIRE (TTL on counter), then SET (envelope blob).
+    // P0-7 + audit-2026-05-24 P0-1: park flows through the NX-guarded wrapper
+    // (`parkDeferredIntentWithNxGuard`), which performs:
+    //   1. SETNX placeholder write at `defer:pending:{sessionId}` to atomically
+    //      claim the park slot. (Without NX, a second DEFER would silently
+    //      overwrite the first parked envelope.)
+    //   2. The framework's INCR on the quota counter at `defer:count:{sessionId}`.
+    //   3. EXPIRE on the counter (TTL hygiene).
+    //   4. The framework's plain SET that overwrites our placeholder with the
+    //      real envelope blob.
+    // Total SET calls: 2 — first the NX placeholder, then the real envelope.
     expect(redisIncrMock).toHaveBeenCalledTimes(1)
     const incrCall = redisIncrMock.mock.calls[0] as unknown as [string]
     expect(incrCall[0]).toBe(`ibatexas:defer:count:${SESSION_ID}`)
-    expect(redisSetMock).toHaveBeenCalledTimes(1)
-    const setCall = redisSetMock.mock.calls[0] as unknown as [
-      string,
-      string,
-      { EX: number },
-    ]
-    expect(setCall[0]).toBe(`ibatexas:defer:pending:${SESSION_ID}`)
-    const parsed = JSON.parse(setCall[1]) as {
+    expect(redisSetMock).toHaveBeenCalledTimes(2)
+    type SetCall = [string, string, { EX: number; NX?: boolean }]
+    const setCalls = redisSetMock.mock.calls as unknown as SetCall[]
+    // Call 1 — NX placeholder (audit-2026-05-24 P0-1 collision guard).
+    expect(setCalls[0][0]).toBe(`ibatexas:defer:pending:${SESSION_ID}`)
+    const placeholder = JSON.parse(setCalls[0][1]) as { __nx_placeholder__?: boolean }
+    expect(placeholder.__nx_placeholder__).toBe(true)
+    expect(setCalls[0][2].NX).toBe(true)
+    // Call 2 — the real envelope blob written by the framework primitive
+    // (no NX, just EX). This is the parked payload we read on resume.
+    expect(setCalls[1][0]).toBe(`ibatexas:defer:pending:${SESSION_ID}`)
+    expect(setCalls[1][2].NX).toBeUndefined()
+    const parsed = JSON.parse(setCalls[1][1]) as {
       envelope: {
         intentHash: string
         version: number
@@ -330,10 +355,10 @@ adjudicateMock.mockReturnValue(deferDecision())
     expect(parsed.envelope.nonce).toBe(envelope.nonce)
     expect(parsed.envelope.taint).toBe(envelope.taint)
     expect(parsed.envelope.actorPrincipal).toBe(envelope.actor.principal)
-    expect(setCall[2].EX).toBeGreaterThan(60)
+    expect(setCalls[1][2].EX).toBeGreaterThan(60)
   })
 
-  it("addItem DEFER with quota_exceeded → proceed:false + userFacing pt-BR copy", async () => {
+  it("addItem DEFER with quota_exceeded → proceed:false + userFacing pt-BR copy (NX placeholder released)", async () => {
     // Simulate the quota threshold being exceeded by returning a count
     // above DEFAULT_DEFER_QUOTA_PER_SESSION (16).
     redisIncrMock.mockResolvedValueOnce(17)
@@ -350,10 +375,55 @@ adjudicateMock.mockReturnValue(deferDecision())
       SESSION_ID,
     )
     expect(gate.proceed).toBe(false)
-    // No park blob written because quota was exceeded.
-    expect(redisSetMock).not.toHaveBeenCalled()
+    // Only the NX placeholder was written (NX:true) — no real envelope SET,
+    // because the framework primitive bailed before its blob write.
+    expect(redisSetMock).toHaveBeenCalledTimes(1)
+    type SetCall = [string, string, { EX: number; NX?: boolean }]
+    const setCalls = redisSetMock.mock.calls as unknown as SetCall[]
+    expect(setCalls[0][2].NX).toBe(true)
+    // audit-2026-05-24 P0-1: the wrapper releases the placeholder when quota
+    // fails so the next legitimate DEFER for this session isn't blocked.
+    expect(redisDelMock).toHaveBeenCalledWith(
+      `ibatexas:defer:pending:${SESSION_ID}`,
+    )
     // pt-BR refusal copy surfaces.
     expect(gate.userFacing).toMatch(/operações em espera/i)
+  })
+
+  it("addItem DEFER with COLLISION (existing parked envelope) → proceed:false + pt-BR collision refusal, framework primitive NOT invoked", async () => {
+    // audit-2026-05-24 P0-1 regression test: when an envelope is already
+    // parked at `defer:pending:{sessionId}`, the NX wrapper's SETNX returns
+    // null and we MUST refuse rather than let the framework primitive
+    // silently overwrite the existing parked payload.
+    //
+    // We simulate "slot already claimed" by having SET-with-NX return null
+    // (the node-redis semantics for SET NX when the key exists). Cast
+    // through `unknown` because the mock's inferred signature returns
+    // `string`, but the real client returns `string | null`.
+    redisSetMock.mockResolvedValueOnce(null as unknown as string)
+    adjudicateMock.mockReturnValue(deferDecision())
+
+    const envelope = buildAddItemEnvelope(
+      { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
+      makeCtx(),
+      SESSION_ID,
+    )
+    const gate = await __testOnly__adjudicateKernelMutation(
+      envelope,
+      makeCtx(),
+      SESSION_ID,
+    )
+    expect(gate.proceed).toBe(false)
+    // Only the SETNX attempt was made — the framework primitive (INCR
+    // followed by plain SET) is never reached because the slot is taken.
+    expect(redisSetMock).toHaveBeenCalledTimes(1)
+    expect(redisIncrMock).not.toHaveBeenCalled()
+    // The collision refusal copy is the canonical pt-BR string from the
+    // wrapper module — proves we routed through the NX guard, not the
+    // raw framework primitive.
+    expect(gate.userFacing).toBe(
+      "Já existe operação em espera para esta sessão.",
+    )
   })
 
   it("addItem REQUEST_CONFIRMATION → proceed:false + pt-BR copy", async () => {
