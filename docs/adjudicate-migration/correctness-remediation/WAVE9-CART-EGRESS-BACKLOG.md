@@ -1,3 +1,7 @@
+> ⚠️ **CLOSED on 2026-05-24.** Wave 9 was completed: `medusaStoreAdjudicated` is implemented at `packages/tools/src/medusa/store-adjudicated.ts` (719 lines + 27 test cases) and adopted by all 6 cart tool files (`add-to-cart`, `apply-coupon`, `create-checkout`, `get-or-create-cart`, `remove-from-cart`, `update-cart`). The "backlog" framing in the title is stale; this doc is preserved as the institutional record of why the wrapper was needed. For current state, see `packages/tools/src/medusa/store-adjudicated.ts` and [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Wave 9 backlog — LLM-callable cart-store medusa bypasses
 
 **Surfaced by:** W8-V4 (commit `3129a79`) — widened `MEDUSA_SCAN_DIRS` in `apps/api/src/__tests__/bypass-detection/bypass-detection.test.ts` to include `packages/tools/src/`.

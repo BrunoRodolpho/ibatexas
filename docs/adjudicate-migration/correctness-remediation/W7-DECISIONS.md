@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W7 decisions log (2026-05-23). W7-D2 (CLI two-person rule) and W7-D3 (OWNER role for kill-switch) reference the kill-switch CLI that was deleted by the IBX-IGE v3.0 cutover. W7-D1 (`DEFERRED_ADMIN_LOW_RISK` allowlist) likely remains in effect — verify against current bypass-detection gate before relying on it. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Wave 7 — Consolidated Decisions Log
 
 **Date:** 2026-05-23

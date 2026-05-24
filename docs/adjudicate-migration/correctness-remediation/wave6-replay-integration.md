@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W6 integration E2E verification (2026-05-23) against real Docker Redis. 7/7 paths PASS at the time; the underlying primitives have evolved since but the verification approach remains a useful reference. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Wave 6 — Replay & Integration End-to-End Verification
 
 Live verification of W1+W3 critical paths against real Docker Redis (port

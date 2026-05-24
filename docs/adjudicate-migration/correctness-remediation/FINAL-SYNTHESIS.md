@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W6 final-synthesis (2026-05-23). The "CONDITIONAL GO for Tier 1 / NO-GO for Tier 3+4" verdict references a tier-rollout framework that was deleted by the IBX-IGE v3.0 cutover (`f3bea43`). Per `CLAUDE.md` rule #9, the kernel is now always authoritative. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Correctness Remediation — Final Synthesis
 
 **Date:** 2026-05-23 (post-Wave 6 verification)

@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W7 per-agent rationale for the `DEFERRED_ADMIN_LOW_RISK` allowlist (2026-05-23). The 10 sites enumerated may have moved since; consult the current bypass-detection allowlist as source of truth. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # W7-DECISIONS — Admin scheduler / tables / delivery-zone governance (P2)
 
 Owner: W7-Govern-Admin

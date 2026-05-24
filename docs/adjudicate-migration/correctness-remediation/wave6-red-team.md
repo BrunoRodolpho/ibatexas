@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W6 red-team adversarial review (2026-05-23). The 2 exploitable findings (whitespace customerId, template-literal bypass) were closed in W7-G1+G2. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Wave 6 — Red-Team Adversarial Review
 
 **Date:** 2026-05-23

@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W7 closure synthesis (2026-05-23). The tier-rollout verdicts (Tier 1 GREEN, Tier 3 YELLOW, Tier 4 RED) reference a rollout framework deleted by the IBX-IGE v3.0 cutover (`f3bea43`). NEW-W7-V1..V5 findings were processed in Waves 8-9 and the cutover. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Correctness Remediation — Wave 7 Synthesis
 
 **Date:** 2026-05-23 (post-Wave 7 closure)
