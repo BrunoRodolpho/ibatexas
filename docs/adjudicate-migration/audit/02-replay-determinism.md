@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover replay-byte-determinism audit (2026-05-23). Informed the redactor-hash decision (Option A) and nonce policy; outstanding nonce-source issues are tracked in `../audit-2026-05-24/CLOSEOUT-STATUS.md`. Content preserved unchanged below as historical record.
+
+---
+
 # Replay Determinism Audit
 
 > Audit pass over every `buildEnvelope` call site, the audit pipeline, and the DEFER park/resume round-trip, against CLAUDE.md rule #9 ("the LLM is a semantic parser with zero state-mutation authority"). Investigates whether re-running an adjudicated decision produces byte-identical `intentHash`.

@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** This synthesises a pre-cutover audit pass (2026-05-23, branch `feat/consume-adjudicate-from-platform-repo` @ `0e1fb62`). The "DO NOT flip `IBX_KERNEL_ENFORCE`" verdict and most P0/P1 findings have been worked through in Waves 1-9 of correctness-remediation; the always-on cutover (`f3bea43`) deleted the shadow/enforce/kill-switch machinery referenced throughout. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Audit Synthesis — Master Findings
 
 **Date:** 2026-05-23

@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover red-team review (2026-05-23). LGPD-anonymize attack surface, NATS-auth requirements, admin two-person rule, and audit-redactor sessionId leak were addressed across Waves 1-9. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md); operator-facing NATS auth requirements remain documented at [`../remediation/NATS-AUTH-REQUIREMENTS.md`](../remediation/NATS-AUTH-REQUIREMENTS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Security Red-Team Audit
 
 > Adversarial review of the M3 governance migration. Assumes hostile customers,

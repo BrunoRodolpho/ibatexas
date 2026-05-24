@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover fail-open inventory (2026-05-23). Drove the fail-closed audit-sink (H2) and ledger work; the audit-sink is now fail-closed via `@ibatexas/audit-sink`. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Reliability / Fail-Open Audit
 
 > Auditor 6 of 8 — Reliability / Fail-Open.
