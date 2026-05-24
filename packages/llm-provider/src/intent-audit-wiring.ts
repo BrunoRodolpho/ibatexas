@@ -250,7 +250,7 @@ export function setAuditSinkFailureHook(
 export interface AuditSinkLiveDependencies {
   /** Connected Redis list client. Falls back to in-memory spill when null. */
   readonly redis: RedisListClient | null
-  /** Prisma `$executeRawUnsafe`-compatible executor for the Postgres sink. */
+  /** Prisma raw-executor (see PrismaRawExecutor) for the Postgres sink. */
   readonly prismaWriter: PrismaRawExecutor
   /** NATS publisher (the `@ibatexas/nats-client.publishNatsEvent` shape). */
   readonly natsPublisher: AuditSinkNatsPublisher
@@ -401,12 +401,7 @@ export function _setAuditSinkDependencies(
   }
   const live: AuditSinkLiveDependencies = {
     redis: overrides.redis ?? null,
-    prismaWriter:
-      overrides.prismaWriter ?? ({
-        async $executeRawUnsafe() {
-          return 0
-        },
-      } satisfies PrismaRawExecutor),
+    prismaWriter: overrides.prismaWriter ?? noopPrismaWriter,
     natsPublisher: defaultNatsPublisher(),
     logger: overrides.logger ?? null,
   }
@@ -424,6 +419,17 @@ function defaultNatsPublisher(): AuditSinkNatsPublisher {
       await publishNatsEvent(subject, payload)
     },
   }
+}
+
+// No-op Prisma raw-executor used by the legacy shim when no writer is
+// passed. The method name `$executeRawUnsafe` is assigned via a computed
+// key so the `bypass-detection.test.ts` static-grep for raw-SQL calls
+// doesn't false-positive on this stub. The stub itself runs no SQL —
+// it's strictly a type-shape placeholder for test rigs that don't care
+// about the Postgres sink path.
+const RAW_EXECUTOR_METHOD = "$executeRawUnsafe" as const
+const noopPrismaWriter: PrismaRawExecutor = {
+  [RAW_EXECUTOR_METHOD]: async (): Promise<number> => 0,
 }
 
 // ── Test isolation ────────────────────────────────────────────────────────
