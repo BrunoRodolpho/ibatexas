@@ -17,7 +17,18 @@
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender, reaisToCentavos, atomicIncr } from "@ibatexas/tools";
 import * as Sentry from "@sentry/node";
-import { createCustomerService, createLoyaltyService, createOrderCommandService, createOrderEventLogService, createPaymentCommandService, ConcurrencyError } from "@ibatexas/domain";
+import {
+  createCustomerService,
+  createLoyaltyService,
+  createOrderCommandService,
+  createOrderEventLogService,
+  createPaymentCommandService,
+  ConcurrencyError,
+  type OrderProjectionCreatePayload,
+  type OrderStatusReconcilePayload,
+  type PaymentCreatePayload,
+} from "@ibatexas/domain";
+import { getAuditSink } from "@ibatexas/llm-provider";
 import { formatOrderId, type OrderPlacedEvent, type OrderStatusChangedEvent, type OrderFulfillmentStatus } from "@ibatexas/types";
 import type { FastifyBaseLogger } from "fastify";
 import { ITEMS_SCHEMA_VERSION } from "@ibatexas/domain";
@@ -27,6 +38,7 @@ import { buildCartRecoveryMessage } from "../jobs/cart-recovery-messages.js";
 import { loadSession } from "../session/store.js";
 import { isNewEvent } from "./dedup.js";
 import { pushToDlq } from "./dlq.js";
+import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 
 const RECENTLY_VIEWED_MAX = 20;
 
@@ -394,10 +406,32 @@ export async function startCartIntelligenceSubscribers(
       }
 
       // 10. Create order projection — failure must NOT block order processing
+      //
+      // Task 16: kernel-gated via order.projection.create envelope (SYSTEM-only).
+      // The full CreateOrderProjectionInput is passed as a second argument because
+      // the mapper output carries Prisma-typed JSON fields that do not round-trip
+      // cleanly through the envelope (per Task 15 docs).
       try {
         const orderPayload = payload as Partial<OrderPlacedEvent>;
-        const commandSvc = createOrderCommandService();
-        await commandSvc.create({
+        const commandSvc = createOrderCommandService(log ?? undefined, {
+          auditSink: getAuditSink(),
+        });
+        const totalInCentavos = orderPayload.totalInCentavos ?? items.reduce((s, i) => s + (i.priceInCentavos ?? 0) * (i.quantity ?? 1), 0);
+        const projectionCreatePayload: OrderProjectionCreatePayload = {
+          orderId,
+          displayId: orderPayload.displayId ?? 0,
+          customerId: customerId,
+          fulfillmentStatus: "pending",
+          paymentStatus: orderPayload.paymentStatus ?? "pending",
+          totalInCentavos,
+        };
+        const envelope = buildSystemEnvelope({
+          kind: "order.projection.create" as const,
+          payload: projectionCreatePayload,
+          sourceSubject: "order.placed",
+          eventId: `projection:${orderId}`,
+        });
+        const outcome = await commandSvc.createFromEnvelope(envelope, {
           id: orderId,
           displayId: orderPayload.displayId ?? 0,
           customerId: customerId,
@@ -406,7 +440,7 @@ export async function startCartIntelligenceSubscribers(
           customerPhone: orderPayload.customerPhone ?? null,
           fulfillmentStatus: "pending",
           paymentStatus: orderPayload.paymentStatus ?? "pending",
-          totalInCentavos: orderPayload.totalInCentavos ?? items.reduce((s, i) => s + (i.priceInCentavos ?? 0) * (i.quantity ?? 1), 0),
+          totalInCentavos,
           subtotalInCentavos: orderPayload.subtotalInCentavos ?? 0,
           shippingInCentavos: orderPayload.shippingInCentavos ?? 0,
           itemCount: items.length,
@@ -424,7 +458,29 @@ export async function startCartIntelligenceSubscribers(
           tipInCentavos: orderPayload.tipInCentavos ?? 0,
           medusaCreatedAt: new Date(),
         });
-        log?.info({ order_id: orderId }, "[cart-intelligence] order projection created");
+        if (
+          outcome.decision.kind !== "EXECUTE" &&
+          outcome.decision.kind !== "REWRITE"
+        ) {
+          const refusalCode =
+            outcome.decision.kind === "REFUSE"
+              ? outcome.decision.refusal.code
+              : undefined;
+          log?.warn(
+            { order_id: orderId, decision: outcome.decision.kind, refusalCode },
+            "[cart-intelligence] order projection create — kernel did not authorize",
+          );
+          if (outcome.decision.kind === "REFUSE") {
+            await pushToDlq(
+              "order.placed",
+              payload as Record<string, unknown>,
+              `kernel REFUSE (projection): ${outcome.decision.refusal.code}`,
+              log,
+            );
+          }
+        } else {
+          log?.info({ order_id: orderId }, "[cart-intelligence] order projection created");
+        }
       } catch (projErr) {
         // Duplicate key = projection already exists (e.g. reprocessed event) — safe to ignore
         // P2002 is Prisma's code for unique constraint violation
@@ -437,19 +493,56 @@ export async function startCartIntelligenceSubscribers(
       }
 
       // 11. Create Payment row — failure must NOT block order processing
+      //
+      // Task 16: kernel-gated via payment.create envelope (SYSTEM-only).
+      // Investigation 04 P0 #3 — this is one of the highest-priority wraps:
+      // a forged order.placed event could create arbitrary Payment rows.
       try {
         const orderPayload = payload as Partial<OrderPlacedEvent>;
         const method = (orderPayload.paymentMethod ?? "pix") as "pix" | "card" | "cash";
         const totalInCentavos = orderPayload.totalInCentavos ?? items.reduce((s, i) => s + (i.priceInCentavos ?? 0) * (i.quantity ?? 1), 0);
 
-        const paymentCmdSvc = createPaymentCommandService(log ?? undefined);
-        await paymentCmdSvc.create({
+        const paymentCmdSvc = createPaymentCommandService(log ?? undefined, {
+          auditSink: getAuditSink(),
+        });
+        const paymentCreatePayload: PaymentCreatePayload = {
           orderId,
           method,
           amountInCentavos: totalInCentavos,
-          stripePaymentIntentId: orderPayload.stripePaymentIntentId ?? undefined,
+          ...(orderPayload.stripePaymentIntentId !== undefined
+            ? { stripePaymentIntentId: orderPayload.stripePaymentIntentId }
+            : {}),
+        };
+        const envelope = buildSystemEnvelope({
+          kind: "payment.create" as const,
+          payload: paymentCreatePayload,
+          sourceSubject: "order.placed",
+          eventId: `payment:${orderId}`,
         });
-        log?.info({ order_id: orderId, method }, "[cart-intelligence] payment row created");
+        const outcome = await paymentCmdSvc.createFromEnvelope(envelope);
+        if (
+          outcome.decision.kind !== "EXECUTE" &&
+          outcome.decision.kind !== "REWRITE"
+        ) {
+          const refusalCode =
+            outcome.decision.kind === "REFUSE"
+              ? outcome.decision.refusal.code
+              : undefined;
+          log?.warn(
+            { order_id: orderId, decision: outcome.decision.kind, refusalCode },
+            "[cart-intelligence] payment.create — kernel did not authorize",
+          );
+          if (outcome.decision.kind === "REFUSE") {
+            await pushToDlq(
+              "order.placed",
+              payload as Record<string, unknown>,
+              `kernel REFUSE (payment): ${outcome.decision.refusal.code}`,
+              log,
+            );
+          }
+        } else {
+          log?.info({ order_id: orderId, method }, "[cart-intelligence] payment row created");
+        }
       } catch (payErr) {
         // ActivePaymentExistsError or unique constraint = already created — safe to ignore
         const isExpected =
@@ -590,15 +683,47 @@ export async function startCartIntelligenceSubscribers(
     });
 
     // 1. Reconcile projection (safety net — PATCH handler updates projection first)
+    //
+    // Task 16: kernel-gated via order.status.reconcile envelope (SYSTEM-only).
     try {
-      const commandSvc = createOrderCommandService(hLog ?? undefined);
-      const result = await commandSvc.reconcileStatus(orderId, {
-        newStatus: newStatus as OrderFulfillmentStatus,
-        eventVersion,
-        actor: "system",
+      const commandSvc = createOrderCommandService(hLog ?? undefined, {
+        auditSink: getAuditSink(),
       });
-      if (result) {
-        hLog?.info({ order_id: orderId, version: result.version }, "[cart-intelligence] projection reconciled from event");
+      const reconcilePayload: OrderStatusReconcilePayload = {
+        orderId,
+        newStatus: newStatus as string,
+        eventVersion: eventVersion ?? 0,
+        actor: "system",
+      };
+      const envelope = buildSystemEnvelope({
+        kind: "order.status.reconcile" as const,
+        payload: reconcilePayload,
+        sourceSubject: "order.status_changed",
+        eventId: `reconcile:${orderId}:${eventVersion ?? "0"}`,
+      });
+      const outcome = await commandSvc.reconcileStatusFromEnvelope(envelope);
+      if (
+        outcome.decision.kind !== "EXECUTE" &&
+        outcome.decision.kind !== "REWRITE"
+      ) {
+        const refusalCode =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.code
+            : undefined;
+        hLog?.warn(
+          { order_id: orderId, decision: outcome.decision.kind, refusalCode },
+          "[cart-intelligence] projection reconcile — kernel did not authorize",
+        );
+        if (outcome.decision.kind === "REFUSE") {
+          await pushToDlq(
+            "order.status_changed",
+            payload as Record<string, unknown>,
+            `kernel REFUSE: ${outcome.decision.refusal.code}`,
+            hLog,
+          );
+        }
+      } else if (outcome.result) {
+        hLog?.info({ order_id: orderId, version: outcome.result.version }, "[cart-intelligence] projection reconciled from event");
       } else {
         hLog?.info({ order_id: orderId }, "[cart-intelligence] projection already up-to-date — reconcile skipped");
       }

@@ -1,0 +1,132 @@
+W7-O1 — `ibx kernel defer resume <sessionId>` CLI — Tier-1 readiness gap closed
+================================================================================
+
+Finding (W6 operational drill, Drill 5, verdict FAIL — top dead-end #1):
+
+  Stuck DEFER recovery: no `ibx kernel defer resume` exists. Operator must
+  SCAN Redis, parse JSON, manually publish NATS. Or restart the worker and
+  hope `runRecoveryScan` clears it.
+
+Resolution: new CLI subcommand that publishes a synthesised
+`payment.status_changed` NATS event so the live `defer-resolver`
+subscriber resumes the parked envelope via the standard two-phase commit.
+
+Design rationale: see W7-DECISIONS-ops.md §O1. The CLI is a resolver-kicker,
+not a resume-reimplementation; this keeps the recovery logic in one place
+(the live subscriber).
+
+W7-Gates G3 dependency: SATISFIED.
+  G3 landed at commit e1e1e10
+  (fix(api/adapters,correctness-w7-G3): defensive hoist actor.principal→
+   actorPrincipal in NX-guard park wrapper)
+  → verifyParkedEnvelopeHash is now active (verified:true | false | null)
+    rather than structurally inert.
+
+Unit tests (in-memory fake Redis, exact CLI command surface):
+
+$ pnpm vitest run packages/cli/src/commands/__tests__/kernel.test.ts -t "W7-O1" --reporter=verbose
+
+ ✓ ibx kernel defer resume (W7-O1) > refuses with exit 1 when no parked envelope exists for the sessionId 3ms
+ ✓ ibx kernel defer resume (W7-O1) > refuses with exit 1 when the parked blob is malformed JSON 0ms
+ ✓ ibx kernel defer resume (W7-O1) > --json emits the synth event for a verified parked envelope (no NATS publish) 1ms
+ ✓ ibx kernel defer resume (W7-O1) > refuses with exit 1 when verifyParkedEnvelopeHash detects tamper 0ms
+ ✓ ibx kernel defer resume (W7-O1) > --json supports a legacy v0.1 blob without hash-verification fields (verifyMode=legacy-no-hash) 0ms
+
+ Tests  5 passed (5)
+
+Integration evidence — real Docker Redis (RULE H):
+
+Setup:
+  $ docker run --rm -d -p 16379:6379 --name w7-o1-evidence-redis redis:7-alpine
+  1a7101f07aa2…
+  $ docker exec w7-o1-evidence-redis redis-cli ping
+  PONG
+
+  Fixture: park a hash-verified envelope at
+    development:defer:pending:cust:o1_drill_session
+  with intentHash computed via the framework's canonicalJson + sha256
+  rules:
+    intentHash=a5d16a67b51f684ccdca9c0340b25264b43521ea7a11414932be97ed7e038a4a
+
+Verified-envelope dry-run (the happy path the runbook documents):
+
+  $ APP_ENV=development REDIS_URL=redis://localhost:16379 IBX_OPERATOR=w7-o1-drill \
+      node packages/cli/dist/index.js kernel defer resume cust:o1_drill_session --json
+
+  {
+    "ok": true,
+    "sessionId": "cust:o1_drill_session",
+    "parkKey": "development:defer:pending:cust:o1_drill_session",
+    "verifyMode": "verified",
+    "parkedSignal": "pix.confirmed",
+    "intentHash": "a5d16a67b51f684ccdca9c0340b25264b43521ea7a11414932be97ed7e038a4a",
+    "intentKind": "order.tool.propose",
+    "publishSubject": "ibatexas.payment.status_changed",
+    "synthEvent": {
+      "orderId": "ord_w7_o1_drill",
+      "paymentId": "pi_w7_o1_drill",
+      "previousStatus": "requires_payment_method",
+      "newStatus": "paid",
+      "method": "pix",
+      "version": 1,
+      "timestamp": "2026-05-23T23:09:31.029Z",
+      "cliInjectedBy": "cli:w7-o1-drill"
+    }
+  }
+
+  → APP_ENV-namespaced key correctly resolved (W7-O5 alignment).
+  → verifyMode=verified — the framework primitive (G3-hardened) accepts
+    the parked envelope.
+  → synthEvent carries the parked payload's paymentId + orderId, plus
+    the cli-injected marker for downstream audit correlation.
+
+Tampered-envelope refusal:
+
+  $ docker exec w7-o1-evidence-redis redis-cli SET \
+      'development:defer:pending:cust:o1_tampered' \
+      '<parked blob with stored intentHash = deadbeef…>'
+  OK
+
+  $ APP_ENV=development REDIS_URL=redis://localhost:16379 IBX_OPERATOR=w7-o1-drill \
+      node packages/cli/dist/index.js kernel defer resume cust:o1_tampered --json
+
+  Parked envelope adulterado — recusando retomada.
+  stored=deadbeef0000000000000000000000000000000000000000000000000000beef derived=ebb32c89da5b59f3157a3e8cbc831892096caeb90950a51b58a2317fbec13d4f
+  $ echo $?
+  1
+
+  → Exit code 1, single-line stored vs derived dump for triage.
+  → No NATS event published (the verification gates the publish).
+
+No-park refusal:
+
+  $ APP_ENV=development REDIS_URL=redis://localhost:16379 IBX_OPERATOR=w7-o1-drill \
+      node packages/cli/dist/index.js kernel defer resume cust:does_not_exist --json
+
+  Nenhum envelope parkado encontrado para cust:does_not_exist (chave: development:defer:pending:cust:does_not_exist).
+  $ echo $?
+  1
+
+  → pt-BR operator-readable error; reveals the namespaced key so an
+    operator can confirm whether they typed the sessionId correctly.
+
+Runbook reference (RULE H §iv):
+
+  docs/adjudicate-migration/runbooks/SHADOW-ENFORCE-ROLLOUT.md gains a new
+  §"Stuck-DEFER recovery (W7-O1)" subsection naming:
+    - the 3-step procedure (SCAN → --json dry-run → live resume)
+    - the framework verifyParkedEnvelopeHash gate (fail-closed on tamper)
+    - the synth-event shape and `cliInjectedBy` marker
+    - that the CLI kicks the existing resolver pipeline — not a resume
+      re-implementation.
+
+Cleanup:
+  $ docker stop w7-o1-evidence-redis
+  w7-o1-evidence-redis
+
+Done criteria:
+  ✓ CLI subcommand works against real Redis with evidence (above).
+  ✓ Integration test exists (in-memory fake at unit level for CI; real
+    Docker Redis manual capture for evidence).
+  ✓ Runbook documents the command + the 3-step procedure.
+  ✓ Tamper detection live (G3-hardened verifyParkedEnvelopeHash).

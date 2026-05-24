@@ -20,6 +20,9 @@ const mockListByOrderId = vi.hoisted(() => vi.fn())
 const mockGetById = vi.hoisted(() => vi.fn())
 const mockTransitionStatus = vi.hoisted(() => vi.fn())
 const mockCreate = vi.hoisted(() => vi.fn())
+// R1-DELETE: envelope-typed entry points.
+const mockTransitionStatusFromEnvelope = vi.hoisted(() => vi.fn())
+const mockCreateFromEnvelope = vi.hoisted(() => vi.fn())
 
 const mockWithLock = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
@@ -41,6 +44,8 @@ vi.mock("@ibatexas/domain", () => ({
   createPaymentCommandService: vi.fn(() => ({
     transitionStatus: mockTransitionStatus,
     create: mockCreate,
+    transitionStatusFromEnvelope: mockTransitionStatusFromEnvelope,
+    createFromEnvelope: mockCreateFromEnvelope,
   })),
 }))
 
@@ -70,6 +75,18 @@ vi.mock("../_stripe-helpers.js", () => ({
       create: mockStripePaymentIntentsCreate,
     },
   })),
+}))
+
+// W7 P5: regenerate-pix now routes the Stripe PI create through
+// stripeAdjudicated. Mock the wrapper so the kernel + audit path is
+// bypassed in this tool-level test — the wrapper itself is covered by
+// packages/tools/src/stripe/__tests__/adjudicated.test.ts.
+vi.mock("../../stripe/adjudicated.js", () => ({
+  stripeAdjudicated: {
+    paymentIntents: {
+      create: mockStripePaymentIntentsCreate,
+    },
+  },
 }))
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -145,6 +162,15 @@ describe("regeneratePix", () => {
     mockCancelStalePaymentIntent.mockResolvedValue(undefined)
     mockTransitionStatus.mockResolvedValue(undefined)
     mockCreate.mockResolvedValue(makeNewPayment())
+    // R1-DELETE: envelope-typed paths return AdjudicatedResult.
+    mockTransitionStatusFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 2, previousStatus: "payment_expired", newStatus: "canceled" },
+    })
+    mockCreateFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: makeNewPayment(),
+    })
     mockPublishNatsEvent.mockResolvedValue(undefined)
 
     // Default Stripe PI with valid PIX QR
@@ -166,27 +192,37 @@ describe("regeneratePix", () => {
     expect(result.message).toBe("Novo PIX gerado! Use o código abaixo para pagar.")
   })
 
-  it("happy path — cancels old Stripe PI and creates new Payment row", async () => {
+  it("[R1-DELETE] happy path — cancels old Stripe PI + envelope-typed cancel + envelope-typed create", async () => {
     await regeneratePix(INPUT, CTX)
 
     expect(mockCancelStalePaymentIntent).toHaveBeenCalledWith("pi_test_old")
-    expect(mockTransitionStatus).toHaveBeenCalledWith(
-      "pay_01",
-      expect.objectContaining({
-        newStatus: "canceled",
-        actor: "customer",
-        actorId: "cust_01",
-        reason: "pix_regeneration",
-      }),
-    )
-    expect(mockCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        orderId: "order_01",
-        method: "pix",
-        amountInCentavos: 8900,
-        stripePaymentIntentId: "pi_test_new",
-      }),
-    )
+
+    // R1-DELETE: cancel + create go through *FromEnvelope.
+    expect(mockTransitionStatusFromEnvelope).toHaveBeenCalledTimes(1)
+    const cancelEnv = mockTransitionStatusFromEnvelope.mock.calls[0]![0] as {
+      kind: string;
+      payload: { paymentId: string; newStatus: string; actor: string; reason: string };
+    }
+    expect(cancelEnv.kind).toBe("payment.status.transition")
+    expect(cancelEnv.payload.newStatus).toBe("canceled")
+    expect(cancelEnv.payload.reason).toBe("pix_regeneration")
+
+    expect(mockCreateFromEnvelope).toHaveBeenCalledTimes(1)
+    const createEnv = mockCreateFromEnvelope.mock.calls[0]![0] as {
+      kind: string;
+      taint: string;
+      payload: { orderId: string; method: string; amountInCentavos: number; stripePaymentIntentId: string };
+    }
+    expect(createEnv.kind).toBe("payment.create")
+    expect(createEnv.taint).toBe("SYSTEM")
+    expect(createEnv.payload.orderId).toBe("order_01")
+    expect(createEnv.payload.method).toBe("pix")
+    expect(createEnv.payload.amountInCentavos).toBe(8900)
+    expect(createEnv.payload.stripePaymentIntentId).toBe("pi_test_new")
+
+    // Bare-arg paths NOT used.
+    expect(mockTransitionStatus).not.toHaveBeenCalled()
+    expect(mockCreate).not.toHaveBeenCalled()
   })
 
   it("happy path — publishes payment.status_changed NATS event", async () => {

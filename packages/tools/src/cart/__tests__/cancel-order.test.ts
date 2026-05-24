@@ -21,6 +21,8 @@ const mockCancelOrder = vi.hoisted(() => vi.fn())
 const mockGetOrder = vi.hoisted(() => vi.fn())
 const mockGetActiveByOrderId = vi.hoisted(() => vi.fn())
 const mockTransitionStatus = vi.hoisted(() => vi.fn())
+// R1-DELETE: cancel-order now dispatches through transitionStatusFromEnvelope.
+const mockTransitionStatusFromEnvelope = vi.hoisted(() => vi.fn())
 const mockCancelStalePaymentIntent = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 
@@ -38,6 +40,7 @@ vi.mock("@ibatexas/domain", () => ({
   })),
   createPaymentCommandService: vi.fn(() => ({
     transitionStatus: mockTransitionStatus,
+    transitionStatusFromEnvelope: mockTransitionStatusFromEnvelope,
   })),
 }))
 
@@ -74,6 +77,11 @@ describe("cancelOrder", () => {
     mockPublishNatsEvent.mockResolvedValue(undefined)
     mockCancelStalePaymentIntent.mockResolvedValue(undefined)
     mockTransitionStatus.mockResolvedValue(undefined)
+    // R1-DELETE: envelope-typed cancel returns AdjudicatedResult shape.
+    mockTransitionStatusFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 4, previousStatus: "awaiting_payment", newStatus: "canceled" },
+    })
     // Default: order has no Stripe PI in metadata (avoids legacy path interference)
     mockGetOrder.mockResolvedValue(orderResponse({ metadata: {} }))
   })
@@ -96,16 +104,25 @@ describe("cancelOrder", () => {
       expect(mockCancelStalePaymentIntent).toHaveBeenCalledWith("pi_test123")
     })
 
-    it("transitions payment status to canceled", async () => {
+    it("[R1-DELETE] transitions payment via envelope (NOT bare-arg)", async () => {
       await cancelOrder(INPUT, CTX)
 
-      expect(mockTransitionStatus).toHaveBeenCalledWith("pay_01", {
-        newStatus: "canceled",
-        actor: "customer",
-        actorId: CTX.customerId,
-        reason: "order_canceled",
-        expectedVersion: 3,
-      })
+      // The envelope-typed entry point was called.
+      expect(mockTransitionStatusFromEnvelope).toHaveBeenCalledTimes(1)
+      const envelope = mockTransitionStatusFromEnvelope.mock.calls[0]![0] as {
+        kind: string;
+        taint: string;
+        payload: { paymentId: string; newStatus: string; actor: string; reason: string; expectedVersion?: number };
+      }
+      expect(envelope.kind).toBe("payment.status.transition")
+      expect(envelope.taint).toBe("TRUSTED")
+      expect(envelope.payload.paymentId).toBe("pay_01")
+      expect(envelope.payload.newStatus).toBe("canceled")
+      expect(envelope.payload.actor).toBe("customer")
+      expect(envelope.payload.reason).toBe("order_canceled")
+      expect(envelope.payload.expectedVersion).toBe(3)
+      // Bare-arg path is NOT used.
+      expect(mockTransitionStatus).not.toHaveBeenCalled()
     })
 
     it("publishes payment.status_changed NATS event", async () => {

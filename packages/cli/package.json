@@ -15,7 +15,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@adjudicate/audit": "workspace:*",
+    "@adjudicate/audit-postgres": "workspace:*",
+    "@adjudicate/core": "workspace:*",
+    "@adjudicate/runtime": "workspace:*",
     "@ibatexas/domain": "workspace:*",
+    "@ibatexas/llm-provider": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",

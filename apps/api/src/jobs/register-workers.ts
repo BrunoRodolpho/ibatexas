@@ -13,6 +13,7 @@ import { startFollowUpPoller } from "./follow-up-poller.js";
 import { startHesitationNudgeWorker } from "./hesitation-nudge.js";
 import { startPixExpiryMonitor } from "./pix-expiry-monitor.js";
 import { startStaleOrderChecker } from "./stale-order-checker.js";
+import { startDeferTimeoutSweeper } from "./defer-timeout-sweeper.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -29,6 +30,9 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   startHesitationNudgeWorker();
   startPixExpiryMonitor();
   startStaleOrderChecker(log);
+  // [task 03] Sweeps expired defer:pending:* keys every 60s and publishes
+  // intent.defer.timeout for downstream notification fan-out.
+  startDeferTimeoutSweeper(log);
 }
 
 /**
@@ -46,6 +50,7 @@ export async function shutdownWorkers(): Promise<void> {
   const { stopHesitationNudgeWorker } = await import("./hesitation-nudge.js");
   const { stopPixExpiryMonitor } = await import("./pix-expiry-monitor.js");
   const { stopStaleOrderChecker } = await import("./stale-order-checker.js");
+  const { stopDeferTimeoutSweeper } = await import("./defer-timeout-sweeper.js");
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -59,5 +64,6 @@ export async function shutdownWorkers(): Promise<void> {
     stopHesitationNudgeWorker(),
     stopPixExpiryMonitor(),
     stopStaleOrderChecker(),
+    stopDeferTimeoutSweeper(),
   ]);
 }

@@ -30,6 +30,7 @@ import { registerStripeCommands } from "./commands/stripe.js"
 import { registerChatCommands } from "./commands/chat.js"
 import { registerDlqCommands } from "./commands/dlq.js"
 import { registerOrdersCommands } from "./commands/orders.js"
+import { registerKernelCommands } from "./commands/kernel.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Env precedence: shell > root .env > cli .env. dotenv semantics: each
@@ -243,6 +244,14 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Kernel",
+      commands: [
+        { usage: "kernel status",        desc: "Estado do kernel: shadow/enforce, intent kinds, ledger, audit sinks" },
+        { usage: "kernel replay [--since=24h]", desc: "Re-feed audit records via adjudicate() e relata drift" },
+        { usage: "kernel divergence [--since=24h]", desc: "Resumo de divergências shadow-mode por classe" },
+      ],
+    },
+    {
       title: "Config",
       commands: [
         { usage: "env check [--step n]", desc: "Validate required environment variables" },
@@ -325,6 +334,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "stripe",  register: registerStripeCommands, description: "Stripe — payments and webhook testing" },
   { name: "dlq",     register: registerDlqCommands,     description: "Dead Letter Queue — inspect, replay, and purge failed events" },
   { name: "orders",  register: registerOrdersCommands,  description: "Orders — projection management and debugging" },
+  { name: "kernel",  register: registerKernelCommands,  description: "Kernel — adjudicate kernel status, replay, and divergence" },
 ]
 
 for (const { name, register, description } of groupedCommands) {

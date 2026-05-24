@@ -1,0 +1,84 @@
+W3 D4 — `ibx kernel divergence --intent-kind` bug fix
+======================================================
+
+Date: 2026-05-23
+Branch: feat/correctness-w1-reproduction
+
+Bug source: docs/adjudicate-migration/deep-audit/08-operational-readiness.md
+            §"INC-1 — Kernel pack drift detected in production"
+
+  > "ibx kernel divergence --since=1h --intent-kind=order.checkout.create
+  > is wired (kernel.ts:352-559) and DOES parse --since and --intent-kind
+  > correctly. BUT: the --intent-kind option is parsed (line 597) yet
+  > NEVER threaded into the SQL query (line 449 ignores it; limit: 10_000
+  > only). So the CLI returns EVERYTHING in the window, then groups
+  > in-memory and the printed table may include other kinds. Output is
+  > functional but the filter is broken."
+
+In other words: an operator running
+  ibx kernel divergence --intent-kind=order.checkout.create
+silently received divergence stats for ALL kinds during the window.
+The investigation step in the runbook (§INC-1) was unreliable.
+
+
+Fix
+===
+packages/cli/src/commands/kernel.ts:
+
+1. `runDivergence` now accepts `intentKind?: string`.
+2. The `--intent-kind <kind>` option is registered on the divergence
+   subcommand (Commander never accepted it before).
+3. The `readAuditWindow` call threads `intentKind` into the window
+   descriptor so the existing `fetchRows` SQL builder appends
+   `AND intent_kind = $N` to the WHERE clause.
+
+Before (kernel.ts:675 — the bug):
+  const records = await readAuditWindow(queryFn,
+    { fromIso, toIso, limit: 10_000 })   // ← intentKind dropped
+
+After:
+  const records = await readAuditWindow(queryFn,
+    {
+      fromIso, toIso,
+      ...(opts.intentKind !== undefined
+        ? { intentKind: opts.intentKind } : {}),
+      limit: 10_000,
+    })
+
+
+Test asserting the fix
+======================
+packages/cli/src/commands/__tests__/kernel.test.ts:
+
+  ibx kernel divergence
+    ✓ threads --intent-kind into the SQL WHERE clause
+
+  The test injects a fake `pg.Client` that captures every SQL string +
+  param array sent through `client.query(...)`. After
+    cmd.parseAsync([
+      "divergence", "--since=24h",
+      "--intent-kind=order.checkout.create",
+    ])
+  the test asserts:
+    - the captured SQL matches `/intent_kind\s*=\s*\$\d/`
+    - the captured params include the string "order.checkout.create"
+
+  Run before the fix: PARSE FAILURE — `--intent-kind` was an
+  unknown option to Commander, so the test threw at parse time.
+  Run after the fix: PASS — the filter is now in the WHERE clause
+  and the runbook step is honest.
+
+
+--help output now lists --intent-kind:
+
+  $ ibx kernel divergence --help
+  Usage: ibx kernel divergence [options]
+
+  Resumo de divergências shadow-mode por classe (BASIS_ONLY,
+  DECISION_KIND, PAYLOAD_REWRITE)
+
+  Options:
+    --since <duration>    Janela de tempo (ex: 24h, 7d) (default: "24h")
+    --intent-kind <kind>  Filtra por intent kind
+                          (ex: order.checkout.create) — W3 D4 fix
+    -h, --help            display help for command

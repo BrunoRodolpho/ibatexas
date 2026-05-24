@@ -2,13 +2,28 @@
 // Runs every 5 minutes via BullMQ repeatable job. Transitions confirmed
 // reservations to `no_show` when the reserved time + 15 minutes has passed
 // with no check-in.
+//
+// ── P1-J — kernel-gated transition via reservation.no_show.mark ─────────
+//
+// Previously called `svc.transition(reservation.id, "no_show")` directly —
+// a deprecated bare-arg state-machine mutation that bypassed the kernel.
+// The reservations Pack's taint policy marks `reservation.no_show.mark`
+// SYSTEM-only; the BullMQ job is the legitimate system caller. We now
+// build a system-actor envelope (nonce = `noshow:${reservationId}` for
+// idempotency on retry) and call `transitionFromEnvelope`. REFUSE /
+// non-EXECUTE outcomes are logged and skipped — the next tick re-attempts.
 
 import { createReservationService } from "@ibatexas/domain"
 import { publishNatsEvent } from "@ibatexas/nats-client"
+import type {
+  ReservationNoShowMarkPayload,
+  ReservationState,
+} from "@ibatexas/pack-reservations"
 import * as Sentry from "@sentry/node"
 import type { Queue, Worker } from "bullmq"
 import type { FastifyBaseLogger } from "fastify"
 import { createQueue, createWorker, type Job } from "./queue.js"
+import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js"
 
 const GRACE_PERIOD_MINUTES = Number.parseInt(process.env.NO_SHOW_GRACE_MINUTES || "15", 10)
 const REPEAT_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes
@@ -60,7 +75,57 @@ export async function checkNoShows(log?: FastifyBaseLogger | null): Promise<void
 
   for (const reservation of noShows) {
     try {
-      await svc.transition(reservation.id, "no_show")
+      // P1-J: kernel-gated transition. SYSTEM actor (taint=SYSTEM clears
+      // the no_show.mark systemOnly floor). nonce keyed on reservationId
+      // so re-runs across BullMQ ticks produce a deterministic intentHash
+      // and the kernel / ledger can dedupe.
+      const payload: ReservationNoShowMarkPayload = { reservationId: reservation.id }
+      const envelope = buildSystemEnvelope<
+        "reservation.no_show.mark",
+        ReservationNoShowMarkPayload
+      >({
+        kind: "reservation.no_show.mark",
+        payload,
+        sourceSubject: "no-show-checker",
+        eventId: `noshow:${reservation.id}`,
+      })
+
+      // Pack policy for no_show.mark requires the reservation snapshot in
+      // state. System path → customerId/staffId nullable; we still project
+      // them so the pack's "isAuthenticatedCustomer" guard short-circuits
+      // (no_show.mark is not in CUSTOMER_FACING_MUTATIONS).
+      const state = {
+        ctx: {
+          channel: "staff" as const,
+          customerId: reservation.customerId,
+          staffId: null,
+          reservation: {
+            id: reservation.id,
+            status: reservation.status,
+            partySize: reservation.partySize,
+            timeSlotId: reservation.timeSlotId,
+          },
+        },
+      } as ReservationState
+
+      const outcome = await svc.transitionFromEnvelope(envelope, state)
+      if (
+        outcome.decision.kind !== "EXECUTE" &&
+        outcome.decision.kind !== "REWRITE"
+      ) {
+        effectiveLogger?.warn(
+          {
+            reservationId: reservation.id,
+            decision: outcome.decision.kind,
+            refusalCode:
+              outcome.decision.kind === "REFUSE"
+                ? outcome.decision.refusal.code
+                : undefined,
+          },
+          "[no-show] kernel did not authorize no_show mark — skipping (next tick will retry)",
+        )
+        continue
+      }
 
       // Publish NATS event (fire-and-forget, outside transaction)
       await publishNatsEvent("reservation.no_show", {

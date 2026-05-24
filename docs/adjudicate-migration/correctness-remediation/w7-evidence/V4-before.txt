@@ -1,0 +1,59 @@
+=== W8-V4 BEFORE state — bypass-detection MEDUSA_SCAN_DIRS does not cover packages/tools/src/ ===
+Branch: feat/correctness-w7-close-w6-findings
+Captured: 2026-05-23 (W8 closure agent)
+
+── The gap (verifier reproduction) ──────────────────────────────────────────
+
+apps/api/src/__tests__/bypass-detection/bypass-detection.test.ts:72-76
+
+  const MEDUSA_SCAN_DIRS = [
+    "apps/api/src/routes",
+    "apps/api/src/jobs",
+    "apps/api/src/subscribers",
+  ]
+
+The scan excludes:
+  - packages/tools/src/             — where the W7-P5 cart sites lived
+  - packages/domain/src/services/   — where order.service.ts lives
+
+The verifier's adversarial probe (wave6 §"P0-NEW-W6-4 through P0-NEW-W6-9"
+item 5) showed this gap allowed the W5 stripe-webhook bypass to slip
+past CI, AND it is structurally why the W7 P5↔P6 hand-off bypass
+(NEW-W7-V1) was invisible to bypass-detection.
+
+The W6 synthesis explicitly called this out:
+  "Stripe SDK direct calls: 6 sites in packages/tools/src/cart/ — no
+   adjudication anywhere"
+
+W7-P4 (orderNote) and W7-P5 (stripe) closed the specific bypasses
+listed by W6 but did NOT widen the scan dirs. A future contributor
+reintroducing the same pattern in packages/tools/src/cart/ would not
+be flagged by CI.
+
+── Test pre-state (PRE-V4) ──────────────────────────────────────────────────
+
+$ pnpm vitest run apps/api/src/__tests__/bypass-detection/
+ RUN  v3.2.4
+ ✓ apps/api/src/__tests__/bypass-detection/bypass-detection.test.ts (31 tests) 1218ms
+
+ Test Files  1 passed (1)
+      Tests  31 passed (31)
+   Duration  1.53s
+
+31 tests pass — but the scan is gate-blind to packages/tools/src/ for
+medusa egress.
+
+── Adversarial confirmation of the gap (probe) ──────────────────────────────
+
+If a future contributor were to add:
+  // packages/tools/src/cart/some-new-tool.ts
+  await medusaAdmin("/admin/orders/x", { method: "POST", ... })
+
+The pre-V4 scan would NOT detect it. The single-line FORBIDDEN_MEDUSA
+patterns + the multi-line FORBIDDEN_MEDUSA_MULTILINE patterns both
+only run against MEDUSA_SCAN_DIRS — which excludes
+packages/tools/src/.
+
+PRISMA_SCAN_DIRS already includes packages/tools/src/{cart,catalog,
+medusa,reservation,intelligence} — so the prisma surface is already
+covered for the tool layer. The medusa surface should match.

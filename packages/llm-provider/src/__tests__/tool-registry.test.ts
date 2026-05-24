@@ -95,7 +95,10 @@ vi.mock("@ibatexas/tools", () => {
 
 import { Channel, type AgentContext } from "@ibatexas/types"
 import { createReservation, cancelReservation, getMyReservations } from "@ibatexas/tools"
-import { executeTool, executeToolDirect, TOOL_DEFINITIONS } from "../tool-registry.js"
+import { executeTool, TOOL_DEFINITIONS } from "../tool-registry.js"
+// `executeToolDirect` was removed in task 06; the test-only helper preserves
+// coverage of the `withCustomerId` injection without re-exposing a bypass.
+import { executeToolForTest } from "./helpers/test-only-executors.js"
 
 const ctx: AgentContext = {
   channel: Channel.WhatsApp,
@@ -165,17 +168,18 @@ describe("executeTool", () => {
 
 describe("withCustomerId injection", () => {
   // MUTATING tools return intents via executeTool (Zero-Trust LLM).
-  // Use executeToolDirect to test withCustomerId — the kernel execution path.
+  // Use executeToolForTest to test withCustomerId — the kernel execution path.
+  // (Replaces task-06-removed `executeToolDirect`; see helpers/test-only-executors.ts.)
 
   it("injects customerId from context when absent in input", async () => {
-    await executeToolDirect("create_reservation", { timeSlotId: "slot_01", partySize: 4 }, ctx)
+    await executeToolForTest("create_reservation", { timeSlotId: "slot_01", partySize: 4 }, ctx)
     expect(createReservation).toHaveBeenCalledWith(
       expect.objectContaining({ customerId: "cust_01" }),
     )
   })
 
   it("overrides LLM-supplied customerId with session context", async () => {
-    await executeToolDirect(
+    await executeToolForTest(
       "create_reservation",
       { customerId: "other_cust", timeSlotId: "slot_01", partySize: 4 },
       ctx,
@@ -186,7 +190,7 @@ describe("withCustomerId injection", () => {
   })
 
   it("injects customerId for cancel_reservation", async () => {
-    await executeToolDirect("cancel_reservation", { reservationId: "res_01" }, ctx)
+    await executeToolForTest("cancel_reservation", { reservationId: "res_01" }, ctx)
     expect(cancelReservation).toHaveBeenCalledWith(
       expect.objectContaining({ customerId: "cust_01", reservationId: "res_01" }),
     )
@@ -208,7 +212,7 @@ describe("withCustomerId injection", () => {
 
     for (const { name, input, mock } of reservationTools) {
       vi.clearAllMocks()
-      await executeToolDirect(name, input, ctx)
+      await executeToolForTest(name, input, ctx)
       expect(mock).toHaveBeenCalledWith(
         expect.objectContaining({ customerId: "cust_01" }),
       )
@@ -220,16 +224,33 @@ describe("withCustomerId injection", () => {
 
   it("returns intent for MUTATING tools via executeTool", async () => {
     const result = await executeTool("create_reservation", { timeSlotId: "slot_01", partySize: 2 }, ctx)
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: "intent",
-      intent: { toolName: "create_reservation", input: { timeSlotId: "slot_01", partySize: 2 }, toolUseId: "" },
+      intent: {
+        toolName: "create_reservation",
+        input: { timeSlotId: "slot_01", partySize: 2 },
+        toolUseId: "",
+        envelope: {
+          version: 2,
+          kind: "order.tool.propose",
+          taint: "UNTRUSTED",
+          actor: { principal: "llm" },
+          payload: {
+            toolName: "create_reservation",
+            input: { timeSlotId: "slot_01", partySize: 2 },
+          },
+        },
+      },
     })
+    // intentHash is deterministic — present and sha256-shaped
+    if (result.kind !== "intent") throw new Error("expected intent")
+    expect(result.intent.envelope?.intentHash).toMatch(/^[0-9a-f]{64}$/)
   })
 
   it("throws when ctx.customerId is missing for auth-required tools", async () => {
     const guestCtx: AgentContext = { ...ctx, customerId: undefined }
     await expect(
-      executeToolDirect("create_reservation", { timeSlotId: "slot_01", partySize: 2 }, guestCtx),
+      executeToolForTest("create_reservation", { timeSlotId: "slot_01", partySize: 2 }, guestCtx),
     ).rejects.toThrow("Autenticação necessária")
   })
 })

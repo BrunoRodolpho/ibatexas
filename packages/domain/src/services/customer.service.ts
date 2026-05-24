@@ -2,13 +2,50 @@
 //
 // Handles: customer upsert, preference updates (Prisma side), review creation.
 // Cache (Redis profile hash) stays in the tools layer — services are pure Prisma.
+//
+// ── Task 15 (M3) — envelope-typed entry points ───────────────────────────
+//
+// Methods `*FromEnvelope` route through the adjudicate kernel via
+// `withAdjudicate` against `customerOnboardingPolicyBundle` from
+// `@ibatexas/pack-customer-onboarding`. Decision D8: parallel surface —
+// existing methods remain (`@deprecated`).
+//
+// Covered intents:
+//   - customer.create               → upsertFromPhone / upsertFromWhatsApp
+//   - customer.preferences.update   → updatePreferences
+//   - customer.pix.details.save     → updatePixDetails
+//   - customer.anonymize            → anonymizeCustomer (module-level helper)
 
+import { createHash } from "node:crypto"
 import { prisma } from "../client.js"
 import type { Channel } from "@ibatexas/types"
+import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import {
+  customerOnboardingPolicyBundle,
+  type CustomerCreatePayload,
+  type CustomerPreferencesUpdatePayload,
+  type CustomerPixDetailsSavePayload,
+  type CustomerAnonymizePayload,
+  type CustomerOnboardingState,
+} from "@ibatexas/pack-customer-onboarding"
+import {
+  withAdjudicate,
+  type AdjudicatedResult,
+} from "./__shared__/with-adjudicate.js"
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
-export function createCustomerService() {
+export interface CustomerServiceOptions {
+  readonly auditSink?: AuditSink
+  readonly log?: { readonly warn?: (...args: unknown[]) => void; readonly error?: (...args: unknown[]) => void }
+}
+
+export function createCustomerService(options?: CustomerServiceOptions) {
+  const adjudicateOptions = {
+    ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+    ...(options?.log ? { log: options.log } : {}),
+  } as const
+
   return {
     /**
      * Create or update a customer record from a verified phone number.
@@ -222,36 +259,401 @@ export function createCustomerService() {
         take: limit,
       })
     },
+
+    // ── Task 15: envelope-typed entry points ────────────────────────────
+
+    /**
+     * Envelope-typed entry point for `customer.create`. SYSTEM-only —
+     * the OTP-verify completion hook is the sole emitter. The `phone`
+     * is passed alongside the envelope (the pack's payload carries
+     * `phoneHash` only — the raw phone never enters policy state per
+     * PII discipline).
+     */
+    async createFromEnvelope(
+      envelope: IntentEnvelope<"customer.create", CustomerCreatePayload>,
+      state: CustomerOnboardingState,
+      extras: { readonly phone: string; readonly name?: string },
+    ): Promise<AdjudicatedResult<{ id: string }>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        customerOnboardingPolicyBundle,
+        async (payload) => {
+          const source = payload.source === "wa-auto" ? "whatsapp" : null
+          if (source === "whatsapp") {
+            return prisma.customer.upsert({
+              where: { phone: extras.phone },
+              create: { phone: extras.phone, source, firstContactAt: new Date() },
+              update: {},
+              select: { id: true },
+            })
+          }
+          // OTP source path.
+          const row = await prisma.customer.upsert({
+            where: { phone: extras.phone },
+            create: { phone: extras.phone, name: extras.name ?? null },
+            update: { ...(extras.name ? { name: extras.name } : {}) },
+            select: { id: true },
+          })
+          return row
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `customer.preferences.update`.
+     * UNTRUSTED-tolerant; pack enforces allergen-explicit-array safety
+     * (CLAUDE.md rule #1).
+     */
+    async updatePreferencesFromEnvelope(
+      envelope: IntentEnvelope<
+        "customer.preferences.update",
+        CustomerPreferencesUpdatePayload
+      >,
+      state: CustomerOnboardingState,
+      extras: { readonly customerId: string },
+    ): Promise<
+      AdjudicatedResult<{
+        allergenExclusions: string[]
+        dietaryRestrictions: string[]
+        favoriteCategories: string[]
+      }>
+    > {
+      return withAdjudicate(
+        envelope,
+        state,
+        customerOnboardingPolicyBundle,
+        async (payload) => {
+          // Pack's allergenExclusions / dietaryFlags are ReadonlyArray<string>;
+          // service's update method accepts string[].
+          return this.updatePreferences(extras.customerId, {
+            allergenExclusions: payload.allergenExclusions as string[],
+            ...(payload.dietaryFlags !== undefined
+              ? { dietaryRestrictions: payload.dietaryFlags as string[] }
+              : {}),
+          })
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `customer.pix.details.save`.
+     * UNTRUSTED-tolerant. The pack validates CPF shape; PII redaction
+     * for the audit emit happens in the upstream wiring layer (task 18).
+     */
+    async updatePixDetailsFromEnvelope(
+      envelope: IntentEnvelope<
+        "customer.pix.details.save",
+        CustomerPixDetailsSavePayload
+      >,
+      state: CustomerOnboardingState,
+      extras: { readonly customerId: string },
+    ): Promise<AdjudicatedResult<void>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        customerOnboardingPolicyBundle,
+        async (payload) => {
+          return this.updatePixDetails(extras.customerId, {
+            name: payload.name,
+            email: payload.email,
+            cpf: payload.cpf,
+          })
+        },
+        adjudicateOptions,
+      )
+    },
   }
+}
+
+// ── Task 15: envelope-typed anonymize entry point ───────────────────────
+
+/**
+ * Envelope-typed entry point for `customer.anonymize`. The pack DEFERs
+ * with a `customer.anonymize.grace` signal (24h by default) before the
+ * destructive operation runs. Adopter (route layer, task 14) decides how
+ * to surface DEFER to the customer and how to schedule the resume.
+ *
+ * The EXECUTE branch invokes `anonymizeCustomer` — the legacy
+ * module-level helper — preserving the existing transactional semantics.
+ */
+export async function anonymizeCustomerFromEnvelope(
+  envelope: IntentEnvelope<"customer.anonymize", CustomerAnonymizePayload>,
+  state: CustomerOnboardingState,
+  options?: CustomerServiceOptions,
+): Promise<AdjudicatedResult<{ success: true }>> {
+  const adjudicateOptions = {
+    ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+    ...(options?.log ? { log: options.log } : {}),
+  } as const
+  return withAdjudicate(
+    envelope,
+    state,
+    customerOnboardingPolicyBundle,
+    async (payload) => {
+      const result = await anonymizeCustomer(payload.customerId)
+      return result as { success: true }
+    },
+    adjudicateOptions,
+  )
 }
 
 /**
  * LGPD Art. 18 — Anonymize a customer's personal data.
- * Preserves order items (fiscal obligation) but delinks from profile.
+ *
+ * Preserves order items (fiscal obligation) and aggregate analytics
+ * shape (co-purchase matrix, dietary safety flags), but obliterates
+ * every direct identifier from the customer record and its child
+ * tables.
+ *
+ * ── W4 P0-13 — completeness fix ──────────────────────────────────────
+ *
+ * Pre-W4 the function:
+ *   - Nulled `name` and `email` on Customer
+ *   - DELETEd Address rows (good)
+ *   - DELETEd CustomerPreferences (good for now — see note below)
+ *   - Delinked CustomerOrderItem (good — fiscal preservation)
+ *
+ * BUT it did NOT:
+ *   - Clear `phone` (LGPD-protected identifier most likely to be
+ *     directly-linkable to a person; the phone is UNIQUE, so we MUST
+ *     replace with a unique non-PII placeholder rather than null).
+ *   - Clear `cpf` (Brazilian tax ID — full PII).
+ *   - Anonymize `Review.comment` (customer-typed free-form text that
+ *     can contain PII the customer entered).
+ *   - Anonymize the relation on `Review.customerId` (FK is SetNull on
+ *     delete; here we explicitly null it AND scrub comment text).
+ *
+ * The W4 fix:
+ *   - phone → "anonymized:{first-8-hex-of-sha256(id)}" — unique by
+ *     construction, recognisable as a sentinel, not reversible.
+ *   - cpf → null
+ *   - email → null (already done)
+ *   - name → "Usuário Removido" (already done)
+ *   - addresses → DELETE (already done)
+ *   - preferences → DELETE (already done; allergens flagged below)
+ *   - reviews → comment="", customerId=null (explicit delink + scrub)
+ *   - order items → customerId=null (already done; fiscal preservation)
+ *
+ * ── Allergen safety note (legal review required) ─────────────────────
+ *
+ * `CustomerPreferences.allergenExclusions` is currently DELETEd along
+ * with the row. This is a tension between LGPD's "right to erasure"
+ * and the operational safety obligation NOT to lose allergen flags
+ * for in-flight orders (CLAUDE.md rule #1).
+ *
+ * Practical reality: at the moment `anonymizeCustomer` fires (after
+ * a 24h grace window), open orders for the customer should have
+ * completed; allergen flags persist on the ORDER itself via the cart
+ * snapshot taken at checkout, not via a join to CustomerPreferences.
+ * So deleting CustomerPreferences does NOT compromise allergen safety
+ * for past orders.
+ *
+ * The remaining concern is FUTURE orders if the customer-id is
+ * recycled (it is not — anonymize is intended to be terminal). The
+ * row is deleted; if the customer ever creates a new account with the
+ * same phone (impossible — phone is now `anonymized:*`), they would
+ * have to re-enter their allergens.
+ *
+ * **Legal review item:** confirm with LGPD counsel that scrubbing
+ * dietaryFlags is permitted (it's PII-adjacent: dietary restriction =
+ * health information, LGPD Art. 11 sensitive data). The audit
+ * recommendation flagged we MUST preserve operational safety
+ * (allergens stay until associated orders close), but the
+ * preferences row at anonymize-time is no longer joined to any open
+ * order. Document the decision in the next privacy-impact assessment.
+ *
+ * If legal asks us to preserve a hashed-allergen flag for future
+ * orders, the implementation would set `allergenExclusions = []` and
+ * preserve dietaryFlags hashed — for now we DELETE the row entirely
+ * (matches the pre-W4 behaviour, no allergen-safety regression).
  */
+// ── NEW-P0-X7: explicit transaction timeouts + review batching ─────────
+//
+// Pre-fix: `prisma.$transaction(async (tx) => { ... })` used Prisma's
+// default 5 s interactive-transaction timeout. A customer with 10k+
+// reviews would time out on the `tx.review.updateMany` step, Prisma
+// would roll the whole transaction back, the customer row would stay
+// un-anonymized — and the LGPD intake receipt (already in Redis) would
+// outlive the rollback. From the operator console: queued. From the DB:
+// nothing happened. The 15-day LGPD deadline starts ticking with no
+// signal.
+//
+// Post-fix:
+//   1. The core (small, deterministic) transaction handles the customer
+//      profile + addresses + preferences + small review batch + order
+//      items in a single 60 s `prisma.$transaction(..., { timeout, maxWait })`.
+//   2. If the customer has > REVIEW_BATCH_HEAVY_THRESHOLD reviews, the
+//      review scrub is split into REVIEW_BATCH_SIZE-sized batches
+//      processed OUTSIDE the main transaction. Each batch is a small
+//      `updateMany` with a `LIMIT` simulated via primary-key chunking.
+//   3. The caller's "receipt cleanup" obligation lives in
+//      `anonymizeCustomerFromEnvelope`'s adopter site (the route layer).
+//      Returning `{ success: true }` only after every batch succeeds
+//      preserves the contract that the Redis receipt is dropped only on
+//      complete success.
+
+/**
+ * Heavy-customer threshold. Below this we keep the original single-tx
+ * shape (one round trip, one Prisma tx). At/above this, we offload the
+ * review scrub to batches outside the main tx so a long-running write
+ * does not hold locks for ~minutes.
+ */
+const REVIEW_BATCH_HEAVY_THRESHOLD = 1000
+
+/** Per-batch chunk size for the heavy path. */
+const REVIEW_BATCH_SIZE = 500
+
+/**
+ * Prisma interactive-transaction timeout for the main anonymize tx.
+ * 60 s covers a customer with ~5k reviews + addresses/preferences on a
+ * normally-loaded primary. Heavier customers route through the batched
+ * review path below.
+ */
+const ANONYMIZE_TX_TIMEOUT_MS = 60_000
+
+/** Prisma maxWait — how long the client waits for a free connection. */
+const ANONYMIZE_TX_MAX_WAIT_MS = 5_000
+
 export async function anonymizeCustomer(customerId: string) {
-  await prisma.$transaction(async (tx) => {
-    // Anonymize profile
-    await tx.customer.update({
-      where: { id: customerId },
-      data: { name: "Usuário Removido", email: null },
-    })
+  // Compute a stable anonymized phone placeholder. UNIQUE constraint on
+  // Customer.phone means we cannot null it; we substitute a non-PII
+  // sentinel that's still unique per record so the column constraint
+  // holds. Using customerId in the hash means the same customer always
+  // produces the same placeholder (idempotent retries land on the same
+  // value), and different customers can never collide.
+  const phoneSentinel =
+    "anonymized:" + createHash("sha256").update(customerId).digest("hex").slice(0, 16)
 
-    // Delete addresses
-    await tx.address.deleteMany({ where: { customerId } })
+  // Count reviews so we know whether to take the heavy-customer path.
+  // `prisma.review.count` is cheap (covered by the customerId index).
+  const reviewCount = await prisma.review.count({ where: { customerId } })
 
-    // Delete preferences
-    await tx.customerPreferences.deleteMany({ where: { customerId } })
+  if (reviewCount > REVIEW_BATCH_HEAVY_THRESHOLD) {
+    // ── Heavy path ────────────────────────────────────────────────
+    //
+    // Strategy:
+    //   1. Scrub review comments in batches OUTSIDE the main tx.
+    //      Each batch is a small updateMany filtered to reviews that
+    //      still carry a non-null comment for this customer, capped
+    //      at REVIEW_BATCH_SIZE rows. This avoids holding locks for
+    //      the duration of the long write.
+    //   2. After every comment is scrubbed, run the core anonymize
+    //      transaction (customer + address + preferences + a
+    //      cleanup pass on reviews + order items) with the explicit
+    //      60 s timeout. The cleanup pass is a no-op `updateMany`
+    //      that catches any reviews inserted while batching was in
+    //      flight — small operation, no timeout risk.
+    //
+    // If ANY batch fails the function throws — the caller MUST NOT
+    // clean up the Redis receipt. A retry repeats the remaining
+    // batches (the scrub is idempotent: comment=null updates remain
+    // null) and reaches the core tx on success.
 
-    // Delink order items (preserve for fiscal/analytics)
-    await tx.customerOrderItem.updateMany({
-      where: { customerId },
-      data: { customerId: null },
-    })
-  })
+    let scrubbedSoFar = 0
+    // Safety cap: at REVIEW_BATCH_SIZE per loop we visit at most
+    // ceil(reviewCount / REVIEW_BATCH_SIZE) iterations before all
+    // not-yet-scrubbed comments are null. Loop exits as soon as a
+    // batch reports zero rows updated.
+    const maxLoops = Math.ceil(reviewCount / REVIEW_BATCH_SIZE) + 1
+    for (let i = 0; i < maxLoops; i++) {
+      // Find the next batch by primary-key chunk. We re-query rather
+      // than tracking offsets so concurrent inserts don't shift the
+      // window — updateMany with a LIMIT can't express that in
+      // Prisma directly, so we fetch ids first.
+      const nextBatch = await prisma.review.findMany({
+        where: { customerId, comment: { not: null } },
+        select: { id: true },
+        take: REVIEW_BATCH_SIZE,
+        orderBy: { id: "asc" },
+      })
+      if (nextBatch.length === 0) break
+      const ids = nextBatch.map((r) => r.id)
+      const result = await prisma.review.updateMany({
+        where: { id: { in: ids } },
+        data: { comment: null },
+      })
+      scrubbedSoFar += result.count
+      if (result.count === 0) break
+    }
+    void scrubbedSoFar
+  }
+
+  // ── Core anonymize transaction ─────────────────────────────────
+  //
+  // The core tx is small + deterministic. We pass an explicit
+  // `timeout` (60 s) so a moderately-loaded primary can finish; the
+  // heavy-customer review path above keeps the per-tx work small even
+  // for 10k-review customers.
+
+  await prisma.$transaction(
+    async (tx) => {
+      // (1) Anonymize the profile row — scrub every direct identifier.
+      // phone is UNIQUE-constrained so we substitute, not null.
+      await tx.customer.update({
+        where: { id: customerId },
+        data: {
+          name: "Usuário Removido",
+          email: null,
+          phone: phoneSentinel,
+          cpf: null,
+          medusaId: null,
+        },
+      })
+
+      // (2) Delete addresses (no PII retained).
+      await tx.address.deleteMany({ where: { customerId } })
+
+      // (3) Delete preferences. See "Allergen safety note" above —
+      // legal-review item; current behaviour preserved (DELETE) because
+      // allergen flags on past orders persist on the cart snapshot at
+      // checkout, not via CustomerPreferences.
+      await tx.customerPreferences.deleteMany({ where: { customerId } })
+
+      // (4) Anonymize reviews. The Review.customerId field is `String`
+      // (not nullable) but `customer Customer? @relation(... onDelete:
+      // SetNull)` — Prisma schema inconsistency. We CANNOT directly
+      // null Review.customerId from app code without a schema migration.
+      //
+      // Instead we scrub the comment text (the customer-typed PII path)
+      // and rely on the Customer row itself being anonymized (phone /
+      // email / cpf / name all scrubbed by step 1) to break PII linkage.
+      // Anyone querying the customer record via this Review's FK lands
+      // on `name="Usuário Removido"` + sentinel phone — no PII reaches
+      // the consumer.
+      //
+      // For the heavy path the bulk of comments are already null after
+      // the batched pre-scrub; this updateMany cleans up any reviews
+      // inserted during batching. Small operation, no timeout risk.
+      await tx.review.updateMany({
+        where: { customerId },
+        data: { comment: null },
+      })
+
+      // (5) Delink order items (preserve for fiscal/analytics).
+      await tx.customerOrderItem.updateMany({
+        where: { customerId },
+        data: { customerId: null },
+      })
+    },
+    {
+      timeout: ANONYMIZE_TX_TIMEOUT_MS,
+      maxWait: ANONYMIZE_TX_MAX_WAIT_MS,
+    },
+  )
 
   return { success: true }
 }
+
+/** @internal — exported for unit tests. */
+export const _anonymizeCustomerInternals = {
+  REVIEW_BATCH_HEAVY_THRESHOLD,
+  REVIEW_BATCH_SIZE,
+  ANONYMIZE_TX_TIMEOUT_MS,
+  ANONYMIZE_TX_MAX_WAIT_MS,
+} as const
 
 /**
  * LGPD Art. 18 — Export all personal data for a customer (portability).

@@ -10,27 +10,13 @@
 // Both WhatsApp webhook and web chat route should use runOrchestrator.
 
 import { type AgentContext, type AgentMessage, type StreamChunk } from "@ibatexas/types"
+import { DEADLINE_HIT, deadlinePromise } from "@adjudicate/runtime"
 import { createLatencyEnvelope, type LatencyEnvelope, type OrderContext } from "./machine/types.js"
 import { buildDeterministicFallback } from "./prompt-synthesizer.js"
 import { runAgent } from "./agent.js"
 
 // Re-export runAgent for backward compatibility
 export { runAgent }
-
-// ── Deadline sentinel ────────────────────────────────────────────────────────
-
-const DEADLINE_HIT = Symbol("DEADLINE_HIT")
-
-/**
- * Create a promise that resolves when the abort signal fires.
- * Used with Promise.race to break out of blocked generator.next() calls.
- */
-function createDeadlinePromise(signal: AbortSignal): Promise<typeof DEADLINE_HIT> {
-  return new Promise<typeof DEADLINE_HIT>((resolve) => {
-    if (signal.aborted) { resolve(DEADLINE_HIT); return }
-    signal.addEventListener("abort", () => resolve(DEADLINE_HIT), { once: true })
-  })
-}
 
 // ── Orchestrator ────────────────────────────────────────────────────────────
 
@@ -73,7 +59,7 @@ export async function* runOrchestrator(
 
   // Promise that resolves when the hard deadline fires — used with Promise.race
   // to break out of blocked generator.next() calls
-  const deadlinePromise = createDeadlinePromise(abortController.signal)
+  const deadline = deadlinePromise(abortController.signal)
 
   try {
     const generator = runAgent(message, history, context)
@@ -84,7 +70,7 @@ export async function* runOrchestrator(
       // would keep us stuck in generator.next() past the 4s deadline.
       const raceResult = await Promise.race([
         generator.next(),
-        deadlinePromise,
+        deadline,
       ])
 
       // ── Hard deadline won the race ──

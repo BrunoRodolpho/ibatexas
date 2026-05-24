@@ -1,0 +1,40 @@
+   × NEW-P0-X3 NATS auth fail-closed in production > THROWS when NODE_ENV=production and no auth/TLS is configured 6ms
+     → promise resolved "{ publish: [Function spy], …(3) }" instead of rejecting
+   ✓ NEW-P0-X3 NATS auth fail-closed in production > PROCEEDS in production when CREDS_PATH is configured 0ms
+   ✓ NEW-P0-X3 NATS auth fail-closed in production > PROCEEDS in production when NKEY_SEED is configured 0ms
+   ✓ NEW-P0-X3 NATS auth fail-closed in production > PROCEEDS in production when only TLS (NATS_TLS_REQUIRED=true) is configured 0ms
+   ✓ NEW-P0-X3 NATS auth fail-closed in production > PROCEEDS in dev (no NODE_ENV) without auth — back-compat default 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/nats-auth-fail-closed.test.ts > NEW-P0-X3 NATS auth fail-closed in production > THROWS when NODE_ENV=production and no auth/TLS is configured
+AssertionError: promise resolved "{ publish: [Function spy], …(3) }" instead of rejecting
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- Error {[39m
+[32m-   "message": "rejected promise",[39m
+[31m+ {[39m
+[31m+   "close": [Function spy],[39m
+[31m+   "drain": [Function spy],[39m
+[31m+   "publish": [Function spy],[39m
+[31m+   "subscribe": [Function spy],[39m
+[2m  }[22m
+
+ ❯ src/__tests__/nats-auth-fail-closed.test.ts:63:39
+     61|     const spy = vi.spyOn(console, "error").mockImplementation(() => un…
+     62|     try {
+     63|       await expect(getNatsConnection()).rejects.toThrow(
+       |                                       ^
+     64|         /production requires NATS auth/i,
+     65|       )
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 4 passed (5)
+   Start at  14:29:40
+   Duration  347ms (transform 42ms, setup 0ms, collect 57ms, tests 8ms, environment 0ms, prepare 55ms)
+

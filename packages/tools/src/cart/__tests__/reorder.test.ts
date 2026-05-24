@@ -9,6 +9,15 @@
 // - Cart creation fails → error message
 // - NATS publish failure → still returns result (non-fatal if .catch is used)
 // - Items without variant_id are skipped
+//
+// ── W3 P1-L (audit remediation) ────────────────────────────────────────
+//
+// reorder.ts was previously on the ALLOWED_MEDUSA_DIRECT allow-list as
+// "read-only fetches" but actually POSTed to /store/carts and
+// /store/carts/:id/line-items. The writes now route through
+// medusaAdjudicated() (Task 17 wrapper). Tests assert the adjudicated
+// wrapper is called for writes; the legacy medusaStoreFetch is no
+// longer used in this file.
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { reorder } from "../reorder.js"
@@ -18,11 +27,17 @@ import { makeCtx, makeGuestCtx } from "./fixtures/medusa.js"
 
 const mockMedusaAdminFetch = vi.hoisted(() => vi.fn())
 const mockMedusaStoreFetch = vi.hoisted(() => vi.fn())
+const mockMedusaAdjudicated = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 
 vi.mock("../_shared.js", () => ({
   medusaAdminFetch: mockMedusaAdminFetch,
   medusaStoreFetch: mockMedusaStoreFetch,
+}))
+
+// W3 P1-L: reorder writes through medusaAdjudicated()
+vi.mock("../../medusa/adjudicated.js", () => ({
+  medusaAdjudicated: mockMedusaAdjudicated,
 }))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -52,7 +67,8 @@ describe("reorder", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockMedusaAdminFetch.mockResolvedValue(ORDER_WITH_ITEMS)
-    mockMedusaStoreFetch.mockResolvedValue(CART_CREATED)
+    // W3 P1-L: writes go through medusaAdjudicated().
+    mockMedusaAdjudicated.mockResolvedValue(CART_CREATED)
     mockPublishNatsEvent.mockResolvedValue(undefined)
   })
 
@@ -85,20 +101,25 @@ describe("reorder", () => {
     expect(result.message).toContain("N\u00e3o foi poss\u00edvel carregar os itens")
   })
 
-  it("creates a new cart with customer_id", async () => {
+  it("creates a new cart with customer_id via medusaAdjudicated (W3 P1-L)", async () => {
     await reorder(INPUT, CTX)
 
-    expect(mockMedusaStoreFetch).toHaveBeenCalledWith(
-      "/store/carts",
-      {
+    // First adjudicated call: cart create.
+    expect(mockMedusaAdjudicated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "store",
         method: "POST",
-        body: JSON.stringify({ customer_id: CTX.customerId }),
-      },
+        path: "/store/carts",
+        payload: { customer_id: CTX.customerId },
+        sourceSubject: "tool:reorder",
+      }),
     )
+    // The legacy medusaStoreFetch path MUST NOT have been used for writes.
+    expect(mockMedusaStoreFetch).not.toHaveBeenCalled()
   })
 
   it("returns error message when cart creation fails (no cart.id)", async () => {
-    mockMedusaStoreFetch
+    mockMedusaAdjudicated
       .mockResolvedValueOnce({ cart: undefined }) // cart creation returns no id
 
     const result = await reorder(INPUT, CTX)
@@ -109,7 +130,7 @@ describe("reorder", () => {
 
   it("adds each item from original order to new cart", async () => {
     // First call: create cart; subsequent calls: add items
-    mockMedusaStoreFetch
+    mockMedusaAdjudicated
       .mockResolvedValueOnce(CART_CREATED) // create cart
       .mockResolvedValueOnce({}) // add item 1
       .mockResolvedValueOnce({}) // add item 2
@@ -117,27 +138,27 @@ describe("reorder", () => {
     await reorder(INPUT, CTX)
 
     // Cart creation + 2 item additions = 3 calls
-    expect(mockMedusaStoreFetch).toHaveBeenCalledTimes(3)
+    expect(mockMedusaAdjudicated).toHaveBeenCalledTimes(3)
 
-    expect(mockMedusaStoreFetch).toHaveBeenCalledWith(
-      "/store/carts/cart_new_01/line-items",
-      {
+    expect(mockMedusaAdjudicated).toHaveBeenCalledWith(
+      expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ variant_id: "variant_costela_500g", quantity: 2 }),
-      },
+        path: "/store/carts/cart_new_01/line-items",
+        payload: { variant_id: "variant_costela_500g", quantity: 2 },
+      }),
     )
 
-    expect(mockMedusaStoreFetch).toHaveBeenCalledWith(
-      "/store/carts/cart_new_01/line-items",
-      {
+    expect(mockMedusaAdjudicated).toHaveBeenCalledWith(
+      expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ variant_id: "variant_linguica_1kg", quantity: 1 }),
-      },
+        path: "/store/carts/cart_new_01/line-items",
+        payload: { variant_id: "variant_linguica_1kg", quantity: 1 },
+      }),
     )
   })
 
   it("returns cartId and success message on happy path", async () => {
-    mockMedusaStoreFetch
+    mockMedusaAdjudicated
       .mockResolvedValueOnce(CART_CREATED)
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({})
@@ -150,7 +171,7 @@ describe("reorder", () => {
   })
 
   it("publishes NATS event with reorder info", async () => {
-    mockMedusaStoreFetch
+    mockMedusaAdjudicated
       .mockResolvedValueOnce(CART_CREATED)
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({})
@@ -169,7 +190,7 @@ describe("reorder", () => {
   })
 
   it("includes unavailable items in error note when some fail", async () => {
-    mockMedusaStoreFetch
+    mockMedusaAdjudicated
       .mockResolvedValueOnce(CART_CREATED) // cart creation
       .mockResolvedValueOnce({}) // first item success
       .mockRejectedValueOnce(new Error("Variant unavailable")) // second item fails
@@ -191,18 +212,18 @@ describe("reorder", () => {
         ],
       },
     })
-    mockMedusaStoreFetch
+    mockMedusaAdjudicated
       .mockResolvedValueOnce(CART_CREATED) // create cart
       .mockResolvedValueOnce({}) // only one item added
 
     await reorder(INPUT, CTX)
 
     // Cart creation + 1 item (skipping the one without variant_id)
-    expect(mockMedusaStoreFetch).toHaveBeenCalledTimes(2)
+    expect(mockMedusaAdjudicated).toHaveBeenCalledTimes(2)
   })
 
   it("handles all items failing to add", async () => {
-    mockMedusaStoreFetch
+    mockMedusaAdjudicated
       .mockResolvedValueOnce(CART_CREATED)
       .mockRejectedValueOnce(new Error("fail"))
       .mockRejectedValueOnce(new Error("fail"))

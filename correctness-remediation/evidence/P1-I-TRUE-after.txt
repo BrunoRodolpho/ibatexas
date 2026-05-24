@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ✓ src/__tests__/refund-drip-cap-atomic.test.ts (4 tests) 23ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  14:37:04
+   Duration  1.26s (transform 495ms, setup 0ms, collect 977ms, tests 23ms, environment 0ms, prepare 44ms)
+

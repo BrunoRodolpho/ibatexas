@@ -1,6 +1,23 @@
 // join_waitlist tool
 // Adds a customer to the waitlist when a time slot is fully booked.
 // Auth: customer
+//
+// ── W7 P1 — BLOCKED on missing service-side envelope entry point ────────
+//
+// This tool still calls `svc.joinWaitlist(...)` directly. Per the W6
+// governance-coverage scan, this is a kernel bypass for an LLM-proposable
+// mutation — but unlike `reservation.create/modify/cancel`, the
+// `reservation.service.ts` does NOT yet expose a `joinWaitlistFromEnvelope`
+// method. The pack-reservations package declares `reservation.waitlist.join`
+// as a valid UNTRUSTED-tolerant intent kind (packages/pack-reservations/src/types.ts:55),
+// but the corresponding service-layer wrapper does not exist.
+//
+// Migrating this site requires a service-side change (adding
+// `joinWaitlistFromEnvelope` to reservation.service.ts) which is OUT OF
+// SCOPE for W7-Govern-Customer (the reservation.service.ts file is
+// READ-ONLY for this agent per the W7 scope split). Surfaced as a
+// sub-finding in the W7 closure report — to be picked up in a follow-up
+// commit by an agent owning packages/domain.
 
 import { createReservationService } from "@ibatexas/domain"
 import { JoinWaitlistInputSchema, type JoinWaitlistInput, type JoinWaitlistOutput } from "@ibatexas/types"

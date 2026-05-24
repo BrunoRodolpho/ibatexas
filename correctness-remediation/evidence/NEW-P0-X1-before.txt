@@ -1,0 +1,35 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ❯ src/__tests__/boot-window-race.test.ts (2 tests | 1 failed) 51ms
+   × NEW-P0-X1 boot-window race > does NOT mark a parked envelope as resumed when dispatcher is not wired (data-loss prevention) 49ms
+     → Boot-window race: parked envelope must not be silently committed without a dispatcher: expected false to be true // Object.is equality
+   ✓ NEW-P0-X1 boot-window race > when dispatcher IS provided at startup, the envelope dispatches normally 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/boot-window-race.test.ts > NEW-P0-X1 boot-window race > does NOT mark a parked envelope as resumed when dispatcher is not wired (data-loss prevention)
+AssertionError: Boot-window race: parked envelope must not be silently committed without a dispatcher: expected false to be true // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- true[39m
+[31m+ false[39m
+
+ ❯ src/__tests__/boot-window-race.test.ts:207:7
+    205|       pendingStillPresent || resumedKeys.length === 0,
+    206|       "Boot-window race: parked envelope must not be silently committe…
+    207|     ).toBe(true)
+       |       ^
+    208|   })
+    209| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  14:27:24
+   Duration  451ms (transform 123ms, setup 0ms, collect 128ms, tests 51ms, environment 0ms, prepare 55ms)
+

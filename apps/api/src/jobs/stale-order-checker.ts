@@ -14,6 +14,21 @@
 //
 // INVARIANT: This is the ONLY job that cancels orders due to payment inactivity.
 // PIX expiry checker only transitions payment status, never cancels orders.
+//
+// ── Task 16 (M3) — kernel-gated stale cancel ──────────────────────────────
+//
+// Per investigation 04 P0 #2: this cron job mutates order + payment state
+// autonomously under Redis locks. A forged BullMQ tick today could fan out
+// arbitrary cancellations. Both transitions (order → CANCELED, payment →
+// CANCELED) now flow through SYSTEM-actor IntentEnvelopes:
+//
+//   - order.status.transition  (orderCmdSvc.transitionStatusFromEnvelope)
+//   - payment.status.transition (paymentCmdSvc.transitionStatusFromEnvelope)
+//
+// Per-candidate envelopes carry a deterministic nonce (`stale:${orderId}`
+// for the order, `stale:${paymentId}` for the payment) so a re-run of the
+// job (or a duplicate BullMQ delivery) produces a byte-identical envelope
+// and the kernel / ledger can dedupe.
 
 import { withLock } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -21,7 +36,10 @@ import {
   prisma,
   createOrderCommandService,
   createPaymentCommandService,
+  type OrderStatusTransitionPayload,
+  type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
+import { getAuditSink, parseBoolEnv } from "@ibatexas/llm-provider";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,
@@ -31,6 +49,7 @@ import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import { createQueue, createWorker, type Job } from "./queue.js";
+import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 
 const REPEAT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -44,7 +63,10 @@ function getThresholdMs(): number {
 }
 
 function isDryRun(): boolean {
-  return process.env.STALE_ORDER_DRY_RUN === "true";
+  // NEW-P1-ENV: was `=== "true"` — operator setting `=1` or `=TRUE`
+  // would silently land on the destructive path. parseBoolEnv accepts
+  // the canonical truthy lexicon and defaults to false (production-safe).
+  return parseBoolEnv(process.env.STALE_ORDER_DRY_RUN, false);
 }
 
 /** Core job logic — exported for direct testing. */
@@ -79,8 +101,13 @@ export async function checkStaleOrders(log?: FastifyBaseLogger | null): Promise<
       take: 50,
     });
 
-    const orderCmdSvc = createOrderCommandService();
-    const paymentCmdSvc = createPaymentCommandService(effectiveLogger ?? undefined);
+    const auditSink = getAuditSink();
+    const orderCmdSvc = createOrderCommandService(effectiveLogger ?? undefined, {
+      auditSink,
+    });
+    const paymentCmdSvc = createPaymentCommandService(effectiveLogger ?? undefined, {
+      auditSink,
+    });
 
     for (const order of staleOrders) {
       try {
@@ -104,39 +131,81 @@ export async function checkStaleOrders(log?: FastifyBaseLogger | null): Promise<
 
         // Acquire lock on the order to prevent concurrent cancellation
         const result = await withLock(`order:${order.id}`, async () => {
-          // Cancel the order fulfillment
+          // ── Task 16: kernel-gated order cancel ──────────────────────
+          const orderTransitionPayload: OrderStatusTransitionPayload = {
+            orderId: order.id,
+            newStatus: OrderFulfillmentStatus.CANCELED,
+            actor: "system",
+            reason: "Pedido expirado — pagamento não confirmado",
+          };
+          const orderEnvelope = buildSystemEnvelope({
+            kind: "order.status.transition" as const,
+            payload: orderTransitionPayload,
+            sourceSubject: "stale-order-checker",
+            eventId: `stale:${order.id}`,
+          });
+
           try {
-            await orderCmdSvc.transitionStatus(order.id, {
-              newStatus: OrderFulfillmentStatus.CANCELED,
-              actor: "system",
-              reason: "Pedido expirado — pagamento não confirmado",
-            });
+            const outcome = await orderCmdSvc.transitionStatusFromEnvelope(orderEnvelope);
+            if (
+              outcome.decision.kind !== "EXECUTE" &&
+              outcome.decision.kind !== "REWRITE"
+            ) {
+              const refusalCode =
+                outcome.decision.kind === "REFUSE"
+                  ? outcome.decision.refusal.code
+                  : undefined;
+              effectiveLogger?.warn(
+                { orderId: order.id, decision: outcome.decision.kind, refusalCode },
+                "[stale-order] kernel did not authorize order cancel — skipping",
+              );
+              return false;
+            }
           } catch (err) {
             // Already canceled or invalid transition — skip
             if ((err as Error).name === "InvalidTransitionError") return false;
             throw err;
           }
 
-          // Cancel the active payment if one exists
+          // ── Task 16: kernel-gated payment cancel ────────────────────
           if (activePayment) {
-            try {
-              const transition = await paymentCmdSvc.transitionStatus(activePayment.id, {
-                newStatus: PaymentStatus.CANCELED,
-                actor: "system",
-                reason: "Pedido expirado",
-                expectedVersion: activePayment.version,
-              });
+            const paymentTransitionPayload: PaymentStatusTransitionPayload = {
+              paymentId: activePayment.id,
+              newStatus: PaymentStatus.CANCELED,
+              actor: "system",
+              reason: "Pedido expirado",
+              expectedVersion: activePayment.version,
+            };
+            const paymentEnvelope = buildSystemEnvelope({
+              kind: "payment.status.transition" as const,
+              payload: paymentTransitionPayload,
+              sourceSubject: "stale-order-checker",
+              eventId: `stale:${activePayment.id}`,
+            });
 
-              await publishNatsEvent("payment.status_changed", {
-                eventType: "payment.status_changed",
-                orderId: order.id,
-                paymentId: activePayment.id,
-                previousStatus: activePayment.status,
-                newStatus: PaymentStatus.CANCELED,
-                method: "unknown",
-                version: transition.version,
-                timestamp: new Date().toISOString(),
-              } satisfies PaymentStatusChangedEvent & { eventType: string });
+            try {
+              const outcome = await paymentCmdSvc.transitionStatusFromEnvelope(paymentEnvelope);
+              if (
+                outcome.decision.kind === "EXECUTE" ||
+                outcome.decision.kind === "REWRITE"
+              ) {
+                const transition = outcome.result!;
+                await publishNatsEvent("payment.status_changed", {
+                  eventType: "payment.status_changed",
+                  orderId: order.id,
+                  paymentId: activePayment.id,
+                  previousStatus: activePayment.status,
+                  newStatus: PaymentStatus.CANCELED,
+                  method: "unknown",
+                  version: transition.version,
+                  timestamp: new Date().toISOString(),
+                } satisfies PaymentStatusChangedEvent & { eventType: string });
+              } else {
+                effectiveLogger?.warn(
+                  { paymentId: activePayment.id, decision: outcome.decision.kind },
+                  "[stale-order] kernel did not authorize payment cancel — order already canceled",
+                );
+              }
             } catch {
               // Payment may already be terminal — non-critical
             }

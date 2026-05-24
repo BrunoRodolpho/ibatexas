@@ -1,0 +1,69 @@
+# G3 — verifyParkedEnvelopeHash hoist (AFTER fix)
+#
+# Command (run from /Users/thaisrodolpho/projects/ibatexas/apps/api):
+#   pnpm vitest run src/adapters/__tests__/park-deferred-intent-nx-hash.test.ts
+#
+# Environment: Docker available; redis-testcontainer.ts harness used.
+#
+# Expected: all 3 W7-G3 integration tests pass. The wrapper now hoists
+# envelope.actor.principal → top-level actorPrincipal when the caller
+# passes a raw IntentEnvelope (where principal is nested). The framework's
+# verifyParkedEnvelopeHash now finds all four required top-level fields
+# (actorPrincipal, version, nonce, taint) on the parked Redis blob and
+# returns {verified: true} — tamper-at-rest detection is live, not inert.
+#
+# Tests:
+#   - park-via-wrapper → read raw blob → verifyParkedEnvelopeHash returns
+#     {verified: true} (happy path with explicit top-level actorPrincipal).
+#   - hoist auto-corrects: caller passes envelope WITHOUT explicit
+#     top-level actorPrincipal — wrapper hoists from actor.principal
+#     (defensive contract verified).
+#   - tamper detection still works: mutating the payload after park yields
+#     verified=false with reason:"tampered" (positive proof that the fix
+#     ENABLES the previously-inert tamper detector).
+#
+# Raw vitest output:
+
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ✓ src/adapters/__tests__/park-deferred-intent-nx-hash.test.ts (3 tests) 772ms
+ ❯ src/__tests__/park-deferred-intent-nx.test.ts (3 tests | 3 skipped) 20014ms
+   ↓ P0-7-TRUE — parkDeferredIntentWithNxGuard > concurrent parks for the same sessionId — exactly one wins, the other gets collision
+   ↓ P0-7-TRUE — parkDeferredIntentWithNxGuard > sequential parks: second attempt for same sessionId returns collision, first envelope preserved
+   ↓ P0-7-TRUE — parkDeferredIntentWithNxGuard > after first park resolves (key deleted), a new park can claim the slot
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/park-deferred-intent-nx.test.ts > P0-7-TRUE — parkDeferredIntentWithNxGuard
+Error: Hook timed out in 10000ms.
+If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".
+ ❯ src/__tests__/park-deferred-intent-nx.test.ts:80:3
+     78|   let client: RedisClient
+     79| 
+     80|   beforeAll(async () => {
+       |   ^
+     81|     client = createClient({ url: REDIS_URL })
+     82|     client.on("error", () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/__tests__/park-deferred-intent-nx.test.ts > P0-7-TRUE — parkDeferredIntentWithNxGuard
+Error: Hook timed out in 10000ms.
+If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".
+ ❯ src/__tests__/park-deferred-intent-nx.test.ts:88:3
+     86|   })
+     87| 
+     88|   afterAll(async () => {
+       |   ^
+     89|     await client.quit().catch(() => {})
+     90|   })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  3 passed | 3 skipped (6)
+   Start at  18:00:51
+   Duration  20.47s (transform 147ms, setup 0ms, collect 673ms, tests 20.79s, environment 0ms, prepare 96ms)
+

@@ -4,14 +4,48 @@
 // and post-checkout fallback confirmation. The LLM only generates customer-facing
 // text from the synthesized prompt — it NEVER makes business decisions.
 
+import { randomUUID } from "node:crypto"
 import Anthropic from "@anthropic-ai/sdk"
 import type { MessageParam, ToolResultBlockParam, ContentBlock } from "@anthropic-ai/sdk/resources/messages.js"
 import { NonRetryableError, type AgentContext, type StreamChunk } from "@ibatexas/types"
 import { getRedisClient, rk } from "@ibatexas/tools"
+import {
+  buildAuditRecord,
+  buildEnvelope,
+  decisionRewrite,
+  localizeDecision,
+  type Decision,
+} from "@adjudicate/core"
+import type { Plan } from "@adjudicate/core/llm"
+import {
+  adjudicate,
+  adjudicateWithShadow,
+  isEnforced,
+  isShadowed,
+  legacyDecisionAsKernelDecision,
+} from "@adjudicate/core/kernel"
+import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br"
+import { parkDeferredIntent } from "@adjudicate/runtime"
+import { resolveLocalizedRefusalText } from "./localizer.js"
 import { TOOL_DEFINITIONS, executeTool } from "./tool-registry.js"
 import type { ToolExecutionResult } from "./tool-registry.js"
+import { TOOL_CLASSIFICATION } from "./machine/types.js"
 import type { OrderContext, SynthesizedPrompt, ToolIntent } from "./machine/types.js"
-import { shouldBufferText, validateBufferedText } from "./validation-layer.js"
+import type { DispatchResult } from "./intent-dispatcher.js"
+import {
+  shouldBufferText,
+  validateBufferedTextTyped,
+} from "./validation-layer.js"
+import {
+  getIntentLedger,
+  isLedgerEnforced,
+} from "./intent-ledger.js"
+import { getAuditSink } from "./intent-audit-wiring.js"
+import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
+// W6-10 (P2-C): pino-shaped logger correlation. The responder accepts
+// an optional logger via GenerateResponseOptions; when apps/api passes
+// `req.log`, every warning/error here carries the per-request reqId.
+import { resolveLogger, type IbxLogger } from "./logger.js"
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -187,11 +221,13 @@ const MAX_TOOLS_PER_TURN = 5
 async function processToolCalls(
   content: ContentBlock[],
   context: AgentContext,
+  machineCtx: OrderContext,
   onChunk: (chunk: StreamChunk) => void,
   conversationRetries: { count: number },
   allowedTools: string[],
+  plan: Plan,
   onToolEvent?: (event: { type: string; payload: Record<string, unknown> }) => void,
-  onToolIntent?: (intent: ToolIntent) => void,
+  onToolIntent?: (intent: ToolIntent) => Promise<DispatchResult | void> | DispatchResult | void,
 ): Promise<ToolResultBlockParam[]> {
   const toolResults: ToolResultBlockParam[] = []
 
@@ -227,15 +263,364 @@ async function processToolCalls(
     if (isToolExecutionResult(result)) {
       if (result.kind === "intent" && result.intent) {
         console.warn("[llm-responder] Intent captured for mutating tool: %s", block.name)
-        onToolIntent?.(result.intent)
-        onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
+
+        // ── Task 07: Planner-violation gate ────────────────────────────────
+        // Defense-in-depth check: even though the state-gate above (line ~237)
+        // rejects tools not in the visible-tool union, the planner is the
+        // single security-sensitive surface that names which mutating intent
+        // identities the LLM may PROPOSE in the current state. If the
+        // identity is not in `plan.allowedIntents`, refuse with a
+        // planner-violation refusal (pt-BR per CLAUDE.md #4). Today the
+        // identity is the tool name — once domain-specific intent kinds ship
+        // (e.g. `order.item.add`), this check shifts to envelope.kind.
+        const intentIdentity = block.name
+        const isMutating = TOOL_CLASSIFICATION.MUTATING.has(intentIdentity as never)
+        if (isMutating && !plan.allowedIntents.includes(intentIdentity)) {
+          console.warn(
+            "[llm-responder] Planner violation: %s not in allowedIntents (%s)",
+            intentIdentity,
+            plan.allowedIntents.join(", ") || "<empty>",
+          )
+          onChunk({
+            type: "tool_result",
+            toolName: block.name,
+            toolUseId: block.id,
+            success: false,
+          })
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify({
+              status: "refused",
+              message: "Não posso processar esta solicitação no momento.",
+              toolName: block.name,
+              refusalCode: "planner_violation",
+              refusalKind: "policy",
+            }),
+          })
+          continue
+        }
+
+        // ── Phase F/G: Execution Ledger (shadow or enforce) ────────────────
+        // The ledger is consulted only when IBX_LEDGER_ENABLED or _ENFORCE is
+        // set; otherwise getIntentLedger() returns null and we fall through.
+        const hash = result.intent.envelope?.intentHash
+        if (hash) {
+          try {
+            const ledger = await getIntentLedger()
+            if (ledger) {
+              const hit = await ledger.checkLedger(hash)
+              if (hit && isLedgerEnforced()) {
+                // Phase G enforcement: duplicate execution — do NOT dispatch
+                // onToolIntent. Surface a "already processed" tool result.
+                console.warn(
+                  "[llm-responder] Ledger replay suppressed (hash=%s, firstAt=%s)",
+                  hash,
+                  hit.at,
+                )
+                onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
+                toolResults.push({
+                  type: "tool_result",
+                  tool_use_id: block.id,
+                  content: JSON.stringify({
+                    status: "already_processed",
+                    message: "Essa solicitação já foi processada.",
+                    toolName: block.name,
+                  }),
+                })
+                continue
+              }
+              // Record (shadow or enforce — both record). First writer wins.
+              await ledger.recordExecution({
+                intentHash: hash,
+                resourceVersion: `session:${context.sessionId}`,
+                sessionId: context.sessionId,
+                kind: result.intent.envelope?.kind ?? "order.tool.propose",
+              })
+            }
+          } catch (err) {
+            // Ledger is best-effort on the hot path. A failure must not block
+            // the intent — the audit sink captures the attempt independently.
+            console.error(
+              "[llm-responder] Ledger error — continuing without dedup:",
+              (err as Error).message,
+            )
+          }
+        }
+
+        // ── Phase P0-b: per-intent kernel adjudication ────────────────────
+        // For each intent kind, decide which path is authoritative:
+        //   1. enforce list  → adjudicate() is the decision
+        //   2. shadow list   → run both, log divergence, legacy stays authoritative
+        //   3. neither       → pure legacy (always-EXECUTE for v1.0 stub baseline)
+        //
+        // The legacy boolean for v1.0 was effectively "always EXECUTE" because
+        // the responder unconditionally invoked onToolIntent. Shadow mode
+        // surfaces every non-EXECUTE adjudicate decision as a DECISION_KIND
+        // divergence — exactly the signal needed to grow the enforce list.
+        const envelope = result.intent.envelope
+        const intentKind = envelope?.kind ?? block.name
+        const orderState: OrderState = { ctx: machineCtx }
+        const startedAt = Date.now()
+        let decision: Decision
+        // Investigation 01 §"P2 #7" / governance 05 §"Audit emit invariants" #2:
+        // The pure-legacy EXECUTE branch must NOT emit an audit record — those
+        // low-signal records were polluting audit.intent.decision.v1 without
+        // adding any forensic value (no kernel involvement, no policy basis).
+        // Only shadow/enforce paths emit; pure legacy is silent.
+        let isPureLegacy = false
+        if (envelope && isEnforced(intentKind, process.env)) {
+          decision = adjudicate(envelope, orderState, orderPolicyBundle)
+        } else if (envelope && isShadowed(intentKind, process.env)) {
+          const shadow = adjudicateWithShadow({
+            envelope,
+            state: orderState,
+            policy: orderPolicyBundle,
+            // v1.0 baseline: legacy always EXECUTE'd. Divergences from this
+            // baseline surface every kernel REFUSE as DECISION_KIND so the
+            // on-call can tune the policy before flipping to enforce.
+            legacy: () => true,
+          })
+          decision = legacyDecisionAsKernelDecision(shadow.legacyDecision)
+        } else {
+          // Pure legacy — preserve v1.0 behavior exactly. No audit emission.
+          decision = legacyDecisionAsKernelDecision({ kind: "EXECUTE" })
+          isPureLegacy = true
+        }
+
+        // Audit emit — the real Decision now drives the record (no more stub).
+        // Suppressed for the pure-legacy branch to keep the audit stream
+        // signal-dense (shadow/enforce records remain load-bearing for the
+        // operator console and the nightly replay harness).
+        //
+        // Task 07: include the AuditPlanSnapshot — buildAuditRecord computes
+        // `planFingerprint = sha256Canonical({visibleReadTools, allowedIntents})`
+        // when `plan` is passed. This binds every record to the exact planner
+        // state the LLM saw, enabling replay-against-historical-plan and
+        // tamper detection on the planner surface.
+        if (envelope && !isPureLegacy) {
+          try {
+            const record = buildAuditRecord({
+              envelope,
+              decision,
+              durationMs: Date.now() - startedAt,
+              plan: {
+                visibleReadTools: plan.visibleReadTools,
+                allowedIntents: plan.allowedIntents,
+              },
+            })
+            void getAuditSink().emit(record).catch((err: unknown) => {
+              console.error(
+                "[llm-responder] Audit emit failed:",
+                (err as Error).message,
+              )
+            })
+          } catch (err) {
+            console.error(
+              "[llm-responder] Audit record build failed:",
+              (err as Error).message,
+            )
+          }
+        }
+
+        // Branch on decision.kind. EXECUTE preserves the v1.0 onToolIntent
+        // path; non-EXECUTE outcomes short-circuit with structured tool
+        // results. ESCALATE / REQUEST_CONFIRMATION fall through to a refusal
+        // shape until their dedicated producers arrive in later phases.
+        if (decision.kind === "EXECUTE" || decision.kind === "REWRITE") {
+          // REWRITE substitutes a sanitized envelope; for now we route the
+          // original to preserve v1.0 behavior. The first REWRITE producer
+          // (P0-d validation layer) handles the rewritten payload at the
+          // text-commit boundary, not here.
+          //
+          // Task 02 (investigation 01 P0 #1): await the dispatcher so that
+          // a failed dispatch downgrades the LLM-visible tool_result. Until
+          // this change shipped, dispatch was a no-op and the responder
+          // always claimed "intent_registered" even when nothing executed.
+          let dispatchResult: DispatchResult | void
+          try {
+            dispatchResult = await onToolIntent?.(result.intent)
+          } catch (err) {
+            const error = err instanceof Error ? err : new Error(String(err))
+            dispatchResult = { kind: "failed", error }
+          }
+
+          if (dispatchResult && dispatchResult.kind === "failed") {
+            // Dispatch failed — do NOT tell the LLM "Solicitação registrada".
+            // Surface a refusal-style tool_result so the LLM stops claiming
+            // success in its turn.
+            console.error(
+              "[llm-responder] Intent dispatch failed for %s: %s",
+              block.name,
+              dispatchResult.error.message,
+            )
+            onChunk({
+              type: "tool_result",
+              toolName: block.name,
+              toolUseId: block.id,
+              success: false,
+            })
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify({
+                status: "dispatch_failed",
+                message: "Não consegui completar essa ação agora. Tente novamente em instantes.",
+                toolName: block.name,
+              }),
+            })
+            continue
+          }
+
+          // executed | skipped | undefined (legacy no-op caller) → success.
+          // For `skipped`, the deterministic kernel already mutated state
+          // upstream — the LLM just needs to know the operation is in flight.
+          onChunk({
+            type: "tool_result",
+            toolName: block.name,
+            toolUseId: block.id,
+            success: true,
+          })
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify({
+              status: "intent_registered",
+              message: "Solicitação registrada. O sistema processará sua requisição.",
+              toolName: block.name,
+            }),
+          })
+          continue
+        }
+
+        if (decision.kind === "DEFER") {
+          // Park the intent via the runtime's `parkDeferredIntent` primitive.
+          // The primitive enforces a per-session quota and populates the T-005
+          // verification fields (`version`, `nonce`, `taint`, `actorPrincipal`)
+          // so the resume side can detect tamper-at-rest. Without these fields,
+          // `verifyParkedEnvelopeHash` returns `verified: null` and the
+          // defer-resolver's tamper-detection is structurally inert (P0-7).
+          let parkQuotaExceeded = false
+          if (envelope) {
+            try {
+              const redis = await getRedisClient()
+              const ttlSeconds = Math.ceil(decision.timeoutMs / 1000) + 60
+              const parkResult = await parkDeferredIntent({
+                envelope: {
+                  intentHash: envelope.intentHash,
+                  kind: envelope.kind,
+                  actor: { sessionId: envelope.actor.sessionId },
+                  payload: envelope.payload,
+                  version: envelope.version,
+                  nonce: envelope.nonce,
+                  taint: envelope.taint,
+                  actorPrincipal: envelope.actor.principal,
+                },
+                signal: decision.signal,
+                ttlSeconds,
+                redis,
+                rk,
+              })
+              if (!parkResult.parked) {
+                parkQuotaExceeded = true
+                console.warn(
+                  "[llm-responder] DEFER park quota exceeded:",
+                  parkResult.reason,
+                  "observed:", parkResult.observed,
+                  "limit:", parkResult.limit,
+                )
+              }
+            } catch (err) {
+              console.error(
+                "[llm-responder] DEFER park failed:",
+                (err as Error).message,
+              )
+            }
+          }
+          if (parkQuotaExceeded) {
+            // Surface as a refusal so the customer learns their additional
+            // DEFER was rejected rather than silently swallowed.
+            onChunk({
+              type: "tool_result",
+              toolName: block.name,
+              toolUseId: block.id,
+              success: false,
+            })
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify({
+                status: "refused",
+                message: "Você tem muitas operações em espera. Aguarde uma delas concluir antes de tentar novamente.",
+                reason: "quota_exceeded",
+                toolName: block.name,
+              }),
+            })
+            continue
+          }
+          onChunk({
+            type: "tool_result",
+            toolName: block.name,
+            toolUseId: block.id,
+            success: true,
+          })
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify({
+              status: "deferred",
+              message: "Estou aguardando confirmação. Te aviso assim que tudo estiver certo.",
+              signal: decision.signal,
+              toolName: block.name,
+            }),
+          })
+          continue
+        }
+
+        // REFUSE / ESCALATE / REQUEST_CONFIRMATION — surface the user-facing
+        // text. onToolIntent is NOT invoked: the kernel said no.
+        //
+        // Task 11: route REFUSE decisions through `localizeDecision` at the
+        // presentation boundary so kernel-emitted refusals (kill_switch,
+        // taint, default_deny, deadline, ...) render in pt-BR. Pack-emitted
+        // refusal codes that aren't in the canonical dictionary fall through
+        // to `portugueseRefusalMessages.fallback`; for those, the inline
+        // pt-BR string constructed by the Pack's `refuse(...)` factory
+        // remains the source of truth — see `localizer.ts` for the policy.
+        const localizedDecision = localizeDecision(
+          decision,
+          portugueseRefusalMessages,
+        )
+        const refusalText =
+          localizedDecision.kind === "REFUSE"
+            ? resolveLocalizedRefusalText(decision, localizedDecision)
+            : localizedDecision.kind === "REQUEST_CONFIRMATION"
+              ? localizedDecision.prompt
+              : "Vou pedir uma revisão antes de seguir."
+        onChunk({
+          type: "tool_result",
+          toolName: block.name,
+          toolUseId: block.id,
+          success: false,
+        })
         toolResults.push({
           type: "tool_result",
           tool_use_id: block.id,
           content: JSON.stringify({
-            status: "intent_registered",
-            message: "Solicitação registrada. O sistema processará sua requisição.",
+            status:
+              localizedDecision.kind === "REFUSE"
+                ? "refused"
+                : localizedDecision.kind === "REQUEST_CONFIRMATION"
+                  ? "confirmation_required"
+                  : "escalated",
+            message: refusalText,
             toolName: block.name,
+            ...(localizedDecision.kind === "REFUSE"
+              ? {
+                  refusalCode: localizedDecision.refusal.code,
+                  refusalKind: localizedDecision.refusal.kind,
+                }
+              : {}),
           }),
         })
         continue
@@ -326,8 +711,23 @@ export interface GenerateResponseOptions {
   isPostCheckout: boolean
   stateValue: string
   onToolEvent?: (event: { type: string; payload: Record<string, unknown> }) => void
-  /** Callback for mutating tool intents intercepted by the Zero-Trust intent bridge. */
-  onToolIntent?: (intent: ToolIntent) => void
+  /**
+   * Callback for mutating tool intents intercepted by the Zero-Trust intent
+   * bridge. Returns a DispatchResult so the responder can downgrade the
+   * LLM-visible tool_result when dispatch fails (see Task 02 / investigation
+   * 01 P0 #1). Returning void is supported for backward compatibility — the
+   * responder treats undefined as "no dispatcher wired" and falls through to
+   * the pre-Task-02 behavior (audit emit only).
+   */
+  onToolIntent?: (intent: ToolIntent) => Promise<DispatchResult | void> | DispatchResult | void
+  /**
+   * Pino-shaped logger for reqId-correlated structured logging.
+   * apps/api passes `req.log` here; the responder defaults to a
+   * console-passthrough when unset (preserves dev behaviour). All
+   * warn/error emissions in the responder + the audit-wiring sink path
+   * route through this logger.
+   */
+  logger?: IbxLogger
 }
 
 /**
@@ -339,6 +739,9 @@ export async function* generateResponse(
 ): AsyncGenerator<StreamChunk> {
   const { synthesized, message, history, agentContext, machineCtx, isPostCheckout } = opts
   const { stateValue } = opts
+  // W6-10: resolve logger once. Default is the console-passthrough;
+  // apps/api passes `req.log` so all responder warnings carry reqId.
+  const log = resolveLogger(opts.logger)
   const hasTools = synthesized.availableTools.length > 0
   const bufferMode = shouldBufferText(stateValue, hasTools)
 
@@ -367,9 +770,16 @@ export async function* generateResponse(
         max_tokens: synthesized.maxTokens,
       })
     } catch (err) {
-      console.error("[agent] Failed to start stream:", (err as Error).message)
+      // W6-10: structured log → carries reqId when apps/api passes req.log.
+      log.error(
+        { err: (err as Error).message, sessionId: agentContext.sessionId },
+        "[agent] Failed to start stream",
+      )
       if (isPostCheckout) {
-        console.warn("[agent] LLM failed post-checkout — yielding deterministic confirmation")
+        log.warn(
+          { sessionId: agentContext.sessionId },
+          "[agent] LLM failed post-checkout — yielding deterministic confirmation",
+        )
         yield { type: "text_delta", delta: buildConfirmationFallback(machineCtx) }
         yield { type: "done" }
         return
@@ -393,9 +803,15 @@ export async function* generateResponse(
         yield* streamTextDeltas(stream)
       }
     } catch (err) {
-      console.error("[agent] Stream error:", (err as Error).message)
+      log.error(
+        { err: (err as Error).message, sessionId: agentContext.sessionId },
+        "[agent] Stream error",
+      )
       if (isPostCheckout) {
-        console.warn("[agent] LLM stream failed post-checkout — yielding deterministic confirmation")
+        log.warn(
+          { sessionId: agentContext.sessionId },
+          "[agent] LLM stream failed post-checkout — yielding deterministic confirmation",
+        )
         yield { type: "text_delta", delta: buildConfirmationFallback(machineCtx) }
         yield { type: "done" }
         return
@@ -414,25 +830,96 @@ export async function* generateResponse(
     if (bufferMode && turnBuffer.length > 0) {
       if (stop_reason === "tool_use") {
         // Pre-tool text — discard to prevent premature confirmations
-        console.warn(
-          "[agent] Discarded pre-tool text in %s: %s",
-          stateValue,
-          turnBuffer.join("").slice(0, 100),
+        log.warn(
+          {
+            stateValue,
+            preview: turnBuffer.join("").slice(0, 100),
+            sessionId: agentContext.sessionId,
+          },
+          "[agent] Discarded pre-tool text",
         )
       } else {
-        // end_turn — validate and flush
+        // end_turn — validate and flush.
+        // P0-d: route through the typed ValidationOutcome so REWRITE
+        // sanitization produces a structured AuditRecord instead of a silent
+        // console.warn drop. PASS streams as before; REWRITE streams the
+        // sanitized text and emits a REWRITE Decision audit; REFUSE emits
+        // refusal text and a REFUSE audit.
         const rawText = turnBuffer.join("")
-        const { cleanText, violations } = validateBufferedText(rawText, stateValue)
-        if (violations.length > 0) {
-          console.warn(
-            "[agent] Removed %d forbidden phrase(s) in %s: %s",
-            violations.length,
-            stateValue,
-            violations.map((v) => v.match).join(", "),
-          )
-        }
-        if (cleanText.length > 0) {
-          yield { type: "text_delta", delta: cleanText }
+        const outcome = validateBufferedTextTyped(rawText, stateValue)
+        if (outcome.kind === "PASS") {
+          if (outcome.text.length > 0) {
+            yield { type: "text_delta", delta: outcome.text }
+          }
+        } else if (outcome.kind === "REWRITE") {
+          // Emit a structured audit record. The synthetic envelope captures
+          // the validation event so downstream replay can reproduce it.
+          try {
+            const validationEnvelope = buildEnvelope({
+              kind: "validation.text.rewrite",
+              payload: { stateValue, originalLength: rawText.length },
+              actor: { principal: "system", sessionId: agentContext.sessionId },
+              taint: "SYSTEM",
+              // v2 envelope: nonce is the idempotency key (not createdAt).
+              // Validation events are post-hoc audit records — never retried —
+              // so a fresh UUID per emit is correct.
+              nonce: randomUUID(),
+            })
+            const record = buildAuditRecord({
+              envelope: validationEnvelope,
+              decision: decisionRewrite(validationEnvelope, outcome.reason, outcome.basis),
+              durationMs: 0,
+            })
+            void getAuditSink().emit(record).catch((err: unknown) => {
+              log.error(
+                { err: (err as Error).message, sessionId: agentContext.sessionId },
+                "[llm-responder] REWRITE audit emit failed",
+              )
+            })
+          } catch (err) {
+            log.error(
+              { err: (err as Error).message, sessionId: agentContext.sessionId },
+              "[llm-responder] REWRITE audit build failed",
+            )
+          }
+          if (outcome.rewritten.length > 0) {
+            yield { type: "text_delta", delta: outcome.rewritten }
+          }
+        } else {
+          // REFUSE — surface a brief refusal to the user, do not stream raw.
+          try {
+            const refuseEnvelope = buildEnvelope({
+              kind: "validation.text.refuse",
+              payload: { stateValue, originalLength: rawText.length },
+              actor: { principal: "system", sessionId: agentContext.sessionId },
+              taint: "SYSTEM",
+              // v2 envelope: nonce is the idempotency key (not createdAt).
+              // Validation events are post-hoc audit records — never retried —
+              // so a fresh UUID per emit is correct.
+              nonce: randomUUID(),
+            })
+            const record = buildAuditRecord({
+              envelope: refuseEnvelope,
+              decision: { kind: "REFUSE", refusal: outcome.refusal, basis: outcome.basis },
+              durationMs: 0,
+            })
+            void getAuditSink().emit(record).catch((err: unknown) => {
+              // P1 (audit/06): REFUSE audit emit had no .catch logging —
+              // refusals reached the user but the audit gap was invisible.
+              // W6-10 now plumbs the failure through the structured logger
+              // so on-call has reqId-correlated evidence.
+              log.warn(
+                { err: (err as Error).message, sessionId: agentContext.sessionId },
+                "[llm-responder] REFUSE audit emit failed",
+              )
+            })
+          } catch (err) {
+            log.warn(
+              { err: (err as Error).message, sessionId: agentContext.sessionId },
+              "[llm-responder] REFUSE audit build failed",
+            )
+          }
+          yield { type: "text_delta", delta: outcome.refusal.userFacing }
         }
       }
     }
@@ -464,9 +951,11 @@ export async function* generateResponse(
       const toolResults = await processToolCalls(
         finalMessage.content,
         agentContext,
+        machineCtx,
         (chunk) => pendingChunks.push(chunk),
         conversationRetries,
         synthesized.availableTools,
+        synthesized.plan,
         opts.onToolEvent,
         opts.onToolIntent,
       )

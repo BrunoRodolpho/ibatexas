@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ✓ src/__tests__/otp-brute-force-atomic.test.ts (5 tests) 28ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  14:42:14
+   Duration  1.27s (transform 344ms, setup 0ms, collect 859ms, tests 28ms, environment 0ms, prepare 42ms)
+

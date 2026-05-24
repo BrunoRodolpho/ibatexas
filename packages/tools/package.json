@@ -21,8 +21,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@adjudicate/core": "workspace:*",
+    "@adjudicate/primitives": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
+    "@ibatexas/pack-orders": "workspace:*",
+    "@ibatexas/pack-reservations": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "redis": "^4.7.1",
     "stripe": "^20.4.1",

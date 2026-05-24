@@ -12,12 +12,58 @@
 //
 // Phase 2: All payment events now write to Payment table via PaymentCommandService
 // in addition to publishing NATS events. Payment is the source of truth for billing.
+//
+// ── Task 12 (M3) — kernel-gated reconciliation ────────────────────────────
+//
+// Stripe payment-state reconciliation now flows through an IntentEnvelope
+// adjudicated by the kernel before the executor runs. Per investigation 02
+// P0 #1 and the M3 master plan, this closes the bare-arg bypass at the
+// highest-blast-radius mutation path.
+//
+//   - Envelope kind:  payment.status.reconcile
+//   - actor.principal: "system"
+//   - actor.sessionId: `stripe-webhook:${event.id}` (operator traceability)
+//   - taint:           "SYSTEM"
+//   - nonce:           event.id (deterministic intentHash per Stripe event;
+//                                replay-safe — re-delivering the same
+//                                event produces the same hash and the
+//                                Execution Ledger / kernel can dedupe)
+//
+// The kernel decision is branched: EXECUTE / REWRITE proceed with the
+// reconcile; REFUSE / DEFER / ESCALATE / REQUEST_CONFIRMATION log the
+// outcome and skip the mutation (Stripe still gets 200; if Stripe should
+// retry, the outer 5xx error path fires for signature / parsing errors
+// only). The audit record is emitted by withAdjudicate inside the
+// PaymentCommandService chokepoint via the configured AuditSink.
 
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import Stripe from "stripe";
-import { getRedisClient, rk, medusaAdmin, medusaStore, withLock } from "@ibatexas/tools";
-import { createOrderService, createPaymentCommandService, createPaymentQueryService, createOrderEventLogService } from "@ibatexas/domain";
+import {
+  getRedisClient,
+  rk,
+  medusaAdmin,
+  medusaStore,
+  withLock,
+  medusaAdjudicated,
+  MedusaAdjudicateRefusedError,
+  MedusaAdjudicateDeferredError,
+  MedusaAdjudicateNeedsReviewError,
+  stripeAdjudicated,
+  StripeAdjudicateRefusedError,
+  StripeAdjudicateDeferredError,
+  StripeAdjudicateNeedsReviewError,
+} from "@ibatexas/tools";
+import {
+  createOrderService,
+  createPaymentCommandService,
+  createPaymentQueryService,
+  createOrderEventLogService,
+  type PaymentStatusReconcilePayload,
+} from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { buildEnvelope } from "@adjudicate/core";
+import { getAuditSink } from "@ibatexas/llm-provider";
 import {
   formatOrderId,
   PaymentStatus,
@@ -39,6 +85,39 @@ type WebhookLogger = {
 
 // ── Reconcile payment status from Stripe event ──────────────────────────────
 
+/**
+ * Build a `payment.status.reconcile` IntentEnvelope for a Stripe webhook
+ * event. Task 12 (M3): the envelope is the canonical capture of every
+ * webhook-driven mutation. `nonce = event.id` so reconstruction is
+ * deterministic (same Stripe event → same `intentHash`) which keeps the
+ * Execution Ledger able to dedupe even if Stripe retries past the Redis
+ * 7-day window.
+ */
+function buildReconcileEnvelope(args: {
+  readonly paymentId: string;
+  readonly orderId: string;
+  readonly newStatus: (typeof PaymentStatus)[keyof typeof PaymentStatus];
+  readonly event: Stripe.Event;
+}) {
+  const payload: PaymentStatusReconcilePayload = {
+    paymentId: args.paymentId,
+    newStatus: args.newStatus,
+    stripeEventId: args.event.id,
+    stripeEventTimestamp: new Date(args.event.created * 1000).toISOString(),
+    expectedOrderId: args.orderId,
+  };
+  return buildEnvelope({
+    kind: "payment.status.reconcile" as const,
+    payload,
+    nonce: args.event.id,
+    actor: {
+      principal: "system",
+      sessionId: `stripe-webhook:${args.event.id}`,
+    },
+    taint: "SYSTEM",
+  });
+}
+
 async function reconcilePaymentFromStripe(
   stripePaymentIntentId: string,
   newStatus: (typeof PaymentStatus)[keyof typeof PaymentStatus],
@@ -46,7 +125,9 @@ async function reconcilePaymentFromStripe(
   logger: WebhookLogger,
 ): Promise<void> {
   const paymentQuerySvc = createPaymentQueryService();
-  const paymentCmdSvc = createPaymentCommandService(logger);
+  const paymentCmdSvc = createPaymentCommandService(logger, {
+    auditSink: getAuditSink(),
+  });
 
   const payment = await paymentQuerySvc.getByStripePaymentIntentId(stripePaymentIntentId);
   if (!payment) {
@@ -58,19 +139,90 @@ async function reconcilePaymentFromStripe(
     return;
   }
 
-  const result = await withLock(`payment:${payment.id}`, async () => {
-    return paymentCmdSvc.reconcileFromWebhook(payment.id, {
+  // ── Kernel-gated reconcile (Task 12 — M3) ──────────────────────────────
+  // Build the envelope OUTSIDE the lock so the kernel can REFUSE / DEFER
+  // without holding the per-payment Redis lock. The executor is invoked
+  // INSIDE the lock (preserves CLAUDE.md rule #10 — distributed
+  // concurrency on the payment row); the kernel adjudication is pure +
+  // deterministic so it does not need the lock.
+  let envelope: ReturnType<typeof buildReconcileEnvelope>;
+  try {
+    envelope = buildReconcileEnvelope({
+      paymentId: payment.id,
+      orderId: payment.orderId,
       newStatus,
-      stripeEventId: event.id,
-      stripeEventTimestamp: new Date(event.created * 1000),
-      expectedOrderId: payment.orderId,
+      event,
     });
+  } catch (err) {
+    // Envelope construction is defensive — the inputs come from a
+    // verified Stripe event and our own DB. A throw here means our
+    // contract has drifted (e.g., missing event.id). Surface as a 5xx
+    // by re-throwing into the outer route's try/catch.
+    logger.error(
+      { event_id: event.id, paymentId: payment.id, error: String(err) },
+      "[stripe-webhook] envelope construction failed",
+    );
+    throw err;
+  }
+
+  const outcome = await withLock(`payment:${payment.id}`, async () => {
+    return paymentCmdSvc.reconcileFromWebhookFromEnvelope(envelope);
   }, 30);
 
+  // withLock returns null when the lock cannot be acquired within the
+  // timeout. Treat as "another worker is reconciling this payment" — no
+  // mutation here, audit was not emitted by the executor either.
+  if (outcome === null) {
+    logger.info(
+      { event_id: event.id, paymentId: payment.id },
+      "[stripe-webhook] Payment reconciliation skipped (lock contention)",
+    );
+    return;
+  }
+
+  // Branch on the kernel's Decision. The audit record was emitted by
+  // withAdjudicate inside the PaymentCommandService chokepoint.
+  if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+    // REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE — the mutation
+    // did NOT run. Log at warn (REFUSE / DEFER are expected for an
+    // out-of-order or terminal state) or error (ESCALATE) depending on
+    // the kind. We still return 200 to Stripe so no retry storm fires
+    // for governance-driven skips; ops sees the refusal via the audit
+    // stream + kernel decision metrics.
+    const decisionKind = outcome.decision.kind;
+    const refusalCode =
+      outcome.decision.kind === "REFUSE"
+        ? outcome.decision.refusal.code
+        : undefined;
+    const escalateReason =
+      outcome.decision.kind === "ESCALATE"
+        ? outcome.decision.reason
+        : undefined;
+    const log =
+      outcome.decision.kind === "ESCALATE" ? logger.error : logger.warn;
+    log.call(
+      logger,
+      {
+        event_id: event.id,
+        paymentId: payment.id,
+        decision: decisionKind,
+        refusalCode,
+        escalateReason,
+        attemptedStatus: newStatus,
+      },
+      "[stripe-webhook] kernel did not authorize reconcile — mutation skipped",
+    );
+    return;
+  }
+
+  // EXECUTE / REWRITE — the reconcile ran. `result` is null when the
+  // executor's own idempotency / terminal / out-of-order / ownership
+  // checks skipped the write (matches the legacy bare-arg return shape).
+  const result = outcome.result ?? null;
   if (result === null) {
     logger.info(
       { event_id: event.id, paymentId: payment.id },
-      "[stripe-webhook] Payment reconciliation skipped (lock, terminal, or already at target)",
+      "[stripe-webhook] Payment reconciliation skipped (terminal, out-of-order, or already at target)",
     );
     return;
   }
@@ -123,28 +275,91 @@ async function handlePaymentSucceeded(
 
   // PIX flow: cart was not completed at checkout time — complete it now
   // that payment has succeeded, creating the Medusa order.
+  //
+  // ── P0-X9 migration ───────────────────────────────────────────────────
+  // The cart-complete POST is a Medusa write — routes through
+  // medusaAdjudicated for kernel governance + audit. The Stripe event ID
+  // is the deterministic idempotency key (and the envelope's nonce), so a
+  // re-delivered webhook produces a byte-identical intentHash and the
+  // kernel / Execution Ledger can dedupe even if Stripe retries past the
+  // outer Redis 7-day window (matches the Task 12 reconcile pattern).
+  // sourceSubject = "webhook:stripe:<event.id>" surfaces in audit.
   const cartId = paymentIntent.metadata?.["cartId"];
   if (!orderId && cartId) {
     try {
-      const completedData = await medusaStore(`/store/carts/${cartId}/complete`, {
+      const completedData = await medusaAdjudicated<
+        Record<string, unknown>,
+        { type?: string; order?: { id: string; display_id?: number } }
+      >({
+        scope: "store",
         method: "POST",
-        body: JSON.stringify({}),
-      }) as { type?: string; order?: { id: string; display_id?: number } };
+        path: `/store/carts/${cartId}/complete`,
+        payload: {},
+        intentKind: "medusa.cart.complete",
+        idempotencyKey: event.id,
+        sourceSubject: `webhook:stripe:${event.id}`,
+        auditSink: getAuditSink(),
+        log: logger,
+      });
 
       orderId = completedData.order?.display_id
         ? formatOrderId(completedData.order.display_id)
         : completedData.order?.id;
 
       if (orderId) {
-        // Persist orderId back to the PaymentIntent for future reference
-        const stripe = getStripe();
-        await stripe.paymentIntents.update(paymentIntent.id, {
-          metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
-        });
+        // W8-V2 (NEW-W7-V2): persist orderId back to the PaymentIntent
+        // through the kernel-gated wrapper rather than a bare Stripe SDK
+        // call. The bare `stripe.paymentIntents.update(...)` here was the
+        // last surviving stripe.* bypass in apps/api/src/routes/ after
+        // W7-P5 closed the cart-tool sites; it slipped past W7-P5's
+        // scope. The idempotency key keys the metadata-update to the
+        // Stripe event so a re-delivered webhook produces a
+        // byte-identical envelope hash (replay-safe).
+        await stripeAdjudicated.paymentIntents.update(
+          paymentIntent.id,
+          {
+            metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
+          },
+          {
+            sourceSubject: `webhook:stripe:${event.id}`,
+            idempotencyKey: `${event.id}:metadata-update:${paymentIntent.id}`,
+            auditSink: getAuditSink(),
+            log: logger,
+          },
+        );
         logger.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
       }
     } catch (err) {
-      logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
+      // Governance-driven skips (REFUSE / DEFER / NEEDS_REVIEW) are
+      // logged + swallowed — we still ack Stripe with 200 so no retry
+      // storm fires (mirrors the existing Task 12 reconcile branch).
+      // The audit record captures the kernel decision; ops sees the
+      // refusal via metrics. Covers both medusa egress (cart.complete)
+      // and stripe egress (paymentIntents.update metadata persist).
+      if (
+        err instanceof MedusaAdjudicateRefusedError ||
+        err instanceof MedusaAdjudicateDeferredError ||
+        err instanceof MedusaAdjudicateNeedsReviewError ||
+        err instanceof StripeAdjudicateRefusedError ||
+        err instanceof StripeAdjudicateDeferredError ||
+        err instanceof StripeAdjudicateNeedsReviewError
+      ) {
+        logger.warn(
+          {
+            event_id: event.id,
+            cart_id: cartId,
+            kind: err.name,
+            code:
+              err instanceof MedusaAdjudicateRefusedError ||
+              err instanceof StripeAdjudicateRefusedError
+                ? err.code
+                : undefined,
+          },
+          "PIX: cart-complete or metadata-persist refused/deferred by kernel",
+        );
+      } else {
+        logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
+      }
     }
   }
 
@@ -153,7 +368,26 @@ async function handlePaymentSucceeded(
     return;
   }
 
-  const svc = createOrderService(medusaAdmin);
+  // W7-P6: route order.service mutations through the kernel-gated wrapper.
+  // The adminAdjudicated closure binds the source-subject + audit sink at
+  // this call site; the service's mutate() helper picks it up.
+  const svc = createOrderService(medusaAdmin, {
+    adminAdjudicated: (args) =>
+      medusaAdjudicated({
+        scope: "admin",
+        method: args.method,
+        path: args.path,
+        ...(args.payload !== undefined ? { payload: args.payload } : {}),
+        ...(args.intentKind ? { intentKind: args.intentKind as never } : {}),
+        ...(args.idempotencyKey !== undefined
+          ? { idempotencyKey: args.idempotencyKey }
+          : {}),
+        sourceSubject: `webhook:stripe:${event.id}:${args.sourceSubject}`,
+        auditSink: getAuditSink(),
+        log: logger,
+      }),
+    log: logger,
+  });
   const result = await svc.capturePayment(orderId, paymentIntent.id, {
     amountInCentavos: paymentIntent.amount,
   });

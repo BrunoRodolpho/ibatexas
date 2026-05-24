@@ -95,7 +95,10 @@ vi.mock("@ibatexas/tools", () => {
 
 import { Channel, type AgentContext } from "@ibatexas/types"
 import { modifyReservation, joinWaitlist, checkTableAvailability } from "@ibatexas/tools"
-import { executeTool, executeToolDirect } from "../tool-registry.js"
+import { executeTool } from "../tool-registry.js"
+// `executeToolDirect` was removed in task 06; the test-only helper preserves
+// coverage of the `withCustomerId` injection without re-exposing a bypass.
+import { executeToolForTest } from "./helpers/test-only-executors.js"
 
 const guestCtx: AgentContext = {
   channel: Channel.Web,
@@ -113,40 +116,41 @@ const customerCtx: AgentContext = {
 
 describe("tool-registry edge cases", () => {
   // MUTATING tools return intents via executeTool (Zero-Trust LLM).
-  // Use executeToolDirect to test withCustomerId — the kernel execution path.
+  // Use executeToolForTest to test withCustomerId — the kernel execution path.
+  // (Replaces task-06-removed `executeToolDirect`; see helpers/test-only-executors.ts.)
 
   it("guest without customerId throws on create_reservation", async () => {
     await expect(
-      executeToolDirect("create_reservation", { timeSlotId: "s1", partySize: 2 }, guestCtx),
+      executeToolForTest("create_reservation", { timeSlotId: "s1", partySize: 2 }, guestCtx),
     ).rejects.toThrow("Autenticação necessária")
   })
 
   it("guest without customerId throws on cancel_reservation", async () => {
     await expect(
-      executeToolDirect("cancel_reservation", { reservationId: "r1" }, guestCtx),
+      executeToolForTest("cancel_reservation", { reservationId: "r1" }, guestCtx),
     ).rejects.toThrow("Autenticação necessária")
   })
 
   it("guest without customerId throws on get_my_reservations", async () => {
     await expect(
-      executeToolDirect("get_my_reservations", {}, guestCtx),
+      executeToolForTest("get_my_reservations", {}, guestCtx),
     ).rejects.toThrow("Autenticação necessária")
   })
 
   it("guest without customerId throws on modify_reservation", async () => {
     await expect(
-      executeToolDirect("modify_reservation", { reservationId: "r1" }, guestCtx),
+      executeToolForTest("modify_reservation", { reservationId: "r1" }, guestCtx),
     ).rejects.toThrow("Autenticação necessária")
   })
 
   it("guest without customerId throws on join_waitlist", async () => {
     await expect(
-      executeToolDirect("join_waitlist", { timeSlotId: "s1", partySize: 2 }, guestCtx),
+      executeToolForTest("join_waitlist", { timeSlotId: "s1", partySize: 2 }, guestCtx),
     ).rejects.toThrow("Autenticação necessária")
   })
 
   it("injects customerId for modify_reservation", async () => {
-    await executeToolDirect(
+    await executeToolForTest(
       "modify_reservation",
       { reservationId: "r1", newPartySize: 5 },
       customerCtx,
@@ -157,7 +161,7 @@ describe("tool-registry edge cases", () => {
   })
 
   it("injects customerId for join_waitlist", async () => {
-    await executeToolDirect(
+    await executeToolForTest(
       "join_waitlist",
       { timeSlotId: "s1", partySize: 3 },
       customerCtx,
@@ -169,9 +173,20 @@ describe("tool-registry edge cases", () => {
 
   it("returns intent for MUTATING tools via executeTool", async () => {
     const result = await executeTool("modify_reservation", { reservationId: "r1" }, customerCtx)
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: "intent",
-      intent: { toolName: "modify_reservation", input: { reservationId: "r1" }, toolUseId: "" },
+      intent: {
+        toolName: "modify_reservation",
+        input: { reservationId: "r1" },
+        toolUseId: "",
+        envelope: {
+          version: 2,
+          kind: "order.tool.propose",
+          taint: "UNTRUSTED",
+          actor: { principal: "llm" },
+          payload: { toolName: "modify_reservation", input: { reservationId: "r1" } },
+        },
+      },
     })
   })
 

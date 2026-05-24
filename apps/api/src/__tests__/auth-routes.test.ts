@@ -19,8 +19,17 @@ import { authRoutes } from "../routes/auth.js";
 const _mockTwilioClient = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
+// ── W7 P3 — envelope-routed customer.create ──────────────────────────────
+// `mockUpsertFromPhone` is a back-compat shim: tests call it with
+// `(phone, name) => { id, phone, name, email }` exactly as before, but the
+// route code now goes through `customerSvc.createFromEnvelope`. The shim
+// below wraps the call: createFromEnvelope returns `{ decision: EXECUTE,
+// result: { id } }` and a subsequent prisma.customer.findUniqueOrThrow
+// returns the full row. Both are derived from `mockUpsertFromPhone`'s
+// configured return so existing test setups don't need per-call updates.
 const mockUpsertFromPhone = vi.hoisted(() => vi.fn());
 const mockGetById = vi.hoisted(() => vi.fn());
+const mockPrismaCustomerFindUniqueOrThrow = vi.hoisted(() => vi.fn());
 
 // Mock Twilio verify API
 const mockVerificationCreate = vi.hoisted(() => vi.fn());
@@ -48,10 +57,31 @@ vi.mock("@ibatexas/tools", () => ({
 }));
 
 vi.mock("@ibatexas/domain", () => ({
+  // W7 P3: createFromEnvelope is the new chokepoint. The shim derives its
+  // EXECUTE result from `mockUpsertFromPhone` so existing test
+  // setups (which call `mockUpsertFromPhone.mockResolvedValue({ id, ... })`)
+  // continue to wire correctly. We also assert on `extras.phone` /
+  // `extras.name` getting threaded through the envelope.
   createCustomerService: () => ({
     upsertFromPhone: mockUpsertFromPhone,
     getById: mockGetById,
+    createFromEnvelope: async (
+      _envelope: unknown,
+      _state: unknown,
+      extras: { phone: string; name?: string },
+    ) => {
+      const row = await mockUpsertFromPhone(extras.phone, extras.name);
+      // The envelope returns `{ id }` only; the route then fetches the
+      // full row via prisma.customer.findUniqueOrThrow.
+      mockPrismaCustomerFindUniqueOrThrow.mockResolvedValueOnce(row);
+      return { decision: { kind: "EXECUTE" }, result: { id: row.id } };
+    },
   }),
+  prisma: {
+    customer: {
+      findUniqueOrThrow: mockPrismaCustomerFindUniqueOrThrow,
+    },
+  },
 }));
 
 vi.mock("../middleware/auth.js", () => ({

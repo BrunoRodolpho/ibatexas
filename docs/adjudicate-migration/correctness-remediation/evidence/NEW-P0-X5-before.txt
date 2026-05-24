@@ -1,0 +1,40 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/packages/llm-provider
+
+ ❯ src/__tests__/audit-redactor-adversarial.test.ts (7 tests | 1 failed) 65ms
+   ✓ NEW-P0-X5 — prototype pollution survives redactor > JSON.parse-style __proto__ payload does NOT pollute Object.prototype 1ms
+   × NEW-P0-X5 — prototype pollution survives redactor > redacted output object does NOT have a polluted prototype 3ms
+     → expected true to be undefined
+   ✓ NEW-P0-X5 — prototype pollution survives redactor > constructor and prototype keys are also rejected 0ms
+   ✓ NEW-P0-X5 — prototype pollution survives redactor > nested __proto__ inside object values is also stripped 0ms
+   ✓ P0-15-VERIFY — adversarial fuzz across 1000 random inputs > redactPayload never throws + prototype stays clean across 1000 random inputs 3ms
+   ✓ P0-15-VERIFY — adversarial fuzz across 1000 random inputs > full record redaction is hash-stable for 200 JSON-safe inputs 19ms
+   ✓ P0-15-VERIFY — adversarial fuzz across 1000 random inputs > cyclic references do not crash the full redact pipeline (fail-open path) 37ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/audit-redactor-adversarial.test.ts > NEW-P0-X5 — prototype pollution survives redactor > redacted output object does NOT have a polluted prototype
+AssertionError: expected true to be undefined
+
+[32m- Expected:[39m 
+undefined
+
+[31m+ Received:[39m 
+true
+
+ ❯ src/__tests__/audit-redactor-adversarial.test.ts:88:29
+     86|       // It's allowed to be Object.prototype or null — but in either c…
+     87|       // `isAdmin` payload key must NOT be present on the chain.
+     88|       expect(proto.isAdmin).toBeUndefined()
+       |                             ^
+     89|     }
+     90|     // The result itself must not carry the polluted key under __proto…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 passed (7)
+   Start at  14:30:53
+   Duration  449ms (transform 96ms, setup 0ms, collect 134ms, tests 65ms, environment 0ms, prepare 44ms)
+

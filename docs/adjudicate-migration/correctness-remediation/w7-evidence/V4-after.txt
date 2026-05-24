@@ -1,0 +1,100 @@
+=== W8-V4 AFTER state — MEDUSA_SCAN_DIRS widened + 10 newly-surfaced sites deferred ===
+Branch: feat/correctness-w7-close-w6-findings
+Closure agent: W8-Closure (single agent, sequential)
+Date: 2026-05-23
+
+── Fix summary ──────────────────────────────────────────────────────────────
+
+1. MEDUSA_SCAN_DIRS at apps/api/src/__tests__/bypass-detection/
+   bypass-detection.test.ts:72-100 widened from:
+
+     ["apps/api/src/routes", "apps/api/src/jobs", "apps/api/src/subscribers"]
+
+   to:
+
+     ["apps/api/src/routes", "apps/api/src/jobs", "apps/api/src/subscribers",
+      "packages/tools/src"]
+
+   `packages/domain/src/services/` is intentionally NOT in the list —
+   the *FromEnvelope write paths there are the canonical owner sites
+   for medusa egress; they don't make HTTP calls (they delegate to
+   medusaAdjudicated via the adminAdjudicated DI per W7-P6 + W8-V1).
+
+2. The widened scan surfaced 10 store-scope `medusaStoreFetch` POST
+   sites across 6 cart-tool files that were structurally invisible to
+   CI before:
+
+     packages/tools/src/cart/add-to-cart.ts:54         POST /store/carts/:id/line-items
+     packages/tools/src/cart/apply-coupon.ts:14        POST /store/carts/:id/promotions
+     packages/tools/src/cart/create-checkout.ts:194    POST /store/carts/:id/promotions
+     packages/tools/src/cart/create-checkout.ts:229    POST /store/carts/:id (email update)
+     packages/tools/src/cart/create-checkout.ts:250    POST /store/payment-collections
+     packages/tools/src/cart/create-checkout.ts:291    POST /store/payment-collections/:id/payment-sessions
+     packages/tools/src/cart/create-checkout.ts:331    POST /store/carts/:id/complete
+     packages/tools/src/cart/get-or-create-cart.ts:136 POST /store/carts (create)
+     packages/tools/src/cart/remove-from-cart.ts:14    DELETE /store/carts/:id/line-items/:itemId
+     packages/tools/src/cart/update-cart.ts:14         PATCH/POST /store/carts/:id/line-items/:itemId
+
+   All 10 are LLM-callable customer-cart STORE-scope mutations. They
+   are real bypasses — kernel adjudication and audit are skipped today.
+
+3. Added the 6 files to DEFERRED_MEDUSA_MIGRATIONS with explicit W9
+   follow-up rationale. The deferred set is now machine-tracked, and
+   the build still fails the moment ANY NEW unwired site appears in
+   `packages/tools/src/`.
+
+4. Updated the sentinel test from "size === 0 in steady state" (the
+   post-P0-X9 reality) to "size === 6 (W8-V4 baseline)" — if the
+   deferred set grows, the test fails until the new entry is paired
+   with a follow-up ticket comment; if it shrinks (because W9 migrates
+   a site), drop the count and mark migration progress.
+
+── Why inline migration was rejected ────────────────────────────────────────
+
+The 10 newly-surfaced sites are LLM-callable cart-store mutations.
+Inline migration requires:
+  (a) New `medusa.store.cart.*` intent kinds added to
+      MEDUSA_INTENT_KINDS in packages/tools/src/medusa/adjudicated.ts.
+  (b) Per-kind policy bundle decisions (auth/taint/business guards).
+  (c) Test coverage for the LLM-flow → kernel → SDK dispatch chain.
+
+That's a multi-day W9-scope task (cart-egress governance), not a
+30-minute V4 scan-widening closure. Deferring to W9 with explicit
+machine-tracked allowlist is the right trade — V4 ships the gate-
+hardening benefit (no NEW regressions can slip into packages/tools/src/)
+without conflating the cart-egress migration into the wave.
+
+── Test results ─────────────────────────────────────────────────────────────
+
+$ pnpm vitest run apps/api/src/__tests__/bypass-detection/
+ RUN  v3.2.4
+ ✓ apps/api/src/__tests__/bypass-detection/bypass-detection.test.ts (31 tests) 1209ms
+
+ Test Files  1 passed (1)
+      Tests  31 passed (31)
+   Duration  1.52s
+
+31 tests pass with the widened scope.
+
+── PRE-FIX vs POST-FIX comparison ───────────────────────────────────────────
+
+PRE: MEDUSA_SCAN_DIRS scans 3 dirs; 0 deferred entries; 31 tests pass.
+     Gap: packages/tools/src/ writes never scanned. A future cart-tool
+     contributor could re-introduce a bypass without CI catching it.
+
+POST: MEDUSA_SCAN_DIRS scans 4 dirs; 6 deferred entries (W9 follow-up);
+      31 tests pass. The 10 surfaced bypasses are now machine-tracked.
+      Any NEW unwired write in packages/tools/src/cart/ (or any of the
+      other tool dirs) fails the build immediately.
+
+── Newly-surfaced bypasses for W9 backlog ───────────────────────────────────
+
+W9 must close (or migrate-with-allowlist-rationale):
+  - 5 cart-line-item / cart-create POSTs (add-to-cart, apply-coupon,
+    get-or-create-cart, remove-from-cart, update-cart).
+  - 5 checkout-flow POSTs in create-checkout.ts (promotions, cart email,
+    payment-collections, payment-sessions, cart-complete).
+
+All are STORE-scope writes; admin-scope writes in cart tools are
+already covered by W7-P5 (stripeAdjudicated) and W8-V1
+(createTooledOrderService → medusaAdjudicated via the adminAdjudicated DI).

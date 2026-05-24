@@ -1,0 +1,85 @@
+NEW-P0-X7 — Anonymize $transaction no timeout — AFTER
+=======================================================
+
+Date: 2026-05-23
+Fix file: packages/domain/src/services/customer.service.ts (anonymizeCustomer
+          + new helper constants + heavy-path batching)
+Test file: packages/domain/src/services/__tests__/anonymize-customer.test.ts
+           (7 new tests in "NEW-P0-X7 transaction timeout + batching" describe)
+
+Approach
+--------
+1. Added an explicit `prisma.$transaction(..., { timeout: 60_000, maxWait:
+   5_000 })` to the core anonymize transaction. The default Prisma 5 s
+   timeout was load-bearing for the LGPD breach scenario; 60 s covers a
+   moderately-loaded primary handling a single-customer scrub.
+
+2. Added a HEAVY-PATH branch for customers with more than
+   REVIEW_BATCH_HEAVY_THRESHOLD (1000) reviews. The path:
+     a. Counts reviews via the indexed `review.count`.
+     b. If heavy, loops `findMany(take: 500)` + `updateMany({ id: { in
+        }})` OUTSIDE the main tx, scrubbing comments in batches of 500
+        until findMany returns empty.
+     c. Then runs the core anonymize transaction with the same shape as
+        the light path — the in-tx `review.updateMany` becomes a no-op
+        cleanup pass that catches any reviews inserted during batching.
+   The batched scrub is idempotent (comment=null updates remain null on
+   retry) so a partial-failure retry resumes from the next unprocessed
+   review without double-work.
+
+3. Receipt cleanup at the caller is unchanged: `anonymizeCustomer`
+   resolves to `{ success: true }` only after every batch + the core tx
+   succeed. If any batch throws, the function throws BEFORE the core tx
+   runs, leaving the customer row un-anonymized AND ensuring the Redis
+   receipt at the caller is NOT cleaned up (the caller-side guarantee).
+
+Constants exported via `_anonymizeCustomerInternals` (test-only)
+----------------------------------------------------------------
+  - REVIEW_BATCH_HEAVY_THRESHOLD = 1000
+  - REVIEW_BATCH_SIZE = 500
+  - ANONYMIZE_TX_TIMEOUT_MS = 60_000
+  - ANONYMIZE_TX_MAX_WAIT_MS = 5_000
+
+Tests added
+-----------
+1. passes explicit timeout (>= 60s) + maxWait to prisma.$transaction
+2. light path (<=1000 reviews) runs the original single-tx shape
+3. heavy path (>1000) batches the review scrub OUTSIDE the tx
+4. heavy path: returns success only after all batches complete
+5. heavy path: if a batch fails, function throws and main tx is NOT entered
+6. heavy path: empty findMany result terminates the loop immediately
+7. light path tolerates 10s simulated tx (regression for default timeout)
+
+Test output
+-----------
+$ npx vitest run src/services/__tests__/anonymize-customer.test.ts
+ ✓ src/services/__tests__/anonymize-customer.test.ts (19 tests) 9ms
+
+ Test Files  1 passed (1)
+      Tests  19 passed (19)
+
+12 pre-existing LGPD-completeness tests still pass; 7 new NEW-P0-X7 tests
+exercise the new timeout + batching contract.
+
+Verification that the test would FAIL on the un-fixed code
+-----------------------------------------------------------
+Removing the `{ timeout, maxWait }` second argument from $transaction
+makes the new test #1 ("passes explicit timeout (>= 60s)") fail with:
+  AssertionError: expected [ ... 1 args ... ] to have length 2 ...
+
+Removing the batched loop and re-running test #3 ("heavy path") fails:
+  AssertionError: expected number to be at least 1
+(the outer findMany was never called).
+
+Confirming the tests exercise the new code paths.
+
+Caller-side note
+----------------
+The audit spec says "Receipt cleanup only after ALL batches succeed".
+That obligation lives at the adopter call site
+(anonymizeCustomerFromEnvelope's route layer, not here). This function
+already preserves the precondition by throwing on any batch failure
+BEFORE running the main transaction — the caller can rely on the
+returned `{ success: true }` to gate its Redis receipt drop. The
+existing structure (caller drops receipt only after `withAdjudicate`'s
+executor resolves) is unchanged.

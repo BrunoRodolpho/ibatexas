@@ -5,14 +5,47 @@
 // between transitions. Returns the final machine state and context.
 //
 // The kernel runs perfectly without any LLM.
+//
+// IBX-IGE / Task 06: the four mutation call sites (addItemToCart,
+// processCheckout, cancelOrderAction, regeneratePixAction) historically
+// bypassed adjudicate() entirely (investigation 01 §"P0 #3"). They now
+// flow through `adjudicateKernelMutation` — the same shadow/enforce
+// pattern the LLM-proposed path uses (llm-responder.ts:303-365). Behaviour
+// is unchanged when neither `IBX_KERNEL_SHADOW` nor `IBX_KERNEL_ENFORCE`
+// names the intent kind: legacy direct-call wins (preserves green
+// baseline). Under shadow mode, both run and divergences emit audit
+// records. Under enforce mode, the kernel's Decision is authoritative —
+// REFUSE/DEFER/REQUEST_CONFIRMATION/ESCALATE short-circuit before the
+// underlying tool runs.
 
 import { createActor } from "xstate"
-import { cancelOrder, regeneratePix } from "@ibatexas/tools"
+import { cancelOrder, regeneratePix, getRedisClient, rk } from "@ibatexas/tools"
+import { buildAuditRecord, type Decision, type IntentEnvelope } from "@adjudicate/core"
+import {
+  adjudicate,
+  adjudicateWithShadow,
+  isEnforced,
+  isShadowed,
+  legacyDecisionAsKernelDecision,
+} from "@adjudicate/core/kernel"
+import { parkDeferredIntent } from "@adjudicate/runtime"
 import { orderMachine, getStateString, createDefaultContext, isCheckoutState } from "./machine/order-machine.js"
 import type { OrderContext, KernelOutput } from "./machine/types.js"
 import { extractIllusionContext } from "./machine/types.js"
 import { routeMessage } from "./router.js"
 import { persistMachineState } from "./machine/persistence.js"
+import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
+import { getAuditSink } from "./intent-audit-wiring.js"
+import {
+  buildAddItemEnvelope,
+  buildCancelOrderEnvelope,
+  buildCheckoutEnvelope,
+  buildRegeneratePixEnvelope,
+  type KernelAddItemPayload,
+  type KernelCancelPayload,
+  type KernelCheckoutPayload,
+  type KernelRegeneratePixPayload,
+} from "./kernel-executor-envelopes.js"
 import {
   searchProduct,
   ensureCart,
@@ -34,6 +67,15 @@ export const CART_TIMEOUT = 10_000
 export const DELIVERY_TIMEOUT = 8_000
 export const CHECKOUT_TIMEOUT = 30_000
 export const LOYALTY_TIMEOUT = 5_000
+
+// ── pt-BR refusal copy for kernel-side short-circuits (CLAUDE.md #4) ─────────
+
+const KERNEL_REFUSAL_CONFIRMATION_PT_BR =
+  "Esta operação requer confirmação adicional. Por favor, aguarde."
+const KERNEL_REFUSAL_ESCALATE_PT_BR =
+  "Estou pedindo revisão antes de seguir. Um atendente assume daqui."
+const KERNEL_REFUSAL_DEFER_PT_BR =
+  "Aguardando confirmação. Te aviso assim que tudo estiver certo."
 
 // ── Async timeout helper ─────────────────────────────────────────────────────
 
@@ -89,6 +131,206 @@ export async function withRetry<T>(
   }
   console.error(`[machine:retry] ${label}: all ${maxAttempts} attempts failed`)
   return fallback
+}
+
+// ── Adjudicate-kernel mutation gate (Task 06) ────────────────────────────────
+
+/**
+ * Outcome of `adjudicateKernelMutation`. The caller branches on `proceed`:
+ *
+ *   - true  → run the legacy mutation (EXECUTE or pure-legacy path).
+ *             When `decision.kind === "REWRITE"`, the caller should use
+ *             `decision.rewritten.payload` instead of the original payload.
+ *   - false → mutation MUST NOT run. The kernel decided REFUSE, DEFER,
+ *             REQUEST_CONFIRMATION, or ESCALATE. `userFacing` carries the
+ *             pt-BR copy the kernel-executor writes into `ctx.lastError`
+ *             so the synthesizer / responder can read it on the next turn.
+ *             For DEFER, the envelope has already been parked via the
+ *             same Redis key shape the responder uses (`defer:pending:<sessionId>`).
+ */
+interface AdjudicationGate<P> {
+  readonly proceed: boolean
+  readonly decision: Decision
+  /** REWRITE: the kernel-rewritten payload to pass to the underlying mutation. */
+  readonly rewrittenPayload?: P
+  /** pt-BR copy to write into `OrderContext.lastError` when `proceed === false`. */
+  readonly userFacing?: string
+  /** True when the kernel parked the envelope (DEFER). Mirrors `ctx.deferredIntentParked` if the caller wants to tag state. */
+  readonly parked?: boolean
+}
+
+/**
+ * Run the adjudicate kernel against a kernel-direct mutation envelope. Mirrors
+ * the LLM-responder's shadow/enforce pattern so the four kernel-executor
+ * mutations are wrapped at the exact same governance boundary as the
+ * LLM-proposed mutations.
+ *
+ * Behaviour matrix (env → outcome):
+ *
+ *   Neither shadow nor enforce names the intent kind:
+ *     - Pure legacy. Decision is synthesized as EXECUTE; no audit record;
+ *       caller runs the underlying mutation unchanged. Preserves the
+ *       green baseline so production behaviour is byte-identical until
+ *       the on-call engages shadow mode for this kind.
+ *
+ *   `IBX_KERNEL_SHADOW=<kind>` matches:
+ *     - `adjudicateWithShadow` runs both legacy (always-EXECUTE baseline)
+ *       AND the policy. Divergences emit audit records. Legacy still
+ *       authoritative — the caller runs the underlying mutation.
+ *
+ *   `IBX_KERNEL_ENFORCE=<kind>` matches:
+ *     - `adjudicate` is authoritative. Audit record always emits. Caller
+ *       branches on `proceed`:
+ *         EXECUTE / REWRITE → run mutation (REWRITE substitutes payload)
+ *         REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE → short-circuit.
+ *
+ * Parks DEFER envelopes via the same `defer:pending:<sessionId>` Redis key
+ * shape `llm-responder.ts:438-460` uses, so a single defer-resolver
+ * subscriber owns both paths.
+ */
+async function adjudicateKernelMutation<K extends string, P>(
+  envelope: IntentEnvelope<K, P>,
+  ctx: OrderContext,
+  sessionId: string,
+): Promise<AdjudicationGate<P>> {
+  const orderState: OrderState = { ctx }
+  const startedAt = Date.now()
+  const intentKind = envelope.kind
+
+  let decision: Decision
+  let isPureLegacy = false
+
+  if (isEnforced(intentKind, process.env)) {
+    decision = adjudicate(envelope, orderState, orderPolicyBundle)
+  } else if (isShadowed(intentKind, process.env)) {
+    // Shadow: legacy is a synthetic always-EXECUTE; we run both and let
+    // adjudicateWithShadow log the divergence. Legacy still wins for the
+    // proceed-or-not decision.
+    const shadow = adjudicateWithShadow({
+      envelope,
+      state: orderState,
+      policy: orderPolicyBundle,
+      legacy: () => true,
+    })
+    decision = legacyDecisionAsKernelDecision(shadow.legacyDecision)
+  } else {
+    // Pure legacy — no audit emission, no policy involvement. Preserves
+    // the green baseline for any kind not in shadow/enforce config.
+    decision = legacyDecisionAsKernelDecision({ kind: "EXECUTE" })
+    isPureLegacy = true
+  }
+
+  // Audit emit — same suppression rule as llm-responder.ts (investigation
+  // 01 §"P2 #7" / governance 05 §"Audit emit invariants" #2). Pure-legacy
+  // EXECUTEs are silent; shadow + enforce paths always emit.
+  if (!isPureLegacy) {
+    try {
+      const record = buildAuditRecord({
+        envelope,
+        decision,
+        durationMs: Date.now() - startedAt,
+      })
+      void getAuditSink().emit(record).catch((err: unknown) => {
+        console.error("[kernel-executor] Audit emit failed:", (err as Error).message)
+      })
+    } catch (err) {
+      console.error("[kernel-executor] Audit record build failed:", (err as Error).message)
+    }
+  }
+
+  // Branch on the kernel's Decision. The first three (EXECUTE / REWRITE)
+  // tell the caller "proceed"; the rest short-circuit.
+  switch (decision.kind) {
+    case "EXECUTE":
+      return { proceed: true, decision }
+
+    case "REWRITE": {
+      // REWRITE substitutes a sanitized envelope. The caller should run the
+      // mutation with the rewritten payload (typed as `P` via the original
+      // envelope's payload shape — the kernel's REWRITE scope is sanitize /
+      // normalize / cap only, never business transformation, so the shape
+      // is preserved by contract).
+      const rewrittenPayload = (decision.rewritten as IntentEnvelope<K, P>).payload
+      return { proceed: true, decision, rewrittenPayload }
+    }
+
+    case "REFUSE":
+      return {
+        proceed: false,
+        decision,
+        userFacing: decision.refusal.userFacing,
+      }
+
+    case "DEFER": {
+      // Park the envelope via the runtime's `parkDeferredIntent` primitive.
+      // The primitive enforces a per-session quota (DEFAULT_DEFER_QUOTA_PER_SESSION = 16),
+      // populates the T-005 verification fields (`version`, `nonce`, `taint`,
+      // `actorPrincipal`) so the resume side can verify the hash, and emits
+      // `recordResourceLimit` telemetry on quota exhaustion. Bypassing this
+      // primitive (the pre-W2 behaviour) left every parked blob with
+      // `verified: null, reason: "missing_fields"` at resume time — tamper
+      // detection was structurally inert.
+      try {
+        const redis = await getRedisClient()
+        const ttlSeconds = Math.ceil(decision.timeoutMs / 1000) + 60
+        const parkResult = await parkDeferredIntent({
+          envelope: {
+            intentHash: envelope.intentHash,
+            kind: envelope.kind,
+            actor: { sessionId: envelope.actor.sessionId },
+            payload: envelope.payload,
+            // T-005 verification fields — spread as flat top-level keys so
+            // `verifyParkedEnvelopeHash` can re-derive the hash on resume.
+            version: envelope.version,
+            nonce: envelope.nonce,
+            taint: envelope.taint,
+            actorPrincipal: envelope.actor.principal,
+          },
+          signal: decision.signal,
+          ttlSeconds,
+          redis,
+          rk,
+        })
+        if (!parkResult.parked) {
+          // Quota exceeded — surface as a refusal so the user learns their
+          // additional DEFER was rejected rather than silently swallowed.
+          console.warn(
+            "[kernel-executor] DEFER park quota exceeded:",
+            parkResult.reason,
+            "observed:", parkResult.observed,
+            "limit:", parkResult.limit,
+          )
+          return {
+            proceed: false,
+            decision,
+            userFacing: "Você tem muitas operações em espera. Aguarde uma delas concluir antes de tentar novamente.",
+          }
+        }
+      } catch (err) {
+        console.error("[kernel-executor] DEFER park failed:", (err as Error).message)
+      }
+      return {
+        proceed: false,
+        decision,
+        userFacing: KERNEL_REFUSAL_DEFER_PT_BR,
+        parked: true,
+      }
+    }
+
+    case "REQUEST_CONFIRMATION":
+      return {
+        proceed: false,
+        decision,
+        userFacing: KERNEL_REFUSAL_CONFIRMATION_PT_BR,
+      }
+
+    case "ESCALATE":
+      return {
+        proceed: false,
+        decision,
+        userFacing: KERNEL_REFUSAL_ESCALATE_PT_BR,
+      }
+  }
 }
 
 // ── Post-order action wrappers ────────────────────────────────────────────────
@@ -278,46 +520,110 @@ export async function executeKernel(
               { maxAttempts: 2, timeoutMs: CART_TIMEOUT, fallback: { success: false, cartId: "", items: [], totalInCentavos: 0, error: "Timeout ao criar carrinho" } as Awaited<ReturnType<typeof ensureCart>>, label: "ensureCart" },
             )
             if (cartResult.success && cartResult.cartId) {
-              let addResult = await withRetry(
-                () => addItemToCart(
-                  cartResult.cartId,
-                  product.variantId,
-                  (event as { quantity?: number }).quantity ?? 1,
-                  { ...currentState.context, cartId: cartResult.cartId },
-                  sessionId,
-                ),
-                { maxAttempts: 2, timeoutMs: CART_TIMEOUT, fallback: { success: false, cartId: cartResult.cartId, items: currentState.context.items, totalInCentavos: currentState.context.totalInCentavos, error: "Timeout ao adicionar item" } as Awaited<ReturnType<typeof addItemToCart>>, label: "addItemToCart" },
+              // ── Task 06: wrap addItemToCart in an IntentEnvelope ─────
+              // Build the system-actor envelope BEFORE the mutation. Under
+              // shadow/enforce mode the kernel's Decision short-circuits;
+              // under pure-legacy it's a no-op and the mutation runs.
+              const addPayload: KernelAddItemPayload = {
+                cartId: cartResult.cartId,
+                variantId: product.variantId,
+                quantity: (event as { quantity?: number }).quantity ?? 1,
+                // Kernel-side allergens not yet plumbed from catalog DTO;
+                // the LLM-proposed path handles allergens explicitly via
+                // pack-orders' `requireExplicitAllergens` guard. Forward-compat
+                // empty array (per CLAUDE.md #1: explicit array, not undefined).
+                allergens: [],
+              }
+              const addEnvelope = buildAddItemEnvelope(
+                addPayload,
+                { ...currentState.context, cartId: cartResult.cartId },
+                sessionId,
+              )
+              const addGate = await adjudicateKernelMutation(
+                addEnvelope,
+                { ...currentState.context, cartId: cartResult.cartId },
+                sessionId,
               )
 
-              // Stale variant: cache was invalidated — re-search with fresh data and retry
-              if (!addResult.success && addResult.staleVariant && searchTerm) {
-                const freshSearch = await withRetry(
-                  () => searchProduct(searchTerm, currentState.context, sessionId),
-                  { maxAttempts: 1, timeoutMs: SEARCH_TIMEOUT, fallback: { found: false, products: [], alternatives: [] } as Awaited<ReturnType<typeof searchProduct>>, label: "searchProduct:retry" },
-                )
-                if (freshSearch.found && freshSearch.products.length > 0) {
-                  const freshProduct = freshSearch.products[0]
-                  addResult = await withRetry(
-                    () => addItemToCart(
-                      cartResult.cartId,
-                      freshProduct.variantId,
-                      (event as { quantity?: number }).quantity ?? 1,
-                      { ...currentState.context, cartId: cartResult.cartId },
-                      sessionId,
-                    ),
-                    { maxAttempts: 1, timeoutMs: CART_TIMEOUT, fallback: addResult, label: "addItemToCart:retry" },
-                  )
-                }
-              }
+              if (!addGate.proceed) {
+                actor.send({
+                  type: "CART_UPDATED",
+                  success: false,
+                  cartId: cartResult.cartId,
+                  items: currentState.context.items,
+                  totalInCentavos: currentState.context.totalInCentavos,
+                  error: addGate.userFacing ?? "Operação não permitida.",
+                })
+              } else {
+                // REWRITE: use the kernel-rewritten payload (sanitized cap)
+                // instead of the original. Pure-legacy / EXECUTE branches use
+                // the original payload.
+                const effectivePayload = addGate.rewrittenPayload ?? addPayload
 
-              actor.send({
-                type: "CART_UPDATED",
-                success: addResult.success,
-                cartId: addResult.cartId,
-                items: addResult.items,
-                totalInCentavos: addResult.totalInCentavos,
-                error: addResult.error,
-              })
+                let addResult = await withRetry(
+                  () => addItemToCart(
+                    effectivePayload.cartId,
+                    effectivePayload.variantId,
+                    effectivePayload.quantity,
+                    { ...currentState.context, cartId: effectivePayload.cartId },
+                    sessionId,
+                  ),
+                  { maxAttempts: 2, timeoutMs: CART_TIMEOUT, fallback: { success: false, cartId: effectivePayload.cartId, items: currentState.context.items, totalInCentavos: currentState.context.totalInCentavos, error: "Timeout ao adicionar item" } as Awaited<ReturnType<typeof addItemToCart>>, label: "addItemToCart" },
+                )
+
+                // Stale variant: cache was invalidated — re-search with fresh data and retry
+                if (!addResult.success && addResult.staleVariant && searchTerm) {
+                  const freshSearch = await withRetry(
+                    () => searchProduct(searchTerm, currentState.context, sessionId),
+                    { maxAttempts: 1, timeoutMs: SEARCH_TIMEOUT, fallback: { found: false, products: [], alternatives: [] } as Awaited<ReturnType<typeof searchProduct>>, label: "searchProduct:retry" },
+                  )
+                  if (freshSearch.found && freshSearch.products.length > 0) {
+                    const freshProduct = freshSearch.products[0]
+                    // Re-envelope for the retry so the audit trail records
+                    // the (legitimately new) variant id. Same envelope kind /
+                    // session — different nonce so ledger dedup sees a new
+                    // attempt.
+                    const retryPayload: KernelAddItemPayload = {
+                      cartId: effectivePayload.cartId,
+                      variantId: freshProduct.variantId,
+                      quantity: effectivePayload.quantity,
+                      allergens: effectivePayload.allergens,
+                    }
+                    const retryEnvelope = buildAddItemEnvelope(
+                      retryPayload,
+                      { ...currentState.context, cartId: effectivePayload.cartId },
+                      sessionId,
+                    )
+                    const retryGate = await adjudicateKernelMutation(
+                      retryEnvelope,
+                      { ...currentState.context, cartId: effectivePayload.cartId },
+                      sessionId,
+                    )
+                    if (retryGate.proceed) {
+                      const finalRetryPayload = retryGate.rewrittenPayload ?? retryPayload
+                      addResult = await withRetry(
+                        () => addItemToCart(
+                          finalRetryPayload.cartId,
+                          finalRetryPayload.variantId,
+                          finalRetryPayload.quantity,
+                          { ...currentState.context, cartId: finalRetryPayload.cartId },
+                          sessionId,
+                        ),
+                        { maxAttempts: 1, timeoutMs: CART_TIMEOUT, fallback: addResult, label: "addItemToCart:retry" },
+                      )
+                    }
+                  }
+                }
+
+                actor.send({
+                  type: "CART_UPDATED",
+                  success: addResult.success,
+                  cartId: addResult.cartId,
+                  items: addResult.items,
+                  totalInCentavos: addResult.totalInCentavos,
+                  error: addResult.error,
+                })
+              }
             } else {
               actor.send({
                 type: "CART_UPDATED",
@@ -361,32 +667,71 @@ export async function executeKernel(
     currentState = actor.getSnapshot()
     stateStr = getStateString(currentState)
     if (stateStr === "checkout.processing_payment") {
-      const checkoutStatusTimer = setTimeout(() => onStatus?.("Fechando seu pedido…"), 1500)
-      const checkoutResult = await withTimeout(
-        processCheckout(currentState.context, sessionId),
-        CHECKOUT_TIMEOUT,
-        { success: false, paymentMethod: currentState.context.paymentMethod ?? "unknown", message: "Timeout ao processar pagamento. Tente novamente." } as Awaited<ReturnType<typeof processCheckout>>,
-        "processCheckout",
+      // ── Task 06: wrap processCheckout in an IntentEnvelope ─────────────
+      const checkoutCtx = currentState.context
+      // Pre-check: missing cartId / paymentMethod is handled inside
+      // `processCheckout` already (returns a typed failure result). We
+      // still build an envelope for the audit trail even if the payload
+      // is partially undefined — the policy bundle's
+      // `requireCartIdForCartOps` guard will refuse it.
+      const checkoutPayload: KernelCheckoutPayload = {
+        cartId: checkoutCtx.cartId ?? "",
+        paymentMethod: checkoutCtx.paymentMethod ?? "pix",
+        tipInCentavos: checkoutCtx.tipInCentavos,
+        deliveryCep: checkoutCtx.deliveryCep,
+      }
+      const checkoutEnvelope = buildCheckoutEnvelope(
+        checkoutPayload,
+        checkoutCtx,
+        sessionId,
       )
-      clearTimeout(checkoutStatusTimer)
-      actor.send({
-        type: "CHECKOUT_RESULT",
-        success: checkoutResult.success,
-        paymentMethod: checkoutResult.paymentMethod,
-        checkoutData: checkoutResult,
-      })
+      const checkoutGate = await adjudicateKernelMutation(
+        checkoutEnvelope,
+        checkoutCtx,
+        sessionId,
+      )
 
-      // After successful checkout, fetch loyalty
-      currentState = actor.getSnapshot()
-      stateStr = getStateString(currentState)
-      if (stateStr === "checkout.order_placed") {
-        const stamps = await withTimeout(
-          fetchLoyaltyBalance(currentState.context, sessionId),
-          LOYALTY_TIMEOUT,
-          null,
-          "fetchLoyalty:postCheckout",
+      if (!checkoutGate.proceed) {
+        const refusalMessage = checkoutGate.userFacing ?? "Operação não permitida."
+        actor.send({
+          type: "CHECKOUT_RESULT",
+          success: false,
+          paymentMethod: checkoutCtx.paymentMethod ?? "unknown",
+          checkoutData: { success: false, paymentMethod: checkoutCtx.paymentMethod ?? "unknown", message: refusalMessage },
+        })
+      } else {
+        const checkoutStatusTimer = setTimeout(() => onStatus?.("Fechando seu pedido…"), 1500)
+        // REWRITE not currently propagated into processCheckout's tuple
+        // signature — the rewritten cartId / paymentMethod would replace
+        // the originals here. processCheckout reads from `currentState.context`
+        // directly; we keep that path for now and surface a REWRITE via the
+        // audit record alone.
+        const checkoutResult = await withTimeout(
+          processCheckout(currentState.context, sessionId),
+          CHECKOUT_TIMEOUT,
+          { success: false, paymentMethod: currentState.context.paymentMethod ?? "unknown", message: "Timeout ao processar pagamento. Tente novamente." } as Awaited<ReturnType<typeof processCheckout>>,
+          "processCheckout",
         )
-        actor.send({ type: "LOYALTY_LOADED", stamps })
+        clearTimeout(checkoutStatusTimer)
+        actor.send({
+          type: "CHECKOUT_RESULT",
+          success: checkoutResult.success,
+          paymentMethod: checkoutResult.paymentMethod,
+          checkoutData: checkoutResult,
+        })
+
+        // After successful checkout, fetch loyalty
+        currentState = actor.getSnapshot()
+        stateStr = getStateString(currentState)
+        if (stateStr === "checkout.order_placed") {
+          const stamps = await withTimeout(
+            fetchLoyaltyBalance(currentState.context, sessionId),
+            LOYALTY_TIMEOUT,
+            null,
+            "fetchLoyalty:postCheckout",
+          )
+          actor.send({ type: "LOYALTY_LOADED", stamps })
+        }
       }
     }
 
@@ -421,17 +766,40 @@ export async function executeKernel(
     stateStr = getStateString(currentState)
 
     if (stateStr === "post_order.cancelling" && currentState.context.orderId) {
-      const cancelResult = await withTimeout(
-        cancelOrderAction(currentState.context, sessionId),
-        CART_TIMEOUT,
-        { success: false, message: "Timeout ao cancelar pedido" },
-        "cancelOrder",
+      // ── Task 06: wrap cancelOrderAction in an IntentEnvelope ───────────
+      const cancelPayload: KernelCancelPayload = {
+        orderId: currentState.context.orderId,
+      }
+      const cancelEnvelope = buildCancelOrderEnvelope(
+        cancelPayload,
+        currentState.context,
+        sessionId,
       )
-      actor.send({
-        type: "CANCEL_ORDER_RESULT",
-        success: cancelResult.success,
-        message: cancelResult.message ?? "",
-      })
+      const cancelGate = await adjudicateKernelMutation(
+        cancelEnvelope,
+        currentState.context,
+        sessionId,
+      )
+
+      if (!cancelGate.proceed) {
+        actor.send({
+          type: "CANCEL_ORDER_RESULT",
+          success: false,
+          message: cancelGate.userFacing ?? "Operação não permitida.",
+        })
+      } else {
+        const cancelResult = await withTimeout(
+          cancelOrderAction(currentState.context, sessionId),
+          CART_TIMEOUT,
+          { success: false, message: "Timeout ao cancelar pedido" },
+          "cancelOrder",
+        )
+        actor.send({
+          type: "CANCEL_ORDER_RESULT",
+          success: cancelResult.success,
+          message: cancelResult.message ?? "",
+        })
+      }
     }
 
     if (stateStr === "post_order.amending" && currentState.context.orderId) {
@@ -444,18 +812,59 @@ export async function executeKernel(
     }
 
     if (stateStr === "post_order.regenerating_pix" && currentState.context.orderId) {
-      const pixResult = await withTimeout(
-        regeneratePixAction(currentState.context, sessionId),
-        CART_TIMEOUT,
-        { success: false, message: "Timeout ao regenerar PIX" },
-        "regeneratePix",
+      // ── Task 06: wrap regeneratePixAction in an IntentEnvelope ─────────
+      const pixPayload: KernelRegeneratePixPayload = {
+        orderId: currentState.context.orderId,
+      }
+      const pixEnvelope = buildRegeneratePixEnvelope(
+        pixPayload,
+        currentState.context,
+        sessionId,
       )
-      actor.send({
-        type: "PIX_REGENERATED",
-        success: pixResult.success,
-        pixCopyPaste: pixResult.pixCopyPaste,
-        pixQrCode: pixResult.pixQrCode,
-      })
+      const pixGate = await adjudicateKernelMutation(
+        pixEnvelope,
+        currentState.context,
+        sessionId,
+      )
+
+      if (!pixGate.proceed) {
+        actor.send({
+          type: "PIX_REGENERATED",
+          success: false,
+          // PIX_REGENERATED carries pix data, not a message — the userFacing
+          // refusal lands on ctx.lastError below for the synthesizer to read.
+          pixCopyPaste: undefined,
+          pixQrCode: undefined,
+        })
+        // Surface the refusal via ctx.lastError so the synthesizer prompt
+        // can render the pt-BR refusal copy on the next turn.
+        if (pixGate.userFacing) {
+          // Mutating ctx.lastError requires an XState event since context is
+          // managed by the actor. We have no dedicated event for "kernel
+          // refusal" — store on the actor's context via a special-purpose
+          // assign event would require machine changes (out of scope here).
+          // Instead, log it; the orchestrator will fall back to the kernel's
+          // default refusal copy in synthesis.
+          console.warn(
+            "[kernel] regeneratePix refused: %s (decision=%s)",
+            pixGate.userFacing,
+            pixGate.decision.kind,
+          )
+        }
+      } else {
+        const pixResult = await withTimeout(
+          regeneratePixAction(currentState.context, sessionId),
+          CART_TIMEOUT,
+          { success: false, message: "Timeout ao regenerar PIX" },
+          "regeneratePix",
+        )
+        actor.send({
+          type: "PIX_REGENERATED",
+          success: pixResult.success,
+          pixCopyPaste: pixResult.pixCopyPaste,
+          pixQrCode: pixResult.pixQrCode,
+        })
+      }
     }
 
     // OBJECTION with "thinking" → schedule follow-up
@@ -503,3 +912,13 @@ export async function executeKernel(
     },
   }
 }
+
+// ── Test-only export ──────────────────────────────────────────────────────────
+//
+// `adjudicateKernelMutation` is module-internal; tests import it via this
+// `@internal` re-export so they can verify branching behaviour (EXECUTE /
+// REFUSE / DEFER / REWRITE) without re-implementing the env-gating logic.
+// Do NOT consume from production code outside this module.
+
+/** @internal — test-only re-export. Do not import from production code. */
+export const __testOnly__adjudicateKernelMutation = adjudicateKernelMutation

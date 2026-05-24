@@ -9,6 +9,11 @@ import { v4 as uuidv4 } from "uuid";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { createCustomerService } from "@ibatexas/domain";
 import { Channel, type AgentContext } from "@ibatexas/types";
+import { buildEnvelope } from "@adjudicate/core";
+import type {
+  CustomerCreatePayload,
+  CustomerOnboardingState,
+} from "@ibatexas/pack-customer-onboarding";
 
 const SESSION_TTL_SECONDS = 24 * 60 * 60; // 24h
 const SESSION_IDLE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes — triggers session rotation
@@ -130,9 +135,55 @@ export async function resolveWhatsAppSession(phone: string): Promise<WhatsAppSes
     throw new Error("Customer creation rate limit exceeded");
   }
 
-  // Upsert customer — WhatsApp phone is pre-verified by Meta
+  // ── W7 P3 — kernel-routed customer.create (WhatsApp first-contact) ──
+  //
+  // Previously this call invoked `customerSvc.upsertFromWhatsApp(phone)`
+  // directly, bypassing the adjudicate kernel. Per pack-customer-onboarding
+  // §"customer.create" + CLAUDE.md rule #9, the WhatsApp pre-verified
+  // first-contact path is one of the two canonical SYSTEM-only seed
+  // paths for new customer rows. We build a system-actor envelope
+  // (`taint: "SYSTEM"`, principal: "system", source: "wa-auto") so the
+  // pack's `systemMinimum: "SYSTEM"` floor is cleared, and route via
+  // `createFromEnvelope` which:
+  //   - Adjudicates against `customerOnboardingPolicyBundle`
+  //   - Emits a governance audit record via the AuditSink
+  //   - Delegates to the existing Prisma upsert (wa-auto source path)
+  //
+  // `nonce` is keyed on the phone hash so re-delivery of the same
+  // pre-verified WhatsApp phone produces a deterministic intentHash
+  // (replay-safe across the cached-session re-entry path).
   const customerSvc = createCustomerService();
-  const customer = await customerSvc.upsertFromWhatsApp(phone);
+  const envelope = buildEnvelope<"customer.create", CustomerCreatePayload>({
+    kind: "customer.create",
+    payload: { phoneHash: hash, source: "wa-auto" },
+    nonce: `wa-session-resolve:${hash}`,
+    actor: {
+      principal: "system",
+      sessionId: `wa-session-resolve:${hash}`,
+    },
+    taint: "SYSTEM",
+  });
+  const state: CustomerOnboardingState = {
+    ctx: {
+      actor: { principal: "system" },
+      customerId: null,
+      customerExists: false,
+      isAuthenticated: false,
+      otpFresh: false,
+      hasParkedAnonymize: false,
+      now: new Date(),
+    },
+  };
+  const outcome = await customerSvc.createFromEnvelope(envelope, state, { phone });
+  if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+    // Pack REFUSEd the system-seed envelope. This is unexpected for the
+    // pre-verified WhatsApp path; surface as a 500-class internal error
+    // upstream so the operator can investigate.
+    throw new Error(
+      `customer.create envelope did not EXECUTE (decision=${outcome.decision.kind}) — refusing WhatsApp session resolve`,
+    );
+  }
+  const customer = outcome.result!;
 
   const sessionId = uuidv4();
   const nowMs = String(Date.now());

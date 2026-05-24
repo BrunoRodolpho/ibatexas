@@ -12,8 +12,11 @@ import { registerSensible } from "./plugins/sensible.js";
 import { registerSwagger } from "./plugins/swagger.js";
 import { registerRateLimit } from "./plugins/rate-limit.js";
 import { genRequestId, registerRequestId } from "./plugins/request-id.js";
+import { installKernelMetricsSink } from "./plugins/kernel-bootstrap.js";
+import { parseBoolEnv } from "@ibatexas/llm-provider";
 import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
+import { metricsRoutes } from "./routes/metrics.js";
 import { requireSecret } from "./utils/require-secret.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -26,7 +29,9 @@ export async function buildServer(): Promise<FastifyInstance> {
           ? undefined
           : { target: "pino-pretty", options: { colorize: true } },
     },
-    trustProxy: process.env.TRUST_PROXY === "true",
+    // NEW-P1-ENV: was `=== "true"` — silently rejected "TRUE", "1", "yes".
+    // parseBoolEnv accepts the canonical truthy lexicon.
+    trustProxy: parseBoolEnv(process.env.TRUST_PROXY, false),
     connectionTimeout: 30_000,
     requestTimeout: 60_000,
     keepAliveTimeout: 72_000,
@@ -40,6 +45,11 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   // Sentry error tracking — must be registered before routes/hooks
   await registerSentry(server);
+
+  // Kernel MetricsSink — install before routes so the first adjudicate() call
+  // already has a producer for the 8 audit_* PostHog events + Prometheus
+  // counters. Registry is reused by the /metrics scrape route below.
+  const kernelRegister = installKernelMetricsSink();
 
   // OBS-001: Request ID — Sentry tagging + response header (genReqId set above)
   registerRequestId(server);
@@ -62,6 +72,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   await registerRateLimit(server);
 
   registerErrorHandler(server);
+
+  // Prometheus scrape endpoint — registered before the rest of the routes so
+  // it is unaffected by domain-route middleware ordering. Auth is enforced
+  // inside the handler via PROMETHEUS_TOKEN.
+  await server.register(metricsRoutes({ register: kernelRegister }));
 
   await registerRoutes(server);
 

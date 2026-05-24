@@ -115,7 +115,13 @@ import {
 } from "@ibatexas/types"
 import { z } from "zod"
 import type { Tool } from "@anthropic-ai/sdk/resources/index.js"
-import { TOOL_CLASSIFICATION, type ToolIntent } from "./machine/types.js"
+import { randomUUID } from "node:crypto"
+import { buildEnvelope } from "@adjudicate/core"
+import {
+  TOOL_CLASSIFICATION,
+  type ToolIntent,
+  type ToolProposePayload,
+} from "./machine/types.js"
 
 // ── Tool definitions (passed to Claude API) ───────────────────────────────────
 // SearchProductsTool uses `inputSchema` (camelCase) for internal use.
@@ -371,37 +377,52 @@ export async function executeTool(
 
   // MUTATING tools: capture as intent, don't execute.
   // The caller (llm-responder) will pass this to the kernel for validation.
+  // Phase B: wrap in a versioned IntentEnvelope alongside legacy fields.
+  const payload: ToolProposePayload = {
+    toolName: name,
+    input,
+    toolUseId: toolUseId ?? "",
+  }
+  const envelope = buildEnvelope({
+    kind: "order.tool.propose",
+    payload,
+    actor: { principal: "llm", sessionId: ctx.sessionId },
+    // User message is the ultimate source of the LLM's tool proposal.
+    // v1.0 payload-level taint; field-level ships in v1.1 per docs/taint.md.
+    taint: "UNTRUSTED",
+    // v2 envelope: nonce is the idempotency key for ledger dedup.
+    // First-attempt proposals get a fresh UUID; on retry the caller must
+    // reuse the same envelope (not rebuild it) so the ledger dedups correctly.
+    nonce: randomUUID(),
+  })
   return {
     kind: "intent",
-    intent: { toolName: name, input, toolUseId: toolUseId ?? "" },
+    intent: {
+      toolName: name,
+      input,
+      toolUseId: toolUseId ?? "",
+      envelope,
+    },
   }
 }
 
-/**
- * Execute a tool directly, bypassing the intent bridge.
- *
- * Used by the kernel executor path (machine/actions.ts) and for executing
- * intents that have been validated and approved by the machine. This function
- * ALWAYS executes the tool handler — no read-only/mutating classification.
- *
- * Validates input against the Zod schema before dispatch.
- * Throws if the tool name is not registered.
- */
-export async function executeToolDirect(
-  name: string,
-  input: unknown,
-  ctx: AgentContext,
-): Promise<unknown> {
-  const handler = handlers.get(name)
-  if (!handler) {
-    throw new Error(`Ferramenta desconhecida: ${name}`)
-  }
-
-  // Validate input with Zod before calling handler
-  const schema = toolInputSchemas.get(name)
-  if (schema) {
-    schema.parse(input)
-  }
-
-  return handler(input, ctx)
-}
+// ── executeToolDirect — REMOVED (Task 06) ────────────────────────────────────
+//
+// `executeToolDirect` previously bypassed the Zero-Trust intent bridge,
+// validating Zod input and calling a handler directly. Investigation 01
+// §"P2 #5" flagged it as a foot-gun: future callers could mutate state
+// without policy review or audit. The kernel-executor never actually used
+// it — only tests did.
+//
+// Removal trade-offs:
+//   - All production mutations now flow through either
+//     `executeTool` (LLM-proposed → intent envelope → adjudicate via responder)
+//     or `executeKernel` (deterministic XState path → adjudicate via
+//     `adjudicateKernelMutation` in kernel-executor.ts).
+//   - Tests that exercised `withCustomerId` auth (reservation handlers) use
+//     `executeToolForTest` in `__tests__/helpers/test-only-executors.ts`.
+//
+// Do NOT reintroduce a public direct-execution export. If you need an
+// LLM-bypassing path for a legitimate non-LLM caller, build an envelope
+// factory (see `kernel-executor-envelopes.ts`) and route through
+// `adjudicate()` with `actor.principal = "system"`.

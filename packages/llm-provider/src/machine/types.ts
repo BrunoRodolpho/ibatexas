@@ -158,10 +158,22 @@ export interface OrderContext {
 
 // ── Synthesized prompt (output of prompt synthesizer) ───────────────────────
 
+import type { Plan } from "@adjudicate/core/llm"
+
 export interface SynthesizedPrompt {
   systemPrompt: string // targeted instructions for LLM
   availableTools: string[] // only tools LLM can call in this state
   maxTokens: number // response length limit
+  /**
+   * Capability planner output for this turn — `visibleReadTools` lists
+   * READ tools the LLM may call directly, `allowedIntents` lists mutating
+   * intent identities the LLM may PROPOSE (those route through the
+   * Zero-Trust intent bridge). The responder consults `plan.allowedIntents`
+   * before invoking `adjudicate()` and stamps the snapshot into audit
+   * records via `buildAuditRecord({ plan })`. See task 07 + investigation
+   * 05 for the framework-side guarantees.
+   */
+  plan: Plan
 }
 
 // ── Meal period helper ──────────────────────────────────────────────────────
@@ -290,6 +302,12 @@ export interface KernelOutput {
     eventType: string
     timestamp: number
   }
+  /**
+   * IBX-IGE Phase E: decisions produced during this turn. Additive — empty array
+   * is valid and keeps legacy consumers green. Populated by adjudicate() call
+   * sites as they are wired in subsequent phases.
+   */
+  decisions?: readonly import("@adjudicate/core").Decision[]
 }
 
 /** Async side-effect the orchestrator must execute between transitions. */
@@ -375,6 +393,11 @@ export const TOOL_CLASSIFICATION = {
     "get_ordered_together",
     "get_loyalty_balance",
     "check_payment_status",
+    // set_pix_details performs no mutation — it validates customer-supplied
+    // {name, email, cpf} and returns a {event: "PIX_DETAILS_COLLECTED"} payload
+    // that the responder must surface via onToolEvent (kind === "result" branch).
+    // Classifying it as MUTATING silently drops the event (see investigation 01 P0 #2).
+    "set_pix_details",
   ]),
 
   MUTATING: new Set([
@@ -386,7 +409,6 @@ export const TOOL_CLASSIFICATION = {
     "create_checkout",
     "cancel_order",
     "amend_order",
-    "add_order_note",
     "reorder",
     "create_reservation",
     "modify_reservation",
@@ -397,24 +419,54 @@ export const TOOL_CLASSIFICATION = {
     "handoff_to_human",
     "schedule_follow_up",
     "regenerate_pix",
-    "set_pix_details",
   ]),
 } as const
 
 // ── Intent Bridge (LLM proposes, Machine decides) ───────────────────────────
 
+import type { IntentEnvelope } from "@adjudicate/core"
+
+/**
+ * Payload carried inside a versioned IntentEnvelope for mutating tool proposals.
+ */
+export interface ToolProposePayload {
+  toolName: string
+  input: unknown
+  toolUseId: string
+}
+
+/**
+ * The canonical envelope kind for LLM-proposed mutating tool calls.
+ * Adopters should treat this as the sole vocabulary for the "order.tool.propose" intent
+ * and migrate away from direct ToolIntent access in Phase I.
+ */
+export type ToolProposeEnvelope = IntentEnvelope<
+  "order.tool.propose",
+  ToolProposePayload
+>
+
 /**
  * When the LLM calls a mutating tool, instead of executing it directly,
  * the system captures it as a ToolIntent. The kernel executor validates
  * the intent against the current machine state and decides whether to execute.
+ *
+ * Phase B (IBX-IGE): the `envelope` field is the new canonical shape — a
+ * versioned IntentEnvelope with a content-addressable `intentHash`. The legacy
+ * `toolName` / `input` / `toolUseId` fields remain for one release to keep
+ * existing call sites green; they will be removed in Phase I.
  */
 export interface ToolIntent {
-  /** Tool name the LLM wants to call */
+  /** Tool name the LLM wants to call (legacy — read from envelope.payload.toolName in new code) */
   toolName: string
-  /** Raw input from the LLM (pre-validated) */
+  /** Raw input from the LLM (legacy — read from envelope.payload.input) */
   input: unknown
-  /** Tool use ID from the Anthropic API (for returning results) */
+  /** Tool use ID from the Anthropic API (legacy — read from envelope.payload.toolUseId) */
   toolUseId: string
+  /**
+   * Canonical envelope. Optional in Phase B; becomes required in Phase I once
+   * every construction site has been migrated.
+   */
+  envelope?: ToolProposeEnvelope
 }
 
 // ── Default context factory ─────────────────────────────────────────────────

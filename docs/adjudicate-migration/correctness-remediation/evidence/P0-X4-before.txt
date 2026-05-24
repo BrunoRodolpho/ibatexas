@@ -1,0 +1,85 @@
+NEW-P0-X4 — PATCH /api/orders/:id/payment/method bypasses kernel (BEFORE)
+==========================================================================
+
+Source: deep-audit/02-remediation-verification.md
+Location: apps/api/src/routes/order-actions.ts:1020-1095
+
+Symptom
+-------
+The route chained THREE kernel bypasses inside a single `withLock`:
+
+  1. `paymentCmdSvc.transitionStatus(currentPayment.id, { newStatus: SWITCHING_METHOD, ... })`
+  2. `paymentCmdSvc.transitionStatus(currentPayment.id, { newStatus: CANCELED, ... })`
+  3. `paymentCmdSvc.create({ orderId, method: newMethod, amountInCentavos })`
+
+Each call invoked the bare-arg (`@deprecated`) entry point on the
+command service, completely skipping kernel adjudication:
+  - No `withAdjudicate`
+  - No audit record
+  - No policy gate
+  - No state-guard / taint-guard / business-guard ladder
+
+The `payment.method.switch` intent kind was registered in
+`@ibatexas/pack-payments` (W5):
+  - types.ts:96 declares the kind
+  - policies.ts:166 has `validateMethodSwitch` guard
+  - policies.ts:442 lists it under `executeAll`
+  - capabilities.ts:62 maps it to the LLM-facing `switch_payment_method` tool
+  - taint policy: UNTRUSTED (customer-initiated)
+But no route ever built or dispatched a `payment.method.switch` envelope.
+
+Pre-fix code (apps/api/src/routes/order-actions.ts:1046-1082):
+--------------------------------------------------------------
+
+    const result = await withLock(`payment:${currentPayment.id}`, async () => {
+      if (canTransitionPayment(...)) {
+        await paymentCmdSvc.transitionStatus(currentPayment.id, {  // ← BYPASS
+          newStatus: PaymentStatus.SWITCHING_METHOD, ...
+        });
+      }
+
+      await paymentCmdSvc.transitionStatus(currentPayment.id, {    // ← BYPASS
+        newStatus: PaymentStatus.CANCELED, ...
+      });
+
+      const newPayment = await paymentCmdSvc.create({              // ← BYPASS
+        orderId: id, method: newMethod, ...
+      });
+      // publishNatsEvent + return
+    }, 15);
+
+Reproduction
+------------
+Test: NEW-P0-X4 — PATCH /api/orders/:id/payment/method envelope migration
+File: apps/api/src/__tests__/payment-method-switch-governance.test.ts
+
+Calling PATCH /api/orders/order_01/payment/method with body {method:"cash"}
+on an awaiting_payment PIX payment:
+
+  Expected (post-fix):
+    statusCode === 200
+    mockTransitionStatusFromEnvelope called with kind=payment.status.transition
+    mockCreateFromEnvelope called with kind=payment.create, taint=SYSTEM
+    mockTransitionStatusLegacy NOT called
+    mockCreateLegacy NOT called
+
+  Actual (pre-fix):
+    statusCode === 200
+    mockTransitionStatusLegacy called 2× (switching_method + canceled)
+    mockCreateLegacy called 1× (new payment row)
+    mockTransitionStatusFromEnvelope NEVER called
+    mockCreateFromEnvelope NEVER called
+
+Failing test output (before fix):
+---------------------------------
+
+    FAIL  src/__tests__/payment-method-switch-governance.test.ts
+      > routes ALL writes through *FromEnvelope (no legacy bypass)
+        AssertionError: expected mockTransitionStatusFromEnvelope to have been called
+          received: 0 calls
+        AssertionError: expected mockCreateFromEnvelope to have been called once
+          received: 0 calls
+        AssertionError: expected mockTransitionStatusLegacy.mock.calls.length 2 to be 0
+          received: 2 (cancel calls bypassing the kernel)
+        AssertionError: expected mockCreateLegacy.mock.calls.length 1 to be 0
+          received: 1 (create bypassing the kernel)

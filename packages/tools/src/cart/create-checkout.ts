@@ -7,7 +7,7 @@
 // IMPORTANT: PIX and card orders are only confirmed via Stripe webhook —
 // never by client polling alone to avoid stuck-pending orders.
 
-import Stripe from "stripe";
+import type Stripe from "stripe";
 import { CreateCheckoutInputSchema, NonRetryableError, formatOrderId, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { reaisToCentavos } from "../medusa/client.js";
@@ -16,13 +16,8 @@ import { getAndConsumeWelcomeCredit } from "../intelligence/welcome-credit.js";
 import { getMealPeriodFromSchedule } from "../schedule/schedule-helpers.js";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
+import { stripeAdjudicated } from "../stripe/adjudicated.js";
 import { medusaStoreFetch } from "./_shared.js";
-
-function getStripe(): Stripe {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) throw new Error("STRIPE_SECRET_KEY not set");
-  return new Stripe(key);
-}
 
 export interface CreateCheckoutOutput {
   success: boolean;
@@ -59,7 +54,6 @@ async function confirmPixAndGetQrCode(
   customerId?: string,
 ): Promise<CreateCheckoutOutput> {
   try {
-    const stripe = getStripe();
     const returnUrl = process.env.RESTAURANT_SITE_URL ?? process.env.NEXT_PUBLIC_URL ?? "https://ibatexas.com.br";
 
     console.warn("[create_checkout] Confirming PI %s with PIX (name=%s email=%s)",
@@ -69,20 +63,28 @@ async function confirmPixAndGetQrCode(
     // WhatsApp users don't provide email or CPF — use restaurant defaults
     const taxId = customer.taxId || process.env.PIX_FALLBACK_TAX_ID;
 
-    const confirmed = await stripe.paymentIntents.confirm(paymentIntentId, {
-      payment_method_data: {
-        type: "pix",
-        billing_details: {
-          name: customer.name || "Cliente IbateXas",
-          email: customer.email || process.env.PIX_FALLBACK_EMAIL || "pedido@ibatexas.com.br",
-          ...(taxId ? { tax_id: taxId } : {}),
+    // PIX confirm — kernel-adjudicated egress.
+    const confirmed = await stripeAdjudicated.paymentIntents.confirm(
+      paymentIntentId,
+      {
+        payment_method_data: {
+          type: "pix",
+          billing_details: {
+            name: customer.name || "Cliente IbateXas",
+            email: customer.email || process.env.PIX_FALLBACK_EMAIL || "pedido@ibatexas.com.br",
+            ...(taxId ? { tax_id: taxId } : {}),
+          },
         },
+        payment_method_options: {
+          pix: { expires_after_seconds: PIX_EXPIRY_SECONDS },
+        },
+        return_url: `${returnUrl}/order/confirmation`,
       },
-      payment_method_options: {
-        pix: { expires_after_seconds: PIX_EXPIRY_SECONDS },
+      {
+        sourceSubject: `tool:create-checkout:confirmPixAndGetQrCode:${customerId ?? "anon"}`,
+        idempotencyKey: `pix-confirm:${paymentIntentId}`,
       },
-      return_url: `${returnUrl}/order/confirmation`,
-    }) as Stripe.PaymentIntent & {
+    ) as Stripe.PaymentIntent & {
       next_action?: {
         pix_display_qr_code?: {
           data?: string;
@@ -112,9 +114,15 @@ async function confirmPixAndGetQrCode(
     // Cart completion must NOT happen here — the payment session is not
     // authorized yet (customer hasn't scanned the QR code).
     try {
-      await stripe.paymentIntents.update(paymentIntentId, {
-        metadata: { cartId },
-      });
+      // PI metadata update — kernel-adjudicated egress.
+      await stripeAdjudicated.paymentIntents.update(
+        paymentIntentId,
+        { metadata: { cartId } },
+        {
+          sourceSubject: `tool:create-checkout:setCartIdMetadata:${customerId ?? "anon"}`,
+          idempotencyKey: `pi-meta:cart:${paymentIntentId}:${cartId}`,
+        },
+      );
     } catch (err) {
       console.warn("[create_checkout] Failed to set cartId metadata on PI:", (err as Error).message);
     }

@@ -3,10 +3,15 @@ import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
+import { bootstrapKernel } from "./plugins/kernel-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
+import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
+import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
+import { startAuditConsumer } from "./subscribers/audit-consumer.js";
+import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
 import logger from "./lib/logger.js";
@@ -37,6 +42,15 @@ const PORT = Number(process.env.PORT ?? 3001);
 
 const start = async (): Promise<void> => {
   const server = await buildServer();
+
+  // Bootstrap the @adjudicate/core kernel: install MetricsSink slot,
+  // validate IBX_KERNEL_SHADOW/IBX_KERNEL_ENFORCE for typos, and (post
+  // task 08) register the orders Pack via installPack. Runs after
+  // Sentry init (so any future PackConformanceError surfaces in
+  // Sentry) but before server.listen so a failed conformance check
+  // prevents serving traffic. See
+  // docs/adjudicate-migration/tasks/01-kernel-bootstrap-plugin.md.
+  await bootstrapKernel(server);
 
   // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma
   const shutdown = async (): Promise<void> => {
@@ -78,6 +92,32 @@ const start = async (): Promise<void> => {
       await startHandoffSubscriber(server.log);
       await startConversationArchiver(server.log);
       await startPaymentLifecycleSubscriber(server.log);
+      // [task 03] defer-resolver wired after payment-lifecycle so the lifecycle
+      // subscriber has already settled the payment row before defer-resolver
+      // re-executes the parked envelope. See docs/adjudicate-migration/tasks/03-*.
+      //
+      // NEW-P0-X1 fix: pass the resume-intent dispatcher as an explicit
+      // parameter so it is wired BEFORE the NATS subscription becomes
+      // live. Pre-fix the dispatcher was wired ~19 lines later via
+      // `setResumeIntentDispatcher(...)`, leaving a boot-window where a
+      // PIX webhook would silently mark a parked envelope as resumed
+      // without dispatching the intent — silent data loss on every cold
+      // boot for in-flight PIX confirmations.
+      await startDeferResolverSubscriber(server.log, {
+        dispatcher: createResumeDispatcherAdapter({ log: server.log }),
+      });
+      // [task 14] LGPD anonymize 24h grace resolver — consumes
+      // `intent.defer.timeout` for the customer.anonymize signal and runs
+      // `anonymizeCustomer` if no cancel-deletion arrived within the
+      // window. Wired alongside the defer-resolver so both subscribe to
+      // the timeout fan-out from `defer-timeout-sweeper`.
+      await startAnonymizeGraceResolverSubscriber(server.log);
+      // [task 19] M4 audit-postgres redundancy consumer. Subscribes to
+      // `audit.intent.decision.v1` and writes records durably to Postgres
+      // — decoupled-archiver pattern. No-op when IBX_AUDIT_POSTGRES_ENABLED
+      // is not "true"; pairs with the in-process Postgres sink composed by
+      // `intent-audit-wiring.ts`. Both flip together per runbook 04.
+      await startAuditConsumer(server.log);
 
       // Start all BullMQ background workers
       registerWorkers(server.log);
@@ -88,4 +128,15 @@ const start = async (): Promise<void> => {
   }
 };
 
-start();
+// P0-6: installPack fail-fast wiring. `start()` invokes `bootstrapKernel`
+// which can throw `PackConformanceError` synchronously. Without an explicit
+// `.catch()`, the rejection only reached `unhandledRejection` (Sentry capture
+// + log) but the process never exited — subscribers never started, no traffic
+// served, yet the pod looked "alive" to a bare `node` orchestrator. Wrap with
+// an explicit catch so bootstrap failures exit non-zero. Sentry still captures
+// via the catch flow (Sentry.captureException is invoked before exit).
+start().catch((err) => {
+  if (process.env.SENTRY_DSN) Sentry.captureException(err);
+  logger.fatal({ err }, "[fatal] startup error");
+  process.exit(1);
+});

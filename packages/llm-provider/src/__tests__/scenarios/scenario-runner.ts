@@ -8,7 +8,7 @@ import { routeMessage } from "../../router.js"
 import { orderMachine, getStateString } from "../../machine/order-machine.js"
 import { synthesizePrompt } from "../../prompt-synthesizer.js"
 import { createDefaultContext } from "../../machine/types.js"
-import type { OrderContext } from "../../machine/types.js"
+import type { OrderContext, SynthesizedPrompt } from "../../machine/types.js"
 
 // ── Fixture types ─────────────────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ export interface TurnResult {
   events: Array<{ type: string; [k: string]: unknown }>
   stateValue: string
   context: Record<string, unknown>
-  synthesized: { systemPrompt: string; availableTools: string[]; maxTokens: number }
+  synthesized: SynthesizedPrompt
   errors: string[]
 }
 

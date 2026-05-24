@@ -76,49 +76,14 @@ export function formatMissingSlots(ctx: OrderContext): string {
 }
 
 // ── State → tools map ─────────────────────────────────────────────────────────
+//
+// IBX-IGE Phase I: capability shaping lives in `capability-planner.ts` —
+// security-sensitive decisions are isolated from the cosmetic renderer. The
+// prompt-synthesizer below is the PromptRenderer and calls the planner for
+// its tool list and forbidden concepts.
 
-// Keys are exact state values or glob-style prefixes ending in ".*".
-// Lookup happens in declaration order; first match wins.
-
-const STATE_TOOLS: Array<[pattern: string, tools: string[]]> = [
-  ["idle", ["get_customer_profile", "search_products", "check_order_status", "get_order_history"]],
-  ["first_contact", ["get_customer_profile", "search_products"]],
-  ["browsing", ["search_products", "get_product_details", "check_inventory", "get_nutritional_info", "estimate_delivery", "check_order_status", "get_order_history"]],
-  ["ordering.", ["search_products", "get_also_added", "get_ordered_together"]],
-  ["checkout.collecting_pix_details", ["set_pix_details"]],
-  ["checkout.reviewing_pix_details", []],
-  ["checkout.", []],
-  ["post_order.cancelling", []],
-  ["post_order.amending", []],
-  ["post_order.regenerating_pix", []],
-  ["post_order.", ["get_loyalty_balance", "check_order_status", "check_payment_status", "search_products"]],
-  ["reservation", ["check_table_availability", "get_my_reservations"]],
-  ["support", ["handoff_to_human"]],
-  ["loyalty_check", ["get_loyalty_balance"]],
-  ["reorder", ["get_order_history", "search_products"]],
-  ["objection", ["schedule_follow_up"]],
-  ["fallback", ["search_products", "get_customer_profile", "estimate_delivery", "check_order_status", "get_order_history"]],
-]
-
-function resolveTools(stateValue: string, ctx?: OrderContext): string[] {
-  for (const [pattern, tools] of STATE_TOOLS) {
-    if (pattern.endsWith(".")) {
-      // prefix match — e.g. "ordering." matches "ordering.item_added"
-      if (stateValue.startsWith(pattern) || stateValue === pattern.slice(0, -1)) {
-        // When closed + item_unavailable: remove search tools to prevent LLM
-        // from bypassing the machine's frozen-only search filter.
-        if (stateValue === "ordering.item_unavailable" && ctx?.mealPeriod === "closed") {
-          return tools.filter((t) => t !== "search_products")
-        }
-        return tools
-      }
-    } else {
-      if (stateValue === pattern) return tools
-    }
-  }
-  // Unknown state — return an empty tool list (safe default)
-  return []
-}
+import { orderCapabilityPlanner } from "./capability-planner.js"
+export { resolveTools, STATE_TOOLS } from "./capability-planner.js"
 
 // ── Order confirmation formatter ──────────────────────────────────────────────
 
@@ -653,11 +618,26 @@ export function synthesizePrompt(
   // Clamp to reasonable bounds (minimum 200, maximum 2x base)
   const finalTokens = Math.max(200, Math.min(adjustedTokens, baseTokens * 2))
 
-  // 5. Assemble and return
+  // 5. Build the Plan via the capability planner. `safePlan` (wrapped at
+  //    export in capability-planner.ts) asserts no MUTATING tool leaks into
+  //    `plan.visibleReadTools` — a misconfigured STATE_TOOLS row throws here,
+  //    BEFORE the LLM sees the leaked surface. The responder consumes
+  //    `plan.allowedIntents` to gate intent dispatch (task 07).
+  const plan = orderCapabilityPlanner.plan(effectiveState, freshContext)
+
+  // The LLM-visible tool list is the union of READ tools (callable directly)
+  // and MUTATING intent identities (proposable via the intent bridge). The
+  // state-gate in `llm-responder.ts:processToolCalls` enforces this set as
+  // the ingress filter; the new planner-violation gate (task 07) additionally
+  // refuses mutating proposals whose identity is not in `plan.allowedIntents`.
+  const availableTools = [...plan.visibleReadTools, ...plan.allowedIntents]
+
+  // 6. Assemble and return
   return {
     systemPrompt: `${baseVoice}\n\nHORA ATUAL: ${timeStr}\n\n${stateBlock}${toneDirective}`,
-    availableTools: resolveTools(effectiveState, freshContext),
+    availableTools,
     maxTokens: finalTokens,
+    plan,
   }
 }
 

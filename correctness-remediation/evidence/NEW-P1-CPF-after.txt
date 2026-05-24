@@ -1,0 +1,58 @@
+NEW-P1-CPF — CPF regex misses CPF-followed-by-`-` — AFTER
+==========================================================
+
+Date: 2026-05-23
+Fix file: packages/llm-provider/src/audit-redactor.ts:233
+Test file: packages/llm-provider/src/__tests__/audit-redactor.test.ts
+           (5 new tests in "regex defense" describe block)
+
+Fix
+---
+Lookahead changed:
+  from: (?![\d.-])
+  to:   (?!\d)
+
+The previous lookahead rejected `-` and `.` as trailing chars, so a
+CPF concatenated with a hyphen-prefixed tag (`12345678900-foo`)
+slipped past. The new lookahead only blocks ANOTHER DIGIT (meaning
+we're inside a longer number). `-` and `.` are now treated as
+non-CPF boundary characters and the match fires.
+
+Lookbehind unchanged: a `-` BEFORE the CPF would still mean we're
+mid-sequence in a longer number (`999-12345678900-456` is a long
+hyphenated number, not a CPF).
+
+Tests added (5 new)
+-------------------
+1. [P1-CPF] redacts bare-digit CPF followed by hyphen-tag
+2. [P1-CPF] redacts CPF prefixed by 'cpf:' followed by hyphen-bar
+3. [P1-CPF] redacts dotted-CPF followed by hyphen-tag (123.456.789-00-x)
+4. [P1-CPF] fuzz: each of 4 audit-spec shapes is redacted
+5. [P1-CPF] does NOT match when CPF is followed by another digit (regression)
+
+Test output
+-----------
+$ npx vitest run src/__tests__/audit-redactor.test.ts
+ ✓ src/__tests__/audit-redactor.test.ts (36 tests) 20ms
+
+ Test Files  1 passed (1)
+      Tests  36 passed (36)
+
+$ npx vitest run src/__tests__/audit-redaction-contract.test.ts
+ ✓ src/__tests__/audit-redaction-contract.test.ts (13 tests) 44ms
+
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+
+All 31 pre-existing audit-redactor tests still pass. The 50-fixture
+contract test (audit-redaction-contract.test.ts) also still passes —
+no regression.
+
+Verification that the test would FAIL on the un-fixed code
+-----------------------------------------------------------
+Restoring the pre-fix lookahead `(?![\d.-])` makes the [P1-CPF] tests
+fail. For "12345678900-foo":
+
+  AssertionError: expected '12345678900-foo' not to match /12345678900/
+
+Confirming the regex change is load-bearing for these inputs.
