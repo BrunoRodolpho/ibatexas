@@ -108,6 +108,11 @@ export {
   setAuditSinkBufferSizeHook,
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
+  // audit-2026-05-24 P1-4 — track ON CONFLICT DO NOTHING events so ops
+  // can see when the in-process sink and the audit-consumer redundancy
+  // path collide on the same row (the desired steady-state once the
+  // upstream UNIQUE constraint lands in `@adjudicate/audit-postgres`).
+  setAuditDedupHook,
   type AuditSinkFailureEventLike,
   // Internal-only — exported for cross-package integration tests that
   // need to inject failing Postgres writers / Redis stubs. Don't call
@@ -177,6 +182,17 @@ export {
   type DispatcherDeps,
   type DispatcherLogger,
 } from "./intent-dispatcher.js"
+
+// Resume-side kernel dispatcher — audit-2026-05-24 P1-3.
+// Re-exported so `apps/api/src/adapters/resume-dispatcher.ts` can invoke the
+// kernel-covered mutations on the resume path (the intent-dispatcher returns
+// `kind: "skipped"` for those because the responder hot path runs them via
+// the XState machine; resume has no machine, hence this seam).
+export {
+  dispatchResumedKernelEnvelope,
+  type ResumeKernelDispatchResult,
+  type ResumeKernelDispatchDeps,
+} from "./resume-kernel-dispatcher.js"
 
 // P0-7-TRUE / audit-2026-05-24 P0-1 — NX-guarded DEFER park wrapper.
 // All four production DEFER call sites (kernel-executor, llm-responder,

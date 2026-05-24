@@ -41,7 +41,9 @@ import type { FastifyBaseLogger } from "fastify"
 import {
   createDefaultDispatchHandlers,
   createIntentDispatcher,
+  dispatchResumedKernelEnvelope,
   type IntentDispatcher,
+  type ResumeKernelDispatchDeps,
 } from "@ibatexas/llm-provider"
 import type { ToolIntent } from "@ibatexas/llm-provider"
 import type { AgentContext } from "@ibatexas/types"
@@ -65,6 +67,13 @@ export interface ResumeDispatcherAdapterDeps {
    * always does in production — this is a belt-and-braces default).
    */
   readonly log?: FastifyBaseLogger
+  /**
+   * Audit-2026-05-24 P1-3: test-injection seam for the resume-side kernel
+   * dispatcher. Production callers leave this undefined and get the live
+   * `@ibatexas/tools` functions; tests pass spies to verify routing without
+   * standing up Medusa.
+   */
+  readonly kernelDispatcherDeps?: ResumeKernelDispatchDeps
 }
 
 // ── Adapter ──────────────────────────────────────────────────────────────────
@@ -95,18 +104,20 @@ export function createResumeDispatcherAdapter(
     try {
       const toolIntent = translateResumedIntent(intent)
       if (toolIntent === null) {
-        // Payload shape is not a ToolProposePayload — every parked envelope
-        // SHOULD be `order.tool.propose` (the only kind the responder DEFERs
-        // today), but we belt-and-brace against future kinds entering the
-        // park path without an adapter update.
-        effectiveLog?.warn(
-          {
-            sessionId: intent.sessionId,
-            intentHash: intent.originalIntentHash,
-            envelopeKind: intent.envelope.kind,
-          },
-          "[resume-dispatcher] parked envelope payload is not a ToolProposePayload — skipping dispatch",
-        )
+        // Audit-2026-05-24 P1-3: parked envelope is not the LLM-proposed
+        // `order.tool.propose` shape — it's likely a kernel-direct envelope
+        // (`order.item.add`, `order.checkout.create`, `order.cancel`,
+        // `payment.pix.regenerate`) parked by `kernel-executor.ts` during a
+        // PIX-pending DEFER. The intent-dispatcher cannot route those (its
+        // identity check resolves to a toolName the responder hot path uses);
+        // the resume-side kernel dispatcher handles them directly.
+        await dispatchResumedKernel({
+          envelope: intent.envelope,
+          sessionId: intent.sessionId,
+          intentHash: intent.originalIntentHash,
+          log: effectiveLog,
+          deps: deps.kernelDispatcherDeps,
+        })
         return
       }
 
@@ -132,22 +143,23 @@ export function createResumeDispatcherAdapter(
       }
 
       if (result.kind === "skipped") {
-        // Deterministic-kernel-covered tool on the resume path. The kernel
-        // executor that owns this mutation does NOT run on resume (no
-        // OrderContext / XState machine is reconstructed here), so
-        // "skipped" on resume means the mutation is silently dropped —
-        // the audit record + the subscriber log together are the trail.
-        // This is the expected outcome for `order.checkout.create` resumes
-        // until task 22 plumbs a resume-side kernel executor.
-        effectiveLog?.info(
-          {
-            sessionId: intent.sessionId,
-            intentHash: intent.originalIntentHash,
-            toolName: toolIntent.toolName,
-            reason: result.reason,
-          },
-          "[resume-dispatcher] dispatch skipped — deterministic kernel covers it (resume audit-only)",
-        )
+        // Audit-2026-05-24 P1-3 (closes "task 22"): the intent-dispatcher
+        // reports `skipped` because the underlying mutation belongs to
+        // DETERMINISTIC_KERNEL_COVERAGE — on the responder hot path the
+        // XState kernel-executor runs it directly, so the dispatcher MUST
+        // skip to avoid double-execution. On the resume path there is NO
+        // machine pass; we have to dispatch the tool ourselves. We hand
+        // off to the resume-side kernel dispatcher, which invokes the
+        // underlying @ibatexas/tools function with the parked envelope's
+        // payload.
+        await dispatchResumedKernel({
+          envelope: intent.envelope,
+          sessionId: intent.sessionId,
+          intentHash: intent.originalIntentHash,
+          toolName: toolIntent.toolName,
+          log: effectiveLog,
+          deps: deps.kernelDispatcherDeps,
+        })
         return
       }
 
@@ -258,4 +270,71 @@ function buildResumeAgentContext(intent: ResumedIntent): AgentContext {
     channel: Channel.WhatsApp,
     userType: "customer",
   }
+}
+
+// ── Resume-side kernel dispatch helper ───────────────────────────────────────
+
+/**
+ * Audit-2026-05-24 P1-3: invoke the resume-side kernel dispatcher and log
+ * the outcome. Wraps `dispatchResumedKernelEnvelope` with the fail-closed
+ * logging contract the subscriber loop relies on — any error becomes a
+ * structured log line and a void return, never a throw.
+ *
+ * Pre-P1-3 the resume path for kernel-covered tools logged a single info
+ * line ("dispatch skipped — deterministic kernel covers it") and returned
+ * void. That was the "task 22" silent drop: the audit record + subscriber
+ * log were the only trail, the actual mutation never ran. This helper
+ * closes that gap by performing the underlying tool call.
+ */
+async function dispatchResumedKernel(args: {
+  readonly envelope: ResumedIntent["envelope"]
+  readonly sessionId: string
+  readonly intentHash: string
+  readonly toolName?: string
+  readonly log?: FastifyBaseLogger
+  readonly deps?: ResumeKernelDispatchDeps
+}): Promise<void> {
+  const { envelope, sessionId, intentHash, toolName, log, deps } = args
+
+  const result = await dispatchResumedKernelEnvelope(
+    envelope,
+    sessionId,
+    deps ?? {},
+  )
+
+  if (result.kind === "executed") {
+    log?.info(
+      {
+        sessionId,
+        intentHash,
+        toolName: result.toolName,
+      },
+      "[resume-dispatcher] resumed kernel-covered intent executed",
+    )
+    return
+  }
+
+  if (result.kind === "failed") {
+    log?.error(
+      {
+        sessionId,
+        intentHash,
+        toolName: result.toolName,
+        err: result.error.message,
+      },
+      "[resume-dispatcher] kernel-covered resume tool threw — audit-only outcome",
+    )
+    return
+  }
+
+  // result.kind === "unsupported"
+  log?.warn(
+    {
+      sessionId,
+      intentHash,
+      envelopeKind: result.envelopeKind,
+      toolName: result.toolName ?? toolName,
+    },
+    "[resume-dispatcher] parked envelope kind/toolName has no resume dispatch route — skipping",
+  )
 }

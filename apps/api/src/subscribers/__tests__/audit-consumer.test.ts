@@ -320,4 +320,26 @@ describe("audit-consumer subscriber", () => {
     expect(insertAudit).toHaveBeenCalledOnce()
     _setAuditConsumerWriter(null)
   })
+
+  // ── 7. [audit-2026-05-24 P1-4] consumer dedup hook is exposed ──────────
+  //
+  // The hook is wired by apps/api during `installKernelMetricsSink` and
+  // bumps `kernel_audit_dedup_total{path="consumer"}` whenever the
+  // writer's `ON CONFLICT DO NOTHING` absorbs a duplicate. Until the
+  // upstream UNIQUE constraint lands in `@adjudicate/audit-postgres`,
+  // this hook will not fire in production — every INSERT lands a fresh
+  // row. The test asserts the setter is exported and idempotent so the
+  // wiring is in place for the schema migration.
+
+  it("[P1-4] setAuditConsumerDedupHook is exported and accepts both a function and null", async () => {
+    const { setAuditConsumerDedupHook } = await import("../audit-consumer.js")
+    expect(typeof setAuditConsumerDedupHook).toBe("function")
+
+    // Should accept a function spy without throwing.
+    const hook = vi.fn()
+    expect(() => setAuditConsumerDedupHook(hook)).not.toThrow()
+
+    // Should accept null (disable) without throwing.
+    expect(() => setAuditConsumerDedupHook(null)).not.toThrow()
+  })
 })

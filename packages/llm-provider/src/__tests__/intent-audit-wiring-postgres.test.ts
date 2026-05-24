@@ -284,6 +284,59 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
     ).toBe(true)
     warnSpy.mockRestore()
   })
+
+  // ── audit-2026-05-24 P1-4: ON CONFLICT dedup hook on the in-process path
+  //
+  // When the upstream `UNIQUE (intent_hash, recorded_at)` constraint lands
+  // on `intent_audit`, the writer's `$executeRawUnsafe` returns 0 for the
+  // second INSERT of the same row. The wiring forwards that to the
+  // `setAuditDedupHook` callback so apps/api can bump
+  // `kernel_audit_dedup_total{path="in_process"}`. This test simulates the
+  // constraint via a Prisma stub that returns 0 and asserts the hook fires
+  // with `path="in_process"`.
+
+  it("[P1-4] fires setAuditDedupHook with path='in_process' when ON CONFLICT absorbs a duplicate", async () => {
+    const redis = makeRedisStub()
+    // Stub returns 0 — simulates the upstream UNIQUE constraint absorbing
+    // the second INSERT.
+    const dedupingWriter = {
+      async $executeRawUnsafe() {
+        return 0
+      },
+    }
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter: dedupingWriter })
+
+    const dedupHook = vi.fn()
+    wiring.setAuditDedupHook(dedupHook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: { x: 1 } }),
+    )
+
+    expect(dedupHook).toHaveBeenCalledTimes(1)
+    expect(dedupHook).toHaveBeenCalledWith("in_process")
+  })
+
+  it("[P1-4] does NOT fire setAuditDedupHook on a fresh insert (writer returns 1)", async () => {
+    const redis = makeRedisStub()
+    const prismaWriter = makePrismaWriter() // returns 1
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter })
+
+    const dedupHook = vi.fn()
+    wiring.setAuditDedupHook(dedupHook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: { x: 1 } }),
+    )
+
+    expect(dedupHook).not.toHaveBeenCalled()
+  })
 })
 
 // ── Q4: recordSinkFailure wire-up ──────────────────────────────────────────

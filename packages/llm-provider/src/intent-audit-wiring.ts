@@ -163,6 +163,10 @@ let _auditLagHook:
   | null = null
 let _bufferSizeHook: ((count: number) => void) | null = null
 let _spillSizeHook: ((count: number) => void) | null = null
+// audit-2026-05-24 P1-4 — track ON CONFLICT DO NOTHING events on the
+// in-process Postgres path. Fires zero-times until the upstream UNIQUE
+// constraint on (intent_hash, recorded_at) lands in @adjudicate/audit-postgres.
+let _auditDedupHook: ((path: "in_process" | "consumer") => void) | null = null
 
 /**
  * Q4: report a downstream-sink failure to the kernel MetricsSink. The hook
@@ -208,6 +212,21 @@ export function setAuditSinkSpillSizeHook(
   hook: ((count: number) => void) | null,
 ): void {
   _spillSizeHook = hook
+}
+
+/**
+ * audit-2026-05-24 P1-4: bump `kernel_audit_dedup_total{path}` on each
+ * `ON CONFLICT DO NOTHING` no-op. The hook is wired by apps/api during
+ * `installKernelMetricsSink` and forwards to the Prometheus counter. The
+ * `path` label distinguishes the in-process sink ("in_process") from the
+ * NATS audit-consumer ("consumer"). High counts on either path indicate
+ * the second-writer is being absorbed by the schema-level dedup — the
+ * desired steady state once the cross-repo UNIQUE constraint lands.
+ */
+export function setAuditDedupHook(
+  hook: ((path: "in_process" | "consumer") => void) | null,
+): void {
+  _auditDedupHook = hook
 }
 
 /**
@@ -335,6 +354,17 @@ function loadInnerSink(log: IbxLogger): AuditSink {
     prisma: (_depsOverride?.prismaWriter ?? prisma) as PrismaRawExecutor,
     onInsert: (row) => {
       void row
+    },
+    // audit-2026-05-24 P1-4: surface ON CONFLICT no-ops via the dedup
+    // observability hook. Fires zero times until the upstream UNIQUE
+    // constraint on (intent_hash, recorded_at) lands.
+    onConflictNoOp: () => {
+      if (!_auditDedupHook) return
+      try {
+        _auditDedupHook("in_process")
+      } catch {
+        // Telemetry must NEVER block the audit pipeline.
+      }
     },
   })
   // Q4: per-sink consecutive-failure counter. PostgresSinkOptions doesn't
@@ -530,6 +560,7 @@ export function _resetAuditSink(): void {
   _bufferSizeHook = null
   _spillSizeHook = null
   _sinkFailureHook = null
+  _auditDedupHook = null
 }
 
 /** @internal — for test access to the redactor used by the wired sink. */
