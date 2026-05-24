@@ -13,11 +13,20 @@ import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const mockMedusaStoreFetch = vi.hoisted(() => vi.fn())
+const mockLineItemsAdd = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 
-vi.mock("../_shared.js", () => ({
-  medusaStoreFetch: mockMedusaStoreFetch,
+// W9: add-to-cart now routes through medusaStoreAdjudicated. Mock the
+// wrapper so the kernel + audit path is bypassed here — the wrapper
+// itself is covered by packages/tools/src/medusa/__tests__/store-adjudicated.test.ts.
+vi.mock("../../medusa/store-adjudicated.js", () => ({
+  medusaStoreAdjudicated: {
+    carts: {
+      lineItems: {
+        add: mockLineItemsAdd,
+      },
+    },
+  },
 }))
 
 vi.mock("../assert-cart-ownership.js", () => ({
@@ -43,25 +52,30 @@ const CTX = makeCtx()
 describe("addToCart", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockMedusaStoreFetch.mockResolvedValue(cartResponse())
+    mockLineItemsAdd.mockResolvedValue(cartResponse())
     mockPublishNatsEvent.mockResolvedValue(undefined)
   })
 
-  it("calls medusaStoreFetch with correct path, method and body", async () => {
+  it("calls medusaStoreAdjudicated.carts.lineItems.add with correct payload and meta", async () => {
     await addToCart(INPUT, CTX)
 
-    expect(mockMedusaStoreFetch).toHaveBeenCalledWith(
-      `/store/carts/${INPUT.cartId}/line-items`,
+    expect(mockLineItemsAdd).toHaveBeenCalledWith(
       {
-        method: "POST",
-        body: JSON.stringify({ variant_id: INPUT.variantId, quantity: INPUT.quantity }),
+        cartId: INPUT.cartId,
+        variantId: INPUT.variantId,
+        quantity: INPUT.quantity,
       },
+      expect.objectContaining({
+        sourceSubject: "cart:add-to-cart",
+        actorPrincipal: "llm",
+        sessionId: CTX.sessionId,
+      }),
     )
   })
 
   it("returns Medusa response on happy path", async () => {
     const medusaData = cartResponse()
-    mockMedusaStoreFetch.mockResolvedValue(medusaData)
+    mockLineItemsAdd.mockResolvedValue(medusaData)
 
     const result = await addToCart(INPUT, CTX)
 
@@ -85,7 +99,7 @@ describe("addToCart", () => {
   })
 
   it("returns error object when Medusa throws", async () => {
-    mockMedusaStoreFetch.mockRejectedValue(new Error("Medusa 500: Internal"))
+    mockLineItemsAdd.mockRejectedValue(new Error("Medusa 500: Internal"))
 
     const result = await addToCart(INPUT, CTX)
 
@@ -96,7 +110,7 @@ describe("addToCart", () => {
   })
 
   it("does not publish NATS event when Medusa throws", async () => {
-    mockMedusaStoreFetch.mockRejectedValue(new Error("Medusa 500"))
+    mockLineItemsAdd.mockRejectedValue(new Error("Medusa 500"))
 
     await addToCart(INPUT, CTX)
 
@@ -105,7 +119,7 @@ describe("addToCart", () => {
 
   it("still returns Medusa data when NATS publish fails (non-fatal)", async () => {
     const medusaData = cartResponse()
-    mockMedusaStoreFetch.mockResolvedValue(medusaData)
+    mockLineItemsAdd.mockResolvedValue(medusaData)
     mockPublishNatsEvent.mockRejectedValue(new Error("NATS down"))
 
     const result = await addToCart(INPUT, CTX)
@@ -115,15 +129,17 @@ describe("addToCart", () => {
 
   it("handles quantity of 1", async () => {
     const input = { ...INPUT, quantity: 1 }
-    mockMedusaStoreFetch.mockResolvedValue(cartResponse())
+    mockLineItemsAdd.mockResolvedValue(cartResponse())
 
     await addToCart(input, CTX)
 
-    expect(mockMedusaStoreFetch).toHaveBeenCalledWith(
-      expect.any(String),
+    expect(mockLineItemsAdd).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: JSON.stringify({ variant_id: input.variantId, quantity: 1 }),
+        cartId: input.cartId,
+        variantId: input.variantId,
+        quantity: 1,
       }),
+      expect.any(Object),
     )
   })
 

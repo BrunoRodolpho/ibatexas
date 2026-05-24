@@ -12,10 +12,19 @@ import { makeCtx, cartResponse, makeLineItem } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const mockMedusaStoreFetch = vi.hoisted(() => vi.fn())
+const mockLineItemsUpdate = vi.hoisted(() => vi.fn())
 
-vi.mock("../_shared.js", () => ({
-  medusaStoreFetch: mockMedusaStoreFetch,
+// W9: update-cart now routes through medusaStoreAdjudicated. Mock the
+// wrapper so the kernel + audit path is bypassed here — the wrapper
+// itself is covered by packages/tools/src/medusa/__tests__/store-adjudicated.test.ts.
+vi.mock("../../medusa/store-adjudicated.js", () => ({
+  medusaStoreAdjudicated: {
+    carts: {
+      lineItems: {
+        update: mockLineItemsUpdate,
+      },
+    },
+  },
 }))
 
 vi.mock("../assert-cart-ownership.js", () => ({
@@ -37,18 +46,23 @@ const CTX = makeCtx()
 describe("updateCart", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockMedusaStoreFetch.mockResolvedValue(cartResponse())
+    mockLineItemsUpdate.mockResolvedValue(cartResponse())
   })
 
-  it("calls medusaStoreFetch with correct path, POST method and quantity body", async () => {
+  it("calls medusaStoreAdjudicated.carts.lineItems.update with correct payload and meta", async () => {
     await updateCart(INPUT, CTX)
 
-    expect(mockMedusaStoreFetch).toHaveBeenCalledWith(
-      `/store/carts/${INPUT.cartId}/line-items/${INPUT.itemId}`,
+    expect(mockLineItemsUpdate).toHaveBeenCalledWith(
       {
-        method: "POST",
-        body: JSON.stringify({ quantity: INPUT.quantity }),
+        cartId: INPUT.cartId,
+        itemId: INPUT.itemId,
+        quantity: INPUT.quantity,
       },
+      expect.objectContaining({
+        sourceSubject: "cart:update-cart",
+        actorPrincipal: "llm",
+        sessionId: CTX.sessionId,
+      }),
     )
   })
 
@@ -56,7 +70,7 @@ describe("updateCart", () => {
     const medusaData = cartResponse({
       items: [makeLineItem({ quantity: 5, subtotal: 44500 })],
     })
-    mockMedusaStoreFetch.mockResolvedValue(medusaData)
+    mockLineItemsUpdate.mockResolvedValue(medusaData)
 
     const result = await updateCart(INPUT, CTX)
 
@@ -64,7 +78,7 @@ describe("updateCart", () => {
   })
 
   it("returns pt-BR error object when Medusa throws", async () => {
-    mockMedusaStoreFetch.mockRejectedValue(new Error("Medusa 400: Bad request"))
+    mockLineItemsUpdate.mockRejectedValue(new Error("Medusa 400: Bad request"))
 
     const result = await updateCart(INPUT, CTX)
 
@@ -75,31 +89,30 @@ describe("updateCart", () => {
   })
 
   it("error message suggests retrying", async () => {
-    mockMedusaStoreFetch.mockRejectedValue(new Error("Medusa 500"))
+    mockLineItemsUpdate.mockRejectedValue(new Error("Medusa 500"))
 
     const result = await updateCart(INPUT, CTX) as { success: boolean; message: string }
 
     expect(result.message).toContain("Tente novamente")
   })
 
-  it("sends quantity as integer in body", async () => {
+  it("sends quantity as integer in payload", async () => {
     const input = { ...INPUT, quantity: 10 }
 
     await updateCart(input, CTX)
 
-    const [, opts] = mockMedusaStoreFetch.mock.calls[0]
-    const parsed = JSON.parse(opts.body)
-    expect(parsed.quantity).toBe(10)
-    expect(typeof parsed.quantity).toBe("number")
+    const [payload] = mockLineItemsUpdate.mock.calls[0]
+    expect(payload.quantity).toBe(10)
+    expect(typeof payload.quantity).toBe("number")
   })
 
   it("handles quantity of 1", async () => {
     const input = { ...INPUT, quantity: 1 }
-    mockMedusaStoreFetch.mockResolvedValue(cartResponse())
+    mockLineItemsUpdate.mockResolvedValue(cartResponse())
 
     await updateCart(input, CTX)
 
-    const [, opts] = mockMedusaStoreFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).quantity).toBe(1)
+    const [payload] = mockLineItemsUpdate.mock.calls[0]
+    expect(payload.quantity).toBe(1)
   })
 })

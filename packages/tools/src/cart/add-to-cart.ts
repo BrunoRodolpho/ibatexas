@@ -3,11 +3,11 @@
 import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { MedusaRequestError } from "../medusa/client.js";
+import { medusaStoreAdjudicated } from "../medusa/store-adjudicated.js";
 import { invalidateAllQueryCache } from "../cache/query-cache.js";
 import { isAvailableNow, describeAvailabilityWindow } from "../catalog/availability.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
 import { assertCartOwnership } from "./assert-cart-ownership.js";
-import { medusaStoreFetch } from "./_shared.js";
 
 /** Lightweight lookup: get a product's availability window from its variant ID via Typesense.
  *  Medusa v2 removed /store/variants/{id} — search Typesense's variantsJson field instead.
@@ -51,10 +51,19 @@ export async function addToCart(
 
   let data: unknown;
   try {
-    data = await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items`, {
-      method: "POST",
-      body: JSON.stringify({ variant_id: parsed.variantId, quantity: parsed.quantity }),
-    });
+    data = await medusaStoreAdjudicated.carts.lineItems.add(
+      {
+        cartId: parsed.cartId,
+        variantId: parsed.variantId,
+        quantity: parsed.quantity,
+      },
+      {
+        sourceSubject: "cart:add-to-cart",
+        actorPrincipal: "llm",
+        ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
+        sessionId: ctx.sessionId,
+      },
+    );
   } catch (err) {
     const isMedusaErr = err instanceof MedusaRequestError;
     const isStaleVariant = isMedusaErr && (err.statusCode === 400 || err.statusCode === 404)

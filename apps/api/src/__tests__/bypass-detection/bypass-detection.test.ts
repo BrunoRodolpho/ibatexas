@@ -450,15 +450,11 @@ describe("Bypass detection — Scenario 1: direct prisma writes for kernel-owned
  *   (b) Per-kind policy bundle decisions (auth, taint, business).
  *   (c) Test coverage for the LLM-flow → kernel → SDK dispatch path.
  *
- * That work is W9-scope (cart-egress governance). Adding the 10 sites
- * to the deferred allowlist makes the gap explicit + machine-tracked,
- * AND lets V4 still fail the build the moment ANY NEW unwired site
- * appears in `packages/tools/src/` (the sentinel test
- * "DEFERRED_MEDUSA_MIGRATIONS is empty in steady state" was rewired
- * below to track the size baseline).
- *
- * Each entry below has the W9 follow-up implied: "migrate to
- * medusaAdjudicated with a new medusa.store.cart.* intent kind."
+ * That work landed in the audit-2026-05-23 Wave 9 closeout: the
+ * medusaStoreAdjudicated wrapper landed in commit `8653a13` and the 10
+ * cart-store sites were migrated to it across commits in the same
+ * branch (3 parallel migration agents per the wave-4 plan). The set
+ * below is now empty in steady state.
  *
  * RULE: any future entry MUST come with a paired comment naming the
  * follow-up ticket. Removing an entry requires the file to actually be
@@ -467,15 +463,7 @@ describe("Bypass detection — Scenario 1: direct prisma writes for kernel-owned
  * by a companion CI check (todo: add) — for now reviewers must scrutinise.
  */
 const DEFERRED_MEDUSA_MIGRATIONS: ReadonlySet<string> = new Set<string>([
-  // ── W8-V4 deferred (W9 follow-up: cart-egress governance) ──────────
-  // All 10 entries are LLM-callable cart-tool STORE-scope mutations
-  // that need new medusa.store.cart.* intent kinds in the wrapper.
-  "packages/tools/src/cart/add-to-cart.ts",
-  "packages/tools/src/cart/apply-coupon.ts",
-  "packages/tools/src/cart/create-checkout.ts",
-  "packages/tools/src/cart/get-or-create-cart.ts",
-  "packages/tools/src/cart/remove-from-cart.ts",
-  "packages/tools/src/cart/update-cart.ts",
+  // empty — Wave 9 cart-egress migration is complete.
 ])
 
 describe("Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated()", () => {
@@ -506,19 +494,13 @@ describe("Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside
   //      (covered by the "detects all 4 multi-line bypass cases" test
   //      below — pinned via the fixture, independent of production tree
   //      state).
-  //   2. DEFERRED_MEDUSA_MIGRATIONS size matches the W8-V4 baseline
-  //      (6 cart-tool files). If the set grows, every NEW entry MUST be
-  //      paired with a follow-up ticket comment. If it shrinks (because
-  //      W9 migrated a site to medusaAdjudicated), drop the count and
-  //      mark the migration in the comment block above.
-  //
-  // The pre-W8 sentinel asserted the set was empty (post-P0-X9 reality);
-  // W8-V4 widened MEDUSA_SCAN_DIRS to include `packages/tools/src/` and
-  // surfaced 10 store-scope cart-mutation POSTs that were structurally
-  // invisible to CI before. Those 10 sites span 6 files (create-checkout
-  // alone hosts 5) and are deferred to W9.
-  it("DEFERRED_MEDUSA_MIGRATIONS size matches the W8-V4 baseline (6 cart-tool files — promotion sentinel)", () => {
-    expect(DEFERRED_MEDUSA_MIGRATIONS.size).toBe(6)
+  //   2. DEFERRED_MEDUSA_MIGRATIONS is empty in steady state. Post Wave 9
+  //      cart-egress migration (medusaStoreAdjudicated wrapper at commit
+  //      `8653a13` + 10 site migrations on the same branch), there are
+  //      no known pending Medusa-write bypasses. Any new entry MUST be
+  //      paired with a follow-up ticket comment in the set above.
+  it("DEFERRED_MEDUSA_MIGRATIONS is empty in steady state (Wave 9 cart-egress closed)", () => {
+    expect(DEFERRED_MEDUSA_MIGRATIONS.size).toBe(0)
   })
 
   // Keep the original single-line scan running too — defense in depth

@@ -17,6 +17,7 @@ import { getMealPeriodFromSchedule } from "../schedule/schedule-helpers.js";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { stripeAdjudicated } from "../stripe/adjudicated.js";
+import { medusaStoreAdjudicated } from "../medusa/store-adjudicated.js";
 import { medusaStoreFetch } from "./_shared.js";
 
 export interface CreateCheckoutOutput {
@@ -191,10 +192,15 @@ export async function createCheckout(
     try {
       const welcomeCode = await getAndConsumeWelcomeCredit(ctx.customerId);
       if (welcomeCode) {
-        await medusaStoreFetch(`/store/carts/${cartId}/promotions`, {
-          method: "POST",
-          body: JSON.stringify({ promo_codes: [welcomeCode] }),
-        });
+        await medusaStoreAdjudicated.carts.promotions.add(
+          { cartId, promoCodes: [welcomeCode] },
+          {
+            sourceSubject: "cart:create-checkout:apply-promotion",
+            actorPrincipal: "llm",
+            ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+            ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+          },
+        );
         console.warn(`[checkout] Welcome credit ${welcomeCode} applied for customer ${ctx.customerId}`);
       }
     } catch (err) {
@@ -226,10 +232,15 @@ export async function createCheckout(
     }
   }
 
-  await medusaStoreFetch(`/store/carts/${cartId}`, {
-    method: "POST",
-    body: JSON.stringify({ metadata }),
-  });
+  await medusaStoreAdjudicated.carts.update(
+    { cartId, body: { metadata } },
+    {
+      sourceSubject: "cart:create-checkout:update-email",
+      actorPrincipal: "llm",
+      ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+      ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+    },
+  );
 
   // 2. Get or create payment collection (Medusa v2 flow)
   const cartForPC = await medusaStoreFetch(`/store/carts/${cartId}`) as {
@@ -247,10 +258,15 @@ export async function createCheckout(
   let paymentCollectionId = cartForPC.cart?.payment_collection?.id;
 
   if (!paymentCollectionId) {
-    const pcData = await medusaStoreFetch(`/store/payment-collections`, {
-      method: "POST",
-      body: JSON.stringify({ cart_id: cartId }),
-    }) as { payment_collection?: { id: string } };
+    const pcData = await medusaStoreAdjudicated.paymentCollections.create(
+      { cartId },
+      {
+        sourceSubject: "cart:create-checkout:create-payment-collection",
+        actorPrincipal: "llm",
+        ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      },
+    ) as { payment_collection?: { id: string } };
     paymentCollectionId = pcData.payment_collection?.id;
   }
 
@@ -288,11 +304,13 @@ export async function createCheckout(
   }
 
   // 4. Initialize payment session on the payment collection
-  const rawSessionData = await medusaStoreFetch(
-    `/store/payment-collections/${paymentCollectionId}/payment-sessions`,
+  const rawSessionData = await medusaStoreAdjudicated.paymentCollections.paymentSessions.create(
+    { paymentCollectionId, providerId },
     {
-      method: "POST",
-      body: JSON.stringify({ provider_id: providerId }),
+      sourceSubject: "cart:create-checkout:create-payment-session",
+      actorPrincipal: "llm",
+      ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+      ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     },
   );
 
@@ -328,10 +346,15 @@ export async function createCheckout(
     }));
 
     // Complete cart directly for cash payment
-    const completedData = await medusaStoreFetch(`/store/carts/${cartId}/complete`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    }) as { type?: string; order?: { id: string; display_id?: number; total?: number; subtotal?: number; shipping_total?: number } };
+    const completedData = await medusaStoreAdjudicated.carts.complete(
+      { cartId },
+      {
+        sourceSubject: "cart:create-checkout:complete",
+        actorPrincipal: "llm",
+        ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      },
+    ) as { type?: string; order?: { id: string; display_id?: number; total?: number; subtotal?: number; shipping_total?: number } };
 
     const rawOrderId = completedData.order?.id;
     const orderId = completedData.order?.display_id

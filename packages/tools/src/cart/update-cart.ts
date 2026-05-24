@@ -1,7 +1,7 @@
 // update_cart tool — update a line item quantity in the Medusa cart
 
 import { UpdateCartInputSchema, type UpdateCartInput, type AgentContext } from "@ibatexas/types";
-import { medusaStoreFetch } from "./_shared.js";
+import { medusaStoreAdjudicated } from "../medusa/store-adjudicated.js";
 import { assertCartOwnership } from "./assert-cart-ownership.js";
 
 export async function updateCart(
@@ -11,10 +11,19 @@ export async function updateCart(
   const parsed = UpdateCartInputSchema.parse(input);
   await assertCartOwnership(parsed.cartId, ctx.customerId);
   try {
-    return await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items/${parsed.itemId}`, {
-      method: "POST",
-      body: JSON.stringify({ quantity: parsed.quantity }),
-    });
+    return await medusaStoreAdjudicated.carts.lineItems.update(
+      {
+        cartId: parsed.cartId,
+        itemId: parsed.itemId,
+        quantity: parsed.quantity,
+      },
+      {
+        sourceSubject: "cart:update-cart",
+        actorPrincipal: "llm",
+        ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
+        sessionId: ctx.sessionId,
+      },
+    );
   } catch (err) {
     console.error("[update_cart] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao atualizar item no carrinho. Tente novamente." };
