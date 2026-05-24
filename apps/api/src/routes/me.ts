@@ -42,13 +42,16 @@
 //   - 30-min cancel-cooldown — blocks re-initiation after a cancel
 //     to defeat harassment / Twilio-spend loops.
 
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildEnvelope } from "@adjudicate/core";
-import { parkDeferredIntent } from "@adjudicate/runtime";
 import { getRedisClient, rk } from "@ibatexas/tools";
+import {
+  parkDeferredIntentWithNxGuard,
+  PARK_COLLISION_REFUSAL_PT_BR,
+} from "@ibatexas/llm-provider";
 import {
   createCustomerService,
   exportCustomerData,
@@ -139,6 +142,40 @@ const CustomerDataResponse = z.object({
     orderedAt: z.date(),
   })),
 });
+
+// ── P0-7 (audit-2026-05-24) — deterministic idempotency-key helpers ────────
+//
+// LGPD destructive operations (anonymize start / confirm) MUST dedupe on
+// retry: a duplicate `initiate-deletion` within the same hour would park
+// two `customer.anonymize` envelopes for the same customer, doubling the
+// scheduled grace-period work and producing two audit records for one
+// logical intent. Per CLAUDE.md rule #9, inputs are non-PII (customerId
+// UUID + epoch-hour) — never the customer's name/phone/email.
+//
+// The fallback derivation uses `${customerId}:${step}:${epoch_hour}` so:
+//   - Two clicks in the same hour produce identical `intentHash`.
+//   - The next hour produces a fresh hash (customer can retry if needed).
+function deriveMeNonce(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
+function resolveMeIdempotencyKey(
+  headerValue: string | string[] | undefined,
+  fallback: string,
+): string {
+  if (typeof headerValue === "string" && headerValue.length > 0) {
+    return headerValue;
+  }
+  if (Array.isArray(headerValue) && headerValue[0]) {
+    return headerValue[0];
+  }
+  return fallback;
+}
+
+/** UTC epoch-hour for the deterministic-key time bucket. */
+function epochHour(): number {
+  return Math.floor(Date.now() / (60 * 60 * 1000));
+}
 
 // ── Plugin ─────────────────────────────────────────────────────────────────────
 
@@ -422,6 +459,19 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       // No `otpToken` is needed in the payload because OTP verification
       // already happened at /verify-otp; the pack reads `otpFresh` from
       // state (which we project as `true` after the verify-marker check).
+      //
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ───────
+      //
+      // Each customer can legitimately initiate one anonymize per hour
+      // (re-initiating instantly is operator error or a retry). Prefer
+      // the client's `Idempotency-Key` header; fall back to a derived
+      // `${customerId}:anonymize:initiate:${epochHour}` so HTTP retries
+      // within the hour produce the same `intentHash` and the kernel
+      // ledger dedupes — no double-parked deletions.
+      const initiateIdempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:anonymize:initiate:${epochHour()}`,
+      );
       const payload: CustomerAnonymizePayload = {
         customerId,
         otpToken: "verified",
@@ -430,7 +480,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       const envelope = buildEnvelope<"customer.anonymize", CustomerAnonymizePayload>({
         kind: "customer.anonymize",
         payload,
-        nonce: randomUUID(),
+        nonce: deriveMeNonce(initiateIdempotencyKey),
         actor: { principal: "user", sessionId: customerId },
         taint: "UNTRUSTED",
       });
@@ -452,11 +502,17 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       const parkedAt = Date.now();
       const intentHash = envelope.intentHash;
       const onDefer = async () => {
-        let parkQuotaExceeded = false;
+        // audit-2026-05-24 P0-1: route through the NX-guarded wrapper so a
+        // second DEFER for the same customerId cannot silently overwrite the
+        // first parked envelope (the framework's raw `parkDeferredIntent`
+        // uses plain SET without NX).
+        let parkRefusal:
+          | { code: "quota_exceeded" | "collision"; message: string }
+          | null = null;
         try {
           const redis = await getRedisClient();
           const ttlSeconds = ANONYMIZE_GRACE_TTL_SECONDS + 60;
-          const parkResult = await parkDeferredIntent({
+          const parkResult = await parkDeferredIntentWithNxGuard({
             envelope: {
               intentHash: envelope.intentHash,
               kind: envelope.kind,
@@ -473,16 +529,31 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
             rk,
           });
           if (!parkResult.parked) {
-            parkQuotaExceeded = true;
-            request.log.warn(
-              {
-                customerId,
-                reason: parkResult.reason,
-                observed: parkResult.observed,
-                limit: parkResult.limit,
-              },
-              "[me/anonymize] DEFER park quota exceeded",
-            );
+            if (parkResult.reason === "quota_exceeded") {
+              parkRefusal = {
+                code: "quota_exceeded",
+                message:
+                  "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
+              };
+              request.log.warn(
+                {
+                  customerId,
+                  reason: parkResult.reason,
+                  observed: parkResult.observed,
+                  limit: parkResult.limit,
+                },
+                "[me/anonymize] DEFER park quota exceeded",
+              );
+            } else {
+              parkRefusal = {
+                code: "collision",
+                message: PARK_COLLISION_REFUSAL_PT_BR,
+              };
+              request.log.warn(
+                { customerId, reason: parkResult.reason },
+                "[me/anonymize] DEFER park collision — envelope already parked",
+              );
+            }
           }
         } catch (err) {
           request.log.error(
@@ -491,21 +562,20 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
           );
         }
 
-        if (parkQuotaExceeded) {
+        if (parkRefusal) {
           return {
             statusCode: 429,
             body: {
               status: "refused",
-              message: "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
-              reason: "quota_exceeded",
+              message: parkRefusal.message,
+              reason: parkRefusal.code,
             },
             decision: {
               kind: "REFUSE" as const,
               refusal: {
                 kind: "BUSINESS_RULE" as const,
-                code: "quota_exceeded",
-                userFacing:
-                  "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
+                code: parkRefusal.code,
+                userFacing: parkRefusal.message,
               },
               basis: [],
             },
@@ -679,6 +749,18 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       // "user"`, `taint = "UNTRUSTED"`, `sessionId = customerId` per the
       // master plan. The `otpToken` is the verified code — the pack's
       // policy only reads `state.otpFresh`, NOT the token itself.
+      //
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ───────
+      //
+      // Legacy single-step DELETE: same dedup posture as
+      // /initiate-deletion. The otpCode is intentionally excluded from
+      // the key — a retry with the same code within the hour must
+      // produce the same `intentHash` so dedup holds; the OTP is
+      // verified upstream and is not load-bearing for hash identity.
+      const legacyIdempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:anonymize:delete:${epochHour()}`,
+      );
       const payload: CustomerAnonymizePayload = {
         customerId,
         otpToken: otpCode,
@@ -687,7 +769,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       const envelope = buildEnvelope<"customer.anonymize", CustomerAnonymizePayload>({
         kind: "customer.anonymize",
         payload,
-        nonce: randomUUID(),
+        nonce: deriveMeNonce(legacyIdempotencyKey),
         actor: { principal: "user", sessionId: customerId },
         taint: "UNTRUSTED",
       });
@@ -717,14 +799,18 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       const parkedAt = Date.now();
       const intentHash = envelope.intentHash;
       const onDefer = async () => {
-        // Park via the runtime's `parkDeferredIntent` primitive — populates
-        // the T-005 verification fields so the resume side can detect
-        // tamper-at-rest, and enforces the per-session park quota (P0-7).
-        let parkQuotaExceeded = false;
+        // Park via the NX-guarded wrapper — populates the T-005 verification
+        // fields so the resume side can detect tamper-at-rest, enforces the
+        // per-session park quota (P0-7), AND refuses on collision with an
+        // already-parked envelope (audit-2026-05-24 P0-1, prevents silent
+        // overwrite by a second DEFER for the same customerId).
+        let parkRefusal:
+          | { code: "quota_exceeded" | "collision"; message: string }
+          | null = null;
         try {
           const redis = await getRedisClient();
           const ttlSeconds = ANONYMIZE_GRACE_TTL_SECONDS + 60; // sweeper grace
-          const parkResult = await parkDeferredIntent({
+          const parkResult = await parkDeferredIntentWithNxGuard({
             envelope: {
               intentHash: envelope.intentHash,
               kind: envelope.kind,
@@ -741,16 +827,31 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
             rk,
           });
           if (!parkResult.parked) {
-            parkQuotaExceeded = true;
-            request.log.warn(
-              {
-                customerId,
-                reason: parkResult.reason,
-                observed: parkResult.observed,
-                limit: parkResult.limit,
-              },
-              "[me/anonymize] DEFER park quota exceeded",
-            );
+            if (parkResult.reason === "quota_exceeded") {
+              parkRefusal = {
+                code: "quota_exceeded",
+                message:
+                  "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
+              };
+              request.log.warn(
+                {
+                  customerId,
+                  reason: parkResult.reason,
+                  observed: parkResult.observed,
+                  limit: parkResult.limit,
+                },
+                "[me/anonymize] DEFER park quota exceeded",
+              );
+            } else {
+              parkRefusal = {
+                code: "collision",
+                message: PARK_COLLISION_REFUSAL_PT_BR,
+              };
+              request.log.warn(
+                { customerId, reason: parkResult.reason },
+                "[me/anonymize] DEFER park collision — envelope already parked",
+              );
+            }
           }
         } catch (err) {
           request.log.error(
@@ -759,21 +860,20 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
           );
         }
 
-        if (parkQuotaExceeded) {
+        if (parkRefusal) {
           return {
             statusCode: 429,
             body: {
               status: "refused",
-              message: "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
-              reason: "quota_exceeded",
+              message: parkRefusal.message,
+              reason: parkRefusal.code,
             },
             decision: {
               kind: "REFUSE" as const,
               refusal: {
                 kind: "BUSINESS_RULE" as const,
-                code: "quota_exceeded",
-                userFacing:
-                  "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
+                code: parkRefusal.code,
+                userFacing: parkRefusal.message,
               },
               basis: [],
             },
@@ -866,6 +966,18 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
 
       // (b) Build the cancel envelope. Same actor / taint as the
       // anonymize envelope so the audit trail is consistent.
+      //
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ───────
+      //
+      // The cancel maps 1:1 to the parked anonymize receipt — bind the
+      // nonce to `receipt.intentHash` so retries of the same cancel
+      // (browser double-click, network blip) collapse to one audit
+      // entry. The Idempotency-Key header still wins for client-driven
+      // dedup.
+      const cancelIdempotencyKey = resolveMeIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${customerId}:anonymize:cancel:${receipt.intentHash}`,
+      );
       const payload: CustomerAnonymizeCancelPayload = { customerId };
       const envelope = buildEnvelope<
         "customer.anonymize.cancel",
@@ -873,7 +985,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       >({
         kind: "customer.anonymize.cancel",
         payload,
-        nonce: randomUUID(),
+        nonce: deriveMeNonce(cancelIdempotencyKey),
         actor: { principal: "user", sessionId: customerId },
         taint: "UNTRUSTED",
       });

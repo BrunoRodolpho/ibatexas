@@ -368,6 +368,94 @@ describe("PATCH /api/orders/:id/type — envelope governance", () => {
     }
   });
 
+  // ── audit-2026-05-24 P2-3: preserve HTTP vocab in audit ──────────────
+  //
+  // D3 commit migrated /type to use the customer-intent-gateway. The
+  // outer envelope's `newType` is collapsed to the pack vocabulary
+  // (`takeout`) for adjudication. The audit record is built from the
+  // envelope's payload — without preserving the original HTTP vocab,
+  // an operator reading the audit row can't tell whether the customer
+  // asked for `pickup` or `dine_in`. We carry both via `httpVocab`.
+  it("preserves HTTP `pickup` in envelope payload `httpVocab` for audit fidelity", async () => {
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/orders/order_01/type",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { type: "pickup" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const env = mockAdjudicate.mock.calls[0]![0] as {
+        payload: {
+          newType: "delivery" | "takeout";
+          httpVocab?: "delivery" | "pickup" | "dine_in";
+        };
+      };
+      // Pack vocab — collapsed
+      expect(env.payload.newType).toBe("takeout");
+      // HTTP vocab — preserved for audit
+      expect(env.payload.httpVocab).toBe("pickup");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("preserves HTTP `dine_in` in envelope payload `httpVocab` for audit fidelity", async () => {
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/orders/order_01/type",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { type: "dine_in" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const env = mockAdjudicate.mock.calls[0]![0] as {
+        payload: {
+          newType: "delivery" | "takeout";
+          httpVocab?: "delivery" | "pickup" | "dine_in";
+        };
+      };
+      expect(env.payload.newType).toBe("takeout");
+      expect(env.payload.httpVocab).toBe("dine_in");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("preserves HTTP `delivery` in envelope payload `httpVocab` (1:1 mapping)", async () => {
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/orders/order_01/type",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { type: "delivery" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const env = mockAdjudicate.mock.calls[0]![0] as {
+        payload: {
+          newType: "delivery" | "takeout";
+          httpVocab?: "delivery" | "pickup" | "dine_in";
+        };
+      };
+      expect(env.payload.newType).toBe("delivery");
+      expect(env.payload.httpVocab).toBe("delivery");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("REFUSE decision → 403 + pt-BR copy + tool NOT called", async () => {
     mockAdjudicate.mockReturnValue({
       kind: "REFUSE",

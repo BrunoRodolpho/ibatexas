@@ -10,7 +10,7 @@
 //
 // All routes require authentication + ownership verification.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -56,6 +56,43 @@ import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 /** Build a minimal AgentContext for API-originated tool calls. */
 function apiContext(customerId: string): AgentContext {
   return { customerId, channel: Channel.Web, sessionId: "api", userType: "customer" };
+}
+
+/**
+ * Derive a deterministic envelope `nonce` from a logical idempotency
+ * identifier (e.g. `${orderId}:cancel`). The same logical key on retry
+ * produces the same `intentHash` so the kernel's Execution Ledger can
+ * dedupe HTTP retries / double-clicks / network blips.
+ *
+ * Hex-encoded SHA-256 is collision-resistant for the small key space we
+ * derive from (orderId / customerId UUIDs + a short action suffix). Per
+ * CLAUDE.md rule 9, the inputs are non-PII identifiers only — see the
+ * `idempotency-key derivation` notes on each call site.
+ *
+ * P0-7 audit-2026-05-24 remediation.
+ */
+function deriveNonce(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
+/**
+ * Prefer the caller's explicit `Idempotency-Key` HTTP header when
+ * supplied (industry standard for client-driven dedup, e.g. Stripe).
+ * Otherwise fall back to the route's derived key. Returns the resolved
+ * value verbatim — callers SHA-256 it via `deriveNonce` for the
+ * envelope nonce.
+ */
+function resolveIdempotencyKey(
+  headerValue: string | string[] | undefined,
+  fallback: string,
+): string {
+  if (typeof headerValue === "string" && headerValue.length > 0) {
+    return headerValue;
+  }
+  if (Array.isArray(headerValue) && headerValue[0]) {
+    return headerValue[0];
+  }
+  return fallback;
 }
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
@@ -271,10 +308,22 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         orderId: id,
         reason: request.body.reason ?? "Cancelado pelo cliente",
       };
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ───────
+      //
+      // Each order can legitimately be cancelled exactly once by its
+      // owner. Browser retries, double-clicks, and network blips on
+      // POST /api/orders/:id/cancel MUST produce the same `intentHash`
+      // so the Execution Ledger dedupes. Prefer the client's explicit
+      // `Idempotency-Key` header; fall back to a route-derived key from
+      // `${orderId}:cancel:${customerId}` (both non-PII UUIDs).
+      const cancelIdempotencyKey = resolveIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${id}:cancel:${customerId}`,
+      );
       const envelope = buildEnvelope<"order.cancel", OrderCancelPayload>({
         kind: "order.cancel",
         payload: cancelPayload,
-        nonce: randomUUID(),
+        nonce: deriveNonce(cancelIdempotencyKey),
         actor: { principal: "user", sessionId: customerId },
         taint: "UNTRUSTED",
       });
@@ -1475,12 +1524,22 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       // Collapse both to `takeout` for the outer envelope; the inner
       // `switchOrderType` tool preserves the precise vocab via the
       // projection-policy envelope it builds internally.
+      //
+      // audit-2026-05-24 P2-3: the audit record is built from the outer
+      // envelope's payload. Without preserving the original HTTP
+      // vocabulary, an operator reading the audit row can't tell
+      // whether the customer asked for `pickup` or `dine_in` — both
+      // collapse to `takeout`. We carry the original via `httpVocab`
+      // (descriptive-only, pack guards ignore it) so the audit record
+      // captures both the policy-adjudicated value AND what the customer
+      // actually said.
       const newType = request.body.type;
       const packNewType: "delivery" | "takeout" =
         newType === "delivery" ? "delivery" : "takeout";
       const typePayload: OrderTypeSwitchPayload = {
         orderId: id,
         newType: packNewType,
+        httpVocab: newType,
       };
       const envelope = buildEnvelope<"order.type.switch", OrderTypeSwitchPayload>({
         kind: "order.type.switch",

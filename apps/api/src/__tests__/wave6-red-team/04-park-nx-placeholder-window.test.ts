@@ -89,8 +89,7 @@ describe("RED-TEAM Target 1 — NX wrapper placeholder + quota-leak window", () 
   });
 
   it("HAZARD: when framework park throws AFTER counter INCR, wrapper cleans up the placeholder but NOT the counter", async () => {
-    // Build a stub that mimics the wrapper's catch path. The wrapper
-    // (apps/api/src/adapters/park-deferred-intent-nx.ts:155-161):
+    // Build a stub that mimics the wrapper's catch path. The wrapper:
     //
     //   try { result = await parkDeferredIntent(args) ... }
     //   catch (err) {
@@ -104,22 +103,32 @@ describe("RED-TEAM Target 1 — NX wrapper placeholder + quota-leak window", () 
     //
     // We assert this by reading the wrapper module and verifying the
     // catch block has no `decr` on the counter key.
+    //
+    // audit-2026-05-24 P0-1: the wrapper implementation moved to
+    // `packages/llm-provider/src/park-nx.ts` so non-apps/api callers
+    // (kernel-executor, llm-responder) can share it. The apps/api
+    // adapter is now a thin re-export. We read the leaf module here.
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const wrapperPath = join(
       __dirname,
       "..",
       "..",
-      "adapters",
-      "park-deferred-intent-nx.ts",
+      "..",
+      "..",
+      "..",
+      "packages",
+      "llm-provider",
+      "src",
+      "park-nx.ts",
     );
     const source = readFileSync(wrapperPath, "utf8");
-    // The catch block lines (155-161) — verify they only delete the
-    // park key, never decrement a counter.
-    const catchBlock = source
-      .split("\n")
-      .slice(150, 165)
-      .join("\n");
+    // Locate the catch block by searching for the signature `} catch (err) {`
+    // immediately following the framework primitive delegation — robust to
+    // line-number drift across edits.
+    const catchIdx = source.indexOf("} catch (err) {");
+    expect(catchIdx).toBeGreaterThan(-1);
+    const catchBlock = source.slice(catchIdx, catchIdx + 400);
     expect(catchBlock).toContain("del?.(parkKey)");
     expect(catchBlock).not.toMatch(/decr\?.\(counterKey/);
   });

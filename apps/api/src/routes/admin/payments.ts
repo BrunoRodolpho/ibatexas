@@ -33,7 +33,7 @@
 // runs INSIDE the EXECUTE branch (post-adjudication). All mutations
 // are now reachable only via `EXECUTE` decisions from the kernel.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -114,6 +114,29 @@ function getRefundDailyNoConfirmCapCentavos(): number {
 }
 
 const REFUND_DAILY_KEY_TTL_SECONDS = 25 * 60 * 60; // 25h to cover DST + clock skew
+
+// ── P0-7 (audit-2026-05-24) — deterministic idempotency-key helpers ────────
+//
+// Admin financial mutations (refund, force-status, etc.) MUST dedupe on
+// retry. Helpers SHA-256 a route-derived idempotency key into the
+// envelope's `nonce` and accept an `Idempotency-Key` HTTP header
+// override (industry standard, e.g. Stripe).
+function deriveAdminNonce(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
+function resolveAdminIdempotencyKey(
+  headerValue: string | string[] | undefined,
+  fallback: string,
+): string {
+  if (typeof headerValue === "string" && headerValue.length > 0) {
+    return headerValue;
+  }
+  if (Array.isArray(headerValue) && headerValue[0]) {
+    return headerValue[0];
+  }
+  return fallback;
+}
 
 function refundDailyBucketKey(staffId: string | null, now: Date = new Date()): string {
   const yyyy = now.getUTCFullYear();
@@ -539,6 +562,30 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const reason = request.body.reason ?? "Reembolso emitido pelo admin";
       const { actorPrincipal, taint, sessionId } = principalFor(staffId);
 
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ─────────
+      //
+      // Refunds send money back to the customer — a retry without dedup
+      // can double-pay. Prefer the admin tool's explicit `Idempotency-Key`
+      // header; fall back to a route-derived key from
+      // `${orderId}:refund:${refundAmount}:${staffId}` so the same staff
+      // retrying the same refund on the same order dedupes via the
+      // kernel's Execution Ledger. Per CLAUDE.md rule #9, inputs are
+      // non-PII (orderId UUID, staffId, integer centavos).
+      const refundIdempotencyKey = resolveAdminIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${id}:refund:${refundAmount}:${staffId ?? "api-key"}`,
+      );
+      const refundNonce = deriveAdminNonce(refundIdempotencyKey);
+      if (
+        typeof request.headers["idempotency-key"] === "undefined" &&
+        !Array.isArray(request.headers["idempotency-key"])
+      ) {
+        server.log.warn(
+          { staffId, orderId: id, refundAmount },
+          "[refund] no Idempotency-Key header — using derived key (operator should set one)",
+        );
+      }
+
       // ── Threshold branch ──────────────────────────────────────────
       if (refundAmount < REFUND_CONFIRMATION_THRESHOLD_CENTAVOS) {
         // P1-I-TRUE — atomic check-and-reserve for the daily drip cap.
@@ -590,7 +637,8 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
               refundAmount,
               reason,
             },
-            nonce: randomUUID(),
+            // P0-7 — deterministic nonce, see route-level derivation above.
+            nonce: refundNonce,
             staffId,
             staffRole,
             actorPrincipal,
@@ -601,6 +649,11 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
             orderId: id,
             refundAmountCentavos: refundAmount,
             reason,
+            // audit-2026-05-24 P2-5: snapshot at step 1. Refund uses its
+            // own payload schema (PaymentRefundIssuePayload, no
+            // expectedVersion field) — step 2 enforces this via a
+            // route-level guard.
+            expectedVersion: payment.version,
           };
 
           const { confirmationId, ttlSeconds } =
@@ -651,7 +704,8 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           refundAmount,
           reason,
           staffId,
-          nonce: randomUUID(),
+          // P0-7 — deterministic nonce, see route-level derivation above.
+          nonce: refundNonce,
           actorPrincipal,
           taint,
           sessionId,
@@ -702,7 +756,8 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           refundAmount,
           reason,
         },
-        nonce: randomUUID(),
+        // P0-7 — deterministic nonce, see route-level derivation above.
+        nonce: refundNonce,
         staffId,
         staffRole,
         actorPrincipal,
@@ -713,6 +768,10 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         orderId: id,
         refundAmountCentavos: refundAmount,
         reason,
+        // audit-2026-05-24 P2-5: snapshot at step 1. Step 2 enforces this
+        // via a route-level guard (refund's PaymentRefundIssuePayload
+        // doesn't carry `expectedVersion`).
+        expectedVersion: payment.version,
       };
 
       const { confirmationId, ttlSeconds } =
@@ -850,6 +909,32 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       if (stored.paymentId !== payment.id) {
         return reply.code(409).send({
           error: "Pagamento ativo divergente. Reabra a operação.",
+        });
+      }
+      // audit-2026-05-24 P2-5: optimistic-concurrency check.
+      // PaymentRefundIssuePayload doesn't carry `expectedVersion`, so we
+      // enforce it at the route boundary: if the payment.version has
+      // advanced since step 1, REFUSE with 409. The operator must
+      // restart from step 1 so the fresh snapshot of
+      // refundedAmountCentavos / amountInCentavos / status is captured.
+      if (
+        pending.expectedVersion !== undefined &&
+        payment.version !== pending.expectedVersion
+      ) {
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.refund.stale_version_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            expectedVersion: pending.expectedVersion,
+            actualVersion: payment.version,
+          },
+          timestamp: new Date(),
+        });
+        return reply.code(409).send({
+          error: "Pagamento foi atualizado por outro atendente após a aprovação. Reabra a operação.",
         });
       }
       // Re-validate refundable amount (someone else may have refunded
@@ -993,6 +1078,8 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       }
 
       const { actorPrincipal } = principalFor(staffId);
+      // audit-2026-05-24 P2-5: snapshot `payment.version` at step 1.
+      const expectedVersion = payment.version;
       const payload: PaymentStatusTransitionPayload = {
         paymentId: payment.id,
         newStatus: request.body.status,
@@ -1013,6 +1100,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         createdAt: new Date().toISOString(),
         orderId: id,
         reason: request.body.reason,
+        expectedVersion,
       };
 
       const { confirmationId, ttlSeconds } =
@@ -1152,18 +1240,51 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       }
 
       const { actorPrincipal, taint, sessionId } = principalFor(staffId);
+      // audit-2026-05-24 P2-5: thread the step-1 version into the
+      // envelope payload. The executor REFUSEs (PaymentConcurrencyError)
+      // if the payment was mutated between the two operator clicks.
+      const envelopePayload: PaymentStatusTransitionPayload = {
+        ...storedPayload,
+        ...(pending.expectedVersion !== undefined
+          ? { expectedVersion: pending.expectedVersion }
+          : {}),
+      };
       const envelope = buildEnvelope<
         "payment.status.transition",
         PaymentStatusTransitionPayload
       >({
         kind: "payment.status.transition",
-        payload: storedPayload,
+        payload: envelopePayload,
         nonce: pending.nonce,
         actor: { principal: actorPrincipal, sessionId },
         taint,
       });
 
-      const outcome = await paymentCmdSvc.transitionStatusFromEnvelope(envelope);
+      let outcome;
+      try {
+        outcome = await paymentCmdSvc.transitionStatusFromEnvelope(envelope);
+      } catch (err) {
+        // audit-2026-05-24 P2-5: optimistic-concurrency conflict — payment
+        // advanced between step 1 and step 2.
+        if ((err as Error).name === "PaymentConcurrencyError") {
+          await eventLogSvc.append({
+            orderId: id,
+            eventType: "admin.force_status.stale_version_refused",
+            discriminator: confirmationId,
+            payload: {
+              confirmationId,
+              staffId,
+              expectedVersion: pending.expectedVersion ?? null,
+              message: (err as Error).message,
+            },
+            timestamp: new Date(),
+          });
+          return reply.code(409).send({
+            error: "Pagamento foi atualizado por outro atendente após a aprovação. Reabra a operação.",
+          });
+        }
+        throw err;
+      }
       if (
         outcome.decision.kind !== "EXECUTE" &&
         outcome.decision.kind !== "REWRITE"

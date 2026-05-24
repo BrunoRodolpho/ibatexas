@@ -48,6 +48,7 @@ import {
   setAuditSinkBufferSizeHook,
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
+  setDeferQuotaExceededHook,
 } from "@ibatexas/llm-provider"
 import { prisma } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
@@ -136,6 +137,13 @@ export function installKernelMetricsSink(
   // installed sink — installed two lines above by `setMetricsSink(sink)`.
   setAuditSinkFailureHook((event) => {
     recordSinkFailure(event)
+  })
+  // audit-2026-05-24 P0-1 — wire the NX-park quota-exceeded metric.
+  // The wrapper lives in `@ibatexas/llm-provider` and is intentionally
+  // decoupled from apps/api; we inject the recorder here so each
+  // `quota_exceeded` rejection bumps `kernel_defer_quota_exceeded_total{kind}`.
+  setDeferQuotaExceededHook((kind) => {
+    recorder.recordDeferQuotaExceeded(kind)
   })
   _recorder = recorder
   return register

@@ -14,7 +14,7 @@
 //
 // All session cart IDs are tracked in Redis active:carts set for abandoned-cart detection.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -82,6 +82,31 @@ function mapMedusaErrorToReply(err: unknown, reply: FastifyReply): boolean {
 }
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+// ── P0-7 (audit-2026-05-24) — deterministic idempotency-key helpers ────────
+//
+// Replays of the same logical operation MUST produce the same envelope
+// `intentHash` so the kernel's Execution Ledger can dedupe. The route
+// derives a stable idempotency key from non-PII identifiers (cartId,
+// orderId, customerId — all UUIDs) and SHA-256s it into the envelope's
+// `nonce`. Callers may override with an explicit `Idempotency-Key`
+// header (industry standard, e.g. Stripe).
+function deriveCartNonce(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
+function resolveCartIdempotencyKey(
+  headerValue: string | string[] | undefined,
+  fallback: string,
+): string {
+  if (typeof headerValue === "string" && headerValue.length > 0) {
+    return headerValue;
+  }
+  if (Array.isArray(headerValue) && headerValue[0]) {
+    return headerValue[0];
+  }
+  return fallback;
+}
 
 const PIX_CACHE_TTL = 90 * 86400; // 90 days
 
@@ -824,10 +849,20 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       };
 
       const sessionId = request.customerId ?? cartId;
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ─────────
+      //
+      // POST /api/cart/checkout creates a payment (PIX/card/cash) and
+      // an order. A retry on the same cart MUST dedupe to avoid double
+      // payment. Prefer the client's `Idempotency-Key` header; fall back
+      // to `${cartId}:checkout` (a cart is logically checked out once).
+      const checkoutIdempotencyKey = resolveCartIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${cartId}:checkout`,
+      );
       const envelope = buildEnvelope<"order.checkout.create", OrderCheckoutCreatePayload>({
         kind: "order.checkout.create",
         payload: checkoutPayload,
-        nonce: randomUUID(),
+        nonce: deriveCartNonce(checkoutIdempotencyKey),
         actor: { principal: "user", sessionId },
         taint: "UNTRUSTED",
       });

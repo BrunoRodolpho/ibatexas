@@ -168,8 +168,14 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       // ── Build pending action ────────────────────────────────────────
       // The nonce is captured here so step 2 reconstructs the SAME
       // envelope (identical intentHash) — load-bearing for audit dedup.
+      //
+      // audit-2026-05-24 P2-5: snapshot `order.version` at step 1 so
+      // step 2 can pass it as `expectedVersion` into the envelope. The
+      // executor REFUSEs (ConcurrencyError) if the projection advanced
+      // between the two operator clicks.
       const reason = request.body.reason ?? "Cancelado pelo admin";
       const { actorPrincipal } = principalFor(staffId);
+      const expectedVersion = order.version;
 
       const payload: OrderStatusTransitionPayload = {
         orderId: id,
@@ -192,6 +198,7 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         createdAt: new Date().toISOString(),
         orderId: id,
         reason,
+        expectedVersion,
       };
 
       const { confirmationId, ttlSeconds } =
@@ -327,7 +334,17 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       }
 
       const { actorPrincipal, taint, sessionId } = principalFor(staffId);
-      const payload = pending.payload as unknown as OrderStatusTransitionPayload;
+      const storedPayload = pending.payload as unknown as OrderStatusTransitionPayload;
+      // audit-2026-05-24 P2-5: thread the step-1 version into the
+      // envelope payload so the executor's optimistic-concurrency check
+      // fires if another mutation has bumped `order.version` between
+      // the two operator clicks.
+      const payload: OrderStatusTransitionPayload = {
+        ...storedPayload,
+        ...(pending.expectedVersion !== undefined
+          ? { expectedVersion: pending.expectedVersion }
+          : {}),
+      };
       const envelope = buildEnvelope<
         "order.status.transition",
         OrderStatusTransitionPayload
@@ -430,6 +447,26 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       } catch (err) {
         if ((err as Error).name === "InvalidTransitionError") {
           return reply.code(422).send({ error: "Transição de status inválida." });
+        }
+        // audit-2026-05-24 P2-5: surface optimistic-concurrency conflicts
+        // as 409 with the canonical receipt-stale message. The operator
+        // must restart from step 1.
+        if ((err as Error).name === "ConcurrencyError") {
+          await eventLogSvc.append({
+            orderId: id,
+            eventType: "admin.force_cancel.stale_version_refused",
+            discriminator: confirmationId,
+            payload: {
+              confirmationId,
+              staffId,
+              expectedVersion: pending.expectedVersion ?? null,
+              message: (err as Error).message,
+            },
+            timestamp: new Date(),
+          });
+          return reply.code(409).send({
+            error: "Pedido foi atualizado por outro atendente após a aprovação. Reabra a operação.",
+          });
         }
         throw err;
       }
@@ -565,6 +602,9 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
       }
 
       const { actorPrincipal } = principalFor(staffId);
+      // audit-2026-05-24 P2-5: snapshot `payment.version` at step 1 so
+      // step 2 carries `expectedVersion` into the envelope payload.
+      const expectedVersion = activePayment.version;
       const payload: PaymentStatusTransitionPayload = {
         paymentId: activePayment.id,
         newStatus: PaymentStatus.WAIVED,
@@ -586,6 +626,7 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         createdAt: new Date().toISOString(),
         orderId: id,
         reason: request.body.reason,
+        expectedVersion,
       };
 
       const { confirmationId, ttlSeconds } =
@@ -730,18 +771,52 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         });
       }
 
+      // audit-2026-05-24 P2-5: thread the step-1 version into the
+      // envelope payload. If the payment has been mutated between
+      // step 1 and step 2 the executor will throw ConcurrencyError.
+      const envelopePayload: PaymentStatusTransitionPayload = {
+        ...storedPayload,
+        ...(pending.expectedVersion !== undefined
+          ? { expectedVersion: pending.expectedVersion }
+          : {}),
+      };
       const envelope = buildEnvelope<
         "payment.status.transition",
         PaymentStatusTransitionPayload
       >({
         kind: "payment.status.transition",
-        payload: storedPayload,
+        payload: envelopePayload,
         nonce: pending.nonce,
         actor: { principal: actorPrincipal, sessionId },
         taint,
       });
 
-      const outcome = await paymentCmdSvc.transitionStatusFromEnvelope(envelope);
+      let outcome;
+      try {
+        outcome = await paymentCmdSvc.transitionStatusFromEnvelope(envelope);
+      } catch (err) {
+        // audit-2026-05-24 P2-5: optimistic-concurrency conflict — the
+        // payment advanced between step 1 and step 2. Surface 409 with
+        // the canonical receipt-stale message.
+        if ((err as Error).name === "PaymentConcurrencyError") {
+          await eventLogSvc.append({
+            orderId: id,
+            eventType: "admin.waive.stale_version_refused",
+            discriminator: confirmationId,
+            payload: {
+              confirmationId,
+              staffId,
+              expectedVersion: pending.expectedVersion ?? null,
+              message: (err as Error).message,
+            },
+            timestamp: new Date(),
+          });
+          return reply.code(409).send({
+            error: "Pagamento foi atualizado por outro atendente após a aprovação. Reabra a operação.",
+          });
+        }
+        throw err;
+      }
       if (
         outcome.decision.kind !== "EXECUTE" &&
         outcome.decision.kind !== "REWRITE"

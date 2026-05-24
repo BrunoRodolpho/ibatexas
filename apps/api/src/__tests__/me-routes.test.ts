@@ -124,9 +124,23 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (k: string) => `ibatexas:${k}`,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}));
+// audit-2026-05-24 P0-1: re-export the real `parkDeferredIntentWithNxGuard`
+// from the leaf module so me.ts routes through the NX-guarded wrapper
+// (the brief's gap — before this fix, me.ts called the framework primitive
+// directly and a second DEFER for the same customerId could silently
+// overwrite the first parked envelope).
+vi.mock("@ibatexas/llm-provider", async () => {
+  const real = (await vi.importActual(
+    "../../../../packages/llm-provider/src/park-nx.js",
+  )) as Record<string, unknown>;
+  return {
+    getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
+    parkDeferredIntentWithNxGuard: real.parkDeferredIntentWithNxGuard,
+    PARK_COLLISION_REFUSAL_PT_BR: real.PARK_COLLISION_REFUSAL_PT_BR,
+    setDeferQuotaExceededHook: real.setDeferQuotaExceededHook,
+    ParkVerificationFieldsMissingError: real.ParkVerificationFieldsMissingError,
+  };
+});
 
 vi.mock("twilio", () => ({
   default: () => ({

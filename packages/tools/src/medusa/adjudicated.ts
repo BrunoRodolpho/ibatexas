@@ -52,6 +52,27 @@
 //     Audit emit is best-effort (mirrors the with-adjudicate helper in
 //     packages/domain/src/services/__shared__/with-adjudicate.ts).
 //   - #2 centavos: this wrapper is payload-agnostic — pass-through.
+//
+// ── Idempotency-key posture (audit-2026-05-24 P0-7) ────────────────────
+//
+// Callers SHOULD provide `meta.idempotencyKey` (or the top-level
+// `idempotencyKey` arg, see `MedusaAdjudicatedArgs`) for any
+// user-initiated mutation that might retry — HTTP retries, browser
+// double-clicks, WhatsApp resends, etc. Without an idempotency key,
+// each call produces a fresh `randomUUID()` nonce; the envelope's
+// `intentHash` differs per attempt and the kernel ledger treats every
+// retry as a NEW intent, executing the side effect multiple times
+// (duplicate Medusa cart writes, duplicate Stripe charges, double-
+// sent Twilio OTPs). The same applies to the sibling wrappers in
+// this repo: `medusaStoreAdjudicated`, `stripeAdjudicated`,
+// `twilioAdjudicated`. Document each route's idempotency posture
+// explicitly at the call site — either derive a stable key from
+// non-PII identifiers (orderId / cartId / customerId UUIDs + action
+// suffix) or require the `Idempotency-Key` HTTP header. See
+// `apps/api/src/routes/order-actions.ts` (cancel),
+// `apps/api/src/routes/cart.ts` (checkout),
+// `apps/api/src/routes/admin/payments.ts` (refund), and
+// `apps/api/src/routes/me.ts` (anonymize) for reference patterns.
 
 import {
   basis,
