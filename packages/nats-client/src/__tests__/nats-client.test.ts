@@ -108,6 +108,36 @@ describe("NATS Client", () => {
     }).not.toThrow()
   })
 
+  // ── audit-2026-05-24 P2-4 — queue groups ───────────────────────────────
+  // Multi-replica deploys need queue groups so each message is handled by
+  // exactly one replica per group (instead of N-fold handler inflation).
+
+  it("[P2-4] subscribeNatsEvent passes queueGroup through as { queue } to NATS", async () => {
+    const conn = await getNatsConnection()
+    const subscribeSpy = conn.subscribe as ReturnType<typeof vi.fn>
+    subscribeSpy.mockClear()
+
+    await subscribeNatsEvent("payment.status_changed", vi.fn(), {
+      queueGroup: "defer-resolver",
+    })
+
+    expect(subscribeSpy).toHaveBeenCalledWith("ibatexas.payment.status_changed", {
+      queue: "defer-resolver",
+    })
+  })
+
+  it("[P2-4] subscribeNatsEvent omits queue opts when no queueGroup is given", async () => {
+    const conn = await getNatsConnection()
+    const subscribeSpy = conn.subscribe as ReturnType<typeof vi.fn>
+    subscribeSpy.mockClear()
+
+    await subscribeNatsEvent("cart.abandoned", vi.fn())
+
+    // Back-compat: no queueGroup → no second arg. Distinguishes "subscribed
+    // without a queue group" from "subscribed to a group named undefined".
+    expect(subscribeSpy).toHaveBeenCalledWith("ibatexas.cart.abandoned")
+  })
+
   it("getNatsConnection can be called without error", async () => {
     const conn = await getNatsConnection()
     expect(conn).toBeDefined()

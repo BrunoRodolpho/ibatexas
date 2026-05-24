@@ -898,7 +898,7 @@ export async function startDeferResolverSubscriber(
         )
       }
     }
-  })
+  }, { queueGroup: "defer-resolver" })
 
   log?.info("[defer-resolver] Subscriber started")
 }

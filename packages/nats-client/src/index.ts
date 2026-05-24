@@ -295,15 +295,30 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
  * Subscribe to domain events.
  * Callback is invoked for each message.
  * Returns an object with unsubscribe() to stop listening.
+ *
+ * ── audit-2026-05-24 P2-4 — queue groups ──────────────────────────────────
+ * Pass `options.queueGroup` so subscribers running in multiple replicas
+ * load-balance the stream instead of every replica handling every message
+ * (N-fold handler inflation). Names must be stable across deploys and
+ * unique per subscriber file — distinct queue groups on the same subject
+ * still fan out to each group, so independent consumers (e.g. defer-
+ * resolver + payment-lifecycle on `payment.status_changed`) coexist.
  */
+export interface SubscribeNatsEventOptions {
+  queueGroup?: string
+}
+
 export async function subscribeNatsEvent(
   event: string,
-  handler: (payload: Record<string, unknown>) => void | Promise<void>
+  handler: (payload: Record<string, unknown>) => void | Promise<void>,
+  options?: SubscribeNatsEventOptions,
 ): Promise<{ unsubscribe: () => void }> {
   const nats = await getNatsConnection()
   const subject = `ibatexas.${event}`
 
-  const sub = nats.subscribe(subject)
+  const sub = options?.queueGroup
+    ? nats.subscribe(subject, { queue: options.queueGroup })
+    : nats.subscribe(subject)
 
   // Handle messages asynchronously
   ;(async () => {

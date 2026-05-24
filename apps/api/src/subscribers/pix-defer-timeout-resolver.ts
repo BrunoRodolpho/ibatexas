@@ -222,6 +222,6 @@ export async function startPixDeferTimeoutResolverSubscriber(
         "[pix-defer-timeout-resolver] unexpected error",
       );
     }
-  });
+  }, { queueGroup: "pix-defer-timeout-resolver" });
   log?.info("[pix-defer-timeout-resolver] Subscriber started");
 }

@@ -202,6 +202,7 @@ export async function startAuditConsumer(
         )
       }
     },
+    { queueGroup: "audit-consumer" },
   )
 
   log?.info("[audit-consumer] subscribed to audit.intent.decision.v1")

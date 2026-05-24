@@ -355,6 +355,6 @@ export async function startAnonymizeGraceResolverSubscriber(
         "[anonymize-grace-resolver] unexpected error",
       );
     }
-  });
+  }, { queueGroup: "anonymize-grace-resolver" });
   log?.info("[anonymize-grace-resolver] Subscriber started");
 }

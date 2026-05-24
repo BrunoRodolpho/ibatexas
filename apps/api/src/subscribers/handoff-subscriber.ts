@@ -58,5 +58,5 @@ export async function startHandoffSubscriber(
       );
       await pushToDlq("support.handoff_requested", payload as Record<string, unknown>, err, log);
     }
-  });
+  }, { queueGroup: "handoff-subscriber" });
 }
