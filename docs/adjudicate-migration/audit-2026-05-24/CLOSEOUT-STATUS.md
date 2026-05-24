@@ -13,7 +13,7 @@ This is the authoritative "what remains" snapshot AFTER R3-1 (conformance suites
 
 The audit-2026-05-24 adversarial sweep produced **9 P0 + 8 P1 + 8 P2** findings. After R1 / R2 / R3 commit waves on this branch:
 
-- **8 / 9 P0** fully closed in code (P0-4 H2 closed via `654d337`; P0-9 LGPD scope has epic-track residue; **P0-2 partially closed** — R2-1 SETNX mutex has a release-ordering bug demonstrated by T6 conformance at 1-4% violation rate per 100 iterations, tracked under follow-up [E2](./tasks/e2-sweeper-resolver-race-v2.md))
+- **9 / 9 P0** fully closed in code (P0-2 race v2 closed via `4c82a22` — Fix-b post-SETNX parkKey re-check; T6 now at **hard-zero violations across 500 race iterations**. P0-9 LGPD scope has epic-track residue.)
 - **8 / 8 P1** closed in code
 - **8 / 8 P2** closed (P2-1, P2-2, P2-3, P2-4, P2-5, P2-6, P2-7, P2-8)
 - **6 / 7 hardening conformance suites** landed (T1, T2, T3, T5, T6, T7); **1 still open** (T4 LGPD scrub — blocked on H3)
@@ -35,7 +35,7 @@ The cutover claim "kernel is authoritative and audited" is now **TRUE for the or
 | ID | Finding | Closing commit(s) |
 |---|---|---|
 | P0-1 | NX-park wrapper had 0 production callers → 4 callers migrated | `de207b2`, `f793cbd` |
-| P0-2 | Sweeper-vs-resume race — SETNX `defer:resuming:` mutex + pix-defer-timeout-resolver (**partial closure**; release-ordering bug under [E2](./tasks/e2-sweeper-resolver-race-v2.md)) | `a1fbb25` |
+| P0-2 | Sweeper-vs-resume race — SETNX `defer:resuming:` mutex (R2-1) + Fix-b resolver re-checks parkKey post-SETNX (E2). T6 hard-zero across 500 race iterations. | `a1fbb25`, `4c82a22` |
 | P0-3 | Anonymize cancel-vs-resolve race → SETNX `anonymize:active:` lock | `df25dbf` |
 | P0-5 | Redactor `whatsapp.handoff.request` typo + `templateVariables` miss | `a487cb3` |
 | P0-6 | 14 intent kinds missing free-form field redactor rules | `a487cb3` |
