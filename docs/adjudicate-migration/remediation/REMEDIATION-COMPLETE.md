@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover W6 closure report (2026-05-23). The "Cleared for Tier 1+2 shadow rollout" recommendation was overtaken by the deeper-audit "NO-GO" verdict (see `../deep-audit/MASTER-DEEP-AUDIT.md`) and then by the IBX-IGE v3.0 always-on cutover (`f3bea43`) which deleted the shadow/enforce framework entirely. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Adjudicate Migration — Remediation Complete
 
 **Status:** Final report (W6 closure)

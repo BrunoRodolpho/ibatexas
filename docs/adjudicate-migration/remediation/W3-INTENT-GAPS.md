@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W3 input-list for the W5 `@ibatexas/pack-payments` migration. Intent kinds have since been reconciled with `../governance/01-intent-taxonomy.md`, and the PIX lifecycle migrated to `@adjudicate/pack-payments-pix` (the lighthouse Pack — see ADR #13). For current intent kind inventory, see `KNOWN_INTENT_KINDS` in code + `../governance/01-intent-taxonomy.md`. Content preserved unchanged below as historical record.
+
+---
+
 # Wave 3 — Intent-Kind Gaps
 
 **Date:** 2026-05-23
