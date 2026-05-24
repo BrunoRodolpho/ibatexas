@@ -366,37 +366,32 @@ describe("createKernelMetricsSink — recordSinkFailure", () => {
 })
 
 // ── recordShadowDivergence ───────────────────────────────────────────────────
+//
+// IBX-IGE v3.0 cutover (f3bea43): shadow-mode plumbing was removed —
+// `recordShadowDivergence` is a no-op retained only to satisfy the
+// `MetricsSink` interface contract. The legacy PostHog events and the
+// `kernel_shadow_divergence_total` Prometheus counter were retired.
 
-describe("createKernelMetricsSink — recordShadowDivergence", () => {
-  it.each([
-    ["BASIS_ONLY", "audit_kernel_shadow_diverged_basis"],
-    ["DECISION_KIND", "audit_kernel_shadow_diverged_kind"],
-    ["PAYLOAD_REWRITE", "audit_kernel_shadow_diverged_rewrite"],
-  ] as const)("%s emits %s", (cls, expectedEvent) => {
+describe("createKernelMetricsSink — recordShadowDivergence (no-op)", () => {
+  it("does not emit any PostHog event", () => {
     const { deps, track } = makeDeps()
     const sink = createKernelMetricsSink(deps)
-    sink.recordShadowDivergence(mkShadowDivergence(cls))
-    expect(track).toHaveBeenCalledWith(
-      expectedEvent,
-      expect.objectContaining({ divergence_class: cls }),
-    )
+    sink.recordShadowDivergence(mkShadowDivergence("DECISION_KIND"))
+    expect(track).not.toHaveBeenCalled()
   })
 
-  it("does NOT fire a Sentry breadcrumb (metrics-only per task table)", () => {
+  it("does not fire a Sentry breadcrumb", () => {
     const { deps, breadcrumb } = makeDeps()
     const sink = createKernelMetricsSink(deps)
     sink.recordShadowDivergence(mkShadowDivergence("DECISION_KIND"))
     expect(breadcrumb).not.toHaveBeenCalled()
   })
 
-  it("increments kernel_shadow_divergence_total", async () => {
+  it("does not register kernel_shadow_divergence_total", async () => {
     const { deps, register } = makeDeps()
-    const sink = createKernelMetricsSink(deps)
-    sink.recordShadowDivergence(mkShadowDivergence("BASIS_ONLY"))
-    const out = await register.getSingleMetricAsString(
-      "kernel_shadow_divergence_total",
-    )
-    expect(out).toContain(`class="BASIS_ONLY"`)
+    createKernelMetricsSink(deps)
+    const metric = register.getSingleMetric("kernel_shadow_divergence_total")
+    expect(metric).toBeUndefined()
   })
 })
 

@@ -87,9 +87,12 @@ const PH_EVENT_DECISION_EXECUTED = "audit_decision_executed"
 const PH_EVENT_DECISION_REFUSED = "audit_decision_refused"
 const PH_EVENT_LEDGER_HIT = "audit_ledger_hit"
 const PH_EVENT_NATS_SINK_FAILED = "audit_nats_sink_failed"
-const PH_EVENT_SHADOW_DIVERGED_BASIS = "audit_kernel_shadow_diverged_basis"
-const PH_EVENT_SHADOW_DIVERGED_KIND = "audit_kernel_shadow_diverged_kind"
-const PH_EVENT_SHADOW_DIVERGED_REWRITE = "audit_kernel_shadow_diverged_rewrite"
+// IBX-IGE v3.0 cutover (f3bea43): shadow-mode plumbing was removed —
+// the kernel is always authoritative. `recordShadowDivergence` remains
+// on `MetricsSink` per the framework's interface contract, but it now
+// no-ops; the legacy `audit_kernel_shadow_diverged_{basis,kind,rewrite}`
+// PostHog events and the `kernel_shadow_divergence_total` Prometheus
+// counter were retired with the shadow path.
 
 // ── Prometheus metric definitions ────────────────────────────────────────────
 //
@@ -102,7 +105,6 @@ interface RegisteredMetrics {
     "kind" | "intent_kind" | "basis_category" | "basis_code"
   >
   readonly decisionDuration: Histogram<"intent_kind">
-  readonly shadowDivergenceTotal: Counter<"class" | "intent_kind">
   readonly ledgerOpTotal: Counter<"outcome" | "op">
   readonly auditSinkFailureTotal: Counter<"sink" | "reason">
   readonly deferResumeDuration: Histogram<"kind">
@@ -197,14 +199,6 @@ function registerMetrics(register: Registry): RegisteredMetrics {
         labelNames: ["intent_kind"] as const,
         // Standard Prometheus latency buckets, per migration doc §metric 2.
         buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
-      },
-      [register],
-    ),
-    shadowDivergenceTotal: counter(
-      {
-        name: "kernel_shadow_divergence_total",
-        help: "Shadow-mode divergences between legacy and adjudicate decisions.",
-        labelNames: ["class", "intent_kind"] as const,
       },
       [register],
     ),
@@ -571,24 +565,14 @@ export function createKernelMetricsSink(
     },
 
     // ── recordShadowDivergence ───────────────────────────────────────────────
-    recordShadowDivergence(event: ShadowDivergenceEvent) {
-      safeIncr("kernel_shadow_divergence_total", () => {
-        metrics.shadowDivergenceTotal.inc({
-          class: event.divergence,
-          intent_kind: event.intentKind,
-        })
-      })
-      const phEvent = shadowDivergenceToPostHogEvent(event.divergence)
-      if (phEvent) {
-        safeTrack(phEvent, {
-          intent_kind: event.intentKind,
-          divergence_class: event.divergence,
-          legacy_kind: event.legacy.kind,
-          adjudicate_kind: event.adjudicate.kind,
-          basis_count: event.adjudicate.basis.length,
-        })
-      }
-      // No Sentry breadcrumb — divergence is metrics-only per task table.
+    //
+    // IBX-IGE v3.0 cutover (f3bea43): the shadow path was removed — the
+    // kernel is always authoritative, so the framework never produces a
+    // ShadowDivergenceEvent in this deployment. The method remains here
+    // because `MetricsSink` (from @adjudicate/core/kernel) declares it as
+    // required; production callers will never hit this path.
+    recordShadowDivergence(_event: ShadowDivergenceEvent) {
+      // No-op. Retained for interface compliance only.
     },
 
     // ── recordResourceLimit ──────────────────────────────────────────────────
@@ -753,24 +737,6 @@ export function createKernelMetricsRecorder(
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
-
-function shadowDivergenceToPostHogEvent(
-  cls: ShadowDivergenceEvent["divergence"],
-): string | null {
-  switch (cls) {
-    case "BASIS_ONLY":
-      return PH_EVENT_SHADOW_DIVERGED_BASIS
-    case "DECISION_KIND":
-      return PH_EVENT_SHADOW_DIVERGED_KIND
-    case "PAYLOAD_REWRITE":
-      return PH_EVENT_SHADOW_DIVERGED_REWRITE
-    // NONE never reaches the sink (shadow.ts only invokes telemetry on
-    // non-NONE divergence) — return null defensively.
-    case "NONE":
-    default:
-      return null
-  }
-}
 
 function serializeError(err: unknown): { message: string; name?: string } {
   if (err instanceof Error) {

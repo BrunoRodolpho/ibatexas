@@ -39,28 +39,6 @@ import { parseBoolEnv } from "@ibatexas/llm-provider"
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-interface ParsedEnvList {
-  raw: string
-  wildcard: boolean
-  kinds: readonly string[]
-}
-
-function parseEnvList(raw: string | undefined): ParsedEnvList {
-  if (!raw) return { raw: "", wildcard: false, kinds: [] }
-  const parts = raw
-    .split(",")
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0)
-  if (parts.includes("*")) {
-    return {
-      raw,
-      wildcard: true,
-      kinds: parts.filter((p) => p !== "*"),
-    }
-  }
-  return { raw, wildcard: false, kinds: parts }
-}
-
 function parseDuration(input: string): number {
   // Parses "24h", "2h30m", "10m", "1d". Returns milliseconds. Throws on
   // invalid input.
@@ -87,14 +65,14 @@ function parseDuration(input: string): number {
 // ── ibx kernel status ─────────────────────────────────────────────────────
 
 async function runStatus(opts: { json?: boolean }): Promise<void> {
-  const shadow = parseEnvList(process.env.IBX_KERNEL_SHADOW)
-  const enforce = parseEnvList(process.env.IBX_KERNEL_ENFORCE)
-  // NEW-P1-ENV: was `=== "true"` for all four. parseBoolEnv accepts the
-  // canonical truthy lexicon (true/1/yes/on, any case) and defaults to
-  // false for unset/typo inputs. The CLI now agrees with the runtime
-  // sites that read these same env vars (kernel-bootstrap, intent-
-  // audit-wiring, intent-ledger) — fixing the "CLI shows enabled but
-  // runtime reads disabled" drift that a `=TRUE` typo would produce.
+  // IBX-IGE v3.0 cutover (commit f3bea43): the kernel is always
+  // authoritative. The legacy `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE`
+  // env-var surface and the `getKillSwitchState()` operator handle were
+  // removed — there is no shadow / enforce / kill-switch state to query.
+  // NEW-P1-ENV: parseBoolEnv accepts the canonical truthy lexicon
+  // (true/1/yes/on, any case) and defaults to false for unset/typo
+  // inputs. The CLI agrees with the runtime sites that read these same
+  // env vars (kernel-bootstrap, intent-audit-wiring, intent-ledger).
   const ledgerEnabled = parseBoolEnv(process.env.IBX_LEDGER_ENABLED, false)
   const ledgerEnforce = parseBoolEnv(process.env.IBX_LEDGER_ENFORCE, false)
   const ledgerFailOpen = parseBoolEnv(process.env.IBX_LEDGER_FAIL_OPEN, false)
@@ -105,16 +83,10 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
 
   // Pull KNOWN_INTENT_KINDS lazily; the imports drag the policy bundles
   // into the CLI process which is fine but slow on cold start.
-  //
-  // IBX-IGE v3.0 cutover (commit f3bea43): the kernel is always
-  // authoritative. The legacy `getKillSwitchState()` surface was removed
-  // from this status command — there is no operator kill switch to query.
   const { KNOWN_INTENT_KINDS } = await import("@ibatexas/llm-provider")
 
   if (opts.json) {
     const out = {
-      shadow: { ...shadow },
-      enforce: { ...enforce },
       knownIntentKinds: {
         count: KNOWN_INTENT_KINDS.size,
         kinds: [...KNOWN_INTENT_KINDS].sort(),
@@ -135,26 +107,6 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   console.log()
   console.log(chalk.bold("ibx kernel status"))
   console.log(chalk.dim("Estado de execução do kernel adjudicate."))
-  console.log()
-
-  console.log(chalk.bold("── Modo shadow (IBX_KERNEL_SHADOW) ─────────────"))
-  if (shadow.wildcard) {
-    console.log(`  ${chalk.cyan("wildcard")}  ${chalk.dim("(todos os intent kinds)")}`)
-  } else if (shadow.kinds.length === 0) {
-    console.log(`  ${chalk.dim("(nenhum kind em shadow)")}`)
-  } else {
-    for (const k of shadow.kinds) console.log(`  • ${k}`)
-  }
-  console.log()
-
-  console.log(chalk.bold("── Modo enforce (IBX_KERNEL_ENFORCE) ────────────"))
-  if (enforce.wildcard) {
-    console.log(`  ${chalk.cyan("wildcard")}  ${chalk.dim("(todos os intent kinds)")}`)
-  } else if (enforce.kinds.length === 0) {
-    console.log(`  ${chalk.dim("(nenhum kind em enforce)")}`)
-  } else {
-    for (const k of enforce.kinds) console.log(`  • ${k}`)
-  }
   console.log()
 
   console.log(chalk.bold("── Intent kinds conhecidos ──────────────────────"))

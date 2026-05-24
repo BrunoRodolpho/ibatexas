@@ -46,8 +46,6 @@ beforeEach(() => {
   registerKernelCommands(cmd)
   stdout = captureStdout()
   savedEnv = {
-    IBX_KERNEL_SHADOW: process.env.IBX_KERNEL_SHADOW,
-    IBX_KERNEL_ENFORCE: process.env.IBX_KERNEL_ENFORCE,
     IBX_AUDIT_POSTGRES_ENABLED: process.env.IBX_AUDIT_POSTGRES_ENABLED,
     POSTHOG_API_KEY: process.env.POSTHOG_API_KEY,
     IBX_LEDGER_ENABLED: process.env.IBX_LEDGER_ENABLED,
@@ -67,14 +65,16 @@ afterEach(() => {
 // ── ibx kernel status ─────────────────────────────────────────────────────
 
 describe("ibx kernel status", () => {
+  // IBX-IGE v3.0 cutover: the legacy IBX_KERNEL_SHADOW / IBX_KERNEL_ENFORCE
+  // env vars and their JSON shape were removed — the kernel is always
+  // authoritative. Status output now reports intent kinds, ledger, audit
+  // sinks only.
   it("emits JSON when --json is set", async () => {
-    delete process.env.IBX_KERNEL_SHADOW
-    delete process.env.IBX_KERNEL_ENFORCE
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
-    expect(parsed).toHaveProperty("shadow")
-    expect(parsed).toHaveProperty("enforce")
+    expect(parsed).not.toHaveProperty("shadow")
+    expect(parsed).not.toHaveProperty("enforce")
     expect(parsed).toHaveProperty("knownIntentKinds")
     expect(parsed).toHaveProperty("ledger")
     expect(parsed).toHaveProperty("audit")
@@ -82,36 +82,14 @@ describe("ibx kernel status", () => {
   })
 
   it("renders human-readable text when --json is absent", async () => {
-    delete process.env.IBX_KERNEL_SHADOW
-    delete process.env.IBX_KERNEL_ENFORCE
     await cmd.parseAsync(["status"], { from: "user" })
     const out = stdout.getOutput()
     expect(out).toContain("ibx kernel status")
-    expect(out).toContain("Modo shadow")
-    expect(out).toContain("Modo enforce")
+    expect(out).not.toContain("Modo shadow")
+    expect(out).not.toContain("Modo enforce")
     expect(out).toContain("Intent kinds conhecidos")
     expect(out).toContain("Execution Ledger")
     expect(out).toContain("Audit sink")
-  })
-
-  it("reflects IBX_KERNEL_SHADOW env var in JSON output", async () => {
-    process.env.IBX_KERNEL_SHADOW = "order.checkout.create,order.cancel"
-    delete process.env.IBX_KERNEL_ENFORCE
-    await cmd.parseAsync(["status", "--json"], { from: "user" })
-    const out = stdout.getOutput()
-    const parsed = JSON.parse(out)
-    expect(parsed.shadow.kinds).toContain("order.checkout.create")
-    expect(parsed.shadow.kinds).toContain("order.cancel")
-    expect(parsed.shadow.wildcard).toBe(false)
-  })
-
-  it("detects wildcard '*' in IBX_KERNEL_ENFORCE", async () => {
-    delete process.env.IBX_KERNEL_SHADOW
-    process.env.IBX_KERNEL_ENFORCE = "*"
-    await cmd.parseAsync(["status", "--json"], { from: "user" })
-    const out = stdout.getOutput()
-    const parsed = JSON.parse(out)
-    expect(parsed.enforce.wildcard).toBe(true)
   })
 
   it("includes all 32 KNOWN_INTENT_KINDS in the JSON list", async () => {

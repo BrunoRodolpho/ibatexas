@@ -41,10 +41,9 @@
 // Per the comment block in `packages/llm-provider/src/intent-kinds.ts`
 // W5-7 decision D10, the `medusa.*` egress kinds are EXCLUDED from
 // `KNOWN_INTENT_KINDS` — they live ONLY inline in this wrapper. The
-// same precedent applies here to `stripe.*`: these are flippable
-// internal-egress kinds, not user-facing intent classes, and are
-// governed by the inline policy in this file rather than by
-// `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE`. The substantive
+// same precedent applies here to `stripe.*`: these are internal-egress
+// kinds, not user-facing intent classes, and are governed by the
+// always-on kernel via the inline policy in this file. The substantive
 // adjudication of "should we charge / refund this customer" already
 // happens upstream in `@ibatexas/pack-payments`.
 //
