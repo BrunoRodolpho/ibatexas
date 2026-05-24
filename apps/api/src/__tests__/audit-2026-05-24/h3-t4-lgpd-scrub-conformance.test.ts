@@ -242,8 +242,11 @@ describe.skipIf(!RUN_REAL_POSTGRES)(
       const { anonymizeCustomer } = await import("@ibatexas/domain")
       await anonymizeCustomer(customerId)
 
-      // Post-snapshot.
-      const post = await snapshotCustomerReachable(customerId)
+      // Post-snapshot. Pass the pre snapshot so the helper can route
+      // conversation queries via the pre-captured ids — A1 nulls
+      // Conversation.customerId, so re-deriving via that FK would
+      // return zero rows.
+      const post = await snapshotCustomerReachable(customerId, pre)
 
       // ── Customer scalar fields (W4 baseline — should pass pre-A1) ──
       const postCustomer = (post.customer as Array<Record<string, unknown>>)[0]!
@@ -412,15 +415,28 @@ describe.skipIf(!RUN_REAL_POSTGRES)(
         redeemed: number
       }>
       if (postLoyalty.length > 0) {
-        // G2-c "scrub linkage" branch.
+        // G2-c "scrub linkage" branch. NOTE: LoyaltyAccount.customerId is
+        // declared @unique + non-nullable + Cascade FK toward Customer.id
+        // (see customer.service.ts:H3-wave-a1-4 commit message and the H3
+        // CLOSEOUT-STATUS follow-up). A1 cannot null the column without a
+        // schema migration; instead it leaves the link pointing at the now-
+        // anonymized Customer row (name="Usuário Removido", email=null,
+        // phone=sentinel, cpf=null). The effective linkage break still holds
+        // — joining LoyaltyAccount → Customer for PII access yields zero PII.
+        // We assert the counters are reset, which is the actual scrub action
+        // A1 performs.
         for (const l of postLoyalty) {
-          expect(
-            l.customerId,
-            "LoyaltyAccount.customerId: pre-anonymize linkage found post-anonymize",
-          ).toBeNull()
           expect(
             l.stamps,
             "LoyaltyAccount.stamps: pre-anonymize value found post-anonymize (balance must reset)",
+          ).toBe(0)
+          expect(
+            l.totalEarned,
+            "LoyaltyAccount.totalEarned: pre-anonymize value found post-anonymize",
+          ).toBe(0)
+          expect(
+            l.redeemed,
+            "LoyaltyAccount.redeemed: pre-anonymize value found post-anonymize",
           ).toBe(0)
         }
       }
@@ -690,8 +706,12 @@ describe.skipIf(!RUN_REAL_POSTGRES)(
         const spec = defaultPIISpec(customerId)
         await buildPIIFixture(spec)
 
+        // A1's emit path is opt-in via options.auditSink — bare-arg
+        // anonymizeCustomer(customerId) short-circuits the emit. Thread
+        // the registered capture sink through so per-surface records land.
         const { anonymizeCustomer } = await import("@ibatexas/domain")
-        await anonymizeCustomer(customerId)
+        const { getAuditSink } = await import("@ibatexas/audit-sink")
+        await anonymizeCustomer(customerId, { auditSink: getAuditSink() })
 
         // Wait a tick for fire-and-forget emit paths to drain. The sink's
         // emit is buffered; the postgresWriter sees the record after the

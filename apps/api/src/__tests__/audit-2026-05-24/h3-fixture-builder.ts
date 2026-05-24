@@ -463,11 +463,19 @@ export async function buildPIIFixture(spec: PIIFixtureSpec): Promise<BuiltFixtur
  */
 export async function snapshotCustomerReachable(
   customerId: string,
+  priorSnapshot?: Record<string, unknown[]>,
 ): Promise<Record<string, unknown[]>> {
-  // First fetch the projections so we can find OrderStatusHistory + OrderEventLog
-  // rows via orderId. OrderEventLog has NO Prisma relation back to
-  // OrderProjection (it's a raw `String` orderId column), so we route via
-  // the projections we just snapshotted.
+  // Post-anonymize, A1 nulls `Conversation.customerId` so re-deriving the
+  // conversation set via that FK returns 0 rows. The optional `priorSnapshot`
+  // lets callers thread the pre-anonymize conversation IDs through so the
+  // post-snapshot can still locate the rows that A1 mutated in place.
+  const priorConversationIds = priorSnapshot
+    ? ((priorSnapshot.conversations as Array<{ id: string }> | undefined) ?? [])
+        .map((c) => c.id)
+    : []
+
+  // OrderProjection.customerId is NOT scrubbed by A1 (only the scalar PII
+  // fields are nulled), so the same query works pre- and post-anonymize.
   const orderProjections = await prisma.orderProjection.findMany({
     where: { customerId },
   })
@@ -491,10 +499,20 @@ export async function snapshotCustomerReachable(
     prisma.customerPreferences.findMany({ where: { customerId } }),
     prisma.review.findMany({ where: { customerId } }),
     prisma.customerOrderItem.findMany({ where: { customerId } }),
-    prisma.conversation.findMany({ where: { customerId } }),
-    prisma.conversationMessage.findMany({
-      where: { conversation: { customerId } },
-    }),
+    priorConversationIds.length > 0
+      ? prisma.conversation.findMany({
+          where: {
+            OR: [{ customerId }, { id: { in: priorConversationIds } }],
+          },
+        })
+      : prisma.conversation.findMany({ where: { customerId } }),
+    priorConversationIds.length > 0
+      ? prisma.conversationMessage.findMany({
+          where: { conversationId: { in: priorConversationIds } },
+        })
+      : prisma.conversationMessage.findMany({
+          where: { conversation: { customerId } },
+        }),
     // OrderStatusHistory has no FK to Customer; we search by the projections
     // we just snapshotted PLUS the actorId for customer-actor rows.
     prisma.orderStatusHistory.findMany({
