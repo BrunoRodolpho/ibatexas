@@ -56,6 +56,10 @@ import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import type { FastifyBaseLogger } from "fastify";
 import { clearPendingDeletion, readPendingDeletion } from "../routes/me/anonymize-otp-gate.js";
+import {
+  acquireAnonymizeActiveLock,
+  releaseAnonymizeActiveLock,
+} from "../routes/me/anonymize-active-lock.js";
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 
 /**
@@ -76,11 +80,22 @@ interface DeferTimeoutEvent {
  *
  * Returns:
  *   - `{kind: "skipped", reason}` — signal mismatch or no pending receipt.
+ *   - `{kind: "refused", reason: "cancel_won_race"}` — audit-2026-05-24
+ *     P0-3: a concurrent cancel-deletion held the anonymize-active mutex
+ *     when the resolver tried to acquire it. The destructive TX is NOT
+ *     run; the customer's revocation is honored. A REFUSE audit record
+ *     is emitted with `business.cancel_won_race` basis.
  *   - `{kind: "anonymized"}` — ran the destructive operation.
  *   - `{kind: "error", err}` — anonymize threw; receipt NOT cleared.
  */
 export type GraceResolverOutcome =
   | { readonly kind: "skipped"; readonly reason: string }
+  | {
+      readonly kind: "refused";
+      readonly customerId: string;
+      readonly intentHash: string;
+      readonly reason: "cancel_won_race";
+    }
   | { readonly kind: "anonymized"; readonly customerId: string; readonly intentHash: string }
   | { readonly kind: "error"; readonly customerId: string; readonly err: Error };
 
@@ -108,103 +123,213 @@ export async function handleAnonymizeGraceTimeout(
     return { kind: "skipped", reason: "no_pending_receipt" };
   }
 
-  // 4. Run the destructive operation. This is module-level — it does
+  // 4. audit-2026-05-24 P0-3 — acquire the anonymize-active mutex BEFORE
+  //    touching Prisma. The cancel-deletion endpoint races against this
+  //    handler on the same `anonymize:active:{customerId}` key. Whoever
+  //    SETNX-acquires first wins the right to mutate; the loser must
+  //    short-circuit.
+  //
+  //    If the cancel hit first: the lock value will be `canceling:*`,
+  //    SETNX fails, we emit a REFUSE audit record (`cancel_won_race`),
+  //    and exit WITHOUT clearing the receipt — the cancel handler is
+  //    responsible for its own cleanup. Returning early before the
+  //    receipt check ran would be wrong, but the receipt check above
+  //    already passed; cancel may not have cleared the receipt yet
+  //    (its DEL happens AFTER it acquires the lock). That is safe — the
+  //    receipt is a "deletion is pending" signal, not a "next sweep must
+  //    retry" signal. The cancel handler will DEL it within its own
+  //    critical section.
+  const lockAttemptStartedAt = Date.now();
+  const lockAcquire = await acquireAnonymizeActiveLock(customerId, "resolving");
+  if (!lockAcquire.acquired) {
+    log?.info(
+      {
+        customerId,
+        intentHash: event.intentHash,
+        heldBy: lockAcquire.heldBy,
+      },
+      "[anonymize-grace-resolver] cancel won race — refusing without mutating",
+    );
+    // Emit a REFUSE audit record so the governance trail shows that the
+    // grace fired but was REFUSED by mutual-exclusion, not silently
+    // skipped.
+    try {
+      const refusalEnvelope = buildSystemEnvelope({
+        kind: "customer.anonymize" as const,
+        payload: {
+          customerId,
+          scope: "lgpd_art_18" as const,
+        },
+        sourceSubject: "intent.defer.timeout",
+        eventId: `${event.intentHash}:cancel_won_race`,
+      });
+      const record = buildAuditRecord({
+        envelope: refusalEnvelope,
+        decision: {
+          kind: "REFUSE",
+          refusal: {
+            kind: "BUSINESS_RULE",
+            code: "customer.anonymize.cancel_won_race",
+            // Internal-only — this REFUSE is system-emitted; no user
+            // is reading it. The pt-BR copy lives on the cancel-deletion
+            // surface (409 Conflict response) since that is what the
+            // real customer sees.
+            userFacing:
+              "Anonimização cancelada — solicitação concorrente do cliente foi honrada.",
+            detail: `heldBy=${lockAcquire.heldBy}`,
+          },
+          basis: [
+            {
+              category: "business",
+              code: BASIS_CODES.business.RULE_VIOLATED,
+              detail: {
+                rule: "cancel_won_race",
+                heldBy: lockAcquire.heldBy,
+                kind: "customer.anonymize",
+              },
+            },
+          ],
+        },
+        durationMs: Date.now() - lockAttemptStartedAt,
+        supersedes: {
+          predecessorIntentHash: event.intentHash,
+          predecessorAt: event.parkedAt,
+          reason: "defer_resumed",
+        },
+      });
+      void getAuditSink()
+        .emit(record)
+        .catch((err: unknown) => {
+          log?.warn(
+            { customerId, intentHash: event.intentHash, err: (err as Error).message },
+            "[anonymize-grace-resolver] cancel_won_race audit emit failed",
+          );
+        });
+    } catch (err) {
+      log?.warn(
+        { customerId, intentHash: event.intentHash, err: (err as Error).message },
+        "[anonymize-grace-resolver] cancel_won_race audit record build failed",
+      );
+    }
+    return {
+      kind: "refused",
+      customerId,
+      intentHash: event.intentHash,
+      reason: "cancel_won_race",
+    };
+  }
+
+  // 5. Run the destructive operation. This is module-level — it does
   //    NOT go through the kernel again (the kernel's verdict was DEFER
   //    at park time; the grace expiry IS the resume signal). The audit
   //    record carries `supersedes: [parked.intentHash]` for the log
   //    bridge.
+  //
+  //    All paths below MUST end up releasing the lock — wrap in
+  //    try/finally so an exception in audit emit or receipt-clear cannot
+  //    pin the lock for its full TTL.
   const startedAt = Date.now();
   try {
-    await anonymizeCustomer(customerId);
-    log?.info(
-      { customerId, intentHash: event.intentHash, parkedAt: receipt.parkedAt },
-      "[anonymize-grace-resolver] anonymize executed after 24h grace expired",
-    );
-  } catch (err) {
-    // Leave the receipt in place — next sweep retries.
-    log?.error(
-      { customerId, intentHash: event.intentHash, err: (err as Error).message },
-      "[anonymize-grace-resolver] anonymizeCustomer threw — receipt left for retry",
-    );
-    return { kind: "error", customerId, err: err as Error };
-  }
+    try {
+      await anonymizeCustomer(customerId);
+      log?.info(
+        { customerId, intentHash: event.intentHash, parkedAt: receipt.parkedAt },
+        "[anonymize-grace-resolver] anonymize executed after 24h grace expired",
+      );
+    } catch (err) {
+      // Leave the receipt in place — next sweep retries. Release the lock
+      // (finally block below) so cancel-side can acquire it. The next
+      // sweep will re-acquire fresh.
+      log?.error(
+        { customerId, intentHash: event.intentHash, err: (err as Error).message },
+        "[anonymize-grace-resolver] anonymizeCustomer threw — receipt left for retry",
+      );
+      return { kind: "error", customerId, err: err as Error };
+    }
 
-  // 5. P0-8 audit emit — destructive LGPD operation MUST be on the audit
-  //    trail. Fired AFTER the Prisma TX commits (so a failed TX produces
-  //    no audit record — the failure is logged in the catch above) and
-  //    BEFORE the receipt clear (so an audit-emit failure does not block
-  //    cleanup — audit is best-effort once the destructive action is
-  //    durable).
-  //
-  //    The system-actor envelope carries:
-  //      - `kind: "customer.anonymize"` — matches the originally parked
-  //        intent kind; the supersedes chain disambiguates "user
-  //        initiated DEFER" vs "system completed after grace".
-  //      - `actor.principal = "system"`, `taint = "SYSTEM"` — set by
-  //        `buildSystemEnvelope`.
-  //      - `payload = {customerId, scope}` — NO PII. customerId is a UUID
-  //        per CLAUDE.md rule; no name/email/phone/CPF.
-  //      - `decision = EXECUTE` with `business.RULE_SATISFIED` basis
-  //        carrying the LGPD anchor — the kernel was NOT re-run here (it
-  //        would just DEFER again); the grace expiry IS the authorization.
-  //      - `supersedes` points at the original park's intentHash so
-  //        replay can chain `DEFER → defer_resumed → EXECUTE`.
-  try {
-    const auditEnvelope = buildSystemEnvelope({
-      kind: "customer.anonymize" as const,
-      payload: {
-        customerId,
-        scope: "lgpd_art_18" as const,
-      },
-      sourceSubject: "intent.defer.timeout",
-      eventId: `${event.intentHash}:grace_expired`,
-    });
-    const record = buildAuditRecord({
-      envelope: auditEnvelope,
-      decision: {
-        kind: "EXECUTE",
-        basis: [
-          {
-            category: "business",
-            code: BASIS_CODES.business.RULE_SATISFIED,
-            detail: {
-              rule: "lgpd_art_18_grace_expired",
-              kind: "customer.anonymize",
-              graceSignal: CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
-            },
-          },
-        ],
-      },
-      durationMs: Date.now() - startedAt,
-      supersedes: {
-        predecessorIntentHash: event.intentHash,
-        predecessorAt: event.parkedAt,
-        reason: "defer_resumed",
-      },
-    });
-    void getAuditSink()
-      .emit(record)
-      .catch((err: unknown) => {
-        // Audit-emit is best-effort once anonymize committed. Log only —
-        // do NOT roll back the destructive op.
-        log?.warn(
-          { customerId, intentHash: event.intentHash, err: (err as Error).message },
-          "[anonymize-grace-resolver] audit emit failed (destructive op already committed)",
-        );
+    // 6. P0-8 audit emit — destructive LGPD operation MUST be on the audit
+    //    trail. Fired AFTER the Prisma TX commits (so a failed TX produces
+    //    no audit record — the failure is logged in the catch above) and
+    //    BEFORE the receipt clear (so an audit-emit failure does not block
+    //    cleanup — audit is best-effort once the destructive action is
+    //    durable).
+    //
+    //    The system-actor envelope carries:
+    //      - `kind: "customer.anonymize"` — matches the originally parked
+    //        intent kind; the supersedes chain disambiguates "user
+    //        initiated DEFER" vs "system completed after grace".
+    //      - `actor.principal = "system"`, `taint = "SYSTEM"` — set by
+    //        `buildSystemEnvelope`.
+    //      - `payload = {customerId, scope}` — NO PII. customerId is a UUID
+    //        per CLAUDE.md rule; no name/email/phone/CPF.
+    //      - `decision = EXECUTE` with `business.RULE_SATISFIED` basis
+    //        carrying the LGPD anchor — the kernel was NOT re-run here (it
+    //        would just DEFER again); the grace expiry IS the authorization.
+    //      - `supersedes` points at the original park's intentHash so
+    //        replay can chain `DEFER → defer_resumed → EXECUTE`.
+    try {
+      const auditEnvelope = buildSystemEnvelope({
+        kind: "customer.anonymize" as const,
+        payload: {
+          customerId,
+          scope: "lgpd_art_18" as const,
+        },
+        sourceSubject: "intent.defer.timeout",
+        eventId: `${event.intentHash}:grace_expired`,
       });
-  } catch (err) {
-    log?.warn(
-      { customerId, intentHash: event.intentHash, err: (err as Error).message },
-      "[anonymize-grace-resolver] audit record build failed (destructive op already committed)",
-    );
+      const record = buildAuditRecord({
+        envelope: auditEnvelope,
+        decision: {
+          kind: "EXECUTE",
+          basis: [
+            {
+              category: "business",
+              code: BASIS_CODES.business.RULE_SATISFIED,
+              detail: {
+                rule: "lgpd_art_18_grace_expired",
+                kind: "customer.anonymize",
+                graceSignal: CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
+              },
+            },
+          ],
+        },
+        durationMs: Date.now() - startedAt,
+        supersedes: {
+          predecessorIntentHash: event.intentHash,
+          predecessorAt: event.parkedAt,
+          reason: "defer_resumed",
+        },
+      });
+      void getAuditSink()
+        .emit(record)
+        .catch((err: unknown) => {
+          // Audit-emit is best-effort once anonymize committed. Log only —
+          // do NOT roll back the destructive op.
+          log?.warn(
+            { customerId, intentHash: event.intentHash, err: (err as Error).message },
+            "[anonymize-grace-resolver] audit emit failed (destructive op already committed)",
+          );
+        });
+    } catch (err) {
+      log?.warn(
+        { customerId, intentHash: event.intentHash, err: (err as Error).message },
+        "[anonymize-grace-resolver] audit record build failed (destructive op already committed)",
+      );
+    }
+
+    // 7. Clear the pending-deletion receipt — the destructive operation
+    //    completed. The 24h TTL would have GC'd it eventually anyway, but
+    //    explicit clear makes the timeline visible in Redis.
+    await clearPendingDeletion(customerId);
+
+    return { kind: "anonymized", customerId, intentHash: event.intentHash };
+  } finally {
+    // 8. Ownership-safe release. Uses the Lua conditional DEL so we cannot
+    //    accidentally release a fresh lock owned by a cancel handler that
+    //    began holding it after our TTL expired (defense-in-depth — should
+    //    not happen given the 60s TTL vs ~hundreds-of-ms TX latency).
+    await releaseAnonymizeActiveLock(customerId, lockAcquire.lockValue);
   }
-
-  // 6. Clear the pending-deletion receipt — the destructive operation
-  //    completed. The 24h TTL would have GC'd it eventually anyway, but
-  //    explicit clear makes the timeline visible in Redis.
-  await clearPendingDeletion(customerId);
-
-  return { kind: "anonymized", customerId, intentHash: event.intentHash };
 }
 
 /**

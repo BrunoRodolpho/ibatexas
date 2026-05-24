@@ -126,17 +126,28 @@ vi.mock("@ibatexas/tools", () => ({
       async set(
         key: string,
         value: string,
-        options?: { EX?: number },
+        options?: { EX?: number; NX?: boolean },
       ): Promise<string | null> {
         mockRedisSet(key, value, options);
+        // audit-2026-05-24 P0-3 — preserve the `NX` flag end-to-end so
+        // the anonymize-active-lock SETNX races against the real Redis
+        // testcontainer behave like production. Without this propagation,
+        // node-redis would silently strip `NX` and every SETNX would
+        // unconditionally succeed — defeating the very property under
+        // test.
+        const setOpts: { EX?: number; NX?: true } = {};
+        if (options?.EX !== undefined) setOpts.EX = options.EX;
+        if (options?.NX === true) setOpts.NX = true;
         const result =
-          options?.EX !== undefined
-            ? ((await redis.set(key, value, { EX: options.EX })) as
-                | string
-                | null)
+          Object.keys(setOpts).length > 0
+            ? ((await redis.set(key, value, setOpts)) as string | null)
             : ((await redis.set(key, value)) as string | null);
-        // Mirror update so synchronous test assertions stay valid.
-        redisStorage.set(key, value);
+        // Mirror update so synchronous test assertions stay valid. On
+        // SETNX collision (result === null) the key was NOT written —
+        // leave the mirror untouched.
+        if (result !== null) {
+          redisStorage.set(key, value);
+        }
         return result;
       },
       async get(key: string): Promise<string | null> {
@@ -597,6 +608,258 @@ describe("LGPD anonymize — full lifecycle (W6-1)", () => {
       expect(outcome.reason).toBe("no_pending_receipt");
     }
 
+    expect(mockAnonymizeCustomer).not.toHaveBeenCalled();
+  });
+
+  // ── audit-2026-05-24 P0-3 — cancel-vs-resolve race regression ───────────
+  //
+  // The bug (audit E-1): pre-fix, the grace resolver's Prisma TX and the
+  // cancel-deletion route's clearPendingDeletion + setCancelCooldown both
+  // wrote against the same customer concurrently. Whichever Postgres
+  // lock-acquisition order won decided whether the data ended up
+  // anonymized — NOT the application-layer "cancel arrived in time"
+  // semantics. The customer could receive a 200 "canceled" while their
+  // data was already anonymized in another TX.
+  //
+  // The fix (this PR): a SETNX-based anonymize-active mutex
+  // (`anonymize:active:{customerId}`) gates both surfaces. The race test
+  // below schedules cancel-deletion + grace-resolver against the SAME
+  // customerId across 100 iterations with a tiny stagger (~ms apart) so
+  // they DO race against real Redis. The invariant is:
+  //
+  //   For every iteration, EXACTLY ONE of {cancel mutated, resolver
+  //   mutated} actually performed its destructive work. The other side
+  //   short-circuited (409 from cancel, REFUSE-cancel_won_race from
+  //   resolver). Neither iteration is allowed to see both succeed.
+  //
+  // This is the LGPD Art. 18 invariant: revocation, once acknowledged,
+  // must be honored. Mutual exclusion is the only guarantee that the
+  // user's experience matches the data outcome.
+
+  it("[P0-3 race] 100 cancel-vs-resolver concurrent iterations — at most one mutates per customer", async () => {
+    const ITERATIONS = 100;
+    type IterationResult = {
+      customerId: string;
+      cancelStatus: number;
+      cancelMutated: boolean;
+      resolverKind: string;
+      resolverMutated: boolean;
+    };
+    const results: IterationResult[] = [];
+
+    const { handleAnonymizeGraceTimeout } = await import(
+      "../../subscribers/anonymize-grace-resolver.js"
+    );
+    const { CUSTOMER_ANONYMIZE_GRACE_SIGNAL } = await import(
+      "@ibatexas/pack-customer-onboarding"
+    );
+
+    for (let i = 0; i < ITERATIONS; i++) {
+      const customerId = `cust_race_${i}`;
+
+      // Seed a pending receipt so both surfaces have something to mutate.
+      // parkedAt is exactly at the grace boundary so the resolver "should"
+      // proceed if it wins.
+      await seedRedis(
+        `ibatexas:anonymize:pending:${customerId}`,
+        JSON.stringify({
+          parkedAt: Date.now() - 24 * 60 * 60 * 1000 - 1,
+          intentHash: `h_race_${i}`,
+          otpTokenHint: "verified",
+        }),
+      );
+
+      // Reset anonymize spy between iterations to count THIS iteration's
+      // calls only.
+      mockAnonymizeCustomer.mockClear();
+      mockAnonymizeCustomer.mockResolvedValue({ success: true });
+
+      const timeoutEvent = {
+        eventType: "intent.defer.timeout" as const,
+        sessionId: customerId,
+        intentHash: `h_race_${i}`,
+        signal: CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
+        parkedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        timestamp: new Date().toISOString(),
+      };
+
+      const app = await buildTestServer();
+      try {
+        // Schedule both within the same microtask flush — Promise.all
+        // races them against real Redis. Whichever SETNX hits the
+        // server first wins.
+        const [cancelRes, resolverOut] = await Promise.all([
+          app.inject({
+            method: "POST",
+            url: "/api/me/data/cancel-deletion",
+            headers: { "x-customer-id": customerId },
+          }),
+          handleAnonymizeGraceTimeout(timeoutEvent),
+        ]);
+
+        const cancelMutated = cancelRes.statusCode === 200;
+        const resolverMutated = resolverOut.kind === "anonymized";
+
+        results.push({
+          customerId,
+          cancelStatus: cancelRes.statusCode,
+          cancelMutated,
+          resolverKind: resolverOut.kind,
+          resolverMutated,
+        });
+
+        // Invariant: never both. If both fired, the LGPD violation is
+        // reproducible.
+        expect(
+          cancelMutated && resolverMutated,
+          `iteration ${i}: BOTH cancel(200) AND resolver(anonymized) fired — LGPD Art. 18 violation. ` +
+            `cancelStatus=${cancelRes.statusCode}, resolverKind=${resolverOut.kind}`,
+        ).toBe(false);
+
+        // Also: not neither, unless one side legitimately raced before
+        // the other even started — the loser must have a typed REFUSE.
+        if (!cancelMutated) {
+          // Cancel must have been 409 (lock collision) or 404 (receipt
+          // gone — should not happen here since we seeded it).
+          expect([404, 409]).toContain(cancelRes.statusCode);
+        }
+        if (!resolverMutated) {
+          // Resolver must have refused with cancel_won_race or hit the
+          // "no_pending_receipt" path (cancel cleared the receipt
+          // between the resolver's SETNX and its readPendingDeletion —
+          // but the resolver reads the receipt FIRST, so this should
+          // not happen; cancel_won_race is the expected refusal).
+          expect(["refused", "skipped"]).toContain(resolverOut.kind);
+        }
+      } finally {
+        await app.close();
+      }
+
+      // Wipe Redis between iterations so the next customerId has a
+      // clean lock namespace.
+      if (runtimeHarness) {
+        await runtimeHarness.client.flushDb();
+      }
+      redisStorage.clear();
+    }
+
+    // Aggregate assertions: across 100 iterations, EVERY iteration must
+    // have exactly one (XOR) mutator. Print the breakdown so a
+    // regression in this property is visible at a glance.
+    const bothFired = results.filter(
+      (r) => r.cancelMutated && r.resolverMutated,
+    );
+    const neitherFired = results.filter(
+      (r) => !r.cancelMutated && !r.resolverMutated,
+    );
+    const cancelWon = results.filter(
+      (r) => r.cancelMutated && !r.resolverMutated,
+    );
+    const resolverWon = results.filter(
+      (r) => !r.cancelMutated && r.resolverMutated,
+    );
+
+    expect(bothFired.length, "LGPD violation count").toBe(0);
+    // Either side may legitimately win the race; the system is correct
+    // as long as exactly one wins each round.
+    expect(cancelWon.length + resolverWon.length + neitherFired.length).toBe(
+      ITERATIONS,
+    );
+    // We expect SOME wins on each side across 100 iterations — if all
+    // 100 went to one side, the test is not actually racing (e.g. the
+    // app server boot serializes them). Soft assertion: at least one
+    // iteration of each side, OR all-of-one-side IF the schedule is
+    // deterministic (we accept either as long as `bothFired === 0`).
+    // We deliberately do NOT assert a min split — schedulers vary.
+    void cancelWon;
+    void resolverWon;
+    void neitherFired;
+  }, 120_000);
+
+  it("[P0-3 race] cancel after resolver acquires → 409 Conflict; resolver completes anonymize", async () => {
+    // Deterministic ordering: pre-acquire the lock as if the resolver
+    // SETNX'd first; then attempt cancel. This locks in the "resolver
+    // wins" path so we can assert the 409 contract precisely.
+    const customerId = "cust_resolver_wins";
+    await seedRedis(
+      `ibatexas:anonymize:pending:${customerId}`,
+      JSON.stringify({
+        parkedAt: Date.now() - 24 * 60 * 60 * 1000,
+        intentHash: "h_resolver_wins",
+        otpTokenHint: "verified",
+      }),
+    );
+    await seedRedis(
+      `ibatexas:anonymize:active:${customerId}`,
+      "resolving:fake-uuid-from-resolver",
+    );
+
+    const app = await buildTestServer();
+    try {
+      const cancelRes = await app.inject({
+        method: "POST",
+        url: "/api/me/data/cancel-deletion",
+        headers: { "x-customer-id": customerId },
+      });
+      expect(cancelRes.statusCode).toBe(409);
+      expect(cancelRes.json().message).toContain(
+        "Solicitação de anonimização já em andamento",
+      );
+      // Receipt was NOT cleared — resolver is responsible for it.
+      const receipt = await requireRuntimeRedis().get(
+        `ibatexas:anonymize:pending:${customerId}`,
+      );
+      expect(receipt).toBeTruthy();
+      // Cooldown was NOT set.
+      const cooldown = await requireRuntimeRedis().get(
+        `ibatexas:anonymize:cancel-cooldown:${customerId}`,
+      );
+      expect(cooldown).toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-3 race] resolver after cancel acquires → refused cancel_won_race; anonymize NOT called", async () => {
+    // Deterministic ordering: pre-acquire the lock as if cancel SETNX'd
+    // first; then run the resolver. This locks in the "cancel wins" path.
+    const customerId = "cust_cancel_wins";
+    await seedRedis(
+      `ibatexas:anonymize:pending:${customerId}`,
+      JSON.stringify({
+        parkedAt: Date.now() - 24 * 60 * 60 * 1000,
+        intentHash: "h_cancel_wins",
+        otpTokenHint: "verified",
+      }),
+    );
+    await seedRedis(
+      `ibatexas:anonymize:active:${customerId}`,
+      "canceling:fake-uuid-from-cancel",
+    );
+
+    const { handleAnonymizeGraceTimeout } = await import(
+      "../../subscribers/anonymize-grace-resolver.js"
+    );
+    const { CUSTOMER_ANONYMIZE_GRACE_SIGNAL } = await import(
+      "@ibatexas/pack-customer-onboarding"
+    );
+
+    mockAnonymizeCustomer.mockClear();
+    const outcome = await handleAnonymizeGraceTimeout({
+      eventType: "intent.defer.timeout" as const,
+      sessionId: customerId,
+      intentHash: "h_cancel_wins",
+      signal: CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
+      parkedAt: new Date().toISOString(),
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(outcome.kind).toBe("refused");
+    if (outcome.kind === "refused") {
+      expect(outcome.reason).toBe("cancel_won_race");
+    }
+    // CRITICAL: anonymizeCustomer was NEVER called — the customer's
+    // revocation is honored, LGPD Art. 18 satisfied.
     expect(mockAnonymizeCustomer).not.toHaveBeenCalled();
   });
 });

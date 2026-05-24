@@ -88,6 +88,10 @@ import {
   verifyAnonymizeOtp,
   clearPendingDeletion,
 } from "./me/anonymize-otp-gate.js";
+import {
+  acquireAnonymizeActiveLock,
+  releaseAnonymizeActiveLock,
+} from "./me/anonymize-active-lock.js";
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -964,6 +968,33 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
+      // (a.1) audit-2026-05-24 P0-3 — acquire the anonymize-active mutex
+      // BEFORE the kernel adjudication + receipt clear. The grace-resolver
+      // subscriber races against this handler on the same Redis key. If
+      // the resolver hit first (its lock value is `resolving:*`), SETNX
+      // fails here and we return 409 Conflict with a pt-BR copy. The
+      // customer sees the truth: their cancel arrived too late.
+      //
+      // The lock TTL (60s) auto-expires if THIS handler crashes mid-flight
+      // so the customer is not permanently uncancellable.
+      const cancelLock = await acquireAnonymizeActiveLock(customerId, "canceling");
+      if (!cancelLock.acquired) {
+        request.log.warn(
+          {
+            customerId,
+            parkedIntentHash: receipt.intentHash,
+            heldBy: cancelLock.heldBy,
+          },
+          "[me/anonymize] cancel-deletion refused — anonymize TX already in flight",
+        );
+        return reply.code(409).send({
+          statusCode: 409,
+          error: "Conflict",
+          message:
+            "Solicitação de anonimização já em andamento; não é possível cancelar.",
+        });
+      }
+
       // (b) Build the cancel envelope. Same actor / taint as the
       // anonymize envelope so the audit trail is consistent.
       //
@@ -1011,58 +1042,70 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       // "supersedes-parked" semantics: the cancel itself doesn't execute
       // anything; it just REFUSEs in a way that signals the parked
       // deletion is now void.
-      const out = await runCustomerIntent({
-        envelope,
-        state,
-        policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
-        executor: async () => {
-          // Defensive — pack policy is REFUSE; reaching here means a
-          // pack misconfiguration. Still safe to clear the receipt.
-          return { canceled: true };
-        },
-        ctx: {
-          customerId,
-          route: "me.anonymize.cancel",
-          log: request.log,
-        },
-        auditSink: getAuditSink(),
-        refusalMessages: portugueseRefusalMessages,
-      });
-
-      // (d) Clear the receipt + the parked envelope blob regardless of
-      // whether the kernel returned REFUSE or EXECUTE — the customer's
-      // intent (cancel) is honored at the route layer.
-      await clearPendingDeletion(customerId);
+      //
+      // Wrap the entire adjudicate + cleanup + cooldown section in
+      // try/finally so the anonymize-active mutex is always released
+      // (CLAUDE.md rule #10 — ownership-checked Lua release).
       try {
-        const redis = await getRedisClient();
-        await redis.del(rk(`defer:pending:${customerId}`));
-      } catch {
-        // Best-effort — sweeper will clean it up eventually.
+        const out = await runCustomerIntent({
+          envelope,
+          state,
+          policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            // Defensive — pack policy is REFUSE; reaching here means a
+            // pack misconfiguration. Still safe to clear the receipt.
+            return { canceled: true };
+          },
+          ctx: {
+            customerId,
+            route: "me.anonymize.cancel",
+            log: request.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        // (d) Clear the receipt + the parked envelope blob regardless of
+        // whether the kernel returned REFUSE or EXECUTE — the customer's
+        // intent (cancel) is honored at the route layer.
+        await clearPendingDeletion(customerId);
+        try {
+          const redis = await getRedisClient();
+          await redis.del(rk(`defer:pending:${customerId}`));
+        } catch {
+          // Best-effort — sweeper will clean it up eventually.
+        }
+
+        // P0-11: set the 30-min cancel-cooldown. This blocks the next
+        // initiate-deletion call so the harassment / Twilio-spend loop
+        // (attacker initiates → victim cancels → attacker re-initiates)
+        // is broken.
+        await setCancelCooldown(customerId);
+
+        // (e) Surface a 200 with the success message regardless of which
+        // branch the kernel took. The REFUSE-supersedes-parked pattern
+        // means a 403 here would confuse the user; the audit record
+        // already captures the kernel's verdict.
+        request.log.info(
+          {
+            customerId,
+            parkedIntentHash: receipt.intentHash,
+            cancelIntentHash: envelope.intentHash,
+            decision: out.decision.kind,
+          },
+          "[me/anonymize] deletion cancelled by customer",
+        );
+        return reply.code(200).send({
+          status: "canceled",
+          message: "Pedido de exclusão cancelado.",
+        });
+      } finally {
+        // (f) audit-2026-05-24 P0-3 — release the anonymize-active mutex.
+        // Ownership-safe Lua DEL so we cannot inadvertently release a
+        // freshly-acquired lock held by the resolver if our TX ran past
+        // the 60s TTL.
+        await releaseAnonymizeActiveLock(customerId, cancelLock.lockValue);
       }
-
-      // P0-11: set the 30-min cancel-cooldown. This blocks the next
-      // initiate-deletion call so the harassment / Twilio-spend loop
-      // (attacker initiates → victim cancels → attacker re-initiates)
-      // is broken.
-      await setCancelCooldown(customerId);
-
-      // (e) Surface a 200 with the success message regardless of which
-      // branch the kernel took. The REFUSE-supersedes-parked pattern
-      // means a 403 here would confuse the user; the audit record
-      // already captures the kernel's verdict.
-      request.log.info(
-        {
-          customerId,
-          parkedIntentHash: receipt.intentHash,
-          cancelIntentHash: envelope.intentHash,
-          decision: out.decision.kind,
-        },
-        "[me/anonymize] deletion cancelled by customer",
-      );
-      return reply.code(200).send({
-        status: "canceled",
-        message: "Pedido de exclusão cancelado.",
-      });
     },
   );
 }

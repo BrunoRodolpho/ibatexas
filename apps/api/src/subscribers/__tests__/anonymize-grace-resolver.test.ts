@@ -27,6 +27,45 @@ const mockRedisDel = vi.hoisted(() =>
     return had ? 1 : 0;
   }),
 );
+// audit-2026-05-24 P0-3 — NX-aware `set` and Lua-release-script-aware
+// `eval` for the anonymize-active-lock module. Mock-Redis must respect
+// SETNX collision semantics (return null when the key already exists
+// under NX) and emulate the ownership-checked Lua release.
+const mockRedisSet = vi.hoisted(() =>
+  vi.fn(
+    async (
+      key: string,
+      value: string,
+      opts?: { EX?: number; NX?: boolean },
+    ) => {
+      if (opts?.NX === true) {
+        if (redisStorage.has(key)) return null;
+        redisStorage.set(key, value);
+        return "OK";
+      }
+      redisStorage.set(key, value);
+      return "OK";
+    },
+  ),
+);
+const mockRedisEval = vi.hoisted(() =>
+  vi.fn(
+    async (
+      _script: string,
+      opts: { keys: string[]; arguments: string[] },
+    ) => {
+      // Anonymize-active-lock conditional DEL: single key, single arg.
+      const key = opts.keys[0]!;
+      const expectedValue = opts.arguments[0]!;
+      const stored = redisStorage.get(key);
+      if (stored === expectedValue) {
+        redisStorage.delete(key);
+        return 1;
+      }
+      return 0;
+    },
+  ),
+);
 const mockAuditSinkEmit = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("@ibatexas/domain", () => ({
@@ -35,9 +74,10 @@ vi.mock("@ibatexas/domain", () => ({
 
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: vi.fn(async () => ({
-    set: vi.fn(async () => "OK"),
+    set: mockRedisSet,
     get: mockRedisGet,
     del: mockRedisDel,
+    eval: mockRedisEval,
   })),
   rk: (k: string) => `ibatexas:${k}`,
 }));
@@ -233,5 +273,77 @@ describe("handleAnonymizeGraceTimeout", () => {
     expect(
       redisStorage.get("ibatexas:anonymize:pending:cust_audit_fail"),
     ).toBeUndefined();
+  });
+
+  // ── audit-2026-05-24 P0-3 — anonymize-active mutex ──────────────────────
+
+  it("[P0-3] refuses with cancel_won_race when the active-lock is already held by a canceler", async () => {
+    seedReceipt("cust_race");
+    // Pre-acquire the lock as if the cancel-deletion endpoint just
+    // grabbed it (its lock value is prefixed with `canceling:`).
+    redisStorage.set(
+      "ibatexas:anonymize:active:cust_race",
+      "canceling:abcd-uuid",
+    );
+
+    const event = makeEvent({ sessionId: "cust_race" });
+    const out = await handleAnonymizeGraceTimeout(event);
+
+    expect(out.kind).toBe("refused");
+    if (out.kind === "refused") {
+      expect(out.reason).toBe("cancel_won_race");
+      expect(out.customerId).toBe("cust_race");
+    }
+    // anonymizeCustomer was NEVER called — the cancel won.
+    expect(mockAnonymizeCustomer).not.toHaveBeenCalled();
+    // Receipt is left untouched (cancel handler will clear it inside its
+    // own critical section).
+    expect(redisStorage.get("ibatexas:anonymize:pending:cust_race")).toBeTruthy();
+    // Lock is left in place (we did NOT acquire; we cannot release).
+    expect(
+      redisStorage.get("ibatexas:anonymize:active:cust_race"),
+    ).toBe("canceling:abcd-uuid");
+    // A REFUSE audit record was emitted.
+    expect(mockAuditSinkEmit).toHaveBeenCalledTimes(1);
+    const record = (mockAuditSinkEmit.mock.calls as unknown as Array<
+      [unknown]
+    >)[0]![0] as {
+      decision: { kind: string; basis: Array<{ code: string; detail?: { rule?: string } }> };
+    };
+    expect(record.decision.kind).toBe("REFUSE");
+    expect(record.decision.basis[0]!.detail?.rule).toBe("cancel_won_race");
+  });
+
+  it("[P0-3] acquires + releases the active-lock around a successful anonymize", async () => {
+    seedReceipt("cust_lock_ok");
+    mockAnonymizeCustomer.mockResolvedValueOnce({ success: true });
+
+    const event = makeEvent({ sessionId: "cust_lock_ok" });
+    const out = await handleAnonymizeGraceTimeout(event);
+
+    expect(out.kind).toBe("anonymized");
+    // Lock was released (Lua DEL succeeded) — key absent post-run.
+    expect(
+      redisStorage.get("ibatexas:anonymize:active:cust_lock_ok"),
+    ).toBeUndefined();
+  });
+
+  it("[P0-3] releases the active-lock even when anonymize throws", async () => {
+    seedReceipt("cust_lock_throw");
+    mockAnonymizeCustomer.mockRejectedValueOnce(new Error("prisma down"));
+
+    const event = makeEvent({ sessionId: "cust_lock_throw" });
+    const out = await handleAnonymizeGraceTimeout(event);
+
+    expect(out.kind).toBe("error");
+    // Lock was released (try/finally) so the next sweep + a competing
+    // cancel can both acquire fresh.
+    expect(
+      redisStorage.get("ibatexas:anonymize:active:cust_lock_throw"),
+    ).toBeUndefined();
+    // Receipt is left in place for the next sweep.
+    expect(
+      redisStorage.get("ibatexas:anonymize:pending:cust_lock_throw"),
+    ).toBeTruthy();
   });
 });
