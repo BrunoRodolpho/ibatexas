@@ -133,6 +133,11 @@ const ALLOWED_MEDUSA_DIRECT = new Set<string>([
   // task 17 defines the wrapper itself.
   "packages/tools/src/medusa/adjudicated.ts",
   "packages/tools/src/medusa/client.ts",
+  // W9 — sibling STORE-scope wrapper. Itself dispatches to medusaStore
+  // after kernel adjudication; the file's bare medusaStore(..., POST/DELETE)
+  // invocations are the wrapper's own transport bridge and must not be
+  // flagged by the bypass scanner. Sibling rationale to ./adjudicated.ts.
+  "packages/tools/src/medusa/store-adjudicated.ts",
   // read-only fetches in tool helpers; the medusaAdjudicated() wrapper is
   // for POST/PUT/DELETE only. Each file below has been audited and only
   // contains GET calls (W3 P1-L verification, 2026-05-23).

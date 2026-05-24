@@ -151,6 +151,35 @@ export {
   type MedusaWrapperState,
 } from "./medusa/adjudicated.js"
 
+// ── Medusa STORE-scope HTTP wrapper (W9 cart-egress epic) ─────────────────────
+// Kernel-gated wrapper around customer-cart STORE-scope mutations. Sibling
+// of `medusaAdjudicated` (which handles ADMIN-scope egress). Closes the
+// 10 LLM-callable cart-tool bypasses inventoried in
+// `docs/adjudicate-migration/correctness-remediation/WAVE9-CART-EGRESS-BACKLOG.md`.
+// Apps and cart tools should import `medusaStoreAdjudicated` from
+// `@ibatexas/tools` for all `/store/*` mutations.
+export {
+  medusaStoreAdjudicated,
+  medusaStoreWrapperPolicyBundle,
+  MEDUSA_STORE_INTENT_KINDS,
+  MedusaStoreAdjudicateRefusedError,
+  MedusaStoreAdjudicateDeferredError,
+  MedusaStoreAdjudicateNeedsReviewError,
+  type MedusaStoreIntentKind,
+  type MedusaStoreWrapperState,
+  type MedusaStoreAdjudicatedMeta,
+  type MedusaStoreFetchLike,
+  type MedusaStoreCartCreatePayload,
+  type MedusaStoreCartLineItemAddPayload,
+  type MedusaStoreCartLineItemUpdatePayload,
+  type MedusaStoreCartLineItemRemovePayload,
+  type MedusaStoreCartEmailUpdatePayload,
+  type MedusaStoreCartPromotionAddPayload,
+  type MedusaStoreCartCompletePayload,
+  type MedusaStorePaymentCollectionCreatePayload,
+  type MedusaStorePaymentSessionCreatePayload,
+} from "./medusa/store-adjudicated.js"
+
 // ── Stripe HTTP wrapper (W7-P5) ───────────────────────────────────────────────
 // Promoted to the top-level barrel so apps/api routes (e.g. the Stripe
 // webhook handler) can route bare `stripe.*` mutations through the
