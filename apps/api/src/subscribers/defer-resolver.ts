@@ -410,8 +410,55 @@ export async function resolveDeferredSession(
       intentHash: parked.envelope.intentHash,
     }
   }
-  // verified === null means a legacy v0.1 blob without verification fields.
-  // We let the resume path log + proceed (warn mode); not a DLQ event.
+  // W8-Q2: fail-loud refuse on missing verification fields.
+  //
+  // The runtime's `verifyParkedEnvelopeHash` returns `{verified: null,
+  // reason: "missing_fields"}` when the parked blob lacks any of
+  // {version, nonce, taint, actorPrincipal} at the envelope's top level.
+  // The runtime treats this as a back-compat branch (warn + proceed under
+  // `verifyHash: "warn"`), which silently disables tamper-at-rest detection.
+  //
+  // The adopter-side contract is stricter: the NX-park wrapper now refuses
+  // to write such blobs (`ParkVerificationFieldsMissingError`), so any
+  // `missing_fields` blob we see at resume time is either pre-W8-Q2 legacy
+  // or evidence that the field-stripping path is being exercised in the
+  // wild. Either way we MUST refuse — proceeding would re-execute an
+  // envelope we cannot prove is the one originally adjudicated.
+  //
+  // We do NOT remove the runtime's back-compat branch (other adopters
+  // outside ibatexas may legitimately rely on warn mode); we just refuse
+  // at our boundary. Tampered + unverifiable both DLQ + return a refusal
+  // kind; the parked key is deleted so the same blob doesn't re-trip on
+  // every signal.
+  if (verification.verified === null) {
+    log?.warn(
+      {
+        sessionId,
+        signal,
+        intentHash: parked.envelope.intentHash,
+        // Help ops triage: which fields were missing?
+        hasVersion: typeof parked.envelope.version === "number",
+        hasNonce: typeof parked.envelope.nonce === "string",
+        hasTaint: typeof parked.envelope.taint === "string",
+        hasActorPrincipal: typeof parked.envelope.actorPrincipal === "string",
+      },
+      "[defer-resolver] park blob unverifiable (missing hash-verification fields) — DLQ + skip",
+    )
+    await pushToDlq(
+      "intent.defer.resume",
+      {
+        sessionId,
+        signal,
+        intentHash: parked.envelope.intentHash,
+        reason: "missing_fields",
+      },
+      new Error("park_blob_unverifiable"),
+      log,
+    )
+    // Delete the unverifiable key — leaving it would re-trip on every resume.
+    await redis.del(rawKey).catch(() => {})
+    return { kind: "park_blob_unverifiable" }
+  }
 
   const intentHash = parked.envelope.intentHash
   const resumingKey = rk(deferResumingKey(intentHash, signal))

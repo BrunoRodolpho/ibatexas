@@ -355,6 +355,61 @@ describe("defer-resolver subscriber", () => {
     setResumeIntentDispatcher(null)
   })
 
+  // ── 3b. Unverifiable envelope (missing fields): refuses + DLQ + no dispatch
+  //
+  // W8-Q2: pre-W8-Q2 the resolver would log a warn and silently proceed
+  // for legacy v0.1 blobs (verifyHash:"warn" semantics on the framework side).
+  // The new contract: ANY blob the framework reports as `verified: null,
+  // reason: "missing_fields"` is refused at the adopter boundary — the only
+  // way to land here in W8-Q2+ is a pre-fix legacy blob OR field-stripping
+  // by a malicious writer. Both warrant DLQ + delete + no dispatch.
+
+  it("refuses to resume a parked envelope missing hash-verification fields (W8-Q2 fail-loud)", async () => {
+    const sessionId = "sess_missing_fields"
+    // Build a "legacy" parked blob: envelope has intentHash, kind, actor,
+    // payload, signal, parkedAt — but NO version/nonce/taint/actorPrincipal
+    // at the top level. The framework verifier would have returned
+    // {verified: null, reason: "missing_fields"}.
+    const legacyParkedBlob = JSON.stringify({
+      envelope: {
+        intentHash: "deadbeef".padEnd(64, "0"),
+        kind: "order.confirm",
+        actor: { sessionId },
+        payload: { orderId: "order_42" },
+        // NO version, nonce, taint, actorPrincipal at top level.
+      },
+      signal: "payment.confirmed",
+      parkedAt: "2025-01-01T00:00:00.000Z",
+    })
+    store.set(`test:defer:pending:${sessionId}`, {
+      value: legacyParkedBlob,
+      ttl: 800,
+    })
+
+    const dispatcher = vi.fn(async () => undefined)
+    const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
+      await import("../defer-resolver.js")
+    setResumeIntentDispatcher(dispatcher)
+
+    const callback = await getRegisteredCallback(
+      startDeferResolverSubscriber,
+      makeLogger(),
+    )
+    await callback(paymentConfirmedEvent())
+
+    // adjudicate() must NOT be called — fail-loud refuses before dispatch.
+    expect(mockAdjudicate).not.toHaveBeenCalled()
+    // Dispatcher must NOT be called.
+    expect(dispatcher).not.toHaveBeenCalled()
+    // Parked key was deleted to prevent re-tripping on every sweep.
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeUndefined()
+    // DLQ side: we wrote to a dlq:* list.
+    const dlqKeys = [...store.keys()].filter((k) => k.includes("dlq:"))
+    expect(dlqKeys.length).toBeGreaterThanOrEqual(1)
+
+    setResumeIntentDispatcher(null)
+  })
+
   // ── 4. Cycle cap: 4th resume is refused ──────────────────────────────────
 
   it("respects the runtime's resume cycle cap (DEFAULT_MAX_RESUME_CYCLES=3)", async () => {
