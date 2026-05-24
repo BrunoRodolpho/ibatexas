@@ -47,6 +47,7 @@ import {
   type ParkedEnvelope,
 } from "@adjudicate/runtime"
 import {
+  BASIS_CODES,
   buildAuditRecord,
   type Decision,
   type IntentEnvelope,
@@ -59,6 +60,7 @@ import {
   type OrderState,
 } from "@ibatexas/llm-provider"
 import type { FastifyBaseLogger } from "fastify"
+import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js"
 import { pushToDlq } from "./dlq.js"
 
 // Wire-level "this PIX has settled" status set, in IbateXas's Stripe
@@ -226,6 +228,18 @@ export type ResolveResult =
   // surfaces here so the subscriber can DLQ (and ops can detect dropped
   // PIX confirmations).
   | { readonly kind: "transient_error"; readonly reason: string }
+  // audit-2026-05-24 E2 (Fix-b): the resolver SETNX-acquired the
+  // `defer:resuming:` mutex BUT the parkKey is already gone — the
+  // sweeper raced ahead between the resolver's parkKey GET and the
+  // SETNX, then published `intent.defer.timeout`, DEL'd the parkKey,
+  // and DEL'd the mutex (releasing it for us to acquire). Dispatching
+  // here would double-execute. We release the mutex, emit a REFUSE
+  // audit record with `rule: "parkKey_missing_after_sweeper"` for
+  // forensic clarity, and exit cleanly.
+  | {
+      readonly kind: "park_missing_after_lock"
+      readonly intentHash: string
+    }
   | {
       readonly kind: "re_adjudicated"
       readonly intentHash: string
@@ -528,6 +542,98 @@ export async function resolveDeferredSession(
     )
     return { kind: "duplicate_suppressed", intentHash }
   }
+
+  // audit-2026-05-24 E2 (Fix-b) — post-SETNX parkKey re-check.
+  //
+  // Race window the P0-2 mutex DOES NOT close: the sweeper SETNX-acquires
+  // the same `defer:resuming:` key, publishes `intent.defer.timeout`, DELs
+  // parkKey, then DELs the mutex. If the resolver had already read the
+  // in-memory park blob (line ~354) but had not yet reached the SETNX
+  // above, it can now SETNX-acquire after the sweeper releases — and would
+  // dispatch the cached in-memory blob, double-executing the destructive
+  // op. Re-check parkKey existence under our mutex: if it's gone, the
+  // sweeper already won; release and exit. The parkKey is the ground-truth
+  // ownership token; once DEL'd by the sweeper, the resolver must NOT
+  // dispatch its stale in-memory blob.
+  const parkRecheck = await robustRedisGet(redis, rawKey, log)
+  if (parkRecheck.kind === "missing") {
+    log?.info(
+      { sessionId, signal, intentHash },
+      "[defer-resolver] parkKey missing after SETNX — sweeper won race, releasing and exiting (E2 Fix-b)",
+    )
+    try {
+      const refusalEnvelope = buildSystemEnvelope({
+        kind: parked.envelope.kind,
+        payload: parked.envelope.payload,
+        sourceSubject: "payment.status_changed",
+        eventId: `${intentHash}:parkKey_missing_after_sweeper`,
+      })
+      const record = buildAuditRecord({
+        envelope: refusalEnvelope,
+        decision: {
+          kind: "REFUSE",
+          refusal: {
+            kind: "BUSINESS_RULE",
+            code: "defer.resume.skipped",
+            userFacing:
+              "Resumo do defer cancelado — confirmação de pagamento já foi processada pelo sweeper.",
+            detail: "parkKey_missing_after_sweeper",
+          },
+          basis: [
+            {
+              category: "business",
+              code: BASIS_CODES.business.RULE_VIOLATED,
+              detail: {
+                rule: "parkKey_missing_after_sweeper",
+                kind: parked.envelope.kind,
+                signal,
+              },
+            },
+          ],
+        },
+        durationMs: 0,
+        supersedes: {
+          predecessorIntentHash: intentHash,
+          predecessorAt: parked.parkedAt,
+          reason: "defer_resumed",
+        },
+      })
+      void getAuditSink()
+        .emit(record)
+        .catch((err: unknown) => {
+          log?.warn(
+            { sessionId, intentHash, err: (err as Error).message },
+            "[defer-resolver] defer.resume.skipped audit emit failed",
+          )
+        })
+    } catch (err) {
+      log?.warn(
+        { sessionId, intentHash, err: (err as Error).message },
+        "[defer-resolver] defer.resume.skipped audit record build failed",
+      )
+    }
+    await redis.del(resumingKey).catch(() => {})
+    return { kind: "park_missing_after_lock", intentHash }
+  }
+  if (parkRecheck.kind === "error") {
+    log?.warn(
+      {
+        sessionId,
+        signal,
+        intentHash,
+        err: (parkRecheck.err as Error)?.message,
+      },
+      "[defer-resolver] parkKey re-check failed — releasing resuming slot and returning transient_error",
+    )
+    await redis.del(resumingKey).catch(() => {})
+    return {
+      kind: "transient_error",
+      reason: `redis_get_park_recheck_failed: ${
+        (parkRecheck.err as Error)?.message ?? "unknown"
+      }`,
+    }
+  }
+  // parkRecheck.kind === "value" — parkKey still present, proceed.
 
   // P0-8 — Two-phase commit, step 3: bump the per-intentHash cycle counter
   // BEFORE dispatch so a runaway DEFER → resume → DEFER chain refuses past
@@ -880,6 +986,14 @@ export async function startDeferResolverSubscriber(
           log?.error(
             { sessionId, paymentId, orderId, reason: result.reason },
             "[defer-resolver] transient Redis error — PIX confirmation queued in DLQ",
+          )
+        } else if (result.kind === "park_missing_after_lock") {
+          // audit-2026-05-24 E2 (Fix-b) — sweeper won the race; the resolver
+          // stepped down cleanly. The skip audit was already emitted inside
+          // resolveDeferredSession.
+          log?.info(
+            { sessionId, paymentId, orderId, intentHash: result.intentHash },
+            "[defer-resolver] sweeper won race — resume skipped (E2 Fix-b)",
           )
         }
       } catch (err) {

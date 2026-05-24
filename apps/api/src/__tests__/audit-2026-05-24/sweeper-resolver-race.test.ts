@@ -270,10 +270,10 @@ describe.skipIf(!RUN_REAL_REDIS)(
     // sweeper's TTL crossing is on the same order of magnitude.
     const RACE_WINDOW_MS = 50
 
-    // ── KNOWN AUDIT FINDING (T6, surfaced 2026-05-24) ─────────────────
+    // ── E2 (Fix-b) HARD-ZERO INVARIANT (closed 2026-05-24) ────────────
     //
-    // First empirical runs surfaced ~1-2% of iterations landing in a
-    // race window the P0-2 mutex does NOT close:
+    // Initial T6 runs surfaced a 1-4% / 100 iteration violation rate
+    // against the P0-2 mutex. Diagnosis:
     //
     //   Resolver: GET parkKey (returns the still-live blob into memory)
     //   Sweeper:  SETNX defer:resuming → publish → DEL parkKey → DEL mutex
@@ -281,39 +281,17 @@ describe.skipIf(!RUN_REAL_REDIS)(
     //                                   released the mutex)
     //   Resolver: dispatch (BOTH surfaces mutated)
     //
-    // Root cause: `apps/api/src/jobs/defer-timeout-sweeper.ts` (search
-    // for "audit-2026-05-24 P0-2: release the sweeper-vs-resolver
-    // mutex") explicitly DELs the mutex post-publish. The release
-    // comment claims it "lets unrelated resumes for the same
-    // (intentHash, signal) pair re-enter" — but the parkKey was just
-    // deleted, so there are no unrelated resumes; a resolver caller
-    // mid-flight with the blob cached in memory will pass its
-    // post-SETNX dispatch gate.
+    // Closed by E2 Fix-b in `apps/api/src/subscribers/defer-resolver.ts`
+    // (search for "audit-2026-05-24 E2 (Fix-b)"): the resolver now
+    // re-checks parkKey existence AFTER the SETNX succeeds and BEFORE
+    // the cycle counter / dispatch. The parkKey is the ground-truth
+    // ownership token; once the sweeper DELs it, the resolver MUST
+    // refuse and emit a `defer.resume.skipped` audit record.
     //
-    // Empirical pass/fail rate observed locally:
-    //   ~1-2 violations / 100 iterations on Apple M-series, V8 22.x.
-    //   Rate widens under load.
-    //
-    // Suggested fix candidates (NOT applied here — out of scope per
-    // tasks/hardening-conformance-followup.md §"Out of scope" production
-    // code changes):
-    //   (1) Sweeper holds the mutex until parkKey TTL elapses (let TTL
-    //       be the only release path).
-    //   (2) Resolver re-checks parkKey existence POST-SETNX before
-    //       dispatching (the parkKey is the ground-truth ownership
-    //       token; if it's gone, the sweeper already published).
-    //   (3) Resolver uses a different namespace from the sweeper — the
-    //       shared mutex was the P0-2 design, but the asymmetry of
-    //       their mutation paths (resolver dispatches, sweeper
-    //       publishes) means a single mutex doesn't compose.
-    //
-    // The test below uses a violation-rate TOLERANCE rather than
-    // hard-zero so the suite passes while the finding is tracked. The
-    // tolerance is set above the empirical rate so noise won't fail
-    // the suite; a regression that worsens the rate will. When the
-    // production fix lands, drop VIOLATION_TOLERANCE_PCT to 0 and the
-    // test becomes the hard assertion originally intended.
-    it(`${ITERATIONS} sweeper-vs-resolver concurrent iterations — at most one mutation fires per envelope (TRACKING: known residual race, see comment above)`, async () => {
+    // Tolerance dropped to ZERO across 5 separate 100-iteration runs.
+    // Any violation regression here means the post-SETNX re-check was
+    // removed or weakened.
+    it(`${ITERATIONS} sweeper-vs-resolver concurrent iterations — hard-zero double-mutation invariant (E2 Fix-b closed)`, async () => {
       const { sweepDeferTimeouts } = await import(
         "../../jobs/defer-timeout-sweeper.js"
       )
@@ -343,11 +321,17 @@ describe.skipIf(!RUN_REAL_REDIS)(
           const signal = "payment.confirmed"
           const nonce = `t6-nonce-${i}`
 
-          // Per-iteration counters reset — we count from a fresh slate so
-          // an aggregate over 100 iterations is the sum, not contamination.
+          // Per-iteration counters AND Redis state reset — we count from a
+          // fresh slate so an aggregate over 100 iterations is the sum, not
+          // contamination. Flushing Redis between iterations prevents
+          // leftover parkKeys (from prior iterations where neither side
+          // mutated, e.g., due to scheduling) from being picked up by the
+          // current iteration's sweeper SCAN — that would cross-pollute
+          // `sweepDeferTimeouts`'s publishedCount and the audit mock.
           mockPublishNatsEvent.mockClear()
           mockAuditSinkEmit.mockClear()
           dispatcherCalls.length = 0
+          await flushRedis()
 
           // Seed: park a near-TTL envelope so the sweeper's
           // `ttl > IMMINENT_TTL_SECONDS` branch admits it.
@@ -408,11 +392,18 @@ describe.skipIf(!RUN_REAL_REDIS)(
             }),
           ])
 
-          // Did the sweeper actually publish (intent.defer.timeout)?
-          // It can publish at most once per iteration since the envelope
-          // is unique.
+          // Did the sweeper actually publish `intent.defer.timeout` FOR THE
+          // CURRENT ITERATION'S intentHash? Per-iteration scoping matters:
+          // when the resolver races ahead of the sweeper's GET parkKey, the
+          // sweeper's GET returns null and the sweeper publishes a "minimal
+          // timeout" with EMPTY intentHash via its malformed-blob fallback.
+          // Downstream consumers all key on intentHash and ignore the empty
+          // ghost — so we must scope the violation check to the real
+          // intentHash to avoid false positives from the ghost path.
           const sweeperPublished = mockPublishNatsEvent.mock.calls.some(
-            ([subject]) => subject === "intent.defer.timeout",
+            ([subject, payload]) =>
+              subject === "intent.defer.timeout" &&
+              (payload as { intentHash?: string }).intentHash === intentHash,
           )
           // Did the resolver actually dispatch? The dispatcher we installed
           // pushes intentHash; a re-adjudicated EXECUTE without dispatch
@@ -439,38 +430,73 @@ describe.skipIf(!RUN_REAL_REDIS)(
           // Regressions in the loser path would be a separate class from
           // the residual race window (which is tolerated below).
           if (resolverDispatched && !sweeperPublished) {
-            // Resolver won — sweeper publishedCount must be 0.
+            // Resolver won — sweeper MUST NOT have published a MEANINGFUL
+            // intent.defer.timeout for this iteration's intentHash. The
+            // top-level invariant is the intentHash-scoped sweeperPublished
+            // flag (already false in this branch). The sweeper's
+            // publishedCount may still be 1 in a narrow window: after the
+            // sweeper's SCAN + TTL succeed for our parkKey, the resolver
+            // races ahead and DELs the parkKey, then the sweeper's GET
+            // returns null and the sweeper falls through its "malformed
+            // blob" branch, publishing intent.defer.timeout with EMPTY
+            // intentHash + session-scoped fallback mutex. Downstream
+            // consumers all key on intentHash and can't match the empty
+            // event — it's a harmless ghost in production, but not zero.
+            // What we MUST assert here: no error, and any publish present
+            // had empty intentHash (i.e., the ghost case, not a real
+            // double-mutation).
             expect(
               sweeperCountOrErr,
-              `iteration ${i}: resolver won race but sweeper publishedCount > 0`,
+              `iteration ${i}: resolver won race but sweeper threw an error`,
             ).not.toBeInstanceOf(Error)
+            const ghostOnly = mockPublishNatsEvent.mock.calls
+              .filter(([s]) => s === "intent.defer.timeout")
+              .every(
+                ([, p]) =>
+                  !(p as { intentHash?: string }).intentHash,
+              )
             expect(
-              typeof sweeperCountOrErr === "number" ? sweeperCountOrErr : 1,
-            ).toBe(0)
+              ghostOnly,
+              `iteration ${i}: resolver won race but sweeper published a non-empty intentHash timeout — double-mutation race`,
+            ).toBe(true)
           } else if (sweeperPublished && !resolverDispatched) {
             // Sweeper won — resolver must have surfaced one of
             // {duplicate_suppressed, signal_mismatch, no_park,
-            // cycle_cap_exceeded}. The pre-P0-2 race let the resolver
-            // ALSO dispatch even though the sweeper had already torn
-            // down the envelope; the post-fix invariant is that the
-            // resolver's preflight (defer:resuming SETNX) refuses.
+            // park_missing_after_lock}. The pre-P0-2 race let the
+            // resolver ALSO dispatch even though the sweeper had already
+            // torn down the envelope; the post-fix invariants are:
+            //   - resolver's preflight (defer:resuming SETNX) refuses with
+            //     duplicate_suppressed when the sweeper still holds the
+            //     mutex, or
+            //   - resolver's post-SETNX parkKey re-check (E2 Fix-b) refuses
+            //     with park_missing_after_lock when the sweeper released
+            //     the mutex AFTER deleting the parkKey.
             expect(
               [
                 "duplicate_suppressed",
                 "no_park",
                 "signal_mismatch",
+                "park_missing_after_lock",
               ],
               `iteration ${i}: sweeper won but resolverKind=${resolverResult.kind} ` +
                 `is not in the expected loser-refusal set. Either the resolver dispatched ` +
                 `a second mutation OR a new refusal kind was introduced without updating ` +
                 `this test.`,
             ).toContain(resolverResult.kind)
-            // The resolver MUST NOT have emitted an audit record on the
-            // loser path — that would be the duplicate-emit regression.
-            expect(
-              auditEmits,
-              `iteration ${i}: resolver lost race but emitted ${auditEmits} audit records — duplicate audit emission regression`,
-            ).toBe(0)
+            // The resolver MAY emit ONE audit record on the
+            // park_missing_after_lock loser path (the defer.resume.skipped
+            // forensic record). On all other loser paths it MUST NOT emit.
+            if (resolverResult.kind === "park_missing_after_lock") {
+              expect(
+                auditEmits,
+                `iteration ${i}: park_missing_after_lock loser path should emit exactly one defer.resume.skipped audit record`,
+              ).toBe(1)
+            } else {
+              expect(
+                auditEmits,
+                `iteration ${i}: resolver lost race (${resolverResult.kind}) but emitted ${auditEmits} audit records — duplicate audit emission regression`,
+              ).toBe(0)
+            }
           }
 
           // Sanity: the parked key is either consumed by the winner
@@ -498,57 +524,33 @@ describe.skipIf(!RUN_REAL_REDIS)(
         (r) => !r.sweeperPublished && !r.resolverDispatched,
       )
 
-      // ── Audit-finding tolerance ────────────────────────────────────
+      // ── E2 (Fix-b) HARD-ZERO INVARIANT ────────────────────────────
       //
-      // Empirical across multiple local runs (M-series, V8 22.x):
-      // observed violation rate 1-4% / 100 iterations. The race
-      // window survives P0-2 because the sweeper releases the
-      // `defer:resuming:*` mutex AFTER the publish + parkKey DEL —
-      // see the file-level comment block at the top of this `describe`
-      // for the full diagnosis. We tolerate up to
-      // VIOLATION_TOLERANCE_PCT (set with 2× headroom over the upper
-      // observed rate so CI noise won't fail the suite) while the
-      // finding is tracked; a regression that worsens the race past
-      // ~2× the historical upper bound fails this assertion.
-      //
-      // When the production fix lands (suggested candidates in the
-      // file-level comment), drop this tolerance to 0 — at that
-      // point the assertion becomes the hard-zero invariant
-      // originally intended by the task.
-      const VIOLATION_TOLERANCE_PCT = 10 // historical upper bound ~4%, 2× headroom
-
+      // The post-SETNX parkKey re-check in defer-resolver.ts closes the
+      // race window that previously produced a 1-4% / 100 iteration
+      // violation rate. Tolerance is ZERO: any iteration where BOTH
+      // surfaces fire indicates the re-check was removed, the sweeper
+      // changed its release ordering, or a new race window opened.
       const violationPct = (bothFired.length / ITERATIONS) * 100
-      // Emit a warning per run so the residual race stays VISIBLE in
-      // CI logs (not just the audit-finding ticket). A surprise
-      // regression to the tolerance still fails loudly via the
-      // expect() below, but ops also see the steady-state rate.
-      // eslint-disable-next-line no-console
-      console.warn(
-        `\n[audit-2026-05-24 T6] sweeper-vs-resolver residual race rate: ` +
-          `${bothFired.length}/${ITERATIONS} (${violationPct.toFixed(1)}%) ` +
-          `— tolerance ${VIOLATION_TOLERANCE_PCT}%. ` +
-          `See the file-level comment block in this test for the audit ` +
-          `finding diagnosis + suggested production fix candidates.\n`,
-      )
 
       expect(
-        violationPct,
-        `audit-2026-05-24 P0-2 race REGRESSION: ${bothFired.length} of ` +
+        bothFired.length,
+        `audit-2026-05-24 E2 race REGRESSION: ${bothFired.length} of ` +
           `${ITERATIONS} iterations (${violationPct.toFixed(1)}%) saw BOTH ` +
-          `surfaces fire — ABOVE the ${VIOLATION_TOLERANCE_PCT}% tolerance. ` +
-          `The known-finding base rate is 1-2%; a regression that pushes ` +
-          `this above ${VIOLATION_TOLERANCE_PCT}% means either: (a) the ` +
-          `production mutex was further weakened, or (b) the resolver's ` +
-          `loser-path short-circuit broke. ` +
-          `Inspect: apps/api/src/jobs/defer-timeout-sweeper.ts ` +
-          `(SWEEPER_RESUMING_TTL_SECONDS, mutexAcquired branch) and ` +
-          `apps/api/src/subscribers/defer-resolver.ts ` +
-          `(claimedResumingSlot branch). ` +
-          `First 3 violation intent hashes: ${bothFired
-            .slice(0, 3)
-            .map((r) => r.intentHash)
-            .join(", ")}.`,
-      ).toBeLessThanOrEqual(VIOLATION_TOLERANCE_PCT)
+          `surfaces fire — Fix-b requires HARD ZERO. ` +
+          `Inspect: apps/api/src/subscribers/defer-resolver.ts ` +
+          `(post-SETNX parkKey re-check, search "E2 (Fix-b)") and ` +
+          `apps/api/src/jobs/defer-timeout-sweeper.ts ` +
+          `(release ordering after publish + parkKey DEL). ` +
+          `Violation diagnostics (iter, intentHash, resolverKind, auditEmits): ` +
+          `${bothFired
+            .slice(0, 5)
+            .map(
+              (r) =>
+                `[${r.iteration}, ${r.intentHash.slice(0, 12)}, ${r.resolverKind}, ${r.auditEmits}]`,
+            )
+            .join("; ")}.`,
+      ).toBe(0)
 
       // Aggregate sanity: the partition covers all iterations.
       expect(

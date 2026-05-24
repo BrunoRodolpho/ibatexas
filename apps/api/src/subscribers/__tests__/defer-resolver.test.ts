@@ -779,6 +779,142 @@ describe("defer-resolver subscriber", () => {
     setResumeIntentDispatcher(null)
   })
 
+  // ── E2 (Fix-b) — post-SETNX parkKey re-check ────────────────────────────
+  //
+  // Race window: resolver GETs parkKey (caching the blob in-memory), then
+  // the sweeper races ahead — SETNX-acquires the mutex, publishes
+  // intent.defer.timeout, DELs parkKey, DELs the mutex. The resolver now
+  // SETNX-acquires the just-released mutex. Without the post-SETNX
+  // re-check, the resolver would dispatch the cached in-memory blob, double-
+  // executing the destructive op. With Fix-b, the resolver re-checks parkKey
+  // under its mutex and exits cleanly when the key is gone.
+  it("[E2-fix-b] post-SETNX parkKey re-check: when parkKey vanishes after the resolver's first GET, resolver releases mutex and emits defer.resume.skipped", async () => {
+    const sessionId = "sess_e2_fix_b"
+    const { envelope, parkedBlob, parkedAt } = buildVerifiableParkedBlob({
+      sessionId,
+    })
+    store.set(`test:defer:pending:${sessionId}`, {
+      value: parkedBlob,
+      ttl: 800,
+    })
+
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
+
+    // Stub redis.get to simulate the race: the FIRST call for the parkKey
+    // returns the blob (resolver caches it in-memory), and ALL subsequent
+    // calls for the parkKey return null (sweeper has DEL'd it). All other
+    // keys (resumed ledger, etc.) pass through to the underlying store.
+    const originalGet = redisStub.get.bind(redisStub)
+    let parkKeyReads = 0
+    const parkKey = `test:defer:pending:${sessionId}`
+    redisStub.get = vi.fn(async (key: string) => {
+      if (key === parkKey) {
+        parkKeyReads++
+        if (parkKeyReads === 1) {
+          return originalGet(key)
+        }
+        // Simulate the sweeper having DEL'd the parkKey between the
+        // resolver's GET (read #1) and the post-SETNX re-check (read #2+).
+        return null
+      }
+      return originalGet(key)
+    }) as typeof redisStub.get
+
+    const dispatcher = vi.fn(async () => undefined)
+    const { setResumeIntentDispatcher, resolveDeferredSession } = await import(
+      "../defer-resolver.js"
+    )
+    setResumeIntentDispatcher(dispatcher)
+
+    try {
+      const result = await resolveDeferredSession({
+        sessionId,
+        signal: "payment.confirmed",
+        event: paymentConfirmedEvent(),
+        log: makeLogger(),
+      })
+
+      // (a) The resolver returned park_missing_after_lock — sweeper won.
+      expect(result.kind).toBe("park_missing_after_lock")
+      if (result.kind === "park_missing_after_lock") {
+        expect(result.intentHash).toBe(envelope.intentHash)
+      }
+      // (a, cont.) NO mutation dispatched.
+      expect(dispatcher).not.toHaveBeenCalled()
+      // adjudicate() must not have been called either — we short-circuited
+      // before re-adjudication.
+      expect(mockAdjudicate).not.toHaveBeenCalled()
+      // (b) defer.resume.skipped audit emitted with correct supersedes chain.
+      expect(mockGetAuditSinkEmit).toHaveBeenCalledOnce()
+      const auditRecord = (
+        mockGetAuditSinkEmit.mock.calls as unknown as Array<[unknown]>
+      )[0]![0] as {
+        envelope: {
+          actor: { principal: string }
+          taint: string
+        }
+        decision: {
+          kind: string
+          refusal?: { kind: string; code: string; detail?: string }
+        }
+        decision_basis: ReadonlyArray<{
+          category: string
+          code: string
+          detail?: Record<string, unknown>
+        }>
+        supersedes?: {
+          predecessorIntentHash: string
+          predecessorAt: string
+          reason: string
+        }
+      }
+      expect(auditRecord.decision.kind).toBe("REFUSE")
+      expect(auditRecord.decision.refusal!.kind).toBe("BUSINESS_RULE")
+      expect(auditRecord.decision.refusal!.code).toBe("defer.resume.skipped")
+      expect(auditRecord.decision.refusal!.detail).toBe(
+        "parkKey_missing_after_sweeper",
+      )
+      // System-actor envelope shape.
+      expect(auditRecord.envelope.actor.principal).toBe("system")
+      expect(auditRecord.envelope.taint).toBe("SYSTEM")
+      // Basis carries the rule name for forensic clarity.
+      const businessBasis = auditRecord.decision_basis.find(
+        (b) => b.category === "business",
+      )
+      expect(businessBasis).toBeTruthy()
+      expect(businessBasis!.code).toBe("rule_violated")
+      expect(
+        (businessBasis!.detail as { rule: string }).rule,
+      ).toBe("parkKey_missing_after_sweeper")
+      // Supersedes chain points back at the original parked envelope.
+      expect(auditRecord.supersedes).toBeTruthy()
+      expect(auditRecord.supersedes!.predecessorIntentHash).toBe(
+        envelope.intentHash,
+      )
+      expect(auditRecord.supersedes!.predecessorAt).toBe(parkedAt)
+      expect(auditRecord.supersedes!.reason).toBe("defer_resumed")
+      // (c) Mutex was released — no defer:resuming:* key left behind.
+      const resumingKeys = [...store.keys()].filter((k) =>
+        k.startsWith("test:defer:resuming:"),
+      )
+      expect(resumingKeys.length).toBe(0)
+      // The cycle counter must NOT have been incremented — we short-circuited
+      // before the INCR. (A counter increment on the loser path would be a
+      // subtle cycle-cap drift bug.)
+      const cycleKey = `test:defer:cycle:${envelope.intentHash}`
+      expect(store.get(cycleKey)).toBeUndefined()
+      // The long-term dedup ledger MUST NOT have been written — that's the
+      // commit step that only the winner reaches.
+      const resumedKeys = [...store.keys()].filter((k) =>
+        k.startsWith("test:defer:resumed:"),
+      )
+      expect(resumedKeys.length).toBe(0)
+    } finally {
+      redisStub.get = originalGet
+      setResumeIntentDispatcher(null)
+    }
+  })
+
   it("[P1-D] transient error on first 2 attempts then success on 3rd — does NOT DLQ", async () => {
     const sessionId = "sess_redis_retry_success"
     const { envelope, parkedBlob } = buildVerifiableParkedBlob({ sessionId })
