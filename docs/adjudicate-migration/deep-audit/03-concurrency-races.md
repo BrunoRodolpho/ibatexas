@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover concurrency audit (2026-05-23). The P0-2 sweeper-resolver race lineage that originated here was partially closed at `a1fbb25` and remains tracked as `tasks/e2-sweeper-resolver-race-v2.md` (per the H-δ civilization-health finding). For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Concurrency & Races Deep Audit
 
 Auditor: Concurrency & Race Conditions Auditor (distributed-systems-engineer level)

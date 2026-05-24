@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** This synthesises a pre-cutover deeper audit pass (2026-05-23, branch `feat/adjudicate-w6-tests-docs`) that distrusted the W1-W6 remediation claims. The "NO-GO for ANY rollout" verdict drove Waves 7-9 and ultimately the IBX-IGE v3.0 always-on cutover (`f3bea43`) — which deleted most of the shadow/enforce/kill-switch surface this audit assumed. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Master Deep-Dive Audit — Synthesis
 
 **Date:** 2026-05-23

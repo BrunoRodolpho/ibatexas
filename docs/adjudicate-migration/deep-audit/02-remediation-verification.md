@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover per-fix scorecard against W1-W6 remediation claims (2026-05-23). PARTIAL and WEAKER-THAN-CLAIMED verdicts drove Waves 7-9 closure work. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Remediation Verification Audit
 
 **Auditor:** Remediation Verification Auditor

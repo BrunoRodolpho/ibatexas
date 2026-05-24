@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover test-quality audit (2026-05-23). Findings on unit-tests-in-disguise integration tests drove Wave-7 fault-injection suite and the 6 conformance suites (T1, T2, T3, T5, T6, T7). For current test coverage and outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Test Quality & Assertion Depth Audit
 
 > Audited 2026-05-23 by the Test Quality & Assertion Depth Auditor agent.

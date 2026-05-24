@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover doc/reality drift audit (2026-05-23). Drove the doc cleanup arc that culminated in the civilization-health 2026-05-24 sweep. The SHADOW-ENFORCE-ROLLOUT runbook this audit walks no longer exists (archived in `f87fb0b` under `../superseded/`). For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md) and [`../CIVILIZATION-HEALTH-2026-05-24.md`](../CIVILIZATION-HEALTH-2026-05-24.md). Content preserved unchanged below as historical record.
+
+---
+
 # Documentation vs Reality Audit
 
 **Auditor:** Documentation vs Reality Auditor (deep-audit wave)

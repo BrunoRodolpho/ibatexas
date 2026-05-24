@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover 10x-load audit (2026-05-23). Identifies failure modes at 2x-5x baseline; performance/scalability work remains open (per the civilization-health report's "What this report does NOT cover" — scalability under load is still open since audit-2026-05-23). For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Scalability / 10x Load Audit
 
 **Date:** 2026-05-23
