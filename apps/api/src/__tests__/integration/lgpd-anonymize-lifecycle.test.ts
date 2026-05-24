@@ -493,8 +493,16 @@ describe("LGPD anonymize — full lifecycle (W6-1)", () => {
     }
 
     // anonymizeCustomer was called exactly once with the customerId.
+    // audit-2026-05-24 H3 Wave-B: grace resolver now threads predecessor
+    // + auditSink so the Wave-A1 per-surface audit + Wave-B compensation
+    // chain both link back to the parked anonymize envelope.
     expect(mockAnonymizeCustomer).toHaveBeenCalledTimes(1);
-    expect(mockAnonymizeCustomer).toHaveBeenCalledWith(CUSTOMER_ID);
+    expect(mockAnonymizeCustomer.mock.calls[0]![0]).toBe(CUSTOMER_ID);
+    expect(mockAnonymizeCustomer.mock.calls[0]![1]).toMatchObject({
+      predecessor: {
+        predecessorIntentHash: "h_t0",
+      },
+    });
 
     // Receipt cleared post-anonymize.
     expect(redisStorage.get(`ibatexas:anonymize:pending:${CUSTOMER_ID}`)).toBeUndefined();
