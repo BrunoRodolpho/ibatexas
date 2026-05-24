@@ -5,6 +5,7 @@ import ora from "ora"
 import { execa } from "execa"
 import { ROOT } from "../utils/root.js"
 import { diagnoseDockerFailure } from "../lib/docker.js"
+import { applyAuditPostgresMigrations } from "./kernel.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -20,7 +21,7 @@ interface BootstrapOpts {
 }
 
 async function runBootstrap(opts: BootstrapOpts) {
-  const TOTAL = opts.skipSeed ? 4 : 6
+  const TOTAL = opts.skipSeed ? 5 : 7
   console.log(chalk.bold.blue("\n  🚀  IbateXas Bootstrap\n"))
 
   let stepNum = 0
@@ -75,7 +76,26 @@ async function runBootstrap(opts: BootstrapOpts) {
     process.exit(1)
   }
 
-  // ── [4] Medusa admin user ─────────────────────────────────────────────────
+  // ── [4] Kernel audit-postgres migrations ──────────────────────────────────
+  step(++stepNum, TOTAL, "Applying adjudicate kernel migrations…")
+  const kernelSpinner = ora({ text: "@adjudicate/audit-postgres migrations", indent: 4 }).start()
+  try {
+    if (!process.env.DATABASE_URL) {
+      kernelSpinner.warn(chalk.yellow("Skipped — DATABASE_URL not set in .env"))
+    } else {
+      await applyAuditPostgresMigrations(process.env.DATABASE_URL, {
+        info: () => {},
+        warn: () => {},
+      })
+      kernelSpinner.succeed(chalk.green("Kernel migrations complete"))
+    }
+  } catch (err) {
+    kernelSpinner.fail(chalk.red("Kernel migrations failed"))
+    console.error(chalk.gray(`    ${(err as Error).message}`))
+    process.exit(1)
+  }
+
+  // ── [5] Medusa admin user ─────────────────────────────────────────────────
   step(++stepNum, TOTAL, "Creating Medusa admin user…")
   const adminEmail = process.env.MEDUSA_ADMIN_EMAIL
   const adminPassword = process.env.MEDUSA_ADMIN_PASSWORD
@@ -96,7 +116,7 @@ async function runBootstrap(opts: BootstrapOpts) {
     }
   }
 
-  // ── [5] Seed data ─────────────────────────────────────────────────────────
+  // ── [6] Seed data ─────────────────────────────────────────────────────────
   if (!opts.skipSeed) {
     step(++stepNum, TOTAL, "Seeding data…")
 
@@ -117,7 +137,7 @@ async function runBootstrap(opts: BootstrapOpts) {
       }
     }
 
-    // ── [6] Verify ────────────────────────────────────────────────────────
+    // ── [7] Verify ────────────────────────────────────────────────────────
     step(++stepNum, TOTAL, "Verifying infrastructure…")
     try {
       await execa("node", [

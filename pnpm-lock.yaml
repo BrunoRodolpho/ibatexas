@@ -54,552 +54,6 @@ importers:
         specifier: ^3.2.0
         version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
 
-  ../adjudicate/examples/commerce-reference:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-    devDependencies:
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../../packages/eslint-config
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/examples/quickstart-anthropic:
-    dependencies:
-      '@adjudicate/anthropic':
-        specifier: workspace:*
-        version: link:../../packages/anthropic
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../../packages/pack-payments-pix
-      '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../../packages/runtime
-      '@anthropic-ai/sdk':
-        specifier: ^0.30.0
-        version: 0.30.1
-    devDependencies:
-      tsx:
-        specifier: ^4.0.0
-        version: 4.21.0
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-
-  ../adjudicate/examples/vacation-approval:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-    devDependencies:
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../../packages/eslint-config
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/adapter-core:
-    dependencies:
-      '@adjudicate/audit':
-        specifier: workspace:*
-        version: link:../audit
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../runtime
-    devDependencies:
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../pack-payments-pix
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/admin-sdk:
-    dependencies:
-      '@trpc/server':
-        specifier: ^11.0.0
-        version: 11.17.0(typescript@5.9.3)
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/analyze:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      ts-morph:
-        specifier: ^25.0.0
-        version: 25.0.1
-    devDependencies:
-      '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../pack-payments-pix
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/anthropic:
-    dependencies:
-      '@adjudicate/adapter-core':
-        specifier: workspace:*
-        version: link:../adapter-core
-      '@adjudicate/audit':
-        specifier: workspace:*
-        version: link:../audit
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../runtime
-    devDependencies:
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../pack-payments-pix
-      '@anthropic-ai/sdk':
-        specifier: ^0.30.0
-        version: 0.30.1
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/audit:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      '@adjudicate/admin-sdk':
-        specifier: workspace:*
-        version: link:../admin-sdk
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/audit-postgres:
-    dependencies:
-      '@adjudicate/audit':
-        specifier: workspace:*
-        version: link:../audit
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      '@adjudicate/admin-sdk':
-        specifier: workspace:*
-        version: link:../admin-sdk
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/cli:
-    dependencies:
-      '@adjudicate/analyze':
-        specifier: workspace:*
-        version: link:../analyze
-      '@adjudicate/conformance':
-        specifier: workspace:*
-        version: link:../conformance
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      chalk:
-        specifier: ^5.3.0
-        version: 5.6.2
-      commander:
-        specifier: ^12.1.0
-        version: 12.1.0
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../primitives
-      tsx:
-        specifier: ^4.19.0
-        version: 4.21.0
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-    optionalDependencies:
-      redis:
-        specifier: ^4.7.0
-        version: 4.7.1
-
-  ../adjudicate/packages/conformance:
-    devDependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../pack-payments-pix
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/core:
-    dependencies:
-      '@noble/hashes':
-        specifier: ^1.7.1
-        version: 1.8.0
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      fast-check:
-        specifier: ^3.23.1
-        version: 3.23.2
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/eslint-config:
-    dependencies:
-      '@eslint/js':
-        specifier: ^9.0.0
-        version: 9.39.4
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      eslint-plugin-import:
-        specifier: ^2.31.0
-        version: 2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1))
-      typescript:
-        specifier: ^5.0.0
-        version: 5.9.3
-      typescript-eslint:
-        specifier: ^8.0.0
-        version: 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
-
-  ../adjudicate/packages/locales-pt-BR:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/migrate:
-    dependencies:
-      ts-morph:
-        specifier: ^25.0.0
-        version: 25.0.1
-    devDependencies:
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/observability:
-    dependencies:
-      '@opentelemetry/api':
-        specifier: ^1.9.0
-        version: 1.9.1
-    devDependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/openai:
-    dependencies:
-      '@adjudicate/adapter-core':
-        specifier: workspace:*
-        version: link:../adapter-core
-      '@adjudicate/audit':
-        specifier: workspace:*
-        version: link:../audit
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../runtime
-    devDependencies:
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../pack-payments-pix
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/pack-deployments-approval:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../primitives
-    devDependencies:
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/pack-identity-kyc:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../primitives
-    devDependencies:
-      '@adjudicate/cli':
-        specifier: workspace:*
-        version: link:../cli
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/pack-payments-pix:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-      '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../primitives
-    devDependencies:
-      '@adjudicate/cli':
-        specifier: workspace:*
-        version: link:../cli
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../runtime
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/primitives:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
-  ../adjudicate/packages/runtime:
-    dependencies:
-      '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      '@adjudicate/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
-
   apps/admin:
     dependencies:
       '@ibatexas/tools':
@@ -661,17 +115,17 @@ importers:
   apps/api:
     dependencies:
       '@adjudicate/audit-postgres':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/audit-postgres
+        specifier: ^1.0.1
+        version: 1.0.1
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/pack-payments-pix
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/runtime
+        specifier: ^0.1.1
+        version: 0.1.1
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2
@@ -819,7 +273,7 @@ importers:
         version: 2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6)
       '@medusajs/medusa':
         specifier: ^2.13.5
-        version: 2.13.5(@medusajs/admin-sdk@2.13.5)(@medusajs/cli@2.13.5(@types/node@22.19.15))(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(@medusajs/icons@2.13.5(react@18.3.1))(@medusajs/ui@4.1.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(awilix@8.0.1)(lightningcss@1.32.0)(posthog-node@5.28.11(rxjs@7.8.2))(react-dom@18.3.1(react@18.3.1))(react-router-dom@6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+        version: 2.13.5(@medusajs/admin-sdk@2.13.5)(@medusajs/cli@2.13.5(@types/node@22.19.15))(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(@medusajs/icons@2.13.5(react@18.3.1))(@medusajs/ui@4.1.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(awilix@8.0.1)(lightningcss@1.32.0)(picomatch@4.0.4)(posthog-node@5.28.11(rxjs@7.8.2))(react-dom@18.3.1(react@18.3.1))(react-router-dom@6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
       '@medusajs/payment-stripe':
         specifier: ^2.13.5
         version: 2.13.5(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))
@@ -931,17 +385,17 @@ importers:
   packages/cli:
     dependencies:
       '@adjudicate/audit':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/audit
+        specifier: ^1.0.1
+        version: 1.0.1
       '@adjudicate/audit-postgres':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/audit-postgres
+        specifier: ^1.0.1
+        version: 1.0.1
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/runtime
+        specifier: ^0.1.1
+        version: 0.1.1
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain
@@ -1022,14 +476,14 @@ importers:
   packages/domain:
     dependencies:
       '@adjudicate/audit':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/audit
+        specifier: ^1.0.1
+        version: 1.0.1
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/primitives
+        specifier: ^0.1.1
+        version: 0.1.1
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../nats-client
@@ -1095,23 +549,23 @@ importers:
   packages/llm-provider:
     dependencies:
       '@adjudicate/audit':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/audit
+        specifier: ^1.0.1
+        version: 1.0.1
       '@adjudicate/audit-postgres':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/audit-postgres
+        specifier: ^1.0.1
+        version: 1.0.1
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/locales-pt-br':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/pack-payments-pix
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/runtime':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/runtime
+        specifier: ^0.1.1
+        version: 0.1.1
       '@anthropic-ai/sdk':
         specifier: ^0.82.0
         version: 0.82.0(zod@4.3.6)
@@ -1190,18 +644,18 @@ importers:
   packages/pack-customer-onboarding:
     dependencies:
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/locales-pt-br':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/primitives
+        specifier: ^0.1.1
+        version: 0.1.1
     devDependencies:
       '@adjudicate/conformance':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/conformance
+        specifier: ^0.1.1
+        version: 0.1.1(@adjudicate/core@1.0.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1218,21 +672,21 @@ importers:
   packages/pack-orders:
     dependencies:
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/locales-pt-br':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/pack-payments-pix
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/primitives
+        specifier: ^0.1.1
+        version: 0.1.1
     devDependencies:
       '@adjudicate/conformance':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/conformance
+        specifier: ^0.1.1
+        version: 0.1.1(@adjudicate/core@1.0.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1249,21 +703,21 @@ importers:
   packages/pack-payments:
     dependencies:
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/locales-pt-br':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/pack-payments-pix':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/pack-payments-pix
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/primitives
+        specifier: ^0.1.1
+        version: 0.1.1
     devDependencies:
       '@adjudicate/conformance':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/conformance
+        specifier: ^0.1.1
+        version: 0.1.1(@adjudicate/core@1.0.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1280,18 +734,18 @@ importers:
   packages/pack-reservations:
     dependencies:
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/locales-pt-br':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/primitives
+        specifier: ^0.1.1
+        version: 0.1.1
     devDependencies:
       '@adjudicate/conformance':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/conformance
+        specifier: ^0.1.1
+        version: 0.1.1(@adjudicate/core@1.0.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1308,18 +762,18 @@ importers:
   packages/pack-whatsapp:
     dependencies:
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/locales-pt-br':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        specifier: ^0.1.1
+        version: 0.1.1
       '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/primitives
+        specifier: ^0.1.1
+        version: 0.1.1
     devDependencies:
       '@adjudicate/conformance':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/conformance
+        specifier: ^0.1.1
+        version: 0.1.1(@adjudicate/core@1.0.0)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1336,11 +790,11 @@ importers:
   packages/tools:
     dependencies:
       '@adjudicate/core':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/core
+        specifier: ^1.0.0
+        version: 1.0.0
       '@adjudicate/primitives':
-        specifier: workspace:*
-        version: link:../../../adjudicate/packages/primitives
+        specifier: ^0.1.1
+        version: 0.1.1
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain
@@ -1425,6 +879,42 @@ importers:
 
 packages:
 
+  '@adjudicate/audit-postgres@1.0.1':
+    resolution: {integrity: sha512-yWxMhwkOaqnoOrsqsOBASqzWo6YL6w4CPY4YlVaM5DV9WP6nXpr8h9Qv81fw+wA2/A7g0bewDUyxqg0mLEJZeg==}
+    peerDependencies:
+      '@adjudicate/admin-sdk': 1.0.0
+    peerDependenciesMeta:
+      '@adjudicate/admin-sdk':
+        optional: true
+
+  '@adjudicate/audit@1.0.1':
+    resolution: {integrity: sha512-9MsRODx4L0KwOTbjPd6he7M7pUoWAbtcIwWTT2UBTS9x43FlQQ8AG3sIEWJJcOh7e4CYdWciFAIU93G4ytWDhQ==}
+    peerDependencies:
+      '@adjudicate/admin-sdk': 1.0.0
+    peerDependenciesMeta:
+      '@adjudicate/admin-sdk':
+        optional: true
+
+  '@adjudicate/conformance@0.1.1':
+    resolution: {integrity: sha512-tzYm68h9kN/ysYXNjXQpasCWIrRM7J4fNU1e7dAW3+omh3b/3N23ud/fQ3S7ikfsXdtwlYCBcNCtgFv+7GWCqg==}
+    peerDependencies:
+      '@adjudicate/core': 1.0.0
+
+  '@adjudicate/core@1.0.0':
+    resolution: {integrity: sha512-AL2um1Q/SvVs94dLTIWOcF0/xWEPlZbN5rQ7qo595CX22cfef5lkJBEOKoyOjQrWN1r5qb4deKywyKcpuJEFow==}
+
+  '@adjudicate/locales-pt-br@0.1.1':
+    resolution: {integrity: sha512-MCxYs3G7ElUPdJK8mJn69+pHdIMK4O0ExdLfpQGxZ4JEj/5h47WX7iQwGLqZF3x89UeH03nRMqLpqaEzjA5PXQ==}
+
+  '@adjudicate/pack-payments-pix@0.1.1':
+    resolution: {integrity: sha512-qQiSo+9SxhZ2iYoeGnl2GasShckLuq+oWmv+Cm4UwwQxPRkUUtIr8MYGFXgYKclZL8sGj5NwgVFZVC+WKcIvBQ==}
+
+  '@adjudicate/primitives@0.1.1':
+    resolution: {integrity: sha512-EzB7+mfoZY2qIHdCPLEAZFlPJzVSX1WFuMQW3E//5ZL/X9b/loCFDvRGGNAzdnqbL8BTxlkXOHlNtk0aeJUvkg==}
+
+  '@adjudicate/runtime@0.1.1':
+    resolution: {integrity: sha512-83kQwW25/vNlGphomHsAFu4IEZgCACaeXW2IWgZtfUuTdjd6Ik/RQgvV3QX9Wla5rn1JEoB3sRJtzI/UqavfBg==}
+
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
     engines: {node: '>=10'}
@@ -1432,9 +922,6 @@ packages:
   '@ampproject/remapping@2.3.0':
     resolution: {integrity: sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw==}
     engines: {node: '>=6.0.0'}
-
-  '@anthropic-ai/sdk@0.30.1':
-    resolution: {integrity: sha512-nuKvp7wOIz6BFei8WrTdhmSsx5mwnArYyJgh4+vYu3V4J0Ltb8Xm3odPm51n1aSI0XxNCrDl7O88cxCtUdAkaw==}
 
   '@anthropic-ai/sdk@0.82.0':
     resolution: {integrity: sha512-xdHTjL1GlUlDugHq/I47qdOKp/ROPvuHl7ROJCgUQigbvPu7asf9KcAcU1EqdrP2LuVhEKaTs7Z+ShpZDRzHdQ==}
@@ -6069,15 +5556,6 @@ packages:
   '@tanstack/virtual-core@3.13.23':
     resolution: {integrity: sha512-zSz2Z2HNyLjCplANTDyl3BcdQJc2k1+yyFoKhNRmCr7V7dY8o8q5m8uFTI1/Pg1kL+Hgrz6u3Xo6eFUB7l66cg==}
 
-  '@trpc/server@11.17.0':
-    resolution: {integrity: sha512-jbAOUe0PpUTCYqziyu+8vYXZdDXPudZgnEhWCQ2NjKnVEjfE93RqHTt1oycZJv/HNf51YlRXfEEwSIAbb161rw==}
-    hasBin: true
-    peerDependencies:
-      typescript: '>=5.7.2'
-
-  '@ts-morph/common@0.26.1':
-    resolution: {integrity: sha512-Sn28TGl/4cFpcM+jwsH1wLncYq3FtN/BIpem+HOygfBWPT5pAeS5dB4VFVzV8FbnOKHpDLZmvAl4AjPEev5idA==}
-
   '@tsconfig/node10@1.0.12':
     resolution: {integrity: sha512-UCYBaeFvM11aU2y3YPZ//O5Rhj+xKyzy7mvcIoAjASbigy8mHMryP5cK7dgjlz2hWxh1g5pLw084E0a/wlUSFQ==}
 
@@ -6188,9 +5666,6 @@ packages:
 
   '@types/mysql@2.15.27':
     resolution: {integrity: sha512-YfWiV16IY0OeBfBCk8+hXKmdTKrKlwKN1MNKAPBu5JYxLwBEZl7QzeEpGnlZb3VMGJrrGmB84gXiH+ofs/TezA==}
-
-  '@types/node-fetch@2.6.13':
-    resolution: {integrity: sha512-QGpRVpzSaUs30JBSGPjOg4Uveu384erbHBoT1zeONvyCfwQxIkUshLAOqN/k9EjGviPRmWTTe6aH2qySWKTVSw==}
 
   '@types/node@18.19.130':
     resolution: {integrity: sha512-GRaXQx6jGfL8sKfaIDD6OupbIHBr9jv7Jnaml9tB7l4v068PAOXqfcujMMo5PhbIs6ggR1XODELqahT2R8v0fg==}
@@ -6579,10 +6054,6 @@ packages:
   agent-base@6.0.2:
     resolution: {integrity: sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==}
     engines: {node: '>= 6.0.0'}
-
-  agentkeepalive@4.6.0:
-    resolution: {integrity: sha512-kja8j7PjmncONqaTsB8fQ+wE2mSU2DJ9D4XKoJ5PFWIdRMa6SLSN1ff4mOr4jCbfRSsxR4keIiySJU0N9T5hIQ==}
-    engines: {node: '>= 8.0.0'}
 
   ajv-draft-04@1.0.0:
     resolution: {integrity: sha512-mv00Te6nmYbRp5DCwclxtt7yV/joXJPGS7nM+97GdxvuttCOfgI3K4U25zboyeX0O+myI8ERluxQe5wljMmVIw==}
@@ -7134,9 +6605,6 @@ packages:
       react: ^18.0.0
       react-dom: ^18.0.0
 
-  code-block-writer@13.0.3:
-    resolution: {integrity: sha512-Oofo0pq3IKnsFtuHqSF7TqBfr71aeyZDVJ0HpmqB7FBM2qEigL0iPONSCZSO9pE9dZTAxANe5XHG9Uy0YMv8cg==}
-
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
     engines: {node: '>=7.0.0'}
@@ -7173,10 +6641,6 @@ packages:
   commander@10.0.1:
     resolution: {integrity: sha512-y4Mg2tXshplEbSGzx7amzPwKKOCGuoSRP/CjEdwwk0FOGlUbq6lKuoyDZTNZkmxHdJtp54hdfY/JUrdL7Xfdug==}
     engines: {node: '>=14'}
-
-  commander@12.1.0:
-    resolution: {integrity: sha512-Vw8qHK3bZM9y/P10u3Vib8o/DdkvA2OtPtZvD871QKjy74Wj1WSKFILMPRPSdUSx5RFK1arlJzEtA4PkFgnbuA==}
-    engines: {node: '>=18'}
 
   commander@13.1.0:
     resolution: {integrity: sha512-/rFeCpNJQbhSZjGVwO9RFV3xPqbnERS8MmIQzCtD/zl6gpJuV/bMLuN92oG3F7d8oDEHHRrujSXNUr8fpjntKw==}
@@ -7981,16 +7445,9 @@ packages:
     resolution: {integrity: sha512-gIXjKqtFuWEgzFRJA9WCQeSJLZDjgJUOMCMzxtvFq/37KojM1BFGufqsCy0r4qSQmYLsZYMeyRqzIWOMup03sw==}
     engines: {node: '>=14'}
 
-  form-data-encoder@1.7.2:
-    resolution: {integrity: sha512-qfqtYan3rxrnCk1VYaA4H+Ms9xdpPqvLZa6xmMgFvhO32x7/3J/ExcTd6qpxM0vH2GdMI+poehyBZvqfMTto8A==}
-
   form-data@4.0.5:
     resolution: {integrity: sha512-8RipRLol37bNs2bhoV67fiTEvdTrbMUYcFTiy3+wuuOnUog2QBHCZWXDRijWQfAkhBj2Uf5UnVaiWwA5vdd82w==}
     engines: {node: '>= 6'}
-
-  formdata-node@4.4.1:
-    resolution: {integrity: sha512-0iirZp3uVDjVGt9p49aTaqjk84TrglENEDuqfdlZQ1roC9CWlPk6Avf8EEnZNcAqPonwkG35x4n3ww/1THYAeQ==}
-    engines: {node: '>= 12.20'}
 
   forwarded-parse@2.1.2:
     resolution: {integrity: sha512-alTFZZQDKMporBH77856pXgzhEzaUVmLCDk+egLgIgHst3Tpndzz8MnKe+GzRJRfvVdn69HhpW7cmXzvtLvJAw==}
@@ -8267,9 +7724,6 @@ packages:
   human-signals@8.0.1:
     resolution: {integrity: sha512-eKCa6bwnJhvxj14kZk5NCPc6Hb6BdsU9DZcOnmQKSnO1VKrfV0zCvtttPZUsBvjmNDn8rpcJfpwSYnHBjc95MQ==}
     engines: {node: '>=18.18.0'}
-
-  humanize-ms@1.2.1:
-    resolution: {integrity: sha512-Fl70vYtsAFb/C06PTS9dZBo7ihau+Tu/DNCk/OyHhea07S+aeMWpFFkUaXRa8fI+ScZbEI8dfSxwY7gxZ9SAVQ==}
 
   hyperlinker@1.0.0:
     resolution: {integrity: sha512-Ty8UblRWFEcfSuIaajM34LdPXIhbs1ajEX/BBPv24J+enSVaEVY63xQ6lTO9VRYS5LAoghIG0IDJ+p+IPzKUQQ==}
@@ -9245,11 +8699,6 @@ packages:
     resolution: {integrity: sha512-t1QzWwnk4sjLWaQAS8CHgOJ+RAfmHpxFWmc36IWTiWHQfs0w5JDMBS1b1ZxQteo0vVVuWJvIUKHDkkeK7vIGCg==}
     engines: {node: '>= 8.0.0'}
 
-  node-domexception@1.0.0:
-    resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
-    engines: {node: '>=10.5.0'}
-    deprecated: Use your platform's native DOMException instead
-
   node-exports-info@1.6.0:
     resolution: {integrity: sha512-pyFS63ptit/P5WqUkt+UUfe+4oevH+bFeIiPPdfb0pFeYEu/1ELnJu5l+5EcTKYL5M7zaAa7S8ddywgXypqKCw==}
     engines: {node: '>= 0.4'}
@@ -9431,9 +8880,6 @@ packages:
 
   password-prompt@1.1.3:
     resolution: {integrity: sha512-HkrjG2aJlvF0t2BMH0e2LB/EHf3Lcq3fNMzy4GYHcQblAvOl+QQji1Lx7WRBMqpVK8p+KR7bCg7oqAMXtdgqyw==}
-
-  path-browserify@1.0.1:
-    resolution: {integrity: sha512-b7uo2UCUOYZcnF/3ID0lulOJi/bafxa1xPe7ZPsammBSpjSWQkjNxlt635YGS2MiR9GjvuXCtz2emr3jbsz98g==}
 
   path-case@3.0.4:
     resolution: {integrity: sha512-qO4qCFjXqVTrcbPt/hQfhTQ+VhFsqNKOPtytgNKkKxSoEp3XPUQ8ObFuePylOIok5gjn69ry8XiULxCwot3Wfg==}
@@ -10664,9 +10110,6 @@ packages:
   ts-interface-checker@0.1.13:
     resolution: {integrity: sha512-Y/arvbn+rrz3JCKl9C4kVNfTfSm2/mEp5FSz5EsZSANGPSlQrpRI5M4PKF+mJnE52jOO90PnPSc3Ur3bTQw0gA==}
 
-  ts-morph@25.0.1:
-    resolution: {integrity: sha512-QJEiTdnz1YjrB3JFhd626gX4rKHDLSjSVMvGGG4v7ONc3RBwa0Eei98G9AT9uNFDMtV54JyuXsFeC+OH0n6bXQ==}
-
   ts-node@10.9.2:
     resolution: {integrity: sha512-f0FFpIdcHgn8zcPSbf1dRevwt047YMnaiJM3u2w2RewrB+fob/zePZcrOyQoLMMO7aBIddLcQIEK5dYjkLnGrQ==}
     hasBin: true
@@ -11031,10 +10474,6 @@ packages:
   wcwidth@1.0.1:
     resolution: {integrity: sha512-XHPEwS0q6TaxcvG85+8EYkbiCux2XtWG2mkc47Ng2A77BQu9+DqIOJldST4HgPkuea7dvKSj5VgX3P1d4rW8Tg==}
 
-  web-streams-polyfill@4.0.0-beta.3:
-    resolution: {integrity: sha512-QW95TCTaHmsYfHDybGMwO5IJIM93I/6vTRk+daHTWFPhwh+C8Cg7j7XyKrwrj8Ib6vYXe0ocYNrmzY4xAAN6ug==}
-    engines: {node: '>= 14'}
-
   web-vitals@5.2.0:
     resolution: {integrity: sha512-i2z98bEmaCqSDiHEDu+gHl/dmR4Q+TxFmG3/13KkMO+o8UxQzCqWaDRCiLgEa41nlO4VpXSI0ASa1xWmO9sBlA==}
 
@@ -11216,24 +10655,47 @@ packages:
 
 snapshots:
 
+  '@adjudicate/audit-postgres@1.0.1':
+    dependencies:
+      '@adjudicate/audit': 1.0.1
+      '@adjudicate/core': 1.0.0
+
+  '@adjudicate/audit@1.0.1':
+    dependencies:
+      '@adjudicate/core': 1.0.0
+
+  '@adjudicate/conformance@0.1.1(@adjudicate/core@1.0.0)':
+    dependencies:
+      '@adjudicate/core': 1.0.0
+
+  '@adjudicate/core@1.0.0':
+    dependencies:
+      '@noble/hashes': 1.8.0
+      zod: 4.3.6
+
+  '@adjudicate/locales-pt-br@0.1.1':
+    dependencies:
+      '@adjudicate/core': 1.0.0
+
+  '@adjudicate/pack-payments-pix@0.1.1':
+    dependencies:
+      '@adjudicate/core': 1.0.0
+      '@adjudicate/primitives': 0.1.1
+
+  '@adjudicate/primitives@0.1.1':
+    dependencies:
+      '@adjudicate/core': 1.0.0
+
+  '@adjudicate/runtime@0.1.1':
+    dependencies:
+      '@adjudicate/core': 1.0.0
+
   '@alloc/quick-lru@5.2.0': {}
 
   '@ampproject/remapping@2.3.0':
     dependencies:
       '@jridgewell/gen-mapping': 0.3.13
       '@jridgewell/trace-mapping': 0.3.31
-
-  '@anthropic-ai/sdk@0.30.1':
-    dependencies:
-      '@types/node': 18.19.130
-      '@types/node-fetch': 2.6.13
-      abort-controller: 3.0.0
-      agentkeepalive: 4.6.0
-      form-data-encoder: 1.7.2
-      formdata-node: 4.4.1
-      node-fetch: 2.7.0
-    transitivePeerDependencies:
-      - encoding
 
   '@anthropic-ai/sdk@0.82.0(zod@4.3.6)':
     dependencies:
@@ -12781,10 +12243,10 @@ snapshots:
 
   '@lukeed/ms@2.0.2': {}
 
-  '@medusajs/admin-bundler@2.13.5(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)':
+  '@medusajs/admin-bundler@2.13.5(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(lightningcss@1.32.0)(picomatch@4.0.4)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)':
     dependencies:
       '@medusajs/admin-shared': 2.13.5
-      '@medusajs/admin-vite-plugin': 2.13.5(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))
+      '@medusajs/admin-vite-plugin': 2.13.5(picomatch@4.0.4)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))
       '@medusajs/dashboard': 2.13.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(typescript@5.9.3)
       '@vitejs/plugin-react': 4.7.0(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))
       autoprefixer: 10.4.27(postcss@8.5.8)
@@ -12823,14 +12285,14 @@ snapshots:
 
   '@medusajs/admin-shared@2.13.5': {}
 
-  '@medusajs/admin-vite-plugin@2.13.5(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))':
+  '@medusajs/admin-vite-plugin@2.13.5(picomatch@4.0.4)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))':
     dependencies:
       '@babel/parser': 7.25.6
       '@babel/traverse': 7.25.6
       '@babel/types': 7.25.6
       '@medusajs/admin-shared': 2.13.5
       chokidar: 3.6.0
-      fdir: 6.1.1
+      fdir: 6.1.1(picomatch@4.0.4)
       magic-string: 0.30.5
       outdent: 0.8.0
       picocolors: 1.1.1
@@ -13181,11 +12643,11 @@ snapshots:
     dependencies:
       '@medusajs/framework': 2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6)
 
-  '@medusajs/medusa@2.13.5(@medusajs/admin-sdk@2.13.5)(@medusajs/cli@2.13.5(@types/node@22.19.15))(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(@medusajs/icons@2.13.5(react@18.3.1))(@medusajs/ui@4.1.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(awilix@8.0.1)(lightningcss@1.32.0)(posthog-node@5.28.11(rxjs@7.8.2))(react-dom@18.3.1(react@18.3.1))(react-router-dom@6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)':
+  '@medusajs/medusa@2.13.5(@medusajs/admin-sdk@2.13.5)(@medusajs/cli@2.13.5(@types/node@22.19.15))(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(@medusajs/icons@2.13.5(react@18.3.1))(@medusajs/ui@4.1.5(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(typescript@5.9.3))(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(awilix@8.0.1)(lightningcss@1.32.0)(picomatch@4.0.4)(posthog-node@5.28.11(rxjs@7.8.2))(react-dom@18.3.1(react@18.3.1))(react-router-dom@6.30.3(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(react@18.3.1)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)':
     dependencies:
       '@inquirer/checkbox': 2.5.0
       '@inquirer/input': 2.3.0
-      '@medusajs/admin-bundler': 2.13.5(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+      '@medusajs/admin-bundler': 2.13.5(@types/node@22.19.15)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(lightningcss@1.32.0)(picomatch@4.0.4)(terser@5.46.1)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
       '@medusajs/analytics': 2.13.5(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))
       '@medusajs/analytics-local': 2.13.5(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))
       '@medusajs/analytics-posthog': 2.13.5(@medusajs/framework@2.13.5(@medusajs/cli@2.13.5(@types/node@22.19.15))(@types/node@22.19.15)(ioredis@5.10.1)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.46.1))(zod@4.3.6))(posthog-node@5.28.11(rxjs@7.8.2))
@@ -17345,16 +16807,6 @@ snapshots:
 
   '@tanstack/virtual-core@3.13.23': {}
 
-  '@trpc/server@11.17.0(typescript@5.9.3)':
-    dependencies:
-      typescript: 5.9.3
-
-  '@ts-morph/common@0.26.1':
-    dependencies:
-      fast-glob: 3.3.3
-      minimatch: 10.2.4
-      path-browserify: 1.0.1
-
   '@tsconfig/node10@1.0.12': {}
 
   '@tsconfig/node12@1.0.11': {}
@@ -17477,11 +16929,6 @@ snapshots:
   '@types/mysql@2.15.27':
     dependencies:
       '@types/node': 22.19.15
-
-  '@types/node-fetch@2.6.13':
-    dependencies:
-      '@types/node': 22.19.15
-      form-data: 4.0.5
 
   '@types/node@18.19.130':
     dependencies:
@@ -17925,10 +17372,6 @@ snapshots:
       debug: 4.4.3(supports-color@8.1.1)
     transitivePeerDependencies:
       - supports-color
-
-  agentkeepalive@4.6.0:
-    dependencies:
-      humanize-ms: 1.2.1
 
   ajv-draft-04@1.0.0(ajv@8.18.0):
     optionalDependencies:
@@ -18574,8 +18017,6 @@ snapshots:
     transitivePeerDependencies:
       - '@types/react'
 
-  code-block-writer@13.0.3: {}
-
   color-convert@2.0.1:
     dependencies:
       color-name: 1.1.4
@@ -18606,8 +18047,6 @@ snapshots:
       delayed-stream: 1.0.0
 
   commander@10.0.1: {}
-
-  commander@12.1.0: {}
 
   commander@13.1.0: {}
 
@@ -19231,35 +18670,6 @@ snapshots:
       - eslint-import-resolver-webpack
       - supports-color
 
-  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint@9.39.4(jiti@2.6.1)):
-    dependencies:
-      '@rtsao/scc': 1.1.0
-      array-includes: 3.1.9
-      array.prototype.findlastindex: 1.2.6
-      array.prototype.flat: 1.3.3
-      array.prototype.flatmap: 1.3.3
-      debug: 3.2.7
-      doctrine: 2.1.0
-      eslint: 9.39.4(jiti@2.6.1)
-      eslint-import-resolver-node: 0.3.10
-      eslint-module-utils: 2.12.1(@typescript-eslint/parser@8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3))(eslint-import-resolver-node@0.3.10)(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
-      hasown: 2.0.2
-      is-core-module: 2.16.1
-      is-glob: 4.0.3
-      minimatch: 10.2.4
-      object.fromentries: 2.0.8
-      object.groupby: 1.0.3
-      object.values: 1.2.1
-      semver: 6.3.1
-      string.prototype.trimend: 1.0.9
-      tsconfig-paths: 3.15.0
-    optionalDependencies:
-      '@typescript-eslint/parser': 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
-    transitivePeerDependencies:
-      - eslint-import-resolver-typescript
-      - eslint-import-resolver-webpack
-      - supports-color
-
   eslint-plugin-import@2.32.0(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1)):
     dependencies:
       '@rtsao/scc': 1.1.0
@@ -19633,7 +19043,9 @@ snapshots:
       reusify: 1.1.0
       xtend: 4.0.2
 
-  fdir@6.1.1: {}
+  fdir@6.1.1(picomatch@4.0.4):
+    optionalDependencies:
+      picomatch: 4.0.4
 
   fdir@6.5.0(picomatch@4.0.4):
     optionalDependencies:
@@ -19708,8 +19120,6 @@ snapshots:
       cross-spawn: 7.0.6
       signal-exit: 4.1.0
 
-  form-data-encoder@1.7.2: {}
-
   form-data@4.0.5:
     dependencies:
       asynckit: 0.4.0
@@ -19717,11 +19127,6 @@ snapshots:
       es-set-tostringtag: 2.1.0
       hasown: 2.0.2
       mime-types: 2.1.35
-
-  formdata-node@4.4.1:
-    dependencies:
-      node-domexception: 1.0.0
-      web-streams-polyfill: 4.0.0-beta.3
 
   forwarded-parse@2.1.2: {}
 
@@ -19973,10 +19378,6 @@ snapshots:
   human-signals@2.1.0: {}
 
   human-signals@8.0.1: {}
-
-  humanize-ms@1.2.1:
-    dependencies:
-      ms: 2.1.3
 
   hyperlinker@1.0.0: {}
 
@@ -20931,8 +20332,6 @@ snapshots:
     dependencies:
       clone: 2.1.2
 
-  node-domexception@1.0.0: {}
-
   node-exports-info@1.6.0:
     dependencies:
       array.prototype.flatmap: 1.3.3
@@ -21136,8 +20535,6 @@ snapshots:
     dependencies:
       ansi-escapes: 4.3.2
       cross-spawn: 7.0.6
-
-  path-browserify@1.0.1: {}
 
   path-case@3.0.4:
     dependencies:
@@ -22614,11 +22011,6 @@ snapshots:
 
   ts-interface-checker@0.1.13: {}
 
-  ts-morph@25.0.1:
-    dependencies:
-      '@ts-morph/common': 0.26.1
-      code-block-writer: 13.0.3
-
   ts-node@10.9.2(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@22.19.15)(typescript@5.9.3):
     dependencies:
       '@cspotcode/source-map-support': 0.8.1
@@ -23009,8 +22401,6 @@ snapshots:
   wcwidth@1.0.1:
     dependencies:
       defaults: 1.0.4
-
-  web-streams-polyfill@4.0.0-beta.3: {}
 
   web-vitals@5.2.0: {}
 

@@ -125,28 +125,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
     wiring._resetAuditSink()
   })
 
-  it("Postgres sink does NOT fire when IBX_AUDIT_POSTGRES_ENABLED is unset", async () => {
-    const redis = makeRedisStub()
-    const prismaWriter = makePrismaWriter()
-    const wiring = await import("../intent-audit-wiring.js")
-    wiring._resetAuditSink()
-    wiring._setAuditSinkDependencies({ redis, prismaWriter })
-
-    const sink = wiring.getAuditSink()
-    await sink.emit(
-      makeRecord({
-        kind: "customer.profile.update",
-        payload: { name: "Test" },
-      }),
-    )
-
-    // Console + NATS fire, Postgres does not.
-    expect(mockPublishNatsEvent).toHaveBeenCalledOnce()
-    expect(prismaWriter._calls).toHaveLength(0)
-  })
-
-  it("Postgres sink fires when IBX_AUDIT_POSTGRES_ENABLED=true", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
+  it("Postgres sink fires unconditionally (always-on, no env gating)", async () => {
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
     const wiring = await import("../intent-audit-wiring.js")
@@ -168,7 +147,6 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   })
 
   it("redactor runs BEFORE Postgres sink — row payload contains [REDACTED], not raw CPF", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
     const wiring = await import("../intent-audit-wiring.js")
@@ -212,7 +190,6 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   })
 
   it("preserves intentHash + auditHash through the redactor on the durable path", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
     const wiring = await import("../intent-audit-wiring.js")
@@ -232,7 +209,6 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   })
 
   it("spills to Redis when Postgres writer throws", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     // Force buffer capacity to 1 so the FIRST failure spills the SECOND
     // emit's record. Default 1000 would absorb the failure into the in-
     // memory queue and never spill in a single-emit test.
@@ -268,8 +244,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
     expect(redis._store.get("test:audit:spill:queue") ?? []).toHaveLength(1)
   })
 
-  it("multi-sink fan-out is wired in order: console, NATS, [Postgres]", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
+  it("multi-sink fan-out is wired in order: console, NATS, Postgres", async () => {
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
     const wiring = await import("../intent-audit-wiring.js")
@@ -289,7 +264,6 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   })
 
   it("invalid IBX_AUDIT_BUFFER_CAPACITY falls back to 1000 with a warning", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     vi.stubEnv("IBX_AUDIT_BUFFER_CAPACITY", "not-a-number")
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
     const redis = makeRedisStub()

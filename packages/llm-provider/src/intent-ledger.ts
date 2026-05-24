@@ -2,21 +2,14 @@
 // Redis infrastructure. Keeps the framework package (@adjudicate/audit)
 // domain-independent — the Redis client + rk() namespacing lives here.
 //
-// Phase F: shadow writes behind IBX_LEDGER_ENABLED.
-// Phase G: enforcement behind IBX_LEDGER_ENFORCE — when true, the kernel
-//   consults checkLedger() before dispatching a mutating intent and short-
-//   circuits if a fresh execution record exists.
-// Phase P0-g: Redis calls now route through `safeRedis("critical", ...)` so
-//   ledger outages flow through the existing circuit breaker. When the
-//   breaker trips:
-//     IBX_LEDGER_FAIL_OPEN=true  → log + return as if no ledger (allow + no dedup)
-//     IBX_LEDGER_FAIL_OPEN=false → throw LedgerUnavailableError → caller
-//                                  surfaces SECURITY/ledger_unavailable refusal.
+// The ledger is always-on and fail-closed: every adjudication consults
+// the ledger for dedup; if Redis is unavailable, the operation throws
+// `LedgerUnavailableError`, which the caller surfaces as a refusal.
+// This is the correct posture for at-least-once delivery — proceeding
+// without dedup risks double-charged orders / duplicate webhooks.
 
 import {
   createRedisLedger,
-  isLedgerEnabled,
-  isLedgerEnforced,
   type Ledger,
   type LedgerHit,
   type LedgerRecordInput,
@@ -26,8 +19,9 @@ import { rk, safeRedis } from "@ibatexas/tools"
 import { recordLedgerOp } from "@adjudicate/core/kernel"
 
 /**
- * Thrown when the Redis ledger is unavailable AND fail-open is disabled.
- * Caller should surface this as a `REFUSE { kind: "SECURITY", code: "ledger_unavailable" }`.
+ * Thrown when the Redis ledger is unavailable. Caller surfaces this as
+ * `REFUSE { kind: "SECURITY", code: "ledger_unavailable" }`. Fail-closed
+ * by design.
  */
 export class LedgerUnavailableError extends Error {
   constructor(public readonly cause?: Error) {
@@ -36,22 +30,10 @@ export class LedgerUnavailableError extends Error {
   }
 }
 
-function isFailOpen(env: NodeJS.ProcessEnv = process.env): boolean {
-  const raw = env["IBX_LEDGER_FAIL_OPEN"]
-  if (raw === undefined) return false
-  const v = raw.toLowerCase().trim()
-  return v === "1" || v === "true" || v === "yes" || v === "on"
-}
-
 let _ledger: Ledger | null = null
 
 function loadLedger(): Ledger {
   if (_ledger) return _ledger
-  // The framework adapter expects a (key, value, options) shape. Internally
-  // we route the redis client call through safeRedis("critical") — that wraps
-  // the call with the existing circuit breaker. On CircuitOpenError, the
-  // wrapper rethrows; we translate to LedgerUnavailableError below in the
-  // public functions checkLedger / recordExecution.
   const ledger = createRedisLedger({
     client: {
       async set(key, value, options) {
@@ -85,20 +67,15 @@ export function _resetLedger(): void {
 }
 
 /**
- * Return the configured Ledger only when shadow writes or enforcement is on.
- * Returns `null` when both flags are off — callers simply skip the ledger step.
- *
- * The returned Ledger applies the IBX_LEDGER_FAIL_OPEN env policy on every
- * operation: on CircuitOpenError, fail-open returns null (no dedup); fail-safe
- * throws LedgerUnavailableError so the caller can refuse the intent.
+ * Return the configured Ledger. Always returns a wrapped ledger — every
+ * caller MUST consult it before dispatching a mutating intent. On Redis
+ * outage the wrapped operations throw `LedgerUnavailableError`.
  */
-export async function getIntentLedger(): Promise<Ledger | null> {
-  if (!isLedgerEnabled() && !isLedgerEnforced()) return null
-  const inner = loadLedger()
-  return wrapWithFailOpenPolicy(inner)
+export async function getIntentLedger(): Promise<Ledger> {
+  return wrapWithMetrics(loadLedger())
 }
 
-function wrapWithFailOpenPolicy(inner: Ledger): Ledger {
+function wrapWithMetrics(inner: Ledger): Ledger {
   return {
     async checkLedger(intentHash: string): Promise<LedgerHit | null> {
       const startedAt = Date.now()
@@ -107,7 +84,7 @@ function wrapWithFailOpenPolicy(inner: Ledger): Ledger {
         recordLedgerOp({
           op: "check",
           outcome: hit ? "hit" : "miss",
-          intentKind: "*", // caller doesn't pass kind; could be threaded later
+          intentKind: "*",
           latencyMs: Date.now() - startedAt,
         })
         return hit
@@ -118,13 +95,6 @@ function wrapWithFailOpenPolicy(inner: Ledger): Ledger {
           intentKind: "*",
           latencyMs: Date.now() - startedAt,
         })
-        if (isFailOpen()) {
-          console.warn(
-            "[intent-ledger] checkLedger failed; fail-open mode → no dedup:",
-            (err as Error).message,
-          )
-          return null
-        }
         throw new LedgerUnavailableError(err as Error)
       }
     },
@@ -146,20 +116,8 @@ function wrapWithFailOpenPolicy(inner: Ledger): Ledger {
           intentKind: entry.kind,
           latencyMs: Date.now() - startedAt,
         })
-        if (isFailOpen()) {
-          console.warn(
-            "[intent-ledger] recordExecution failed; fail-open mode → no dedup record:",
-            (err as Error).message,
-          )
-          // Fail-open: behave as if no prior record existed (allow + no dedup).
-          // "acquired" matches "we now own this slot" — the kernel proceeds
-          // exactly as it would on a real cache miss.
-          return "acquired"
-        }
         throw new LedgerUnavailableError(err as Error)
       }
     },
   }
 }
-
-export { isLedgerEnabled, isLedgerEnforced }

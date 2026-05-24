@@ -21,8 +21,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/core": "workspace:*",
-    "@adjudicate/primitives": "workspace:*",
+    "@adjudicate/core": "^1.0.0",
+    "@adjudicate/primitives": "^0.1.1",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",

@@ -53,6 +53,33 @@ vi.mock("../intent-audit-wiring.js", () => ({
   getAuditSink: () => ({ emit: vi.fn().mockResolvedValue(undefined) }),
 }))
 
+// Stub the execution ledger — llm-responder now always queries it for dedup.
+// The test's Redis mock doesn't satisfy `safeRedis("critical", …)`'s contract,
+// so without this shim `LedgerUnavailableError` would propagate and short-
+// circuit the dispatcher. A no-op ledger keeps the focus on dispatch wiring.
+vi.mock("../intent-ledger.js", () => ({
+  getIntentLedger: vi.fn().mockResolvedValue({
+    checkLedger: vi.fn().mockResolvedValue(null),
+    recordExecution: vi.fn().mockResolvedValue("acquired"),
+  }),
+  LedgerUnavailableError: class extends Error {},
+}))
+
+// Stub the kernel's adjudicate() to always return EXECUTE — this test
+// exercises dispatcher wiring, not policy. The real policy bundle would
+// REFUSE the synthesised "order.tool.propose" envelope (it doesn't carry
+// the order-domain state these guards expect), short-circuiting before
+// the dispatcher.
+vi.mock("@adjudicate/core/kernel", async () => {
+  const actual = (await vi.importActual(
+    "@adjudicate/core/kernel",
+  )) as Record<string, unknown>
+  return {
+    ...actual,
+    adjudicate: vi.fn().mockReturnValue({ kind: "EXECUTE", basis: [] }),
+  }
+})
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const baseContext: AgentContext = {

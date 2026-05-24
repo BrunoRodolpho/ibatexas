@@ -275,31 +275,7 @@ describe("runCustomerIntent — enforce/shadow switch", () => {
     expect(mockAdjudicate).toHaveBeenCalledTimes(1);
   });
 
-  it("[NEW-P0-X2] kind not enforced + not shadowed → default-REFUSE (no adjudicate call, executor NOT run)", async () => {
-    // Pre-W1 fix: this test expected statusCode 200 (silent default-EXECUTE).
-    // That was the documented default-deny invariant inverted. After
-    // NEW-P0-X2 the gateway default-REFUSES any kind ops hasn't put on
-    // shadow/enforce and that isn't in ALWAYS_ENFORCE.
-    const executor = vi.fn(async () => ({ ok: true }));
-
-    const out = await runCustomerIntent({
-      envelope: makeEnvelope("test.kind"),
-      state: {},
-      policy: dummyPolicy,
-      executor,
-      ctx: { customerId: "cust_01", route: "test" },
-      auditSink: noopAuditSink,
-    });
-
-    expect(out.statusCode).toBe(403);
-    expect(out.decision.kind).toBe("REFUSE");
-    // adjudicate was NOT called — default-REFUSE bypasses the kernel.
-    expect(mockAdjudicate).not.toHaveBeenCalled();
-    expect(executor).not.toHaveBeenCalled();
-  });
-
-  it("kind in IBX_KERNEL_ENFORCE → adjudicates and surfaces kernel decision", async () => {
-    vi.stubEnv("IBX_KERNEL_ENFORCE", "test.kind");
+  it("adjudicates every intent kind and surfaces the kernel's REFUSE", async () => {
     mockAdjudicate.mockReturnValue({
       kind: "REFUSE",
       refusal: { kind: "BUSINESS_RULE", code: "x", userFacing: "Nope." },
@@ -319,29 +295,5 @@ describe("runCustomerIntent — enforce/shadow switch", () => {
     expect(out.statusCode).toBe(403);
     expect(mockAdjudicate).toHaveBeenCalledTimes(1);
     expect(executor).not.toHaveBeenCalled();
-  });
-
-  it("kind in IBX_KERNEL_SHADOW → adjudicates but executor runs (legacy wins)", async () => {
-    vi.stubEnv("IBX_KERNEL_SHADOW", "test.kind");
-    mockAdjudicate.mockReturnValue({
-      kind: "REFUSE",
-      refusal: { kind: "BUSINESS_RULE", code: "x", userFacing: "Nope." },
-      basis: [],
-    } satisfies Decision);
-    const executor = vi.fn(async () => ({ ok: true }));
-
-    const out = await runCustomerIntent({
-      envelope: makeEnvelope("test.kind"),
-      state: {},
-      policy: dummyPolicy,
-      executor,
-      ctx: { customerId: "cust_01", route: "test" },
-      auditSink: noopAuditSink,
-    });
-
-    // Shadow mode → kernel runs for telemetry but legacy EXECUTE wins.
-    expect(out.statusCode).toBe(200);
-    expect(mockAdjudicate).toHaveBeenCalledTimes(1);
-    expect(executor).toHaveBeenCalledTimes(1);
   });
 });

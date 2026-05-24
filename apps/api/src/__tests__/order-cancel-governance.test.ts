@@ -166,37 +166,7 @@ describe("POST /api/orders/:id/cancel — envelope governance", () => {
     vi.unstubAllEnvs();
   });
 
-  it("[NEW-P0-X2] pure-legacy mode (no env) → default-REFUSE 403, executor NOT called", async () => {
-    // Pre-W1 fix: this asserted statusCode 200 (silent default-EXECUTE).
-    // After NEW-P0-X2 the gateway default-REFUSES kinds outside
-    // shadow/enforce/ALWAYS_ENFORCE. order.cancel is not in
-    // ALWAYS_ENFORCE; without env wiring it surfaces 403.
-    const app = await buildTestServer();
-    try {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/orders/order_01/cancel",
-        headers: { "x-customer-id": "cust_01" },
-        payload: { reason: "Mudei de ideia" },
-      });
-
-      expect(res.statusCode).toBe(403);
-      const body = res.json() as { error: string };
-      // Either the gateway's userFacing copy OR the pack-localized
-      // fallback ("Essa ação não é permitida…") satisfies the contract —
-      // both mean pt-BR REFUSE, both block the destructive call.
-      expect(body.error).toMatch(/(indispon|suporte|Tente novamente|permitida neste)/i);
-      // Legacy command-service NOT called — default-REFUSE blocked it.
-      expect(mockTransitionStatus).not.toHaveBeenCalled();
-      // adjudicate NOT called either — REFUSE happens before kernel dispatch.
-      expect(mockAdjudicate).not.toHaveBeenCalled();
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("enforce mode + EXECUTE decision → executor runs, returns 200", async () => {
-    vi.stubEnv("IBX_KERNEL_ENFORCE", "order.cancel");
+  it("EXECUTE decision → executor runs, returns 200", async () => {
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
 
     const app = await buildTestServer();

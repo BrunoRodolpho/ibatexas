@@ -17,13 +17,7 @@ import {
   type Decision,
 } from "@adjudicate/core"
 import type { Plan } from "@adjudicate/core/llm"
-import {
-  adjudicate,
-  adjudicateWithShadow,
-  isEnforced,
-  isShadowed,
-  legacyDecisionAsKernelDecision,
-} from "@adjudicate/core/kernel"
+import { adjudicate } from "@adjudicate/core/kernel"
 import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br"
 import { parkDeferredIntent } from "@adjudicate/runtime"
 import { resolveLocalizedRefusalText } from "./localizer.js"
@@ -36,10 +30,7 @@ import {
   shouldBufferText,
   validateBufferedTextTyped,
 } from "./validation-layer.js"
-import {
-  getIntentLedger,
-  isLedgerEnforced,
-} from "./intent-ledger.js"
+import { getIntentLedger } from "./intent-ledger.js"
 import { getAuditSink } from "./intent-audit-wiring.js"
 import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
 // W6-10 (P2-C): pino-shaped logger correlation. The responder accepts
@@ -301,104 +292,60 @@ async function processToolCalls(
           continue
         }
 
-        // ── Phase F/G: Execution Ledger (shadow or enforce) ────────────────
-        // The ledger is consulted only when IBX_LEDGER_ENABLED or _ENFORCE is
-        // set; otherwise getIntentLedger() returns null and we fall through.
+        // ── Execution Ledger ────────────────────────────────────────────────
+        // The ledger is always consulted. On dedup hit, the intent is
+        // suppressed with an "already processed" tool result. On Redis
+        // failure, LedgerUnavailableError propagates and surfaces the
+        // intent as a refusal — fail-closed by design (correctness over
+        // availability for at-least-once delivery).
         const hash = result.intent.envelope?.intentHash
         if (hash) {
-          try {
-            const ledger = await getIntentLedger()
-            if (ledger) {
-              const hit = await ledger.checkLedger(hash)
-              if (hit && isLedgerEnforced()) {
-                // Phase G enforcement: duplicate execution — do NOT dispatch
-                // onToolIntent. Surface a "already processed" tool result.
-                console.warn(
-                  "[llm-responder] Ledger replay suppressed (hash=%s, firstAt=%s)",
-                  hash,
-                  hit.at,
-                )
-                onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
-                toolResults.push({
-                  type: "tool_result",
-                  tool_use_id: block.id,
-                  content: JSON.stringify({
-                    status: "already_processed",
-                    message: "Essa solicitação já foi processada.",
-                    toolName: block.name,
-                  }),
-                })
-                continue
-              }
-              // Record (shadow or enforce — both record). First writer wins.
-              await ledger.recordExecution({
-                intentHash: hash,
-                resourceVersion: `session:${context.sessionId}`,
-                sessionId: context.sessionId,
-                kind: result.intent.envelope?.kind ?? "order.tool.propose",
-              })
-            }
-          } catch (err) {
-            // Ledger is best-effort on the hot path. A failure must not block
-            // the intent — the audit sink captures the attempt independently.
-            console.error(
-              "[llm-responder] Ledger error — continuing without dedup:",
-              (err as Error).message,
+          const ledger = await getIntentLedger()
+          const hit = await ledger.checkLedger(hash)
+          if (hit) {
+            console.warn(
+              "[llm-responder] Ledger replay suppressed (hash=%s, firstAt=%s)",
+              hash,
+              hit.at,
             )
+            onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify({
+                status: "already_processed",
+                message: "Essa solicitação já foi processada.",
+                toolName: block.name,
+              }),
+            })
+            continue
           }
+          await ledger.recordExecution({
+            intentHash: hash,
+            resourceVersion: `session:${context.sessionId}`,
+            sessionId: context.sessionId,
+            kind: result.intent.envelope?.kind ?? "order.tool.propose",
+          })
         }
 
-        // ── Phase P0-b: per-intent kernel adjudication ────────────────────
-        // For each intent kind, decide which path is authoritative:
-        //   1. enforce list  → adjudicate() is the decision
-        //   2. shadow list   → run both, log divergence, legacy stays authoritative
-        //   3. neither       → pure legacy (always-EXECUTE for v1.0 stub baseline)
+        // ── Kernel adjudication (always-on) ────────────────────────────────
+        // Every LLM-proposed mutating tool is adjudicated. The kernel's
+        // Decision is authoritative — REFUSE / DEFER / REQUEST_CONFIRMATION /
+        // ESCALATE short-circuit before the underlying tool dispatches.
+        // Every decision emits an audit record (console + NATS + Postgres
+        // via the fan-out sink in intent-audit-wiring.ts).
         //
-        // The legacy boolean for v1.0 was effectively "always EXECUTE" because
-        // the responder unconditionally invoked onToolIntent. Shadow mode
-        // surfaces every non-EXECUTE adjudicate decision as a DECISION_KIND
-        // divergence — exactly the signal needed to grow the enforce list.
+        // Task 07: buildAuditRecord computes `planFingerprint =
+        // sha256Canonical({visibleReadTools, allowedIntents})` when `plan`
+        // is passed, binding every record to the exact planner state the
+        // LLM saw — enables replay-against-historical-plan and tamper
+        // detection on the planner surface.
         const envelope = result.intent.envelope
-        const intentKind = envelope?.kind ?? block.name
         const orderState: OrderState = { ctx: machineCtx }
         const startedAt = Date.now()
         let decision: Decision
-        // Investigation 01 §"P2 #7" / governance 05 §"Audit emit invariants" #2:
-        // The pure-legacy EXECUTE branch must NOT emit an audit record — those
-        // low-signal records were polluting audit.intent.decision.v1 without
-        // adding any forensic value (no kernel involvement, no policy basis).
-        // Only shadow/enforce paths emit; pure legacy is silent.
-        let isPureLegacy = false
-        if (envelope && isEnforced(intentKind, process.env)) {
+        if (envelope) {
           decision = adjudicate(envelope, orderState, orderPolicyBundle)
-        } else if (envelope && isShadowed(intentKind, process.env)) {
-          const shadow = adjudicateWithShadow({
-            envelope,
-            state: orderState,
-            policy: orderPolicyBundle,
-            // v1.0 baseline: legacy always EXECUTE'd. Divergences from this
-            // baseline surface every kernel REFUSE as DECISION_KIND so the
-            // on-call can tune the policy before flipping to enforce.
-            legacy: () => true,
-          })
-          decision = legacyDecisionAsKernelDecision(shadow.legacyDecision)
-        } else {
-          // Pure legacy — preserve v1.0 behavior exactly. No audit emission.
-          decision = legacyDecisionAsKernelDecision({ kind: "EXECUTE" })
-          isPureLegacy = true
-        }
-
-        // Audit emit — the real Decision now drives the record (no more stub).
-        // Suppressed for the pure-legacy branch to keep the audit stream
-        // signal-dense (shadow/enforce records remain load-bearing for the
-        // operator console and the nightly replay harness).
-        //
-        // Task 07: include the AuditPlanSnapshot — buildAuditRecord computes
-        // `planFingerprint = sha256Canonical({visibleReadTools, allowedIntents})`
-        // when `plan` is passed. This binds every record to the exact planner
-        // state the LLM saw, enabling replay-against-historical-plan and
-        // tamper detection on the planner surface.
-        if (envelope && !isPureLegacy) {
           try {
             const record = buildAuditRecord({
               envelope,
@@ -421,6 +368,11 @@ async function processToolCalls(
               (err as Error).message,
             )
           }
+        } else {
+          // No envelope — pure-read tool (the planner classifies these and
+          // routes them through the dispatcher without an envelope). Skip
+          // adjudication; treat as EXECUTE for caller flow.
+          decision = { kind: "EXECUTE", basis: [] }
         }
 
         // Branch on decision.kind. EXECUTE preserves the v1.0 onToolIntent

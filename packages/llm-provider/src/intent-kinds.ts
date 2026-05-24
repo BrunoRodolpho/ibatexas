@@ -1,10 +1,10 @@
 // Intent kind union — `KNOWN_INTENT_KINDS`.
 //
-// Per `docs/adjudicate-migration/governance/01-intent-taxonomy.md`
-// §"Intent kind union (knownIntents)", `validateEnforceConfig` from
-// `@adjudicate/core/kernel` needs a single `ReadonlySet<string>` of every
-// valid intent kind so that typos in `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE`
-// can be flagged at boot.
+// Source-of-truth for which intent kinds the kernel knows about. Used by
+// the boot-time Pack-coverage validator (kernel-bootstrap.ts): every
+// known kind MUST resolve to a Pack policy at boot or the api refuses to
+// start. This catches the "added an intent kind but forgot to add a Pack
+// policy" regression case.
 //
 // This module is the assembly point. It composes the intent surfaces of
 // every first-party Pack plus first-party adopter Packs (currently only
@@ -32,11 +32,10 @@
 // The 13 `medusa.admin.order.*`, `medusa.cart.*`, `medusa.payment_collection.*`
 // kinds emitted by `packages/tools/src/medusa/adjudicated.ts` are an internal
 // egress wrapper around the Medusa REST proxy — they operate one layer
-// below the user-facing intent taxonomy. Including them in `KNOWN_INTENT_KINDS`
-// would surface them as flippable kinds in `IBX_KERNEL_ENFORCE`, which is
-// not the design intent. They are governed by their own inline policy in
-// `adjudicated.ts` independent of the kernel typo gate. See
-// `docs/adjudicate-migration/migration/decisions-log.md` D10 for rationale.
+// below the user-facing intent taxonomy. They are governed by their own
+// inline policy in `adjudicated.ts` independent of the user-facing Pack
+// surface tracked here. See `docs/adjudicate-migration/migration/decisions-log.md`
+// D10 for rationale.
 
 import type { CustomerOnboardingIntentKind } from "@ibatexas/pack-customer-onboarding"
 import type { OrderIntentKind } from "@ibatexas/pack-orders"

@@ -6,28 +6,17 @@
 //
 // The kernel runs perfectly without any LLM.
 //
-// IBX-IGE / Task 06: the four mutation call sites (addItemToCart,
-// processCheckout, cancelOrderAction, regeneratePixAction) historically
-// bypassed adjudicate() entirely (investigation 01 §"P0 #3"). They now
-// flow through `adjudicateKernelMutation` — the same shadow/enforce
-// pattern the LLM-proposed path uses (llm-responder.ts:303-365). Behaviour
-// is unchanged when neither `IBX_KERNEL_SHADOW` nor `IBX_KERNEL_ENFORCE`
-// names the intent kind: legacy direct-call wins (preserves green
-// baseline). Under shadow mode, both run and divergences emit audit
-// records. Under enforce mode, the kernel's Decision is authoritative —
-// REFUSE/DEFER/REQUEST_CONFIRMATION/ESCALATE short-circuit before the
-// underlying tool runs.
+// IBX-IGE v3.0: the four kernel-direct mutation call sites (addItemToCart,
+// processCheckout, cancelOrderAction, regeneratePixAction) flow through
+// `adjudicateKernelMutation` — the kernel is always authoritative. Every
+// envelope is adjudicated; every decision emits an audit record;
+// REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE short-circuit before
+// the underlying tool runs.
 
 import { createActor } from "xstate"
 import { cancelOrder, regeneratePix, getRedisClient, rk } from "@ibatexas/tools"
 import { buildAuditRecord, type Decision, type IntentEnvelope } from "@adjudicate/core"
-import {
-  adjudicate,
-  adjudicateWithShadow,
-  isEnforced,
-  isShadowed,
-  legacyDecisionAsKernelDecision,
-} from "@adjudicate/core/kernel"
+import { adjudicate } from "@adjudicate/core/kernel"
 import { parkDeferredIntent } from "@adjudicate/runtime"
 import { orderMachine, getStateString, createDefaultContext, isCheckoutState } from "./machine/order-machine.js"
 import type { OrderContext, KernelOutput } from "./machine/types.js"
@@ -138,9 +127,9 @@ export async function withRetry<T>(
 /**
  * Outcome of `adjudicateKernelMutation`. The caller branches on `proceed`:
  *
- *   - true  → run the legacy mutation (EXECUTE or pure-legacy path).
- *             When `decision.kind === "REWRITE"`, the caller should use
- *             `decision.rewritten.payload` instead of the original payload.
+ *   - true  → run the mutation. When `decision.kind === "REWRITE"`, the
+ *             caller should use `decision.rewritten.payload` instead of
+ *             the original payload.
  *   - false → mutation MUST NOT run. The kernel decided REFUSE, DEFER,
  *             REQUEST_CONFIRMATION, or ESCALATE. `userFacing` carries the
  *             pt-BR copy the kernel-executor writes into `ctx.lastError`
@@ -160,33 +149,16 @@ interface AdjudicationGate<P> {
 }
 
 /**
- * Run the adjudicate kernel against a kernel-direct mutation envelope. Mirrors
- * the LLM-responder's shadow/enforce pattern so the four kernel-executor
- * mutations are wrapped at the exact same governance boundary as the
- * LLM-proposed mutations.
+ * Run the adjudicate kernel against a kernel-direct mutation envelope.
+ * The kernel is always authoritative — every envelope is adjudicated,
+ * every decision emits an audit record. Caller branches on `proceed`:
  *
- * Behaviour matrix (env → outcome):
- *
- *   Neither shadow nor enforce names the intent kind:
- *     - Pure legacy. Decision is synthesized as EXECUTE; no audit record;
- *       caller runs the underlying mutation unchanged. Preserves the
- *       green baseline so production behaviour is byte-identical until
- *       the on-call engages shadow mode for this kind.
- *
- *   `IBX_KERNEL_SHADOW=<kind>` matches:
- *     - `adjudicateWithShadow` runs both legacy (always-EXECUTE baseline)
- *       AND the policy. Divergences emit audit records. Legacy still
- *       authoritative — the caller runs the underlying mutation.
- *
- *   `IBX_KERNEL_ENFORCE=<kind>` matches:
- *     - `adjudicate` is authoritative. Audit record always emits. Caller
- *       branches on `proceed`:
- *         EXECUTE / REWRITE → run mutation (REWRITE substitutes payload)
- *         REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE → short-circuit.
+ *   EXECUTE / REWRITE → run mutation (REWRITE substitutes payload)
+ *   REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE → short-circuit.
  *
  * Parks DEFER envelopes via the same `defer:pending:<sessionId>` Redis key
- * shape `llm-responder.ts:438-460` uses, so a single defer-resolver
- * subscriber owns both paths.
+ * shape `llm-responder.ts` uses, so a single defer-resolver subscriber
+ * owns both paths.
  */
 async function adjudicateKernelMutation<K extends string, P>(
   envelope: IntentEnvelope<K, P>,
@@ -195,47 +167,20 @@ async function adjudicateKernelMutation<K extends string, P>(
 ): Promise<AdjudicationGate<P>> {
   const orderState: OrderState = { ctx }
   const startedAt = Date.now()
-  const intentKind = envelope.kind
 
-  let decision: Decision
-  let isPureLegacy = false
+  const decision: Decision = adjudicate(envelope, orderState, orderPolicyBundle)
 
-  if (isEnforced(intentKind, process.env)) {
-    decision = adjudicate(envelope, orderState, orderPolicyBundle)
-  } else if (isShadowed(intentKind, process.env)) {
-    // Shadow: legacy is a synthetic always-EXECUTE; we run both and let
-    // adjudicateWithShadow log the divergence. Legacy still wins for the
-    // proceed-or-not decision.
-    const shadow = adjudicateWithShadow({
+  try {
+    const record = buildAuditRecord({
       envelope,
-      state: orderState,
-      policy: orderPolicyBundle,
-      legacy: () => true,
+      decision,
+      durationMs: Date.now() - startedAt,
     })
-    decision = legacyDecisionAsKernelDecision(shadow.legacyDecision)
-  } else {
-    // Pure legacy — no audit emission, no policy involvement. Preserves
-    // the green baseline for any kind not in shadow/enforce config.
-    decision = legacyDecisionAsKernelDecision({ kind: "EXECUTE" })
-    isPureLegacy = true
-  }
-
-  // Audit emit — same suppression rule as llm-responder.ts (investigation
-  // 01 §"P2 #7" / governance 05 §"Audit emit invariants" #2). Pure-legacy
-  // EXECUTEs are silent; shadow + enforce paths always emit.
-  if (!isPureLegacy) {
-    try {
-      const record = buildAuditRecord({
-        envelope,
-        decision,
-        durationMs: Date.now() - startedAt,
-      })
-      void getAuditSink().emit(record).catch((err: unknown) => {
-        console.error("[kernel-executor] Audit emit failed:", (err as Error).message)
-      })
-    } catch (err) {
-      console.error("[kernel-executor] Audit record build failed:", (err as Error).message)
-    }
+    void getAuditSink().emit(record).catch((err: unknown) => {
+      console.error("[kernel-executor] Audit emit failed:", (err as Error).message)
+    })
+  } catch (err) {
+    console.error("[kernel-executor] Audit record build failed:", (err as Error).message)
   }
 
   // Branch on the kernel's Decision. The first three (EXECUTE / REWRITE)
@@ -521,9 +466,8 @@ export async function executeKernel(
             )
             if (cartResult.success && cartResult.cartId) {
               // ── Task 06: wrap addItemToCart in an IntentEnvelope ─────
-              // Build the system-actor envelope BEFORE the mutation. Under
-              // shadow/enforce mode the kernel's Decision short-circuits;
-              // under pure-legacy it's a no-op and the mutation runs.
+              // Build the system-actor envelope BEFORE the mutation. The
+              // kernel's Decision short-circuits on REFUSE/DEFER/etc.
               const addPayload: KernelAddItemPayload = {
                 cartId: cartResult.cartId,
                 variantId: product.variantId,
@@ -556,8 +500,7 @@ export async function executeKernel(
                 })
               } else {
                 // REWRITE: use the kernel-rewritten payload (sanitized cap)
-                // instead of the original. Pure-legacy / EXECUTE branches use
-                // the original payload.
+                // instead of the original. EXECUTE branches use the original.
                 const effectivePayload = addGate.rewrittenPayload ?? addPayload
 
                 let addResult = await withRetry(
@@ -916,9 +859,10 @@ export async function executeKernel(
 // ── Test-only export ──────────────────────────────────────────────────────────
 //
 // `adjudicateKernelMutation` is module-internal; tests import it via this
-// `@internal` re-export so they can verify branching behaviour (EXECUTE /
-// REFUSE / DEFER / REWRITE) without re-implementing the env-gating logic.
-// Do NOT consume from production code outside this module.
+// `@internal` re-export so they can verify decision branching (EXECUTE /
+// REWRITE / REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE) without
+// reaching into private internals. Do NOT consume from production code
+// outside this module.
 
 /** @internal — test-only re-export. Do not import from production code. */
 export const __testOnly__adjudicateKernelMutation = adjudicateKernelMutation

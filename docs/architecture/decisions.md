@@ -261,7 +261,7 @@ Stripe and WhatsApp webhook routes use scoped content type parsers via
 
 4. **Strict kernel guard ordering surfaced a unit-test design mistake.** A first cut of the taint-gate test asserted REFUSE on an UNTRUSTED-proposed `pix.charge.confirm` against a *pending* charge. The kernel's order is state → auth → taint, so the DEFER state guard fires first; the taint gate never runs. Fixed by exercising the taint gate with a state where all state guards pass (`status: "confirmed"`). Worth recording: Pack authors must read the kernel's strict guard order before designing security tests, or risk pinning the wrong invariant.
 
-5. **No npm publication yet.** Per Phase -1 of the platform roadmap, the Pack ships as a `workspace:*` dep inside the IbateXas monorepo for now. The `@adjudicate` org claim, public repo, Sigstore CI, and changesets pipeline are still pending; once those land, the Pack tags `0.1.0-experimental` as its first npm publish without code changes.
+5. **No npm publication yet.** Per Phase -1 of the platform roadmap, the Pack ships as a `workspace:*` dep inside the IbateXas monorepo for now. The `@adjudicate` org claim, public repo, Sigstore CI, and changesets pipeline are still pending; once those land, the Pack tags `0.1.0-experimental` as its first npm publish without code changes. **(Superseded 2026-05-24 — see Phase 3 below; all `@adjudicate/*` packages now ship from the npm registry under the `adjudicate` org owned by `brunoro`.)**
 
 **Consequences:**
 - IbateXas's `@ibatexas/llm-provider` no longer re-exports `PIX_CONFIRMATION_SIGNAL` / `PIX_DEFER_TIMEOUT_MS` / `PIX_CONFIRMED_STATUSES`. New consumers import directly from `@adjudicate/pack-payments-pix`. The single existing consumer (`apps/api/src/subscribers/defer-resolver.ts`) was migrated in this PR.
@@ -287,7 +287,7 @@ IbateXas-side changes in this PR:
 
 - Workspace copies of all `@adjudicate/*` packages and `@example/*` examples deleted (~3500-4500 LOC removed).
 - `pnpm-workspace.yaml` extended with cross-repo includes (5 new lines + comment).
-- `packages/llm-provider/package.json` and `apps/api/package.json` keep `workspace:*` references — they now resolve through the cross-repo workspace.
+- `packages/llm-provider/package.json` and `apps/api/package.json` keep `workspace:*` references — they now resolve through the cross-repo workspace. **(Superseded in Phase 3 — see below; both files now pin npm registry versions.)**
 - `vitest.config.ts` aliases for `@adjudicate/*` removed from both `packages/llm-provider/` and `apps/api/` (vitest now resolves directly to the cross-repo workspace via node_modules).
 - New defense-in-depth test: `packages/llm-provider/src/__tests__/pack-signal-contract.test.ts` pins `PIX_CONFIRMATION_SIGNAL === "payment.confirmed"`. Any future Pack version that renames the signal trips this test on dependency upgrade. llm-provider test count: 84 → 85.
 
@@ -295,5 +295,58 @@ Test counts unchanged across consumers: `@ibatexas/api` 642 passing, `@ibatexas/
 
 Cross-link to platform-side ADR: [`packages/pack-payments-pix/docs/ADR-002-defer-guard-factory.md`](https://github.com/BrunoRodolpho/adjudicate/blob/main/packages/pack-payments-pix/docs/ADR-002-defer-guard-factory.md).
 
-**Future follow-up (deferred):** when the `@adjudicate` npm org is claimed and the platform's release pipeline publishes `0.2.0-experimental` to the registry, IbateXas drops the cross-repo workspace include and pins to npm versions. That's a single additional PR (`pnpm-workspace.yaml` -2 lines, two `package.json` changes from `workspace:*` to `^0.2.0-experimental`).
+**Phase 3 — npm migration (2026-05-24):**
+
+The platform repo published all 15 `@adjudicate/*` packages to npm under the unscoped `adjudicate` org owned by `brunoro`:
+
+| Package | Version |
+|---|---|
+| `@adjudicate/core` | `1.0.0` |
+| `@adjudicate/audit`, `@adjudicate/audit-postgres` | `1.0.1` |
+| `@adjudicate/runtime`, `primitives`, `analyze`, `anthropic`, `openai`, `conformance`, `locales-pt-br`, `observability`, `adapter-core`, `cli`, `pack-payments-pix`, `pack-identity-kyc`, `pack-deployments-approval` | `0.1.1` |
+
+A meta-package `adjudicate@0.1.0` was also published (entire monorepo in one tarball) for `npm i -g adjudicate` consumers who want the CLI globally — IbateXas does not consume the meta-package.
+
+**IbateXas-side migration changes:**
+
+- `pnpm-workspace.yaml`: the `../adjudicate/packages/*` and `../adjudicate/examples/*` cross-repo includes are removed. Workspace scope drops from 40 projects to 18 (ibatexas-only).
+- 10 consumer `package.json` files (`apps/api`, `packages/cli`, `packages/domain`, `packages/llm-provider`, `packages/tools`, `packages/pack-{customer-onboarding,orders,payments,reservations,whatsapp}`) replace every `"@adjudicate/*": "workspace:*"` with the appropriate caret-pinned version above (e.g. `"@adjudicate/core": "^1.0.0"`).
+- `pnpm install` resolves all `@adjudicate/*` deps from the registry under `node_modules/.pnpm/@adjudicate+*@*/`. Subpath imports like `@adjudicate/core/kernel` and `@adjudicate/core/llm` continue to work without changes — only the resolution path differs.
+- Full workspace build (`ibx dev build`) verified green: 15/15 turbo tasks successful in 28.6s.
+
+**Upgrade path going forward:** bump the version in the consuming `package.json` and `pnpm install`. No more cross-repo coordination needed for routine version updates.
+
+**Adjacent stale references not addressed in this migration** (carry forward as a separate cleanup):
+- 5 GitHub Actions workflows (`.github/workflows/{ci,deploy,deploy-staging,override-drift,upgrade-radar}.yml`) still check out the adjudicate sibling repo and `mv __adjudicate__ ../adjudicate` to set up the old cross-repo workspace. These steps are now redundant — CI installs `@adjudicate/*` from npm directly. The `ci.yml:17` comment also references "until @adjudicate/* is published to npm".
+- `packages/cli/src/commands/kernel.ts` (lines 262, 267, 271) prints runbook output that references `../adjudicate/packages/audit-postgres/migrations/*.sql` paths. With audit-postgres on npm, those migrations live under `node_modules/.pnpm/@adjudicate+audit-postgres@1.0.1/node_modules/@adjudicate/audit-postgres/migrations/`.
+
+### 14. Kernel always-on cutover (2026-05-24)
+
+**Decision:** Delete the staged-rollout machinery for the adjudicate kernel. The kernel is now always authoritative — every mutation is adjudicated, every decision is audited, no env-var gating, no shadow mode, no kill switch.
+
+**Why:** IbateXas is not in real production. The staged-rollout playbook (shadow → enforce → kill-switch → fail-open ledger → opt-in audit-postgres) was deadweight, and in current dev state the kernel was inert — the `isPureLegacy` branch in `kernel-executor.ts` was taken for every mutation, synthesizing EXECUTE without consulting policy and suppressing audit emission. The framework consumed from npm was loaded but doing zero work on live traffic.
+
+**What was removed:**
+- `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` env vars and their boot-time validators (`assertEnforceConfigNotEmptyAfterTrim`, `validateEnforceConfig`).
+- The 3-way branch (`isEnforced` → `adjudicateWithShadow` → pure-legacy) in `packages/llm-provider/src/kernel-executor.ts`, `packages/llm-provider/src/llm-responder.ts`, and `apps/api/src/routes/__shared__/customer-intent-gateway.ts`. Replaced with unconditional `adjudicate()` + unconditional audit emit.
+- The `legacyDecisionAsKernelDecision` / `adjudicateWithShadow` / `isPureLegacy` machinery from all 3 call sites.
+- `IBX_LEDGER_ENABLED` / `IBX_LEDGER_ENFORCE` / `IBX_LEDGER_FAIL_OPEN` env vars. The ledger is always-on and fail-closed — Redis unreachability surfaces as a `LedgerUnavailableError` that propagates to a `REFUSE { code: "ledger_unavailable" }`. No more fail-open knob (the comment in `intent-ledger.ts` explicitly warned "flip to true only in non-financial paths," which doesn't fit IbateXas's financial paths).
+- `IBX_AUDIT_POSTGRES_ENABLED` env var. The Postgres audit sink is always part of the fan-out (`console + NATS + Postgres`) inside `persistentBufferedSink`. Audit emit remains best-effort at the IbateXas boundary; a Postgres outage spills records to Redis for the `audit-consumer` subscriber to drain on recovery.
+- The kill-switch surface entirely: `packages/tools/src/redis/kill-switch-store.ts`, `apps/api/src/routes/admin/kernel.ts` (HTTP admin route), the `ibx kernel kill-switch` CLI subcommand wiring, the `kernel_kill_switch_state` Prometheus gauge polling, and the corresponding test files. The `@adjudicate/core/kernel` internal kill-switch check still exists inside `adjudicate()` but the Redis key it consults is never written, so it's a constant no-op.
+- The `ibx kernel divergence` CLI subcommand wiring (shadow-mode divergences no longer exist).
+- 5 staged-rollout runbooks at `docs/ops/runbooks/01-stage-…` through `05-stage-pix-charge-pack.md`. Replaced with a single `kernel-operations.md` covering audit-postgres ops, DEFER troubleshooting, Pack version updates, and incident response.
+
+**What was added:**
+- `ibx kernel migrate` — applies the `@adjudicate/audit-postgres` SQL migrations against `$DATABASE_URL`. Idempotent (swallows "already exists" / "duplicate" errors). Lives in `packages/cli/src/commands/kernel.ts`.
+- `ibx bootstrap` invokes `applyAuditPostgresMigrations` as step 4 of 7, so first-time setup brings the `intent_audit` table up automatically.
+- `assertPackCoverage` in `apps/api/src/plugins/kernel-bootstrap.ts` — boot validator that walks `KNOWN_INTENT_KINDS` and throws `PackCoverageError` if any kind is not declared by an installed Pack's `intents` list.
+- `assertAuditPostgresReady` — boot preflight probing `SELECT 1 FROM intent_audit LIMIT 1`. Refuses to boot with a clear actionable error pointing to `ibx bootstrap` if the table is missing.
+
+**Migration path for adopters (the recipe other repos can apply):**
+1. In every consumer of `@adjudicate/core/kernel`, replace the `isEnforced` / `isShadowed` / pure-legacy 3-way branch with a single unconditional `adjudicate(envelope, state, policy)` call. Drop the `isPureLegacy` flag and the audit-emit guard.
+2. Drop `isLedgerEnabled` / `isLedgerEnforced` / fail-open knobs from the ledger adapter. Always wrap in a metrics-recording fail-closed shim.
+3. Drop the postgres-enabled gate from the audit-wiring fan-out; always include the Postgres sink.
+4. Delete the kill-switch CLI/HTTP/store surface.
+5. In the api boot anchor, add a Pack-coverage validator and an audit-postgres preflight.
+6. Add an `ibx kernel migrate` (or equivalent) command that resolves the `@adjudicate/audit-postgres` package via `import.meta.resolve` and applies `migrations/*.sql` against `$DATABASE_URL`. Wire it into the existing setup command.
 
