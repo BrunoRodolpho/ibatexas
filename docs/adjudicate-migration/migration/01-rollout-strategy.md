@@ -3,7 +3,7 @@
 **Status:** Draft v0.1 — pending stakeholder review
 **Owner:** Migration Planner (Claude)
 **Last updated:** 2026-05-22
-**Companion docs:** `02-milestones.md`, `03-blast-radius-analysis.md`, `04-shadow-enforce-sequencing.md`, `05-kill-switch-strategy.md`, `06-observability-requirements.md`, `07-production-safety-checklist.md`
+**Companion docs:** `02-milestones.md`, `03-blast-radius-analysis.md`, `../superseded/04-shadow-enforce-sequencing.md`, `../superseded/05-kill-switch-strategy.md`, `06-observability-requirements.md`, `07-production-safety-checklist.md`
 
 ---
 
@@ -57,9 +57,9 @@ The operator-facing track. Owns the per-intent-kind flip sequence, the divergenc
 
 **Concrete deliverables:**
 
-- Per-intent shadow rollout (driven by `04-shadow-enforce-sequencing.md`).
+- Per-intent shadow rollout (driven by `../superseded/04-shadow-enforce-sequencing.md`).
 - Per-intent divergence dashboard (PostHog + Grafana, per `06-observability-requirements.md`).
-- Per-intent kill switch surface (`05-kill-switch-strategy.md`).
+- Per-intent kill switch surface (`../superseded/05-kill-switch-strategy.md`).
 - Per-intent enforce flip with rehearsed rollback (`07-production-safety-checklist.md`).
 - Daily replay job consuming the audit Postgres table (per `investigation/05 §"Capabilities ibatexas should adopt"` Tier 1 item 8).
 
@@ -83,8 +83,8 @@ stateDiagram-v2
 **Rules:**
 
 1. An intent kind must be in `IBX_KERNEL_SHADOW` for ≥7 days before it can be added to `IBX_KERNEL_ENFORCE`.
-2. During shadow, divergence rates must satisfy the thresholds in `04-shadow-enforce-sequencing.md` (typically `DECISION_KIND` = 0, `PAYLOAD_REWRITE` = 0, `BASIS_ONLY` < 5% for ≥7 consecutive days).
-3. An intent kind moves from `enforce` back to `shadow` via the per-intent kill switch (`05-kill-switch-strategy.md`). Rollback is reversible — no data loss, no schema change.
+2. During shadow, divergence rates must satisfy the thresholds in `../superseded/04-shadow-enforce-sequencing.md` (typically `DECISION_KIND` = 0, `PAYLOAD_REWRITE` = 0, `BASIS_ONLY` < 5% for ≥7 consecutive days).
+3. An intent kind moves from `enforce` back to `shadow` via the per-intent kill switch (`../superseded/05-kill-switch-strategy.md`). Rollback is reversible — no data loss, no schema change.
 4. The transition from `legacy → shadow` is also a flip, but lower stakes: shadow does not change legacy behaviour. Shadow can be enabled as soon as the entrypoint is wrapped *and* observability is live.
 
 **What "shadow" means concretely:**
@@ -150,7 +150,7 @@ Phase 3 is the destination. It means: a new contributor can't introduce a mutati
 
 **The rule:** before any intent kind flips to `enforce`, the corresponding kill-switch path must be exercised in staging within the prior 7 days. No exceptions.
 
-**Three layers of kill switch** (full detail in `05-kill-switch-strategy.md`):
+**Three layers of kill switch** (full detail in `../superseded/05-kill-switch-strategy.md`):
 
 1. **Global** — `IBX_KILL_SWITCH=1` at boot, or `setKillSwitch(true, reason)` at runtime, or `POST /api/admin/kernel/kill-switch` from the operator console. Every intent refuses with `SECURITY/kill_switch_active`.
 2. **Per-intent** — `createDistributedKillSwitchPubSub` per intent kind (per `investigation/05 §"Cross-replica coordination"`). Flips one kind from `enforce` back to `shadow` without a redeploy.
@@ -223,7 +223,7 @@ gantt
 | Engage per-intent kill switch | On-call (any) | `ibx kernel kill-switch enable <intent>` |
 | Approve a new intent kind | Owner of the Pack that hosts it | Pack `intents` set + ADR |
 | Approve a new mutation entrypoint | Code reviewer + bypass-detection CI gate | PR review + CI |
-| Resume from kill-switched state | Migration lead | Post-mortem template (`05-kill-switch-strategy.md`) |
+| Resume from kill-switched state | Migration lead | Post-mortem template (`../superseded/05-kill-switch-strategy.md`) |
 | Approve enforce of a payment-touching intent | Migration lead + finance + ops lead | Pre-flight checklist sign-offs |
 | Approve enforce of `customer.anonymize` | Migration lead + legal | Pre-flight checklist sign-offs |
 
@@ -250,7 +250,7 @@ For each intent kind in scope:
 - [ ] Registered against a Pack with explicit `default` (no implicit EXECUTE).
 - [ ] Has a guard for every legal state transition.
 - [ ] Has a dashboard panel showing rate / latency / refusal breakdown (`06-observability-requirements.md` Dashboard 1).
-- [ ] Has run in shadow ≥7 days with divergence below threshold (`04-shadow-enforce-sequencing.md`).
+- [ ] Has run in shadow ≥7 days with divergence below threshold (`../superseded/04-shadow-enforce-sequencing.md`).
 - [ ] Has been flipped to enforce with the pre-flight checklist signed off.
 - [ ] Has a per-intent kill switch tested in staging within the last quarter.
 - [ ] Has the post-stage report filed at `docs/ops/runbooks/reports/<intent>-<date>.md`.

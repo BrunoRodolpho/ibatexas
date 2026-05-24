@@ -3,7 +3,7 @@
 **Status:** Reconciled v0.2 (W3 correctness wave)
 **Owner:** Migration Planner
 **Last updated:** 2026-05-23
-**Companion docs:** `01-rollout-strategy.md`, `04-shadow-enforce-sequencing.md` (per-tier thresholds), `05-kill-switch-strategy.md`, `07-production-safety-checklist.md`
+**Companion docs:** `01-rollout-strategy.md`, `../superseded/04-shadow-enforce-sequencing.md` (per-tier thresholds), `../superseded/05-kill-switch-strategy.md`, `07-production-safety-checklist.md`
 
 > **W3 reconciliation note (2026-05-23).** The deep audit
 > (`deep-audit/06-docs-vs-reality.md` §"Ghost metrics") flagged 11 metric
@@ -130,11 +130,11 @@ sum by (kind) (rate(kernel_refusal_total[5m]))
 **Labels:** `class` (`BASIS_ONLY | DECISION_KIND | PAYLOAD_REWRITE`), `intent_kind`
 **Verified at:** `apps/api/src/plugins/kernel-metrics-sink.ts:184-191` (registration), `:471-476` (increment in recordShadowDivergence)
 
-**Naming note (W3 reconciliation):** The runbook (`SHADOW-ENFORCE-ROLLOUT.md` line 86) previously used label `divergence=` in its PromQL; code emits label `class=`. The runbook is fixed in W3.
+**Naming note (W3 reconciliation):** The runbook (`../superseded/SHADOW-ENFORCE-ROLLOUT.md` line 86) previously used label `divergence=` in its PromQL; code emits label `class=`. The runbook is fixed in W3.
 
 **Increment trigger:** `adjudicateWithShadow` returns a divergence; the `ShadowTelemetrySink` (per `investigation/05 §"@adjudicate/core/kernel"`) records it.
 
-**Why this matters:** This is the **enforce-flip gate metric** per `04-shadow-enforce-sequencing.md`. Per-tier thresholds:
+**Why this matters:** This is the **enforce-flip gate metric** per `../superseded/04-shadow-enforce-sequencing.md`. Per-tier thresholds:
 - Tier 1: `BASIS_ONLY < 5%`, `DECISION_KIND = 0`, `PAYLOAD_REWRITE = 0` for 7 days.
 - Tier 4: `BASIS_ONLY < 1%`, others = 0 for 14–28 days.
 
@@ -214,7 +214,7 @@ These extend the six core metrics and are also part of the contract. Every name 
 - ~~`kernel_audit_sink_failures_total`~~ (plural) → `kernel_audit_sink_failure_total` (singular).
 - ~~`kernel_entrypoint_coverage_ratio`~~ → `kernel_intent_kind_coverage` (the metric measures intent-kind coverage, not entrypoint coverage).
 - ~~`kernel_replay_drift_count_total`~~ — folded into `kernel_replay_drift_total{class}` (single counter with class label is canonical).
-- ~~`kernel_kill_switch_toggle_total`~~ — not yet implemented (kill-switch toggle is operator-initiated; the state gauge is sufficient until a per-toggle audit event lands per `05-kill-switch-strategy.md`).
+- ~~`kernel_kill_switch_toggle_total`~~ — not yet implemented (kill-switch toggle is operator-initiated; the state gauge is sufficient until a per-toggle audit event lands per `../superseded/05-kill-switch-strategy.md`).
 
 ---
 
@@ -580,7 +580,7 @@ Per `investigation/07 §"NATS audit subjects"`:
   - `audit.intent.defer.v1` — park events (envelope, signal, parkedAt).
   - `audit.intent.resume.v1` — resume events (parked envelope hash, resumed at).
   - `audit.ledger.op.v1` — ledger latency stream.
-  - `audit.intent.kill_switch.v1` — kill switch toggles (per `05-kill-switch-strategy.md`).
+  - `audit.intent.kill_switch.v1` — kill switch toggles (per `../superseded/05-kill-switch-strategy.md`).
 
 All subjects under the `ibatexas.` house prefix.
 
@@ -636,7 +636,7 @@ Failures (any `regressing` or `flapping`) emit `kernel_replay_drift_total{class}
 - [ ] CI gate: audit redaction contract test green for 14 consecutive days.
 - [ ] Daily replay job running; last 7 days drift class = `stable`.
 - [ ] `ibx kernel status` and `ibx kernel replay` CLIs functional.
-- [ ] On-call drilled on dashboards (quarterly chaos test pass per `05-kill-switch-strategy.md`).
+- [ ] On-call drilled on dashboards (quarterly chaos test pass per `../superseded/05-kill-switch-strategy.md`).
 
 ---
 

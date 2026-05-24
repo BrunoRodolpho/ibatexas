@@ -1,3 +1,7 @@
+> ⚠️ **PARTIALLY SUPERSEDED on 2026-05-23.** This document enumerated open items before Wave 7. Per [`audit-2026-05-23/open-blockers-reconciliation.md`](./audit-2026-05-23/open-blockers-reconciliation.md), 38 of 52 items have since been closed and 3 deliberately deferred. The remaining 9 still-open items appear in `audit-2026-05-23/SYNTHESIS.md` under "Critical findings". The content below is preserved unchanged.
+
+---
+
 # Open Blockers
 
 Anything marked `BLOCKED` here halts a specific task. Dependents are marked `DEFERRED` in `current-state.md`.

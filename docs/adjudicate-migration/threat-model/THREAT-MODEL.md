@@ -4,7 +4,7 @@
 **Owner:** Security review + migration lead
 **Last reviewed:** 2026-05-23
 **Annual review cadence:** Every 2026-05 (calendar reminder + ticket cut).
-**Companion docs:** `../audit/05-security-red-team.md`, `../audit/AUDIT-SYNTHESIS.md`, `../remediation/REMEDIATION-COMPLETE.md`, `../runbooks/SHADOW-ENFORCE-ROLLOUT.md`, `../remediation/NATS-AUTH-REQUIREMENTS.md`.
+**Companion docs:** `../audit/05-security-red-team.md`, `../audit/AUDIT-SYNTHESIS.md`, `../remediation/REMEDIATION-COMPLETE.md`, `../superseded/SHADOW-ENFORCE-ROLLOUT.md`, `../remediation/NATS-AUTH-REQUIREMENTS.md`.
 
 ---
 

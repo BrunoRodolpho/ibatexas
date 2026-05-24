@@ -3,7 +3,7 @@
 **Status:** Draft v0.1
 **Owner:** Migration Planner
 **Last updated:** 2026-05-22
-**Companion docs:** `01-rollout-strategy.md`, `04-shadow-enforce-sequencing.md`, `05-kill-switch-strategy.md`, `07-production-safety-checklist.md`
+**Companion docs:** `01-rollout-strategy.md`, `../superseded/04-shadow-enforce-sequencing.md`, `../superseded/05-kill-switch-strategy.md`, `07-production-safety-checklist.md`
 
 ---
 
@@ -317,7 +317,7 @@ Tier 4 intents should use all three. Tier 1/2/3 use the standard alerting.
 
 ## Per-intent rollback playbook
 
-For each tier in `04-shadow-enforce-sequencing.md`:
+For each tier in `../superseded/04-shadow-enforce-sequencing.md`:
 
 ```mermaid
 flowchart TD
@@ -334,7 +334,7 @@ flowchart TD
     J -->|No| K[Log; add scenario fixture; revisit at next milestone]
 ```
 
-The kill switch is the always-safe rollback. The post-mortem template (`05-kill-switch-strategy.md`) standardises the recovery procedure.
+The kill switch is the always-safe rollback. The post-mortem template (`../superseded/05-kill-switch-strategy.md`) standardises the recovery procedure.
 
 ---
 

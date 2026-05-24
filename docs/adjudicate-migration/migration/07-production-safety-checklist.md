@@ -3,7 +3,7 @@
 **Status:** Draft v0.1
 **Owner:** Migration Planner
 **Last updated:** 2026-05-22
-**Companion docs:** `01-rollout-strategy.md`, `04-shadow-enforce-sequencing.md`, `05-kill-switch-strategy.md`, `06-observability-requirements.md`
+**Companion docs:** `01-rollout-strategy.md`, `../superseded/04-shadow-enforce-sequencing.md`, `../superseded/05-kill-switch-strategy.md`, `06-observability-requirements.md`
 
 ---
 
@@ -34,7 +34,7 @@ Before flipping any intent kind from shadow to enforce, **every** item below mus
 - [ ] **Shadow data for ≥ tier-minimum days.** Tier 1+2: ≥7 days. Tier 3: ≥14 days. Tier 4: ≥21 days (or 28 for `customer.anonymize`).
 - [ ] **`kernel_shadow_divergence_total{class="DECISION_KIND"} = 0`** over the soak window.
 - [ ] **`kernel_shadow_divergence_total{class="PAYLOAD_REWRITE"} = 0`** over the soak window.
-- [ ] **`kernel_shadow_divergence_total{class="BASIS_ONLY"}` rate below tier threshold** (5% / 3% / 2% / 1% per `04-shadow-enforce-sequencing.md` per tier).
+- [ ] **`kernel_shadow_divergence_total{class="BASIS_ONLY"}` rate below tier threshold** (5% / 3% / 2% / 1% per `../superseded/04-shadow-enforce-sequencing.md` per tier).
 - [ ] **All `BASIS_ONLY` patterns documented** in the per-intent shadow review doc (matching `docs/ops/runbooks/01-stage-read-mutations.md` §"Expected divergence patterns").
 
 ### Section 3 — Observability and audit
@@ -52,7 +52,7 @@ Before flipping any intent kind from shadow to enforce, **every** item below mus
 - [ ] **Distributed kill-switch propagation verified.** Multi-replica staging deploy confirms all replicas mirror the kill-switch state.
 - [ ] **Runbook reviewed and rehearsed.** A team member can execute the rollback procedure from the runbook in <2 minutes.
 - [ ] **Customer-impact rollback plan documented.** Per `03-blast-radius-analysis.md` scenarios.
-- [ ] **Rollback owner identified and reachable.** Per-tier owner per `04-shadow-enforce-sequencing.md`.
+- [ ] **Rollback owner identified and reachable.** Per-tier owner per `../superseded/04-shadow-enforce-sequencing.md`.
 
 ### Section 5 — Communication and staffing
 
@@ -206,7 +206,7 @@ When an alert fires post-enforce:
 - Roll back a Pack version: Primary on-call + migration lead approval.
 - Roll back a deployment: Primary on-call + migration lead + ops lead.
 
-**Procedure** (mirrors `05-kill-switch-strategy.md` §"Recovery procedure"):
+**Procedure** (mirrors `../superseded/05-kill-switch-strategy.md` §"Recovery procedure"):
 1. Acknowledge in PagerDuty.
 2. Open the related dashboard (Dashboard 1 / 2 / 3 / 4 per symptom).
 3. Triage the scope: which switch?
@@ -296,7 +296,7 @@ Expected output: `regressing: 0; flapping: 0` (all divergences resolved).
 
 ### Step 5 — File post-mortem
 
-Use the template in `05-kill-switch-strategy.md` §"Recovery procedure" → Step 6.
+Use the template in `../superseded/05-kill-switch-strategy.md` §"Recovery procedure" → Step 6.
 
 ---
 
@@ -306,7 +306,7 @@ Every quarter, on-call drills the safety infrastructure in staging:
 
 ### Quarter X Week 1 — Kill switch propagation drill
 
-**Drill 1: Global kill switch** (per `05-kill-switch-strategy.md` Drill 1)
+**Drill 1: Global kill switch** (per `../superseded/05-kill-switch-strategy.md` Drill 1)
 
 - Run synthetic traffic generator at 10 req/s of mixed intents.
 - Engage global kill switch via CLI.
@@ -314,7 +314,7 @@ Every quarter, on-call drills the safety infrastructure in staging:
 - Disengage; verify recovery < 30s.
 - Pass = no replica stuck; metric counters reflect toggle.
 
-**Drill 2: Per-intent kill switch** (per `05-kill-switch-strategy.md` Drill 2)
+**Drill 2: Per-intent kill switch** (per `../superseded/05-kill-switch-strategy.md` Drill 2)
 
 - Per active enforce intent: engage + disengage.
 - Pass criteria: same.

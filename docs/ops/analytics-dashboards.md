@@ -382,7 +382,7 @@ The same `MetricsSink` adapter that emits the 8 PostHog `audit_*` events above a
 | `kernel_decision_total` | Counter | `kind` (Decision kind: EXECUTE / REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE / REWRITE), `intent_kind` | Every adjudicate() call. Refusal-rate denominator. |
 | `kernel_refusal_total` | Counter | `kind` (refusal kind: SECURITY / BUSINESS_RULE / AUTH / STATE), `intent_kind`, `basis_category`, `basis_code` | Per-intent refusal distribution. Alert on >2× 7-day baseline. |
 | `kernel_decision_duration_seconds` | Histogram | `intent_kind` | adjudicate() latency in seconds. Alert on p99 > 100ms. Buckets: 1ms — 10s. |
-| `kernel_shadow_divergence_total` | Counter | `class` (BASIS_ONLY / DECISION_KIND / PAYLOAD_REWRITE), `intent_kind` | Enforce-flip gate metric per `04-shadow-enforce-sequencing.md`. |
+| `kernel_shadow_divergence_total` | Counter | `class` (BASIS_ONLY / DECISION_KIND / PAYLOAD_REWRITE), `intent_kind` | Enforce-flip gate metric per `../adjudicate-migration/superseded/04-shadow-enforce-sequencing.md`. |
 | `kernel_ledger_op_total` | Counter | `outcome` (hit / miss / ok / duplicate / error), `op` (check / record) | Execution Ledger fail-open detection. |
 | `kernel_audit_sink_failure_total` | Counter | `sink` (nats / postgres / console), `reason` (errorClass) | NATS / Postgres audit pipeline health. Drives circuit-breaker engagement. |
 | `kernel_defer_resume_duration_seconds` | Histogram | `kind` | Park-to-resume latency for DEFER intents. Populated by the resolver (Task 03). Buckets: 100ms — 4h. |

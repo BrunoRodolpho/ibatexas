@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-23.** This document describes a pre-cutover migration plan. The plan has been executed (IBX-IGE v3.0 always-on cutover landed at commit `f3bea43`; ~200 commits of implementation work followed across 9 correctness waves). For the current-as-of-2026-05-23 gap report, see [`audit-2026-05-23/SYNTHESIS.md`](./audit-2026-05-23/SYNTHESIS.md). For historical record of the original plan, the content below is preserved unchanged.
+
+---
+
 # Adjudicate Migration — Master Plan
 
 **Status:** Draft v0.1 — pending stakeholder review before Phase 5 execution
