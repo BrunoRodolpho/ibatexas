@@ -903,6 +903,34 @@ export async function anonymizeCustomer(customerId: string) {
           data: { payload: { anonymized: true } },
         })
       }
+
+      // (11) Surface 6: LoyaltyAccount — reset aggregate counters per
+      // G2-c pick ("scrub linkage + reset balance to 0; don't delete").
+      //
+      // Schema deviation from G2-c expectation: LoyaltyAccount.customerId
+      // is `String @unique` and NOT nullable, AND has a FK enforced via
+      // `customer Customer @relation(... onDelete: Cascade)`. We CANNOT
+      // null the column from app code without a schema migration, and we
+      // CANNOT substitute a sentinel customerId because the FK constraint
+      // requires the value to exist in Customer.id. The Customer row is
+      // kept (anonymized in place, not deleted), so the FK stays valid.
+      //
+      // The effective linkage break still happens: the Customer row
+      // pointed at by this LoyaltyAccount.customerId now carries
+      // name="Usuário Removido", email=null, phone=sentinel, cpf=null.
+      // Anyone joining LoyaltyAccount → Customer for PII access lands
+      // on the scrubbed Customer; no original-customer PII reaches the
+      // consumer. Counters (stamps/totalEarned/redeemed) are reset to
+      // zero to remove aggregate-stat reconstructability.
+      //
+      // Per H3 task acceptance criteria + schema constraint, this is
+      // the closest implementation of G2-c without a schema migration
+      // (out of Wave-A1 scope). Documented as a schema-mismatch deviation
+      // in the agent report.
+      await tx.loyaltyAccount.updateMany({
+        where: { customerId },
+        data: { stamps: 0, totalEarned: 0, redeemed: 0 },
+      })
     },
     {
       timeout: ANONYMIZE_TX_TIMEOUT_MS,
