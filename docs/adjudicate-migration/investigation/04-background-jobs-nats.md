@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Phase-1 pre-cutover investigation (2026-05-22). The NATS/BullMQ inventory + "Zero subscribers go through `adjudicate()`" finding drove the system-actor envelope discipline now codified in `apps/api/src/subscribers/__shared__/`. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # 04 — Background Jobs, NATS, Deferred Workflows
 
 > Scope: NATS subscribers, publishers, BullMQ workers/jobs, the Redis outbox, the DLQ,

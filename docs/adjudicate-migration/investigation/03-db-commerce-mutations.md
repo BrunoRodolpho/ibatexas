@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Phase-1 pre-cutover investigation (2026-05-22). The ~50 Prisma mutation site inventory and "0% adjudication coverage" finding drove the migration. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # 03 — Database & Commerce Mutation Surfaces
 
 Scope: every persistence-layer mutation in the IbateXas monorepo — Prisma writes

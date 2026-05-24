@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Phase-1 pre-cutover investigation (2026-05-22). Trust-boundary mapping informed [`../governance/03-trust-boundary-model.md`](../governance/03-trust-boundary-model.md) (load-bearing constitutional). The PII-in-audit-payload concern drove the audit-redactor work. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md) and [`../threat-model/THREAT-MODEL.md`](../threat-model/THREAT-MODEL.md). Content preserved unchanged below as historical record.
+
+---
+
 # 08 — Security & Trust Boundaries
 
 > Investigator 8 / 8. Scope: security boundaries and trust-crossing surfaces in

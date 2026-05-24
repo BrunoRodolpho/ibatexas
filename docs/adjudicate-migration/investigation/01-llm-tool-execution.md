@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Phase-1 pre-cutover investigation (2026-05-22). The "kernel is dormant" diagnosis catalysed M0-M2; the env-var gating (`IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE`) it references was deleted by the cutover (`f3bea43`). Per `CLAUDE.md` rule #9, the kernel is now always authoritative. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # 01 — LLM Tool Execution Path
 
 Scope: every file under `packages/llm-provider/src/` plus the API entrypoints that drive

@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Phase-1 pre-cutover investigation (2026-05-22). The "kernel dormant by accident" diagnosis no longer applies — the always-on cutover (`f3bea43`) deleted env-var gating; `installPack()` and `validateEnforceConfig()` boot hooks are wired via the H2 audit-sink bootstrap. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # 06 — Runtime Config & Governance Plumbing
 
 ## Executive summary
