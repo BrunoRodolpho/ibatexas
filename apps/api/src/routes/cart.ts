@@ -18,7 +18,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { buildEnvelope } from "@adjudicate/core";
+import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 import {
   getRedisClient,
   rk,
@@ -45,7 +45,6 @@ import {
 import { getAuditSink } from "@ibatexas/llm-provider";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
-import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 
 // ── P0-X9 migration helpers ────────────────────────────────────────────────
 //
@@ -172,15 +171,14 @@ export async function cachePixDetailsForCustomer(
       email: data.email ?? "",
       cpf: data.cpf ?? "",
     };
-    const envelope = buildEnvelope<
+    const envelope = buildCustomerEnvelope<
       "customer.pix.details.save",
       CustomerPixDetailsSavePayload
     >({
       kind: "customer.pix.details.save",
       payload,
       nonce: randomUUID(),
-      actor: { principal: "user", sessionId: customerId },
-      taint: "UNTRUSTED",
+      customerId,
     });
     const state: CustomerOnboardingState = {
       ctx: {
@@ -859,12 +857,11 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         request.headers["idempotency-key"],
         `${cartId}:checkout`,
       );
-      const envelope = buildEnvelope<"order.checkout.create", OrderCheckoutCreatePayload>({
+      const envelope = buildCustomerEnvelope<"order.checkout.create", OrderCheckoutCreatePayload>({
         kind: "order.checkout.create",
         payload: checkoutPayload,
         nonce: deriveCartNonce(checkoutIdempotencyKey),
-        actor: { principal: "user", sessionId },
-        taint: "UNTRUSTED",
+        customerId: sessionId,
       });
 
       // The order pack adjudicates against this minimal state slice. We
@@ -963,7 +960,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
               },
             });
             if (projection) {
-              const noteEnvelope = buildEnvelope<
+              const noteEnvelope = buildCustomerEnvelope<
                 "order.note.add",
                 OrderNoteAddPayload
               >({
@@ -973,13 +970,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
                   body: request.body.notes,
                 },
                 nonce: randomUUID(),
-                actor: {
-                  principal: "user",
-                  sessionId: request.customerId
-                    ? `customer:${request.customerId}`
-                    : `cart:${cartId}`,
-                },
-                taint: "UNTRUSTED",
+                customerId: request.customerId
+                  ? `customer:${request.customerId}`
+                  : `cart:${cartId}`,
               });
               const noteOrderState: OrderState = {
                 ctx: {

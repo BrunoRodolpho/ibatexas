@@ -51,7 +51,7 @@ import {
 import { getAuditSink } from "@ibatexas/llm-provider";
 import { type AgentContext, Channel } from "@ibatexas/types";
 import { requireAuth } from "../middleware/auth.js";
-import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 
 /** Build a minimal AgentContext for API-originated tool calls. */
 function apiContext(customerId: string): AgentContext {
@@ -320,12 +320,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         request.headers["idempotency-key"],
         `${id}:cancel:${customerId}`,
       );
-      const envelope = buildEnvelope<"order.cancel", OrderCancelPayload>({
+      const envelope = buildCustomerEnvelope<"order.cancel", OrderCancelPayload>({
         kind: "order.cancel",
         payload: cancelPayload,
         nonce: deriveNonce(cancelIdempotencyKey),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        customerId,
       });
 
       const orderState: OrderState = {
@@ -351,7 +350,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
             // outer `order.cancel` envelope is already adjudicated by
             // runCustomerIntent; these inner envelopes adjudicate the
             // projection-level transitions (order + payment).
-            const orderTransitionEnvelope = buildEnvelope<
+            const orderTransitionEnvelope = buildCustomerEnvelope<
               "order.status.transition",
               OrderStatusTransitionPayload
             >({
@@ -364,8 +363,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
                 reason: request.body.reason ?? "Cancelado pelo cliente",
               },
               nonce: randomUUID(),
-              actor: { principal: "user", sessionId: customerId },
-              taint: "UNTRUSTED",
+              customerId,
             });
             const orderOutcome = await orderCmdSvc.transitionStatusFromEnvelope(
               orderTransitionEnvelope,
@@ -649,12 +647,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           },
         ],
       };
-      const envelope = buildEnvelope<"order.amend.request", OrderAmendRequestPayload>({
+      const envelope = buildCustomerEnvelope<"order.amend.request", OrderAmendRequestPayload>({
         kind: "order.amend.request",
         payload: amendPayload,
         nonce: randomUUID(),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        customerId,
       });
 
       const orderState: OrderState = {
@@ -733,7 +730,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         // Should not occur — verifyOwnership above passed — but bail safely.
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
-      const noteEnvelope = buildEnvelope<
+      const noteEnvelope = buildCustomerEnvelope<
         "order.note.add",
         OrderNoteAddPayload
       >({
@@ -743,11 +740,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           body: request.body.content,
         },
         nonce: randomUUID(),
-        actor: {
-          principal: "user",
-          sessionId: `customer:${customerId}`,
-        },
-        taint: "UNTRUSTED",
+        customerId: `customer:${customerId}`,
       });
       const noteOrderState: OrderState = {
         ctx: {
@@ -1429,12 +1422,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           zip: reqBody.address.postalCode,
         },
       };
-      const envelope = buildEnvelope<"order.address.change", OrderAddressChangePayload>({
+      const envelope = buildCustomerEnvelope<"order.address.change", OrderAddressChangePayload>({
         kind: "order.address.change",
         payload: addressPayload,
         nonce: randomUUID(),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        customerId,
       });
 
       const orderState: OrderState = {
@@ -1541,12 +1533,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         newType: packNewType,
         httpVocab: newType,
       };
-      const envelope = buildEnvelope<"order.type.switch", OrderTypeSwitchPayload>({
+      const envelope = buildCustomerEnvelope<"order.type.switch", OrderTypeSwitchPayload>({
         kind: "order.type.switch",
         payload: typePayload,
         nonce: randomUUID(),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        customerId,
       });
 
       const orderState: OrderState = {

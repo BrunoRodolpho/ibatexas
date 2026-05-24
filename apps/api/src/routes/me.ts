@@ -46,7 +46,6 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { buildEnvelope } from "@adjudicate/core";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import {
   parkDeferredIntentWithNxGuard,
@@ -66,7 +65,7 @@ import {
 } from "@ibatexas/pack-customer-onboarding";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import { requireAuth } from "../middleware/auth.js";
-import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 import {
   ANONYMIZE_GRACE_TTL_SECONDS,
   ANONYMIZE_FAIL_THRESHOLD,
@@ -481,12 +480,11 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         otpToken: "verified",
         scope: "lgpd_art_18",
       };
-      const envelope = buildEnvelope<"customer.anonymize", CustomerAnonymizePayload>({
+      const envelope = buildCustomerEnvelope<"customer.anonymize", CustomerAnonymizePayload>({
         kind: "customer.anonymize",
         payload,
         nonce: deriveMeNonce(initiateIdempotencyKey),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        customerId,
       });
 
       // Project state for the pack policy. `otpFresh` is true here
@@ -770,12 +768,11 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         otpToken: otpCode,
         scope: "lgpd_art_18",
       };
-      const envelope = buildEnvelope<"customer.anonymize", CustomerAnonymizePayload>({
+      const envelope = buildCustomerEnvelope<"customer.anonymize", CustomerAnonymizePayload>({
         kind: "customer.anonymize",
         payload,
         nonce: deriveMeNonce(legacyIdempotencyKey),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        customerId,
       });
 
       // (f) Project state for the pack policy. `otpFresh` is true here
@@ -1010,15 +1007,14 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         `${customerId}:anonymize:cancel:${receipt.intentHash}`,
       );
       const payload: CustomerAnonymizeCancelPayload = { customerId };
-      const envelope = buildEnvelope<
+      const envelope = buildCustomerEnvelope<
         "customer.anonymize.cancel",
         CustomerAnonymizeCancelPayload
       >({
         kind: "customer.anonymize.cancel",
         payload,
         nonce: deriveMeNonce(cancelIdempotencyKey),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        customerId,
       });
 
       const state: CustomerOnboardingState = {
