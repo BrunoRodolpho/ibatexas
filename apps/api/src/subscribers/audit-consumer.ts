@@ -6,12 +6,11 @@
 // writes the record durably to Postgres via `@adjudicate/audit-postgres`.
 //
 // Why a second writer alongside the in-process Postgres sink?
-//   The in-process sink (composed inside `intent-audit-wiring.ts` when
-//   IBX_AUDIT_POSTGRES_ENABLED=true) writes synchronously inside the
-//   request path. If the API process crashes between the NATS publish and
-//   the Postgres INSERT, the audit row is lost. NATS guarantees at-least-
-//   once delivery to subscribed consumers; this subscriber catches up any
-//   record the in-process sink missed.
+//   The in-process sink (composed inside `intent-audit-wiring.ts`) writes
+//   synchronously inside the request path. If the API process crashes
+//   between the NATS publish and the Postgres INSERT, the audit row is
+//   lost. NATS guarantees at-least-once delivery to subscribed consumers;
+//   this subscriber catches up any record the in-process sink missed.
 //
 //   Two layers of dedup keep the second writer idempotent:
 //     1. `isNewEvent(audit.intent.decision.v1:<intentHash>:<recordAt>)` —
@@ -26,9 +25,10 @@
 //   - Malformed payload: log + DLQ; never throw to the NATS subscriber
 //     loop (a throw would tear down the SCAN/dispatch loop).
 //
-// Feature flag: subscriber is a no-op (logs once, registers nothing) when
-// `IBX_AUDIT_POSTGRES_ENABLED !== "true"`. This keeps the rollout aligned
-// with the in-process sink — both off, both on.
+// Always-on durability: per IBX-IGE v3.0 cutover (CLAUDE.md rule #9), the
+// in-process Postgres sink is always composed and this consumer is always
+// subscribed. There is no env-var gate — the audit-postgres redundancy
+// path runs unconditionally alongside the in-process sink.
 
 import type { AuditRecord } from "@adjudicate/core"
 import {
@@ -59,19 +59,13 @@ export function _setAuditConsumerWriter(writer: PostgresWriter | null): void {
 }
 
 /**
- * Wire the audit-consumer subscriber. No-op when the Postgres sink is
- * disabled (the in-process sink and the consumer roll out together).
+ * Wire the audit-consumer subscriber. Always-on per IBX-IGE v3.0 cutover:
+ * subscribes to `audit.intent.decision.v1` and durably persists each
+ * record to Postgres as the redundancy path behind the in-process sink.
  */
 export async function startAuditConsumer(
   log?: FastifyBaseLogger,
 ): Promise<void> {
-  if (process.env.IBX_AUDIT_POSTGRES_ENABLED !== "true") {
-    log?.info(
-      "[audit-consumer] IBX_AUDIT_POSTGRES_ENABLED!=true — consumer disabled",
-    )
-    return
-  }
-
   // Build the writer once at startup. `createPostgresSink` wraps it in the
   // emit-error reporting layer we want for the redundancy path too.
   const writer =

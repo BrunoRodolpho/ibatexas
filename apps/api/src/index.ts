@@ -114,9 +114,9 @@ const start = async (): Promise<void> => {
       await startAnonymizeGraceResolverSubscriber(server.log);
       // [task 19] M4 audit-postgres redundancy consumer. Subscribes to
       // `audit.intent.decision.v1` and writes records durably to Postgres
-      // — decoupled-archiver pattern. No-op when IBX_AUDIT_POSTGRES_ENABLED
-      // is not "true"; pairs with the in-process Postgres sink composed by
-      // `intent-audit-wiring.ts`. Both flip together per runbook 04.
+      // — decoupled-archiver pattern. Always-on per IBX-IGE v3.0 cutover
+      // (CLAUDE.md rule #9); pairs with the in-process Postgres sink
+      // composed by `intent-audit-wiring.ts`.
       await startAuditConsumer(server.log);
 
       // Start all BullMQ background workers
