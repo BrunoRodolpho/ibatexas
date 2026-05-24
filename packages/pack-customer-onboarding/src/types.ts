@@ -98,10 +98,16 @@ export interface CustomerProfileUpdatePayload {
  * The policy refuses if it's absent or inferred from prose — allergens
  * are safety-critical and the LLM cannot guess them. Empty array `[]`
  * is the canonical "no exclusions" shape and is accepted as-is.
+ *
+ * `favoriteCategories` is non-safety-critical preference metadata
+ * (category handles like "churrasco", "grelhados"); kept on the payload
+ * so the executor can persist it as part of the same envelope rather
+ * than threading a separate side-channel through `extras`.
  */
 export interface CustomerPreferencesUpdatePayload {
   readonly allergenExclusions: ReadonlyArray<string>
   readonly dietaryFlags?: ReadonlyArray<string>
+  readonly favoriteCategories?: ReadonlyArray<string>
 }
 
 /**

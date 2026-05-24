@@ -575,6 +575,126 @@ describe("ordersPack — PackV0 shape", () => {
   })
 })
 
+// ── order.review.submit ─────────────────────────────────────────────────
+
+describe("ordersPolicyBundle — order.review.submit", () => {
+  it("EXECUTE happy path: rating=5, orderId set, customer authenticated", () => {
+    const decision = adjudicate(
+      env("order.review.submit", {
+        orderId: "o-1",
+        productId: "prod-1",
+        rating: 5,
+        comment: "Tudo ótimo!",
+      }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("EXECUTE happy path: rating=1 (lower boundary)", () => {
+    const decision = adjudicate(
+      env("order.review.submit", {
+        orderId: "o-1",
+        productId: "prod-1",
+        rating: 1,
+      }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE: rating=0 (below range)", () => {
+    const decision = adjudicate(
+      env("order.review.submit", {
+        orderId: "o-1",
+        productId: "prod-1",
+        rating: 0,
+      }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.review.rating_invalid")
+  })
+
+  it("REFUSE: rating=6 (above range)", () => {
+    const decision = adjudicate(
+      env("order.review.submit", {
+        orderId: "o-1",
+        productId: "prod-1",
+        rating: 6,
+      }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.review.rating_invalid")
+  })
+
+  it("REFUSE: rating=3.5 (non-integer)", () => {
+    const decision = adjudicate(
+      env("order.review.submit", {
+        orderId: "o-1",
+        productId: "prod-1",
+        rating: 3.5,
+      }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.review.rating_invalid")
+  })
+
+  it("REFUSE: rating missing from payload", () => {
+    const decision = adjudicate(
+      env("order.review.submit", {
+        orderId: "o-1",
+        productId: "prod-1",
+      }),
+      state({ orderId: "o-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.review.rating_invalid")
+  })
+
+  it("REFUSE: missing orderId in state (requireOrderIdForMutation)", () => {
+    const decision = adjudicate(
+      env("order.review.submit", {
+        orderId: "o-1",
+        productId: "prod-1",
+        rating: 4,
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
+  it("REFUSE: customer not authenticated", () => {
+    const decision = adjudicate(
+      env("order.review.submit", {
+        orderId: "o-1",
+        productId: "prod-1",
+        rating: 4,
+      }),
+      state({ orderId: "o-1", customerId: null, channel: "web" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("auth.required")
+  })
+})
+
 // ── Rehydrator ──────────────────────────────────────────────────────────
 
 describe("rehydrateOrderState", () => {

@@ -15,6 +15,9 @@
 //   - customer.preferences.update   → updatePreferences
 //   - customer.pix.details.save     → updatePixDetails
 //   - customer.anonymize            → anonymizeCustomer (module-level helper)
+//   - order.review.submit           → submitReview (orders Pack — reviews are
+//                                     order-related; the orders policy bundle
+//                                     gates rating + orderId)
 
 import { createHash } from "node:crypto"
 import { prisma } from "../client.js"
@@ -28,6 +31,11 @@ import {
   type CustomerAnonymizePayload,
   type CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding"
+import {
+  ordersPolicyBundle,
+  type OrderReviewSubmitPayload,
+  type OrderState,
+} from "@ibatexas/pack-orders"
 import {
   withAdjudicate,
   type AdjudicatedResult,
@@ -62,6 +70,13 @@ export function createCustomerService(options?: CustomerServiceOptions) {
     /**
      * Get or create customer preferences.
      * Allergens are always explicit arrays — never inferred (CLAUDE.md rule 1).
+     *
+     * @deprecated Use `updatePreferencesFromEnvelope` instead — the bare-arg
+     *   entry point bypasses the kernel adjudication (allergen-explicit-array
+     *   guard, audit emit, etc). Kept as the executor for the envelope
+     *   wrapper above and for any remaining callers; will be removed once
+     *   the M3 migration completes. See `customer.preferences.update` in
+     *   `packages/pack-customer-onboarding`.
      */
     async updatePreferences(
       customerId: string,
@@ -99,6 +114,12 @@ export function createCustomerService(options?: CustomerServiceOptions) {
     /**
      * Submit or update a product review.
      * Returns the updated aggregate rating for the product.
+     *
+     * @deprecated Use `submitReviewFromEnvelope` instead — the bare-arg
+     *   entry point bypasses the kernel adjudication (rating-range guard,
+     *   audit emit, etc). Kept for any remaining callers; will be removed
+     *   once the M3 migration completes. See `order.review.submit` in
+     *   `packages/pack-orders`.
      */
     async submitReview(input: {
       customerId: string
@@ -180,6 +201,12 @@ export function createCustomerService(options?: CustomerServiceOptions) {
     /**
      * Update PIX billing details (name, email, CPF) after successful PIX checkout.
      * Persists to DB so data survives Redis TTL expiry.
+     *
+     * @deprecated Use `updatePixDetailsFromEnvelope` instead — the bare-arg
+     *   entry point bypasses the kernel adjudication (CPF-shape guard, audit
+     *   emit, etc). Kept for any remaining callers; will be removed once the
+     *   M3 migration completes. See `customer.pix.details.save` in
+     *   `packages/pack-customer-onboarding`.
      */
     async updatePixDetails(customerId: string, data: { name?: string; email?: string; cpf?: string }) {
       await prisma.customer.update({
@@ -325,13 +352,57 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         state,
         customerOnboardingPolicyBundle,
         async (payload) => {
-          // Pack's allergenExclusions / dietaryFlags are ReadonlyArray<string>;
-          // service's update method accepts string[].
+          // Pack's allergenExclusions / dietaryFlags / favoriteCategories are
+          // ReadonlyArray<string>; service's update method accepts string[].
           return this.updatePreferences(extras.customerId, {
             allergenExclusions: payload.allergenExclusions as string[],
             ...(payload.dietaryFlags !== undefined
               ? { dietaryRestrictions: payload.dietaryFlags as string[] }
               : {}),
+            ...(payload.favoriteCategories !== undefined
+              ? { favoriteCategories: payload.favoriteCategories as string[] }
+              : {}),
+          })
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `order.review.submit`. UNTRUSTED-
+     * tolerant; the pack-orders policy validates the rating range
+     * (`order.review.rating_invalid`) and gates on `state.ctx.orderId`
+     * being present (`order.not_found`). The executor delegates to the
+     * legacy `submitReview()` for the Prisma upsert + aggregate stats
+     * pass, returning the updated aggregate to the caller so the cache
+     * layer in the tools package can refresh Typesense.
+     *
+     * Note: `order.review.submit` lives in the orders Pack (reviews are
+     * order-related) — the policy bundle / state shape differ from the
+     * customer-onboarding kinds above. We import both Packs here per
+     * the kernel chokepoint pattern: each *FromEnvelope method picks
+     * the Pack appropriate to its intent kind.
+     */
+    async submitReviewFromEnvelope(
+      envelope: IntentEnvelope<"order.review.submit", OrderReviewSubmitPayload>,
+      state: OrderState,
+      extras: {
+        readonly customerId: string
+        readonly channel: Channel
+      },
+    ): Promise<AdjudicatedResult<{ avgRating: number; reviewCount: number }>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        ordersPolicyBundle,
+        async (payload) => {
+          return this.submitReview({
+            customerId: extras.customerId,
+            productId: payload.productId,
+            orderId: payload.orderId,
+            rating: payload.rating,
+            ...(payload.comment !== undefined ? { comment: payload.comment } : {}),
+            channel: extras.channel,
           })
         },
         adjudicateOptions,

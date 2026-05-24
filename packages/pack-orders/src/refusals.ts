@@ -159,6 +159,21 @@ export function refuseAmountExceedsLimit(
 }
 
 /**
+ * Review rating outside the 1–5 integer range. The wire schema also
+ * validates this at the LLM tool boundary, but the kernel runs as a
+ * second authority — an LLM that fabricates a rating value (e.g.
+ * `rating: 10`) is refused here rather than reaching Prisma.
+ */
+export function refuseInvalidRating(rating: unknown): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    "order.review.rating_invalid",
+    "A nota da avaliação precisa ser um número inteiro de 1 a 5 estrelas.",
+    `rating=${String(rating)}`,
+  )
+}
+
+/**
  * Pack-level default-deny. The kernel's own default-deny path emits
  * `default_deny` (see `@adjudicate/locales-pt-BR.portugueseRefusalMessages`);
  * Packs that want a richer user-facing message return this Refusal from

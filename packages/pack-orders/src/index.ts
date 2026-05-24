@@ -124,6 +124,7 @@ export {
   refuseGuestCheckoutBlocked,
   refuseInvalidPaymentMethod,
   refuseInvalidQuantity,
+  refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
   refuseNotAuthenticated,
@@ -204,6 +205,7 @@ export const ordersPack = {
     "order.item.allergens_not_explicit",
     "order.item.quantity_invalid",
     "order.item.quantity_over_limit",
+    "order.review.rating_invalid",
     "order.default.deny",
   ],
   /**

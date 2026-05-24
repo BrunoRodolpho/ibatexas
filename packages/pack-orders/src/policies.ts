@@ -52,6 +52,7 @@ import {
   refuseGuestCheckoutBlocked,
   refuseInvalidPaymentMethod,
   refuseInvalidQuantity,
+  refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
   refuseNotAuthenticated,
@@ -559,6 +560,37 @@ const executeNoteAdd: OrderGuard = (envelope) => {
   ])
 }
 
+/**
+ * Validate the rating range on `order.review.submit`. CLAUDE.md
+ * positions the kernel as a second authority — even though the wire
+ * schema enforces 1–5 integer at the LLM tool boundary, the policy
+ * REFUSEs an out-of-range rating so a future caller that skipped the
+ * wire schema cannot reach Prisma with `rating: 99`.
+ *
+ * Empty / null comment is fine. The kernel-emitted basis is
+ * `RULE_VIOLATED` — the wire schema's rejection short-circuits before
+ * this guard sees most LLM proposals.
+ */
+const validateReviewRating: OrderGuard = (envelope) => {
+  if (envelope.kind !== "order.review.submit") return null
+  const payload = envelope.payload as { rating?: unknown }
+  const rating = payload.rating
+  if (
+    typeof rating !== "number" ||
+    !Number.isInteger(rating) ||
+    rating < 1 ||
+    rating > 5
+  ) {
+    return decisionRefuse(refuseInvalidRating(rating), [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: "review_rating_out_of_range",
+        rating: typeof rating === "number" ? rating : null,
+      }),
+    ])
+  }
+  return null
+}
+
 // ── W5-2 EXECUTE producers ──────────────────────────────────────────────
 
 const W5_EXECUTE_KINDS: ReadonlySet<string> = new Set([
@@ -620,6 +652,7 @@ export const ordersPolicyBundle: PolicyBundle<
     refuseAmountAboveCap,
     escalateLargeCancel,
     confirmLargeTicket,
+    validateReviewRating,
     executeCartOps,
     executeCheckout,
     executeCancel,

@@ -62,6 +62,7 @@ export const ORDER_TOOLS: ToolClassification = {
     "amend_order",
     "add_order_note",
     "reorder",
+    "submit_review",
   ]),
 }
 
@@ -83,6 +84,7 @@ export const ORDER_TOOL_TO_INTENT: Readonly<
   cancel_order: "order.cancel",
   amend_order: "order.amend.request",
   add_order_note: "order.note.add",
+  submit_review: "order.review.submit",
   // `reorder` is a higher-level orchestration that produces multiple
   // `order.item.add` envelopes; not a single-intent map.
 }
