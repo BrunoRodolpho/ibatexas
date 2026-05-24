@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-23.** This document describes machinery that was DELETED by the IBX-IGE v3.0 always-on cutover (commit `f3bea43`). The kernel is now unconditionally authoritative — there is no shadow mode, no enforce env-var gating, and no kill-switch surface. For current state, see [`../audit-2026-05-23/SYNTHESIS.md`](../audit-2026-05-23/SYNTHESIS.md). This file is kept as historical record only.
+
+---
+
 # 04 — Shadow → Enforce Sequencing
 
 **Status:** Draft v0.1
