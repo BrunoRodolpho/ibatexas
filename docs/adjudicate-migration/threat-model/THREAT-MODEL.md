@@ -1,3 +1,7 @@
+> **NOTE — load-bearing constitutional with stale rollout framing.** The asset inventory, trust boundaries, STRIDE matrix, LGPD analysis, and residual-risks list below are still authoritative. **Exceptions:** the `IBX_KERNEL_ENFORCE` env var asset (line 33), the "enforce-mode rollout MUST NOT happen until..." gating language throughout the STRIDE matrix, and the companion-doc link to `../superseded/SHADOW-ENFORCE-ROLLOUT.md` describe a rollout framework deleted by the IBX-IGE v3.0 cutover (`f3bea43`). Per `CLAUDE.md` rule #9, the kernel is always authoritative — read enforce-flip gates as "before production deploy" production-safety guidance. See `README.md` in this directory for the full classification and the list of localized stale references.
+
+---
+
 # IbateXas Kernel-Gated Mutation — Threat Model
 
 **Status:** W6-12 (final wave). First formal threat model post-adjudicate migration.
