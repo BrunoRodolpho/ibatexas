@@ -39,7 +39,7 @@
 // can be removed once the framework primitive gains NX semantics.
 
 import { parkDeferredIntent } from "@adjudicate/runtime"
-import { deferParkKey } from "@adjudicate/runtime"
+import { deferCounterKey, deferParkKey } from "@adjudicate/runtime"
 import type {
   ParkDeferredIntentArgs,
   ParkDeferredIntentResult,
@@ -171,6 +171,33 @@ export async function parkDeferredIntentWithNxGuard(
   // placeholder with the real envelope payload — and the order is what
   // matters. The framework's quota INCR runs inside `parkDeferredIntent`,
   // so a session at quota still gets the proper `quota_exceeded` result.
+  //
+  // audit-2026-05-24 P1-8 — Quota-counter leak on mid-park throw.
+  //
+  // The framework's `parkDeferredIntent` performs INCR → EXPIRE → check →
+  // SET (see node_modules/@adjudicate/runtime/dist/defer-park.js). If a
+  // Redis network blip lands between the successful INCR and the SET, the
+  // framework throws and the per-session counter is leaked at +1 — quota
+  // appears full to subsequent legitimate callers until the TTL clears the
+  // counter (DEFER_PENDING_TTL_GRACE_SECONDS = 14d in production).
+  //
+  // The framework's own rollback path only fires on the synchronous
+  // "newCount > quota" branch (which DECRs before returning quota_exceeded);
+  // mid-flight throws bypass it entirely.
+  //
+  // The fix: when the framework call throws, DECR the counter ourselves
+  // (best-effort; TTL is the safety net for a DECR failure). The DECR is
+  // safe because:
+  //   - If the framework had INCR'd: DECR restores the pre-call count.
+  //   - If the framework threw BEFORE the INCR (extremely unlikely given
+  //     INCR is the first redis call in the framework): DECR would drift
+  //     the counter to -1, but the framework treats anything <= quota as
+  //     "OK", and a future park's INCR brings it back to 0 or 1. No quota
+  //     leak in the opposite direction.
+  // The asymmetry favours quota correctness over an unlikely off-by-one.
+  const counterKey = argsHoisted.rk(
+    deferCounterKey(argsHoisted.envelope.actor.sessionId),
+  )
   try {
     const result: ParkDeferredIntentResult = await parkDeferredIntent(
       argsHoisted,
@@ -193,6 +220,12 @@ export async function parkDeferredIntentWithNxGuard(
     // Swallow del errors; TTL is the safety net.
     await (argsHoisted.redis as { del?: (k: string) => Promise<unknown> })
       .del?.(parkKey)
+      ?.catch(() => {})
+    // audit-2026-05-24 P1-8 — DECR the quota counter to undo any INCR the
+    // framework may have performed before the throw. Best-effort; the
+    // counter's TTL is the safety net.
+    await (argsHoisted.redis as { decr?: (k: string) => Promise<unknown> })
+      .decr?.(counterKey)
       ?.catch(() => {})
     throw err
   }

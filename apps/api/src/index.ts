@@ -10,6 +10,7 @@ import { startConversationArchiver } from "./subscribers/conversation-archiver.j
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
 import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
 import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
+import { startPixDeferTimeoutResolverSubscriber } from "./subscribers/pix-defer-timeout-resolver.js";
 import { startAuditConsumer } from "./subscribers/audit-consumer.js";
 import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
@@ -112,6 +113,13 @@ const start = async (): Promise<void> => {
       // window. Wired alongside the defer-resolver so both subscribe to
       // the timeout fan-out from `defer-timeout-sweeper`.
       await startAnonymizeGraceResolverSubscriber(server.log);
+      // [audit-2026-05-24 P1-7] PIX defer-timeout audit bridge. Consumes
+      // `intent.defer.timeout` filtered for the PIX confirmation signal
+      // and emits a `payment.pix.timeout.audit` audit record so the
+      // decision log chains `DEFER (park) → defer_timeout` for parked
+      // PIX checkouts whose customer never paid. Actual DB-side payment
+      // status transition is owned by the pix-expiry-checker cron.
+      await startPixDeferTimeoutResolverSubscriber(server.log);
       // [task 19] M4 audit-postgres redundancy consumer. Subscribes to
       // `audit.intent.decision.v1` and writes records durably to Postgres
       // — decoupled-archiver pattern. Always-on per IBX-IGE v3.0 cutover

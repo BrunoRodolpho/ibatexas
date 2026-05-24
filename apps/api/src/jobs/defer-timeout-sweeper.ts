@@ -46,6 +46,18 @@
 //      TTL). Downstream ops monitoring queries this for liveness; a
 //      missing heartbeat indicates worker outage.
 //
+// ── audit-2026-05-24 P0-2: sweeper-vs-resolver mutex ─────────────────────
+//
+// Before publishing `intent.defer.timeout` for any parked envelope, the
+// sweeper now SETNX'es the same `defer:resuming:{deferResumeHash}` key the
+// defer-resolver claims when dispatching a resume. This serializes the two
+// paths so a parked envelope at the TTL boundary cannot have BOTH a
+// destructive timeout-handler fire AND a resume dispatch — exactly the
+// double-execution class for intents whose timeout-side executor matches
+// the resume-side executor (LGPD anonymize; any future PIX-timeout
+// consumer per P1-7). The mutex's 60s TTL is the safety net for crashes
+// between SETNX and publish; on commit the sweeper explicitly DELs it.
+//
 // CLAUDE.md rules honoured:
 //   #7 rk() for all Redis keys (defer:pending:* matches what the responder
 //      wrote when parking).
@@ -54,7 +66,7 @@
 
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
-import { type ParkedEnvelope } from "@adjudicate/runtime";
+import { deferResumeHash, type ParkedEnvelope } from "@adjudicate/runtime";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
@@ -107,6 +119,16 @@ const HEARTBEAT_TTL_SECONDS = (REPEAT_INTERVAL_MS / 1000) * 2;
 // scan can't double-fire across consecutive startups; short enough that
 // stale markers don't accumulate forever. Matches the runtime grace.
 const RECOVERY_FIRED_TTL_SECONDS = 14 * 24 * 60 * 60; // 14d
+
+// audit-2026-05-24 P0-2: sweeper-vs-resolver mutex TTL.
+//
+// The sweeper acquires the same `defer:resuming:{deferResumeHash}` key the
+// defer-resolver uses (see apps/api/src/subscribers/defer-resolver.ts,
+// `DEFER_RESUMING_TTL_SECONDS`) so that the two paths cannot both fire for
+// the same parked envelope. Matches the resolver's 60s TTL — long enough
+// for a publish + DEL to complete, short enough that a crashed sweeper
+// doesn't permanently block resume.
+const SWEEPER_RESUMING_TTL_SECONDS = 60;
 
 let queue: Queue | null = null;
 let worker: Worker | null = null;
@@ -258,6 +280,46 @@ export async function sweepDeferTimeouts(
         continue;
       }
 
+      // audit-2026-05-24 P0-2: sweeper-vs-resolver mutex.
+      //
+      // SETNX the same `defer:resuming:{deferResumeHash}` key the defer-resolver
+      // claims before dispatching. If the resolver is mid-flight (signal arrived
+      // just-in-time as TTL crossed the imminent threshold), we MUST NOT publish
+      // `intent.defer.timeout` — that would race against the resolver's resume
+      // for destructive intents whose timeout-handler runs the same executor
+      // (e.g., LGPD anonymize) or for any future PIX-timeout consumer (P1-7).
+      // The resolver, on commit, deletes both the resuming marker and the
+      // parked key; the next sweep tick sees nothing to do. If the resolver
+      // crashes mid-flight, the resuming marker's TTL clears the lock; the
+      // next sweep tick re-acquires + publishes.
+      //
+      // When intentHash is unavailable (malformed park blob), we can't derive
+      // the same key the resolver would; fall back to a session-scoped lock
+      // so the legitimate-malformed-blob path still serializes against ops
+      // tooling that may resolve by sessionId.
+      const resumingMutexKey = rk(
+        intentHash && signal
+          ? `defer:resuming:${deferResumeHash(intentHash, signal)}`
+          : `defer:resuming:fallback:${sessionId}`,
+      );
+      const mutexAcquired = await redis
+        .set(resumingMutexKey, new Date().toISOString(), {
+          NX: true,
+          EX: SWEEPER_RESUMING_TTL_SECONDS,
+        })
+        .catch(() => null);
+      if (mutexAcquired !== "OK") {
+        effectiveLogger?.debug(
+          { sessionId, intentHash, signal, ttl },
+          "[defer-timeout-sweeper] resolver mid-flight — skipping timeout publish",
+        );
+        // Release the recovery marker so the next sweep can re-fire if the
+        // resolver crashes and the parked key is still around.
+        await redis.del(recoveryKey).catch(() => {});
+        // Do NOT DEL the parked key — the resolver owns its lifecycle.
+        continue;
+      }
+
       // Publish the timeout. Subscribers (e.g. notification fan-out)
       // consume `intent.defer.timeout` to drive user-facing follow-ups.
       const payload: DeferTimeoutEventPayload = {
@@ -274,8 +336,9 @@ export async function sweepDeferTimeouts(
         // publishNatsEvent already swallows NATS errors internally; this
         // path only fires for synchronous misuse. Don't DEL the key if
         // publish failed so the next sweep retries. Also release the
-        // dedup marker so retry can re-claim it.
+        // dedup marker AND the sweeper mutex so retry can re-claim them.
         await redis.del(recoveryKey).catch(() => {});
+        await redis.del(resumingMutexKey).catch(() => {});
         effectiveLogger?.error(
           { key, err: (publishErr as Error).message },
           "[defer-timeout-sweeper] publishNatsEvent failed — leaving key for retry",
@@ -295,6 +358,13 @@ export async function sweepDeferTimeouts(
         // Best-effort. Even if DEL fails, the Redis TTL will eventually
         // garbage-collect the key.
       });
+
+      // audit-2026-05-24 P0-2: release the sweeper-vs-resolver mutex now that
+      // both the publish and the parked-key DEL have completed. The marker's
+      // TTL would clean it up anyway, but explicit release lets unrelated
+      // resumes for the same (intentHash, signal) pair re-enter without
+      // waiting on the 60s TTL.
+      await redis.del(resumingMutexKey).catch(() => {});
 
       publishedCount++;
       effectiveLogger?.info(
@@ -449,6 +519,33 @@ export async function runRecoveryScan(
         continue;
       }
 
+      // audit-2026-05-24 P0-2: sweeper-vs-resolver mutex. Same coordination
+      // pattern as the steady-state sweep — if the defer-resolver is already
+      // mid-flight for this (intentHash, signal) pair, don't publish a
+      // duplicate `intent.defer.timeout`. Mirrors the resolver's
+      // `defer:resuming:{deferResumeHash}` lock.
+      const resumingMutexKey = rk(
+        intentHash && signal
+          ? `defer:resuming:${deferResumeHash(intentHash, signal)}`
+          : `defer:resuming:fallback:${sessionId}`,
+      );
+      const mutexAcquired = await redis
+        .set(resumingMutexKey, new Date().toISOString(), {
+          NX: true,
+          EX: SWEEPER_RESUMING_TTL_SECONDS,
+        })
+        .catch(() => null);
+      if (mutexAcquired !== "OK") {
+        effectiveLogger?.debug(
+          { sessionId, intentHash, signal, ttl },
+          "[defer-timeout-sweeper] recovery: resolver mid-flight — skipping",
+        );
+        // Release the recovery marker so the next attempt can re-claim it
+        // once the resolver completes (or its lock expires).
+        await redis.del(recoveryKey).catch(() => {});
+        continue;
+      }
+
       const payload: DeferTimeoutEventPayload = {
         eventType: "intent.defer.timeout",
         sessionId,
@@ -461,8 +558,9 @@ export async function runRecoveryScan(
         await publishNatsEvent("intent.defer.timeout", payload);
       } catch (publishErr) {
         // Same as steady-state: don't DEL key on publish failure. Release
-        // the dedup marker so the next attempt can retry.
+        // the dedup marker AND the sweeper mutex so the next attempt can retry.
         await redis.del(recoveryKey).catch(() => {});
+        await redis.del(resumingMutexKey).catch(() => {});
         effectiveLogger?.error(
           { key, err: (publishErr as Error).message },
           "[defer-timeout-sweeper] recovery: publishNatsEvent failed — leaving key for retry",
@@ -474,6 +572,10 @@ export async function runRecoveryScan(
       await bumpDeferTimeoutMetric(signal || "unknown");
 
       await redis.del(key).catch(() => {});
+
+      // audit-2026-05-24 P0-2: release the sweeper-vs-resolver mutex; the
+      // TTL is the safety net for crashes between publish and release.
+      await redis.del(resumingMutexKey).catch(() => {});
 
       recoveryFiredCount++;
       effectiveLogger?.info(

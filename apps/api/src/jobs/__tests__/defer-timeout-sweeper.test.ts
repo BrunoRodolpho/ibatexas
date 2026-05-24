@@ -4,6 +4,7 @@
 // Redis is replaced by a tiny in-memory stub with TTL semantics.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { deferResumeHash } from "@adjudicate/runtime"
 import {
   sweepDeferTimeouts,
   startDeferTimeoutSweeper,
@@ -276,6 +277,93 @@ describe("sweepDeferTimeouts", () => {
     expect(count).toBe(0)
     // Key still there — next sweep will retry.
     expect(store.get(`test:defer:pending:${sessionId}`)).toBeDefined()
+  })
+
+  // ── audit-2026-05-24 P0-2: sweeper-vs-resolver mutex ─────────────────────
+
+  it("[P0-2] acquires defer:resuming:{hash} mutex BEFORE publishing the timeout (legitimate case)", async () => {
+    const sessionId = "sess_p0_2_alone"
+    const intentHash = "ih_p0_2_alone"
+    const signal = "payment.confirmed"
+    store.set(`test:defer:pending:${sessionId}`, {
+      value: parkBlob({ sessionId, intentHash, signal }),
+      ttl: 1,
+    })
+
+    const count = await sweepDeferTimeouts(makeLogger())
+
+    // Mutex acquired, timeout published, parked key DEL'd, mutex released.
+    expect(count).toBe(1)
+    expect(mockPublishNatsEvent).toHaveBeenCalledOnce()
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeUndefined()
+    // The sweeper releases the mutex on commit so it doesn't linger.
+    const mutexKey = `test:defer:resuming:${deferResumeHash(intentHash, signal)}`
+    expect(store.get(mutexKey)).toBeUndefined()
+  })
+
+  it("[P0-2] skips publish when resolver mid-flight (defer:resuming:{hash} already claimed)", async () => {
+    const sessionId = "sess_p0_2_race"
+    const intentHash = "ih_p0_2_race"
+    const signal = "payment.confirmed"
+    store.set(`test:defer:pending:${sessionId}`, {
+      value: parkBlob({ sessionId, intentHash, signal }),
+      ttl: 1,
+    })
+
+    // Simulate the defer-resolver having SETNX'd the resuming marker
+    // microseconds before the sweeper tick fires. The sweeper MUST NOT
+    // publish a duplicate timeout — the resolver owns the resume.
+    const mutexKey = `test:defer:resuming:${deferResumeHash(intentHash, signal)}`
+    store.set(mutexKey, {
+      value: JSON.stringify({
+        at: new Date().toISOString(),
+        sessionId,
+        intentHash,
+        signal,
+      }),
+      ttl: 60,
+    })
+
+    const count = await sweepDeferTimeouts(makeLogger())
+
+    // No publish: sweeper saw resolver in-flight, backed off.
+    expect(count).toBe(0)
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled()
+    // The parked key MUST be preserved — the resolver owns its lifecycle and
+    // will DEL on commit. A premature sweeper DEL would race the resolver.
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeDefined()
+    // The resolver's mutex marker is left intact (we didn't claim it).
+    expect(store.get(mutexKey)).toBeDefined()
+    // The recovery-fired marker we briefly claimed is released so a future
+    // sweep (after the resolver completes or its lock expires) can re-fire
+    // the timeout if needed.
+    expect(store.get(`test:recovery:fired:${intentHash}`)).toBeUndefined()
+  })
+
+  it("[P0-2] recovery scan also respects the sweeper-vs-resolver mutex", async () => {
+    const sessionId = "sess_p0_2_recovery_race"
+    const intentHash = "ih_p0_2_recovery_race"
+    const signal = "payment.confirmed"
+    store.set(`test:defer:pending:${sessionId}`, {
+      value: parkBlob({ sessionId, intentHash, signal }),
+      ttl: 1,
+    })
+
+    // Resolver mid-flight at recovery time.
+    const mutexKey = `test:defer:resuming:${deferResumeHash(intentHash, signal)}`
+    store.set(mutexKey, {
+      value: JSON.stringify({ at: "x", sessionId, intentHash, signal }),
+      ttl: 60,
+    })
+
+    const count = await runRecoveryScan(makeLogger())
+
+    // Recovery scan skips identically: no publish, parked key preserved.
+    expect(count).toBe(0)
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled()
+    expect(store.get(`test:defer:pending:${sessionId}`)).toBeDefined()
+    // Recovery-fired marker released so retry can re-claim.
+    expect(store.get(`test:recovery:fired:${intentHash}`)).toBeUndefined()
   })
 
   // ── 7. [P1-E] Heartbeat is refreshed on every sweep tick ────────────────
