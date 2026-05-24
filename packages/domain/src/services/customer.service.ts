@@ -578,6 +578,34 @@ const REVIEW_BATCH_HEAVY_THRESHOLD = 1000
 const REVIEW_BATCH_SIZE = 500
 
 /**
+ * Heavy-customer threshold for the conversation-message scrub. Below this
+ * the in-tx `updateMany` handles every message in one round-trip; at/above,
+ * messages are pre-batched OUTSIDE the main tx to avoid holding locks.
+ * audit-2026-05-24 H3 wave-a1.
+ */
+const CONVERSATION_MESSAGE_BATCH_HEAVY_THRESHOLD = 1000
+
+/** Per-batch chunk size for the conversation-message heavy path. */
+const CONVERSATION_MESSAGE_BATCH_SIZE = 500
+
+/**
+ * Placeholder content written to ConversationMessage.content during
+ * anonymization. Free-form pt-BR text cannot be safely parsed for PII;
+ * wholesale replacement is the safe option (SYNTHESIS §"surface 2").
+ */
+const CONVERSATION_MESSAGE_PLACEHOLDER = "[anonymized]"
+
+/**
+ * Heavy-customer threshold for the order-event-log scrub. Below this the
+ * in-tx `updateMany` handles every row in one round-trip; at/above, rows
+ * are pre-batched OUTSIDE the main tx. audit-2026-05-24 H3 wave-a1.
+ */
+const ORDER_EVENT_LOG_BATCH_HEAVY_THRESHOLD = 1000
+
+/** Per-batch chunk size for the order-event-log heavy path. */
+const ORDER_EVENT_LOG_BATCH_SIZE = 500
+
+/**
  * Prisma interactive-transaction timeout for the main anonymize tx.
  * 60 s covers a customer with ~5k reviews + addresses/preferences on a
  * normally-loaded primary. Heavier customers route through the batched
@@ -650,6 +678,101 @@ export async function anonymizeCustomer(customerId: string) {
       if (result.count === 0) break
     }
     void scrubbedSoFar
+  }
+
+  // ── H3 wave-a1: ConversationMessage heavy-path pre-scrub ───────
+  //
+  // ConversationMessage rows are linked to a customer indirectly through
+  // Conversation.customerId — there is no direct FK on the messages
+  // table. Look up the customer's conversation ids first; if the message
+  // count exceeds the heavy threshold, batch the content scrub OUTSIDE
+  // the main tx (same pattern as reviews).
+
+  const customerConversationRows = await prisma.conversation.findMany({
+    where: { customerId },
+    select: { id: true },
+  })
+  const customerConversationIds = customerConversationRows.map((row) => row.id)
+
+  if (customerConversationIds.length > 0) {
+    const messageCount = await prisma.conversationMessage.count({
+      where: { conversationId: { in: customerConversationIds } },
+    })
+    if (messageCount > CONVERSATION_MESSAGE_BATCH_HEAVY_THRESHOLD) {
+      // Same loop shape as the review heavy path: re-query in id chunks
+      // so concurrent inserts don't shift the window; exit when a batch
+      // reports zero rows (every message already carries the placeholder).
+      const maxLoops =
+        Math.ceil(messageCount / CONVERSATION_MESSAGE_BATCH_SIZE) + 1
+      for (let i = 0; i < maxLoops; i++) {
+        const nextBatch = await prisma.conversationMessage.findMany({
+          where: {
+            conversationId: { in: customerConversationIds },
+            content: { not: CONVERSATION_MESSAGE_PLACEHOLDER },
+          },
+          select: { id: true },
+          take: CONVERSATION_MESSAGE_BATCH_SIZE,
+          orderBy: { id: "asc" },
+        })
+        if (nextBatch.length === 0) break
+        const ids = nextBatch.map((r) => r.id)
+        const result = await prisma.conversationMessage.updateMany({
+          where: { id: { in: ids } },
+          data: { content: CONVERSATION_MESSAGE_PLACEHOLDER },
+        })
+        if (result.count === 0) break
+      }
+    }
+  }
+
+  // ── H3 wave-a1: OrderEventLog heavy-path pre-scrub ─────────────
+  //
+  // OrderEventLog has NO customer FK — the link is via orderId →
+  // OrderProjection.customerId. Look up the customer's order ids first;
+  // if the event count exceeds the heavy threshold, batch the payload
+  // scrub OUTSIDE the main tx.
+
+  const customerOrderRows = await prisma.orderProjection.findMany({
+    where: { customerId },
+    select: { id: true },
+  })
+  const customerOrderIds = customerOrderRows.map((row) => row.id)
+
+  if (customerOrderIds.length > 0) {
+    const eventCount = await prisma.orderEventLog.count({
+      where: { orderId: { in: customerOrderIds } },
+    })
+    if (eventCount > ORDER_EVENT_LOG_BATCH_HEAVY_THRESHOLD) {
+      // The "already-scrubbed" predicate cannot trivially be expressed
+      // against a JSON column in Prisma, so we paginate by id-greater-than
+      // cursor and let the updateMany be idempotent on rerun (replacing
+      // {anonymized:true} with {anonymized:true} is a no-op).
+      const maxLoops =
+        Math.ceil(eventCount / ORDER_EVENT_LOG_BATCH_SIZE) + 1
+      let cursor: string | null = null
+      for (let i = 0; i < maxLoops; i++) {
+        const baseWhere = { orderId: { in: customerOrderIds } }
+        const where =
+          cursor === null
+            ? baseWhere
+            : { ...baseWhere, id: { gt: cursor } }
+        const nextBatch: Array<{ id: string }> =
+          await prisma.orderEventLog.findMany({
+            where,
+            select: { id: true },
+            take: ORDER_EVENT_LOG_BATCH_SIZE,
+            orderBy: { id: "asc" },
+          })
+        if (nextBatch.length === 0) break
+        const ids = nextBatch.map((r) => r.id)
+        const result = await prisma.orderEventLog.updateMany({
+          where: { id: { in: ids } },
+          data: { payload: { anonymized: true } },
+        })
+        if (result.count === 0) break
+        cursor = ids[ids.length - 1] ?? null
+      }
+    }
   }
 
   // ── Core anonymize transaction ─────────────────────────────────
@@ -735,6 +858,27 @@ export async function anonymizeCustomer(customerId: string) {
           shippingAddressJson: { anonymized: true },
         },
       })
+
+      // (7) Surface 2: ConversationMessage.content — replace free-form
+      // customer text with a placeholder. The heavy path above already
+      // scrubbed bulk rows; this cleanup pass catches any messages that
+      // landed during batching (e.g., from an in-flight LLM turn).
+      // Filter by the customer's conversation ids — no direct customer
+      // FK on the messages table.
+      if (customerConversationIds.length > 0) {
+        await tx.conversationMessage.updateMany({
+          where: { conversationId: { in: customerConversationIds } },
+          data: { content: CONVERSATION_MESSAGE_PLACEHOLDER },
+        })
+      }
+
+      // (8) Surface 3: Conversation.customerId — null-out the FK. The
+      // column is already nullable (SetNull cascade declared); messages
+      // remain queryable via Conversation.sessionId for audit purposes.
+      await tx.conversation.updateMany({
+        where: { customerId },
+        data: { customerId: null },
+      })
     },
     {
       timeout: ANONYMIZE_TX_TIMEOUT_MS,
@@ -751,6 +895,11 @@ export const _anonymizeCustomerInternals = {
   REVIEW_BATCH_SIZE,
   ANONYMIZE_TX_TIMEOUT_MS,
   ANONYMIZE_TX_MAX_WAIT_MS,
+  CONVERSATION_MESSAGE_BATCH_HEAVY_THRESHOLD,
+  CONVERSATION_MESSAGE_BATCH_SIZE,
+  CONVERSATION_MESSAGE_PLACEHOLDER,
+  ORDER_EVENT_LOG_BATCH_HEAVY_THRESHOLD,
+  ORDER_EVENT_LOG_BATCH_SIZE,
 } as const
 
 /**
