@@ -450,5 +450,231 @@ describe.skipIf(!RUN_REAL_POSTGRES)(
       // with future tests that inspect builder output directly).
       void fixtures
     })
+
+    it("anonymize leaves Staff/admin actor records untouched", async () => {
+      // Heavy-on-staff fixture: 5 admin-actor status rows + 1 customer-actor
+      // row + 1 system-actor row. Anonymize must scrub ONLY the customer
+      // row's actorId; the rest are forensic-audit data and must remain.
+      const customerId = "cust_t4_staff_negative"
+      const adminActorIds = ["staff_t4_a1", "staff_t4_a2", "staff_t4_a3"]
+
+      await buildPIIFixture({
+        customerId,
+        phone: "+5511955511111",
+        email: "minimal.staff.case@example.com",
+        name: "Minimal Staff Case",
+        orderStatusHistory: [
+          {
+            orderId: "ord_t4_staff_neg_1",
+            actorType: "customer",
+            actorId: customerId,
+          },
+          ...adminActorIds.map((id, i) => ({
+            orderId: `ord_t4_staff_neg_${i + 2}`,
+            actorType: "admin" as const,
+            actorId: id,
+            reason: `admin override #${i + 1}`,
+          })),
+          {
+            orderId: "ord_t4_staff_neg_sys",
+            actorType: "system" as const,
+            actorId: null,
+          },
+        ],
+      })
+
+      // Pre-snapshot — record every admin actorId so we can assert it
+      // survives unchanged post-anonymize.
+      const pre = await snapshotCustomerReachable(customerId)
+      const preAdminActors = (
+        pre.orderStatusHistory as Array<{ actor: string; actorId: string | null }>
+      )
+        .filter((h) => h.actor === "admin")
+        .map((h) => h.actorId)
+      expect(
+        preAdminActors,
+        "fixture setup: expected 3 admin-actor rows pre-anonymize",
+      ).toEqual(expect.arrayContaining(adminActorIds))
+
+      const { anonymizeCustomer } = await import("@ibatexas/domain")
+      await anonymizeCustomer(customerId)
+
+      const post = await snapshotCustomerReachable(customerId)
+      const postRows = post.orderStatusHistory as Array<{
+        actor: string
+        actorId: string | null
+      }>
+      const postAdminActors = postRows
+        .filter((h) => h.actor === "admin")
+        .map((h) => h.actorId)
+      const postCustomerRows = postRows.filter((h) => h.actor === "customer")
+
+      // Admin actorIds are byte-for-byte preserved.
+      expect(
+        postAdminActors,
+        "OrderStatusHistory(admin): admin actorIds were modified — staff/admin negative test regression",
+      ).toEqual(expect.arrayContaining(adminActorIds))
+      expect(
+        postAdminActors.length,
+        "OrderStatusHistory(admin): row count changed post-anonymize",
+      ).toBe(adminActorIds.length)
+
+      // Customer-actor row's actorId IS scrubbed.
+      for (const c of postCustomerRows) {
+        expect(
+          c.actorId,
+          "OrderStatusHistory(customer): actorId not scrubbed",
+        ).toBeNull()
+      }
+    })
+
+    it("anonymize is idempotent (re-running produces no further change)", async () => {
+      const customerId = "cust_t4_idempotency"
+      const spec = defaultPIISpec(customerId)
+      await buildPIIFixture(spec)
+
+      const { anonymizeCustomer } = await import("@ibatexas/domain")
+
+      // First run.
+      await anonymizeCustomer(customerId)
+      const post1 = await snapshotCustomerReachable(customerId)
+
+      // Second run.
+      await anonymizeCustomer(customerId)
+      const post2 = await snapshotCustomerReachable(customerId)
+
+      // Compare every table key. We use a JSON normalisation pass that
+      // strips `updatedAt` (Prisma bumps this on UPDATE even for a no-op
+      // SetNull → SetNull update) — the rest of the row must match
+      // byte-for-byte across runs. Anything else is a non-idempotent
+      // mutation (e.g., a counter, a re-hashed phone sentinel, an audit
+      // marker row written twice).
+      const normalise = (rows: unknown[]) =>
+        JSON.stringify(
+          rows.map((r) => {
+            const copy = { ...(r as Record<string, unknown>) } as Record<
+              string,
+              unknown
+            >
+            delete copy["updatedAt"]
+            delete copy["updated_at"]
+            return copy
+          }),
+        )
+
+      for (const key of Object.keys(post1)) {
+        const a = normalise(post1[key]!)
+        const b = normalise(post2[key]!)
+        expect(
+          b,
+          `idempotency: table '${key}' changed between anonymize runs — non-idempotent mutation`,
+        ).toBe(a)
+      }
+    })
+
+    it("anonymize emits audit records per surface scrubbed", async () => {
+      // Capture every audit emission via a fresh sink wired into the
+      // audit-sink leaf. We must reset + rewire because `__setAuditSinkDependencies`
+      // is idempotent-after-init and the global setup.ts already wired a
+      // noop. Per the leaf API: `__resetAuditSink()` then
+      // `__setAuditSinkDependencies({...})` with our captures.
+      const auditSinkModule = await import("@ibatexas/audit-sink")
+      const { __resetAuditSink, __setAuditSinkDependencies } = auditSinkModule
+
+      const captured: Array<Record<string, unknown>> = []
+
+      __resetAuditSink()
+      __setAuditSinkDependencies({
+        spillStorage: {
+          async append() {
+            /* no-op */
+          },
+          async *readAll() {
+            /* yields nothing */
+          },
+          async ack() {
+            /* no-op */
+          },
+        },
+        postgresWriter: {
+          async insertAudit(record: Record<string, unknown>) {
+            captured.push(record)
+          },
+        },
+        natsPublisher: {
+          async publish() {
+            /* no-op */
+          },
+        },
+        redactor: {
+          redact(record) {
+            return record
+          },
+        },
+        logger: {
+          warn() {
+            /* no-op */
+          },
+          error() {
+            /* no-op */
+          },
+        },
+      })
+
+      try {
+        const customerId = "cust_t4_audit_emit"
+        const spec = defaultPIISpec(customerId)
+        await buildPIIFixture(spec)
+
+        const { anonymizeCustomer } = await import("@ibatexas/domain")
+        await anonymizeCustomer(customerId)
+
+        // Wait a tick for fire-and-forget emit paths to drain. The sink's
+        // emit is buffered; the postgresWriter sees the record after the
+        // internal queue flushes.
+        await new Promise((resolve) => setTimeout(resolve, 100))
+
+        // Pre-A1: anonymizeCustomer emits ZERO per-surface audit records
+        // (the legacy path goes through `withAdjudicate` only at the
+        // envelope-typed entry point, not the bare helper). Post-A1: we
+        // expect ≥ N records, one per surface scrubbed — kinds shaped like
+        // `customer.anonymize.<surface>.scrubbed` OR
+        // `customer.anonymize.<surface>` (A1 picks the convention).
+        //
+        // To keep this assertion durable across reasonable A1 implementations
+        // we check: at least one captured record carries `customer.anonymize`
+        // in the kind/intentKind/envelope.kind chain. Pre-A1 this is zero;
+        // a passing post-A1 implementation produces ≥ 1.
+        const anonymizeRecords = captured.filter((r) => {
+          const kind =
+            (r["kind"] as string | undefined) ??
+            (r["intentKind"] as string | undefined) ??
+            ((r["envelope"] as Record<string, unknown> | undefined)?.[
+              "kind"
+            ] as string | undefined) ??
+            ""
+          return kind.includes("customer.anonymize")
+        })
+
+        expect(
+          anonymizeRecords.length,
+          "anonymize: expected ≥1 audit record carrying 'customer.anonymize' — post-A1 should emit per-surface records",
+        ).toBeGreaterThan(0)
+      } finally {
+        // Restore the noop sink for downstream tests in the file.
+        __resetAuditSink()
+        __setAuditSinkDependencies({
+          spillStorage: {
+            async append() {},
+            async *readAll() {},
+            async ack() {},
+          },
+          postgresWriter: { async insertAudit() {} },
+          natsPublisher: { async publish() {} },
+          redactor: { redact: (r) => r },
+          logger: { warn() {}, error() {} },
+        })
+      }
+    })
   },
 )
