@@ -11,72 +11,111 @@
 
 Resolve the `@ibatexas/tools` → `@ibatexas/llm-provider` dep-cycle that prevents wrapper call sites in `packages/tools/src/cart/*` and the whatsapp client from supplying `auditSink: getAuditSink()` to wrapper meta. Then make `auditSink` a **required** field on wrapper meta so the audit-trail hole cannot regress.
 
-## Live state (verified 2026-05-24 post-R3)
+## Live state (verified 2026-05-24 post-R3 + corrected by H2-recon agent 2026-05-24 evening)
 
-All four wrappers still declare `auditSink` as optional:
+**Wrapper inventory.** Four wrappers; all still declare `auditSink` as optional:
 - `packages/tools/src/twilio/adjudicated.ts:381` — `readonly auditSink?: AuditSink`
 - `packages/tools/src/stripe/adjudicated.ts:355` — same
 - `packages/tools/src/medusa/store-adjudicated.ts:539` — same
 - `packages/tools/src/medusa/adjudicated.ts:501` — same
 
-Wrapper sites passing auditSink today (verified by grep): only `apps/api/src/routes/order-actions.ts` (5 sites — works because `apps/api/` can import from `@ibatexas/llm-provider`).
+**Wrapper invocation counts (counted by H2-recon agent, NOT file-count).** Original task file undercounted: each cart-tool file can host multiple wrapper invocations.
 
-Wrapper sites NOT passing auditSink (verified by grep — empty result for `auditSink` in `packages/tools/src/cart/` and `apps/api/src/whatsapp/client.ts`):
-- `packages/tools/src/cart/{add-to-cart, apply-coupon, remove-from-cart, update-cart, get-or-create-cart, create-checkout, amend-order, regenerate-pix, _stripe-helpers}.ts` — 12 sites
-- `apps/api/src/whatsapp/client.ts` — 2 sites (`sendSingleMessage`, `sendMedia`)
+| File | Invocations | In original scope? |
+|---|---|---|
+| `packages/tools/src/cart/add-to-cart.ts` | 1 | yes |
+| `packages/tools/src/cart/apply-coupon.ts` | 1 | yes |
+| `packages/tools/src/cart/remove-from-cart.ts` | 1 | yes |
+| `packages/tools/src/cart/update-cart.ts` | 1 | yes |
+| `packages/tools/src/cart/get-or-create-cart.ts` | 1 | yes |
+| `packages/tools/src/cart/create-checkout.ts` | **7** | yes |
+| `packages/tools/src/cart/amend-order.ts` | **9** | yes |
+| `packages/tools/src/cart/regenerate-pix.ts` | 1 | yes |
+| `packages/tools/src/cart/_stripe-helpers.ts` | 1 | yes |
+| `packages/tools/src/cart/reorder.ts` | 2 | **NO — scope decision needed** |
+| `packages/tools/src/cart/_shared.ts:54` (`createTooledOrderService` factory) | 1 | **NO — scope decision needed** |
+| **Cart subtotal** | **26** | |
+| `apps/api/src/whatsapp/client.ts` | 2 | yes |
+| **Grand total** | **28** | |
 
-**14 wrapper-call sites currently emit zero audit records.**
+**Already-passing sites (verified by grep — NOT a gap):** 18 sites across `apps/api/src/routes/cart.ts` (15), `apps/api/src/routes/stripe-webhook.ts` (4 — note count overlap with cart.ts since stripe-webhook.ts has 4 of its own), and `apps/api/src/routes/admin/products.ts` (1). Plus the 5 in `apps/api/src/routes/order-actions.ts`. All correctly thread `auditSink: getAuditSink()`.
 
-The deliberate-cycle-avoidance comment lives at `packages/tools/src/cart/_shared.ts:18-26`.
+**Architectural reality — corrects the original "Option A" premise:**
+- `AuditSink` interface is ALREADY in `@adjudicate/audit` (registry-published leaf). Wrappers already import it from there. Nothing to extract for the interface itself.
+- `getAuditSink()` lives in `packages/llm-provider/src/intent-audit-wiring.ts`. Its load-bearing deps include:
+  - `getRedisClient` from `@ibatexas/tools` (Redis spill storage)
+  - `rk()` from `@ibatexas/tools` (in sibling `redis-spill-storage.ts`)
+  - `prisma` from `@ibatexas/domain` (Postgres sink)
+  - `publishNatsEvent` from `@ibatexas/nats-client`
+  - Sibling files `audit-redactor.ts`, `redis-spill-storage.ts`, `postgres-audit-writer.ts`, `logger.ts`
 
-## Architectural options (G1)
+A naïve "extract to leaf package" would create the **inverse cycle** `@ibatexas/audit-sink → @ibatexas/tools` (via `getRedisClient`/`rk`). The cycle has to be broken either by DI (boot-time dep injection) or by relocating the adapters with type-only imports.
 
-### Option A — Extract `getAuditSink` to a leaf package (recommended)
+**Test-fixture impact:** ZERO. All 4 wrapper test files already pass `auditSink` in every meta literal (9, 12, 11, 13 sink-references respectively). Flipping `auditSink` to required at the type level is safe.
 
-**Mechanism:** New workspace package `@ibatexas/audit-sink` containing `AuditSink` interface, `getAuditSink()` factory, and (if needed) the persistent buffered sink + multi-sink composition. Both `@ibatexas/tools` and `@ibatexas/llm-provider` depend on the leaf — no cycle.
+The cycle-avoidance comment at `packages/tools/src/cart/_shared.ts:18-26` is still load-bearing today.
 
-**Steps:**
-1. `pnpm create` new workspace package `packages/audit-sink/`
-2. Move `AuditSink` interface and `getAuditSink` (+ minimal transitive deps) from `@ibatexas/llm-provider` into the leaf
-3. Re-export from `@ibatexas/llm-provider` for back-compat (one release cycle, then remove)
-4. Add `@ibatexas/audit-sink` as a dep of `@ibatexas/tools` (and `@ibatexas/llm-provider`)
-5. Make `auditSink` required on all 4 wrapper meta types
-6. Update all 14 wrapper-call sites to pass `auditSink: getAuditSink()`
-7. Update `packages/tools/src/cart/_shared.ts:18-26` comment to reflect closure
-8. Land T2 conformance test (see [hardening-conformance-followup.md](./hardening-conformance-followup.md))
+## Architectural sub-options (G1 — choose one of A1 / A2 / A3)
 
-**Effort:** 4-6h (~2h package extract + 2h call-site sweep + 1-2h tests).
+### A1 — Pure builder, boot-time DI
 
-### Option B — DI via module-scoped default
+**Mechanism:**
+- New leaf package `@ibatexas/audit-sink` containing `getAuditSink` as a pure builder. It accepts injected dependencies via a `__setAuditSinkDependencies({redisClient, prismaWriter, natsPublisher, logger})` registration call at boot.
+- The leaf has ZERO runtime deps on `@ibatexas/tools` or `@ibatexas/domain` — both are injected.
+- `apps/api/src/index.ts` (or a new `audit-sink-bootstrap.ts`) calls `__setAuditSinkDependencies(...)` after the Redis + Prisma + NATS clients are constructed.
+- `@ibatexas/llm-provider` re-exports `getAuditSink` from the leaf for one release cycle (back-compat).
 
-**Mechanism:** A module-level `__setDefaultAuditSink(sink)` registered at app boot; wrappers fall back to it when `meta.auditSink` is undefined.
+**Pros:** cleanest layering; truly leaf-package; no cyclic anything.
+**Cons:** introduces boot-order coupling; requires app-side initialization step before any envelope flows.
+**Effort:** ~6-8h (leaf package + DI wiring + boot move + sweep 28 sites).
+**Risk:** medium — boot-order bugs are subtle.
 
-**Trade-offs:**
-- Pro: zero call-site changes (the wrapper just gets a non-undefined sink at runtime).
-- Con: introduces module-scoped state — risks test-pollution between suites, makes the "audited by construction" claim harder to enforce.
-- Con: cannot make `auditSink` required at the TYPE level — only at runtime. T2 conformance must inspect runtime behavior, not call-site shape.
+### A2 — Adapters move with leaf, type-only deps
 
-**Effort:** 3-4h.
+**Mechanism:**
+- New leaf package `@ibatexas/audit-sink` containing `getAuditSink`, redis-spill-storage, postgres-audit-writer adapters.
+- Leaf depends on `@ibatexas/tools` ONLY for type-only imports (`import type { RedisListClient } from "@ibatexas/tools"`) — no runtime dep edge.
+- Lazy-singleton fallback (current shape of `getAuditSink`) preserved; tools that need the sink get it without app-side initialization.
 
-### Option C — Caller-emits-audit pattern
+**Pros:** smaller behavioral delta from today; preserves the lazy-singleton ergonomics; type-only imports are TS-side only and don't create runtime cycles.
+**Cons:** requires careful import discipline (linter rule + review); adapters move to a less-discoverable location.
+**Effort:** ~5-7h (leaf package + adapter move + sweep 28 sites).
+**Risk:** low-medium — TS type-only imports are well-understood.
 
-**Mechanism:** Remove `auditSink` from wrapper meta entirely. Wrapper returns the unemitted `AuditRecord`; caller is responsible for emitting it.
+### A3 — Thin interface leaf + app-side registration (RECOMMENDED)
 
-**Trade-offs:**
-- Pro: clean separation; wrapper is purely "policy + dispatch."
-- Con: inverts the "audited by construction" contract — easy to forget to emit.
-- Con: every caller must import `AuditSink`, breaking the same cycle in the opposite direction.
+**Mechanism:**
+- New leaf package `@ibatexas/audit-sink` containing ONLY:
+  - Re-export of `AuditSink` interface from `@adjudicate/audit`
+  - A registration interface: `registerAuditSink(sink: AuditSink)` + `getAuditSink(): AuditSink`
+- `getAuditSink` throws "audit sink not registered" if called before registration (fail-closed).
+- `intent-audit-wiring.ts` STAYS in `@ibatexas/llm-provider` (no extraction). At app boot, it constructs the sink and calls `registerAuditSink(sink)` on the leaf.
+- `@ibatexas/tools` imports `getAuditSink` from the leaf — gets the registered sink at runtime; no cyclic dep.
 
-**Effort:** 4-6h.
+**Pros:** smallest blast radius; almost zero code movement; cleanest type-side enforcement; fail-closed by construction.
+**Cons:** the leaf is small enough that someone might question why it exists vs. just registering via module-scoped state — but the package boundary is what enforces the no-cycle guarantee.
+**Effort:** ~3-4h (leaf package + 1 wiring call + sweep 28 sites).
+**Risk:** low — minimum surface area.
 
-## Acceptance criteria (regardless of option)
+### Recommendation
 
-- All 14 wrapper-call sites either pass `auditSink` (A) or receive it via DI (B) or emit themselves (C).
-- All 4 wrapper meta types have `auditSink` typed as **required** (A) — not just optional.
-- T2 conformance suite added under `apps/api/src/__tests__/audit-2026-05-24/audit-sink-wrapper-conformance.test.ts` (or `bypass-detection/` if static-grep based).
-- Existing wrapper tests still pass; new tests assert that an audit record was emitted for at least one Stripe / Twilio / Medusa-store wrapper call.
+**A3** — smallest blast radius, lowest risk, fastest. The other two (A1 / A2) buy more architectural purity but cost more hours for marginal gain over A3's strict-leaf-with-registration shape.
+
+## Scope sub-decision: `reorder.ts` + `_shared.ts` factory in or out?
+
+The 2 wrapper sites in `cart/reorder.ts` and the 1 factory wire in `cart/_shared.ts:54` (`createTooledOrderService`) were NOT in the original 14-site enumeration. They are real LLM-callable / system-actor mutation paths that should be audited.
+
+**Default recommendation:** include both. The factory wire in `_shared.ts:54` may require threading `auditSink` into `createOrderService(domain)`'s `adminAdjudicated` parameter — verify the path; if it cascades into 3+ files in `@ibatexas/domain`, STOP and re-scope.
+
+## Acceptance criteria (regardless of sub-option)
+
+- All 28 wrapper-call sites (or 26 if reorder.ts + _shared.ts factory excluded by scope sub-decision) pass `auditSink: getAuditSink()` from the leaf.
+- All 4 wrapper meta types have `auditSink` typed as **required** — not just optional.
+- T2 conformance suite added under `apps/api/src/__tests__/bypass-detection/audit-sink-wrapper-conformance.test.ts` (static grep — every wrapper call has `auditSink:` in its meta literal).
+- Existing wrapper tests still pass (they all already pass `auditSink` — verified zero-cascade).
+- New integration test: spy on `getAuditSink()` and assert a Stripe / Twilio / Medusa-store wrapper call produces an `emit` invocation.
 - `packages/tools/src/cart/_shared.ts:18-26` comment updated to reflect closure (or removed if no longer load-bearing).
-- One commit per logical sub-step; commit messages follow the repo convention (`fix(tools,api,audit-2026-05-24-H2-...): ...`).
+- One commit per logical sub-step; commit messages follow the repo convention (`fix(audit-sink,tools,api,audit-2026-05-24-H2-...): ...`).
 
 ## Required tests
 
@@ -101,11 +140,9 @@ The deliberate-cycle-avoidance comment lives at `packages/tools/src/cart/_shared
 - Blocks T2 conformance suite (must land after this).
 - T2 in turn protects future regressions.
 
-## Ready-to-spawn sub-agent prompt
+## Ready-to-spawn sub-agent prompt (FILL IN sub-option once G1 picks A1 / A2 / A3 and scope sub-decision)
 
-> You are the H2 audit-sink architecture agent. The Bucket H2 (P0-4 wrapper auditSink dep-cycle) decision is **Option A** (extract `getAuditSink` to a new leaf package `@ibatexas/audit-sink`). Implement per `docs/adjudicate-migration/audit-2026-05-24/tasks/h2-wrapper-audit-sink-architecture.md` §"Option A". Hard requirements: (1) make `auditSink` REQUIRED at the type level on all 4 wrappers (twilio, stripe, medusa, medusa-store); (2) all 14 wrapper-call sites enumerated in the task file must pass `auditSink: getAuditSink()`; (3) add the T2 conformance suite per [hardening-conformance-followup.md](./hardening-conformance-followup.md). Repo conventions: ESM `.js` extensions on local imports, vitest, no comments unless WHY is non-obvious, commit per logical sub-step. Skip `npm run build`; do NOT run dev servers. Run typecheck via `pnpm typecheck` for api + tools + audit-sink. Run `pnpm test` only on the new T2 suite + the wrapper unit tests you change. Report back with: (a) file diff list, (b) commit hashes, (c) verification that the 14 call sites no longer skip emit (grep evidence), (d) any surprise findings outside the scope of the task file. **If you uncover a fifth wrapper or a 15th call site not listed in the task file, STOP and report up — do not silently expand scope.**
-
-*Substitute "Option B" or "Option C" if the user picks differently; update §"Hard requirements" accordingly.*
+> You are the H2 audit-sink architecture agent. The user's G1 decision is **{A1 | A2 | A3}** (default recommended: A3). The user's scope sub-decision is **{include | exclude}** `reorder.ts` (2 sites) and `_shared.ts:54` factory wire (1 site). Implement per `docs/adjudicate-migration/audit-2026-05-24/tasks/h2-wrapper-audit-sink-architecture.md` §"A{N}" and the scope decision. Hard requirements: (1) make `auditSink` REQUIRED at the type level on all 4 wrappers; (2) all {26|28} wrapper-call sites pass `auditSink: getAuditSink()`; (3) add the T2 conformance suite. Repo conventions: ESM `.js` extensions on local imports, vitest, no comments unless WHY is non-obvious, commit per logical sub-step. Skip `npm run build`; do NOT run dev servers. Run typecheck via `pnpm typecheck` for api + tools + audit-sink. Run `pnpm test` only on the new T2 suite + the wrapper unit tests you change. Report back with: (a) per-commit summary, (b) verification that all wrapper-call sites pass `auditSink` (grep evidence), (c) the T2 conformance suite's first run output, (d) any surprises. **If you uncover a 29th wrapper-call site or another file using `@adjudicate/audit`'s `AuditSink` interface outside the wrapper paths, STOP and report up — do not silently expand scope.**
 
 ## Risk classification
 

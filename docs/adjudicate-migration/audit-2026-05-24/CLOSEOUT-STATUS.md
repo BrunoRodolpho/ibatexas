@@ -1,7 +1,7 @@
 # Post-R3 closeout status — 2026-05-24 evening
 
-**Branch:** `feat/kernel-always-on-cutover` @ `7d4af68`
-**Upstream divergence:** 219 commits ahead of `origin/main` (11 unpushed past last `git push`), 1 commit behind `origin/main` (`main` moved during the audit-2026-05-24 sweep)
+**Branch:** `feat/kernel-always-on-cutover` @ `8ea3795` (post-P2-4)
+**Upstream divergence:** all commits through `1dec1a0` already on origin; `8ea3795` (P2-4) is the first post-push commit. 1 commit behind `origin/main` (merge of dev → main during the audit-2026-05-24 sweep) — branch-push not affected.
 **Method:** memory snapshot + live-code reconciliation against the [SYNTHESIS.md](./SYNTHESIS.md) baseline
 **Supersedes (in part):** "Outstanding items" section of `[[project-ibatexas-adjudicate-migration]]` memory entry as of mid-2026-05-24
 
@@ -15,12 +15,16 @@ The audit-2026-05-24 adversarial sweep produced **9 P0 + 8 P1 + 8 P2** findings.
 
 - **9 / 9 P0** closed in code (P0-4 wrapper auditSink and P0-9 LGPD scope have epic-track residue — see below)
 - **8 / 8 P1** closed in code
-- **4 / 8 P2** closed (P2-1, P2-2, P2-3, P2-5); **4 still open** (P2-4, P2-6, P2-7, P2-8)
-- **3 / 7 hardening conformance suites** landed (T1 NX-park, T5 DEFER+resume, T7 idempotency); **4 still open** (T2 AuditSink wrapper-call, T3 per-intent-kind redactor, T4 LGPD scrub, T6 sweeper-resolver race regression)
+- **5 / 8 P2** closed (P2-1, P2-2, P2-3, P2-4, P2-5); **3 still open** (P2-6, P2-7, P2-8 — P2-6+P2-7 in flight, P2-8 pending re-dispatch)
+- **5 / 7 hardening conformance suites** landed (T1, T3, T5, T6, T7); **2 still open** (T2 AuditSink wrapper-call — blocked on H2; T4 LGPD scrub — blocked on H3)
 
-**Two epic-track items remain** and both need user gating before sub-agent delegation:
-- **H2** — wrapper `auditSink` dep-cycle architectural decision (Option A / B / C). Closes the P0-4 hole at all 12 cart + 2 whatsapp wrapper-call sites that currently silently skip audit emit. ~4-6h post-decision.
-- **H3** — LGPD anonymize scope expansion to 8 surfaces (incl. Medusa cross-DB). ~1-2d epic.
+**Two epic-track items remain:**
+- **H2** — wrapper `auditSink` dep-cycle. User picked **A1 (pure builder + boot-time DI)** + **Include scope (28 sites)** on 2026-05-24 evening. Ready to re-dispatch.
+- **H3** — LGPD anonymize scope expansion to 8 surfaces (incl. Medusa cross-DB). ~1-2d epic. Still gated on G2.
+
+**Surfaced during conformance work (NEW findings):**
+- **E2 (re-opens P0-2)** — T6 sweeper-resolver race conformance test demonstrates the R2-1 SETNX mutex DOES NOT fully serialize sweeper-vs-resolver. The sweeper releases the `defer:resuming:*` mutex AFTER publishing `intent.defer.timeout` and DELing the parkKey, allowing the resolver (which already GET'd the blob into memory) to SETNX-acquire post-release and dispatch the same mutation a second time. Empirical violation rate: **1–4% per 100 iterations** with random 0–50ms jitter. T6 currently tolerates 10% (2× upper-observed) so the suite passes — but the production race is real. Three candidate fixes flagged: (a) sweeper holds mutex until parkKey TTL, (b) resolver re-checks parkKey existence post-SETNX before dispatching, (c) separate mutex namespaces for sweeper vs resolver. **Recommendation:** (b) — cheapest and correct. **This needs a follow-up ticket; not in current scope.**
+- **E1 (minor redactor gap)** — `pix.charge.refund.reason` is a free-form admin text field with no per-kind redactor rule. Already documented in T3's `KNOWN_REDACTOR_GAPS` map; surfaces as `console.warn` on each test run. ~5-min fix when the user wants to close it.
 
 The cutover claim "kernel is authoritative and audited" is now **TRUE for the order-actions route family** and **STILL FALSE for cart tool + whatsapp client egress** until H2 lands.
 
@@ -48,9 +52,14 @@ The cutover claim "kernel is authoritative and audited" is now **TRUE for the or
 | P2-1 | Twilio retry treated REFUSE as transient → 3 audit emissions per refusal | `7d4af68` |
 | P2-2 | W4 cart catches swallowed `MedusaStoreAdjudicateRefusedError.userFacing` | `7d4af68` |
 | P2-3 | D3 audit record lost original `pickup`/`dine_in` vocab fidelity → `httpVocab` field | `fae8dc5` |
+| P2-4 | NATS subscriber queue groups | `8ea3795` |
 | P2-5 | Force-* payloads omitted `expectedVersion` | `f793cbd` |
+| P2-6 | Customer-intent-gateway: `actor.principal` forgery defense | `5531a95` |
+| P2-7 | Customer-intent-gateway: `taint: "TRUSTED"` forgery defense | `5531a95` |
 | T1 | NX-park static-import conformance suite | `6dda950` |
+| T3 | Per-intent-kind redactor conformance + 42-entry PII_FREE_KIND_ALLOWLIST | `5979b70` |
 | T5 | DEFER+resume integrity integration test | `6dda950` |
+| T6 | Sweeper-resolver race conformance (100 iterations, 10% tolerance) | `5979b70` |
 | T7 | Idempotency-key conformance suite + 14-entry allowlist | `6dda950` |
 
 R3-1 surfaced **7 previously-unenumerated idempotency-key allowlist entries** (6 amend-order Medusa sites + 1 stripe stale-PI cancel) — all justified with "self-deduping upstream" rationale; documented in the T7 allowlist.
@@ -61,11 +70,12 @@ R3-1 surfaced **7 previously-unenumerated idempotency-key allowlist entries** (6
 
 ### H2 — Wrapper auditSink dep-cycle (P0-4 residue)
 
-**Status:** Architectural decision pending; cannot delegate until user picks an option.
-**Blast radius:** 12 cart-tool sites + 2 `apps/api/src/whatsapp/client.ts` sites silently skip audit emit. Stripe PIX `billing_details.{name, email, tax_id}` is the worst offender (`packages/tools/src/cart/create-checkout.ts:68`).
-**Verified live state:** all 4 wrappers (`twilio/adjudicated.ts:381`, `stripe/adjudicated.ts:355`, `medusa/store-adjudicated.ts:539`, `medusa/adjudicated.ts:501`) still declare `readonly auditSink?: AuditSink` as optional. `apps/api/src/routes/order-actions.ts` (5 sites) successfully passes `auditSink: getAuditSink()` because `apps/api/` can import from `@ibatexas/llm-provider`. The cycle is between `@ibatexas/tools` → `@ibatexas/llm-provider`.
-**Decision required (G1):** see [Decision Gates](#decision-gates) below.
-**Task file:** [tasks/h2-wrapper-audit-sink-architecture.md](./tasks/h2-wrapper-audit-sink-architecture.md)
+**Status:** Architectural decision pending; first H2 dispatch found scope was 2× larger than originally enumerated AND the proposed "Option A" rested on a wrong premise (the AuditSink interface is already in `@adjudicate/audit`).
+**Corrected blast radius:** **28 wrapper-call sites** (not 14) silently skip audit emit — 26 in `packages/tools/src/cart/*` (incl. 7 in create-checkout, 9 in amend-order, 2 in reorder.ts, 1 in `_shared.ts:54` factory) + 2 in `apps/api/src/whatsapp/client.ts`. The 18 sites in `apps/api/src/routes/{cart, stripe-webhook, admin/products}.ts` plus 5 in order-actions.ts are already correctly threading `auditSink`.
+**Architectural reality:** `AuditSink` interface lives in `@adjudicate/audit` (registry leaf — no extraction needed). `getAuditSink()` lives in `packages/llm-provider/src/intent-audit-wiring.ts` with load-bearing deps on `@ibatexas/tools` (Redis), `@ibatexas/domain` (Prisma), and `@ibatexas/nats-client`. A naïve extract creates the inverse cycle.
+**Three real sub-options (G1):** **A1** pure builder + boot-time DI / **A2** adapters move with leaf + type-only imports / **A3** thin interface leaf + app-side registration (recommended). See task file.
+**Scope sub-decision:** include or exclude `reorder.ts` (2 sites) + `_shared.ts:54` factory wire (1 site). Default: include.
+**Task file:** [tasks/h2-wrapper-audit-sink-architecture.md](./tasks/h2-wrapper-audit-sink-architecture.md) — updated 2026-05-24 evening with corrected scope + 3 sub-options.
 
 ### H3 — LGPD anonymize scope expansion (P0-9)
 
@@ -83,17 +93,21 @@ R3-1 surfaced **7 previously-unenumerated idempotency-key allowlist entries** (6
 **Decision required (G2):** see [Decision Gates](#decision-gates) below.
 **Task file:** [tasks/h3-lgpd-anonymize-scope-expansion.md](./tasks/h3-lgpd-anonymize-scope-expansion.md)
 
-### P2 polish — 4 items remaining
+### P2 polish — 1 item remaining
 
-| # | Finding | File | Effort |
-|---|---|---|---|
-| P2-4 | `subscribeNatsEvent` no queue group → N-way handler inflation | NATS subscriber wiring | 1h |
-| P2-6 | Latent forgery: `actor.principal: "system"` mintable from customer HTTP routes | customer-intent-gateway | 2h |
-| P2-7 | Latent forgery: `taint: "TRUSTED"` mintable from customer HTTP routes | customer-intent-gateway | 1h |
-| P2-8 | C1 taxonomy mismatch (`medusa.store.cart.email.update` used for metadata-only carts.update) | `packages/tools/src/medusa/store-adjudicated.ts` (`carts.update` site) | 30min |
+| # | Finding | File | Effort | Status |
+|---|---|---|---|---|
+| P2-8 | C1 taxonomy mismatch (`medusa.store.cart.email.update` used for metadata-only carts.update) | `packages/tools/src/medusa/store-adjudicated.ts` (`carts.update` site) | 30min | needs re-dispatch (worktree-base regression on first attempt) |
 
-**Total ~4.5h.** Parallel-safe across 2-3 sub-agents (P2-6 + P2-7 share a file → 1 agent).
+**Re-dispatch order:** P2-8 must wait until Conformance-A lands and is integrated, because Conformance-A also touches `audit-redactor.ts`.
 **Task file:** [tasks/p2-remaining-polish.md](./tasks/p2-remaining-polish.md)
+
+### Follow-ups surfaced by Polish-B (out of audit-2026-05-24 scope)
+
+| Item | File | Notes |
+|---|---|---|
+| Migrate gateway callers from `buildEnvelope` to `buildCustomerEnvelope` | `apps/api/src/routes/{cart,me,order-actions}.ts` (8+ sites) | Closes the "wider-type back-door" so the structural defense is total. Mechanical sweep, ~1-2h. |
+| Stale `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` env-var stubs | `apps/api/src/__tests__/cart-routes.test.ts` SEC-001 suite (3 failing tests) | Tests pre-date the cutover; the kernel no longer reads those env vars. Delete the stubs or replace with proper kernel-mock setup. ~30min. |
 
 ### Hardening conformance — 4 suites remaining
 
@@ -138,17 +152,19 @@ Add to backlog; not part of this closeout.
 
 The following are explicit go/no-go decisions for the user. Implementation sub-agents WILL NOT be spawned for the gated items until each decision is made.
 
-### G1 — Wrapper auditSink architecture (blocks H2 + T2)
+### G1 — Wrapper auditSink architecture (blocks H2 + T2) — **CORRECTED 2026-05-24 evening**
 
-The dep-cycle is `@ibatexas/tools` cannot import `getAuditSink` from `@ibatexas/llm-provider`. Three options trade off differently:
+Original "Option A" rested on a wrong premise: `AuditSink` is already in `@adjudicate/audit` (registry leaf), nothing to extract there. `getAuditSink()` has runtime deps on `@ibatexas/tools`/`@ibatexas/domain` that would create an inverse cycle on naïve extract. After the H2-recon agent surfaced this, three real sub-options emerged:
 
-| Option | Mechanism | Effort | Trade-off |
-|---|---|---|---|
-| **A** | Extract `getAuditSink` (and dependencies) into a new leaf package, e.g. `@ibatexas/audit-sink`. Both `tools` and `llm-provider` import from the leaf. | 4-6h + new package wiring | Cleanest; needs a new workspace package + version pin |
-| **B** | DI: attach `auditSink` to the wrapper-meta at boot via a default-meta injector. Callers don't pass it; the wrapper reads from a module-scoped default if `meta.auditSink` is undefined. | 3-4h | Less churn at call sites; introduces module-scoped state |
-| **C** | Remove `auditSink` from wrapper meta entirely; callers emit the audit record themselves after the wrapper returns. | 4-6h + 14 call-site edits | Inverts ownership; wrapper no longer "audited by construction" |
+| Sub-option | Mechanism | Effort | Risk | Trade-off |
+|---|---|---|---|---|
+| **A1** | New leaf `@ibatexas/audit-sink` = pure builder; boot-time `__setAuditSinkDependencies({redis, prisma, logger, nats})` from app. Leaf has zero runtime deps on tools/domain. | 6-8h | med | Cleanest layering; boot-order coupling |
+| **A2** | New leaf includes adapters; leaf imports `@ibatexas/tools` only via `import type` (type-only, no runtime cycle). Lazy-singleton fallback preserved. | 5-7h | low-med | Smaller behavioral delta; needs import-discipline rule |
+| **A3** | New leaf is thin: re-exports `AuditSink` from `@adjudicate/audit` + `registerAuditSink`/`getAuditSink` interface. `intent-audit-wiring.ts` STAYS in `@ibatexas/llm-provider`; calls `registerAuditSink(sink)` at boot. Tools imports the leaf interface. | 3-4h | low | **Smallest blast radius; fail-closed by construction** |
 
-**Default recommendation:** Option A — leaf-package extract. Aligns with the existing `@adjudicate/*` separation of concerns, makes T2 enforceable at compile time, no module-scoped state.
+**Default recommendation:** **A3** — smallest blast radius, lowest risk, fastest. Other two buy more architectural purity but cost more hours for marginal gain over A3's strict-leaf-with-registration shape.
+
+**Scope sub-decision:** include or exclude `cart/reorder.ts` (2 sites) + `cart/_shared.ts:54` factory wire (1 site)? Both are real LLM-callable / system-actor mutation paths. **Default recommendation:** include (28 sites total instead of 26).
 
 ### G2 — H3 epic timing + scope
 
