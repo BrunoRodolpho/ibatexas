@@ -325,4 +325,46 @@ The V1/V2/V4 trio is small enough (1 day total) and well-scoped enough (reproduc
 - 14 W7 closure commits + 1 verifier-report commit: `git log --oneline 94964f0..HEAD`
 - W7 aggregate change footprint: `git diff --stat 94964f0..HEAD` (83 files, +8274/-547 lines)
 
-End of W7 synthesis.
+---
+
+## Wave 8 addendum — V1/V2/V4 closure + 10 new cart-store findings
+
+**Branch state at W8 close:** 3 additional commits on `feat/correctness-w7-close-w6-findings`:
+
+- `5f800f2` — feat(correctness-w8-V1): shared createTooledOrderService factory + hard-throw on bare createOrderService
+- `84b5c39` — fix(correctness-w8-V2): route stripe-webhook.ts:308 through stripeAdjudicated.paymentIntents.update
+- `3129a79` — chore(correctness-w8-V4): widen bypass-detection MEDUSA_SCAN_DIRS to packages/tools/src/
+
+**W8 verdict:** all three closures verified. 228/228 tests pass across 16 test files. Spot-check confirmed:
+- `packages/domain/src/services/order.service.ts:149` now hard-throws on bare `createOrderService` (no silent fallback)
+- Only 2 production callers of `createOrderService` remain; both pass `adminAdjudicated` DI
+- `apps/api/src/routes/stripe-webhook.ts:318` wraps through `stripeAdjudicated.paymentIntents.update`
+- All 6 V evidence files written (V1/V2/V4 before/after)
+
+**Tier verdict updates after W8:**
+- 🟢 **Tier 1 shadow — GREEN** (unchanged)
+- 🟢 **Tier 3 shadow — GREEN** (NEW-W7-V1 closed; the LLM-callable cart-tool kernel-bypass seam is sealed; the hard-throw guard prevents regression)
+- 🟡 **Tier 4 enforce — YELLOW** (downgraded from RED; V3 G3-hoist-incomplete remains the only Tier 4 blocker — version/nonce/taint fields not hoisted, so tamper-detection partial-coverage gap persists)
+
+**NEW-W8 findings (Wave 9 backlog):**
+
+V4's scan widening surfaced 10 LLM-callable cart-store medusa bypasses in `packages/tools/src/cart/` — added to `DEFERRED_MEDUSA_MIGRATIONS` with W9 follow-up rationale. Full list in `docs/adjudicate-migration/correctness-remediation/WAVE9-CART-EGRESS-BACKLOG.md`.
+
+These are **not Tier 1 or Tier 3 blockers** — they are customer-cart STORE-scope mutations (add-to-cart, apply-coupon, checkout, etc.) that bypass kernel adjudication. For Tier 4 enforce (LGPD anonymize, refund > R$1k), they're a meaningful but tangential gap (different intent surface, not directly blocking).
+
+**Cart-egress epic (W9 — separate from this remediation cycle):**
+- ~10 new `medusa.store.cart.*` intent kinds + per-kind policy bundles
+- LLM-flow test coverage per kind
+- Estimated ~3-5 days, single engineer
+- Recommended as its own epic, not as a deep-audit loop continuation
+
+**Recursion observation:** Each adversarial pass surfaced roughly half-as-many new findings:
+- W6 verifier: 8 new findings (closing W1-W3's work)
+- W7 verifier: 5 new findings (closing W6's work)
+- W8 wide scan: 10 new findings — BUT this is a categorical surfacing (V4 widening exposed a previously-unscanned directory), not net-new bugs introduced by W7
+
+The deep-audit cycle has converged on the previously-scanned surface. The cart-store findings are a different category, not deep-audit residual.
+
+**Final recommendation:** Ship Tier 1 + Tier 3 shadow now. Treat Tier 4 enforce as gated on V3 hoist completion (~30 min fix) + cart-egress epic (~3-5 days). Stop the current remediation loop here.
+
+End of W7 + W8 synthesis.
