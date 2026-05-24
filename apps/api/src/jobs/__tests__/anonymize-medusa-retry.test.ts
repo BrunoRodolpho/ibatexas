@@ -160,11 +160,11 @@ describe("sweepMedusaAnonymizeRetry", () => {
 
     expect(mockBumpAttempt).toHaveBeenCalledWith("cust_retry");
     expect(mockPublishNatsEvent).toHaveBeenCalledTimes(1);
-    const publishedSubject = mockPublishNatsEvent.mock.calls[0]![0];
-    const publishedPayload = mockPublishNatsEvent.mock.calls[0]![1] as Record<
-      string,
-      unknown
+    const publishCalls = mockPublishNatsEvent.mock.calls as unknown as Array<
+      [string, Record<string, unknown>]
     >;
+    const publishedSubject = publishCalls[0]![0];
+    const publishedPayload = publishCalls[0]![1];
     expect(publishedSubject).toBe("customer.anonymize.medusa.pending");
     expect(publishedPayload.customerId).toBe("cust_retry");
     expect(publishedPayload.medusaId).toBe("cus_med_retry");
