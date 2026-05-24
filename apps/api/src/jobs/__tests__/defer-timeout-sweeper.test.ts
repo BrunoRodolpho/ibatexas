@@ -260,6 +260,95 @@ describe("sweepDeferTimeouts", () => {
     expect(store.get("test:defer:pending:sess_bad")).toBeUndefined()
   })
 
+  // ── audit-2026-05-24 E3: resolver-won-race ghost-publish suppression ────
+
+  it("[E3] suppresses publish when parkKey vanishes between SCAN/TTL and GET (resolver won race)", async () => {
+    const sessionId = "sess_e3_race_loser"
+    const intentHash = "ih_e3_race_loser"
+    const signal = "payment.confirmed"
+    store.set(`test:defer:pending:${sessionId}`, {
+      value: parkBlob({ sessionId, intentHash, signal }),
+      ttl: 1,
+    })
+
+    // Race scenario: the resolver wins between the sweeper's SCAN/TTL
+    // pass and its GET parkKey. We model this by replacing the in-memory
+    // stub's get() with a one-shot that DELs the parkKey on the first
+    // read (mimicking the resolver having raced ahead in real time). The
+    // SCAN already captured the key as a candidate; TTL=1 passes the
+    // imminent-threshold gate; then GET fires and finds the key gone.
+    const log = makeLogger()
+    const realGet = redisStub.get.bind(redisStub)
+    let getsObserved = 0
+    redisStub.get = async (key: string): Promise<string | null> => {
+      getsObserved++
+      if (getsObserved === 1) {
+        store.delete(`test:defer:pending:${sessionId}`)
+        return null
+      }
+      return realGet(key)
+    }
+
+    const count = await sweepDeferTimeouts(log)
+
+    // E3 invariant: no publish fires at all. Pre-E3 the sweeper would
+    // have fallen through its malformed-blob fallback and published an
+    // empty-intentHash event under a session-scoped fallback mutex.
+    expect(count).toBe(0)
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled()
+    // Debug log entry MUST surface the parkKey so ops + replay can
+    // correlate the race-loser path. The rk() mock prefixes keys with
+    // `test:`, so the parkKey is `test:defer:pending:sess_e3_race_loser`.
+    expect(log.debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parkKey: `test:defer:pending:${sessionId}`,
+      }),
+      expect.stringContaining(
+        "parkKey vanished between SCAN/TTL and GET",
+      ),
+    )
+    // No fallback mutex was acquired — the session-scoped fallback mutex
+    // key the pre-E3 code path would have SETNX'd MUST not exist.
+    expect(
+      store.get(`test:defer:resuming:fallback:${sessionId}`),
+    ).toBeUndefined()
+  })
+
+  it("[E3] recovery scan applies the same suppression on race-loser GET", async () => {
+    const sessionId = "sess_e3_recovery_race"
+    const intentHash = "ih_e3_recovery_race"
+    const signal = "payment.confirmed"
+    store.set(`test:defer:pending:${sessionId}`, {
+      value: parkBlob({ sessionId, intentHash, signal }),
+      ttl: 1,
+    })
+
+    const log = makeLogger()
+    const realGet = redisStub.get.bind(redisStub)
+    let getsObserved = 0
+    redisStub.get = async (key: string): Promise<string | null> => {
+      getsObserved++
+      if (getsObserved === 1) {
+        store.delete(`test:defer:pending:${sessionId}`)
+        return null
+      }
+      return realGet(key)
+    }
+
+    const count = await runRecoveryScan(log)
+
+    expect(count).toBe(0)
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled()
+    expect(log.debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parkKey: `test:defer:pending:${sessionId}`,
+      }),
+      expect.stringContaining(
+        "parkKey vanished between SCAN/TTL and GET",
+      ),
+    )
+  })
+
   // ── 6. publishNatsEvent failure: key is NOT deleted (retry next sweep) ──
 
   it("leaves the parked key in place when publishNatsEvent throws (retry next sweep)", async () => {

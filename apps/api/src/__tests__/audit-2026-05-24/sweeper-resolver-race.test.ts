@@ -392,18 +392,18 @@ describe.skipIf(!RUN_REAL_REDIS)(
             }),
           ])
 
-          // Did the sweeper actually publish `intent.defer.timeout` FOR THE
-          // CURRENT ITERATION'S intentHash? Per-iteration scoping matters:
-          // when the resolver races ahead of the sweeper's GET parkKey, the
-          // sweeper's GET returns null and the sweeper publishes a "minimal
-          // timeout" with EMPTY intentHash via its malformed-blob fallback.
-          // Downstream consumers all key on intentHash and ignore the empty
-          // ghost — so we must scope the violation check to the real
-          // intentHash to avoid false positives from the ghost path.
+          // Did the sweeper actually publish `intent.defer.timeout`?
+          //
+          // audit-2026-05-24 E3 closed (commit suppressing sweeper ghost
+          // publish): when the resolver wins the race between the
+          // sweeper's SCAN/TTL pass and the sweeper's parkKey GET, the
+          // sweeper now short-circuits with a debug log and does NOT
+          // publish at all. As a result we count any `intent.defer.timeout`
+          // publish as a real sweeper-won mutation — there is no longer a
+          // ghost path to filter for. The aggregate invariant below pins
+          // this to `publishedCount === 0` on resolver-won iterations.
           const sweeperPublished = mockPublishNatsEvent.mock.calls.some(
-            ([subject, payload]) =>
-              subject === "intent.defer.timeout" &&
-              (payload as { intentHash?: string }).intentHash === intentHash,
+            ([subject]) => subject === "intent.defer.timeout",
           )
           // Did the resolver actually dispatch? The dispatcher we installed
           // pushes intentHash; a re-adjudicated EXECUTE without dispatch
@@ -430,35 +430,34 @@ describe.skipIf(!RUN_REAL_REDIS)(
           // Regressions in the loser path would be a separate class from
           // the residual race window (which is tolerated below).
           if (resolverDispatched && !sweeperPublished) {
-            // Resolver won — sweeper MUST NOT have published a MEANINGFUL
-            // intent.defer.timeout for this iteration's intentHash. The
-            // top-level invariant is the intentHash-scoped sweeperPublished
-            // flag (already false in this branch). The sweeper's
-            // publishedCount may still be 1 in a narrow window: after the
-            // sweeper's SCAN + TTL succeed for our parkKey, the resolver
-            // races ahead and DELs the parkKey, then the sweeper's GET
-            // returns null and the sweeper falls through its "malformed
-            // blob" branch, publishing intent.defer.timeout with EMPTY
-            // intentHash + session-scoped fallback mutex. Downstream
-            // consumers all key on intentHash and can't match the empty
-            // event — it's a harmless ghost in production, but not zero.
-            // What we MUST assert here: no error, and any publish present
-            // had empty intentHash (i.e., the ghost case, not a real
-            // double-mutation).
+            // Resolver won — sweeper MUST NOT have published ANY
+            // intent.defer.timeout event for this iteration.
+            //
+            // audit-2026-05-24 E3 closed: prior to the E3 fix the sweeper
+            // could still publish a "ghost" timeout with empty intentHash
+            // via its malformed-blob fallback when the resolver DEL'd the
+            // parkKey between SCAN/TTL and GET. With the E3 suppression
+            // (apps/api/src/jobs/defer-timeout-sweeper.ts: `if (raw ===
+            // null) continue`), the sweeper short-circuits with a debug
+            // log instead. We pin the strict invariant: publishedCount on
+            // the sweeper side is 0, and no `intent.defer.timeout` call
+            // (ghost OR meaningful) fires.
             expect(
               sweeperCountOrErr,
               `iteration ${i}: resolver won race but sweeper threw an error`,
             ).not.toBeInstanceOf(Error)
-            const ghostOnly = mockPublishNatsEvent.mock.calls
-              .filter(([s]) => s === "intent.defer.timeout")
-              .every(
-                ([, p]) =>
-                  !(p as { intentHash?: string }).intentHash,
-              )
             expect(
-              ghostOnly,
-              `iteration ${i}: resolver won race but sweeper published a non-empty intentHash timeout — double-mutation race`,
-            ).toBe(true)
+              sweeperCountOrErr,
+              `iteration ${i}: resolver won race but sweeper publishedCount=${sweeperCountOrErr} — E3 ghost-publish suppression regression`,
+            ).toBe(0)
+            const timeoutPublishes = mockPublishNatsEvent.mock.calls.filter(
+              ([s]) => s === "intent.defer.timeout",
+            )
+            expect(
+              timeoutPublishes.length,
+              `iteration ${i}: resolver won race but sweeper published ${timeoutPublishes.length} intent.defer.timeout event(s) — E3 regression. ` +
+                `First payload: ${JSON.stringify(timeoutPublishes[0]?.[1])}`,
+            ).toBe(0)
           } else if (sweeperPublished && !resolverDispatched) {
             // Sweeper won — resolver must have surfaced one of
             // {duplicate_suppressed, signal_mismatch, no_park,

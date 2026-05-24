@@ -235,26 +235,45 @@ export async function sweepDeferTimeouts(
       }
 
       // Read the parked envelope so we can pull intentHash + signal +
-      // parkedAt for the timeout event. If the read fails or the blob is
-      // malformed, we still DEL the key and publish a minimal event so
-      // ops can see what got cleaned up.
+      // parkedAt for the timeout event. If the blob is non-null but
+      // malformed (JSON.parse fails), we still publish a minimal event so
+      // ops can see what got cleaned up — that's a genuine data-corruption
+      // case worth surfacing.
+      //
+      // audit-2026-05-24 E3: if `raw === null` here, the key vanished
+      // between our SCAN/TTL pass and this GET. The only path that DELs a
+      // parkKey out from under the sweeper is the defer-resolver winning
+      // the race (it DELs both the parkKey and the resuming mutex on
+      // commit). Publishing `intent.defer.timeout` with empty intentHash +
+      // empty signal under a session-scoped fallback mutex creates a
+      // "ghost" event that no downstream consumer can match (all consumers
+      // key on intentHash). The implicit contract of `intent.defer.timeout`
+      // is "every event has a non-empty intentHash"; honour that contract
+      // by suppressing the publish entirely. Future consumers (e.g., a
+      // metrics counter or forensic replay) can trust the contract without
+      // having to filter empty events.
       const raw = await redis.get(key).catch(() => null);
       const sessionId = parseSessionId(key);
+      if (raw === null) {
+        effectiveLogger?.debug(
+          { parkKey: key },
+          "sweeper: parkKey vanished between SCAN/TTL and GET — resolver won the race; suppressing publish",
+        );
+        continue;
+      }
       let intentHash = "";
       let signal = "";
       let parkedAt = "";
-      if (raw) {
-        try {
-          const parked = JSON.parse(raw) as ParkedEnvelope;
-          intentHash = parked.envelope?.intentHash ?? "";
-          signal = parked.signal ?? "";
-          parkedAt = parked.parkedAt ?? "";
-        } catch (parseErr) {
-          effectiveLogger?.warn(
-            { key, err: (parseErr as Error).message },
-            "[defer-timeout-sweeper] malformed parked envelope — publishing minimal timeout",
-          );
-        }
+      try {
+        const parked = JSON.parse(raw) as ParkedEnvelope;
+        intentHash = parked.envelope?.intentHash ?? "";
+        signal = parked.signal ?? "";
+        parkedAt = parked.parkedAt ?? "";
+      } catch (parseErr) {
+        effectiveLogger?.warn(
+          { key, err: (parseErr as Error).message },
+          "[defer-timeout-sweeper] malformed parked envelope — publishing minimal timeout",
+        );
       }
 
       // P1-E: dedup against the recovery scan. If a recovery scan fired
@@ -479,23 +498,33 @@ export async function runRecoveryScan(
       // by the next normal tick.
       if (ttl > IMMINENT_TTL_SECONDS) continue;
 
+      // audit-2026-05-24 E3: same race-loser suppression as the
+      // steady-state sweep — if `raw === null`, the parkKey vanished
+      // between SCAN/TTL and GET (resolver won the race and DEL'd it on
+      // commit). Publishing an empty-intentHash ghost violates the
+      // `intent.defer.timeout` contract; skip.
       const raw = await redis.get(key).catch(() => null);
       const sessionId = parseSessionId(key);
+      if (raw === null) {
+        effectiveLogger?.debug(
+          { parkKey: key },
+          "sweeper: parkKey vanished between SCAN/TTL and GET — resolver won the race; suppressing publish",
+        );
+        continue;
+      }
       let intentHash = "";
       let signal = "";
       let parkedAt = "";
-      if (raw) {
-        try {
-          const parked = JSON.parse(raw) as ParkedEnvelope;
-          intentHash = parked.envelope?.intentHash ?? "";
-          signal = parked.signal ?? "";
-          parkedAt = parked.parkedAt ?? "";
-        } catch (parseErr) {
-          effectiveLogger?.warn(
-            { key, err: (parseErr as Error).message },
-            "[defer-timeout-sweeper] malformed parked envelope during recovery — publishing minimal timeout",
-          );
-        }
+      try {
+        const parked = JSON.parse(raw) as ParkedEnvelope;
+        intentHash = parked.envelope?.intentHash ?? "";
+        signal = parked.signal ?? "";
+        parkedAt = parked.parkedAt ?? "";
+      } catch (parseErr) {
+        effectiveLogger?.warn(
+          { key, err: (parseErr as Error).message },
+          "[defer-timeout-sweeper] malformed parked envelope during recovery — publishing minimal timeout",
+        );
       }
 
       // Idempotency: SETNX the recovery-fired marker keyed by intentHash.
