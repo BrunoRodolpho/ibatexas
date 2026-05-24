@@ -61,7 +61,14 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
     // (`anonymize:otp:`, `defer:pending:`, …). The downstream
     // `requireAuth` gate currently catches `!customerId` (since `!""` is
     // truthy), but defense-in-depth: never assign empty `sub`.
-    if (typeof payload.sub !== "string" || payload.sub === "") {
+    //
+    // audit-2026-05-24 P1-6: also reject whitespace-only `sub`. W7-G1
+    // patched the OTP gate via `normalizeSub`, but the middleware itself
+    // still accepted `"   "` — those tokens would have populated
+    // `customerId` with whitespace and then collided on shared Redis
+    // keys (defer:pending:, otp:fail:…) the same way the empty string
+    // does.
+    if (typeof payload.sub !== "string" || payload.sub.trim().length === 0) {
       return;
     }
 
@@ -91,8 +98,9 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
 
     if (payload.userType !== "staff") return; // Unexpected — not a staff token
 
-    // NEW-P0-X8: same defense-in-depth for the staff path.
-    if (typeof payload.sub !== "string" || payload.sub === "") {
+    // NEW-P0-X8 + audit-2026-05-24 P1-6: same defense-in-depth for the
+    // staff path. Reject empty- or whitespace-only `sub`.
+    if (typeof payload.sub !== "string" || payload.sub.trim().length === 0) {
       return;
     }
 
@@ -121,10 +129,16 @@ export function requireAuth(
 ): void {
   // Return before done() on 401 to prevent route handler from executing
   extractAuth(request).then(() => {
-    // NEW-P0-X8: explicit empty-string check (defense in depth). `!""` is
-    // truthy so the original `!request.customerId` already catches it,
-    // but spell it out so the invariant survives future refactors.
-    if (!request.customerId || request.customerId === "") {
+    // NEW-P0-X8 + audit-2026-05-24 P1-6: explicit empty/whitespace check
+    // (defense in depth). `!""` is truthy so the original
+    // `!request.customerId` already catches the empty string, but a
+    // whitespace-only `sub` like `"   "` is truthy AND collides on
+    // shared Redis keys. Spell out both invariants so future refactors
+    // can't drop them.
+    if (
+      !request.customerId ||
+      request.customerId.trim().length === 0
+    ) {
       void reply
         .code(401)
         .send({ statusCode: 401, error: "Unauthorized", message: "Sessão inválida." });

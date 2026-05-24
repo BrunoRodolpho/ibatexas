@@ -206,6 +206,17 @@ export interface OrderAddressChangePayload {
 export interface OrderTypeSwitchPayload {
   readonly orderId: string
   readonly newType: "delivery" | "takeout"
+  /**
+   * audit-2026-05-24 P2-3: optional non-collapsed HTTP vocabulary
+   * captured for audit fidelity. Pack-orders policies adjudicate on
+   * `newType` (binary delivery|takeout); adopters whose HTTP surface
+   * distinguishes `pickup` vs `dine_in` (both collapse to `takeout`
+   * here) can record the operator-visible vocab via this field so the
+   * audit record preserves what the customer actually asked for.
+   *
+   * Ignored by the pack's guards — descriptive only.
+   */
+  readonly httpVocab?: "delivery" | "pickup" | "dine_in"
 }
 
 export interface OrderReviewSubmitPayload {

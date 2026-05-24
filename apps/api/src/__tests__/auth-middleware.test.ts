@@ -275,3 +275,80 @@ describe("JWT revocation (SEC-004)", () => {
     expect(mockGetRedisClient).not.toHaveBeenCalled();
   });
 });
+
+// ── audit-2026-05-24 P1-6: whitespace-only `sub` is rejected ──────────────
+//
+// W7-G1 patched the OTP gate via `normalizeSub`, but the middleware itself
+// still only rejected the empty string. A JWT with `sub: "   "` would have
+// populated `request.customerId` with whitespace and then collided on
+// shared Redis keys (defer:pending:, otp:fail:…) the same way the empty
+// string does. The three middleware sites (customer path, staff path,
+// requireAuth gate) now all `.trim().length === 0` check.
+describe("requireAuth rejects whitespace-only `sub` (audit-2026-05-24 P1-6)", () => {
+  let server: FastifyInstance;
+  let sideEffects: string[];
+
+  beforeAll(async () => {
+    const built = await buildTestServer();
+    server = built.app;
+    sideEffects = built.sideEffects;
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `test:${key}`);
+  });
+
+  it("returns 401 when JWT `sub` is whitespace-only (customer path)", async () => {
+    sideEffects.length = 0;
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      // Whitespace-only sub — must not populate customerId
+      this.user = { sub: "   ", userType: "customer" };
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    expect(response.statusCode).toBe(401);
+    // The route handler must NOT have executed
+    expect(sideEffects).not.toContain("protected-handler-executed");
+  });
+
+  it("returns 401 when JWT `sub` is tab/newline (customer path)", async () => {
+    sideEffects.length = 0;
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      this.user = { sub: "\t\n ", userType: "customer" };
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(sideEffects).not.toContain("protected-handler-executed");
+  });
+
+  it("does NOT pass through to handler when whitespace `sub` (defense-in-depth)", async () => {
+    sideEffects.length = 0;
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      this.user = { sub: " ", userType: "customer" };
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    // The middleware must NOT populate request.customerId with " ".
+    // The status should be 401, NOT 200 with customerId=" ".
+    expect(response.statusCode).toBe(401);
+    expect(sideEffects).toHaveLength(0);
+  });
+});

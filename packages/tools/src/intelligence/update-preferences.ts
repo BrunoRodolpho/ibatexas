@@ -41,13 +41,23 @@ export async function updatePreferences(
   }
 
   // ── Build the IntentEnvelope ────────────────────────────────────────
-  // CLAUDE.md rule #1: allergens must be an explicit array. We force the
-  // default to `[]` here so an LLM omission surfaces as the explicit
-  // "no exclusions" shape rather than `undefined` — the pack's safety
-  // guard REFUSEs the latter.
-  const allergenExclusions = Array.isArray(parsed.allergenExclusions)
-    ? parsed.allergenExclusions
-    : []
+  // CLAUDE.md rule #1 (audit-2026-05-24 P1-1): allergens MUST always be
+  // an explicit array — never inferred. The previous version coerced an
+  // omitted `allergenExclusions` to `[]` before envelope build, hiding
+  // the LLM's omission as a deliberate "no exclusions" decision and
+  // silently zeroing the customer's stored allergens.
+  //
+  // Fail-CLOSED at the tool boundary: if the LLM proposal does not
+  // include an explicit array, REFUSE here. The customer must say
+  // either "no allergens" (explicit `[]`) or list their allergens; the
+  // LLM may not omit the field.
+  if (!Array.isArray(parsed.allergenExclusions)) {
+    throw new NonRetryableError(
+      "Por segurança, alergias precisam ser informadas explicitamente. " +
+        "Confirme se você tem alergias (ou nenhuma) antes de salvar.",
+    )
+  }
+  const allergenExclusions = parsed.allergenExclusions
 
   const payload: CustomerPreferencesUpdatePayload = {
     allergenExclusions,

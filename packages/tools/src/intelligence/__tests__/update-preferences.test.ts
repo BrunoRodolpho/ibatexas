@@ -142,12 +142,44 @@ describe("updatePreferences", () => {
     expect(extras).toEqual({ customerId: "cus_01" })
   })
 
-  it("defaults allergenExclusions to [] in the envelope when omitted", async () => {
-    await updatePreferences(
-      { dietaryRestrictions: ["vegano"] },
+  // ── audit-2026-05-24 P1-1: refuse when allergens are missing ──────────
+  //
+  // CLAUDE.md rule #1: allergens MUST always be an explicit array — never
+  // inferred. The previous behavior silently coerced `undefined` → `[]`,
+  // which zeroed any stored allergens whenever the LLM omitted the
+  // field. The tool now REFUSEs at its boundary so the envelope is never
+  // built; the customer must explicitly say "no allergens" (`[]`) or
+  // list their allergens.
+  it("REFUSEs when allergenExclusions is omitted (CLAUDE.md rule #1)", async () => {
+    await expect(
+      updatePreferences({ dietaryRestrictions: ["vegano"] }, CTX_AUTH),
+    ).rejects.toThrow(/alergias precisam ser informadas/i)
+    expect(mockUpdatePreferencesFromEnvelope).not.toHaveBeenCalled()
+    expect(mockMulti).not.toHaveBeenCalled()
+    expect(mockHSet).not.toHaveBeenCalled()
+  })
+
+  it("REFUSEs when allergenExclusions is the empty object input (no fields)", async () => {
+    await expect(updatePreferences({}, CTX_AUTH)).rejects.toThrow(
+      /alergias precisam ser informadas/i,
+    )
+    expect(mockUpdatePreferencesFromEnvelope).not.toHaveBeenCalled()
+  })
+
+  it("PASSes through when caller sends explicit empty `[]` (no allergens)", async () => {
+    mockUpdatePreferencesFromEnvelope.mockResolvedValue(
+      execOutcome({
+        allergenExclusions: [],
+        dietaryRestrictions: ["vegano"],
+        favoriteCategories: [],
+      }),
+    )
+    const result = await updatePreferences(
+      { allergenExclusions: [], dietaryRestrictions: ["vegano"] },
       CTX_AUTH,
     )
-
+    expect(result.success).toBe(true)
+    expect(mockUpdatePreferencesFromEnvelope).toHaveBeenCalledOnce()
     const [envelope] = mockUpdatePreferencesFromEnvelope.mock.calls[0]
     expect(envelope.payload.allergenExclusions).toEqual([])
   })
@@ -200,7 +232,7 @@ describe("updatePreferences", () => {
   })
 
   it("resets Redis TTL via pipeline", async () => {
-    await updatePreferences({}, CTX_AUTH)
+    await updatePreferences({ allergenExclusions: [] }, CTX_AUTH)
 
     expect(mockPipelineExpire).toHaveBeenCalledWith(
       "customer:profile:cus_01",
@@ -210,7 +242,7 @@ describe("updatePreferences", () => {
   })
 
   it("uses rk() to build the profile key", async () => {
-    await updatePreferences({}, CTX_AUTH)
+    await updatePreferences({ allergenExclusions: [] }, CTX_AUTH)
 
     expect(mockRk).toHaveBeenCalledWith("customer:profile:cus_01")
   })
@@ -284,8 +316,11 @@ describe("updatePreferences", () => {
     expect(result.message).toBe("Preferências atualizadas.")
   })
 
-  it("returns generic message when no fields provided", async () => {
-    const result = await updatePreferences({}, CTX_AUTH)
+  it("returns generic message when only the required `allergenExclusions: []` is provided", async () => {
+    const result = await updatePreferences(
+      { allergenExclusions: [] },
+      CTX_AUTH,
+    )
 
     expect(result.success).toBe(true)
     expect(result.message).toBe("Preferências atualizadas.")
