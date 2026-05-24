@@ -34,6 +34,7 @@ const mockOrderProjectionUpdateMany = vi.hoisted(() => vi.fn())
 const mockOrderProjectionFindManyOuter = vi.hoisted(() => vi.fn())
 const mockConversationMessageUpdateMany = vi.hoisted(() => vi.fn())
 const mockConversationMessageUpdateManyOuter = vi.hoisted(() => vi.fn())
+const mockConversationMessageFindManyOuter = vi.hoisted(() => vi.fn())
 const mockConversationFindManyOuter = vi.hoisted(() => vi.fn())
 const mockConversationMessageCount = vi.hoisted(() => vi.fn())
 const mockConversationUpdateMany = vi.hoisted(() => vi.fn())
@@ -80,6 +81,9 @@ vi.mock("../../client.js", () => ({
     orderProjection: { findMany: mockOrderProjectionFindManyOuter },
     conversationMessage: {
       count: mockConversationMessageCount,
+      // The heavy-path loop calls findMany to fetch the next id batch and
+      // updateMany to scrub the batch. Both live on the outer client.
+      findMany: mockConversationMessageFindManyOuter,
       updateMany: mockConversationMessageUpdateManyOuter,
     },
     conversation: { findMany: mockConversationFindManyOuter },
@@ -124,6 +128,7 @@ describe("anonymizeCustomer — W4 P0-13 LGPD completeness", () => {
     mockConversationFindManyOuter.mockResolvedValue([])
     mockConversationMessageCount.mockResolvedValue(0)
     mockConversationMessageUpdateManyOuter.mockResolvedValue({ count: 0 })
+    mockConversationMessageFindManyOuter.mockResolvedValue([])
     mockOrderEventLogCount.mockResolvedValue(0)
     mockOrderEventLogFindManyOuter.mockResolvedValue([])
     mockOrderEventLogUpdateManyOuter.mockResolvedValue({ count: 0 })
@@ -288,6 +293,7 @@ describe("anonymizeCustomer — NEW-P0-X7 transaction timeout + batching", () =>
     mockConversationFindManyOuter.mockResolvedValue([])
     mockConversationMessageCount.mockResolvedValue(0)
     mockConversationMessageUpdateManyOuter.mockResolvedValue({ count: 0 })
+    mockConversationMessageFindManyOuter.mockResolvedValue([])
     mockOrderEventLogCount.mockResolvedValue(0)
     mockOrderEventLogFindManyOuter.mockResolvedValue([])
     mockOrderEventLogUpdateManyOuter.mockResolvedValue({ count: 0 })
@@ -414,5 +420,352 @@ describe("anonymizeCustomer — NEW-P0-X7 transaction timeout + batching", () =>
     )
     const result = await anonymizeCustomer("cust_regression_x7")
     expect(result).toEqual({ success: true })
+  })
+})
+
+// ── audit-2026-05-24 H3 wave-a1 — 7-surface scope expansion ────────────
+
+describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockCustomerUpdate.mockResolvedValue({ id: "cust_01" })
+    mockAddressDeleteMany.mockResolvedValue({ count: 1 })
+    mockPreferencesDeleteMany.mockResolvedValue({ count: 1 })
+    mockReviewUpdateMany.mockResolvedValue({ count: 1 })
+    mockCustomerOrderItemUpdateMany.mockResolvedValue({ count: 1 })
+    mockReviewCount.mockResolvedValue(0)
+    mockReviewFindMany.mockResolvedValue([])
+    mockReviewUpdateManyOuter.mockResolvedValue({ count: 0 })
+    mockOrderProjectionUpdateMany.mockResolvedValue({ count: 0 })
+    mockConversationMessageUpdateMany.mockResolvedValue({ count: 0 })
+    mockConversationUpdateMany.mockResolvedValue({ count: 0 })
+    mockOrderStatusHistoryUpdateMany.mockResolvedValue({ count: 0 })
+    mockOrderEventLogUpdateMany.mockResolvedValue({ count: 0 })
+    mockLoyaltyAccountUpdateMany.mockResolvedValue({ count: 0 })
+    mockReservationUpdateMany.mockResolvedValue({ count: 0 })
+    mockOrderProjectionFindManyOuter.mockResolvedValue([])
+    mockConversationFindManyOuter.mockResolvedValue([])
+    mockConversationMessageCount.mockResolvedValue(0)
+    mockConversationMessageUpdateManyOuter.mockResolvedValue({ count: 0 })
+    mockConversationMessageFindManyOuter.mockResolvedValue([])
+    mockOrderEventLogCount.mockResolvedValue(0)
+    mockOrderEventLogFindManyOuter.mockResolvedValue([])
+    mockOrderEventLogUpdateManyOuter.mockResolvedValue({ count: 0 })
+    mockTransaction.mockImplementation(
+      async (fn: (tx: typeof txClient) => Promise<unknown>) => fn(txClient),
+    )
+  })
+
+  // ── Surface 1: OrderProjection ──────────────────────────────────────
+
+  describe("Surface 1: OrderProjection scrub", () => {
+    it("nulls customerEmail / customerName / customerPhone for all rows linked to customerId", async () => {
+      await anonymizeCustomer("cust_01")
+      expect(mockOrderProjectionUpdateMany).toHaveBeenCalledWith({
+        where: { customerId: "cust_01" },
+        data: {
+          customerEmail: null,
+          customerName: null,
+          customerPhone: null,
+          shippingAddressJson: { anonymized: true },
+        },
+      })
+    })
+
+    it("full-replaces shippingAddressJson with {anonymized: true} per G2-b pick", async () => {
+      await anonymizeCustomer("cust_01")
+      const call = mockOrderProjectionUpdateMany.mock.calls[0]![0] as {
+        data: { shippingAddressJson: unknown }
+      }
+      expect(call.data.shippingAddressJson).toEqual({ anonymized: true })
+    })
+  })
+
+  // ── Surface 2: ConversationMessage ──────────────────────────────────
+
+  describe("Surface 2: ConversationMessage.content scrub", () => {
+    it("replaces content with '[anonymized]' placeholder for all of the customer's messages (light path)", async () => {
+      mockConversationFindManyOuter.mockResolvedValue([
+        { id: "conv_a" },
+        { id: "conv_b" },
+      ])
+      mockConversationMessageCount.mockResolvedValue(50) // below threshold
+
+      await anonymizeCustomer("cust_01")
+
+      // In-tx cleanup call filters by the customer's conversation ids.
+      expect(mockConversationMessageUpdateMany).toHaveBeenCalledWith({
+        where: { conversationId: { in: ["conv_a", "conv_b"] } },
+        data: { content: "[anonymized]" },
+      })
+    })
+
+    it("skips conversationMessage.updateMany when the customer has no conversations", async () => {
+      mockConversationFindManyOuter.mockResolvedValue([])
+
+      await anonymizeCustomer("cust_no_conv")
+
+      expect(mockConversationMessageUpdateMany).not.toHaveBeenCalled()
+    })
+
+    it("[heavy path] batches the message scrub OUTSIDE the main tx when > 1000 messages", async () => {
+      mockConversationFindManyOuter.mockResolvedValue([{ id: "conv_a" }])
+      mockConversationMessageCount.mockResolvedValue(3_500)
+      // Return one non-empty batch, then empty (terminator).
+      const messageIds = Array.from({ length: 500 }, (_, i) => ({
+        id: `msg_${i}`,
+      }))
+      mockConversationMessageFindManyOuter
+        .mockResolvedValueOnce(messageIds)
+        .mockResolvedValueOnce([])
+      mockConversationMessageUpdateManyOuter.mockResolvedValue({ count: 500 })
+
+      await anonymizeCustomer("cust_heavy_msgs")
+
+      // The outer (pre-tx) updateMany should have been called.
+      expect(mockConversationMessageUpdateManyOuter).toHaveBeenCalled()
+      // The first batch should target the message ids we returned.
+      const firstCall = mockConversationMessageUpdateManyOuter.mock.calls[0]![0] as {
+        where: { id: { in: string[] } }
+        data: { content: string }
+      }
+      expect(firstCall.where.id.in).toHaveLength(500)
+      expect(firstCall.data.content).toBe("[anonymized]")
+    })
+  })
+
+  // ── Surface 3: Conversation.customerId ──────────────────────────────
+
+  describe("Surface 3: Conversation.customerId null-out", () => {
+    it("nulls Conversation.customerId for all of the customer's conversations", async () => {
+      await anonymizeCustomer("cust_01")
+      expect(mockConversationUpdateMany).toHaveBeenCalledWith({
+        where: { customerId: "cust_01" },
+        data: { customerId: null },
+      })
+    })
+  })
+
+  // ── Surface 4: OrderStatusHistory.actorId ───────────────────────────
+
+  describe("Surface 4: OrderStatusHistory.actorId scrub", () => {
+    it("nulls actorId ONLY where actor='customer' AND actorId=customerId (preserves Staff actorIds)", async () => {
+      await anonymizeCustomer("cust_01")
+      expect(mockOrderStatusHistoryUpdateMany).toHaveBeenCalledWith({
+        where: { actor: "customer", actorId: "cust_01" },
+        data: { actorId: null },
+      })
+    })
+  })
+
+  // ── Surface 5: OrderEventLog.payload ────────────────────────────────
+
+  describe("Surface 5: OrderEventLog.payload full-replace", () => {
+    it("full-replaces payload with {anonymized: true} for rows linked via orderId (light path)", async () => {
+      mockOrderProjectionFindManyOuter.mockResolvedValue([
+        { id: "order_a" },
+        { id: "order_b" },
+      ])
+      mockOrderEventLogCount.mockResolvedValue(10) // below threshold
+
+      await anonymizeCustomer("cust_01")
+
+      expect(mockOrderEventLogUpdateMany).toHaveBeenCalledWith({
+        where: { orderId: { in: ["order_a", "order_b"] } },
+        data: { payload: { anonymized: true } },
+      })
+    })
+
+    it("skips orderEventLog.updateMany when the customer has no orders", async () => {
+      mockOrderProjectionFindManyOuter.mockResolvedValue([])
+
+      await anonymizeCustomer("cust_no_orders")
+
+      expect(mockOrderEventLogUpdateMany).not.toHaveBeenCalled()
+    })
+  })
+
+  // ── Surface 6: LoyaltyAccount ───────────────────────────────────────
+
+  describe("Surface 6: LoyaltyAccount reset (G2-c)", () => {
+    it("resets aggregate counters (stamps, totalEarned, redeemed) but does NOT touch customerId (schema deviation)", async () => {
+      await anonymizeCustomer("cust_01")
+      expect(mockLoyaltyAccountUpdateMany).toHaveBeenCalledWith({
+        where: { customerId: "cust_01" },
+        data: { stamps: 0, totalEarned: 0, redeemed: 0 },
+      })
+      // Verify customerId is NOT included in the update payload — the FK
+      // is non-nullable per schema; the linkage break happens via the
+      // Customer-row scrub upstream (step 1 of the tx).
+      const call = mockLoyaltyAccountUpdateMany.mock.calls[0]![0] as {
+        data: Record<string, unknown>
+      }
+      expect(call.data).not.toHaveProperty("customerId")
+    })
+  })
+
+  // ── Surface 7: Reservation.specialRequests ──────────────────────────
+
+  describe("Surface 7: Reservation.specialRequests scrub", () => {
+    it("replaces specialRequests with empty JSON array [] (schema deviation: column is NOT NULL)", async () => {
+      await anonymizeCustomer("cust_01")
+      expect(mockReservationUpdateMany).toHaveBeenCalledWith({
+        where: { customerId: "cust_01" },
+        data: { specialRequests: [] },
+      })
+    })
+  })
+
+  // ── Atomicity: all 7 surfaces inside the same $transaction ──────────
+
+  describe("Atomicity: all 7 scrubs run inside the same prisma.$transaction", () => {
+    it("invokes every scrub on the tx client passed to $transaction (light path)", async () => {
+      mockConversationFindManyOuter.mockResolvedValue([{ id: "conv_a" }])
+      mockOrderProjectionFindManyOuter.mockResolvedValue([{ id: "order_a" }])
+
+      await anonymizeCustomer("cust_01")
+
+      // Single tx call.
+      expect(mockTransaction).toHaveBeenCalledTimes(1)
+      // Every surface mock was called.
+      expect(mockOrderProjectionUpdateMany).toHaveBeenCalled()
+      expect(mockConversationMessageUpdateMany).toHaveBeenCalled()
+      expect(mockConversationUpdateMany).toHaveBeenCalled()
+      expect(mockOrderStatusHistoryUpdateMany).toHaveBeenCalled()
+      expect(mockOrderEventLogUpdateMany).toHaveBeenCalled()
+      expect(mockLoyaltyAccountUpdateMany).toHaveBeenCalled()
+      expect(mockReservationUpdateMany).toHaveBeenCalled()
+    })
+
+    it("maintains the explicit 60s timeout + maxWait on the scope-extended tx", async () => {
+      await anonymizeCustomer("cust_01")
+      const callArgs = mockTransaction.mock.calls[0]!
+      const options = callArgs[1] as { timeout: number; maxWait: number }
+      expect(options.timeout).toBeGreaterThanOrEqual(60_000)
+      expect(options.maxWait).toBeGreaterThanOrEqual(1_000)
+    })
+  })
+
+  // ── Audit emit: per-surface records ──────────────────────────────────
+
+  describe("Audit emit: one record per scrubbed surface", () => {
+    it("emits 7 audit records, one per surface, with the expected kinds", async () => {
+      const emit = vi.fn().mockResolvedValue(undefined)
+      const auditSink = { emit }
+
+      await anonymizeCustomer("cust_01", { auditSink })
+
+      expect(emit).toHaveBeenCalledTimes(7)
+      const kinds = emit.mock.calls.map(
+        (call) => (call[0] as { envelope: { kind: string } }).envelope.kind,
+      )
+      expect(kinds).toEqual([
+        "customer.anonymize.order_projection.scrubbed",
+        "customer.anonymize.conversation_message.scrubbed",
+        "customer.anonymize.conversation_link.scrubbed",
+        "customer.anonymize.order_status_history.scrubbed",
+        "customer.anonymize.order_event_log.scrubbed",
+        "customer.anonymize.loyalty_account.scrubbed",
+        "customer.anonymize.reservation_special_requests.scrubbed",
+      ])
+    })
+
+    it("each record carries a system-actor envelope (principal=system, taint=SYSTEM)", async () => {
+      const emit = vi.fn().mockResolvedValue(undefined)
+      const auditSink = { emit }
+
+      await anonymizeCustomer("cust_01", { auditSink })
+
+      for (const call of emit.mock.calls) {
+        const record = call[0] as {
+          envelope: {
+            actor: { principal: string; sessionId: string }
+            taint: string
+            payload: { customerId: string }
+          }
+        }
+        expect(record.envelope.actor.principal).toBe("system")
+        expect(record.envelope.actor.sessionId).toBe(
+          "customer.anonymize:cust_01",
+        )
+        expect(record.envelope.taint).toBe("SYSTEM")
+        expect(record.envelope.payload.customerId).toBe("cust_01")
+      }
+    })
+
+    it("each record's decision is EXECUTE with business.rule_satisfied basis", async () => {
+      const emit = vi.fn().mockResolvedValue(undefined)
+      const auditSink = { emit }
+
+      await anonymizeCustomer("cust_01", { auditSink })
+
+      for (const call of emit.mock.calls) {
+        const record = call[0] as {
+          decision: { kind: string }
+          decision_basis: readonly { category: string; code: string }[]
+        }
+        expect(record.decision.kind).toBe("EXECUTE")
+        expect(record.decision_basis).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              category: "business",
+              code: "rule_satisfied",
+            }),
+          ]),
+        )
+      }
+    })
+
+    it("chains each record's supersedes to the predecessor envelope when supplied", async () => {
+      const emit = vi.fn().mockResolvedValue(undefined)
+      const auditSink = { emit }
+      const predecessor = {
+        predecessorIntentHash: "sha256:abc123",
+        predecessorAt: "2026-05-24T15:00:00.000Z",
+      }
+
+      await anonymizeCustomer("cust_01", { auditSink, predecessor })
+
+      for (const call of emit.mock.calls) {
+        const record = call[0] as {
+          supersedes?: {
+            predecessorIntentHash: string
+            predecessorAt: string
+            reason: string
+          }
+        }
+        expect(record.supersedes).toBeDefined()
+        expect(record.supersedes?.predecessorIntentHash).toBe("sha256:abc123")
+        expect(record.supersedes?.predecessorAt).toBe(
+          "2026-05-24T15:00:00.000Z",
+        )
+        // Type system constrains reason to {confirmation_resolved,
+        // defer_resumed, rewrite_executed, replay}; "replay" is the
+        // closest semantic for scope-extension records.
+        expect(record.supersedes?.reason).toBe("replay")
+      }
+    })
+
+    it("does NOT emit when no auditSink is supplied (backwards-compat)", async () => {
+      // No audit sink — the existing call shape stays unchanged.
+      await anonymizeCustomer("cust_01")
+      // No assertion needed beyond "did not throw"; this verifies the
+      // optional-options path doesn't crash.
+    })
+
+    it("a failing audit-sink emit does NOT fail anonymizeCustomer (best-effort emit)", async () => {
+      const emit = vi
+        .fn()
+        .mockRejectedValue(new Error("audit emit blew up"))
+      const auditSink = { emit }
+      const log = { error: vi.fn() }
+
+      const result = await anonymizeCustomer("cust_01", { auditSink, log })
+
+      // Scrub itself succeeded.
+      expect(result).toEqual({ success: true })
+      // 7 emit attempts even though they all "fail".
+      expect(emit).toHaveBeenCalledTimes(7)
+    })
   })
 })
