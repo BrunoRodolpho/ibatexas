@@ -122,6 +122,7 @@ export type MedusaIntentKind =
   | "medusa.admin.order.cancel"
   | "medusa.admin.order.capture_payment"
   | "medusa.admin.product.update"
+  | "medusa.admin.customer.update"
   | "medusa.unknown"
 
 // Convenience for tests / introspection.
@@ -143,6 +144,7 @@ export const MEDUSA_INTENT_KINDS: ReadonlyArray<MedusaIntentKind> = [
   "medusa.admin.order.cancel",
   "medusa.admin.order.capture_payment",
   "medusa.admin.product.update",
+  "medusa.admin.customer.update",
   "medusa.unknown",
 ]
 
@@ -216,6 +218,16 @@ const PATH_RULES: ReadonlyArray<PathRule> = [
     method: "POST",
     pattern: /^\/admin\/products\/[^/]+\/?$/,
     kind: "medusa.admin.product.update",
+  },
+  // Admin customer update — bare POST against /admin/customers/:id. Used
+  // exclusively by the H3 Wave-B Medusa anonymize compensation chain. The
+  // endpoint is Medusa v2 RPC-style POST (NOT PATCH) per
+  // node_modules/@medusajs/medusa/dist/api/admin/customers/[id]/route.js
+  // (verified during audit-2026-05-24 H3 Wave-B).
+  {
+    method: "POST",
+    pattern: /^\/admin\/customers\/[^/]+\/?$/,
+    kind: "medusa.admin.customer.update",
   },
   // Store cart line-items — update / remove (item-scoped) before bare add.
   {

@@ -11,6 +11,7 @@ import { startConversationArchiver } from "./subscribers/conversation-archiver.j
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
 import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
 import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
+import { startCustomerAnonymizeMedusaResolverSubscriber } from "./subscribers/customer-anonymize-medusa-resolver.js";
 import { startPixDeferTimeoutResolverSubscriber } from "./subscribers/pix-defer-timeout-resolver.js";
 import { startAuditConsumer } from "./subscribers/audit-consumer.js";
 import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
@@ -123,6 +124,13 @@ const start = async (): Promise<void> => {
       // window. Wired alongside the defer-resolver so both subscribe to
       // the timeout fan-out from `defer-timeout-sweeper`.
       await startAnonymizeGraceResolverSubscriber(server.log);
+      // [audit-2026-05-24 H3 Wave-B] Cross-DB Medusa anonymize compensation.
+      // Consumes `customer.anonymize.medusa.pending` (emitted by
+      // anonymizeCustomer after the Prisma TX commits) and PATCHes the
+      // Medusa-side customer row. The compensation chain closes with a
+      // `.confirmed` audit record; failures emit `.failed` and remain
+      // available for the anonymize-medusa-retry BullMQ job to re-publish.
+      await startCustomerAnonymizeMedusaResolverSubscriber(server.log);
       // [audit-2026-05-24 P1-7] PIX defer-timeout audit bridge. Consumes
       // `intent.defer.timeout` filtered for the PIX confirmation signal
       // and emits a `payment.pix.timeout.audit` audit record so the
