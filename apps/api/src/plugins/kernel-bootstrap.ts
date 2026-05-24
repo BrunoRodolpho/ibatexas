@@ -35,7 +35,7 @@ import { installPack, PackConformanceError } from "@adjudicate/core"
 type InstalledPackLike = {
   readonly pack: { readonly intents: ReadonlyArray<string> }
 }
-import { setMetricsSink } from "@adjudicate/core/kernel"
+import { recordSinkFailure, setMetricsSink } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
@@ -46,6 +46,7 @@ import {
   setAuditLagHook,
   setAuditRedactorFailureHook,
   setAuditSinkBufferSizeHook,
+  setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
 } from "@ibatexas/llm-provider"
 import { prisma } from "@ibatexas/domain"
@@ -129,6 +130,13 @@ export function installKernelMetricsSink(
   setAuditSinkSpillSizeHook((count) =>
     recorder.recordAuditSinkSpillSize(count),
   )
+  // Q4: forward downstream-sink failures (postgres onError, NATS onFailure,
+  // buffered-sink spill-failure events) to the kernel MetricsSink.
+  // `recordSinkFailure` is a module-level helper that calls into the
+  // installed sink — installed two lines above by `setMetricsSink(sink)`.
+  setAuditSinkFailureHook((event) => {
+    recordSinkFailure(event)
+  })
   _recorder = recorder
   return register
 }

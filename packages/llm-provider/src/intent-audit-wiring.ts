@@ -164,6 +164,24 @@ let _auditLagHook:
 let _bufferSizeHook: ((count: number) => void) | null = null
 let _spillSizeHook: ((count: number) => void) | null = null
 
+/**
+ * Q4: report a downstream-sink failure to the kernel MetricsSink. The hook
+ * receives the kernel-shaped SinkFailureEvent (`sink` is restricted to the
+ * "console" | "nats" | "postgres" enum defined in `@adjudicate/core/kernel`)
+ * and forwards to `recordSinkFailure(...)`. The hook is wired by apps/api
+ * in `kernel-bootstrap.ts`; until wired, sink failures still log via the
+ * existing pino warnings but do not bump `kernel_audit_sink_failure_total`.
+ */
+export interface AuditSinkFailureEventLike {
+  readonly sink: "console" | "nats" | "postgres"
+  readonly subject: string
+  readonly errorClass: string
+  readonly consecutiveFailures: number
+}
+let _sinkFailureHook:
+  | ((event: AuditSinkFailureEventLike) => void)
+  | null = null
+
 /** W3-8: bump kernel_audit_redactor_failures_total on redactor fail-open. */
 export function setAuditRedactorFailureHook(
   hook: ((reason: string) => void) | null,
@@ -190,6 +208,36 @@ export function setAuditSinkSpillSizeHook(
   hook: ((count: number) => void) | null,
 ): void {
   _spillSizeHook = hook
+}
+
+/**
+ * Q4: bump kernel_audit_sink_failure_total on downstream-sink errors.
+ * Fires from postgresSink.onError, natsSink.onFailure, and persistentBufferedSink
+ * spill-failure events. The hook implementation in apps/api forwards to
+ * `recordSinkFailure(...)` on the kernel MetricsSink.
+ */
+export function setAuditSinkFailureHook(
+  hook: ((event: AuditSinkFailureEventLike) => void) | null,
+): void {
+  _sinkFailureHook = hook
+}
+
+/** Internal — fail-open call site for the sink-failure hook. */
+function reportSinkFailure(event: AuditSinkFailureEventLike): void {
+  if (!_sinkFailureHook) return
+  try {
+    _sinkFailureHook(event)
+  } catch {
+    // Telemetry MUST NEVER block audit emission. Swallow.
+  }
+}
+
+/** Internal — classify an error to a stable label (no PII). */
+function errorClassOf(err: unknown): string {
+  if (err instanceof Error) {
+    return err.constructor.name || "Error"
+  }
+  return "unknown"
 }
 
 /**
@@ -264,6 +312,18 @@ function loadInnerSink(log: IbxLogger): AuditSink {
         await publishNatsEvent(subject, payload as Record<string, unknown>)
       },
     },
+    // Q4: forward per-failure events to the kernel MetricsSink so
+    // `kernel_audit_sink_failure_total{sink="nats"}` increments per event.
+    // The NatsSink already tracks `consecutiveFailures` internally and surfaces
+    // it on every onFailure call — we pass it through unchanged.
+    onFailure: (event) => {
+      reportSinkFailure({
+        sink: "nats",
+        subject: event.subject,
+        errorClass: event.errorClass,
+        consecutiveFailures: event.consecutiveFailures,
+      })
+    },
   })
   const console_ = createConsoleSink({ prefix: "[ibx-audit]" })
 
@@ -277,20 +337,43 @@ function loadInnerSink(log: IbxLogger): AuditSink {
       void row
     },
   })
+  // Q4: per-sink consecutive-failure counter. PostgresSinkOptions doesn't
+  // ship one (NatsSink does), so we maintain it here. Reset to 0 on the
+  // next successful emit (signalled by a fresh getAuditSink() emit cycle —
+  // see the increment / reset pattern below where the wrapping emit closes
+  // over `postgresConsecutiveFailures`).
+  let postgresConsecutiveFailures = 0
   const postgresSink = createPostgresSink({
     writer: postgresWriter,
-    onError: (err: Error) => {
+    onError: (err: Error, record) => {
       // Postgres outage doesn't block adjudicate() — the buffered sink
       // spills to Redis and the audit-consumer subscriber drains on
       // recovery. W6-10: structured log carries reqId via injected `log`.
+      postgresConsecutiveFailures += 1
       log.warn(
-        { err: err.message },
+        { err: err.message, intentKind: record.envelope.kind },
         "[intent-audit-wiring] postgres sink emit failed — falling back to spill storage",
       )
+      // Q4: bump kernel_audit_sink_failure_total{sink="postgres"}.
+      reportSinkFailure({
+        sink: "postgres",
+        subject: "audit.intent.decision.v1",
+        errorClass: errorClassOf(err),
+        consecutiveFailures: postgresConsecutiveFailures,
+      })
     },
   })
+  // Wrap postgresSink to reset the consecutive-failure counter on success.
+  // The reset is part of the "circuit breaker" contract documented in the
+  // NatsSink — postgres has no built-in equivalent so we model it here.
+  const postgresSinkWithReset: AuditSink = {
+    async emit(record) {
+      await postgresSink.emit(record)
+      postgresConsecutiveFailures = 0
+    },
+  }
 
-  return multiSink(console_, nats, postgresSink)
+  return multiSink(console_, nats, postgresSinkWithReset)
 }
 
 function loadSink(): AuditSink {
@@ -305,9 +388,10 @@ function loadSink(): AuditSink {
   const redactor = loadRedactor()
 
   // Task 19 — persistent buffer between the redactor and the inner sinks.
-  // `onOverflow` is the operator-facing telemetry hook; we log here and
-  // future work can wire `recordSinkFailure` once the metrics-sink slot
-  // exposes a public spill counter.
+  // `onOverflow` is the operator-facing telemetry hook; Q4 wires the spill-
+  // failure events through to `kernel_audit_sink_failure_total` via the
+  // injected `_sinkFailureHook` (apps/api forwards to recordSinkFailure on
+  // the kernel MetricsSink).
   //
   // W3-9/W3-10: also notify the buffer/spill gauges via the injected hooks.
   // The exact in-memory queue size is held internal to persistentBufferedSink
@@ -318,6 +402,11 @@ function loadSink(): AuditSink {
   // precise count is needed.
   let _bufferDepth = 0
   let _spillDepth = 0
+  // Q4: track non-capacity spills as consecutive-failure observations. The
+  // buffer fronts the multiSink fan-out; spill = "an inner sink errored" so
+  // we attribute it to the durable target ("postgres") which is the sink
+  // operators care about when the buffer-spill alert fires.
+  let bufferSpillConsecutiveFailures = 0
   const buffered = persistentBufferedSink({
     inner: innerSink,
     storage: spillStorage,
@@ -344,6 +433,24 @@ function loadSink(): AuditSink {
           { intentKind: record.envelope.kind, intentHash: record.intentHash, reason },
           "[intent-audit-wiring] audit spill",
         )
+        // Q4: bump kernel_audit_sink_failure_total. We attribute to
+        // "postgres" because the durable inner target is what operators
+        // monitor; the `errorClass` carries the spill reason so dashboards
+        // can split between "failure" (sink errored) and "drain-failure"
+        // (spill-drain attempt failed). Intent kind is a stable, low-
+        // cardinality label and contains no PII.
+        bufferSpillConsecutiveFailures += 1
+        reportSinkFailure({
+          sink: "postgres",
+          subject: "audit.intent.decision.v1",
+          errorClass: `spill_${reason}`,
+          consecutiveFailures: bufferSpillConsecutiveFailures,
+        })
+      } else {
+        // Capacity-only spills mean the queue is shedding into durable
+        // storage but no sink errored — reset the streak so the next
+        // failure starts fresh.
+        bufferSpillConsecutiveFailures = 0
       }
       // Track for the buffer-size gauge — capacity-reason events count
       // as "queue at capacity" snapshots.
@@ -422,6 +529,7 @@ export function _resetAuditSink(): void {
   _auditLagHook = null
   _bufferSizeHook = null
   _spillSizeHook = null
+  _sinkFailureHook = null
 }
 
 /** @internal — for test access to the redactor used by the wired sink. */

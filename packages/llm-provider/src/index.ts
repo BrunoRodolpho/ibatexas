@@ -106,7 +106,9 @@ export {
   setAuditLagHook,
   setAuditRedactorFailureHook,
   setAuditSinkBufferSizeHook,
+  setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
+  type AuditSinkFailureEventLike,
   // Internal-only — exported for cross-package integration tests that
   // need to inject failing Postgres writers / Redis stubs. Don't call
   // these from production code paths.
