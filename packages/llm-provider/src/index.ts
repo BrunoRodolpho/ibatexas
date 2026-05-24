@@ -144,8 +144,15 @@ export {
 // Audit redactor (task 18 / M4). Exposed so future Packs or operator tools
 // can construct a custom redactor (e.g. for replay-with-extra-rules) without
 // reaching into the internal module path.
+//
+// audit-2026-05-24 T3: also export INTENT_KIND_FIELD_RULES and
+// PII_FREE_KIND_ALLOWLIST so the per-intent-kind redactor conformance suite
+// at `apps/api/src/__tests__/audit-2026-05-24/per-intent-redactor-conformance.test.ts`
+// can introspect both sets without reaching into the internal module path.
 export {
   createAuditRedactor,
+  INTENT_KIND_FIELD_RULES,
+  PII_FREE_KIND_ALLOWLIST,
   type AuditRedactor,
   type AuditRedactorOptions,
 } from "./audit-redactor.js"

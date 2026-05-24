@@ -366,7 +366,7 @@ function classifyRedactorError(err: unknown): AuditRedactorFailureReason {
 //      below makes the redactor over-redact those fields rather than
 //      hope the regex catches every leak.
 
-const INTENT_KIND_FIELD_RULES: Record<string, ReadonlyArray<string>> = {
+export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<string>>> = {
   // ── WhatsApp body, variables, and handover reason fields ───────────────
   // F-5: WhatsAppMessageSendPayload's variable map is `templateVariables`,
   // not `variables`. We keep `variables` as an alias for defense-in-depth
@@ -432,7 +432,111 @@ const INTENT_KIND_FIELD_RULES: Record<string, ReadonlyArray<string>> = {
   "validation.text.refuse": ["originalText", "rewritten"],
 }
 
-// ── Factory ───────────────────────────────────────────────────────────────────
+// ── PII-free intent-kind allowlist (audit-2026-05-24 T3) ──────────────────
+//
+// Conformance contract: every kind in `KNOWN_INTENT_KINDS` MUST appear in
+// EITHER `INTENT_KIND_FIELD_RULES` (above) OR `PII_FREE_KIND_ALLOWLIST`
+// (below). The conformance test at
+// `apps/api/src/__tests__/audit-2026-05-24/per-intent-redactor-conformance.test.ts`
+// pins this invariant — adding a new intent kind without classifying it
+// here fails CI with a file:line pointer.
+//
+// Entries are kinds whose payloads are PII-free by construction:
+//
+//   - **Opaque-id-only** — payload carries `{orderId, paymentId, cartId,
+//     reservationId, itemId, variantId, addressId, waitlistId,
+//     chargeId, providerTxId, ...}` plus closed enums/numbers/booleans.
+//     The global REDACT/HASH field-name rules and the regex defenses
+//     cover any incidental PII a malicious LLM might smuggle into a
+//     free-form string slot; the typed payload shape itself has no
+//     free-form text.
+//   - **Already-redacted PII** — `phoneHash` is a one-way SHA-256 by the
+//     time it enters the audit pipeline (cf. pack-whatsapp/sanitize.ts).
+//     The hash is itself the audit-correlation token; no additional
+//     redaction would add safety.
+//   - **PII covered by global field-name rules** — kinds whose only
+//     PII-bearing fields are `{name, email, cpf, cnpj, phone, address,
+//     customerId, ...}` are fully covered by the global REDACT_FIELDS /
+//     HASH_FIELDS sets above. They do NOT need a per-kind rule because
+//     the walker's field-name match fires unconditionally on those
+//     literal names regardless of `envelope.kind`.
+//
+// Adding a new entry requires a 1-line WHY comment naming the payload's
+// PII surface (or explicit "no PII fields"). Catch-all comments
+// ("looks fine") are rejected by code review.
+export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
+  // ── Order Pack — opaque-id-only payloads ────────────────────────────
+  "order.cart.ensure", // cartId only
+  "order.item.add", // cartId/variantId/quantity/allergens(enum array)
+  "order.item.update", // cartId/itemId/quantity
+  "order.item.remove", // cartId/itemId
+  "order.cart.sync", // cartId/items[]; items are variantId+quantity+allergens
+  "order.coupon.apply", // cartId/code; code is a short opaque promo handle
+  "order.checkout.create", // PII in pixDetails covered by global REDACT (name/email/cpf)
+  "order.pix.details.set", // PII in name/email/cpf covered by global REDACT_FIELDS
+  "order.cancel.system", // orderId + reason: closed enum ("stale"|"pix_expired")
+  "order.amend.request", // orderId + changes[] (op enum + variantId/itemId)
+  "order.amend.add_item", // orderId/variantId/quantity/allergens
+  "order.amend.update_qty", // orderId/itemId/quantity
+  "order.amend.remove_item", // orderId/itemId
+  "order.address.change", // address.{street,number,...} covered by global HASH_FIELDS
+  "order.type.switch", // orderId + newType: closed enum + optional httpVocab enum
+  "order.reorder", // previousOrderId + paymentMethod: closed enum
+  "order.projection.create", // customerId covered by global HASH_FIELDS
+  "order.status.reconcile", // orderId/newStatus(short status enum)/source: closed enum
+
+  // ── Reservation Pack — opaque-id-only payloads ───────────────────────
+  "reservation.checkin", // reservationId only
+  "reservation.complete", // reservationId only
+  "reservation.no_show.mark", // reservationId only
+  "reservation.waitlist.join", // timeSlotId/partySize
+  "reservation.waitlist.notify", // waitlistId only
+
+  // ── WhatsApp Pack — phone fields are pre-hashed ─────────────────────
+  // `WhatsAppSessionHandoverPayload.fromHashedPhone` is SHA-256 of the
+  // customer's number (per pack-whatsapp). The kind ALSO carries a free-
+  // form `reason` and `lastMessage` — but those are already in
+  // INTENT_KIND_FIELD_RULES above (which is why this kind is NOT
+  // allowlisted; `whatsapp.session.handover` MUST be classified as ruled,
+  // not PII-free). This comment lives here as documentation of the
+  // boundary; no kind is allowlisted in this section today.
+
+  // ── Payment Pack — opaque-id-only or closed-enum reason payloads ─────
+  "payment.create", // orderId/paymentId/method enum/amountCentavos/stripePaymentIntentId
+  "payment.charge.create", // alias of payment.create — same shape
+  "payment.charge.confirm", // paymentId/wireStatus/stripeEventId
+  "payment.charge.expire", // paymentId + reason: closed enum ("pix_expired")
+  "payment.pix.regenerate", // orderId/paymentId/currentRegenerationCount
+  "payment.method.switch", // customerId covered by global HASH_FIELDS
+  "payment.retry", // orderId/previousPaymentId/newMethod enum
+  "payment.refund.confirm", // paymentId/wireStatus/stripeEventId
+  "payment.dispute.open", // paymentId/stripeEventId/disputeAmountCentavos
+  "payment.cash.confirm", // orderId/paymentId/amountCentavos/staffId (operator id, no customer PII)
+  "payment.status.reconcile", // paymentId/newStatus/stripeEventId/timestamp
+
+  // ── Customer Onboarding — fields hit global REDACT / pre-hashed ─────
+  "customer.create", // phoneHash is already SHA-256 (audit-correlation token)
+  "customer.profile.update", // name/email covered by global HASH/REDACT
+  "customer.preferences.update", // allergenExclusions/dietaryFlags (short controlled-vocabulary strings)
+  "customer.pix.details.save", // name/email/cpf covered by global HASH/REDACT
+  "customer.address.add", // address.{street,...} covered by global HASH_FIELDS
+  "customer.address.remove", // addressId only
+
+  // ── PIX Charge (adjudicate/pack-payments-pix) ───────────────────────
+  // `pix.charge.create.payerDocument` is digit-only CPF (11) or CNPJ (14).
+  // The CPF regex defense catches the 11-digit shape; the 14-digit CNPJ
+  // shape is caught by CARD_RE (13-19 digit run → `[REDACTED:CARD]`).
+  // The label is imperfect (CNPJ flagged as CARD) but the value is
+  // redacted — that's the load-bearing invariant.
+  "pix.charge.create",
+  "pix.charge.confirm", // chargeId/providerTxId/timestamp
+  // NOTE: `pix.charge.refund.reason` is a free-form admin text field that
+  // is NOT covered by INTENT_KIND_FIELD_RULES today — see the per-intent
+  // redactor conformance test for the flagged-as-finding gap.
+  // `pix.charge.refund` is intentionally NOT in this allowlist; it should
+  // gain a `["reason"]` entry in INTENT_KIND_FIELD_RULES alongside the
+  // payment-domain reason kinds (separate audit-redactor ticket).
+])
 
 export function createAuditRedactor(
   opts: AuditRedactorOptions = {},
