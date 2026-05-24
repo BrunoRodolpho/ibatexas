@@ -18,16 +18,16 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@adjudicate/core": "workspace:*"
+    "@adjudicate/core": "^1.0.0"
   },
   "dependencies": {
-    "@adjudicate/core": "workspace:*",
-    "@adjudicate/locales-pt-br": "workspace:*",
-    "@adjudicate/pack-payments-pix": "workspace:*",
-    "@adjudicate/primitives": "workspace:*"
+    "@adjudicate/core": "^1.0.0",
+    "@adjudicate/locales-pt-br": "^0.1.1",
+    "@adjudicate/pack-payments-pix": "^0.1.1",
+    "@adjudicate/primitives": "^0.1.1"
   },
   "devDependencies": {
-    "@adjudicate/conformance": "workspace:*",
+    "@adjudicate/conformance": "^0.1.1",
     "@ibatexas/eslint-config": "workspace:*",
     "@vitest/coverage-v8": "^3.2.0",
     "typescript": "^5.9.0",

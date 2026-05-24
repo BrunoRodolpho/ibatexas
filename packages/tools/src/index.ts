@@ -71,15 +71,6 @@ export {
 } from "./redis/circuit-breaker.js"
 export { safeRedis } from "./redis/safe-redis.js"
 export { acquireLock, withLock, type LockHandle } from "./redis/distributed-lock.js"
-export {
-  createKillSwitchStore,
-  KILL_SWITCH_KEY_SUFFIX,
-  KILL_SWITCH_CHANNEL_SUFFIX,
-  type KillSwitchStore,
-  type KillSwitchMetadata,
-  type KillSwitchEvent,
-  type KillSwitchRedisClient,
-} from "./redis/kill-switch-store.js"
 
 // ── Tracing ──────────────────────────────────────────────────────────────────
 export {

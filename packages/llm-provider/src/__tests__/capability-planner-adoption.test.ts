@@ -63,6 +63,29 @@ vi.mock("../intent-audit-wiring.js", () => ({
   getAuditSink: () => ({ emit: mockAuditEmit }),
 }))
 
+// Stub the execution ledger — llm-responder now always queries it for dedup.
+vi.mock("../intent-ledger.js", () => ({
+  getIntentLedger: vi.fn().mockResolvedValue({
+    checkLedger: vi.fn().mockResolvedValue(null),
+    recordExecution: vi.fn().mockResolvedValue("acquired"),
+  }),
+  LedgerUnavailableError: class extends Error {},
+}))
+
+// Stub the kernel's adjudicate() to always return EXECUTE — these tests
+// exercise capability-planner gating + audit emission, not policy. The
+// real policy bundle would REFUSE the synthesised "order.tool.propose"
+// envelope (it doesn't carry the order-domain state these guards expect).
+vi.mock("@adjudicate/core/kernel", async () => {
+  const actual = (await vi.importActual(
+    "@adjudicate/core/kernel",
+  )) as Record<string, unknown>
+  return {
+    ...actual,
+    adjudicate: vi.fn().mockReturnValue({ kind: "EXECUTE", basis: [] }),
+  }
+})
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const baseContext: AgentContext = {
@@ -481,92 +504,79 @@ describe("planner-violation refusal in llm-responder", () => {
 // ── 4. Audit records include the AuditPlanSnapshot ───────────────────────────
 
 describe("AuditPlanSnapshot in audit records", () => {
-  it("emits an audit record with non-empty plan.planFingerprint when shadow/enforce is active", async () => {
-    // Pure-legacy mode suppresses audit emission (governance §"Audit emit
-    // invariants" #2). To exercise the audit path we need to drive a
-    // shadow-mode intent — set IBX_KERNEL_SHADOW to include the intent
-    // kind. The envelope.kind for LLM-proposed mutating tools is
-    // "order.tool.propose" — adding it to shadow flips on the audit emit.
-    const origShadow = process.env.IBX_KERNEL_SHADOW
-    process.env.IBX_KERNEL_SHADOW = "order.tool.propose"
-
-    try {
-      const turn1Final = {
-        stop_reason: "tool_use",
-        content: [
-          {
-            type: "tool_use",
-            id: "tu_handoff_audit",
-            name: "handoff_to_human",
-            input: { sessionId: baseContext.sessionId, reason: "test" },
-          },
-        ],
-        usage: { input_tokens: 10, output_tokens: 5 },
-      }
-      const turn2Final = {
-        stop_reason: "end_turn",
-        content: [{ type: "text", text: "ok" }],
-        usage: { input_tokens: 5, output_tokens: 3 },
-      }
-      mockStream
-        .mockReturnValueOnce(buildMockStream([], turn1Final))
-        .mockReturnValueOnce(
-          buildMockStream(
-            [{ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } }],
-            turn2Final,
-          ),
-        )
-      mockExecuteTool.mockResolvedValue({
-        kind: "intent",
-        intent: buildHandoffIntent(),
-      })
-
-      const dispatchSpy = vi.fn().mockResolvedValue({
-        kind: "executed",
-        result: { success: true },
-      })
-
-      const { generateResponse } = await import("../llm-responder.js")
-      const planUnderTest: Plan = {
-        visibleReadTools: ["search_products"],
-        allowedIntents: ["handoff_to_human"],
-      }
-      const chunks: StreamChunk[] = []
-      for await (const chunk of generateResponse({
-        synthesized: {
-          systemPrompt: "test",
-          availableTools: ["handoff_to_human"],
-          maxTokens: 1024,
-          plan: planUnderTest,
+  it("emits an audit record with non-empty plan.planFingerprint (kernel always-on)", async () => {
+    const turn1Final = {
+      stop_reason: "tool_use",
+      content: [
+        {
+          type: "tool_use",
+          id: "tu_handoff_audit",
+          name: "handoff_to_human",
+          input: { sessionId: baseContext.sessionId, reason: "test" },
         },
-        message: "preciso falar com um humano",
-        history: [],
-        agentContext: baseContext,
-        machineCtx: { items: [] } as never,
-        isPostCheckout: false,
-        stateValue: "support",
-        onToolIntent: dispatchSpy,
-      })) {
-        chunks.push(chunk)
-      }
-
-      // The audit sink should have received exactly one record with
-      // record.plan.planFingerprint as a non-empty hex string.
-      expect(mockAuditEmit).toHaveBeenCalled()
-      const calls = mockAuditEmit.mock.calls as ReadonlyArray<ReadonlyArray<unknown>>
-      const lastCall = calls[calls.length - 1] ?? []
-      const record = lastCall[0] as {
-        plan?: { visibleReadTools: readonly string[]; allowedIntents: readonly string[]; planFingerprint: string }
-      }
-      expect(record.plan).toBeDefined()
-      expect(record.plan!.visibleReadTools).toEqual(planUnderTest.visibleReadTools)
-      expect(record.plan!.allowedIntents).toEqual(planUnderTest.allowedIntents)
-      expect(typeof record.plan!.planFingerprint).toBe("string")
-      // sha256 hex string is 64 chars.
-      expect(record.plan!.planFingerprint).toMatch(/^[0-9a-f]{64}$/)
-    } finally {
-      if (origShadow === undefined) delete process.env.IBX_KERNEL_SHADOW
-      else process.env.IBX_KERNEL_SHADOW = origShadow
+      ],
+      usage: { input_tokens: 10, output_tokens: 5 },
     }
+    const turn2Final = {
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "ok" }],
+      usage: { input_tokens: 5, output_tokens: 3 },
+    }
+    mockStream
+      .mockReturnValueOnce(buildMockStream([], turn1Final))
+      .mockReturnValueOnce(
+        buildMockStream(
+          [{ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } }],
+          turn2Final,
+        ),
+      )
+    mockExecuteTool.mockResolvedValue({
+      kind: "intent",
+      intent: buildHandoffIntent(),
+    })
+
+    const dispatchSpy = vi.fn().mockResolvedValue({
+      kind: "executed",
+      result: { success: true },
+    })
+
+    const { generateResponse } = await import("../llm-responder.js")
+    const planUnderTest: Plan = {
+      visibleReadTools: ["search_products"],
+      allowedIntents: ["handoff_to_human"],
+    }
+    const chunks: StreamChunk[] = []
+    for await (const chunk of generateResponse({
+      synthesized: {
+        systemPrompt: "test",
+        availableTools: ["handoff_to_human"],
+        maxTokens: 1024,
+        plan: planUnderTest,
+      },
+      message: "preciso falar com um humano",
+      history: [],
+      agentContext: baseContext,
+      machineCtx: { items: [] } as never,
+      isPostCheckout: false,
+      stateValue: "support",
+      onToolIntent: dispatchSpy,
+    })) {
+      chunks.push(chunk)
+    }
+
+    // Audit emits unconditionally. The record's plan.planFingerprint should
+    // be a non-empty sha256 hex string.
+    expect(mockAuditEmit).toHaveBeenCalled()
+    const calls = mockAuditEmit.mock.calls as ReadonlyArray<ReadonlyArray<unknown>>
+    const lastCall = calls[calls.length - 1] ?? []
+    const record = lastCall[0] as {
+      plan?: { visibleReadTools: readonly string[]; allowedIntents: readonly string[]; planFingerprint: string }
+    }
+    expect(record.plan).toBeDefined()
+    expect(record.plan!.visibleReadTools).toEqual(planUnderTest.visibleReadTools)
+    expect(record.plan!.allowedIntents).toEqual(planUnderTest.allowedIntents)
+    expect(typeof record.plan!.planFingerprint).toBe("string")
+    // sha256 hex string is 64 chars.
+    expect(record.plan!.planFingerprint).toMatch(/^[0-9a-f]{64}$/)
   })
 })

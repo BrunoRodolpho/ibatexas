@@ -49,7 +49,7 @@ import {
   type Decision,
   type IntentEnvelope,
 } from "@adjudicate/core";
-import { adjudicate, isEnforced, isShadowed, type PolicyBundle } from "@adjudicate/core/kernel";
+import { adjudicate, type PolicyBundle } from "@adjudicate/core/kernel";
 
 /**
  * Per-call context the gateway threads into the audit record / executor.
@@ -156,93 +156,17 @@ export async function runCustomerIntent<R>(
     options;
 
   const startedAt = Date.now();
-  const intentKind = envelope.kind;
 
-  // ── Always-enforce list ────────────────────────────────────────────────
+  // ── Kernel adjudication (always-on) ────────────────────────────────────
   //
-  // Some intent kinds carry kernel-side governance that IS the safety
-  // model — not a future enforce target. The LGPD anonymize flow's
-  // DEFER + 24h grace lives in the pack's policy; bypassing it would
-  // mean a customer who completed initiate-deletion + DELETE skips the
-  // cancel window entirely. We force-adjudicate these kinds regardless
-  // of `IBX_KERNEL_ENFORCE`.
-  //
-  // ── NEW-P0-X2 (W1 correctness remediation) ─────────────────────────────
-  //
-  // The previous "pure-legacy = synthetic EXECUTE" branch silently let
-  // every customer-mutation kind through unless it was in shadow/enforce
-  // env or in ALWAYS_ENFORCE. The documented invariant (default-deny)
-  // was inverted: any kind not yet listed defaulted to EXECUTE.
-  //
-  // The fix: ALL customer kinds outside shadow+enforce now default to
-  // REFUSE with a generic pt-BR userFacing. ALWAYS_ENFORCE additionally
-  // covers the safety-critical customer.* kinds (profile.update,
-  // preferences.update, pix.details.save) so they ARE adjudicated even
-  // if ops forgets to add them to IBX_KERNEL_ENFORCE.
-  //
-  // Address kinds are deliberately NOT in ALWAYS_ENFORCE per the audit:
-  // pack policy for customer.address.* doesn't exist yet, so forcing
-  // adjudication would default-REFUSE every legit call. Routes touching
-  // address-* kinds should land them on the shadow list when policies
-  // arrive.
-  const ALWAYS_ENFORCE: ReadonlySet<string> = new Set([
-    "customer.anonymize",
-    "customer.anonymize.cancel",
-    "customer.profile.update",
-    "customer.preferences.update",
-    "customer.pix.details.save",
-  ]);
-
-  // ── Enforce / shadow / pure-legacy switch ──────────────────────────────
-  //
-  // Mirrors `kernel-executor.ts:200` (the LLM-side adjudicate gate) so
-  // the customer route surface is governed the same way: an intent kind
-  // not yet on the enforce list runs through the executor unconditionally,
-  // preserving the green baseline. Shadow mode runs the kernel for
-  // divergence telemetry but lets the legacy result win.
-  //
-  // Pure-legacy now means REFUSE — the documented default. Ops must
-  // explicitly add a kind to shadow (to telemetry-test it) or enforce
-  // (to bind the kernel decision) before customer mutations of that
-  // kind are reachable through the gateway.
-  let decision: Decision;
-  let isPureLegacy = false;
-
-  if (ALWAYS_ENFORCE.has(intentKind) || isEnforced(intentKind, process.env)) {
-    decision = adjudicate(envelope, state, policy);
-  } else if (isShadowed(intentKind, process.env)) {
-    // Shadow mode — adjudicate runs for divergence telemetry but the
-    // legacy path (synthetic always-EXECUTE) wins for proceed-or-not.
-    // Shadow MUST be an opt-in for telemetry; the kind is known to
-    // exist and ops accepts the legacy EXECUTE during the soak.
-    try {
-      adjudicate(envelope, state, policy);
-    } catch {
-      // Pack threw — skip telemetry, fall through to legacy EXECUTE.
-    }
-    decision = { kind: "EXECUTE", basis: [] };
-  } else {
-    // Pure-legacy now default-REFUSE (NEW-P0-X2). The kind is unknown
-    // to the kernel rollout config and not in ALWAYS_ENFORCE — surface
-    // a pt-BR refusal so the gateway never silently executes
-    // unadjudicated mutations.
-    decision = {
-      kind: "REFUSE",
-      refusal: {
-        kind: "BUSINESS_RULE",
-        code: "customer_intent.kernel_not_configured",
-        userFacing:
-          "Operação indisponível no momento. Tente novamente em instantes ou entre em contato com o suporte.",
-      },
-      basis: [],
-    };
-    // Audit emit IS preserved for the REFUSE so on-call sees the
-    // default-deny in telemetry (vs. the previous silent default-EXECUTE).
-    isPureLegacy = false;
-  }
+  // Every customer-driven mutation is adjudicated. The kernel's policy
+  // bundle is authoritative — no env-var gating. Any intent kind that
+  // lacks a Pack policy will default-REFUSE inside `adjudicate()`, which
+  // is the correct behavior for an unconfigured surface.
+  const decision: Decision = adjudicate(envelope, state, policy);
 
   // ── Audit emit — best-effort, never blocks ─────────────────────────────
-  if (auditSink && !isPureLegacy) {
+  if (auditSink) {
     try {
       const record = buildAuditRecord({
         envelope,

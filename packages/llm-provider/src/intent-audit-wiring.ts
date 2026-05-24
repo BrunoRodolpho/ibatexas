@@ -19,9 +19,12 @@
 //
 // Task 19 (M4): two additions —
 //   1. `@adjudicate/audit-postgres.createPostgresSink` is added to the
-//      multi-sink fan-out behind a feature flag (`IBX_AUDIT_POSTGRES_ENABLED`).
-//      Disabled by default; flips to true after the staging soak (see
-//      runbook 04).
+//      multi-sink fan-out unconditionally. The kernel is always-on and
+//      audit-postgres is part of the durable record — operators run
+//      `ibx kernel migrate` (called by `ibx bootstrap`) to apply the
+//      8 raw-SQL migrations from @adjudicate/audit-postgres. Boot
+//      preflight in kernel-bootstrap.ts fails fast if the `intent_audit`
+//      table is missing.
 //   2. The whole fan-out is wrapped in `persistentBufferedSink`, backed by
 //      a Redis spill storage (`createRedisSpillStorage`). When an inner
 //      sink fails or backpressures, records spill to Redis and drain on
@@ -34,7 +37,7 @@
 //             └─ multiSink(
 //                 consoleSink,
 //                 natsSink,
-//                 [postgresSink if IBX_AUDIT_POSTGRES_ENABLED]
+//                 postgresSink                           // always-on
 //               )
 //
 // Order matters: the redactor MUST wrap the buffered sink (not run inside
@@ -62,7 +65,6 @@ import { publishNatsEvent } from "@ibatexas/nats-client"
 import { getRedisClient } from "@ibatexas/tools"
 import { prisma } from "@ibatexas/domain"
 import { createAuditRedactor, type AuditRedactor } from "./audit-redactor.js"
-import { parseBoolEnv } from "./parse-bool-env.js"
 import {
   createRedisSpillStorage,
   type RedisListClient,
@@ -102,13 +104,6 @@ function bufferCapacity(): number {
     return 1_000
   }
   return parsed
-}
-
-function postgresEnabled(): boolean {
-  // NEW-P1-ENV: was `=== "true"` (silently disabled by "TRUE", "1", "yes",
-  // whitespace). parseBoolEnv accepts the canonical truthy lexicon and
-  // defaults to false when the var is unset or carries a typo.
-  return parseBoolEnv(process.env.IBX_AUDIT_POSTGRES_ENABLED, false)
 }
 
 // ── Test-injectable overrides ──────────────────────────────────────────────
@@ -271,36 +266,31 @@ function loadInnerSink(log: IbxLogger): AuditSink {
     },
   })
   const console_ = createConsoleSink({ prefix: "[ibx-audit]" })
-  const sinks: AuditSink[] = [console_, nats]
 
-  if (postgresEnabled()) {
-    const writer = createPostgresAuditWriter({
-      prisma: (_depsOverride?.prismaWriter ?? prisma) as PrismaRawExecutor,
-      onInsert: (row) => {
-        // Lag observation hook — operator dashboards subtract `row.recorded_at`
-        // from `Date.now()` to surface `kernel_audit_postgres_lag_seconds`.
-        // We log on debug-only paths to avoid noise on the hot path; the
-        // metric registration itself is deferred to a follow-up task that
-        // exposes the histogram on the `/metrics` route.
-        void row
-      },
-    })
-    sinks.push(
-      createPostgresSink({
-        writer,
-        onError: (err: Error) => {
-          // Fail-open: log once and let the buffered sink handle retry.
-          // W6-10: structured log carries reqId via injected `log`.
-          log.warn(
-            { err: err.message },
-            "[intent-audit-wiring] postgres sink emit failed — falling back to spill storage",
-          )
-        },
-      }),
-    )
-  }
+  // Audit-postgres is always-on. Boot preflight in kernel-bootstrap.ts
+  // verifies the `intent_audit` table exists before serving any traffic;
+  // operators run `ibx kernel migrate` (via `ibx bootstrap`) to apply
+  // the raw-SQL migrations from @adjudicate/audit-postgres.
+  const postgresWriter = createPostgresAuditWriter({
+    prisma: (_depsOverride?.prismaWriter ?? prisma) as PrismaRawExecutor,
+    onInsert: (row) => {
+      void row
+    },
+  })
+  const postgresSink = createPostgresSink({
+    writer: postgresWriter,
+    onError: (err: Error) => {
+      // Postgres outage doesn't block adjudicate() — the buffered sink
+      // spills to Redis and the audit-consumer subscriber drains on
+      // recovery. W6-10: structured log carries reqId via injected `log`.
+      log.warn(
+        { err: err.message },
+        "[intent-audit-wiring] postgres sink emit failed — falling back to spill storage",
+      )
+    },
+  })
 
-  return multiSink(...sinks)
+  return multiSink(console_, nats, postgresSink)
 }
 
 function loadSink(): AuditSink {

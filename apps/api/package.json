@@ -17,10 +17,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/audit-postgres": "workspace:*",
-    "@adjudicate/core": "workspace:*",
-    "@adjudicate/pack-payments-pix": "workspace:*",
-    "@adjudicate/runtime": "workspace:*",
+    "@adjudicate/audit-postgres": "^1.0.1",
+    "@adjudicate/core": "^1.0.0",
+    "@adjudicate/pack-payments-pix": "^0.1.1",
+    "@adjudicate/runtime": "^0.1.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
     "@fastify/helmet": "^13.0.2",

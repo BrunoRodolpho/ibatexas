@@ -1,4 +1,4 @@
-// Tests for kernel-executor's adjudicate-mutation gate (Task 06).
+// Tests for kernel-executor's adjudicate-mutation gate.
 //
 // Verifies the branching behaviour of `adjudicateKernelMutation` (the helper
 // exported via `__testOnly__adjudicateKernelMutation`) for every Decision
@@ -10,13 +10,10 @@
 //   - REQUEST_CONFIRMATION → caller short-circuits with pt-BR copy
 //   - ESCALATE             → caller short-circuits with pt-BR copy
 //
-// The helper itself decides between pure-legacy / shadow / enforce paths
-// based on `IBX_KERNEL_SHADOW` and `IBX_KERNEL_ENFORCE`. To keep these
-// tests deterministic we drive the path explicitly via the env var.
-//
-// We mock @adjudicate/core/kernel.adjudicate to control the Decision the
-// gate observes — that lets us assert the branching contract without
-// dragging in the full policy bundle for every decision kind.
+// The kernel is always authoritative — every envelope is adjudicated. We
+// mock @adjudicate/core/kernel.adjudicate to control the Decision the gate
+// observes, so we can assert the branching contract per decision kind
+// without dragging in the full policy bundle.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Decision, IntentEnvelope } from "@adjudicate/core"
@@ -29,9 +26,6 @@ import type { Decision, IntentEnvelope } from "@adjudicate/core"
 
 const {
   adjudicateMock,
-  adjudicateWithShadowMock,
-  isEnforcedMock,
-  isShadowedMock,
   redisSetMock,
   redisIncrMock,
   redisDecrMock,
@@ -39,9 +33,6 @@ const {
   auditEmitMock,
 } = vi.hoisted(() => ({
   adjudicateMock: vi.fn(),
-  adjudicateWithShadowMock: vi.fn(),
-  isEnforcedMock: vi.fn(),
-  isShadowedMock: vi.fn(),
   redisSetMock: vi.fn(async () => "OK"),
   // parkDeferredIntent calls INCR → EXPIRE → SET. We default to count=1
   // so the quota check (default 16) is satisfied.
@@ -58,10 +49,6 @@ vi.mock("@adjudicate/core/kernel", async () => {
   return {
     ...actual,
     adjudicate: adjudicateMock,
-    adjudicateWithShadow: adjudicateWithShadowMock,
-    isEnforced: isEnforcedMock,
-    isShadowed: isShadowedMock,
-    // legacyDecisionAsKernelDecision is pure — pass through the real impl.
   }
 })
 
@@ -222,16 +209,8 @@ function rewriteDecision<K extends string, P>(
 
 beforeEach(() => {
   adjudicateMock.mockReset()
-  adjudicateWithShadowMock.mockReset()
-  isEnforcedMock.mockReset()
-  isShadowedMock.mockReset()
   redisSetMock.mockReset()
   auditEmitMock.mockReset()
-
-  // Default: pure-legacy path (no shadow, no enforce). Individual tests
-  // override these mocks to drive specific branches.
-  isEnforcedMock.mockReturnValue(false)
-  isShadowedMock.mockReturnValue(false)
   // Redis stub returns success by default.
   redisSetMock.mockResolvedValue("OK")
   auditEmitMock.mockResolvedValue(undefined)
@@ -241,35 +220,11 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-// ── Pure-legacy path (no shadow, no enforce) ────────────────────────────────
+// ── Kernel always-on (single decision path) ─────────────────────────────────
 
-describe("adjudicateKernelMutation — pure-legacy path", () => {
-  it("returns proceed:true with synthesized EXECUTE when neither shadow nor enforce names the kind", async () => {
-    const envelope = buildAddItemEnvelope(
-      { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
-      makeCtx(),
-      SESSION_ID,
-    )
-    const gate = await __testOnly__adjudicateKernelMutation(
-      envelope,
-      makeCtx(),
-      SESSION_ID,
-    )
-    expect(gate.proceed).toBe(true)
-    expect(gate.decision.kind).toBe("EXECUTE")
-    // Audit MUST NOT emit for pure-legacy (investigation 01 §"P2 #7").
-    expect(auditEmitMock).not.toHaveBeenCalled()
-    // Real `adjudicate()` MUST NOT run in pure-legacy.
-    expect(adjudicateMock).not.toHaveBeenCalled()
-  })
-})
-
-// ── Enforce path ────────────────────────────────────────────────────────────
-
-describe("adjudicateKernelMutation — enforce path", () => {
+describe("adjudicateKernelMutation", () => {
   it("addItem EXECUTE → proceed:true (no rewritten payload)", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(executeDecision())
+adjudicateMock.mockReturnValue(executeDecision())
 
     const payload: KernelAddItemPayload = {
       cartId: "c",
@@ -290,8 +245,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 
   it("addItem REFUSE → proceed:false + userFacing from refusal", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(refuseDecision("Sem permissão."))
+adjudicateMock.mockReturnValue(refuseDecision("Sem permissão."))
 
     const envelope = buildAddItemEnvelope(
       { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
@@ -308,8 +262,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 
   it("addItem REWRITE → proceed:true + rewrittenPayload propagated", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    const originalPayload: KernelAddItemPayload = {
+const originalPayload: KernelAddItemPayload = {
       cartId: "c",
       variantId: "v",
       quantity: 99, // would-exceed-stock
@@ -333,8 +286,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 
   it("addItem DEFER → proceed:false + envelope parked in redis via parkDeferredIntent", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(deferDecision())
+adjudicateMock.mockReturnValue(deferDecision())
 
     const envelope = buildAddItemEnvelope(
       { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
@@ -385,8 +337,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
     // Simulate the quota threshold being exceeded by returning a count
     // above DEFAULT_DEFER_QUOTA_PER_SESSION (16).
     redisIncrMock.mockResolvedValueOnce(17)
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(deferDecision())
+adjudicateMock.mockReturnValue(deferDecision())
 
     const envelope = buildAddItemEnvelope(
       { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
@@ -406,8 +357,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 
   it("addItem REQUEST_CONFIRMATION → proceed:false + pt-BR copy", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(confirmDecision())
+adjudicateMock.mockReturnValue(confirmDecision())
 
     const envelope = buildAddItemEnvelope(
       { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
@@ -424,8 +374,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 
   it("addItem ESCALATE → proceed:false + pt-BR copy", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(escalateDecision())
+adjudicateMock.mockReturnValue(escalateDecision())
 
     const envelope = buildAddItemEnvelope(
       { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
@@ -442,8 +391,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 
   it("processCheckout REFUSE → proceed:false (envelope kind = order.checkout.create)", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(refuseDecision("Carrinho vazio."))
+adjudicateMock.mockReturnValue(refuseDecision("Carrinho vazio."))
 
     const payload: KernelCheckoutPayload = {
       cartId: "c",
@@ -464,8 +412,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 
   it("cancelOrder EXECUTE → proceed:true (envelope kind = order.cancel)", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(executeDecision())
+adjudicateMock.mockReturnValue(executeDecision())
 
     const payload: KernelCancelPayload = { orderId: "ord_01" }
     const envelope = buildCancelOrderEnvelope(payload, makeCtx(), SESSION_ID)
@@ -479,8 +426,7 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 
   it("regeneratePix REFUSE → proceed:false (envelope kind = payment.pix.regenerate)", async () => {
-    isEnforcedMock.mockReturnValue(true)
-    adjudicateMock.mockReturnValue(refuseDecision("Pedido não encontrado."))
+adjudicateMock.mockReturnValue(refuseDecision("Pedido não encontrado."))
 
     const payload: KernelRegeneratePixPayload = { orderId: "ord_01" }
     const envelope = buildRegeneratePixEnvelope(payload, makeCtx(), SESSION_ID)
@@ -494,39 +440,3 @@ describe("adjudicateKernelMutation — enforce path", () => {
   })
 })
 
-// ── Shadow path ─────────────────────────────────────────────────────────────
-
-describe("adjudicateKernelMutation — shadow path", () => {
-  it("runs both legacy and adjudicate; proceed reflects the LEGACY EXECUTE baseline", async () => {
-    isEnforcedMock.mockReturnValue(false)
-    isShadowedMock.mockReturnValue(true)
-    // adjudicateWithShadow's real return shape is
-    //   { legacyDecision: { kind: "EXECUTE" | "REFUSE" },
-    //     adjudicateDecision: Decision,
-    //     divergence: DivergenceClass }
-    // The gate calls `legacyDecisionAsKernelDecision(legacyDecision)`, so
-    // we mock the legacy side as EXECUTE.
-    adjudicateWithShadowMock.mockReturnValue({
-      legacyDecision: { kind: "EXECUTE" },
-      adjudicateDecision: refuseDecision("would-have-refused"),
-      divergence: "DECISION_KIND",
-    })
-
-    const envelope = buildAddItemEnvelope(
-      { cartId: "c", variantId: "v", quantity: 1, allergens: [] },
-      makeCtx(),
-      SESSION_ID,
-    )
-    const gate = await __testOnly__adjudicateKernelMutation(
-      envelope,
-      makeCtx(),
-      SESSION_ID,
-    )
-    // Legacy EXECUTE wins under shadow; the kernel's REFUSE only goes to audit.
-    expect(gate.proceed).toBe(true)
-    expect(gate.decision.kind).toBe("EXECUTE")
-    expect(adjudicateWithShadowMock).toHaveBeenCalledTimes(1)
-    // Audit emits for shadow.
-    expect(auditEmitMock).toHaveBeenCalledTimes(1)
-  })
-})
