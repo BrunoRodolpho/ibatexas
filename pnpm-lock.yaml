@@ -150,6 +150,9 @@ importers:
       '@fastify/swagger-ui':
         specifier: ^5.2.5
         version: 5.2.5
+      '@ibatexas/audit-sink':
+        specifier: workspace:*
+        version: link:../../packages/audit-sink
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../../packages/domain

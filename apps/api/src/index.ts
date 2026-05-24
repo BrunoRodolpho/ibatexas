@@ -4,6 +4,7 @@ import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
 import { bootstrapKernel } from "./plugins/kernel-bootstrap.js";
+import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
@@ -52,6 +53,15 @@ const start = async (): Promise<void> => {
   // prevents serving traffic. See
   // docs/adjudicate-migration/tasks/01-kernel-bootstrap-plugin.md.
   await bootstrapKernel(server);
+
+  // audit-2026-05-24 H2 (A1): register the audit-sink leaf's boot-time
+  // DI BEFORE subscribers / routes / workers fire. Post-H2, `getAuditSink()`
+  // lives in `@ibatexas/audit-sink` (zero-dep leaf) and is fail-closed —
+  // any wrapper-call site that runs before this bootstrap throws
+  // `AuditSinkNotInitializedError`. Must run AFTER `bootstrapKernel`
+  // (which calls `installKernelMetricsSink` to populate the hook
+  // state read by `buildAuditSinkDependencies`).
+  await bootstrapAuditSinkDI(server.log);
 
   // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma
   const shutdown = async (): Promise<void> => {
