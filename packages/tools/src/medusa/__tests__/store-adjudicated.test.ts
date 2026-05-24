@@ -75,9 +75,9 @@ afterEach(() => {
 // ── MEDUSA_STORE_INTENT_KINDS sanity ────────────────────────────────────
 
 describe("MEDUSA_STORE_INTENT_KINDS", () => {
-  it("exposes the 9 mapped kinds plus medusa.store.unknown (10 total)", () => {
-    expect(MEDUSA_STORE_INTENT_KINDS).toHaveLength(10)
-    expect(new Set(MEDUSA_STORE_INTENT_KINDS).size).toBe(10)
+  it("exposes the 10 mapped kinds plus medusa.store.unknown (11 total)", () => {
+    expect(MEDUSA_STORE_INTENT_KINDS).toHaveLength(11)
+    expect(new Set(MEDUSA_STORE_INTENT_KINDS).size).toBe(11)
     expect(MEDUSA_STORE_INTENT_KINDS).toContain("medusa.store.unknown")
     expect(MEDUSA_STORE_INTENT_KINDS).toContain("medusa.store.cart.create")
     expect(MEDUSA_STORE_INTENT_KINDS).toContain(
@@ -91,6 +91,9 @@ describe("MEDUSA_STORE_INTENT_KINDS", () => {
     )
     expect(MEDUSA_STORE_INTENT_KINDS).toContain(
       "medusa.store.cart.email.update",
+    )
+    expect(MEDUSA_STORE_INTENT_KINDS).toContain(
+      "medusa.store.cart.metadata.update",
     )
     expect(MEDUSA_STORE_INTENT_KINDS).toContain(
       "medusa.store.cart.promotion.add",
@@ -312,6 +315,54 @@ describe("medusaStoreAdjudicated — additional EXECUTE paths", () => {
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({
       email: "customer@example.com",
     })
+  })
+})
+
+// ── carts.update kind branching (P2-8) ──────────────────────────────────
+
+describe("medusaStoreAdjudicated.carts.update — kind branching", () => {
+  it("emits medusa.store.cart.email.update when body contains email", async () => {
+    const { fake, calls } = makeFakeTransport()
+    __setMedusaStoreForTests(fake)
+    const { sink, records } = createMemoryAuditSink()
+
+    await medusaStoreAdjudicated.carts.update(
+      { cartId: "cart_01", body: { email: "customer@example.com" } },
+      { sourceSubject: "tool:create_checkout", auditSink: sink },
+    )
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.path).toBe("/store/carts/cart_01")
+
+    await Promise.resolve()
+    expect(records).toHaveLength(1)
+    expect(records[0]!.envelope.kind).toBe("medusa.store.cart.email.update")
+    expect(records[0]!.decision.kind).toBe("EXECUTE")
+  })
+
+  it("emits medusa.store.cart.metadata.update when body has no email field", async () => {
+    const { fake, calls } = makeFakeTransport()
+    __setMedusaStoreForTests(fake)
+    const { sink, records } = createMemoryAuditSink()
+
+    await medusaStoreAdjudicated.carts.update(
+      {
+        cartId: "cart_01",
+        body: { metadata: { reorderSource: "whatsapp" } },
+      },
+      { sourceSubject: "tool:tag_cart", auditSink: sink },
+    )
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.path).toBe("/store/carts/cart_01")
+    expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({
+      metadata: { reorderSource: "whatsapp" },
+    })
+
+    await Promise.resolve()
+    expect(records).toHaveLength(1)
+    expect(records[0]!.envelope.kind).toBe("medusa.store.cart.metadata.update")
+    expect(records[0]!.decision.kind).toBe("EXECUTE")
   })
 })
 

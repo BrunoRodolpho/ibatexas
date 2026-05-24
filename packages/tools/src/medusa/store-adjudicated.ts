@@ -105,6 +105,7 @@ export type MedusaStoreIntentKind =
   | "medusa.store.cart.line_item.update"
   | "medusa.store.cart.line_item.remove"
   | "medusa.store.cart.email.update"
+  | "medusa.store.cart.metadata.update"
   | "medusa.store.cart.promotion.add"
   | "medusa.store.cart.complete"
   | "medusa.store.payment_collection.create"
@@ -118,6 +119,7 @@ export const MEDUSA_STORE_INTENT_KINDS: ReadonlyArray<MedusaStoreIntentKind> = [
   "medusa.store.cart.line_item.update",
   "medusa.store.cart.line_item.remove",
   "medusa.store.cart.email.update",
+  "medusa.store.cart.metadata.update",
   "medusa.store.cart.promotion.add",
   "medusa.store.cart.complete",
   "medusa.store.payment_collection.create",
@@ -321,6 +323,7 @@ const refuseInvalidPayload: MedusaStoreGuard = (envelope) => {
       return null
     }
     case "medusa.store.cart.email.update":
+    case "medusa.store.cart.metadata.update":
     case "medusa.store.cart.complete":
     case "medusa.store.payment_collection.create": {
       if (empty(p["cartId"])) {
@@ -744,13 +747,34 @@ export const medusaStoreAdjudicated = {
     /**
      * Apply a metadata / email update to the cart. Mirrors
      * `POST /store/carts/:cartId` with the supplied body.
+     *
+     * The emitted intent kind is BRANCHED on payload shape so the audit
+     * taxonomy reflects what's actually being shipped to Medusa:
+     *
+     *   - body has an `email` property → `medusa.store.cart.email.update`
+     *     (the audit record carries customer email; downstream redactors
+     *     must scrub the field — covered by the global REDACT_FIELDS
+     *     rule for `email`).
+     *   - otherwise → `medusa.store.cart.metadata.update` (the body is
+     *     metadata-only; no PII semantics leak into the kind name).
+     *
+     * Before this split every cart-update emitted the `*.email.update`
+     * kind regardless of payload, which leaked PII semantics into the
+     * audit trail for metadata-only updates.
      */
     async update(
       payload: MedusaStoreCartEmailUpdatePayload,
       meta: MedusaStoreAdjudicatedMeta,
     ): Promise<unknown> {
+      const hasEmail =
+        payload.body !== null &&
+        typeof payload.body === "object" &&
+        Object.prototype.hasOwnProperty.call(payload.body, "email")
+      const kind: MedusaStoreIntentKind = hasEmail
+        ? "medusa.store.cart.email.update"
+        : "medusa.store.cart.metadata.update"
       const env = await runKernelAndAudit<MedusaStoreCartEmailUpdatePayload>(
-        "medusa.store.cart.email.update",
+        kind,
         payload,
         meta,
       )
