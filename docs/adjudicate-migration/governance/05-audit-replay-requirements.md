@@ -1,3 +1,7 @@
+> **NOTE — load-bearing with stale rollout framing.** The `AuditRecord` v4 schema, PII redactor contract, and replay/drift policy below are still authoritative. The "before enforce flip" gating references throughout this doc point to a deleted rollout framework — the kernel is now always-on per `CLAUDE.md` rule #9 (cutover commit `f3bea43`). Read "before enforce flip" as "before production deploy" (or simply ignore the gating, since no rollout phase exists today). See `README.md` in this directory for the full classification.
+
+---
+
 # 05 — Audit & Replay Requirements
 
 > Companion to: [`01-intent-taxonomy.md`](./01-intent-taxonomy.md), [`04-decision-policy.md`](./04-decision-policy.md), [`06-deferred-execution-policy.md`](./06-deferred-execution-policy.md), [`07-rollback-recovery.md`](./07-rollback-recovery.md).

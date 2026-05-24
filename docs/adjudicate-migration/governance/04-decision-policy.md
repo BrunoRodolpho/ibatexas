@@ -1,3 +1,7 @@
+> **NOTE — load-bearing with localized stale refs.** The six decision outcomes (`EXECUTE/REFUSE/DEFER/ESCALATE/REQUEST_CONFIRMATION/REWRITE`), refusal taxonomy, and pt-BR localization below are still authoritative. **Exception:** line 216 references `IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE` typo-guarding — these env vars were deleted by the IBX-IGE v3.0 cutover (`f3bea43`). The underlying `validateEnforceConfig` contract may still exist as a type-shape; verify before relying on it. See `README.md` in this directory for the full classification.
+
+---
+
 # 04 — Decision Policy
 
 > Companion to: [`01-intent-taxonomy.md`](./01-intent-taxonomy.md), [`03-trust-boundary-model.md`](./03-trust-boundary-model.md), [`05-audit-replay-requirements.md`](./05-audit-replay-requirements.md), [`06-deferred-execution-policy.md`](./06-deferred-execution-policy.md).

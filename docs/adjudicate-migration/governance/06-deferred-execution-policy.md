@@ -1,3 +1,7 @@
+> **NOTE — load-bearing constitutional.** The DEFER semantics + park/resume protocol + TTL + idempotency rules below are still authoritative. The "two bugs in today's implementation" callouts in the executive summary (resolver not started, resume doesn't re-execute) were closed in W1-W4 of correctness-remediation and the cutover; treat those paragraphs as historical context. See `README.md` in this directory for the full classification.
+
+---
+
 # 06 — Deferred Execution Policy
 
 > Companion to: [`01-intent-taxonomy.md`](./01-intent-taxonomy.md), [`04-decision-policy.md`](./04-decision-policy.md), [`05-audit-replay-requirements.md`](./05-audit-replay-requirements.md).

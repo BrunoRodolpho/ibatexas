@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24 — DOWNGRADED from load-bearing.** The three-concentric-rollback-layers model below (per-intent env-var rollback, per-process kill switch, cluster-wide distributed kill switch via Redis pub/sub) describes machinery that was **deleted** by the IBX-IGE v3.0 always-on cutover (`f3bea43`). Per `CLAUDE.md` rule #9: "the kernel is always authoritative — no env-var gating, no shadow mode, no kill switch." For current operator surface (which is intentionally smaller — fail-closed audit + ledger; no rollback levers besides redeploy), see [`docs/ops/runbooks/kernel-operations.md`](../../ops/runbooks/kernel-operations.md). Content preserved unchanged below as historical record of the rollback model that existed before the cutover.
+
+---
+
 # 07 — Rollback & Recovery
 
 > Companion to: [`05-audit-replay-requirements.md`](./05-audit-replay-requirements.md), [`06-deferred-execution-policy.md`](./06-deferred-execution-policy.md).

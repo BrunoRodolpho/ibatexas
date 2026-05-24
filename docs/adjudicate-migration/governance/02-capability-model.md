@@ -1,3 +1,7 @@
+> **NOTE — load-bearing constitutional.** The `CapabilityPlanner<S,C>` + `safePlan()` + `ToolClassification<R,M>` contract below is still authoritative per `CLAUDE.md` rule #9. The migration-target framing ("currently dead code, the migration adopts it") is past tense — the planner is now live in `packages/llm-provider/src/capability-planner.ts`. See `README.md` in this directory for the full classification.
+
+---
+
 # 02 — Capability Model
 
 > Companion to: [`01-intent-taxonomy.md`](./01-intent-taxonomy.md), [`03-trust-boundary-model.md`](./03-trust-boundary-model.md).

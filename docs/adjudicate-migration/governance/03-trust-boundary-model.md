@@ -1,3 +1,7 @@
+> **NOTE — load-bearing with localized stale refs.** The `UNTRUSTED < TRUSTED < SYSTEM` taint lattice and per-boundary identity assertions below are still authoritative for `IntentActor.taint`. **Exception:** lines 83 and 148 reference `setKillSwitch` and `IBX_KERNEL_ENFORCE` — both deleted by the IBX-IGE v3.0 cutover (`f3bea43`); ignore those bypass-callout rows. See `README.md` in this directory for the full classification.
+
+---
+
 # 03 — Trust Boundary Model
 
 > Companion to: [`01-intent-taxonomy.md`](./01-intent-taxonomy.md), [`02-capability-model.md`](./02-capability-model.md), [`04-decision-policy.md`](./04-decision-policy.md).

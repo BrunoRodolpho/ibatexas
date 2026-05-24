@@ -1,3 +1,7 @@
+> **NOTE — load-bearing with localized stale refs.** The 6-domain intent kind catalog and naming convention below are still authoritative for `IntentEnvelope.kind`. **Exception:** the three `system.kernel.*` intent kinds at lines 142-144 (`system.kernel.kill_switch.toggle`, `system.kernel.shadow.add`, `system.kernel.enforce.add`) reference admin endpoints that were deleted by the IBX-IGE v3.0 cutover (`f3bea43`) and should be ignored. See `README.md` in this directory for the full classification.
+
+---
+
 # 01 — Intent Taxonomy
 
 > Companion to: [`02-capability-model.md`](./02-capability-model.md), [`03-trust-boundary-model.md`](./03-trust-boundary-model.md), [`04-decision-policy.md`](./04-decision-policy.md).
