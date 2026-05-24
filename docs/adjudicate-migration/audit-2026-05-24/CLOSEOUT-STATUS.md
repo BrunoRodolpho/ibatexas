@@ -13,10 +13,10 @@ This is the authoritative "what remains" snapshot AFTER R3-1 (conformance suites
 
 The audit-2026-05-24 adversarial sweep produced **9 P0 + 8 P1 + 8 P2** findings. After R1 / R2 / R3 commit waves on this branch:
 
-- **9 / 9 P0** fully closed in code (P0-2 race v2 closed via `4c82a22` — Fix-b post-SETNX parkKey re-check; T6 now at **hard-zero violations across 500 race iterations**. P0-9 LGPD scope has epic-track residue.)
+- **9 / 9 P0** fully closed in code (P0-2 race v2 closed via `4c82a22` — T6 hard-zero across 500 race iterations; P0-4 H2 closed via `654d337`; P0-9 H3 LGPD scope closed via Wave A+B+C at `c41e35c` — all 12 surfaces covered).
 - **8 / 8 P1** closed in code
 - **8 / 8 P2** closed (P2-1, P2-2, P2-3, P2-4, P2-5, P2-6, P2-7, P2-8)
-- **6 / 7 hardening conformance suites** landed (T1, T2, T3, T5, T6, T7); **1 still open** (T4 LGPD scrub — blocked on H3)
+- **7 / 7 hardening conformance suites** landed (T1, T2, T3, T4, T5, T6, T7); T4 verified 4/4 pass at `da6dfe5`.
 
 **Epic-track status:**
 - **H2** — ✅ CLOSED. New `@ibatexas/audit-sink` leaf package + boot-time DI + all 28 wrapper-call sites + T2 conformance landed at `654d337`. 1196 tests pass across 4 packages.
