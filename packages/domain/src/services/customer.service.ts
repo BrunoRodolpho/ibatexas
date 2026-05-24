@@ -22,7 +22,14 @@
 import { createHash } from "node:crypto"
 import { prisma } from "../client.js"
 import type { Channel } from "@ibatexas/types"
-import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import {
+  buildAuditRecord,
+  buildEnvelope,
+  decisionExecute,
+  type AuditSink,
+  type IntentEnvelope,
+  type Supersession,
+} from "@adjudicate/core"
 import {
   customerOnboardingPolicyBundle,
   type CustomerCreatePayload,
@@ -464,7 +471,18 @@ export async function anonymizeCustomerFromEnvelope(
     state,
     customerOnboardingPolicyBundle,
     async (payload) => {
-      const result = await anonymizeCustomer(payload.customerId)
+      // Thread the audit-scope-extension predecessor link so the per-surface
+      // scrub records emitted by anonymizeCustomer's H3 wave-a1 extension
+      // chain back to this `customer.anonymize` envelope.
+      const anonymizeOptions: AnonymizeCustomerOptions = {
+        ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+        ...(options?.log ? { log: options.log } : {}),
+        predecessor: {
+          predecessorIntentHash: envelope.intentHash,
+          predecessorAt: envelope.createdAt,
+        },
+      }
+      const result = await anonymizeCustomer(payload.customerId, anonymizeOptions)
       return result as { success: true }
     },
     adjudicateOptions,
@@ -616,7 +634,46 @@ const ANONYMIZE_TX_TIMEOUT_MS = 60_000
 /** Prisma maxWait — how long the client waits for a free connection. */
 const ANONYMIZE_TX_MAX_WAIT_MS = 5_000
 
-export async function anonymizeCustomer(customerId: string) {
+/**
+ * Per-surface scrub kinds emitted as audit records after the main
+ * transaction commits. Each value mirrors the table the scrub targets so
+ * audit consumers can filter by surface. audit-2026-05-24 H3 wave-a1.
+ */
+const SCRUB_AUDIT_KINDS = [
+  "customer.anonymize.order_projection.scrubbed",
+  "customer.anonymize.conversation_message.scrubbed",
+  "customer.anonymize.conversation_link.scrubbed",
+  "customer.anonymize.order_status_history.scrubbed",
+  "customer.anonymize.order_event_log.scrubbed",
+  "customer.anonymize.loyalty_account.scrubbed",
+  "customer.anonymize.reservation_special_requests.scrubbed",
+] as const
+
+type ScrubAuditKind = (typeof SCRUB_AUDIT_KINDS)[number]
+
+/**
+ * Optional context for `anonymizeCustomer`. Adopters supply an `auditSink`
+ * to emit the per-surface scrub records (H3 wave-a1). `predecessor` chains
+ * each emitted record back to the original `customer.anonymize` envelope
+ * via the AuditRecord `supersedes` field. Both are optional — call sites
+ * predating the audit-scope expansion continue to work unchanged.
+ */
+export interface AnonymizeCustomerOptions {
+  readonly auditSink?: AuditSink
+  readonly predecessor?: {
+    readonly predecessorIntentHash: string
+    readonly predecessorAt: string
+  }
+  readonly log?: {
+    readonly warn?: (...args: unknown[]) => void
+    readonly error?: (...args: unknown[]) => void
+  }
+}
+
+export async function anonymizeCustomer(
+  customerId: string,
+  options?: AnonymizeCustomerOptions,
+) {
   // Compute a stable anonymized phone placeholder. UNIQUE constraint on
   // Customer.phone means we cannot null it; we substitute a non-PII
   // sentinel that's still unique per record so the column constraint
@@ -956,7 +1013,77 @@ export async function anonymizeCustomer(customerId: string) {
     },
   )
 
+  // ── H3 wave-a1: per-surface audit emit ─────────────────────────
+  //
+  // Emit one AuditRecord per scrubbed surface. The records carry the
+  // system-actor envelope (this is a non-LLM operator/scheduled action)
+  // and an EXECUTE decision with a `business.rule_satisfied` basis
+  // (the LGPD-erasure business rule was satisfied by the scrub).
+  //
+  // When `predecessor` is supplied, every record's `supersedes` field
+  // chains back to the original `customer.anonymize` envelope so audit
+  // readers can follow scrub-extension records back to the originating
+  // request without join hops.
+  //
+  // Emission is best-effort: a failing sink does NOT fail the scrub
+  // (the data is already mutated by the committed tx; failing here would
+  // surface as a misleading "anonymize failed" up the stack).
+  if (options?.auditSink) {
+    emitScrubAuditRecords(customerId, options)
+  }
+
   return { success: true }
+}
+
+function emitScrubAuditRecords(
+  customerId: string,
+  options: AnonymizeCustomerOptions,
+): void {
+  const auditSink = options.auditSink
+  if (!auditSink) return
+  const supersedes: Supersession | undefined = options.predecessor
+    ? {
+        predecessorIntentHash: options.predecessor.predecessorIntentHash,
+        predecessorAt: options.predecessor.predecessorAt,
+        reason: "replay",
+      }
+    : undefined
+  for (const kind of SCRUB_AUDIT_KINDS) {
+    try {
+      const envelope = buildEnvelope({
+        kind,
+        payload: { customerId },
+        actor: {
+          principal: "system",
+          sessionId: `customer.anonymize:${customerId}`,
+        },
+        taint: "SYSTEM",
+        nonce: `${customerId}:${kind}`,
+      })
+      const decision = decisionExecute([
+        { category: "business", code: "rule_satisfied" },
+      ])
+      const record = buildAuditRecord({
+        envelope,
+        decision,
+        durationMs: 0,
+        ...(supersedes !== undefined ? { supersedes } : {}),
+      })
+      void auditSink.emit(record).catch((err: unknown) => {
+        options.log?.error?.(
+          "[anonymize-customer] audit emit failed:",
+          kind,
+          (err as Error).message ?? String(err),
+        )
+      })
+    } catch (err) {
+      options.log?.error?.(
+        "[anonymize-customer] audit record build failed:",
+        kind,
+        (err as Error).message ?? String(err),
+      )
+    }
+  }
 }
 
 /** @internal — exported for unit tests. */
