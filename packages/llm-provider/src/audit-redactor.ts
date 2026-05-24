@@ -87,6 +87,7 @@ import { createHash } from "node:crypto"
 import {
   sha256Canonical,
   type AuditRecord,
+  type Decision,
   type IntentActor,
 } from "@adjudicate/core"
 
@@ -331,7 +332,7 @@ function classifyRedactorError(err: unknown): AuditRedactorFailureReason {
 // Some intents stash PII in fields whose NAMES don't trigger the global
 // REDACT/HASH sets. Three examples from the IbateXas surface:
 //
-//   1. `whatsapp.handoff.request.reason` — free-form text that often quotes
+//   1. `whatsapp.session.handover.*` — free-form reason text that often quotes
 //      a customer's last message (which may contain CPF/email).
 //   2. `whatsapp.message.send.body` — the actual outbound message body. The
 //      template name is fine; the rendered body is not.
@@ -344,15 +345,89 @@ function classifyRedactorError(err: unknown): AuditRedactorFailureReason {
 //
 // Adding a new intent? Add it here. The contract test will cover it
 // automatically via the corpus.
+//
+// ── Audit-2026-05-24 F-5 / F-6 history ────────────────────────────────────
+//
+// F-5: pre-2026-05-24 this map keyed on `"whatsapp.handoff.request"` — a
+//      taxonomy-doc kind that does NOT exist in pack-whatsapp's
+//      `WhatsAppIntentKind` union. The real kind is
+//      `"whatsapp.session.handover"`. The typo silently disabled the rule
+//      so the reason/lastMessage free-form text reached the audit sink
+//      verbatim. Likewise, the WhatsApp template send payload uses
+//      `templateVariables` (per `WhatsAppTemplateSendPayload`), not
+//      `variables` — so the variable map (which carries rendered customer
+//      names) escaped redaction.
+//
+// F-6: 14 envelope kinds across pack-payments, pack-orders,
+//      pack-reservations, pack-whatsapp ship free-form text fields
+//      (`reason`, `comment`, `body`, `note`, `specialRequests`) that the
+//      global PII regex catches CPF/email/phone/card for — but NOT
+//      customer names buried mid-sentence. Adding explicit per-kind rules
+//      below makes the redactor over-redact those fields rather than
+//      hope the regex catches every leak.
 
 const INTENT_KIND_FIELD_RULES: Record<string, ReadonlyArray<string>> = {
-  // WhatsApp body and reason fields — see investigation 08 P0 #1.
-  "whatsapp.message.send": ["body", "text", "variables"],
-  "whatsapp.template.send": ["variables"],
-  "whatsapp.handoff.request": ["reason", "lastMessage"],
-  // Validation events emit synthesised payloads. We redact any "originalText"
-  // / "rewritten" content because validation triggers can capture PII the
-  // customer typed.
+  // ── WhatsApp body, variables, and handover reason fields ───────────────
+  // F-5: WhatsAppMessageSendPayload's variable map is `templateVariables`,
+  // not `variables`. We keep `variables` as an alias for defense-in-depth
+  // against any payload variant that uses the shorter name.
+  "whatsapp.message.send": ["body", "text", "templateVariables", "variables"],
+  // F-5: WhatsAppTemplateSendPayload's variable map is `templateVariables`.
+  // `to` is hashed via HASH_FIELDS if it ever lands as a phone; the rule
+  // here covers the rendered variable values.
+  "whatsapp.template.send": ["templateVariables", "variables"],
+  // F-5: the real WhatsApp handoff kind is `whatsapp.session.handover`,
+  // NOT `whatsapp.handoff.request` (the latter exists only in the
+  // taxonomy doc, not in the Pack's union). The fix here is the typo
+  // correction — without it, the rule was inert for the entire WhatsApp
+  // domain since the package's introduction.
+  "whatsapp.session.handover": ["reason", "lastMessage"],
+  // F-6: persistence-side conversation append. The `body` field carries
+  // the literal customer-typed text (often CPF/email/name fragments). The
+  // wire-egress `whatsapp.message.send.body` was already covered; this is
+  // the missing archival sibling per pack-whatsapp's W5-6 design.
+  "conversation.message.append": ["body", "text"],
+
+  // ── Payment-domain free-form reasons (F-6) ──────────────────────────────
+  // `PaymentRefundIssuePayload.reason`, `PaymentWaivePayload.reason`,
+  // `PaymentStatusForcePayload.reason`. Reasons are free-form admin
+  // strings that can quote customer language (CPF, names) so they are
+  // redacted as a subtree.
+  "payment.refund.issue": ["reason"],
+  "payment.waive": ["reason"],
+  "payment.status.force": ["reason"],
+  // Defense-in-depth — these `reason` fields are typed but technically
+  // closed enums in pack-payments. We still over-redact in case a Pack
+  // bump introduces a free-form string in the future.
+  "payment.charge.fail": ["reason"],
+  "payment.charge.cancel": ["reason"],
+  "payment.status.transition": ["reason"],
+
+  // ── Order-domain free-form text fields (F-6) ───────────────────────────
+  // `OrderCancelPayload.reason`, `OrderNoteAddPayload.body`,
+  // `OrderReviewSubmitPayload.comment`, `OrderStatusTransitionPayload.reason`.
+  "order.cancel": ["reason"],
+  "order.note.add": ["body"],
+  "order.review.submit": ["comment"],
+  "order.status.transition": ["reason"],
+
+  // ── Reservation-domain free-form text fields (F-6) ─────────────────────
+  // `ReservationCreatePayload.specialRequests` and `.modify.specialRequests`
+  // are arrays of free-form strings (the kind-rule path match collapses
+  // every leaf to `[REDACTED]`). `ReservationCancelPayload.reason` is a
+  // free-form cancellation reason.
+  "reservation.create": ["specialRequests"],
+  "reservation.modify": ["specialRequests"],
+  "reservation.cancel": ["reason"],
+
+  // ── Customer-onboarding free-form fields (F-6) ─────────────────────────
+  // `CustomerAnonymizePayload` is bounded (scope/customerId/otpToken) but
+  // older audit fixtures and route layers attach a free-form `reason`
+  // string. We over-redact it.
+  "customer.anonymize": ["reason"],
+  "customer.anonymize.cancel": ["reason"],
+
+  // ── Validation events (synthesised payloads carry customer-typed text) ─
   "validation.text.rewrite": ["originalText", "rewritten"],
   "validation.text.refuse": ["originalText", "rewritten"],
 }
@@ -423,6 +498,34 @@ export function createAuditRedactor(
         hashSecret,
       )
 
+      // P1-2 (audit-2026-05-24 C-1): walk `decision.rewritten.payload`
+      // with the SAME per-kind rule as `envelope.payload`.
+      //
+      // Threat: when the kernel decides REWRITE, the decision carries a
+      // post-rewrite envelope at `decision.rewritten`. Adopters wire
+      // sanitizers like pack-whatsapp's `sanitizeCustomerString` into
+      // the REWRITE path — but those sanitizers do NOT do PII
+      // detection (see pack-whatsapp/src/sanitize.ts header). The
+      // post-rewrite payload therefore still carries CPF/email/phone
+      // typed by the customer, and the pre-2026-05-24 redactor's
+      // shallow spread on the AuditRecord skipped `decision.rewritten`
+      // entirely. The unredacted payload landed on NATS subject
+      // `ibatexas.audit.intent.decision.v1` in cleartext.
+      //
+      // Fix: when the decision is REWRITE, redact the rewritten
+      // payload using the SAME kind rules. The intent kind is preserved
+      // across REWRITE (sanitization, normalization, capping only — see
+      // `decision.ts`), so reusing `kindFieldPaths` is safe.
+      const redactedDecision = redactDecisionPayload(
+        record.decision,
+        {
+          redactFields,
+          hashFields,
+          kindFieldPaths,
+          hashSecret,
+        },
+      )
+
       // Shallow-clone the record and envelope, substituting the redacted
       // payload and actor. Invariant #3: intentHash is NEVER recomputed —
       // replay uses it to look up the original envelope and that lookup
@@ -434,6 +537,7 @@ export function createAuditRedactor(
           actor: redactedActor,
           payload: redactedPayload,
         },
+        decision: redactedDecision,
       }
 
       // P0-15 Option A: recompute auditHash over the redacted record so
@@ -476,6 +580,23 @@ export function createAuditRedactor(
         record.envelope.actor,
         hashSecret,
       )
+      // P1-2: if the failed-redact record is a REWRITE, also stub the
+      // rewritten payload — the fail-open path must not leak PII via the
+      // decision-level envelope either.
+      const stubbedDecision: Decision =
+        record.decision.kind === "REWRITE"
+          ? {
+              ...record.decision,
+              rewritten: {
+                ...record.decision.rewritten,
+                actor: redactActorSessionId(
+                  record.decision.rewritten.actor,
+                  hashSecret,
+                ),
+                payload: { __redactor_error: true },
+              },
+            }
+          : record.decision
       const stubbed: AuditRecord = {
         ...record,
         envelope: {
@@ -483,6 +604,7 @@ export function createAuditRedactor(
           actor: stubbedActor,
           payload: { __redactor_error: true },
         },
+        decision: stubbedDecision,
       }
       // The fail-open stub payload also needs a recomputed auditHash so
       // `verifyAuditRecord` doesn't surface false-positive tamper warnings
@@ -492,6 +614,51 @@ export function createAuditRedactor(
   }
 
   return { redact, redactPayload }
+}
+
+// ── P1-2: decision.rewritten.payload helper ──────────────────────────────
+//
+// REWRITE decisions carry a transformed envelope at `decision.rewritten`.
+// Per `@adjudicate/core/decision.ts` REWRITE is scope-restricted to
+// sanitization/normalization/safe capping — never business transformation
+// — so the rewritten envelope's `kind` is identical to the original
+// envelope's kind. The per-kind rules used on `envelope.payload` apply
+// without modification.
+//
+// Why redact REWRITE's rewritten payload at all? Adopters (pack-whatsapp's
+// REWRITE guard via `sanitizeCustomerString`) sanitize template-injection
+// shapes but DO NOT do PII detection — see the file-level comment in
+// pack-whatsapp/src/sanitize.ts. A customer who types
+// `meu cpf é 123.456.789-00` produces a rewritten payload whose `body` still
+// carries the CPF. Pre-fix, that field reached NATS unredacted.
+//
+// Returns a fresh Decision object. Non-REWRITE decisions are returned
+// unchanged — they carry no envelope payload at the decision level.
+function redactDecisionPayload(
+  decision: Decision,
+  ctx: WalkContext,
+): Decision {
+  if (decision.kind !== "REWRITE") {
+    return decision
+  }
+  const rewrittenPayload = walk(decision.rewritten.payload, "", ctx)
+  // Also hash the rewritten envelope's actor.sessionId for parity with
+  // the top-level actor redaction (P0-10). If the kernel rebuilt the
+  // rewritten envelope with the original actor, hashing here is
+  // defense-in-depth: a misbehaving REWRITE that swapped the actor for
+  // a customerId-bearing sessionId would still get scrubbed.
+  const rewrittenActor = redactActorSessionId(
+    decision.rewritten.actor,
+    ctx.hashSecret,
+  )
+  return {
+    ...decision,
+    rewritten: {
+      ...decision.rewritten,
+      actor: rewrittenActor,
+      payload: rewrittenPayload,
+    },
+  }
 }
 
 // ── P0-10: actor.sessionId hash helper ────────────────────────────────────
