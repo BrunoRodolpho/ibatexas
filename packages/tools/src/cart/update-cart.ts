@@ -1,7 +1,10 @@
 // update_cart tool — update a line item quantity in the Medusa cart
 
 import { UpdateCartInputSchema, type UpdateCartInput, type AgentContext } from "@ibatexas/types";
-import { medusaStoreAdjudicated } from "../medusa/store-adjudicated.js";
+import {
+  medusaStoreAdjudicated,
+  MedusaStoreAdjudicateRefusedError,
+} from "../medusa/store-adjudicated.js";
 import { assertCartOwnership } from "./assert-cart-ownership.js";
 
 export async function updateCart(
@@ -25,6 +28,11 @@ export async function updateCart(
       },
     );
   } catch (err) {
+    // audit-2026-05-24 P2-2: kernel REFUSE attaches a kind-specific pt-BR
+    // userFacing copy — surface it instead of the generic fallback.
+    if (err instanceof MedusaStoreAdjudicateRefusedError) {
+      return { success: false, message: err.userFacing };
+    }
     console.error("[update_cart] Medusa error:", (err as Error).message);
     return { success: false, message: "Erro ao atualizar item no carrinho. Tente novamente." };
   }

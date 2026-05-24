@@ -14,7 +14,10 @@
 // virtue of wrapping the wrapper call in the existing retry loop.
 
 import twilio from "twilio";
-import { twilioAdjudicated } from "@ibatexas/tools";
+import {
+  twilioAdjudicated,
+  TwilioAdjudicateRefusedError,
+} from "@ibatexas/tools";
 import logger from "../lib/logger.js";
 import { hashPhone } from "./session.js";
 
@@ -148,6 +151,17 @@ async function sendSingleMessage(to: string, body: string, hash: string): Promis
       );
       return;
     } catch (err) {
+      // Classify the error: kernel REFUSE is permanent — retrying would
+      // emit a fresh audit record per attempt (3× pollution) for the same
+      // payload that will never be approved. Re-throw immediately.
+      if (err instanceof TwilioAdjudicateRefusedError) {
+        logger.warn(
+          { phone_hash: hash, code: err.code },
+          "[whatsapp.send.refused] kernel refusal, not retrying",
+        );
+        throw err;
+      }
+
       const isLast = attempt === maxRetries - 1;
       logger.error(
         { phone_hash: hash, attempt: attempt + 1, maxRetries, error: String(err) },
@@ -231,6 +245,17 @@ export async function sendMedia(to: string, mediaUrl: string, body?: string): Pr
       logger.info({ phone_hash: hash, media_url: mediaUrl }, "[whatsapp.sendMedia]");
       return;
     } catch (err) {
+      // Classify the error: kernel REFUSE is permanent — retrying would
+      // emit a fresh audit record per attempt (3× pollution) for the same
+      // payload that will never be approved. Re-throw immediately.
+      if (err instanceof TwilioAdjudicateRefusedError) {
+        logger.warn(
+          { phone_hash: hash, code: err.code },
+          "[whatsapp.sendMedia.refused] kernel refusal, not retrying",
+        );
+        throw err;
+      }
+
       const isLast = attempt === maxRetries - 1;
       logger.error(
         { phone_hash: hash, attempt: attempt + 1, maxRetries, error: String(err) },

@@ -3,7 +3,10 @@
 import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { MedusaRequestError } from "../medusa/client.js";
-import { medusaStoreAdjudicated } from "../medusa/store-adjudicated.js";
+import {
+  medusaStoreAdjudicated,
+  MedusaStoreAdjudicateRefusedError,
+} from "../medusa/store-adjudicated.js";
 import { invalidateAllQueryCache } from "../cache/query-cache.js";
 import { isAvailableNow, describeAvailabilityWindow } from "../catalog/availability.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
@@ -65,6 +68,13 @@ export async function addToCart(
       },
     );
   } catch (err) {
+    // audit-2026-05-24 P2-2: when the kernel REFUSEs, the wrapper attaches
+    // a kind-specific pt-BR refusal copy (`err.userFacing`) that is more
+    // helpful than the generic fallback below. Surface it directly.
+    if (err instanceof MedusaStoreAdjudicateRefusedError) {
+      return { success: false, message: err.userFacing };
+    }
+
     const isMedusaErr = err instanceof MedusaRequestError;
     const isStaleVariant = isMedusaErr && (err.statusCode === 400 || err.statusCode === 404)
       && err.responseText.includes("do not exist");

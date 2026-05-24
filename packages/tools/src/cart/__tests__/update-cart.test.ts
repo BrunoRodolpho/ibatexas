@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { updateCart } from "../update-cart.js"
+import { MedusaStoreAdjudicateRefusedError } from "../../medusa/store-adjudicated.js"
 import { makeCtx, cartResponse, makeLineItem } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
@@ -17,15 +18,24 @@ const mockLineItemsUpdate = vi.hoisted(() => vi.fn())
 // W9: update-cart now routes through medusaStoreAdjudicated. Mock the
 // wrapper so the kernel + audit path is bypassed here — the wrapper
 // itself is covered by packages/tools/src/medusa/__tests__/store-adjudicated.test.ts.
-vi.mock("../../medusa/store-adjudicated.js", () => ({
-  medusaStoreAdjudicated: {
-    carts: {
-      lineItems: {
-        update: mockLineItemsUpdate,
+// Preserve the real MedusaStoreAdjudicateRefusedError so `instanceof`
+// narrowing inside update-cart works correctly in tests.
+vi.mock("../../medusa/store-adjudicated.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../medusa/store-adjudicated.js")>(
+      "../../medusa/store-adjudicated.js",
+    )
+  return {
+    ...actual,
+    medusaStoreAdjudicated: {
+      carts: {
+        lineItems: {
+          update: mockLineItemsUpdate,
+        },
       },
     },
-  },
-}))
+  }
+})
 
 vi.mock("../assert-cart-ownership.js", () => ({
   assertCartOwnership: vi.fn().mockResolvedValue({ id: "cart_01", customer_id: "cus_01" }),
@@ -114,5 +124,26 @@ describe("updateCart", () => {
 
     const [payload] = mockLineItemsUpdate.mock.calls[0]
     expect(payload.quantity).toBe(1)
+  })
+
+  // audit-2026-05-24 P2-2: kernel REFUSE userFacing copy is surfaced
+  // instead of the generic "Erro ao atualizar..." fallback.
+  it("surfaces wrapper userFacing copy on MedusaStoreAdjudicateRefusedError", async () => {
+    const userFacing =
+      "Não foi possível processar a operação no carrinho porque a quantidade é inválida."
+    const refusedErr = new MedusaStoreAdjudicateRefusedError({
+      kind: "REFUSE",
+      refusal: {
+        kind: "BUSINESS_RULE",
+        code: "medusa.store.payload.invalid_quantity",
+        userFacing,
+      },
+      basis: [],
+    })
+    mockLineItemsUpdate.mockRejectedValue(refusedErr)
+
+    const result = await updateCart(INPUT, CTX)
+
+    expect(result).toEqual({ success: false, message: userFacing })
   })
 })

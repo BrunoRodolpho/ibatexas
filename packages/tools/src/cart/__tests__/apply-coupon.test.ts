@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { applyCoupon } from "../apply-coupon.js"
+import { MedusaStoreAdjudicateRefusedError } from "../../medusa/store-adjudicated.js"
 import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
@@ -18,15 +19,24 @@ const mockPromotionsAdd = vi.hoisted(() => vi.fn())
 // medusaStoreAdjudicated. Mock the wrapper at the module boundary so the
 // kernel + audit path is bypassed in this tool-level test — the wrapper
 // itself is covered by packages/tools/src/medusa/__tests__/store-adjudicated.test.ts.
-vi.mock("../../medusa/store-adjudicated.js", () => ({
-  medusaStoreAdjudicated: {
-    carts: {
-      promotions: {
-        add: mockPromotionsAdd,
+// Preserve the real MedusaStoreAdjudicateRefusedError so `instanceof`
+// narrowing inside apply-coupon works correctly in tests.
+vi.mock("../../medusa/store-adjudicated.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../medusa/store-adjudicated.js")>(
+      "../../medusa/store-adjudicated.js",
+    )
+  return {
+    ...actual,
+    medusaStoreAdjudicated: {
+      carts: {
+        promotions: {
+          add: mockPromotionsAdd,
+        },
       },
     },
-  },
-}))
+  }
+})
 
 vi.mock("../assert-cart-ownership.js", () => ({
   assertCartOwnership: vi.fn().mockResolvedValue({ id: "cart_01", customer_id: "cus_01" }),
@@ -119,5 +129,26 @@ describe("applyCoupon", () => {
       success: false,
       message: expect.stringContaining("erro ao aplicar desconto"),
     })
+  })
+
+  // audit-2026-05-24 P2-2: kernel REFUSE userFacing copy is surfaced
+  // instead of the generic "Cupom inválido..." fallback.
+  it("surfaces wrapper userFacing copy on MedusaStoreAdjudicateRefusedError", async () => {
+    const userFacing =
+      "Não foi possível aplicar o cupom porque o código está vazio."
+    const refusedErr = new MedusaStoreAdjudicateRefusedError({
+      kind: "REFUSE",
+      refusal: {
+        kind: "BUSINESS_RULE",
+        code: "medusa.store.payload.empty_promo_codes",
+        userFacing,
+      },
+      basis: [],
+    })
+    mockPromotionsAdd.mockRejectedValue(refusedErr)
+
+    const result = await applyCoupon(INPUT, CTX)
+
+    expect(result).toEqual({ success: false, message: userFacing })
   })
 })
