@@ -21,6 +21,7 @@
 
 import { createHash } from "node:crypto"
 import { prisma } from "../client.js"
+import { publishNatsEvent } from "@ibatexas/nats-client"
 import type { Channel } from "@ibatexas/types"
 import {
   buildAuditRecord,
@@ -683,6 +684,19 @@ export async function anonymizeCustomer(
   const phoneSentinel =
     "anonymized:" + createHash("sha256").update(customerId).digest("hex").slice(0, 16)
 
+  // audit-2026-05-24 H3 Wave-B: capture medusaId BEFORE the Prisma TX
+  // nulls it. The Wave-B cross-DB compensation chain needs to PATCH the
+  // Medusa-side customer row by id; once the TX scrubs Customer.medusaId
+  // to null we can no longer recover the target. If the customer was
+  // never linked to a Medusa row (medusaId === null), we skip the
+  // compensation chain entirely — there's nothing to scrub on the
+  // Medusa side.
+  const customerForCompensation = await prisma.customer.findUnique({
+    where: { id: customerId },
+    select: { medusaId: true },
+  })
+  const medusaIdForCompensation = customerForCompensation?.medusaId ?? null
+
   // Count reviews so we know whether to take the heavy-customer path.
   // `prisma.review.count` is cheap (covered by the customerId index).
   const reviewCount = await prisma.review.count({ where: { customerId } })
@@ -1030,6 +1044,37 @@ export async function anonymizeCustomer(
   // surface as a misleading "anonymize failed" up the stack).
   if (options?.auditSink) {
     emitScrubAuditRecords(customerId, options)
+  }
+
+  // ── H3 wave-b: Medusa cross-DB compensation kickoff ─────────────
+  //
+  // The 7 in-process Prisma surfaces are now scrubbed. Surface 8 — the
+  // Medusa-side customer row — lives in a separate Postgres database
+  // reachable only via HTTP admin API. Emit a NATS pending event so
+  // the Wave-B subscriber (`customer-anonymize-medusa-resolver` in
+  // apps/api) can complete the compensation chain. If the customer was
+  // never linked to a Medusa row (medusaId === null, captured before
+  // the TX), skip — there's nothing to scrub.
+  //
+  // The publish is fire-and-forget. NATS down is handled by retry
+  // semantics on the subscriber side; if publish itself fails the
+  // event silently drops, but the destructive Prisma op is already
+  // committed so the LGPD 30-day erasure clock is satisfied. The
+  // residual Medusa-side PII window is documented as acceptable in the
+  // SYNTHESIS (`cross-db.md §"Risk 5: Eventual consistency window"`).
+  if (medusaIdForCompensation && options?.predecessor) {
+    void publishNatsEvent("customer.anonymize.medusa.pending", {
+      customerId,
+      medusaId: medusaIdForCompensation,
+      parkedIntentHash: options.predecessor.predecessorIntentHash,
+      parkedAt: options.predecessor.predecessorAt,
+      attempt: 1,
+    }).catch((err: unknown) => {
+      options.log?.warn?.(
+        "[anonymize-customer] medusa-pending publish failed:",
+        (err as Error).message ?? String(err),
+      )
+    })
   }
 
   return { success: true }

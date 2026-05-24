@@ -164,7 +164,17 @@ describe("handleAnonymizeGraceTimeout", () => {
       expect(out.customerId).toBe("cust_01");
       expect(out.intentHash).toBe("abc123");
     }
-    expect(mockAnonymizeCustomer).toHaveBeenCalledWith("cust_01");
+    // audit-2026-05-24 H3 Wave-B: resolver now threads predecessor +
+    // auditSink so the wave-a1 per-surface audit and the wave-b Medusa
+    // compensation chain both have what they need.
+    expect(mockAnonymizeCustomer).toHaveBeenCalledTimes(1);
+    expect(mockAnonymizeCustomer.mock.calls[0]![0]).toBe("cust_01");
+    expect(mockAnonymizeCustomer.mock.calls[0]![1]).toMatchObject({
+      predecessor: {
+        predecessorIntentHash: "abc123",
+        predecessorAt: "2026-05-22T00:00:00Z",
+      },
+    });
     // Receipt was cleared after anonymize.
     expect(redisStorage.get("ibatexas:anonymize:pending:cust_01")).toBeUndefined();
   });
@@ -198,10 +208,14 @@ describe("handleAnonymizeGraceTimeout", () => {
     const out = await handleAnonymizeGraceTimeout(event);
 
     expect(out.kind).toBe("anonymized");
-    // Destructive TX committed BEFORE audit emit.
-    expect(mockAnonymizeCustomer).toHaveBeenCalledWith("cust_audit");
+    // Destructive TX committed BEFORE audit emit. Resolver now threads
+    // predecessor + auditSink (audit-2026-05-24 H3 Wave-B).
+    expect(mockAnonymizeCustomer).toHaveBeenCalledTimes(1);
+    expect(mockAnonymizeCustomer.mock.calls[0]![0]).toBe("cust_audit");
 
-    // Exactly one audit record emitted.
+    // Exactly one audit record emitted by the resolver itself. (The
+    // wave-a1 per-surface scrub records are emitted *inside*
+    // `anonymizeCustomer` which is mocked, so they do not surface here.)
     expect(mockAuditSinkEmit).toHaveBeenCalledTimes(1);
     const record = (mockAuditSinkEmit.mock.calls as unknown as Array<
       [unknown]

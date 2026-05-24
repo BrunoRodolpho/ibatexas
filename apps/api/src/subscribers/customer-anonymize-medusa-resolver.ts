@@ -42,7 +42,11 @@
 // default (cross-db.md §"Risk 2: Medusa customer metadata").
 
 import { subscribeNatsEvent, publishNatsEvent } from "@ibatexas/nats-client";
-import { medusaAdjudicated } from "@ibatexas/tools";
+import {
+  clearMedusaAnonymizePending,
+  medusaAdjudicated,
+  recordMedusaAnonymizePending,
+} from "@ibatexas/tools";
 import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import type { FastifyBaseLogger } from "fastify";
@@ -134,6 +138,21 @@ export async function handleMedusaAnonymizePending(
     parkedIntentHash,
   );
 
+  // Record the pending entry BEFORE the Medusa call so the retry job
+  // can find it if THIS subscriber pass crashes mid-flight. Best-effort
+  // — Redis unreachable means no retry, but the destructive op is still
+  // attempted via the NATS event.
+  await recordMedusaAnonymizePending(
+    {
+      customerId,
+      medusaId,
+      parkedIntentHash,
+      parkedAt,
+      attempt: payload.attempt,
+    },
+    log,
+  );
+
   try {
     await medusaAdjudicated({
       scope: "admin",
@@ -170,6 +189,11 @@ export async function handleMedusaAnonymizePending(
     { customerId, medusaId, parkedIntentHash, attempt: payload.attempt },
     "[customer-anonymize-medusa-resolver] Medusa customer scrubbed",
   );
+
+  // Clear the pending entry so the retry job stops sweeping for this
+  // customer. Best-effort — TTL would GC eventually anyway, but explicit
+  // clear makes the timeline visible in Redis.
+  await clearMedusaAnonymizePending(customerId, log);
 
   emitMedusaAnonymizeAudit({
     kind: "customer.anonymize.medusa.confirmed",

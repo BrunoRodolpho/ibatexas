@@ -20,6 +20,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest"
 // ── Hoisted mocks ─────────────────────────────────────────────────────────
 
 const mockCustomerUpdate = vi.hoisted(() => vi.fn())
+const mockCustomerFindUnique = vi.hoisted(() => vi.fn())
+const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 const mockAddressDeleteMany = vi.hoisted(() => vi.fn())
 const mockPreferencesDeleteMany = vi.hoisted(() => vi.fn())
 const mockReviewUpdateMany = vi.hoisted(() => vi.fn())
@@ -61,10 +63,19 @@ const txClient = {
   reservation: { updateMany: mockReservationUpdateMany },
 }
 
+vi.mock("@ibatexas/nats-client", () => ({
+  publishNatsEvent: mockPublishNatsEvent,
+}))
+
 vi.mock("../../client.js", () => ({
   prisma: {
     $transaction: mockTransaction,
-    customer: { update: mockCustomerUpdate },
+    customer: {
+      update: mockCustomerUpdate,
+      // audit-2026-05-24 H3 Wave-B: anonymizeCustomer reads medusaId
+      // before the TX so the Wave-B compensation kickoff has a target.
+      findUnique: mockCustomerFindUnique,
+    },
     address: { deleteMany: mockAddressDeleteMany },
     customerPreferences: { deleteMany: mockPreferencesDeleteMany },
     review: {
@@ -105,6 +116,10 @@ describe("anonymizeCustomer — W4 P0-13 LGPD completeness", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockCustomerUpdate.mockResolvedValue({ id: "cust_01" })
+    // H3 Wave-B default: no medusaId linkage. Tests that exercise the
+    // compensation kickoff override per-test.
+    mockCustomerFindUnique.mockResolvedValue({ medusaId: null })
+    mockPublishNatsEvent.mockResolvedValue(undefined)
     mockAddressDeleteMany.mockResolvedValue({ count: 1 })
     mockPreferencesDeleteMany.mockResolvedValue({ count: 1 })
     mockReviewUpdateMany.mockResolvedValue({ count: 1 })
@@ -272,6 +287,8 @@ describe("anonymizeCustomer — NEW-P0-X7 transaction timeout + batching", () =>
   beforeEach(() => {
     vi.clearAllMocks()
     mockCustomerUpdate.mockResolvedValue({ id: "cust_01" })
+    mockCustomerFindUnique.mockResolvedValue({ medusaId: null })
+    mockPublishNatsEvent.mockResolvedValue(undefined)
     mockAddressDeleteMany.mockResolvedValue({ count: 1 })
     mockPreferencesDeleteMany.mockResolvedValue({ count: 1 })
     mockReviewUpdateMany.mockResolvedValue({ count: 1 })
@@ -429,6 +446,8 @@ describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => 
   beforeEach(() => {
     vi.clearAllMocks()
     mockCustomerUpdate.mockResolvedValue({ id: "cust_01" })
+    mockCustomerFindUnique.mockResolvedValue({ medusaId: null })
+    mockPublishNatsEvent.mockResolvedValue(undefined)
     mockAddressDeleteMany.mockResolvedValue({ count: 1 })
     mockPreferencesDeleteMany.mockResolvedValue({ count: 1 })
     mockReviewUpdateMany.mockResolvedValue({ count: 1 })

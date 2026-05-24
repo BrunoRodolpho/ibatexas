@@ -231,7 +231,22 @@ export async function handleAnonymizeGraceTimeout(
   const startedAt = Date.now();
   try {
     try {
-      await anonymizeCustomer(customerId);
+      // audit-2026-05-24 H3 Wave-B: thread the parked envelope's intent
+      // hash + parkedAt as the predecessor so the wave-b Medusa
+      // compensation chain (`customer.anonymize.medusa.pending`) emits
+      // with a proper supersession link back to the originating user
+      // anonymize request. Also supplies auditSink so wave-a1 per-surface
+      // scrub records emit from the grace path (they were silent pre-
+      // wave-b because the resolver previously called anonymizeCustomer
+      // without options).
+      await anonymizeCustomer(customerId, {
+        auditSink: getAuditSink(),
+        ...(log ? { log } : {}),
+        predecessor: {
+          predecessorIntentHash: event.intentHash,
+          predecessorAt: event.parkedAt,
+        },
+      });
       log?.info(
         { customerId, intentHash: event.intentHash, parkedAt: receipt.parkedAt },
         "[anonymize-grace-resolver] anonymize executed after 24h grace expired",

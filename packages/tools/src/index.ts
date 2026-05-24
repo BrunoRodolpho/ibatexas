@@ -151,6 +151,21 @@ export {
   type MedusaWrapperState,
 } from "./medusa/adjudicated.js"
 
+// ── Medusa anonymize compensation tracking (audit-2026-05-24 H3 Wave-B) ──
+// Redis-backed registry of in-flight `customer.anonymize.medusa.pending`
+// events. Domain emits → subscriber confirms → retry job sweeps stragglers.
+export {
+  medusaAnonymizePendingKey,
+  medusaAnonymizePendingIndexKey,
+  recordMedusaAnonymizePending,
+  readMedusaAnonymizePending,
+  clearMedusaAnonymizePending,
+  listMedusaAnonymizePendingCustomerIds,
+  bumpMedusaAnonymizePendingAttempt,
+  MEDUSA_ANONYMIZE_PENDING_TTL_SECONDS,
+  type MedusaAnonymizePendingEntry,
+} from "./medusa/anonymize-pending.js"
+
 // ── Medusa STORE-scope HTTP wrapper (W9 cart-egress epic) ─────────────────────
 // Kernel-gated wrapper around customer-cart STORE-scope mutations. Sibling
 // of `medusaAdjudicated` (which handles ADMIN-scope egress). Closes the
