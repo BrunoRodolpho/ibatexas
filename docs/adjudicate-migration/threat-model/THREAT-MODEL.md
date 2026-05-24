@@ -34,8 +34,8 @@ This threat model covers the kernel-gated mutation surface of IbateXas:
 | Twilio Verify OTP codes | HIGH — auth bearer | Twilio (we never see them); freshness markers in Redis | Replay of an OTP = full account takeover or anonymize. |
 | Admin JWT cookies | CRITICAL — staff bearer | HTTP-only Set-Cookie; backed by JWT issued at OTP gate | Stolen JWT = stolen staff role (until rotated). |
 | `ADMIN_API_KEY` (env) | CRITICAL — bypasses JWT | Env var | Per P1-H: this is a single-key bearer for system-actor admin paths. Compromise = unbounded refunds. |
-| `IBX_KERNEL_ENFORCE` env var | CRITICAL — gate config | Env var | Tampering disables enforcement. P0-9 fail-closed mitigates typos but a deliberate edit could disable a kind. |
-| Pack policy code | HIGH — decides every mutation | Source code; build artifact | A malicious Pack edit changes the gate logic. Code review + CI gate (bypass-detection) defends. |
+| ~~`IBX_KERNEL_ENFORCE` env var~~ (HISTORICAL) | n/a | n/a | Updated 2026-05-24 post-cutover: the IBX-IGE v3.0 cutover (`f3bea43`) removed `IBX_KERNEL_ENFORCE`/`IBX_KERNEL_SHADOW`. The kernel is always authoritative — there is no env-gated state to tamper with at this asset boundary. |
+| Pack policy code | HIGH — decides every mutation | Source code; build artifact | A malicious Pack edit changes the gate logic. Code review + CI gate (bypass-detection) defends. Post-cutover this is the **only** code path that controls the kernel's decision surface — there is no runtime override. |
 
 ---
 
@@ -69,7 +69,7 @@ This threat model covers the kernel-gated mutation surface of IbateXas:
 
 **Trust boundary 3: NATS subject.** Every audit record passes through NATS subject `ibatexas.audit.intent.decision.v1`. Anyone with NATS connect can subscribe — TODAY this is the open infrastructure threat (P0-12).
 
-**Trust boundary 4: env → kernel-config.** `IBX_KERNEL_ENFORCE` is operator-controlled. Two-key signoff requirement (per the rollout runbook) is procedural, not technical. A compromised operator can flip an env var.
+**Trust boundary 4: build/deploy → kernel.** Updated 2026-05-24 post-cutover: the IBX-IGE v3.0 cutover (`f3bea43`) collapsed this boundary. There is no runtime env-gated kernel state any longer — `IBX_KERNEL_ENFORCE` / `IBX_KERNEL_SHADOW` no longer exist, and `setKillSwitch()` was removed. Kernel configuration is now **compile-time + boot-time only**: the installed Pack set is decided by the `kernel-bootstrap.ts` `installPack(...)` calls (source code), and the `KNOWN_INTENT_KINDS` typo gate is similarly compiled in. The remaining trust boundary for kernel behavior is therefore the **source-code → build artifact** boundary (covered by Pack policy code in §Assets and by the bypass-detection CI gate in §Tampering). A compromised CI/CD pipeline or build-artifact substitution is the analogous threat; a compromised operator cannot flip a runtime env var because none exist.
 
 ---
 

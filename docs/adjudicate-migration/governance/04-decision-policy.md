@@ -217,7 +217,7 @@ Per `AuditRecord` (v4) from `@adjudicate/core` (per investigation 05). See [`05-
 
 ## Default REFUSE on unmatched
 
-Per master plan §"Governance principles" #4: every PolicyBundle ends with `default: constant(decisionRefuse(...))`. The default refusal uses code `default_deny` (per `portugueseRefusalMessages.byCode.default_deny`) and basis `kernel/default_deny`. Adopting `validateEnforceConfig(KNOWN_INTENT_KINDS, env)` at boot (per investigation 06 §"P0-3") additionally guards against typos in `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` — unknown tokens in those env vars produce a `recordSinkFailure({code: "enforce_config_typo"})` event and a console warning, but they do **not** flip an intent into the wrong gate.
+Per master plan §"Governance principles" #4: every PolicyBundle ends with `default: constant(decisionRefuse(...))`. The default refusal uses code `default_deny` (per `portugueseRefusalMessages.byCode.default_deny`) and basis `kernel/default_deny`. ~~Adopting `validateEnforceConfig(KNOWN_INTENT_KINDS, env)` at boot additionally guards against typos in `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE`...~~ (Updated 2026-05-24 post-cutover: the IBX-IGE v3.0 cutover (`f3bea43`) removed the `IBX_KERNEL_{SHADOW,ENFORCE}` env vars; there are no env-gated allowlists to typo-check anymore. The `KNOWN_INTENT_KINDS` set is still the typo gate for envelopes the kernel sees — unknown kinds default-REFUSE.)
 
 ## Decision → user surface
 

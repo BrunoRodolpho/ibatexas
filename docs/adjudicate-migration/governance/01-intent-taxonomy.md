@@ -141,11 +141,13 @@ All outbound WhatsApp must produce an intent envelope. The `notification.send` s
 
 ### Domain: `system` — operator + kernel + cron control
 
+> Updated 2026-05-24 post-cutover: the IBX-IGE v3.0 cutover (`f3bea43`) removed the kill-switch, shadow, and enforce surfaces — the kernel is always authoritative. The three `system.kernel.{kill_switch.toggle, shadow.add, enforce.add}` intents below are **DEPRECATED** (no admin endpoint exists; the underlying `setKillSwitch` API and `IBX_KERNEL_{SHADOW,ENFORCE}` env vars no longer exist). Kept here only for historical traceability; do not introduce new code paths against them.
+
 | Kind | Actors | Payload | Mutation surface | PII |
 |---|---|---|---|---|
-| `system.kernel.kill_switch.toggle` | a | `{active: bool, reason}` | `setKillSwitch(active, reason)` from `@adjudicate/core/kernel` — admin endpoint to add per `06-runtime-config-governance.md` P0-7 | none |
-| `system.kernel.shadow.add` | a | `{intentKind}` | mutate `IBX_KERNEL_SHADOW` allowlist (operational, not via env var directly) | none |
-| `system.kernel.enforce.add` | a | `{intentKind}` | mutate `IBX_KERNEL_ENFORCE` allowlist | none |
+| ~~`system.kernel.kill_switch.toggle`~~ (DEPRECATED) | a | `{active: bool, reason}` | removed post-cutover — no kill switch exists | none |
+| ~~`system.kernel.shadow.add`~~ (DEPRECATED) | a | `{intentKind}` | removed post-cutover — no shadow allowlist exists | none |
+| ~~`system.kernel.enforce.add`~~ (DEPRECATED) | a | `{intentKind}` | removed post-cutover — no enforce allowlist exists | none |
 | `system.kernel.pack.register` | a | `{packId, version}` | `installPack(pack, ...)` from `@adjudicate/core` boot path | none |
 | `system.replay.run` | a | `{since, until, intentKind?}` | future `ibx kernel replay` CLI (per `07-testing-observability.md` P1 #10) | none |
 | `system.backfill.execute` | a | `{job, dryRun: bool}` | `packages/cli/src/commands/db.ts:550, 679` (`db backfill:projections`, `db backfill:payments`) | none |
