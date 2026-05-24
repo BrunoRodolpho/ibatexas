@@ -68,11 +68,33 @@ const PRISMA_SCAN_DIRS = [
 /**
  * Directories where direct medusa HTTP calls are forbidden — only the
  * `medusaAdjudicated()` wrapper may issue them. See task 17.
+ *
+ * ── W8-V4 (NEW-W7-V4) ────────────────────────────────────────────────
+ *
+ * The W6 verifier surfaced the gap that the scan dirs only covered
+ * apps/api/src and excluded packages/tools/src — the same dirs where
+ * W6's "Stripe SDK direct calls: 6 sites" + "prisma.orderNote.create
+ * in 4 production routes" findings lived. W7-P4 (orderNote) and
+ * W7-P5 (stripe cart) closed those bypasses but did NOT widen the
+ * scan, so a future regression in packages/tools/src/cart/ would not
+ * surface in CI.
+ *
+ * W8-V4 widens MEDUSA_SCAN_DIRS to also cover packages/tools/src/.
+ * Legitimate read-only carve-outs are listed in ALLOWED_MEDUSA_DIRECT
+ * (e.g. cart/get-cart.ts, catalog/check-inventory.ts, the wrapper
+ * itself), so adding the dirs widens detection without false positives.
+ *
+ * packages/domain/src/services/ is INTENTIONALLY NOT in this list —
+ * the *FromEnvelope write paths and `mutate()` helper there are the
+ * canonical owner sites for medusa egress; they don't make HTTP calls
+ * (they delegate to medusaAdjudicated via the adminAdjudicated DI per
+ * W7-P6 + W8-V1).
  */
 const MEDUSA_SCAN_DIRS = [
   "apps/api/src/routes",
   "apps/api/src/jobs",
   "apps/api/src/subscribers",
+  "packages/tools/src",
 ]
 
 /**
@@ -401,7 +423,37 @@ describe("Bypass detection — Scenario 1: direct prisma writes for kernel-owned
  * Originally surfaced 13 production call sites in `routes/admin/products.ts`,
  * `routes/cart.ts`, and `routes/stripe-webhook.ts` that bypassed
  * `medusaAdjudicated()`. All 13 sites were migrated to the wrapper in
- * the P0-X9 follow-up commits — the allow-list is now empty.
+ * the P0-X9 follow-up commits.
+ *
+ * ── W8-V4 (NEW-W7-V4) additions ──────────────────────────────────────
+ *
+ * Widening MEDUSA_SCAN_DIRS to include `packages/tools/src/` surfaced
+ * 10 store-scope `medusaStoreFetch` POST sites in cart tools that
+ * were structurally invisible to CI before:
+ *
+ *   - add-to-cart, apply-coupon, remove-from-cart, update-cart,
+ *     get-or-create-cart (5 line-item / cart-create POSTs)
+ *   - create-checkout (5 POSTs across cart-set-email, promotions,
+ *     payment-collections, payment-sessions, cart-complete)
+ *
+ * These are all customer-cart STORE-scope mutations (`/store/carts/...`
+ * and `/store/payment-collections/...`) on the LLM-callable surface.
+ * They're real bypasses — kernel adjudication and audit are skipped
+ * today — but migrating them inline requires:
+ *   (a) New `medusa.store.cart.*` intent kinds in the wrapper's
+ *       MEDUSA_INTENT_KINDS taxonomy.
+ *   (b) Per-kind policy bundle decisions (auth, taint, business).
+ *   (c) Test coverage for the LLM-flow → kernel → SDK dispatch path.
+ *
+ * That work is W9-scope (cart-egress governance). Adding the 10 sites
+ * to the deferred allowlist makes the gap explicit + machine-tracked,
+ * AND lets V4 still fail the build the moment ANY NEW unwired site
+ * appears in `packages/tools/src/` (the sentinel test
+ * "DEFERRED_MEDUSA_MIGRATIONS is empty in steady state" was rewired
+ * below to track the size baseline).
+ *
+ * Each entry below has the W9 follow-up implied: "migrate to
+ * medusaAdjudicated with a new medusa.store.cart.* intent kind."
  *
  * RULE: any future entry MUST come with a paired comment naming the
  * follow-up ticket. Removing an entry requires the file to actually be
@@ -410,7 +462,15 @@ describe("Bypass detection — Scenario 1: direct prisma writes for kernel-owned
  * by a companion CI check (todo: add) — for now reviewers must scrutinise.
  */
 const DEFERRED_MEDUSA_MIGRATIONS: ReadonlySet<string> = new Set<string>([
-  // empty — all P0-X9 entries migrated.
+  // ── W8-V4 deferred (W9 follow-up: cart-egress governance) ──────────
+  // All 10 entries are LLM-callable cart-tool STORE-scope mutations
+  // that need new medusa.store.cart.* intent kinds in the wrapper.
+  "packages/tools/src/cart/add-to-cart.ts",
+  "packages/tools/src/cart/apply-coupon.ts",
+  "packages/tools/src/cart/create-checkout.ts",
+  "packages/tools/src/cart/get-or-create-cart.ts",
+  "packages/tools/src/cart/remove-from-cart.ts",
+  "packages/tools/src/cart/update-cart.ts",
 ])
 
 describe("Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated()", () => {
@@ -435,24 +495,25 @@ describe("Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside
     expect(offenders).toEqual([])
   })
 
-  // P0-X9 sentinel — invariant: the scan still works even when no files
-  // are on the deferred allow-list. Two checks:
+  // W8-V4 sentinel — the scan must not silently degrade. Two checks:
   //
   //   1. The fixture-based multi-line scan still detects 4-of-4 cases
   //      (covered by the "detects all 4 multi-line bypass cases" test
   //      below — pinned via the fixture, independent of production tree
   //      state).
-  //   2. DEFERRED_MEDUSA_MIGRATIONS is empty in steady state. If it
-  //      grows, every entry MUST be paired with a follow-up ticket
-  //      comment (rule above the set).
+  //   2. DEFERRED_MEDUSA_MIGRATIONS size matches the W8-V4 baseline
+  //      (6 cart-tool files). If the set grows, every NEW entry MUST be
+  //      paired with a follow-up ticket comment. If it shrinks (because
+  //      W9 migrated a site to medusaAdjudicated), drop the count and
+  //      mark the migration in the comment block above.
   //
-  // The original sentinel ("surface the deferred set") was tied to the
-  // existence of pre-migration bypasses and stopped making sense once
-  // the migrations landed — replacing it with this empty-set invariant
-  // keeps the spirit of the original guard (the scan must not silently
-  // degrade) while reflecting post-P0-X9-follow-up reality.
-  it("DEFERRED_MEDUSA_MIGRATIONS is empty in steady state (sentinel)", () => {
-    expect(DEFERRED_MEDUSA_MIGRATIONS.size).toBe(0)
+  // The pre-W8 sentinel asserted the set was empty (post-P0-X9 reality);
+  // W8-V4 widened MEDUSA_SCAN_DIRS to include `packages/tools/src/` and
+  // surfaced 10 store-scope cart-mutation POSTs that were structurally
+  // invisible to CI before. Those 10 sites span 6 files (create-checkout
+  // alone hosts 5) and are deferred to W9.
+  it("DEFERRED_MEDUSA_MIGRATIONS size matches the W8-V4 baseline (6 cart-tool files — promotion sentinel)", () => {
+    expect(DEFERRED_MEDUSA_MIGRATIONS.size).toBe(6)
   })
 
   // Keep the original single-line scan running too — defense in depth
