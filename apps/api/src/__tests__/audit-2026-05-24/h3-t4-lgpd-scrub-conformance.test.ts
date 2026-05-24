@@ -446,6 +446,70 @@ describe.skipIf(!RUN_REAL_POSTGRES)(
         ).toBe(true)
       }
 
+      // ── JSON-stringification defense-in-depth scan ───────────────
+      //
+      // The per-surface assertions above pin the EXPECTED scrubs. This
+      // scan catches surface-internal misses: e.g., A1 scrubs
+      // OrderProjection.customerEmail but forgets `shippingAddressJson.recipientName`,
+      // or adds a new column with PII that wasn't in the schema audit. We
+      // serialise every reachable row to JSON and assert NO pre-anonymize
+      // PII string survives.
+      //
+      // Inputs to scan are the load-bearing PII strings from the spec —
+      // anything verbatim from the customer's profile that would let an
+      // operator reconstruct identity post-anonymize.
+      const piiInputs: Array<{ label: string; value: string }> = [
+        { label: "email", value: spec.email },
+        { label: "name", value: spec.name },
+        { label: "phone", value: spec.phone },
+        ...(spec.cpf ? [{ label: "cpf", value: spec.cpf }] : []),
+        // String values from the embedded JSON payloads. These are the
+        // SECOND-order leaks: A1 scrubs the column but leaves a copy
+        // inside a JSON blob. The fixture seeds these explicitly so the
+        // scan has detectable values.
+        { label: "shippingRecipient", value: "João Silva Teste" },
+        { label: "shippingStreet", value: "Rua T4 Teste" },
+        {
+          label: "eventLogEmail",
+          value: "joao.silva.t4@example.com",
+        },
+        { label: "reservationNotes", value: "alérgico a amendoim" },
+        { label: "reviewComment", value: "Adorei! Sou João Silva" },
+      ]
+
+      // For each reachable table, run a per-row JSON.stringify and
+      // search for each PII input. A hit reports BOTH the table AND the
+      // PII label so the operator can pinpoint the missed scrub.
+      const leakReports: string[] = []
+      for (const [tableName, rows] of Object.entries(post)) {
+        if (!Array.isArray(rows)) continue
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i]!
+          const serialized = JSON.stringify(row)
+          for (const pii of piiInputs) {
+            if (serialized.includes(pii.value)) {
+              // Column hint — find the first key whose stringified value
+              // contains the PII. Best-effort: nested JSON values get
+              // attributed to their top-level column.
+              const cols: string[] = []
+              for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+                if (JSON.stringify(v).includes(pii.value)) cols.push(k)
+              }
+              leakReports.push(
+                `PII leak in ${tableName}[${i}] — column(s) {${cols.join(", ")}} — PII type=${pii.label} value=${JSON.stringify(pii.value)}`,
+              )
+            }
+          }
+        }
+      }
+
+      expect(
+        leakReports,
+        leakReports.length > 0
+          ? `JSON-stringification defense-in-depth scan caught residual PII (${leakReports.length} hits):\n  ${leakReports.join("\n  ")}`
+          : "ok",
+      ).toEqual([])
+
       // Suppress lint on unused fixture-import (we keep it for symmetry
       // with future tests that inspect builder output directly).
       void fixtures
