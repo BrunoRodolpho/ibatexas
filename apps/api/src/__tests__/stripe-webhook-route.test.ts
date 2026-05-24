@@ -29,6 +29,14 @@ const mockReconcileFromWebhook = vi.hoisted(() => vi.fn());
 const mockReconcileFromWebhookFromEnvelope = vi.hoisted(() => vi.fn());
 const mockGetByStripePaymentIntentId = vi.hoisted(() => vi.fn());
 const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+// W8-V2: PIX cart-complete persists the orderId back to the PaymentIntent
+// through stripeAdjudicated rather than a bare Stripe SDK call. Mock it
+// here so tests can assert the wrapper is called instead of the bare SDK.
+const mockStripeAdjudicatedUpdate = vi.hoisted(() => vi.fn().mockResolvedValue({}));
+// W8-V2: bare Stripe SDK paymentIntents.update — exposed as a hoisted
+// mock so the bypass-sentinel test below can assert it is NEVER invoked
+// for the metadata-persist path.
+const mockBareStripePaymentIntentsUpdate = vi.hoisted(() => vi.fn().mockResolvedValue({}));
 
 // P0-X9: typed errors from medusaAdjudicated. Mocked for instanceof checks.
 const MockRefusedError = vi.hoisted(() =>
@@ -65,10 +73,11 @@ const MockNeedsReviewError = vi.hoisted(() =>
 vi.mock("stripe", () => ({
   default: class MockStripe {
     webhooks = { constructEvent: mockConstructEvent };
+    // W8-V2: production code now routes the metadata-update through
+    // stripeAdjudicated. The bare SDK update mock stays here so the
+    // bypass-sentinel test below can confirm it is NEVER invoked.
     paymentIntents = {
-      // PIX cart-complete persists the orderId back to the PI's metadata
-      // via this call. The actual return value is ignored by the handler.
-      update: vi.fn(async () => ({})),
+      update: mockBareStripePaymentIntentsUpdate,
     };
   },
 }));
@@ -83,6 +92,15 @@ vi.mock("@ibatexas/tools", () => ({
   MedusaAdjudicateRefusedError: MockRefusedError,
   MedusaAdjudicateDeferredError: MockDeferredError,
   MedusaAdjudicateNeedsReviewError: MockNeedsReviewError,
+  // W8-V2: typed errors + wrapper for the stripe-egress on metadata-persist.
+  stripeAdjudicated: {
+    paymentIntents: {
+      update: mockStripeAdjudicatedUpdate,
+    },
+  },
+  StripeAdjudicateRefusedError: MockRefusedError,
+  StripeAdjudicateDeferredError: MockDeferredError,
+  StripeAdjudicateNeedsReviewError: MockNeedsReviewError,
 }));
 
 vi.mock("@ibatexas/domain", () => ({
@@ -1462,5 +1480,159 @@ describe("POST /api/webhooks/stripe — PIX cart-complete via medusaAdjudicated 
       expect.stringContaining("/store/carts/"),
       expect.objectContaining({ method: "POST" }),
     );
+  });
+});
+
+// ── W8-V2 (NEW-W7-V2): PIX cart-complete metadata-update via stripeAdjudicated ──
+//
+// The bare `stripe.paymentIntents.update(...)` at stripe-webhook.ts:308
+// was the last surviving stripe.* bypass in apps/api/src/routes/ after
+// W7-P5 closed the cart-tool sites. W8-V2 routes it through the
+// `stripeAdjudicated.paymentIntents.update(...)` wrapper so the
+// metadata-persist mutation gets a `stripe.payment_intent.update`
+// envelope, kernel adjudication, and an audit record.
+
+describe("POST /api/webhooks/stripe — PIX cart-complete metadata-update via stripeAdjudicated (W8-V2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
+    mockStripeAdjudicatedUpdate.mockResolvedValue({});
+    mockBareStripePaymentIntentsUpdate.mockResolvedValue({});
+  });
+
+  function createPixEvent(
+    eventId = "evt_pix_meta_update_01",
+    cartId = "cart_pix_01",
+  ) {
+    return {
+      id: eventId,
+      type: "payment_intent.succeeded",
+      created: 1_700_000_000,
+      data: {
+        object: {
+          id: "pi_pix_meta_456",
+          metadata: { cartId, customerId: "cus_01" },
+          last_payment_error: null,
+        },
+      },
+    };
+  }
+
+  it("persists orderId through stripeAdjudicated.paymentIntents.update with event-keyed idempotency", async () => {
+    const event = createPixEvent("evt_pix_meta_42", "cart_pix_42");
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    // cart-complete returns an order so the metadata-persist branch fires
+    mockMedusaAdjudicated.mockResolvedValue({
+      type: "order",
+      order: { id: "order_pix_42", display_id: 200 },
+    });
+    // capturePayment may run; we don't care about its output here.
+    mockCapturePayment.mockResolvedValue(null);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // The wrapper WAS called with the expected shape.
+    expect(mockStripeAdjudicatedUpdate).toHaveBeenCalledTimes(1);
+    const [piId, params, meta] = mockStripeAdjudicatedUpdate.mock.calls[0]!;
+    expect(piId).toBe("pi_pix_meta_456");
+    expect(params).toMatchObject({
+      metadata: expect.objectContaining({
+        cartId: "cart_pix_42",
+        customerId: "cus_01",
+        medusaOrderId: expect.stringMatching(/order|200/),
+      }),
+    });
+    expect(meta).toMatchObject({
+      sourceSubject: "webhook:stripe:evt_pix_meta_42",
+      idempotencyKey: "evt_pix_meta_42:metadata-update:pi_pix_meta_456",
+    });
+  });
+
+  it("does NOT call the bare Stripe SDK paymentIntents.update for metadata-persist (bypass-detection sentinel)", async () => {
+    const event = createPixEvent("evt_pix_bare_check_01");
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    mockMedusaAdjudicated.mockResolvedValue({
+      type: "order",
+      order: { id: "order_pix_99", display_id: 300 },
+    });
+    mockCapturePayment.mockResolvedValue(null);
+
+    const app = await buildTestServer();
+    await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    // The bare SDK update transport MUST stay dormant for this mutation.
+    // If a future refactor reverts to `stripe.paymentIntents.update(...)`,
+    // this assertion blocks it.
+    expect(mockBareStripePaymentIntentsUpdate).not.toHaveBeenCalled();
+    // And the wrapper IS called.
+    expect(mockStripeAdjudicatedUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("acks Stripe with 200 + swallows StripeAdjudicateRefusedError (no retry storm)", async () => {
+    const event = createPixEvent("evt_pix_refuse_meta_01");
+    mockConstructEvent.mockReturnValue(event);
+
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    mockMedusaAdjudicated.mockResolvedValue({
+      type: "order",
+      order: { id: "order_pix_refuse_01", display_id: 400 },
+    });
+    // Kernel refuses the metadata-persist (e.g. policy bundle change).
+    mockStripeAdjudicatedUpdate.mockRejectedValue(
+      new MockRefusedError({
+        code: "stripe.kind.not_allowed",
+        userFacing: "Operação Stripe não permitida no momento.",
+      }),
+    );
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": "t=123,v1=valid",
+      },
+      payload: Buffer.from("{}"),
+    });
+
+    // Governance-driven skip — Stripe still gets 200 so no retry storm.
+    expect(res.statusCode).toBe(200);
+    // Wrapper was attempted; bare SDK never touched.
+    expect(mockStripeAdjudicatedUpdate).toHaveBeenCalledTimes(1);
+    expect(mockBareStripePaymentIntentsUpdate).not.toHaveBeenCalled();
   });
 });

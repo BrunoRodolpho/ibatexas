@@ -49,6 +49,10 @@ import {
   MedusaAdjudicateRefusedError,
   MedusaAdjudicateDeferredError,
   MedusaAdjudicateNeedsReviewError,
+  stripeAdjudicated,
+  StripeAdjudicateRefusedError,
+  StripeAdjudicateDeferredError,
+  StripeAdjudicateNeedsReviewError,
 } from "@ibatexas/tools";
 import {
   createOrderService,
@@ -303,11 +307,26 @@ async function handlePaymentSucceeded(
         : completedData.order?.id;
 
       if (orderId) {
-        // Persist orderId back to the PaymentIntent for future reference
-        const stripe = getStripe();
-        await stripe.paymentIntents.update(paymentIntent.id, {
-          metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
-        });
+        // W8-V2 (NEW-W7-V2): persist orderId back to the PaymentIntent
+        // through the kernel-gated wrapper rather than a bare Stripe SDK
+        // call. The bare `stripe.paymentIntents.update(...)` here was the
+        // last surviving stripe.* bypass in apps/api/src/routes/ after
+        // W7-P5 closed the cart-tool sites; it slipped past W7-P5's
+        // scope. The idempotency key keys the metadata-update to the
+        // Stripe event so a re-delivered webhook produces a
+        // byte-identical envelope hash (replay-safe).
+        await stripeAdjudicated.paymentIntents.update(
+          paymentIntent.id,
+          {
+            metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
+          },
+          {
+            sourceSubject: `webhook:stripe:${event.id}`,
+            idempotencyKey: `${event.id}:metadata-update:${paymentIntent.id}`,
+            auditSink: getAuditSink(),
+            log: logger,
+          },
+        );
         logger.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
       }
     } catch (err) {
@@ -315,20 +334,28 @@ async function handlePaymentSucceeded(
       // logged + swallowed — we still ack Stripe with 200 so no retry
       // storm fires (mirrors the existing Task 12 reconcile branch).
       // The audit record captures the kernel decision; ops sees the
-      // refusal via metrics.
+      // refusal via metrics. Covers both medusa egress (cart.complete)
+      // and stripe egress (paymentIntents.update metadata persist).
       if (
         err instanceof MedusaAdjudicateRefusedError ||
         err instanceof MedusaAdjudicateDeferredError ||
-        err instanceof MedusaAdjudicateNeedsReviewError
+        err instanceof MedusaAdjudicateNeedsReviewError ||
+        err instanceof StripeAdjudicateRefusedError ||
+        err instanceof StripeAdjudicateDeferredError ||
+        err instanceof StripeAdjudicateNeedsReviewError
       ) {
         logger.warn(
           {
             event_id: event.id,
             cart_id: cartId,
             kind: err.name,
-            code: err instanceof MedusaAdjudicateRefusedError ? err.code : undefined,
+            code:
+              err instanceof MedusaAdjudicateRefusedError ||
+              err instanceof StripeAdjudicateRefusedError
+                ? err.code
+                : undefined,
           },
-          "PIX: cart-complete refused/deferred by kernel — order not created from this event",
+          "PIX: cart-complete or metadata-persist refused/deferred by kernel",
         );
       } else {
         logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");

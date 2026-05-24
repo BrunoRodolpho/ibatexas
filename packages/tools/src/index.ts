@@ -160,6 +160,25 @@ export {
   type MedusaWrapperState,
 } from "./medusa/adjudicated.js"
 
+// ── Stripe HTTP wrapper (W7-P5) ───────────────────────────────────────────────
+// Promoted to the top-level barrel so apps/api routes (e.g. the Stripe
+// webhook handler) can route bare `stripe.*` mutations through the
+// kernel-gated wrapper. Previously only re-exported from
+// `packages/tools/src/stripe/index.ts`; the webhook route was importing
+// the bare `Stripe` SDK and bypassed the wrapper (NEW-W7-V2, closed in
+// W8). Apps should import `stripeAdjudicated` from `@ibatexas/tools`.
+export {
+  stripeAdjudicated,
+  stripeWrapperPolicyBundle,
+  STRIPE_INTENT_KINDS,
+  StripeAdjudicateRefusedError,
+  StripeAdjudicateDeferredError,
+  StripeAdjudicateNeedsReviewError,
+  type StripeIntentKind,
+  type StripeWrapperState,
+  type StripeAdjudicatedArgs,
+} from "./stripe/adjudicated.js"
+
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"
 
