@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** The rollback mechanics referenced throughout ("kill switch flip back to shadow", "per-intent enforce flip", `IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE`) describe machinery deleted by the IBX-IGE v3.0 cutover (`f3bea43`). The audit-sink loss tolerance tables, revenue-at-risk estimates, and LGPD/regulatory exposure analyses remain useful as production-safety thinking, but the framework binding them to rollout phases no longer applies. Content preserved unchanged below as historical record.
+
+---
+
 # 03 — Blast Radius Analysis
 
 **Status:** Draft v0.1

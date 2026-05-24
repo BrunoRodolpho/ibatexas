@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** The pre-flight checklist below is structured as "per intent kind, per enforce flip" — there are no enforce flips post-cutover (the always-on kernel deleted the shadow/enforce framework). Several individual checks (Pack contract test passes, bypass-detection green, audit-redaction contract test) remain relevant as standalone CI gates, but the gated-procedure framing no longer applies. For current operator surface, see `docs/ops/runbooks/kernel-operations.md`. Content preserved unchanged below as historical record.
+
+---
+
 # 07 — Production Safety Checklist
 
 **Status:** Draft v0.1

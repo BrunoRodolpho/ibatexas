@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** M0-M4 (plumbing, LLM-path completion, Pack architecture, mutation-entrypoint governance, observability + audit + replay) and M6 (test coverage migration-grade) were completed via the work-arc that produced the IBX-IGE v3.0 always-on cutover (`f3bea43`). M5 (shadow-mode rollout), M7 (tier 1+2 enforce), and M8 (tier 3+4 enforce) were abandoned — the cutover replaced staged rollout with always-on. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # 02 — Milestones (M0–M8)
 
 **Status:** Draft v0.1

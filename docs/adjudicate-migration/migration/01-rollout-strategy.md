@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** The three-track rollout plan (plumbing → coverage → shadow→enforce sequencing) below assumed env-var-gated kernel enforcement, kill switches, and per-intent shadow-to-enforce flips. All of that was deleted by the IBX-IGE v3.0 always-on cutover (`f3bea43`). Per `CLAUDE.md` rule #9, the kernel is always authoritative — there is no rollout phase. For current operator surface, see `docs/ops/runbooks/kernel-operations.md`. Content preserved unchanged below as historical record.
+
+---
+
 # 01 — Rollout Strategy
 
 **Status:** Draft v0.1 — pending stakeholder review

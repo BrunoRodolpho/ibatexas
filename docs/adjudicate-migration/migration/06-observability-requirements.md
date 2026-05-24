@@ -1,3 +1,7 @@
+> **NOTE — load-bearing metric contract with stale rollout framing.** The six contract metrics (`kernel_decision_total`, `kernel_decision_duration_seconds`, `kernel_refusal_total`, `kernel_shadow_divergence_total`, `kernel_defer_pending_gauge`, `kernel_audit_lag_seconds`) below are still emitted from `apps/api/src/plugins/kernel-metrics-sink.ts` — each carries a `verified at` line pointing to the registration site, and this doc remains the contract-of-record for metric names and label sets. **Exception:** `kernel_shadow_divergence_total` is registered but unused post-cutover (the always-on kernel has no shadow path). The "before enforce flip" gating language throughout this doc references a deleted rollout framework; read it as production-safety guidance rather than as a gate. See `README.md` in this directory for full classification.
+
+---
+
 # 06 — Observability Requirements
 
 **Status:** Reconciled v0.2 (W3 correctness wave)
