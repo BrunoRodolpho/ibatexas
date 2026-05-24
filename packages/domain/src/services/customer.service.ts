@@ -879,6 +879,30 @@ export async function anonymizeCustomer(customerId: string) {
         where: { customerId },
         data: { customerId: null },
       })
+
+      // (9) Surface 4: OrderStatusHistory.actorId — null-out where the
+      // actor was the customer. The schema does NOT declare actorId as
+      // a Prisma relation (it's a raw String column that can reference
+      // Staff OR Customer, discriminated by the `actor` enum). The
+      // SYNTHESIS recommendation: filter on `actor = "customer"` AND
+      // `actorId = customerId` before nulling so we don't accidentally
+      // null Staff actor references for actions on this customer's orders.
+      await tx.orderStatusHistory.updateMany({
+        where: { actor: "customer", actorId: customerId },
+        data: { actorId: null },
+      })
+
+      // (10) Surface 5: OrderEventLog.payload — full-replace JSON for
+      // every row whose orderId belongs to this customer. The heavy path
+      // above already scrubbed bulk rows; this cleanup pass catches any
+      // events written during batching. OrderEventLog has NO customer FK
+      // — the link is via orderId → OrderProjection.customerId.
+      if (customerOrderIds.length > 0) {
+        await tx.orderEventLog.updateMany({
+          where: { orderId: { in: customerOrderIds } },
+          data: { payload: { anonymized: true } },
+        })
+      }
     },
     {
       timeout: ANONYMIZE_TX_TIMEOUT_MS,
