@@ -276,13 +276,16 @@ describe("detectMedusaIntentKind", () => {
 // ── MEDUSA_INTENT_KINDS sanity check ────────────────────────────────────
 
 describe("MEDUSA_INTENT_KINDS", () => {
-  it("exposes the 17 mapped kinds plus medusa.unknown", () => {
+  it("exposes the 18 mapped kinds plus medusa.unknown", () => {
     // P0-X9 follow-up added medusa.admin.product.update +
     // medusa.payment_session.create to the union → 16 total.
     // W7-P6 added medusa.admin.order.edit.items.remove (DELETE shape) +
     // medusa.admin.order.capture_payment → 18 total.
-    expect(MEDUSA_INTENT_KINDS).toHaveLength(18)
-    expect(new Set(MEDUSA_INTENT_KINDS).size).toBe(18)
+    // audit-2026-05-24 H3 Wave-B added medusa.admin.customer.update (POST
+    // /admin/customers/:id, for the LGPD cross-DB compensation chain)
+    // → 19 total.
+    expect(MEDUSA_INTENT_KINDS).toHaveLength(19)
+    expect(new Set(MEDUSA_INTENT_KINDS).size).toBe(19)
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.unknown")
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.product.update")
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.payment_session.create")
@@ -290,6 +293,7 @@ describe("MEDUSA_INTENT_KINDS", () => {
       "medusa.admin.order.edit.items.remove",
     )
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.order.capture_payment")
+    expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.customer.update")
   })
 })
 
