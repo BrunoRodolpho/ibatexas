@@ -170,6 +170,25 @@ export {
   type StripeAdjudicatedArgs,
 } from "./stripe/adjudicated.js"
 
+// ── Twilio SDK wrapper (audit-2026-05-23) ─────────────────────────────────────
+// Kernel-gated wrapper around `twilio.messages.create`. Closes the
+// gate-blind 2× direct send in `apps/api/src/whatsapp/client.ts:132,204`
+// surfaced by the 2026-05-23 coverage audit. Apps should import
+// `twilioAdjudicated` from `@ibatexas/tools`.
+export {
+  twilioAdjudicated,
+  twilioWrapperPolicyBundle,
+  TWILIO_INTENT_KINDS,
+  TwilioAdjudicateRefusedError,
+  TwilioAdjudicateDeferredError,
+  TwilioAdjudicateNeedsReviewError,
+  type TwilioIntentKind,
+  type TwilioWrapperState,
+  type TwilioMessageSendPayload,
+  type TwilioAdjudicatedMeta,
+  type TwilioClientLike,
+} from "./twilio/adjudicated.js"
+
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"
 

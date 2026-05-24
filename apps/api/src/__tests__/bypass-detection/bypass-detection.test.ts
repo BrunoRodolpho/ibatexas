@@ -837,16 +837,26 @@ const EXECUTE_RAW_SCAN_DIRS = [
 
 /**
  * Direct `twilio.messages.create` / Twilio SDK send. WhatsApp messaging
- * should go through `whatsappPack` adjudication for pt-BR validation,
- * rate limiting, and audit. The OTP path uses Twilio Verify (a different
- * surface) which is allowed.
+ * should go through `twilioAdjudicated.messages.create()` (kernel-gated
+ * egress wrapper in `@ibatexas/tools`) so each send produces an audit
+ * record and the inline policy bundle governs egress. The OTP path uses
+ * Twilio Verify (a different surface — `verifications.create` /
+ * `verificationChecks.create`) which is filtered out by the test below.
  *
- * Allow-list: WhatsApp Pack + admin/auth OTP modules.
+ * Allow-list: the wrapper itself.
+ *
+ * ── audit-2026-05-23 ─────────────────────────────────────────────────
+ * The previous allowlist referenced `apps/api/src/whatsapp/sender.ts`
+ * which never existed on disk (a real `packages/tools/src/whatsapp/
+ * sender.ts` exists but is just a DI seam — no `messages.create`).
+ * The 2× `messages.create` in `apps/api/src/whatsapp/client.ts` are
+ * now routed through `twilioAdjudicated`; the scan covers
+ * `apps/api/src/whatsapp` so any future regression at the bare-SDK
+ * level surfaces. The wrapper file is the only legitimate site.
  */
 const ALLOWED_TWILIO_MESSAGES = new Set<string>([
-  // Twilio SDK wrapper modules (the only legitimate clients).
-  "apps/api/src/whatsapp/sender.ts",
-  "apps/api/src/whatsapp/init.ts",
+  // The kernel-gated wrapper itself (audit-2026-05-23).
+  "packages/tools/src/twilio/adjudicated.ts",
 ])
 
 const FORBIDDEN_TWILIO_MESSAGES = [
@@ -857,6 +867,7 @@ const TWILIO_SCAN_DIRS = [
   "apps/api/src/routes",
   "apps/api/src/subscribers",
   "apps/api/src/jobs",
+  "apps/api/src/whatsapp",
   "packages/tools/src",
 ]
 
@@ -950,6 +961,11 @@ describe("Bypass detection — W6-8 extension: direct twilio.messages.create out
         if (/verificationChecks?\.create/.test(t)) return false
         // Medusa workflow messages — out of scope.
         if (/inboxMessages|workflowMessages/.test(t)) return false
+        // audit-2026-05-23: `twilioAdjudicated.messages.create(...)` is
+        // the kernel-gated wrapper call — that IS the legitimate egress
+        // path. Only bare-SDK `client.messages.create` / `twilio.messages.create`
+        // counts as a bypass.
+        if (/twilioAdjudicated\.messages\.create/.test(t)) return false
         return true
       })
       if (real.length > 0) {
@@ -957,7 +973,7 @@ describe("Bypass detection — W6-8 extension: direct twilio.messages.create out
           .map((o) => `  • ${o.file}:${o.line}  →  ${o.text}`)
           .join("\n")
         throw new Error(
-          `Direct twilio.messages.create detected outside the WhatsApp Pack allow-list — route WhatsApp sends through whatsappPack adjudication.\n\nOffenders (${real.length}):\n${lines}`,
+          `Direct twilio.messages.create detected outside the WhatsApp Pack allow-list — route WhatsApp sends through twilioAdjudicated.messages.create() in @ibatexas/tools.\n\nOffenders (${real.length}):\n${lines}`,
         )
       }
       expect(real).toEqual([])

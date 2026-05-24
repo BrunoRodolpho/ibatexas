@@ -801,6 +801,9 @@ importers:
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../nats-client
+      '@ibatexas/pack-customer-onboarding':
+        specifier: workspace:*
+        version: link:../pack-customer-onboarding
       '@ibatexas/pack-orders':
         specifier: workspace:*
         version: link:../pack-orders
@@ -816,6 +819,9 @@ importers:
       stripe:
         specifier: ^20.4.1
         version: 20.4.1(@types/node@22.19.15)
+      twilio:
+        specifier: ^5.13.0
+        version: 5.13.1
       typesense:
         specifier: ^1.8.2
         version: 1.8.2(@babel/runtime@7.29.2)
