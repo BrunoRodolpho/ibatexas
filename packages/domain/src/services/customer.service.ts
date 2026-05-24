@@ -708,6 +708,33 @@ export async function anonymizeCustomer(customerId: string) {
         where: { customerId },
         data: { customerId: null },
       })
+
+      // ── audit-2026-05-24 H3 wave-a1 — scope expansion (surfaces 1-7) ──
+      //
+      // The original 4-surface scrub (Customer + Address + CustomerPreferences
+      // + Review) above leaves PII in 7 other in-process tables. SYNTHESIS
+      // §G2 picks: full-replace JSON for shipping/payload, placeholder for
+      // chat content, null-out for scalars + soft FKs, sentinel substitute
+      // where UNIQUE / NOT NULL constraints block null. See
+      // docs/adjudicate-migration/audit-2026-05-24/tasks/h3-investigation/SYNTHESIS.md
+      //
+      // Heavy-customer paths (ConversationMessage + OrderEventLog) are
+      // pre-batched OUTSIDE this transaction (see "Heavy path" block above
+      // the tx) to avoid holding locks for the duration of multi-thousand-
+      // row updates. The in-tx updateMany below acts as the cleanup pass.
+
+      // (6) Surface 1: OrderProjection — scrub denormalized customer fields
+      // + full-replace shipping address JSON. customerId stays (FK SetNull
+      // semantics; the row stays linked to the anonymized Customer).
+      await tx.orderProjection.updateMany({
+        where: { customerId },
+        data: {
+          customerEmail: null,
+          customerName: null,
+          customerPhone: null,
+          shippingAddressJson: { anonymized: true },
+        },
+      })
     },
     {
       timeout: ANONYMIZE_TX_TIMEOUT_MS,

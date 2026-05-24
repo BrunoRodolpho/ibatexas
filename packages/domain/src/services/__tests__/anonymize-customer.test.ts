@@ -29,6 +29,21 @@ const mockReviewCount = vi.hoisted(() => vi.fn())
 const mockReviewFindMany = vi.hoisted(() => vi.fn())
 const mockReviewUpdateManyOuter = vi.hoisted(() => vi.fn())
 const mockTransaction = vi.hoisted(() => vi.fn())
+// audit-2026-05-24 H3 wave-a1 — scope-expansion mocks (7 new surfaces)
+const mockOrderProjectionUpdateMany = vi.hoisted(() => vi.fn())
+const mockOrderProjectionFindManyOuter = vi.hoisted(() => vi.fn())
+const mockConversationMessageUpdateMany = vi.hoisted(() => vi.fn())
+const mockConversationMessageUpdateManyOuter = vi.hoisted(() => vi.fn())
+const mockConversationFindManyOuter = vi.hoisted(() => vi.fn())
+const mockConversationMessageCount = vi.hoisted(() => vi.fn())
+const mockConversationUpdateMany = vi.hoisted(() => vi.fn())
+const mockOrderStatusHistoryUpdateMany = vi.hoisted(() => vi.fn())
+const mockOrderEventLogUpdateMany = vi.hoisted(() => vi.fn())
+const mockOrderEventLogUpdateManyOuter = vi.hoisted(() => vi.fn())
+const mockOrderEventLogCount = vi.hoisted(() => vi.fn())
+const mockOrderEventLogFindManyOuter = vi.hoisted(() => vi.fn())
+const mockLoyaltyAccountUpdateMany = vi.hoisted(() => vi.fn())
+const mockReservationUpdateMany = vi.hoisted(() => vi.fn())
 
 const txClient = {
   customer: { update: mockCustomerUpdate },
@@ -36,6 +51,13 @@ const txClient = {
   customerPreferences: { deleteMany: mockPreferencesDeleteMany },
   review: { updateMany: mockReviewUpdateMany },
   customerOrderItem: { updateMany: mockCustomerOrderItemUpdateMany },
+  orderProjection: { updateMany: mockOrderProjectionUpdateMany },
+  conversationMessage: { updateMany: mockConversationMessageUpdateMany },
+  conversation: { updateMany: mockConversationUpdateMany },
+  orderStatusHistory: { updateMany: mockOrderStatusHistoryUpdateMany },
+  orderEventLog: { updateMany: mockOrderEventLogUpdateMany },
+  loyaltyAccount: { updateMany: mockLoyaltyAccountUpdateMany },
+  reservation: { updateMany: mockReservationUpdateMany },
 }
 
 vi.mock("../../client.js", () => ({
@@ -54,6 +76,18 @@ vi.mock("../../client.js", () => ({
       updateMany: mockReviewUpdateManyOuter,
     },
     customerOrderItem: { updateMany: mockCustomerOrderItemUpdateMany },
+    // Outer (pre-tx) surfaces used by the H3 wave-a1 heavy-path batching.
+    orderProjection: { findMany: mockOrderProjectionFindManyOuter },
+    conversationMessage: {
+      count: mockConversationMessageCount,
+      updateMany: mockConversationMessageUpdateManyOuter,
+    },
+    conversation: { findMany: mockConversationFindManyOuter },
+    orderEventLog: {
+      count: mockOrderEventLogCount,
+      findMany: mockOrderEventLogFindManyOuter,
+      updateMany: mockOrderEventLogUpdateManyOuter,
+    },
   },
 }))
 
@@ -76,6 +110,23 @@ describe("anonymizeCustomer — W4 P0-13 LGPD completeness", () => {
     mockReviewCount.mockResolvedValue(0)
     mockReviewFindMany.mockResolvedValue([])
     mockReviewUpdateManyOuter.mockResolvedValue({ count: 0 })
+    // H3 wave-a1: default tx-client mocks (light path, no new-surface data)
+    mockOrderProjectionUpdateMany.mockResolvedValue({ count: 0 })
+    mockConversationMessageUpdateMany.mockResolvedValue({ count: 0 })
+    mockConversationUpdateMany.mockResolvedValue({ count: 0 })
+    mockOrderStatusHistoryUpdateMany.mockResolvedValue({ count: 0 })
+    mockOrderEventLogUpdateMany.mockResolvedValue({ count: 0 })
+    mockLoyaltyAccountUpdateMany.mockResolvedValue({ count: 0 })
+    mockReservationUpdateMany.mockResolvedValue({ count: 0 })
+    // H3 wave-a1: default outer mocks (light path — count below threshold,
+    // no batching activity).
+    mockOrderProjectionFindManyOuter.mockResolvedValue([])
+    mockConversationFindManyOuter.mockResolvedValue([])
+    mockConversationMessageCount.mockResolvedValue(0)
+    mockConversationMessageUpdateManyOuter.mockResolvedValue({ count: 0 })
+    mockOrderEventLogCount.mockResolvedValue(0)
+    mockOrderEventLogFindManyOuter.mockResolvedValue([])
+    mockOrderEventLogUpdateManyOuter.mockResolvedValue({ count: 0 })
     // Default: $transaction runs the inner function inline (legacy behavior).
     // Heavy-path tests override to inspect options.
     mockTransaction.mockImplementation(
@@ -223,6 +274,23 @@ describe("anonymizeCustomer — NEW-P0-X7 transaction timeout + batching", () =>
     mockReviewCount.mockResolvedValue(0)
     mockReviewFindMany.mockResolvedValue([])
     mockReviewUpdateManyOuter.mockResolvedValue({ count: 0 })
+    // H3 wave-a1: default tx-client mocks (light path, no new-surface data)
+    mockOrderProjectionUpdateMany.mockResolvedValue({ count: 0 })
+    mockConversationMessageUpdateMany.mockResolvedValue({ count: 0 })
+    mockConversationUpdateMany.mockResolvedValue({ count: 0 })
+    mockOrderStatusHistoryUpdateMany.mockResolvedValue({ count: 0 })
+    mockOrderEventLogUpdateMany.mockResolvedValue({ count: 0 })
+    mockLoyaltyAccountUpdateMany.mockResolvedValue({ count: 0 })
+    mockReservationUpdateMany.mockResolvedValue({ count: 0 })
+    // H3 wave-a1: default outer mocks (light path — count below threshold,
+    // no batching activity).
+    mockOrderProjectionFindManyOuter.mockResolvedValue([])
+    mockConversationFindManyOuter.mockResolvedValue([])
+    mockConversationMessageCount.mockResolvedValue(0)
+    mockConversationMessageUpdateManyOuter.mockResolvedValue({ count: 0 })
+    mockOrderEventLogCount.mockResolvedValue(0)
+    mockOrderEventLogFindManyOuter.mockResolvedValue([])
+    mockOrderEventLogUpdateManyOuter.mockResolvedValue({ count: 0 })
     mockTransaction.mockImplementation(
       async (fn: (tx: typeof txClient) => Promise<unknown>) => fn(txClient),
     )
