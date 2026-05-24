@@ -1,7 +1,7 @@
 # Post-R3 closeout status — 2026-05-24 evening
 
-**Branch:** `feat/kernel-always-on-cutover` @ `8ea3795` (post-P2-4)
-**Upstream divergence:** all commits through `1dec1a0` already on origin; `8ea3795` (P2-4) is the first post-push commit. 1 commit behind `origin/main` (merge of dev → main during the audit-2026-05-24 sweep) — branch-push not affected.
+**Branch:** `feat/kernel-always-on-cutover` @ `654d337` (post-H2 + T2)
+**Upstream:** all commits through `654d337` on origin.
 **Method:** memory snapshot + live-code reconciliation against the [SYNTHESIS.md](./SYNTHESIS.md) baseline
 **Supersedes (in part):** "Outstanding items" section of `[[project-ibatexas-adjudicate-migration]]` memory entry as of mid-2026-05-24
 
@@ -16,10 +16,10 @@ The audit-2026-05-24 adversarial sweep produced **9 P0 + 8 P1 + 8 P2** findings.
 - **9 / 9 P0** closed in code (P0-4 wrapper auditSink and P0-9 LGPD scope have epic-track residue — see below)
 - **8 / 8 P1** closed in code
 - **8 / 8 P2** closed (P2-1, P2-2, P2-3, P2-4, P2-5, P2-6, P2-7, P2-8)
-- **5 / 7 hardening conformance suites** landed (T1, T3, T5, T6, T7); **2 still open** (T2 AuditSink wrapper-call — blocked on H2; T4 LGPD scrub — blocked on H3)
+- **6 / 7 hardening conformance suites** landed (T1, T2, T3, T5, T6, T7); **1 still open** (T4 LGPD scrub — blocked on H3)
 
-**Two epic-track items remain:**
-- **H2** — wrapper `auditSink` dep-cycle. User picked **A1 (pure builder + boot-time DI)** + **Include scope (28 sites)** on 2026-05-24 evening. Ready to re-dispatch.
+**Epic-track status:**
+- **H2** — ✅ CLOSED. New `@ibatexas/audit-sink` leaf package + boot-time DI + all 28 wrapper-call sites + T2 conformance landed at `654d337`. 1196 tests pass across 4 packages.
 - **H3** — LGPD anonymize scope expansion to 8 surfaces (incl. Medusa cross-DB). ~1-2d epic. Still gated on G2.
 
 **Surfaced during conformance work (NEW findings):**
@@ -57,6 +57,8 @@ The cutover claim "kernel is authoritative and audited" is now **TRUE for the or
 | P2-6 | Customer-intent-gateway: `actor.principal` forgery defense | `5531a95` |
 | P2-7 | Customer-intent-gateway: `taint: "TRUSTED"` forgery defense | `5531a95` |
 | P2-8 | Split `medusa.store.cart.{email,metadata}.update` taxonomy | `87c0474` |
+| P0-4 | H2 — `@ibatexas/audit-sink` leaf package + 28-site wrapper sweep + required `auditSink` meta | `a928370..654d337` (7 commits) |
+| T2 | AuditSink wrapper-call conformance suite (38 sites scanned, regression floor at 30) | `2b35eaf` |
 | T1 | NX-park static-import conformance suite | `6dda950` |
 | T3 | Per-intent-kind redactor conformance + 42-entry PII_FREE_KIND_ALLOWLIST | `5979b70` |
 | T5 | DEFER+resume integrity integration test | `6dda950` |
@@ -69,14 +71,25 @@ R3-1 surfaced **7 previously-unenumerated idempotency-key allowlist entries** (6
 
 ## Still open (post-R3)
 
-### H2 — Wrapper auditSink dep-cycle (P0-4 residue)
+### H2 — Wrapper auditSink dep-cycle (P0-4) — ✅ CLOSED
 
-**Status:** Architectural decision pending; first H2 dispatch found scope was 2× larger than originally enumerated AND the proposed "Option A" rested on a wrong premise (the AuditSink interface is already in `@adjudicate/audit`).
-**Corrected blast radius:** **28 wrapper-call sites** (not 14) silently skip audit emit — 26 in `packages/tools/src/cart/*` (incl. 7 in create-checkout, 9 in amend-order, 2 in reorder.ts, 1 in `_shared.ts:54` factory) + 2 in `apps/api/src/whatsapp/client.ts`. The 18 sites in `apps/api/src/routes/{cart, stripe-webhook, admin/products}.ts` plus 5 in order-actions.ts are already correctly threading `auditSink`.
-**Architectural reality:** `AuditSink` interface lives in `@adjudicate/audit` (registry leaf — no extraction needed). `getAuditSink()` lives in `packages/llm-provider/src/intent-audit-wiring.ts` with load-bearing deps on `@ibatexas/tools` (Redis), `@ibatexas/domain` (Prisma), and `@ibatexas/nats-client`. A naïve extract creates the inverse cycle.
-**Three real sub-options (G1):** **A1** pure builder + boot-time DI / **A2** adapters move with leaf + type-only imports / **A3** thin interface leaf + app-side registration (recommended). See task file.
-**Scope sub-decision:** include or exclude `reorder.ts` (2 sites) + `_shared.ts:54` factory wire (1 site). Default: include.
-**Task file:** [tasks/h2-wrapper-audit-sink-architecture.md](./tasks/h2-wrapper-audit-sink-architecture.md) — updated 2026-05-24 evening with corrected scope + 3 sub-options.
+**Closed:** `a928370..654d337` (7 commits, 2026-05-24 evening). Sub-option **A1** (pure builder + boot-time DI) per G1 user decision.
+
+**What landed:**
+- New `@ibatexas/audit-sink` leaf package (`a928370`) — re-exports `AuditSink` from `@adjudicate/audit`, exports `__setAuditSinkDependencies({redisClient, prismaWriter, natsPublisher, logger})` + `getAuditSink()`. Fail-closed via `AuditSinkNotInitializedError` if `getAuditSink()` is called before registration.
+- Sink construction moved into leaf (`74181f9`); legacy `_setAuditSinkDependencies` shim preserved in `intent-audit-wiring.ts` so 18 pre-existing tests pass unmodified.
+- Boot wiring at `apps/api/src/audit-sink-bootstrap.ts` (`5aa7047`) — called from server start before kernel/wrapper paths can execute.
+- `auditSink` REQUIRED on all 4 wrapper meta types (`a63305c`); conditional `if (meta.auditSink)` guards removed — emit is mandatory.
+- All 28 wrapper-call sites pass `auditSink: getAuditSink()` (`8e3847d`). T2 conformance suite walks 38 sites total (regression floor at 30).
+- T2 conformance + bypass-detection cleanup (`2b35eaf`, `654d337`).
+
+**Verified test counts:** audit-sink 11/11, llm-provider 443/443, tools 680/680, api audit-2026-05-24 + bypass-detection 62/62 = **1196 tests pass**.
+
+**Surprises during H2:**
+- `multiSink` in `@adjudicate/audit` v1.0.1 is strict by default — postgres-sink errors propagate. Buffered sink + spill handle this; H2 leaf is fail-open at the IbateXas boundary.
+- `packages/tools` had no `vitest.config.ts` — added with no-op leaf wiring at `src/__tests__/setup.ts` so tests don't hit the fail-closed leaf.
+- The `_shared.ts:54` `createTooledOrderService` factory wire was tractable — no cascade into `@ibatexas/domain`.
+- JSDoc inline-comment trap in `bypass-detection.test.ts` required a small `noopPrismaWriter` rewrite (closed by `654d337`).
 
 ### H3 — LGPD anonymize scope expansion (P0-9)
 
@@ -105,16 +118,12 @@ R3-1 surfaced **7 previously-unenumerated idempotency-key allowlist entries** (6
 | Workspace `dist/`-build requirement for cross-package tests | `packages/tools/` (172 pre-existing typecheck errors), `packages/llm-provider/` (78 pre-existing typecheck errors), `apps/api/` cross-package tests | Polish-A + P2-8 v2 | Source-imports-from-dist pattern means each package must be built before consumers can type-check or test against it. Forced both agents to either skip cross-package tests OR run `pnpm -F <pkg> build` (allowed only when scope-minimal). Workspace ergonomics — worth considering a `tsc --build` orchestration or source-imports config. |
 | Possible documentation correction in P2-8 task file premise | `docs/adjudicate-migration/audit-2026-05-24/tasks/p2-remaining-polish.md` §"P2-8" | P2-8 v2 | Task file claimed "the existing `medusa.store.cart.email.update` rule stays" — no such rule existed. Also instructed "add per-kind rule" — but `medusa.store.*` is by-design outside `KNOWN_INTENT_KINDS` (W5-7 / D10 policy at `packages/llm-provider/src/intent-kinds.ts:30-38`), so the correct call is to leave audit-redactor untouched. Future task files for the medusa namespace should reflect this. |
 
-### Hardening conformance — 4 suites remaining
+### Hardening conformance — 1 suite remaining (T4)
 
-| Suite | Purpose | Notes |
+| Suite | Purpose | Status |
 |---|---|---|
-| T2 | AuditSink wrapper-call conformance — assert every wrapper-call passes `auditSink` | Blocked on H2 — pointless until the dep-cycle resolves and wrappers can require the sink |
-| T3 | Per-intent-kind redactor conformance — for each kind in `KNOWN_INTENT_KINDS`, either a per-kind rule exists OR the payload is provably PII-free | ~2-3h |
-| T4 | LGPD scrub conformance — snapshot every table reachable from customerId; post-anonymize zero rows match the pre-anonymize PII fixtures | Blocked on H3 — useless before scope expansion lands |
-| T6 | Sweeper-resolver race regression test — schedule both within 50ms; assert at most one mutation fires | ~1-2h |
+| T4 | LGPD scrub conformance — snapshot every table reachable from customerId; post-anonymize zero rows match the pre-anonymize PII fixtures | 🚧 Blocked on H3; will be bundled with the H3 epic sub-agent |
 
-**Total ~3-5h for T3 + T6** (the only two unblocked).
 **Task file:** [tasks/hardening-conformance-followup.md](./tasks/hardening-conformance-followup.md)
 
 ### F2 — `kernel.intent_dispatched` basis code (sibling repo)
