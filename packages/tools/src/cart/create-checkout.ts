@@ -10,6 +10,7 @@
 import type Stripe from "stripe";
 import { CreateCheckoutInputSchema, NonRetryableError, formatOrderId, type CreateCheckoutInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { reaisToCentavos } from "../medusa/client.js";
 import { loadSchedule } from "../cache/schedule-cache.js";
 import { getAndConsumeWelcomeCredit } from "../intelligence/welcome-credit.js";
@@ -84,6 +85,7 @@ async function confirmPixAndGetQrCode(
       {
         sourceSubject: `tool:create-checkout:confirmPixAndGetQrCode:${customerId ?? "anon"}`,
         idempotencyKey: `pix-confirm:${paymentIntentId}`,
+        auditSink: getAuditSink(),
       },
     ) as Stripe.PaymentIntent & {
       next_action?: {
@@ -122,6 +124,7 @@ async function confirmPixAndGetQrCode(
         {
           sourceSubject: `tool:create-checkout:setCartIdMetadata:${customerId ?? "anon"}`,
           idempotencyKey: `pi-meta:cart:${paymentIntentId}:${cartId}`,
+          auditSink: getAuditSink(),
         },
       );
     } catch (err) {
@@ -197,6 +200,7 @@ export async function createCheckout(
           {
             sourceSubject: "cart:create-checkout:apply-promotion",
             actorPrincipal: "llm",
+            auditSink: getAuditSink(),
             ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
             ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
           },
@@ -237,6 +241,7 @@ export async function createCheckout(
     {
       sourceSubject: "cart:create-checkout:update-email",
       actorPrincipal: "llm",
+      auditSink: getAuditSink(),
       ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
       ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     },
@@ -263,6 +268,7 @@ export async function createCheckout(
       {
         sourceSubject: "cart:create-checkout:create-payment-collection",
         actorPrincipal: "llm",
+        auditSink: getAuditSink(),
         ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
         ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
       },
@@ -309,6 +315,7 @@ export async function createCheckout(
     {
       sourceSubject: "cart:create-checkout:create-payment-session",
       actorPrincipal: "llm",
+      auditSink: getAuditSink(),
       ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
       ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
     },
@@ -351,6 +358,7 @@ export async function createCheckout(
       {
         sourceSubject: "cart:create-checkout:complete",
         actorPrincipal: "llm",
+        auditSink: getAuditSink(),
         ...(ctx.customerId ? { customerId: ctx.customerId } : {}),
         ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
       },

@@ -12,6 +12,7 @@
 
 import { ReorderInputSchema, NonRetryableError, type ReorderInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { withOrderOwnership } from "../guards/with-ownership.js";
 import { medusaAdjudicated } from "../medusa/adjudicated.js";
 import { medusaAdminFetch } from "./_shared.js";
@@ -45,6 +46,7 @@ async function reorderImpl(
     path: "/store/carts",
     payload: { customer_id: ctx.customerId },
     sourceSubject: "tool:reorder",
+    auditSink: getAuditSink(),
   });
 
   const cartId = cartData.cart?.id;
@@ -63,6 +65,7 @@ async function reorderImpl(
         path: `/store/carts/${cartId}/line-items`,
         payload: { variant_id: item.variant_id, quantity: item.quantity },
         sourceSubject: "tool:reorder",
+        auditSink: getAuditSink(),
       });
     } catch {
       errors.push(item.title);

@@ -1,6 +1,7 @@
 // apply_coupon tool — apply a promotion code to the Medusa cart
 
 import { ApplyCouponInputSchema, type ApplyCouponInput, type AgentContext } from "@ibatexas/types";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   medusaStoreAdjudicated,
   MedusaStoreAdjudicateRefusedError,
@@ -19,6 +20,7 @@ export async function applyCoupon(
       {
         sourceSubject: "cart:apply-coupon",
         actorPrincipal: "llm",
+        auditSink: getAuditSink(),
         ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
         sessionId: ctx.sessionId,
       },

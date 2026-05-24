@@ -2,6 +2,7 @@
 
 import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { MedusaRequestError } from "../medusa/client.js";
 import {
   medusaStoreAdjudicated,
@@ -63,6 +64,7 @@ export async function addToCart(
       {
         sourceSubject: "cart:add-to-cart",
         actorPrincipal: "llm",
+        auditSink: getAuditSink(),
         ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
         sessionId: ctx.sessionId,
       },

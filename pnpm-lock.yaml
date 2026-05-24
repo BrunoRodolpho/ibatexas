@@ -823,6 +823,9 @@ importers:
       '@adjudicate/primitives':
         specifier: ^0.1.1
         version: 0.1.1
+      '@ibatexas/audit-sink':
+        specifier: workspace:*
+        version: link:../audit-sink
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain

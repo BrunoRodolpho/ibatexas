@@ -63,6 +63,14 @@ function createMemoryAuditSink(): {
   return { sink, records }
 }
 
+// audit-2026-05-24 H2 (A1): `auditSink` is required on wrapper meta.
+// Tests that don't assert on emit behaviour pass an explicit no-op sink.
+const noopAuditSink: AuditSink = {
+  async emit() {
+    /* no-op */
+  },
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
@@ -153,7 +161,7 @@ describe("medusaStoreAdjudicated.carts.lineItems.add — EXECUTE", () => {
         quantity: 1,
         metadata: { note: "extra spicy" },
       },
-      { sourceSubject: "tool:add_to_cart" },
+      { sourceSubject: "tool:add_to_cart", auditSink: noopAuditSink },
     )
 
     expect(calls).toHaveLength(1)
@@ -226,7 +234,7 @@ describe("medusaStoreAdjudicated.paymentCollections.paymentSessions.create — E
 
     await medusaStoreAdjudicated.paymentCollections.paymentSessions.create(
       { paymentCollectionId: "pcol_01", providerId: "pp_stripe_stripe" },
-      { sourceSubject: "tool:create_checkout" },
+      { sourceSubject: "tool:create_checkout", auditSink: noopAuditSink },
     )
 
     expect(calls).toHaveLength(1)
@@ -247,7 +255,7 @@ describe("medusaStoreAdjudicated — additional EXECUTE paths", () => {
 
     await medusaStoreAdjudicated.carts.lineItems.update(
       { cartId: "cart_01", itemId: "li_42", quantity: 3 },
-      { sourceSubject: "tool:update_cart" },
+      { sourceSubject: "tool:update_cart", auditSink: noopAuditSink },
     )
 
     expect(calls[0]!.path).toBe("/store/carts/cart_01/line-items/li_42")
@@ -261,7 +269,7 @@ describe("medusaStoreAdjudicated — additional EXECUTE paths", () => {
 
     await medusaStoreAdjudicated.carts.lineItems.remove(
       { cartId: "cart_01", itemId: "li_42" },
-      { sourceSubject: "tool:remove_from_cart" },
+      { sourceSubject: "tool:remove_from_cart", auditSink: noopAuditSink },
     )
 
     expect(calls[0]!.path).toBe("/store/carts/cart_01/line-items/li_42")
@@ -275,7 +283,7 @@ describe("medusaStoreAdjudicated — additional EXECUTE paths", () => {
 
     await medusaStoreAdjudicated.carts.promotions.add(
       { cartId: "cart_01", promoCodes: ["WELCOME10", "FRETE_FREE"] },
-      { sourceSubject: "tool:apply_coupon" },
+      { sourceSubject: "tool:apply_coupon", auditSink: noopAuditSink },
     )
 
     expect(calls[0]!.path).toBe("/store/carts/cart_01/promotions")
@@ -291,7 +299,7 @@ describe("medusaStoreAdjudicated — additional EXECUTE paths", () => {
 
     const result = await medusaStoreAdjudicated.carts.create(
       { body: { region_id: "reg_01" } },
-      { sourceSubject: "tool:get_or_create_cart" },
+      { sourceSubject: "tool:get_or_create_cart", auditSink: noopAuditSink },
     )
 
     expect(result).toEqual({ cart: { id: "cart_new" } })
@@ -308,7 +316,7 @@ describe("medusaStoreAdjudicated — additional EXECUTE paths", () => {
 
     await medusaStoreAdjudicated.carts.update(
       { cartId: "cart_01", body: { email: "customer@example.com" } },
-      { sourceSubject: "tool:create_checkout" },
+      { sourceSubject: "tool:create_checkout", auditSink: noopAuditSink },
     )
 
     expect(calls[0]!.path).toBe("/store/carts/cart_01")
@@ -463,7 +471,7 @@ describe("medusaStoreAdjudicated — REFUSE on invalid payload", () => {
     try {
       await medusaStoreAdjudicated.carts.lineItems.add(
         { cartId: "cart_01", variantId: "   ", quantity: 1 },
-        { sourceSubject: "tool:add_to_cart" },
+        { sourceSubject: "tool:add_to_cart", auditSink: noopAuditSink },
       )
     } catch (err) {
       captured = err as MedusaStoreAdjudicateRefusedError
@@ -481,7 +489,7 @@ describe("medusaStoreAdjudicated — REFUSE on invalid payload", () => {
     await expect(
       medusaStoreAdjudicated.carts.lineItems.update(
         { cartId: "cart_01", itemId: "", quantity: 1 },
-        { sourceSubject: "tool:update_cart" },
+        { sourceSubject: "tool:update_cart", auditSink: noopAuditSink },
       ),
     ).rejects.toMatchObject({ code: "medusa.store.payload.empty_item_id" })
 
@@ -495,7 +503,7 @@ describe("medusaStoreAdjudicated — REFUSE on invalid payload", () => {
     await expect(
       medusaStoreAdjudicated.carts.lineItems.remove(
         { cartId: "cart_01", itemId: "" },
-        { sourceSubject: "tool:remove_from_cart" },
+        { sourceSubject: "tool:remove_from_cart", auditSink: noopAuditSink },
       ),
     ).rejects.toMatchObject({ code: "medusa.store.payload.empty_item_id" })
 
@@ -509,7 +517,7 @@ describe("medusaStoreAdjudicated — REFUSE on invalid payload", () => {
     await expect(
       medusaStoreAdjudicated.carts.lineItems.add(
         { cartId: "cart_01", variantId: "var_42", quantity: 0 },
-        { sourceSubject: "tool:add_to_cart" },
+        { sourceSubject: "tool:add_to_cart", auditSink: noopAuditSink },
       ),
     ).rejects.toMatchObject({ code: "medusa.store.payload.invalid_quantity" })
 
@@ -523,7 +531,7 @@ describe("medusaStoreAdjudicated — REFUSE on invalid payload", () => {
     await expect(
       medusaStoreAdjudicated.paymentCollections.paymentSessions.create(
         { paymentCollectionId: "", providerId: "pp_stripe_stripe" },
-        { sourceSubject: "tool:create_checkout" },
+        { sourceSubject: "tool:create_checkout", auditSink: noopAuditSink },
       ),
     ).rejects.toMatchObject({
       code: "medusa.store.payload.empty_payment_collection_id",
@@ -539,7 +547,7 @@ describe("medusaStoreAdjudicated — REFUSE on invalid payload", () => {
     await expect(
       medusaStoreAdjudicated.carts.promotions.add(
         { cartId: "cart_01", promoCodes: [""] },
-        { sourceSubject: "tool:apply_coupon" },
+        { sourceSubject: "tool:apply_coupon", auditSink: noopAuditSink },
       ),
     ).rejects.toMatchObject({
       code: "medusa.store.payload.empty_promo_codes",
@@ -560,7 +568,7 @@ describe("medusaStoreAdjudicated — REFUSE refusal copy", () => {
     try {
       await medusaStoreAdjudicated.carts.lineItems.add(
         { cartId: "", variantId: "var_42", quantity: 1 },
-        { sourceSubject: "tool:add_to_cart" },
+        { sourceSubject: "tool:add_to_cart", auditSink: noopAuditSink },
       )
     } catch (err) {
       captured = err as MedusaStoreAdjudicateRefusedError
@@ -617,7 +625,7 @@ describe("medusaStoreAdjudicated — REWRITE forwarded to transport", () => {
 
     await medusaStoreAdjudicated.carts.lineItems.add(
       { cartId: "cart_01", variantId: "var_42", quantity: 5 },
-      { sourceSubject: "tool:add_to_cart" },
+      { sourceSubject: "tool:add_to_cart", auditSink: noopAuditSink },
     )
 
     expect(calls).toHaveLength(1)
@@ -745,7 +753,7 @@ describe("medusaStoreAdjudicated — audit fail-open", () => {
 
     const result = await medusaStoreAdjudicated.carts.lineItems.add(
       { cartId: "cart_01", variantId: "var_42", quantity: 1 },
-      { sourceSubject: "tool:add_to_cart" },
+      { sourceSubject: "tool:add_to_cart", auditSink: noopAuditSink },
     )
     expect(result).toEqual({ ok: true })
     expect(calls).toHaveLength(1)

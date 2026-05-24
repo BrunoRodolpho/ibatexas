@@ -15,17 +15,24 @@
 // so their order.service mutations silently bypassed the kernel. The
 // W8 closure (NEW-W7-V1) migrates them through this factory.
 //
-// Mirrors the wiring shape used at `apps/api/src/routes/stripe-webhook.ts:347`
-// (W7-P6 reference site). Audit sink is intentionally omitted because
-// `@ibatexas/tools` cannot depend on `@ibatexas/llm-provider` (which owns
-// `getAuditSink`) without creating a cycle. The wrapper's fail-open
-// posture applies (per packages/tools/src/medusa/adjudicated.ts:474-479):
-// the kernel still gates the call; audit emit is best-effort and skipped
-// when the sink is not injected. This is the same posture the other
-// cart-tool `medusaAdjudicated()` call sites already use (none of them
-// pass an audit sink either — see amend-order.ts:84, 228, 236, etc.).
+// ── audit-2026-05-24 H2 (A1) closure ──────────────────────────────────────
+//
+// Pre-H2 the audit sink slot was intentionally omitted here because
+// `@ibatexas/tools` could not depend on `@ibatexas/llm-provider` (which
+// owned `getAuditSink`) without creating a cycle. H2 (sub-option A1)
+// moved `getAuditSink` into the new leaf package `@ibatexas/audit-sink`
+// (zero runtime deps on tools / domain / nats-client / llm-provider),
+// closing the cycle. Every `medusaAdjudicated` call now passes
+// `auditSink: getAuditSink()` — including the one this factory closure
+// fans out to via `createOrderService.adminAdjudicated`.
+//
+// The factory's closure is the single seam through which the 6 mutating
+// medusa egresses in `packages/domain/src/services/order.service.ts`
+// reach the wrapper; adding the audit sink here means those 6 egresses
+// emit audit records without any cascade into the domain package.
 
 import { createOrderService, type OrderService } from "@ibatexas/domain"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import { medusaAdmin } from "../medusa/client.js"
 import { medusaAdjudicated } from "../medusa/adjudicated.js"
 
@@ -61,6 +68,11 @@ export function createTooledOrderService(
           ? { idempotencyKey: args.idempotencyKey }
           : {}),
         sourceSubject: `${sourceSubject}:${args.sourceSubject}`,
+        // audit-2026-05-24 H2 (A1): the leaf-package cycle break landed,
+        // so every medusa egress in order.service.ts now emits an audit
+        // record by contract. Same as the 28 wrapper-call sites the H2
+        // sweep covers.
+        auditSink: getAuditSink(),
       }),
   })
 }

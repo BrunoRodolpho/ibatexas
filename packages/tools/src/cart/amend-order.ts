@@ -33,6 +33,7 @@ import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
 import { AmendOrderInputSchema, NonRetryableError, canPerformAction, type AmendOrderInput, type AmendOrderResult, type AgentContext, type CustomerAction, type OrderFulfillmentStatus } from "@ibatexas/types";
 import { buildEnvelope } from "@adjudicate/core";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { createOrderQueryService, createPaymentQueryService, createPaymentCommandService, type OrderService, type PaymentCreatePayload, type PaymentStatusTransitionPayload } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdjudicated } from "../medusa/adjudicated.js";
@@ -75,6 +76,7 @@ async function regeneratePixIfNeeded(
     {
       sourceSubject: `tool:amend-order:regeneratePixIfNeeded:${sessionId}`,
       idempotencyKey: `amend:pix:${orderId}:${newTotal}`,
+      auditSink: getAuditSink(),
     },
   ) as Stripe.PaymentIntent & {
     next_action?: { pix_display_qr_code?: { data?: string; image_url_svg?: string } };
@@ -87,6 +89,7 @@ async function regeneratePixIfNeeded(
     path: `/admin/orders/${orderId}`,
     payload: { metadata: { stripePaymentIntentId: newPi.id } },
     sourceSubject: `tool:amend-order:${sessionId}`,
+    auditSink: getAuditSink(),
   });
 
   const pixData = newPi.next_action?.pix_display_qr_code;
@@ -231,6 +234,7 @@ export async function amendOrder(
         method: "POST",
         path: `/admin/orders/${parsed.orderId}/edits`,
         sourceSubject: `tool:amend-order:${ctx.customerId}`,
+        auditSink: getAuditSink(),
       });
       const editId = editData.order_edit.id;
 
@@ -240,6 +244,7 @@ export async function amendOrder(
         path: `/admin/orders/${parsed.orderId}/edits/${editId}/items`,
         payload: { variant_id: parsed.variantId, quantity: parsed.quantity ?? 1 },
         sourceSubject: `tool:amend-order:${ctx.customerId}`,
+        auditSink: getAuditSink(),
       });
 
       await medusaAdjudicated<undefined, unknown>({
@@ -247,6 +252,7 @@ export async function amendOrder(
         method: "POST",
         path: `/admin/orders/${parsed.orderId}/edits/${editId}/confirm`,
         sourceSubject: `tool:amend-order:${ctx.customerId}`,
+        auditSink: getAuditSink(),
       });
 
       const pixResult = await regeneratePixIfNeeded(
@@ -369,6 +375,7 @@ export async function amendOrder(
         method: "POST",
         path: `/admin/orders/${parsed.orderId}/edits`,
         sourceSubject: `tool:amend-order:${ctx.customerId}`,
+        auditSink: getAuditSink(),
       });
       const editId = editData.order_edit.id;
 
@@ -378,6 +385,7 @@ export async function amendOrder(
         path: `/admin/orders/${parsed.orderId}/edits/${editId}/items/${item.id}`,
         payload: { quantity: parsed.quantity },
         sourceSubject: `tool:amend-order:${ctx.customerId}`,
+        auditSink: getAuditSink(),
       });
 
       await medusaAdjudicated<undefined, unknown>({
@@ -385,6 +393,7 @@ export async function amendOrder(
         method: "POST",
         path: `/admin/orders/${parsed.orderId}/edits/${editId}/confirm`,
         sourceSubject: `tool:amend-order:${ctx.customerId}`,
+        auditSink: getAuditSink(),
       });
 
       const pixResult = await regeneratePixIfNeeded(
@@ -532,6 +541,7 @@ export async function amendOrder(
           {
             sourceSubject: `tool:amend-order:change_payment:${ctx.customerId}`,
             idempotencyKey: `amend:switch:${activePayment.id}:${parsed.paymentMethod}`,
+            auditSink: getAuditSink(),
           },
         ) as Stripe.PaymentIntent;
 

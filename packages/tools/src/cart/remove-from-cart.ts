@@ -1,6 +1,7 @@
 // remove_from_cart tool — delete a line item from the Medusa cart
 
 import { RemoveFromCartInputSchema, type RemoveFromCartInput, type AgentContext } from "@ibatexas/types";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   medusaStoreAdjudicated,
   MedusaStoreAdjudicateRefusedError,
@@ -22,6 +23,7 @@ export async function removeFromCart(
       {
         sourceSubject: "cart:remove-from-cart",
         actorPrincipal: "llm",
+        auditSink: getAuditSink(),
         ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
         sessionId: ctx.sessionId,
       },

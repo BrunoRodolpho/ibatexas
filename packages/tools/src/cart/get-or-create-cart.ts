@@ -12,6 +12,7 @@
 //   5. Store new cartId in Redis (24h TTL)
 
 import type { AgentContext } from "@ibatexas/types";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { reaisToCentavos } from "../medusa/client.js";
 import { medusaStoreAdjudicated } from "../medusa/store-adjudicated.js";
 import { getRedisClient } from "../redis/client.js";
@@ -139,6 +140,7 @@ export async function getOrCreateCart(
       {
         sourceSubject: "cart:get-or-create-cart",
         actorPrincipal: "llm",
+        auditSink: getAuditSink(),
         ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
         sessionId: ctx.sessionId,
       },

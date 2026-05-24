@@ -18,6 +18,7 @@ import {
   twilioAdjudicated,
   TwilioAdjudicateRefusedError,
 } from "@ibatexas/tools";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import logger from "../lib/logger.js";
 import { hashPhone } from "./session.js";
 
@@ -147,7 +148,11 @@ async function sendSingleMessage(to: string, body: string, hash: string): Promis
     try {
       await twilioAdjudicated.messages.create(
         { from, to, body },
-        { sourceSubject: "whatsapp:sendText", reason: "send-text" },
+        {
+          sourceSubject: "whatsapp:sendText",
+          reason: "send-text",
+          auditSink: getAuditSink(),
+        },
       );
       return;
     } catch (err) {
@@ -240,7 +245,11 @@ export async function sendMedia(to: string, mediaUrl: string, body?: string): Pr
           mediaUrl: [mediaUrl],
           ...(body ? { body } : {}),
         },
-        { sourceSubject: "whatsapp:sendMedia", reason: "send-media" },
+        {
+          sourceSubject: "whatsapp:sendMedia",
+          reason: "send-media",
+          auditSink: getAuditSink(),
+        },
       );
       logger.info({ phone_hash: hash, media_url: mediaUrl }, "[whatsapp.sendMedia]");
       return;

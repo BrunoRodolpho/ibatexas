@@ -11,6 +11,7 @@
 // surfaces) it remains exported until call-site migrations finish.
 
 import Stripe from "stripe"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import { stripeAdjudicated } from "../stripe/adjudicated.js"
 
 export function getStripe(): Stripe {
@@ -31,6 +32,7 @@ export async function cancelStalePaymentIntent(paymentIntentId: string): Promise
   try {
     await stripeAdjudicated.paymentIntents.cancel(paymentIntentId, {
       sourceSubject: "tool:cart-helpers:cancelStalePaymentIntent",
+      auditSink: getAuditSink(),
     })
   } catch (err: unknown) {
     const stripeErr = err as { code?: string }

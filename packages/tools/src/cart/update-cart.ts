@@ -1,6 +1,7 @@
 // update_cart tool — update a line item quantity in the Medusa cart
 
 import { UpdateCartInputSchema, type UpdateCartInput, type AgentContext } from "@ibatexas/types";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   medusaStoreAdjudicated,
   MedusaStoreAdjudicateRefusedError,
@@ -23,6 +24,7 @@ export async function updateCart(
       {
         sourceSubject: "cart:update-cart",
         actorPrincipal: "llm",
+        auditSink: getAuditSink(),
         ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
         sessionId: ctx.sessionId,
       },

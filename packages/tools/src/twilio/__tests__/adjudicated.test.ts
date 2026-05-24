@@ -60,6 +60,15 @@ function createMemoryAuditSink(): {
   return { sink, records }
 }
 
+// audit-2026-05-24 H2 (A1): `auditSink` is REQUIRED on wrapper meta.
+// Tests that don't assert on the emit record use this no-op sink so the
+// type checks pass without coupling the assertion to audit behaviour.
+const noopAuditSink: AuditSink = {
+  async emit() {
+    /* no-op */
+  },
+}
+
 beforeEach(() => {
   process.env["TWILIO_ACCOUNT_SID"] = "AC_test_dummy"
   process.env["TWILIO_AUTH_TOKEN"] = "auth_test_dummy"
@@ -159,7 +168,7 @@ describe("twilioAdjudicated.messages.create — EXECUTE", () => {
         body: "Seu recibo:",
         mediaUrl: ["https://example.com/receipt.pdf"],
       },
-      { sourceSubject: "test:send-both" },
+      { sourceSubject: "test:send-both", auditSink: noopAuditSink },
     )
 
     expect(calls).toHaveLength(1)
@@ -185,7 +194,7 @@ describe("twilioAdjudicated.messages.create — EXECUTE", () => {
         to: "whatsapp:+2",
         body: "x",
       },
-      { sourceSubject: "test:passthrough" },
+      { sourceSubject: "test:passthrough", auditSink: noopAuditSink },
     )
 
     expect(calls).toHaveLength(1)
@@ -338,7 +347,7 @@ describe("twilioAdjudicated — REFUSE on invalid payload", () => {
         to: "whatsapp:+2",
         mediaUrl: ["https://example.com/x.jpg"],
       },
-      { sourceSubject: "test:media-only" },
+      { sourceSubject: "test:media-only", auditSink: noopAuditSink },
     )
 
     expect(calls).toHaveLength(1)
@@ -373,13 +382,19 @@ describe("twilioAdjudicated — audit fail-open", () => {
     expect(errorLog).toHaveBeenCalled()
   })
 
-  it("works without an audit sink", async () => {
+  // audit-2026-05-24 H2 (A1): `auditSink` is required at the type level.
+  // The legacy "works without an audit sink" semantics no longer exist;
+  // tests that don't want a real emit pass a `noopAuditSink` instead.
+  it("accepts a no-op audit sink (callers MUST pass a sink post-H2 A1)", async () => {
     const { fake } = makeFakeTwilio()
     __setTwilioClientForTests(fake)
 
     const result = await twilioAdjudicated.messages.create(
       { from: "whatsapp:+1", to: "whatsapp:+2", body: "x" },
-      { sourceSubject: "test:no-sink" },
+      // Renamed from "test:no-sink" — post audit-2026-05-24 H2 (A1) the
+      // sink is required at the type level; tests that don't care about
+      // emit behaviour pass an explicit no-op sink.
+      { sourceSubject: "test:noop-sink", auditSink: noopAuditSink },
     )
     expect(result).toEqual({ sid: "SM_fake_message" })
   })
@@ -427,7 +442,7 @@ describe("twilioAdjudicated — REFUSE refusal copy", () => {
     try {
       await twilioAdjudicated.messages.create(
         { from: "", to: "whatsapp:+2", body: "x" },
-        { sourceSubject: "test:refuse-msg" },
+        { sourceSubject: "test:refuse-msg", auditSink: noopAuditSink },
       )
     } catch (err) {
       captured = err as TwilioAdjudicateRefusedError

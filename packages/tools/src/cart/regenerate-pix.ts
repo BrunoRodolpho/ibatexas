@@ -15,6 +15,7 @@
 import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
 import { buildEnvelope } from "@adjudicate/core";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { NonRetryableError, type AgentContext } from "@ibatexas/types";
 import {
   createPaymentQueryService,
@@ -142,6 +143,7 @@ export async function regeneratePix(
       {
         sourceSubject: `tool:regenerate-pix:${customerId}`,
         idempotencyKey: `pix-regen:${active.id}:${customerId}`,
+        auditSink: getAuditSink(),
       },
     ) as Stripe.PaymentIntent & {
       next_action?: {
