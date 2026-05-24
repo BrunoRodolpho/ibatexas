@@ -41,10 +41,12 @@ import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from 
 import {
   ordersPolicyBundle,
   portugueseRefusalMessages,
+  type OrderAddressChangePayload,
   type OrderAmendRequestPayload,
   type OrderCancelPayload,
   type OrderNoteAddPayload,
   type OrderState,
+  type OrderTypeSwitchPayload,
 } from "@ibatexas/pack-orders";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import { type AgentContext, Channel } from "@ibatexas/types";
@@ -1353,15 +1355,87 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // ── Task 14 — wrap address change in adjudicate envelope ──────────
+      //
+      // The customer-facing kind is `order.address.change` (per
+      // `@ibatexas/pack-orders`). The kernel adjudicates against the
+      // outer pack-orders bundle; the inner `changeDeliveryAddress` tool
+      // then re-adjudicates against `orderProjectionPolicyBundle` at the
+      // service-layer chokepoint (`changeAddressFromEnvelope`). Map the
+      // HTTP body's IbateXas-vocab address (`address1`/`postalCode`/…)
+      // onto the Pack's canonical vocab (`street`/`zip`/…).
+      const reqBody = request.body;
+      const addressPayload: OrderAddressChangePayload = {
+        orderId: id,
+        address: {
+          street: reqBody.address.address1,
+          ...(reqBody.address.address2 !== undefined
+            ? { complement: reqBody.address.address2 }
+            : {}),
+          ...(reqBody.address.neighborhood !== undefined
+            ? { neighborhood: reqBody.address.neighborhood }
+            : {}),
+          city: reqBody.address.city,
+          state: reqBody.address.state,
+          zip: reqBody.address.postalCode,
+        },
+      };
+      const envelope = buildEnvelope<"order.address.change", OrderAddressChangePayload>({
+        kind: "order.address.change",
+        payload: addressPayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "UNTRUSTED",
+      });
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          lastAction: null,
+        },
+      };
+
       try {
-        const result = await changeDeliveryAddress(
-          { orderId: id, address: request.body.address },
-          apiContext(customerId),
-        );
-        if (!result.success) {
-          return reply.code(422).send({ error: result.message, needsEscalation: result.needsEscalation });
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            return changeDeliveryAddress(
+              { orderId: id, address: reqBody.address },
+              apiContext(customerId),
+            );
+          },
+          ctx: {
+            customerId,
+            route: "order.address.change",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        // The inner tool returns `{ success: boolean, message, needsEscalation? }`
+        // on its own — surface the legacy 422 mapping when the tool's
+        // service-layer adjudication or business validator refused even
+        // though the outer pack-orders adjudication permitted EXECUTE.
+        if (out.statusCode === 200) {
+          const toolResult = out.body as {
+            success: boolean;
+            message: string;
+            needsEscalation?: boolean;
+          };
+          if (!toolResult.success) {
+            return reply.code(422).send({
+              error: toolResult.message,
+              needsEscalation: toolResult.needsEscalation,
+            });
+          }
         }
-        return reply.send(result);
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });
@@ -1393,15 +1467,75 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // ── Task 14 — wrap type switch in adjudicate envelope ─────────────
+      //
+      // The customer-facing kind is `order.type.switch`. Pack-orders uses
+      // the binary `delivery` | `takeout` vocabulary; IbateXas's HTTP
+      // surface distinguishes `pickup` vs `dine_in` (both non-delivery).
+      // Collapse both to `takeout` for the outer envelope; the inner
+      // `switchOrderType` tool preserves the precise vocab via the
+      // projection-policy envelope it builds internally.
+      const newType = request.body.type;
+      const packNewType: "delivery" | "takeout" =
+        newType === "delivery" ? "delivery" : "takeout";
+      const typePayload: OrderTypeSwitchPayload = {
+        orderId: id,
+        newType: packNewType,
+      };
+      const envelope = buildEnvelope<"order.type.switch", OrderTypeSwitchPayload>({
+        kind: "order.type.switch",
+        payload: typePayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "UNTRUSTED",
+      });
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          lastAction: null,
+        },
+      };
+
       try {
-        const result = await switchOrderType(
-          { orderId: id, newType: request.body.type },
-          apiContext(customerId),
-        );
-        if (!result.success) {
-          return reply.code(422).send({ error: result.message, needsEscalation: result.needsEscalation });
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            return switchOrderType(
+              { orderId: id, newType },
+              apiContext(customerId),
+            );
+          },
+          ctx: {
+            customerId,
+            route: "order.type.switch",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        // Preserve legacy 422 mapping when the inner tool refuses despite
+        // the outer pack-orders adjudication permitting EXECUTE.
+        if (out.statusCode === 200) {
+          const toolResult = out.body as {
+            success: boolean;
+            message: string;
+            needsEscalation?: boolean;
+          };
+          if (!toolResult.success) {
+            return reply.code(422).send({
+              error: toolResult.message,
+              needsEscalation: toolResult.needsEscalation,
+            });
+          }
         }
-        return reply.send(result);
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });
