@@ -15,7 +15,7 @@ The audit-2026-05-24 adversarial sweep produced **9 P0 + 8 P1 + 8 P2** findings.
 
 - **9 / 9 P0** closed in code (P0-4 wrapper auditSink and P0-9 LGPD scope have epic-track residue — see below)
 - **8 / 8 P1** closed in code
-- **5 / 8 P2** closed (P2-1, P2-2, P2-3, P2-4, P2-5); **3 still open** (P2-6, P2-7, P2-8 — P2-6+P2-7 in flight, P2-8 pending re-dispatch)
+- **8 / 8 P2** closed (P2-1, P2-2, P2-3, P2-4, P2-5, P2-6, P2-7, P2-8)
 - **5 / 7 hardening conformance suites** landed (T1, T3, T5, T6, T7); **2 still open** (T2 AuditSink wrapper-call — blocked on H2; T4 LGPD scrub — blocked on H3)
 
 **Two epic-track items remain:**
@@ -56,6 +56,7 @@ The cutover claim "kernel is authoritative and audited" is now **TRUE for the or
 | P2-5 | Force-* payloads omitted `expectedVersion` | `f793cbd` |
 | P2-6 | Customer-intent-gateway: `actor.principal` forgery defense | `5531a95` |
 | P2-7 | Customer-intent-gateway: `taint: "TRUSTED"` forgery defense | `5531a95` |
+| P2-8 | Split `medusa.store.cart.{email,metadata}.update` taxonomy | `87c0474` |
 | T1 | NX-park static-import conformance suite | `6dda950` |
 | T3 | Per-intent-kind redactor conformance + 42-entry PII_FREE_KIND_ALLOWLIST | `5979b70` |
 | T5 | DEFER+resume integrity integration test | `6dda950` |
@@ -93,21 +94,16 @@ R3-1 surfaced **7 previously-unenumerated idempotency-key allowlist entries** (6
 **Decision required (G2):** see [Decision Gates](#decision-gates) below.
 **Task file:** [tasks/h3-lgpd-anonymize-scope-expansion.md](./tasks/h3-lgpd-anonymize-scope-expansion.md)
 
-### P2 polish — 1 item remaining
+### P2 polish — all closed
 
-| # | Finding | File | Effort | Status |
-|---|---|---|---|---|
-| P2-8 | C1 taxonomy mismatch (`medusa.store.cart.email.update` used for metadata-only carts.update) | `packages/tools/src/medusa/store-adjudicated.ts` (`carts.update` site) | 30min | needs re-dispatch (worktree-base regression on first attempt) |
+### Follow-ups surfaced by sub-agents (out of audit-2026-05-24 scope)
 
-**Re-dispatch order:** P2-8 must wait until Conformance-A lands and is integrated, because Conformance-A also touches `audit-redactor.ts`.
-**Task file:** [tasks/p2-remaining-polish.md](./tasks/p2-remaining-polish.md)
-
-### Follow-ups surfaced by Polish-B (out of audit-2026-05-24 scope)
-
-| Item | File | Notes |
-|---|---|---|
-| Migrate gateway callers from `buildEnvelope` to `buildCustomerEnvelope` | `apps/api/src/routes/{cart,me,order-actions}.ts` (8+ sites) | Closes the "wider-type back-door" so the structural defense is total. Mechanical sweep, ~1-2h. |
-| Stale `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` env-var stubs | `apps/api/src/__tests__/cart-routes.test.ts` SEC-001 suite (3 failing tests) | Tests pre-date the cutover; the kernel no longer reads those env vars. Delete the stubs or replace with proper kernel-mock setup. ~30min. |
+| Item | File | Source | Notes |
+|---|---|---|---|
+| Migrate gateway callers from `buildEnvelope` to `buildCustomerEnvelope` | `apps/api/src/routes/{cart,me,order-actions}.ts` (8+ sites) | Polish-B | Closes the "wider-type back-door" so the structural defense is total. Mechanical sweep, ~1-2h. |
+| Stale `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` env-var stubs | `apps/api/src/__tests__/cart-routes.test.ts` SEC-001 suite (3 failing tests) | Polish-B | Tests pre-date the cutover; the kernel no longer reads those env vars. Delete the stubs or replace with proper kernel-mock setup. ~30min. |
+| Workspace `dist/`-build requirement for cross-package tests | `packages/tools/` (172 pre-existing typecheck errors), `packages/llm-provider/` (78 pre-existing typecheck errors), `apps/api/` cross-package tests | Polish-A + P2-8 v2 | Source-imports-from-dist pattern means each package must be built before consumers can type-check or test against it. Forced both agents to either skip cross-package tests OR run `pnpm -F <pkg> build` (allowed only when scope-minimal). Workspace ergonomics — worth considering a `tsc --build` orchestration or source-imports config. |
+| Possible documentation correction in P2-8 task file premise | `docs/adjudicate-migration/audit-2026-05-24/tasks/p2-remaining-polish.md` §"P2-8" | P2-8 v2 | Task file claimed "the existing `medusa.store.cart.email.update` rule stays" — no such rule existed. Also instructed "add per-kind rule" — but `medusa.store.*` is by-design outside `KNOWN_INTENT_KINDS` (W5-7 / D10 policy at `packages/llm-provider/src/intent-kinds.ts:30-38`), so the correct call is to leave audit-redactor untouched. Future task files for the medusa namespace should reflect this. |
 
 ### Hardening conformance — 4 suites remaining
 
