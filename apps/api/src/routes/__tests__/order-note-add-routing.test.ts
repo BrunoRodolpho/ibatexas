@@ -76,8 +76,22 @@ describe("P4 — 4 orderNote.create sites wired to addNoteFromEnvelope", () => {
     // Customer paths → UNTRUSTED (user actor); staff/admin paths → TRUSTED
     // (or SYSTEM when staff is null / API-key). The migration preserves
     // the actor model.
-    expect(read("cart.ts")).toMatch(/taint:\s*"UNTRUSTED"/)
-    expect(read("order-actions.ts")).toMatch(/taint:\s*"UNTRUSTED"/)
+    //
+    // Polish-B followup: customer routes were migrated to
+    // `buildCustomerEnvelope`, which stamps `taint: "UNTRUSTED"` itself —
+    // the literal no longer appears at the call site. Match either the
+    // raw literal (for inner envelopes that still use `buildEnvelope`) or
+    // the customer-envelope constructor.
+    const cartSrc = read("cart.ts")
+    expect(
+      cartSrc.match(/taint:\s*"UNTRUSTED"/) ||
+        cartSrc.match(/buildCustomerEnvelope</),
+    ).not.toBeNull()
+    const orderActionsSrc = read("order-actions.ts")
+    expect(
+      orderActionsSrc.match(/taint:\s*"UNTRUSTED"/) ||
+        orderActionsSrc.match(/buildCustomerEnvelope</),
+    ).not.toBeNull()
     // Admin routes do TRUSTED for staffId, SYSTEM for null.
     const adminA = read("admin/order-actions.ts")
     expect(adminA).toMatch(/taint:\s*staffId\s*\?\s*"TRUSTED"\s*:\s*"SYSTEM"/)
