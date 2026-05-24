@@ -20,7 +20,7 @@ The audit-2026-05-24 adversarial sweep produced **9 P0 + 8 P1 + 8 P2** findings.
 
 **Epic-track status:**
 - **H2** — ✅ CLOSED. New `@ibatexas/audit-sink` leaf package + boot-time DI + all 28 wrapper-call sites + T2 conformance landed at `654d337`. 1196 tests pass across 4 packages.
-- **H3** — Wave A (in-process anonymize + T4 conformance) ✅ landed at `50adfb6`. Wave B (Medusa cross-DB via compensation pattern) and Wave C (ANPD compliance doc refresh) ready to dispatch — G2 picks settled.
+- **H3** — ✅ FULLY CLOSED IN CODE. Wave A (in-process anonymize + T4 conformance) at `fb7ff85..50adfb6`, T4 verified 4/4 against integrated A1+A2 at `da6dfe5`. Wave B (Medusa cross-DB compensation + retry) at `eaab695..c41e35c`. Wave C (ANPD compliance proof doc) at `0f5f367`. **All 12 LGPD surfaces covered.** Wave B agent also fixed a silent bug: grace resolver was bypassing A1's per-surface audit-emit by calling bare-arg anonymize — now threads predecessor + auditSink so production destructive anonymizes emit per-surface records correctly.
 
 **Findings discovered during conformance + civilization + E2 work:**
 - **E2** — ✅ CLOSED at `4c82a22` via Fix-b (resolver re-checks parkKey existence post-SETNX before dispatching). T6 conformance now demonstrates **hard-zero violations across 500 race iterations** (5 separate 100-iteration runs). The audit-record emit pattern uses `REFUSE` + `BUSINESS_RULE` + `code: defer.resume.skipped` + `detail: parkKey_missing_after_sweeper`, mirroring the existing anonymize `cancel_won_race` pattern. No new top-level Decision kind; no cross-repo pack version bump.
@@ -60,8 +60,10 @@ The cutover claim "kernel is authoritative and audited" is now **TRUE across all
 | P2-8 | Split `medusa.store.cart.{email,metadata}.update` taxonomy | `87c0474` |
 | P0-4 | H2 — `@ibatexas/audit-sink` leaf package + 28-site wrapper sweep + required `auditSink` meta | `a928370..654d337` (7 commits) |
 | T2 | AuditSink wrapper-call conformance suite (38 sites scanned, regression floor at 30) | `2b35eaf` |
-| **P0-9 Wave A (partial)** | H3 in-process anonymize across 7 surfaces (OrderProjection, ConversationMessage, Conversation.customerId, OrderStatusHistory[customer], OrderEventLog, LoyaltyAccount, Reservation.specialRequests) + per-surface audit emits | `993467e..fb7ff85` (7 commits) |
-| **T4** | LGPD scrub conformance suite (testcontainer + PIIFixtureSpec builder + 4 cases: happy-path, Staff-untouched, idempotency, audit-emit + JSON defense-in-depth) | `89457b7..50adfb6` (5 commits) |
+| **P0-9 Wave A** | H3 in-process anonymize across 7 surfaces (OrderProjection, ConversationMessage, Conversation.customerId, OrderStatusHistory[customer], OrderEventLog, LoyaltyAccount, Reservation.specialRequests) + per-surface audit emits | `993467e..fb7ff85` (7 commits) |
+| **T4** | LGPD scrub conformance suite (testcontainer + PIIFixtureSpec builder + 4 cases) — verified **4/4 pass** end-to-end at `da6dfe5` | `89457b7..50adfb6` (5 commits) + `da6dfe5` (T4 fixup) |
+| **P0-9 Wave B** | H3 Medusa cross-DB compensation + retry pattern — new audit kinds, subscriber, BullMQ retry job (12 attempts × 5 min), grace-resolver silent-bug fix (predecessor + auditSink now threaded) | `eaab695..c41e35c` (7 commits) |
+| **H3 Wave C** | ANPD compliance proof doc at `docs/compliance/lgpd-anonymize-coverage.md` (327 lines, 12/12 coverage stated) | `0f5f367` |
 | T1 | NX-park static-import conformance suite | `6dda950` |
 | T3 | Per-intent-kind redactor conformance + 42-entry PII_FREE_KIND_ALLOWLIST | `5979b70` |
 | T5 | DEFER+resume integrity integration test | `6dda950` |
