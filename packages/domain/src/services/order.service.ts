@@ -18,9 +18,21 @@
 // `apps/api` and `packages/tools` wire it via a thin closure that binds
 // the source-subject + audit-sink at the construction site.
 //
-// Backwards-compat: when `adminAdjudicated` is undefined, mutations fall
-// back to the bare `fetchAdmin` path (preserved for legacy tests). New
-// production wiring MUST supply the adjudicated DI per CLAUDE.md rule #9.
+// ── W8-V1 — hard-throw on missing adminAdjudicated ────────────────────────
+//
+// The W7-P6 closure left a silent fallback to bare `fetchAdmin` when
+// `adminAdjudicated` was undefined, on the assumption that the remaining
+// cart-tool callers would migrate in a follow-up. The verifier surfaced
+// NEW-W7-V1: three callers (`cancel-order`, `amend-order`,
+// `check-order-status` in `packages/tools/src/cart/`) silently bypassed
+// the kernel for medusa egress because they never received the DI.
+//
+// W8 closes the seam: every cart-tool caller now goes through
+// `createTooledOrderService()` (packages/tools/src/cart/_shared.ts), and
+// the silent fallback is replaced by a hard `throw` at the first
+// mutation attempt — so any future regression (a new caller that
+// forgets the DI) fails loudly at call time rather than silently
+// bypassing the kernel.
 //
 // GETs (reads) always pass through `fetchAdmin` directly — the wrapper's
 // own `dispatchHttp` would do the same for GET; the wrapper pass-through
@@ -86,11 +98,16 @@ export interface OrderItem {
 }
 
 /**
- * Optional DI for createOrderService. When `adminAdjudicated` is
- * supplied, the 6 mutating egresses route through the kernel-gated
- * wrapper; otherwise they fall back to the bare `medusaAdminFn` path
- * (legacy posture). Log is used for the fallback-warning once at
- * service construction.
+ * DI for createOrderService. The 6 mutating egresses route through the
+ * `adminAdjudicated` wrapper (kernel + audit). Pre-W8 the option was
+ * optional with a silent bare-`fetchAdmin` fallback; W8-V1 made the
+ * option load-bearing — calling a mutation without it now throws (see
+ * the `mutate()` helper below).
+ *
+ * For LLM-callable cart tools, use `createTooledOrderService()` from
+ * `packages/tools/src/cart/_shared.ts` (the canonical wiring path).
+ * For ad-hoc construction in tests, pass a vi.fn() stub for
+ * `adminAdjudicated`.
  */
 export interface OrderServiceOptions {
   readonly adminAdjudicated?: AdminAdjudicated
@@ -107,11 +124,17 @@ export function createOrderService(
   const adminAdjudicated = options?.adminAdjudicated
 
   /**
-   * Dispatch a mutation through the adjudicated wrapper when injected,
-   * otherwise fall back to bare fetchAdmin. The fallback exists ONLY
-   * to keep legacy tests / unmigrated callers operational while the
-   * W7 closure cycle is in flight. Production wiring (apps/api,
-   * packages/tools) MUST supply `adminAdjudicated`.
+   * Dispatch a mutation through the adjudicated wrapper. The wrapper is
+   * required: callers that omit `adminAdjudicated` get a hard throw on
+   * the first mutation attempt rather than a silent bypass.
+   *
+   * W8-V1 (NEW-W7-V1) removed the silent fallback to bare `fetchAdmin`
+   * that masked the W7 P5↔P6 hand-off gap. The fallback existed so
+   * cart-tool callers could remain on a legacy posture during the W7
+   * closure cycle; once those callers migrated to
+   * `createTooledOrderService()`, the fallback became a foot-gun for
+   * any future regression. The throw is fail-loud and bounded to the
+   * call-site that forgot the wiring.
    */
   async function mutate<P, R = unknown>(args: {
     path: string
@@ -120,23 +143,25 @@ export function createOrderService(
     sourceSubject: string
     idempotencyKey?: string
   }): Promise<R> {
-    if (adminAdjudicated) {
-      return adminAdjudicated<P, R>({
-        method: args.method,
-        path: args.path,
-        ...(args.payload !== undefined ? { payload: args.payload } : {}),
-        sourceSubject: args.sourceSubject,
-        ...(args.idempotencyKey !== undefined
-          ? { idempotencyKey: args.idempotencyKey }
-          : {}),
-      })
+    if (!adminAdjudicated) {
+      // W8-V1: hard fail rather than silently bypassing the kernel.
+      throw new Error(
+        "createOrderService called without adjudicated medusa client — " +
+          "refusing to bypass kernel for mutation egress. " +
+          "Construct the service via createTooledOrderService() " +
+          "(packages/tools/src/cart/_shared.ts) or pass an adminAdjudicated " +
+          "DI per the apps/api/src/routes/stripe-webhook.ts wiring example.",
+      )
     }
-    // Legacy fallback path — no kernel adjudication, no audit emit.
-    const init: RequestInit = { method: args.method }
-    if (args.payload !== undefined) {
-      init.body = JSON.stringify(args.payload)
-    }
-    return (await fetchAdmin(args.path, init)) as R
+    return adminAdjudicated<P, R>({
+      method: args.method,
+      path: args.path,
+      ...(args.payload !== undefined ? { payload: args.payload } : {}),
+      sourceSubject: args.sourceSubject,
+      ...(args.idempotencyKey !== undefined
+        ? { idempotencyKey: args.idempotencyKey }
+        : {}),
+    })
   }
 
   return {

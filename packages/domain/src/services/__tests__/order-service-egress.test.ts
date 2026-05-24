@@ -1,4 +1,4 @@
-// OrderService — egress-governance tests (W7-P6).
+// OrderService — egress-governance tests (W7-P6 + W8-V1).
 //
 // Verifies that the 6 mutating Medusa egresses in order.service.ts route
 // through the injected `adminAdjudicated` DI rather than the bare
@@ -14,7 +14,11 @@
 //   6. capturePayment() ×2      — POST /admin/orders/:id/capture-payment
 //                                  + POST /admin/orders/:id (metadata)
 //
-// We also assert legacy fallback (no DI) still works for back-compat.
+// W8-V1 (NEW-W7-V1) hardened the contract: the old silent fallback to
+// bare fetchAdmin when `adminAdjudicated` was undefined is now a hard
+// throw at the first mutation attempt. The "legacy bare-fetchAdmin"
+// test was flipped to assert the throw — see the
+// `[W8-V1] cancelOrder THROWS when adminAdjudicated is omitted` case.
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { createOrderService, type AdminAdjudicated } from "../order.service.js"
@@ -63,8 +67,12 @@ describe("OrderService — egress governance (W7-P6)", () => {
     expect(fetchAdmin.mock.calls[0][0]).toBe("/admin/orders/order_01")
   })
 
-  it("cancelOrder still works via the legacy bare-fetchAdmin path when adminAdjudicated is omitted", async () => {
-    // Legacy posture: no DI provided. Mutation falls back to fetchAdmin.
+  it("[W8-V1] cancelOrder THROWS when adminAdjudicated is omitted (no silent kernel bypass)", async () => {
+    // W8-V1 closure (NEW-W7-V1): the pre-W8 silent fallback to bare
+    // fetchAdmin was the source of the cart-tool hand-off bypass. The
+    // mutate() helper now hard-throws when adminAdjudicated is undefined
+    // rather than silently sending the POST through fetchAdmin. The GET
+    // (read) is unaffected — only mutations trip the gate.
     fetchAdmin.mockImplementation((path: string) => {
       if (path === "/admin/orders/order_01") {
         return Promise.resolve({
@@ -81,16 +89,22 @@ describe("OrderService — egress governance (W7-P6)", () => {
     })
 
     const svc = createOrderService(fetchAdmin)
-    const result = await svc.cancelOrder("order_01", "cust_01", { force: true })
 
-    expect(result.success).toBe(true)
-    expect(adminAdjudicated).not.toHaveBeenCalled()
-    // Both the GET and the POST went through fetchAdmin.
-    expect(fetchAdmin).toHaveBeenCalledTimes(2)
-    expect(fetchAdmin.mock.calls[1][0]).toBe("/admin/orders/order_01/cancel")
-    expect((fetchAdmin.mock.calls[1][1] as RequestInit | undefined)?.method).toBe(
-      "POST",
+    await expect(
+      svc.cancelOrder("order_01", "cust_01", { force: true }),
+    ).rejects.toThrow(
+      /createOrderService called without adjudicated medusa client/,
     )
+
+    // GET still fired (the throw is in mutate(), not in the constructor).
+    expect(fetchAdmin).toHaveBeenCalledWith("/admin/orders/order_01")
+    // The POST was NOT issued — kernel bypass refused.
+    expect(adminAdjudicated).not.toHaveBeenCalled()
+    const postCalls = fetchAdmin.mock.calls.filter((call) => {
+      const init = call[1] as RequestInit | undefined
+      return init?.method === "POST"
+    })
+    expect(postCalls).toEqual([])
   })
 
   // ── cancelItem — single-item collapse ─────────────────────────────────

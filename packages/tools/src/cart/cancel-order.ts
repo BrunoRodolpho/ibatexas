@@ -12,13 +12,12 @@ import { randomUUID } from "node:crypto";
 import { buildEnvelope } from "@adjudicate/core";
 import { CancelOrderInputSchema, NonRetryableError, type CancelOrderInput, type AgentContext } from "@ibatexas/types";
 import {
-  createOrderService,
   createPaymentQueryService,
   createPaymentCommandService,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
-import { medusaAdmin } from "../medusa/client.js";
+import { createTooledOrderService } from "./_shared.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 
 export async function cancelOrder(
@@ -31,7 +30,10 @@ export async function cancelOrder(
     throw new NonRetryableError("Autenticação necessária para cancelar pedido.");
   }
 
-  const svc = createOrderService(medusaAdmin);
+  // W8-V1: route order.service mutations through the kernel-gated wrapper
+  // via the shared factory. Replaces the pre-W8 bare `createOrderService(medusaAdmin)`
+  // which silently fell back to bare fetchAdmin (no kernel, no audit).
+  const svc = createTooledOrderService("tool:cancel_order");
   const result = await svc.cancelOrder(parsed.orderId, ctx.customerId);
 
   // If order cancellation succeeded, also cancel the active Payment

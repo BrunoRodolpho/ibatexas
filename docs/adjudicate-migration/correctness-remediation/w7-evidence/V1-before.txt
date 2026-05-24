@@ -1,0 +1,88 @@
+=== W8-V1 BEFORE state — 3 cart-tool callers bypass kernel via createOrderService silent fallback ===
+Branch: feat/correctness-w7-close-w6-findings
+Captured: 2026-05-23 (W8 closure agent)
+
+── The bypass (verifier reproduction) ────────────────────────────────────────
+
+$ grep -n "createOrderService(medusaAdmin)" packages/tools/src/cart/ -r
+packages/tools/src/cart/check-order-status.ts:18:  const svc = createOrderService(medusaAdmin);
+packages/tools/src/cart/amend-order.ts:187:  const svc = createOrderService(medusaAdmin);
+packages/tools/src/cart/cancel-order.ts:34:  const svc = createOrderService(medusaAdmin);
+
+All three callers instantiate createOrderService(medusaAdmin) WITHOUT the
+`adminAdjudicated` option. The order.service.ts `mutate()` helper (line 116)
+silently falls back to bare `fetchAdmin` (lines 133-139) when
+`adminAdjudicated` is undefined:
+
+  packages/domain/src/services/order.service.ts:122-140
+    if (adminAdjudicated) {
+      return adminAdjudicated<P, R>({ ... })
+    }
+    // Legacy fallback path — no kernel adjudication, no audit emit.
+    const init: RequestInit = { method: args.method }
+    if (args.payload !== undefined) {
+      init.body = JSON.stringify(args.payload)
+    }
+    return (await fetchAdmin(args.path, init)) as R
+
+Operational impact:
+  - cancel-order.ts calls svc.cancelOrder(...) → mutate({ POST /admin/orders/:id/cancel })
+    Hits the legacy fallback. NO kernel adjudication, NO audit emit for order.cancel.
+  - amend-order.ts calls svc.cancelItem(...) → mutate({ POST/POST/DELETE/POST edit-sequence })
+    All 4 mutations hit the legacy fallback.
+  - check-order-status.ts uses svc only for getOrder (a GET) — safe today, but
+    instantiation still routes through bare medusaAdmin posture.
+
+Tier impact: Tier 3 LLM-callable surface (cancel_order, amend_order) silently
+bypasses kernel for medusa egress. Verifier marked as P0.
+
+── Existing test suite baseline (PRE-FIX) ────────────────────────────────────
+
+$ pnpm vitest run packages/domain/src/services/__tests__/order-service-egress.test.ts
+ RUN  v3.2.4
+ ✓ packages/domain/src/services/__tests__/order-service-egress.test.ts (6 tests) 7ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Duration  316ms
+
+Note: the existing "legacy bare-fetchAdmin path" test (line 66-94 in
+order-service-egress.test.ts) PASSES today — that's the gap we are closing.
+The fallback exists and is exercised by that test. Post-fix, the test
+expectation flips to "throws when adminAdjudicated is omitted."
+
+$ pnpm vitest run packages/tools/src/cart
+ Test Files  13 passed (13)
+      Tests  157 passed (157)
+   Duration  1.46s
+
+All 157 cart-tool tests pass because they MOCK createOrderService entirely
+(see __tests__/cancel-order.test.ts:34 and amend-order-change-payment.test.ts:48)
+— so the silent bypass at the underlying domain layer is invisible to
+the cart-tool test surface. This is exactly why the bypass slipped past
+W7-Stripe-Wrapper (P5) and W7-Govern-Order (P6) — neither agent's test
+surface exercised the wiring seam.
+
+── createOrderService caller enumeration (verification surface) ──────────────
+
+$ grep -rn 'createOrderService' packages/ apps/ --include="*.ts" | grep -v dist | grep -v __tests__ | grep -v node_modules
+packages/tools/src/cart/check-order-status.ts:4:import { createOrderService } from "@ibatexas/domain";
+packages/tools/src/cart/check-order-status.ts:18:  const svc = createOrderService(medusaAdmin);
+packages/tools/src/cart/amend-order.ts:36:import { createOrderService, ...
+packages/tools/src/cart/amend-order.ts:55:  svc: ReturnType<typeof createOrderService>,
+packages/tools/src/cart/amend-order.ts:187:  const svc = createOrderService(medusaAdmin);
+packages/tools/src/cart/cancel-order.ts:15:  createOrderService,
+packages/tools/src/cart/cancel-order.ts:34:  const svc = createOrderService(medusaAdmin);
+packages/domain/src/index.ts:13:  createOrderService,
+packages/domain/src/services/order.service.ts:102:export function createOrderService(
+packages/domain/src/services/order.service.ts:384:export type OrderService = ReturnType<typeof createOrderService>
+apps/api/src/routes/stripe-webhook.ts:54:  createOrderService,
+apps/api/src/routes/stripe-webhook.ts:347:  const svc = createOrderService(medusaAdmin, { adminAdjudicated: ... })
+
+Three production callers omit `adminAdjudicated`:
+  - packages/tools/src/cart/check-order-status.ts:18
+  - packages/tools/src/cart/amend-order.ts:187
+  - packages/tools/src/cart/cancel-order.ts:34
+
+One production caller correctly injects `adminAdjudicated`:
+  - apps/api/src/routes/stripe-webhook.ts:347 (W7-P6 wired correctly)

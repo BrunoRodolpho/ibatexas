@@ -33,12 +33,12 @@ import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
 import { AmendOrderInputSchema, NonRetryableError, canPerformAction, type AmendOrderInput, type AmendOrderResult, type AgentContext, type CustomerAction, type OrderFulfillmentStatus } from "@ibatexas/types";
 import { buildEnvelope } from "@adjudicate/core";
-import { createOrderService, createOrderQueryService, createPaymentQueryService, createPaymentCommandService, type PaymentCreatePayload, type PaymentStatusTransitionPayload } from "@ibatexas/domain";
+import { createOrderQueryService, createPaymentQueryService, createPaymentCommandService, type OrderService, type PaymentCreatePayload, type PaymentStatusTransitionPayload } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdjudicated } from "../medusa/adjudicated.js";
-import { medusaAdmin } from "../medusa/client.js";
 import { withLock } from "../redis/distributed-lock.js";
 import { stripeAdjudicated } from "../stripe/adjudicated.js";
+import { createTooledOrderService } from "./_shared.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 
 /**
@@ -52,7 +52,7 @@ import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 async function regeneratePixIfNeeded(
   orderId: string,
   oldPiId: string | undefined,
-  svc: ReturnType<typeof createOrderService>,
+  svc: OrderService,
   sessionId: string,
 ): Promise<{ newPixQrCodeText?: string; newPixQrCodeUrl?: string; newStripePaymentIntentId?: string } | null> {
   if (!oldPiId) return null;
@@ -182,9 +182,10 @@ export async function amendOrder(
     throw new NonRetryableError("Autenticação necessária para modificar pedido.");
   }
 
-  // medusaAdmin used here only for GET (svc reads). All writes via
-  // medusaAdjudicated().
-  const svc = createOrderService(medusaAdmin);
+  // W8-V1: route order.service mutations through the kernel-gated wrapper
+  // via the shared factory. svc.getOrder (GET) still bypasses the wrapper;
+  // mutating helpers (svc.cancelItem) now go through medusaAdjudicated.
+  const svc = createTooledOrderService("tool:amend_order");
   const { order, ownershipValid } = await svc.getOrder(parsed.orderId, ctx.customerId);
 
   if (!ownershipValid) {
