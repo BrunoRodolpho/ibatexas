@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** This logs judgment calls made during the pre-cutover overnight autonomous run (2026-05-22 → 2026-05-23). The architectural-level ADR log of record is now [`docs/architecture/decisions.md`](../architecture/decisions.md); the per-session operational decisions below are preserved as historical context for that overnight phase. For current institutional decisions affecting the audit-2026-05-24 closeout, see [`audit-2026-05-24/CLOSEOUT-STATUS.md`](./audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below.
+
+---
+
 # Decisions Log
 
 Every non-trivial judgment call made during the overnight autonomous run.

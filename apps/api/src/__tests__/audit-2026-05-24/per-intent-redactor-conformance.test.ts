@@ -94,17 +94,10 @@ const KNOWN_REDACTOR_GAPS: ReadonlyMap<
     readonly rationale: string
   }
 >([
-  [
-    "pix.charge.refund",
-    {
-      missingField: "reason",
-      suggestedRule: `"pix.charge.refund": ["reason"]`,
-      rationale:
-        "PixChargeRefundPayload.reason is free-form admin text — same shape as " +
-        "payment.refund.issue/payment.waive (both already in INTENT_KIND_FIELD_RULES). " +
-        "An admin who quotes the customer's revocation message could leak CPF/email.",
-    },
-  ],
+  // Empty — all previously-known gaps closed. The sentinel test "every
+  // KNOWN_REDACTOR_GAPS entry exists in KNOWN_INTENT_KINDS and is NOT also
+  // classified" still runs on each iteration and will catch a stale entry
+  // if added without a real gap.
 ])
 
 // ── Tests ─────────────────────────────────────────────────────────────────

@@ -396,6 +396,7 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   "payment.refund.issue": ["reason"],
   "payment.waive": ["reason"],
   "payment.status.force": ["reason"],
+  "pix.charge.refund": ["reason"],
   // Defense-in-depth — these `reason` fields are typed but technically
   // closed enums in pack-payments. We still over-redact in case a Pack
   // bump introduces a free-form string in the future.
@@ -530,12 +531,8 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   // redacted — that's the load-bearing invariant.
   "pix.charge.create",
   "pix.charge.confirm", // chargeId/providerTxId/timestamp
-  // NOTE: `pix.charge.refund.reason` is a free-form admin text field that
-  // is NOT covered by INTENT_KIND_FIELD_RULES today — see the per-intent
-  // redactor conformance test for the flagged-as-finding gap.
-  // `pix.charge.refund` is intentionally NOT in this allowlist; it should
-  // gain a `["reason"]` entry in INTENT_KIND_FIELD_RULES alongside the
-  // payment-domain reason kinds (separate audit-redactor ticket).
+  // `pix.charge.refund` has free-form `reason` admin text, ruled in
+  // INTENT_KIND_FIELD_RULES alongside payment.refund.issue / payment.waive.
 ])
 
 export function createAuditRedactor(
