@@ -585,11 +585,22 @@ export async function resolveDeferredSession(
   }
 
   // Emit audit record linking the resumption back to the original park.
+  //
+  // P1-5 — `supersedes` carries the original parked intent's hash so the
+  // replay/audit reader can chain `DEFER (original) → resume (this record)`
+  // by following `record.supersedes.predecessorIntentHash`. The parked
+  // envelope's `intentHash` IS the predecessor; `parked.parkedAt` is the
+  // wall-clock anchor of the park step the audit reader joins on.
   try {
     const record = buildAuditRecord({
       envelope,
       decision,
       durationMs: Date.now() - startedAt,
+      supersedes: {
+        predecessorIntentHash: intentHash,
+        predecessorAt: parked.parkedAt,
+        reason: "defer_resumed",
+      },
     })
     void getAuditSink()
       .emit(record)

@@ -52,8 +52,11 @@ import {
   CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
 } from "@ibatexas/pack-customer-onboarding";
 import { anonymizeCustomer } from "@ibatexas/domain";
+import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
+import { getAuditSink } from "@ibatexas/llm-provider";
 import type { FastifyBaseLogger } from "fastify";
 import { clearPendingDeletion, readPendingDeletion } from "../routes/me/anonymize-otp-gate.js";
+import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 
 /**
  * Shape of the event the defer-timeout-sweeper publishes.
@@ -110,6 +113,7 @@ export async function handleAnonymizeGraceTimeout(
   //    at park time; the grace expiry IS the resume signal). The audit
   //    record carries `supersedes: [parked.intentHash]` for the log
   //    bridge.
+  const startedAt = Date.now();
   try {
     await anonymizeCustomer(customerId);
     log?.info(
@@ -125,7 +129,77 @@ export async function handleAnonymizeGraceTimeout(
     return { kind: "error", customerId, err: err as Error };
   }
 
-  // 5. Clear the pending-deletion receipt — the destructive operation
+  // 5. P0-8 audit emit — destructive LGPD operation MUST be on the audit
+  //    trail. Fired AFTER the Prisma TX commits (so a failed TX produces
+  //    no audit record — the failure is logged in the catch above) and
+  //    BEFORE the receipt clear (so an audit-emit failure does not block
+  //    cleanup — audit is best-effort once the destructive action is
+  //    durable).
+  //
+  //    The system-actor envelope carries:
+  //      - `kind: "customer.anonymize"` — matches the originally parked
+  //        intent kind; the supersedes chain disambiguates "user
+  //        initiated DEFER" vs "system completed after grace".
+  //      - `actor.principal = "system"`, `taint = "SYSTEM"` — set by
+  //        `buildSystemEnvelope`.
+  //      - `payload = {customerId, scope}` — NO PII. customerId is a UUID
+  //        per CLAUDE.md rule; no name/email/phone/CPF.
+  //      - `decision = EXECUTE` with `business.RULE_SATISFIED` basis
+  //        carrying the LGPD anchor — the kernel was NOT re-run here (it
+  //        would just DEFER again); the grace expiry IS the authorization.
+  //      - `supersedes` points at the original park's intentHash so
+  //        replay can chain `DEFER → defer_resumed → EXECUTE`.
+  try {
+    const auditEnvelope = buildSystemEnvelope({
+      kind: "customer.anonymize" as const,
+      payload: {
+        customerId,
+        scope: "lgpd_art_18" as const,
+      },
+      sourceSubject: "intent.defer.timeout",
+      eventId: `${event.intentHash}:grace_expired`,
+    });
+    const record = buildAuditRecord({
+      envelope: auditEnvelope,
+      decision: {
+        kind: "EXECUTE",
+        basis: [
+          {
+            category: "business",
+            code: BASIS_CODES.business.RULE_SATISFIED,
+            detail: {
+              rule: "lgpd_art_18_grace_expired",
+              kind: "customer.anonymize",
+              graceSignal: CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
+            },
+          },
+        ],
+      },
+      durationMs: Date.now() - startedAt,
+      supersedes: {
+        predecessorIntentHash: event.intentHash,
+        predecessorAt: event.parkedAt,
+        reason: "defer_resumed",
+      },
+    });
+    void getAuditSink()
+      .emit(record)
+      .catch((err: unknown) => {
+        // Audit-emit is best-effort once anonymize committed. Log only —
+        // do NOT roll back the destructive op.
+        log?.warn(
+          { customerId, intentHash: event.intentHash, err: (err as Error).message },
+          "[anonymize-grace-resolver] audit emit failed (destructive op already committed)",
+        );
+      });
+  } catch (err) {
+    log?.warn(
+      { customerId, intentHash: event.intentHash, err: (err as Error).message },
+      "[anonymize-grace-resolver] audit record build failed (destructive op already committed)",
+    );
+  }
+
+  // 6. Clear the pending-deletion receipt — the destructive operation
   //    completed. The 24h TTL would have GC'd it eventually anyway, but
   //    explicit clear makes the timeline visible in Redis.
   await clearPendingDeletion(customerId);

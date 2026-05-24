@@ -738,6 +738,47 @@ describe("defer-resolver subscriber", () => {
     expect(dlqKeys.length).toBe(0)
   })
 
+  // ── P1-5 — supersedes wired on resume audit record ───────────────────────
+
+  it("[P1-5] resume audit record carries supersedes pointing at the original parked intent's hash", async () => {
+    const sessionId = "sess_supersedes"
+    const { envelope, parkedBlob, parkedAt } = buildVerifiableParkedBlob({ sessionId })
+    store.set(`test:defer:pending:${sessionId}`, { value: parkedBlob, ttl: 800 })
+
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
+
+    const dispatcher = vi.fn(async () => undefined)
+    const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
+      await import("../defer-resolver.js")
+    setResumeIntentDispatcher(dispatcher)
+
+    const callback = await getRegisteredCallback(startDeferResolverSubscriber)
+    await callback(paymentConfirmedEvent())
+
+    expect(mockGetAuditSinkEmit).toHaveBeenCalledOnce()
+    const record = (mockGetAuditSinkEmit.mock.calls as unknown as Array<
+      [unknown]
+    >)[0]![0] as {
+      supersedes?: {
+        predecessorIntentHash: string
+        predecessorAt: string
+        reason: string
+      }
+      envelope: { intentHash: string }
+    }
+
+    // The new (resume) record's envelope hash equals the parked one (we
+    // re-adjudicated the same envelope); supersedes points back to that
+    // same predecessor hash and the original parkedAt timestamp.
+    expect(record.envelope.intentHash).toBe(envelope.intentHash)
+    expect(record.supersedes).toBeTruthy()
+    expect(record.supersedes!.predecessorIntentHash).toBe(envelope.intentHash)
+    expect(record.supersedes!.predecessorAt).toBe(parkedAt)
+    expect(record.supersedes!.reason).toBe("defer_resumed")
+
+    setResumeIntentDispatcher(null)
+  })
+
   it("[P1-D] transient error on first 2 attempts then success on 3rd — does NOT DLQ", async () => {
     const sessionId = "sess_redis_retry_success"
     const { envelope, parkedBlob } = buildVerifiableParkedBlob({ sessionId })
