@@ -30,7 +30,7 @@
 //   - No new envelope kinds, no new executors — strictly the existing
 //     deterministic-kernel surface.
 
-import type { IntentEnvelope } from "@adjudicate/core"
+import type { IntentEnvelope, IntentActor } from "@adjudicate/core"
 import type { AgentContext } from "@ibatexas/types"
 import { Channel } from "@ibatexas/types"
 import {
@@ -123,10 +123,7 @@ export interface ResumeKernelDispatchDeps {
 // ── Context builder ───────────────────────────────────────────────────────────
 
 /**
- * Build the minimal `AgentContext` the resume-side tool calls need. The
- * parked envelope carries only `actor.sessionId`; the rest is synthesized
- * with the same conservative defaults `buildResumeAgentContext` uses inside
- * `resume-dispatcher.ts`.
+ * Build the minimal `AgentContext` the resume-side tool calls need.
  *
  *   - `channel = Channel.WhatsApp`: PIX-deferred intents are exclusively a
  *     WhatsApp concern (the web checkout path returns the PIX QR
@@ -136,15 +133,39 @@ export interface ResumeKernelDispatchDeps {
  *   - `userType = "customer"`: resume can only happen for customer-
  *     initiated parks. System-actor kinds (`order.cancel.system`) never
  *     DEFER via the responder hot path.
- *   - `customerId = undefined`: the handlers that need it pull from input
- *     payload or sessionId-keyed Redis lookups; we deliberately do not
- *     spelunk into Redis here to keep the dispatcher side-effect-free.
+ *   - `customerId`: audit-2026-05-25 (I6) — sourced from
+ *     `actor.sessionId` when `actor.principal === "user"`. Pre-fix this
+ *     was always `undefined`, which broke cancelOrder + regeneratePix
+ *     ("Autenticação necessária" hard-throw on missing customerId) and
+ *     addToCart for authenticated carts (assertCartOwnership rejected
+ *     undefined against a cart with a non-null customer_id). The
+ *     dispatcher's try/catch converted those throws to
+ *     `{kind: 'failed'}`, the adapter logged them, and the defer-resolver
+ *     committed the resume as durable — silent data loss for every
+ *     PIX-deferred kernel-direct intent owned by an authenticated
+ *     customer.
+ *
+ *     Customer-initiated routes (buildCustomerEnvelope at
+ *     customer-intent-gateway.ts) set `actor.sessionId = customerId`
+ *     by convention. System-actor envelopes use
+ *     `${source}:${eventId}` for sessionId — those should never reach
+ *     this resume path, but the principal check defense-in-depths
+ *     against a malformed parked envelope leaking a non-customerId
+ *     value through.
  */
-function buildResumeKernelContext(sessionId: string): AgentContext {
+function buildResumeKernelContext(
+  sessionId: string,
+  actor: IntentActor,
+): AgentContext {
+  const customerId =
+    actor.principal === "user" && actor.sessionId.length > 0
+      ? actor.sessionId
+      : undefined
   return {
     sessionId,
     channel: Channel.WhatsApp,
     userType: "customer",
+    ...(customerId !== undefined ? { customerId } : {}),
   }
 }
 
@@ -192,7 +213,7 @@ export async function dispatchResumedKernelEnvelope(
     }
   }
 
-  const ctx = buildResumeKernelContext(sessionId)
+  const ctx = buildResumeKernelContext(sessionId, envelope.actor)
   const input = extractInput(envelope)
 
   const addToCartFn = deps.addToCart ?? addToCart

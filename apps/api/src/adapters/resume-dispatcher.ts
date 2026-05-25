@@ -315,6 +315,22 @@ async function dispatchResumedKernel(args: {
   }
 
   if (result.kind === "failed") {
+    // audit-2026-05-25 (I6): pre-fix this returned silently after
+    // logging, so the upstream defer-resolver treated the resume as
+    // "completed" — SETNX-committed defer:resumed:{hash}, DEL'd parked
+    // key, INCRed quota counter. The destructive mutation never ran
+    // but the framework's dedup ledger now blocks any retry. The
+    // customer's PIX was captured; their action was lost; nothing
+    // surfaced to operators.
+    //
+    // Fix: re-throw the underlying error. The defer-resolver's existing
+    // throw-path DLQ (defer-resolver.ts:751) catches it, pushes to the
+    // dead-letter queue, and crucially DOES NOT commit defer:resumed.
+    // A retry from NATS redelivery (or recovery scan) becomes possible.
+    //
+    // A future audit event `kernel.resume.failed` carrying intentHash +
+    // toolName + error class would let operator dashboards distinguish
+    // this from other DLQ entries — tracked as a follow-up.
     log?.error(
       {
         sessionId,
@@ -322,9 +338,9 @@ async function dispatchResumedKernel(args: {
         toolName: result.toolName,
         err: result.error.message,
       },
-      "[resume-dispatcher] kernel-covered resume tool threw — audit-only outcome",
+      "[resume-dispatcher] kernel-covered resume tool threw — surfacing to DLQ",
     )
-    return
+    throw result.error
   }
 
   // result.kind === "unsupported"
