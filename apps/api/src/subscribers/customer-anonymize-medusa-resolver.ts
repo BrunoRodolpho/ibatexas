@@ -45,6 +45,7 @@ import { subscribeNatsEvent, publishNatsEvent } from "@ibatexas/nats-client";
 import {
   clearMedusaAnonymizePending,
   medusaAdjudicated,
+  readMedusaAnonymizePending,
   recordMedusaAnonymizePending,
 } from "@ibatexas/tools";
 import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
@@ -142,6 +143,19 @@ export async function handleMedusaAnonymizePending(
   // can find it if THIS subscriber pass crashes mid-flight. Best-effort
   // — Redis unreachable means no retry, but the destructive op is still
   // attempted via the NATS event.
+  //
+  // audit-2026-05-25 (I11): preserve `firstEmittedAt` across retries.
+  // Pre-fix the subscriber called recordMedusaAnonymizePending without
+  // passing firstEmittedAt; the function's `entry.firstEmittedAt ?? now`
+  // fallback overwrote the field on every retry receipt. The documented
+  // semantics ("Wall-clock ms when the pending event was first
+  // emitted") were silently falsified — operator dashboards joining on
+  // firstEmittedAt to detect stuck-for-hours customers reported stale
+  // "just started" values. Now we read the existing entry first and
+  // propagate the original firstEmittedAt.
+  const existingEntry = await readMedusaAnonymizePending(customerId, log).catch(
+    () => null,
+  );
   await recordMedusaAnonymizePending(
     {
       customerId,
@@ -149,6 +163,9 @@ export async function handleMedusaAnonymizePending(
       parkedIntentHash,
       parkedAt,
       attempt: payload.attempt,
+      ...(existingEntry?.firstEmittedAt !== undefined
+        ? { firstEmittedAt: existingEntry.firstEmittedAt }
+        : {}),
     },
     log,
   );

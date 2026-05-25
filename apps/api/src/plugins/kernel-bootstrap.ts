@@ -43,6 +43,7 @@ import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import {
   KNOWN_INTENT_KINDS,
+  setAuditDedupHook,
   setAuditLagHook,
   setAuditRedactorFailureHook,
   setAuditSinkBufferSizeHook,
@@ -50,6 +51,7 @@ import {
   setAuditSinkSpillSizeHook,
   setDeferQuotaExceededHook,
 } from "@ibatexas/llm-provider"
+import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { prisma } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
@@ -144,6 +146,36 @@ export function installKernelMetricsSink(
   // `quota_exceeded` rejection bumps `kernel_defer_quota_exceeded_total{kind}`.
   setDeferQuotaExceededHook((kind) => {
     recorder.recordDeferQuotaExceeded(kind)
+  })
+  // audit-2026-05-25 (I11): wire the dedup hooks. PR #62 review found
+  // both setAuditDedupHook (in-process sink path) and
+  // setAuditConsumerDedupHook (NATS subscriber path) were exported but
+  // never installed at boot — so once the upstream
+  // `@adjudicate/audit-postgres` UNIQUE(intent_hash, recorded_at)
+  // constraint ships, `kernel_audit_dedup_total{path}` would have
+  // stayed at zero forever, depriving operators of the documented
+  // "schema deployed" signal.
+  //
+  // Until the constraint lands AND the recorder grows an explicit
+  // recordAuditDedup({path}) → Prometheus counter, we forward the
+  // events to the structured logger so they surface in log-search +
+  // can be aggregated by operators. The Sentry breadcrumb gives
+  // incident responders timeline visibility.
+  setAuditDedupHook((path) => {
+    logger.info({ path }, "[audit-dedup] in-process sink dropped duplicate audit row")
+    Sentry.addBreadcrumb({
+      category: "audit-dedup",
+      level: "info",
+      message: `audit dedup fired (path=${path})`,
+    })
+  })
+  setAuditConsumerDedupHook(() => {
+    logger.info({ path: "consumer" }, "[audit-dedup] NATS audit-consumer dropped duplicate audit row")
+    Sentry.addBreadcrumb({
+      category: "audit-dedup",
+      level: "info",
+      message: "audit dedup fired (path=consumer)",
+    })
   })
   _recorder = recorder
   return register
