@@ -240,6 +240,23 @@ function detectForgery(envelope: IntentEnvelope): ForgeryFinding | null {
   return null;
 }
 
+// audit-2026-05-25 (I12): safe-truncate caps to prevent the audit
+// pipeline DoS the multi-agent review found. An attacker who reaches
+// runCustomerIntent with a forged envelope can supply arbitrarily
+// large `envelope.kind` or `finding.value` strings; the
+// emitForgeryAudit body previously interpolated them unbounded into
+// the audit-record kind + detail, producing multi-MB rows that hit
+// Postgres column limits, NATS broker max-message size, and pino
+// console heap pressure. The very surface designed to capture forgery
+// attempts became the attack vector.
+const FORGERY_KIND_MAX_LENGTH = 256;
+const FORGERY_DETAIL_MAX_LENGTH = 1024;
+
+function safeTruncate(input: string, maxLength: number): string {
+  if (input.length <= maxLength) return input;
+  return `${input.slice(0, maxLength)}…[truncated:${input.length - maxLength}]`;
+}
+
 async function emitForgeryAudit(
   envelope: IntentEnvelope,
   finding: ForgeryFinding,
@@ -252,9 +269,24 @@ async function emitForgeryAudit(
     // Re-stamp the envelope as a system-actor audit subject so the
     // rejection trail itself is not minted under the customer's identity.
     // The original forged values are captured in `refusal.detail`.
+    const safeOriginalKind = safeTruncate(
+      String(envelope.kind),
+      FORGERY_KIND_MAX_LENGTH,
+    );
+    const safeFindingValue = safeTruncate(
+      String(finding.value),
+      FORGERY_DETAIL_MAX_LENGTH,
+    );
     const rejection = buildEnvelope({
-      kind: `${envelope.kind}.forgery_rejected`,
-      payload: { route: ctx.route, originalKind: envelope.kind, field: finding.field },
+      kind: safeTruncate(
+        `${safeOriginalKind}.forgery_rejected`,
+        FORGERY_KIND_MAX_LENGTH,
+      ),
+      payload: {
+        route: ctx.route,
+        originalKind: safeOriginalKind,
+        field: finding.field,
+      },
       actor: {
         principal: "system",
         sessionId: `customer-intent-gateway:${ctx.route}:${ctx.customerId}`,
@@ -270,7 +302,7 @@ async function emitForgeryAudit(
           kind: "SECURITY",
           code: FORGERY_REJECTION_CODE,
           userFacing: "Requisição inválida.",
-          detail: `forged ${finding.field}=${String(finding.value)}`,
+          detail: `forged ${finding.field}=${safeFindingValue}`,
         },
         basis: [],
       },
