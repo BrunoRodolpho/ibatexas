@@ -141,6 +141,18 @@ const REDACT_FIELDS: ReadonlySet<string> = new Set([
   // exempt because actor lives outside payload, but if the LLM ever inserts a
   // sessionId-like field INSIDE payload it gets scrubbed)
   "msisdn",
+  // audit-2026-05-25 (I3) — OTP tokens. The customer's 6-digit Twilio
+  // Verify OTP flows through CustomerAnonymizePayload.otpToken (see
+  // apps/api/src/routes/me.ts ~line 766) and would otherwise reach the
+  // audit pipeline verbatim within Twilio's TTL window. The 6-digit
+  // OTP shape doesn't match CPF/email/phone/card regex defenses, so we
+  // pin it at the field-name layer. The customer.anonymize per-kind
+  // rule covers the canonical case; this set entry catches any future
+  // intent kind that carries the same field name.
+  "otptoken",
+  "otp_token",
+  "otpcode",
+  "otp_code",
 ])
 
 /**
@@ -425,8 +437,49 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   // `CustomerAnonymizePayload` is bounded (scope/customerId/otpToken) but
   // older audit fixtures and route layers attach a free-form `reason`
   // string. We over-redact it.
-  "customer.anonymize": ["reason"],
-  "customer.anonymize.cancel": ["reason"],
+  //
+  // audit-2026-05-25 (I3): otpToken — the customer's 6-digit Twilio
+  // Verify OTP is embedded literal in CustomerAnonymizePayload (see
+  // apps/api/src/routes/me.ts ~line 766). It is NOT a CPF/email/phone
+  // shape so the regex defenses don't catch it; it is NOT in
+  // REDACT_FIELDS or HASH_FIELDS by name. Pre-fix, the literal OTP
+  // flowed to NATS subject ibatexas.audit.intent.decision.v1 + Postgres
+  // intent_audit in cleartext within Twilio Verify's validity window.
+  // Per-kind rule explicitly covers it as a subtree; the field is also
+  // added to REDACT_FIELDS globally for defense-in-depth across any
+  // future intent kind that carries it.
+  "customer.anonymize": ["reason", "otpToken"],
+  "customer.anonymize.cancel": ["reason", "otpToken"],
+
+  // ── Wrapper-level intent kinds (audit-2026-05-25 I3) ────────────────────
+  // The 4 wrapper meta types (twilio/stripe/medusa/medusa-store) emit
+  // intent kinds OUTSIDE KNOWN_INTENT_KINDS per the D10 policy
+  // (`packages/llm-provider/src/intent-kinds.ts`). The per-intent-redactor
+  // conformance test iterates KNOWN_INTENT_KINDS so the gap was invisible;
+  // the gap-sweep finding flagged that `twilio.message.send`'s `body`
+  // field (rendered pt-BR customer-name greetings like "Olá João, …")
+  // bypassed both the global field-name rules (no match on "body") and
+  // the regex defenses (first names aren't CPF/email/phone shapes).
+  //
+  // Rules below cover the common PII vectors in each wrapper namespace:
+  //   - body/text/templateVariables — customer-typed or LLM-rendered
+  //   - description/title — admin or customer free-form fields
+  //   - note/comment — admin annotations
+  //   - metadata — opaque object that can carry arbitrary PII
+  "twilio.message.send": ["body", "text", "templateVariables", "variables"],
+  "medusa.admin.customer.update": ["metadata", "first_name", "last_name", "company_name"],
+  "medusa.admin.order.update_metadata": ["metadata"],
+  "medusa.admin.order.edit.create": ["description", "internal_note"],
+  "medusa.admin.product.update": ["description", "subtitle", "metadata"],
+  "medusa.cart.update": ["metadata", "context"],
+  "medusa.cart.complete": ["metadata"],
+  "medusa.store.cart.update": ["metadata", "context"],
+  "medusa.store.cart.email.update": ["metadata"],
+  "medusa.store.cart.metadata.update": ["metadata"],
+  "medusa.store.cart.complete": ["metadata"],
+  "stripe.payment_intent.create": ["description", "metadata", "statement_descriptor"],
+  "stripe.refund.create": ["reason", "metadata"],
+  "stripe.charge.update": ["description", "metadata"],
 
   // ── Validation events (synthesised payloads carry customer-typed text) ─
   "validation.text.rewrite": ["originalText", "rewritten"],
@@ -617,6 +670,21 @@ export function createAuditRedactor(
       // payload using the SAME kind rules. The intent kind is preserved
       // across REWRITE (sanitization, normalization, capping only — see
       // `decision.ts`), so reusing `kindFieldPaths` is safe.
+      //
+      // audit-2026-05-25 (I3): ALSO walk decision.basis[].detail. The
+      // gap-sweep review found that subscribers like
+      // apps/api/src/subscribers/customer-anonymize-medusa-resolver.ts
+      // build EXECUTE-shaped decisions with
+      // `basis: [{category:'business', code:RULE_VIOLATED,
+      // detail: {errorMessage: (err as Error).message ?? String(err)}}]`.
+      // Pre-fix, the redactor's walk skipped decision.basis entirely
+      // (the file-level comment explicitly listed `decision_basis` as
+      // "untouched"). MedusaRequestError messages can quote PII
+      // ("Could not find customer with email user@example.com") so the
+      // unredacted detail flowed to NATS + Postgres. Fix walks each
+      // basis entry's detail object through the same redactor (no
+      // kindFieldPaths because rules are payload-keyed; global
+      // REDACT/HASH/regex defenses still apply).
       const redactedDecision = redactDecisionPayload(
         record.decision,
         {
@@ -739,23 +807,44 @@ function redactDecisionPayload(
   decision: Decision,
   ctx: WalkContext,
 ): Decision {
-  if (decision.kind !== "REWRITE") {
-    return decision
+  // audit-2026-05-25 (I3): every decision kind has `basis: BasisEntry[]`
+  // and each entry may carry a free-form `detail` object. Walk every
+  // detail through the redactor so embedded PII (Medusa error strings
+  // quoting customer email/CPF, free-form business-rule violation
+  // notes, etc.) gets scrubbed. Uses a context with EMPTY kindFieldPaths
+  // because the kind-rule prefixes are payload-keyed; the global
+  // REDACT_FIELDS / HASH_FIELDS sets and the regex defenses still apply
+  // at every nesting level.
+  const basisCtx: WalkContext = { ...ctx, kindFieldPaths: new Set<string>() }
+  const redactedBasis = (decision.basis ?? []).map((b) => {
+    if (b.detail === undefined) return b
+    const redactedDetail = walk(b.detail, "", basisCtx)
+    return { ...b, detail: redactedDetail as Record<string, unknown> }
+  })
+  const baseWithBasis: Decision = {
+    ...decision,
+    basis: redactedBasis,
+  } as Decision
+
+  if (baseWithBasis.kind !== "REWRITE") {
+    return baseWithBasis
   }
-  const rewrittenPayload = walk(decision.rewritten.payload, "", ctx)
+
+  // REWRITE-only: also walk the rewritten envelope's payload + actor.
+  const rewrittenPayload = walk(baseWithBasis.rewritten.payload, "", ctx)
   // Also hash the rewritten envelope's actor.sessionId for parity with
   // the top-level actor redaction (P0-10). If the kernel rebuilt the
   // rewritten envelope with the original actor, hashing here is
   // defense-in-depth: a misbehaving REWRITE that swapped the actor for
   // a customerId-bearing sessionId would still get scrubbed.
   const rewrittenActor = redactActorSessionId(
-    decision.rewritten.actor,
+    baseWithBasis.rewritten.actor,
     ctx.hashSecret,
   )
   return {
-    ...decision,
+    ...baseWithBasis,
     rewritten: {
-      ...decision.rewritten,
+      ...baseWithBasis.rewritten,
       actor: rewrittenActor,
       payload: rewrittenPayload,
     },
