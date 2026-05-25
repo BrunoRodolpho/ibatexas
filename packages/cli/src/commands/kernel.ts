@@ -76,10 +76,13 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   const ledgerEnabled = parseBoolEnv(process.env.IBX_LEDGER_ENABLED, false)
   const ledgerEnforce = parseBoolEnv(process.env.IBX_LEDGER_ENFORCE, false)
   const ledgerFailOpen = parseBoolEnv(process.env.IBX_LEDGER_FAIL_OPEN, false)
-  const postgresEnabled = parseBoolEnv(
-    process.env.IBX_AUDIT_POSTGRES_ENABLED,
-    false,
-  )
+  // audit-2026-05-25 (I13): the IBX_AUDIT_POSTGRES_ENABLED env var was
+  // deleted in the H2 cutover (audit-postgres is unconditionally part
+  // of the sink fan-out per CLAUDE.md rule #9). The CLI's pre-cutover
+  // gating logic stayed in place and produced a no-op `ibx kernel
+  // replay` + a misleading "TODO: enable IBX_AUDIT_POSTGRES_ENABLED"
+  // message on healthy deployments. Removed.
+  const postgresEnabled = true
 
   // Pull KNOWN_INTENT_KINDS lazily; the imports drag the policy bundles
   // into the CLI process which is fine but slow on cold start.
@@ -155,10 +158,13 @@ async function runReplay(opts: {
   }
   const limit = Number.parseInt(opts.limit ?? "1000", 10)
   // NEW-P1-ENV: see runStatus() above for rationale.
-  const postgresEnabled = parseBoolEnv(
-    process.env.IBX_AUDIT_POSTGRES_ENABLED,
-    false,
-  )
+  // audit-2026-05-25 (I13): the IBX_AUDIT_POSTGRES_ENABLED env var was
+  // deleted in the H2 cutover (audit-postgres is unconditionally part
+  // of the sink fan-out per CLAUDE.md rule #9). The CLI's pre-cutover
+  // gating logic stayed in place and produced a no-op `ibx kernel
+  // replay` + a misleading "TODO: enable IBX_AUDIT_POSTGRES_ENABLED"
+  // message on healthy deployments. Removed.
+  const postgresEnabled = true
 
   console.log()
   console.log(chalk.bold("ibx kernel replay"))

@@ -197,14 +197,20 @@ export async function handleAnonymizeGraceTimeout(
           reason: "defer_resumed",
         },
       });
-      void getAuditSink()
-        .emit(record)
-        .catch((err: unknown) => {
-          log?.warn(
-            { customerId, intentHash: event.intentHash, err: (err as Error).message },
-            "[anonymize-grace-resolver] cancel_won_race audit emit failed",
-          );
-        });
+      // audit-2026-05-25 (I13): await the emit instead of fire-and-forget.
+      // Pre-fix the LGPD-relevant `cancel_won_race` denial event was
+      // silently lost on audit-sink failures (only logged a warn).
+      // The audit-sink itself has retry + spill machinery; awaiting
+      // lets that fire. Errors are still caught + logged so the
+      // subscriber loop isn't broken by audit-pipeline outages.
+      try {
+        await getAuditSink().emit(record);
+      } catch (err) {
+        log?.warn(
+          { customerId, intentHash: event.intentHash, err: (err as Error).message },
+          "[anonymize-grace-resolver] cancel_won_race audit emit failed",
+        );
+      }
     } catch (err) {
       log?.warn(
         { customerId, intentHash: event.intentHash, err: (err as Error).message },

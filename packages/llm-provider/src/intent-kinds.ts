@@ -184,6 +184,19 @@ const CUSTOMER_ONBOARDING_INTENT_KINDS = [
 // Future Pack growth (`@ibatexas/pack-auth`, `@ibatexas/pack-loyalty`,
 // `@ibatexas/pack-ops`) extends this set from inside their own modules.
 
+// audit-2026-05-25 (I13): loyalty.stamp.add is a real kernel-gated
+// domain mutation (introduced this PR — cart-intelligence.ts:362,
+// loyalty.service.ts:93, loyalty-policy.ts:28) but was absent from
+// KNOWN_INTENT_KINDS. Absence excluded it from assertPackCoverage
+// boot-time check, the per-intent redactor conformance test, and the
+// kernel-metrics sink's knownIntentKinds list. Add it explicitly so
+// the existing T3 conformance test gates redaction rules for it
+// (covered by the global HASH_FIELDS rule on `customerId`) and
+// future loyalty kinds follow the same registration convention.
+export const LOYALTY_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
+  "loyalty.stamp.add",
+])
+
 export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...ORDER_INTENT_KINDS,
   ...RESERVATION_INTENT_KINDS,
@@ -191,4 +204,5 @@ export const KNOWN_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   ...PIX_INTENT_KINDS,
   ...PAYMENT_INTENT_KINDS,
   ...CUSTOMER_ONBOARDING_INTENT_KINDS,
+  ...LOYALTY_INTENT_KINDS,
 ])

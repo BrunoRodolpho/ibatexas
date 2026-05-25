@@ -576,6 +576,9 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "customer.address.add", // address.{street,...} covered by global HASH_FIELDS
   "customer.address.remove", // addressId only
 
+  // ── Loyalty (audit-2026-05-25 I13) ───────────────────────────────────
+  "loyalty.stamp.add", // {customerId} only — covered by global HASH_FIELDS
+
   // ── PIX Charge (adjudicate/pack-payments-pix) ───────────────────────
   // `pix.charge.create.payerDocument` is digit-only CPF (11) or CNPJ (14).
   // The CPF regex defense catches the 11-digit shape; the 14-digit CNPJ
