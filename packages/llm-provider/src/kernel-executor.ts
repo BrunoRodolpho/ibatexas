@@ -68,6 +68,12 @@ const KERNEL_REFUSAL_ESCALATE_PT_BR =
   "Estou pedindo revisão antes de seguir. Um atendente assume daqui."
 const KERNEL_REFUSAL_DEFER_PT_BR =
   "Aguardando confirmação. Te aviso assim que tudo estiver certo."
+// audit-2026-05-25 (I4): distinct refusal when Redis-side park itself
+// throws (network blip, NX SETNX timeout). Distinct from the happy-path
+// "aguardando confirmação" copy because the operation was NOT queued —
+// the customer must retry. Plain refusal, no implied resume timeline.
+const KERNEL_REFUSAL_DEFER_PARK_FAILED_PT_BR =
+  "Não foi possível registrar seu pedido agora. Tente novamente em alguns instantes."
 
 // ── Async timeout helper ─────────────────────────────────────────────────────
 
@@ -269,7 +275,20 @@ async function adjudicateKernelMutation<K extends string, P>(
           }
         }
       } catch (err) {
+        // audit-2026-05-25 (I4): pre-fix this catch only logged and fell
+        // through to `return { ..., parked: true }`, which told the
+        // downstream caller (and ultimately the user) that the intent
+        // was deferred-and-resumable. But the throw means Redis did NOT
+        // accept the placeholder OR the envelope — no parked key exists,
+        // no defer-timeout-sweeper will surface it, no resume subscriber
+        // will fire. The customer's destructive action is silently lost.
+        // Fix: surface a distinct refusal instead of pretending success.
         console.error("[kernel-executor] DEFER park failed:", (err as Error).message)
+        return {
+          proceed: false,
+          decision,
+          userFacing: KERNEL_REFUSAL_DEFER_PARK_FAILED_PT_BR,
+        }
       }
       return {
         proceed: false,

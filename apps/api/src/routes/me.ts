@@ -558,10 +558,40 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
             }
           }
         } catch (err) {
+          // audit-2026-05-25 (I4): pre-fix this catch only logged and
+          // fell through to persistPendingDeletion() + 202 'Pedido de
+          // exclusão recebido. Você tem 24 horas para cancelar.' But
+          // the throw means Redis did NOT accept the placeholder OR
+          // envelope; no defer:pending:{customerId} key exists; the
+          // anonymize-grace-resolver will never fire; the LGPD Art. 18
+          // + ANPD 15-day deletion deadline silently passes. Customer
+          // received a 202 confirming a deletion that will never run.
+          // Fix: surface a distinct 503 + refusal so the customer
+          // retries instead of waiting 24h+ for a deletion that won't
+          // happen.
           request.log.error(
             { customerId, err: (err as Error).message },
             "[me/anonymize] DEFER park failed",
           );
+          return {
+            statusCode: 503,
+            body: {
+              status: "error",
+              message:
+                "Não foi possível registrar seu pedido de exclusão agora. Tente novamente em alguns instantes.",
+              reason: "park_failed",
+            },
+            decision: {
+              kind: "REFUSE" as const,
+              refusal: {
+                kind: "BUSINESS_RULE" as const,
+                code: "park_failed",
+                userFacing:
+                  "Não foi possível registrar seu pedido de exclusão agora. Tente novamente em alguns instantes.",
+              },
+              basis: [],
+            },
+          };
         }
 
         if (parkRefusal) {
@@ -855,10 +885,40 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
             }
           }
         } catch (err) {
+          // audit-2026-05-25 (I4): pre-fix this catch only logged and
+          // fell through to persistPendingDeletion() + 202 'Pedido de
+          // exclusão recebido. Você tem 24 horas para cancelar.' But
+          // the throw means Redis did NOT accept the placeholder OR
+          // envelope; no defer:pending:{customerId} key exists; the
+          // anonymize-grace-resolver will never fire; the LGPD Art. 18
+          // + ANPD 15-day deletion deadline silently passes. Customer
+          // received a 202 confirming a deletion that will never run.
+          // Fix: surface a distinct 503 + refusal so the customer
+          // retries instead of waiting 24h+ for a deletion that won't
+          // happen.
           request.log.error(
             { customerId, err: (err as Error).message },
             "[me/anonymize] DEFER park failed",
           );
+          return {
+            statusCode: 503,
+            body: {
+              status: "error",
+              message:
+                "Não foi possível registrar seu pedido de exclusão agora. Tente novamente em alguns instantes.",
+              reason: "park_failed",
+            },
+            decision: {
+              kind: "REFUSE" as const,
+              refusal: {
+                kind: "BUSINESS_RULE" as const,
+                code: "park_failed",
+                userFacing:
+                  "Não foi possível registrar seu pedido de exclusão agora. Tente novamente em alguns instantes.",
+              },
+              basis: [],
+            },
+          };
         }
 
         if (parkRefusal) {
