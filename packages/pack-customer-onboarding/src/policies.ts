@@ -286,7 +286,20 @@ const enforceProfileRateLimit: CustomerGuard = (envelope, state) => {
 const validateCpfShape: CustomerGuard = (envelope) => {
   if (envelope.kind !== "customer.pix.details.save") return null
   const payload = envelope.payload as { cpf?: unknown }
-  if (typeof payload.cpf !== "string" || !isValidCpf(payload.cpf)) {
+  // audit-2026-05-25 (I10): skip validation when cpf is absent or empty.
+  // Pre-fix the cachePixDetails envelope path at
+  // packages/llm-provider/src/machine/actions.ts:415 supplied
+  // `cpf: data.cpf ?? ""` to satisfy a previously-non-optional payload
+  // shape. validateCpfShape ran `isValidCpf("")` → false → REFUSE,
+  // which blocked name + email persistence for every guest-style PIX
+  // checkout. CustomerPixDetailsSavePayload.cpf is now optional; this
+  // guard treats absence as "nothing to validate, let the upstream
+  // executor handle name/email persistence." Presence still triggers
+  // Modulo-11 validation.
+  if (typeof payload.cpf !== "string" || payload.cpf.length === 0) {
+    return null
+  }
+  if (!isValidCpf(payload.cpf)) {
     return decisionRefuse(refuseCpfInvalid(), [
       basis("business", BASIS_CODES.business.RULE_VIOLATED, {
         rule: "cpf_invalid_format",

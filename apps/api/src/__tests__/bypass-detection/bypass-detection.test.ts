@@ -133,6 +133,11 @@ const ALLOWED_MEDUSA_DIRECT = new Set<string>([
   // task 17 defines the wrapper itself.
   "packages/tools/src/medusa/adjudicated.ts",
   "packages/tools/src/medusa/client.ts",
+  // W9 — sibling STORE-scope wrapper. Itself dispatches to medusaStore
+  // after kernel adjudication; the file's bare medusaStore(..., POST/DELETE)
+  // invocations are the wrapper's own transport bridge and must not be
+  // flagged by the bypass scanner. Sibling rationale to ./adjudicated.ts.
+  "packages/tools/src/medusa/store-adjudicated.ts",
   // read-only fetches in tool helpers; the medusaAdjudicated() wrapper is
   // for POST/PUT/DELETE only. Each file below has been audited and only
   // contains GET calls (W3 P1-L verification, 2026-05-23).
@@ -445,15 +450,11 @@ describe("Bypass detection — Scenario 1: direct prisma writes for kernel-owned
  *   (b) Per-kind policy bundle decisions (auth, taint, business).
  *   (c) Test coverage for the LLM-flow → kernel → SDK dispatch path.
  *
- * That work is W9-scope (cart-egress governance). Adding the 10 sites
- * to the deferred allowlist makes the gap explicit + machine-tracked,
- * AND lets V4 still fail the build the moment ANY NEW unwired site
- * appears in `packages/tools/src/` (the sentinel test
- * "DEFERRED_MEDUSA_MIGRATIONS is empty in steady state" was rewired
- * below to track the size baseline).
- *
- * Each entry below has the W9 follow-up implied: "migrate to
- * medusaAdjudicated with a new medusa.store.cart.* intent kind."
+ * That work landed in the audit-2026-05-23 Wave 9 closeout: the
+ * medusaStoreAdjudicated wrapper landed in commit `8653a13` and the 10
+ * cart-store sites were migrated to it across commits in the same
+ * branch (3 parallel migration agents per the wave-4 plan). The set
+ * below is now empty in steady state.
  *
  * RULE: any future entry MUST come with a paired comment naming the
  * follow-up ticket. Removing an entry requires the file to actually be
@@ -462,15 +463,7 @@ describe("Bypass detection — Scenario 1: direct prisma writes for kernel-owned
  * by a companion CI check (todo: add) — for now reviewers must scrutinise.
  */
 const DEFERRED_MEDUSA_MIGRATIONS: ReadonlySet<string> = new Set<string>([
-  // ── W8-V4 deferred (W9 follow-up: cart-egress governance) ──────────
-  // All 10 entries are LLM-callable cart-tool STORE-scope mutations
-  // that need new medusa.store.cart.* intent kinds in the wrapper.
-  "packages/tools/src/cart/add-to-cart.ts",
-  "packages/tools/src/cart/apply-coupon.ts",
-  "packages/tools/src/cart/create-checkout.ts",
-  "packages/tools/src/cart/get-or-create-cart.ts",
-  "packages/tools/src/cart/remove-from-cart.ts",
-  "packages/tools/src/cart/update-cart.ts",
+  // empty — Wave 9 cart-egress migration is complete.
 ])
 
 describe("Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside medusaAdjudicated()", () => {
@@ -501,19 +494,13 @@ describe("Bypass detection — Scenario 2: medusaStore/medusaAdmin write outside
   //      (covered by the "detects all 4 multi-line bypass cases" test
   //      below — pinned via the fixture, independent of production tree
   //      state).
-  //   2. DEFERRED_MEDUSA_MIGRATIONS size matches the W8-V4 baseline
-  //      (6 cart-tool files). If the set grows, every NEW entry MUST be
-  //      paired with a follow-up ticket comment. If it shrinks (because
-  //      W9 migrated a site to medusaAdjudicated), drop the count and
-  //      mark the migration in the comment block above.
-  //
-  // The pre-W8 sentinel asserted the set was empty (post-P0-X9 reality);
-  // W8-V4 widened MEDUSA_SCAN_DIRS to include `packages/tools/src/` and
-  // surfaced 10 store-scope cart-mutation POSTs that were structurally
-  // invisible to CI before. Those 10 sites span 6 files (create-checkout
-  // alone hosts 5) and are deferred to W9.
-  it("DEFERRED_MEDUSA_MIGRATIONS size matches the W8-V4 baseline (6 cart-tool files — promotion sentinel)", () => {
-    expect(DEFERRED_MEDUSA_MIGRATIONS.size).toBe(6)
+  //   2. DEFERRED_MEDUSA_MIGRATIONS is empty in steady state. Post Wave 9
+  //      cart-egress migration (medusaStoreAdjudicated wrapper at commit
+  //      `8653a13` + 10 site migrations on the same branch), there are
+  //      no known pending Medusa-write bypasses. Any new entry MUST be
+  //      paired with a follow-up ticket comment in the set above.
+  it("DEFERRED_MEDUSA_MIGRATIONS is empty in steady state (Wave 9 cart-egress closed)", () => {
+    expect(DEFERRED_MEDUSA_MIGRATIONS.size).toBe(0)
   })
 
   // Keep the original single-line scan running too — defense in depth
@@ -837,16 +824,26 @@ const EXECUTE_RAW_SCAN_DIRS = [
 
 /**
  * Direct `twilio.messages.create` / Twilio SDK send. WhatsApp messaging
- * should go through `whatsappPack` adjudication for pt-BR validation,
- * rate limiting, and audit. The OTP path uses Twilio Verify (a different
- * surface) which is allowed.
+ * should go through `twilioAdjudicated.messages.create()` (kernel-gated
+ * egress wrapper in `@ibatexas/tools`) so each send produces an audit
+ * record and the inline policy bundle governs egress. The OTP path uses
+ * Twilio Verify (a different surface — `verifications.create` /
+ * `verificationChecks.create`) which is filtered out by the test below.
  *
- * Allow-list: WhatsApp Pack + admin/auth OTP modules.
+ * Allow-list: the wrapper itself.
+ *
+ * ── audit-2026-05-23 ─────────────────────────────────────────────────
+ * The previous allowlist referenced `apps/api/src/whatsapp/sender.ts`
+ * which never existed on disk (a real `packages/tools/src/whatsapp/
+ * sender.ts` exists but is just a DI seam — no `messages.create`).
+ * The 2× `messages.create` in `apps/api/src/whatsapp/client.ts` are
+ * now routed through `twilioAdjudicated`; the scan covers
+ * `apps/api/src/whatsapp` so any future regression at the bare-SDK
+ * level surfaces. The wrapper file is the only legitimate site.
  */
 const ALLOWED_TWILIO_MESSAGES = new Set<string>([
-  // Twilio SDK wrapper modules (the only legitimate clients).
-  "apps/api/src/whatsapp/sender.ts",
-  "apps/api/src/whatsapp/init.ts",
+  // The kernel-gated wrapper itself (audit-2026-05-23).
+  "packages/tools/src/twilio/adjudicated.ts",
 ])
 
 const FORBIDDEN_TWILIO_MESSAGES = [
@@ -857,6 +854,7 @@ const TWILIO_SCAN_DIRS = [
   "apps/api/src/routes",
   "apps/api/src/subscribers",
   "apps/api/src/jobs",
+  "apps/api/src/whatsapp",
   "packages/tools/src",
 ]
 
@@ -950,6 +948,11 @@ describe("Bypass detection — W6-8 extension: direct twilio.messages.create out
         if (/verificationChecks?\.create/.test(t)) return false
         // Medusa workflow messages — out of scope.
         if (/inboxMessages|workflowMessages/.test(t)) return false
+        // audit-2026-05-23: `twilioAdjudicated.messages.create(...)` is
+        // the kernel-gated wrapper call — that IS the legitimate egress
+        // path. Only bare-SDK `client.messages.create` / `twilio.messages.create`
+        // counts as a bypass.
+        if (/twilioAdjudicated\.messages\.create/.test(t)) return false
         return true
       })
       if (real.length > 0) {
@@ -957,7 +960,7 @@ describe("Bypass detection — W6-8 extension: direct twilio.messages.create out
           .map((o) => `  • ${o.file}:${o.line}  →  ${o.text}`)
           .join("\n")
         throw new Error(
-          `Direct twilio.messages.create detected outside the WhatsApp Pack allow-list — route WhatsApp sends through whatsappPack adjudication.\n\nOffenders (${real.length}):\n${lines}`,
+          `Direct twilio.messages.create detected outside the WhatsApp Pack allow-list — route WhatsApp sends through twilioAdjudicated.messages.create() in @ibatexas/tools.\n\nOffenders (${real.length}):\n${lines}`,
         )
       }
       expect(real).toEqual([])

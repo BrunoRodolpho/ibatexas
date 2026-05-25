@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Phase-1 pre-cutover capability inventory of `@adjudicate/*` v1.0-rc (2026-05-22). The platform repo has since published `1.0.0` / `0.1.1` family versions and the lighthouse `@adjudicate/pack-payments-pix` has been adopted (see ADR #13). For current adopted surface, see `CLAUDE.md` rule #9 and the per-package version pins in the root `package.json`. Content preserved unchanged below as historical record.
+
+---
+
 # 05 — Adjudicate Capabilities Inventory
 
 > Investigator 5 of 8 — full capability surface of `@adjudicate/*` v1.0-rc.

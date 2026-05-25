@@ -2,12 +2,16 @@
 
 import { AddToCartInputSchema, type AddToCartInput, type AgentContext } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { MedusaRequestError } from "../medusa/client.js";
+import {
+  medusaStoreAdjudicated,
+  MedusaStoreAdjudicateRefusedError,
+} from "../medusa/store-adjudicated.js";
 import { invalidateAllQueryCache } from "../cache/query-cache.js";
 import { isAvailableNow, describeAvailabilityWindow } from "../catalog/availability.js";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
 import { assertCartOwnership } from "./assert-cart-ownership.js";
-import { medusaStoreFetch } from "./_shared.js";
 
 /** Lightweight lookup: get a product's availability window from its variant ID via Typesense.
  *  Medusa v2 removed /store/variants/{id} — search Typesense's variantsJson field instead.
@@ -51,11 +55,28 @@ export async function addToCart(
 
   let data: unknown;
   try {
-    data = await medusaStoreFetch(`/store/carts/${parsed.cartId}/line-items`, {
-      method: "POST",
-      body: JSON.stringify({ variant_id: parsed.variantId, quantity: parsed.quantity }),
-    });
+    data = await medusaStoreAdjudicated.carts.lineItems.add(
+      {
+        cartId: parsed.cartId,
+        variantId: parsed.variantId,
+        quantity: parsed.quantity,
+      },
+      {
+        sourceSubject: "cart:add-to-cart",
+        actorPrincipal: "llm",
+        auditSink: getAuditSink(),
+        ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
+        sessionId: ctx.sessionId,
+      },
+    );
   } catch (err) {
+    // audit-2026-05-24 P2-2: when the kernel REFUSEs, the wrapper attaches
+    // a kind-specific pt-BR refusal copy (`err.userFacing`) that is more
+    // helpful than the generic fallback below. Surface it directly.
+    if (err instanceof MedusaStoreAdjudicateRefusedError) {
+      return { success: false, message: err.userFacing };
+    }
+
     const isMedusaErr = err instanceof MedusaRequestError;
     const isStaleVariant = isMedusaErr && (err.statusCode === 400 || err.statusCode === 404)
       && err.responseText.includes("do not exist");

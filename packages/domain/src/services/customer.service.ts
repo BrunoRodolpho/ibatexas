@@ -15,11 +15,23 @@
 //   - customer.preferences.update   → updatePreferences
 //   - customer.pix.details.save     → updatePixDetails
 //   - customer.anonymize            → anonymizeCustomer (module-level helper)
+//   - order.review.submit           → submitReview (orders Pack — reviews are
+//                                     order-related; the orders policy bundle
+//                                     gates rating + orderId)
 
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { Prisma } from "../generated/prisma-client/client.js"
 import { prisma } from "../client.js"
+import { publishNatsEvent } from "@ibatexas/nats-client"
 import type { Channel } from "@ibatexas/types"
-import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import {
+  buildAuditRecord,
+  buildEnvelope,
+  decisionExecute,
+  type AuditSink,
+  type IntentEnvelope,
+  type Supersession,
+} from "@adjudicate/core"
 import {
   customerOnboardingPolicyBundle,
   type CustomerCreatePayload,
@@ -28,6 +40,11 @@ import {
   type CustomerAnonymizePayload,
   type CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding"
+import {
+  ordersPolicyBundle,
+  type OrderReviewSubmitPayload,
+  type OrderState,
+} from "@ibatexas/pack-orders"
 import {
   withAdjudicate,
   type AdjudicatedResult,
@@ -62,6 +79,13 @@ export function createCustomerService(options?: CustomerServiceOptions) {
     /**
      * Get or create customer preferences.
      * Allergens are always explicit arrays — never inferred (CLAUDE.md rule 1).
+     *
+     * @deprecated Use `updatePreferencesFromEnvelope` instead — the bare-arg
+     *   entry point bypasses the kernel adjudication (allergen-explicit-array
+     *   guard, audit emit, etc). Kept as the executor for the envelope
+     *   wrapper above and for any remaining callers; will be removed once
+     *   the M3 migration completes. See `customer.preferences.update` in
+     *   `packages/pack-customer-onboarding`.
      */
     async updatePreferences(
       customerId: string,
@@ -99,6 +123,12 @@ export function createCustomerService(options?: CustomerServiceOptions) {
     /**
      * Submit or update a product review.
      * Returns the updated aggregate rating for the product.
+     *
+     * @deprecated Use `submitReviewFromEnvelope` instead — the bare-arg
+     *   entry point bypasses the kernel adjudication (rating-range guard,
+     *   audit emit, etc). Kept for any remaining callers; will be removed
+     *   once the M3 migration completes. See `order.review.submit` in
+     *   `packages/pack-orders`.
      */
     async submitReview(input: {
       customerId: string
@@ -180,6 +210,12 @@ export function createCustomerService(options?: CustomerServiceOptions) {
     /**
      * Update PIX billing details (name, email, CPF) after successful PIX checkout.
      * Persists to DB so data survives Redis TTL expiry.
+     *
+     * @deprecated Use `updatePixDetailsFromEnvelope` instead — the bare-arg
+     *   entry point bypasses the kernel adjudication (CPF-shape guard, audit
+     *   emit, etc). Kept for any remaining callers; will be removed once the
+     *   M3 migration completes. See `customer.pix.details.save` in
+     *   `packages/pack-customer-onboarding`.
      */
     async updatePixDetails(customerId: string, data: { name?: string; email?: string; cpf?: string }) {
       await prisma.customer.update({
@@ -325,13 +361,57 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         state,
         customerOnboardingPolicyBundle,
         async (payload) => {
-          // Pack's allergenExclusions / dietaryFlags are ReadonlyArray<string>;
-          // service's update method accepts string[].
+          // Pack's allergenExclusions / dietaryFlags / favoriteCategories are
+          // ReadonlyArray<string>; service's update method accepts string[].
           return this.updatePreferences(extras.customerId, {
             allergenExclusions: payload.allergenExclusions as string[],
             ...(payload.dietaryFlags !== undefined
               ? { dietaryRestrictions: payload.dietaryFlags as string[] }
               : {}),
+            ...(payload.favoriteCategories !== undefined
+              ? { favoriteCategories: payload.favoriteCategories as string[] }
+              : {}),
+          })
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `order.review.submit`. UNTRUSTED-
+     * tolerant; the pack-orders policy validates the rating range
+     * (`order.review.rating_invalid`) and gates on `state.ctx.orderId`
+     * being present (`order.not_found`). The executor delegates to the
+     * legacy `submitReview()` for the Prisma upsert + aggregate stats
+     * pass, returning the updated aggregate to the caller so the cache
+     * layer in the tools package can refresh Typesense.
+     *
+     * Note: `order.review.submit` lives in the orders Pack (reviews are
+     * order-related) — the policy bundle / state shape differ from the
+     * customer-onboarding kinds above. We import both Packs here per
+     * the kernel chokepoint pattern: each *FromEnvelope method picks
+     * the Pack appropriate to its intent kind.
+     */
+    async submitReviewFromEnvelope(
+      envelope: IntentEnvelope<"order.review.submit", OrderReviewSubmitPayload>,
+      state: OrderState,
+      extras: {
+        readonly customerId: string
+        readonly channel: Channel
+      },
+    ): Promise<AdjudicatedResult<{ avgRating: number; reviewCount: number }>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        ordersPolicyBundle,
+        async (payload) => {
+          return this.submitReview({
+            customerId: extras.customerId,
+            productId: payload.productId,
+            orderId: payload.orderId,
+            rating: payload.rating,
+            ...(payload.comment !== undefined ? { comment: payload.comment } : {}),
+            channel: extras.channel,
           })
         },
         adjudicateOptions,
@@ -393,7 +473,18 @@ export async function anonymizeCustomerFromEnvelope(
     state,
     customerOnboardingPolicyBundle,
     async (payload) => {
-      const result = await anonymizeCustomer(payload.customerId)
+      // Thread the audit-scope-extension predecessor link so the per-surface
+      // scrub records emitted by anonymizeCustomer's H3 wave-a1 extension
+      // chain back to this `customer.anonymize` envelope.
+      const anonymizeOptions: AnonymizeCustomerOptions = {
+        ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+        ...(options?.log ? { log: options.log } : {}),
+        predecessor: {
+          predecessorIntentHash: envelope.intentHash,
+          predecessorAt: envelope.createdAt,
+        },
+      }
+      const result = await anonymizeCustomer(payload.customerId, anonymizeOptions)
       return result as { success: true }
     },
     adjudicateOptions,
@@ -507,6 +598,34 @@ const REVIEW_BATCH_HEAVY_THRESHOLD = 1000
 const REVIEW_BATCH_SIZE = 500
 
 /**
+ * Heavy-customer threshold for the conversation-message scrub. Below this
+ * the in-tx `updateMany` handles every message in one round-trip; at/above,
+ * messages are pre-batched OUTSIDE the main tx to avoid holding locks.
+ * audit-2026-05-24 H3 wave-a1.
+ */
+const CONVERSATION_MESSAGE_BATCH_HEAVY_THRESHOLD = 1000
+
+/** Per-batch chunk size for the conversation-message heavy path. */
+const CONVERSATION_MESSAGE_BATCH_SIZE = 500
+
+/**
+ * Placeholder content written to ConversationMessage.content during
+ * anonymization. Free-form pt-BR text cannot be safely parsed for PII;
+ * wholesale replacement is the safe option (SYNTHESIS §"surface 2").
+ */
+const CONVERSATION_MESSAGE_PLACEHOLDER = "[anonymized]"
+
+/**
+ * Heavy-customer threshold for the order-event-log scrub. Below this the
+ * in-tx `updateMany` handles every row in one round-trip; at/above, rows
+ * are pre-batched OUTSIDE the main tx. audit-2026-05-24 H3 wave-a1.
+ */
+const ORDER_EVENT_LOG_BATCH_HEAVY_THRESHOLD = 1000
+
+/** Per-batch chunk size for the order-event-log heavy path. */
+const ORDER_EVENT_LOG_BATCH_SIZE = 500
+
+/**
  * Prisma interactive-transaction timeout for the main anonymize tx.
  * 60 s covers a customer with ~5k reviews + addresses/preferences on a
  * normally-loaded primary. Heavier customers route through the batched
@@ -517,7 +636,46 @@ const ANONYMIZE_TX_TIMEOUT_MS = 60_000
 /** Prisma maxWait — how long the client waits for a free connection. */
 const ANONYMIZE_TX_MAX_WAIT_MS = 5_000
 
-export async function anonymizeCustomer(customerId: string) {
+/**
+ * Per-surface scrub kinds emitted as audit records after the main
+ * transaction commits. Each value mirrors the table the scrub targets so
+ * audit consumers can filter by surface. audit-2026-05-24 H3 wave-a1.
+ */
+const SCRUB_AUDIT_KINDS = [
+  "customer.anonymize.order_projection.scrubbed",
+  "customer.anonymize.conversation_message.scrubbed",
+  "customer.anonymize.conversation_link.scrubbed",
+  "customer.anonymize.order_status_history.scrubbed",
+  "customer.anonymize.order_event_log.scrubbed",
+  "customer.anonymize.loyalty_account.scrubbed",
+  "customer.anonymize.reservation_special_requests.scrubbed",
+] as const
+
+type ScrubAuditKind = (typeof SCRUB_AUDIT_KINDS)[number]
+
+/**
+ * Optional context for `anonymizeCustomer`. Adopters supply an `auditSink`
+ * to emit the per-surface scrub records (H3 wave-a1). `predecessor` chains
+ * each emitted record back to the original `customer.anonymize` envelope
+ * via the AuditRecord `supersedes` field. Both are optional — call sites
+ * predating the audit-scope expansion continue to work unchanged.
+ */
+export interface AnonymizeCustomerOptions {
+  readonly auditSink?: AuditSink
+  readonly predecessor?: {
+    readonly predecessorIntentHash: string
+    readonly predecessorAt: string
+  }
+  readonly log?: {
+    readonly warn?: (...args: unknown[]) => void
+    readonly error?: (...args: unknown[]) => void
+  }
+}
+
+export async function anonymizeCustomer(
+  customerId: string,
+  options?: AnonymizeCustomerOptions,
+) {
   // Compute a stable anonymized phone placeholder. UNIQUE constraint on
   // Customer.phone means we cannot null it; we substitute a non-PII
   // sentinel that's still unique per record so the column constraint
@@ -526,6 +684,19 @@ export async function anonymizeCustomer(customerId: string) {
   // value), and different customers can never collide.
   const phoneSentinel =
     "anonymized:" + createHash("sha256").update(customerId).digest("hex").slice(0, 16)
+
+  // audit-2026-05-24 H3 Wave-B: capture medusaId BEFORE the Prisma TX
+  // nulls it. The Wave-B cross-DB compensation chain needs to PATCH the
+  // Medusa-side customer row by id; once the TX scrubs Customer.medusaId
+  // to null we can no longer recover the target. If the customer was
+  // never linked to a Medusa row (medusaId === null), we skip the
+  // compensation chain entirely — there's nothing to scrub on the
+  // Medusa side.
+  const customerForCompensation = await prisma.customer.findUnique({
+    where: { id: customerId },
+    select: { medusaId: true },
+  })
+  const medusaIdForCompensation = customerForCompensation?.medusaId ?? null
 
   // Count reviews so we know whether to take the heavy-customer path.
   // `prisma.review.count` is cheap (covered by the customerId index).
@@ -579,6 +750,109 @@ export async function anonymizeCustomer(customerId: string) {
       if (result.count === 0) break
     }
     void scrubbedSoFar
+  }
+
+  // ── H3 wave-a1: ConversationMessage heavy-path pre-scrub ───────
+  //
+  // ConversationMessage rows are linked to a customer indirectly through
+  // Conversation.customerId — there is no direct FK on the messages
+  // table. Look up the customer's conversation ids first; if the message
+  // count exceeds the heavy threshold, batch the content scrub OUTSIDE
+  // the main tx (same pattern as reviews).
+
+  const customerConversationRows = await prisma.conversation.findMany({
+    where: { customerId },
+    select: { id: true },
+  })
+  const customerConversationIds = customerConversationRows.map((row) => row.id)
+
+  if (customerConversationIds.length > 0) {
+    const messageCount = await prisma.conversationMessage.count({
+      where: { conversationId: { in: customerConversationIds } },
+    })
+    if (messageCount > CONVERSATION_MESSAGE_BATCH_HEAVY_THRESHOLD) {
+      // Same loop shape as the review heavy path: re-query in id chunks
+      // so concurrent inserts don't shift the window; exit when a batch
+      // reports zero rows (every message already carries the placeholder).
+      const maxLoops =
+        Math.ceil(messageCount / CONVERSATION_MESSAGE_BATCH_SIZE) + 1
+      for (let i = 0; i < maxLoops; i++) {
+        const nextBatch = await prisma.conversationMessage.findMany({
+          where: {
+            conversationId: { in: customerConversationIds },
+            content: { not: CONVERSATION_MESSAGE_PLACEHOLDER },
+          },
+          select: { id: true },
+          take: CONVERSATION_MESSAGE_BATCH_SIZE,
+          orderBy: { id: "asc" },
+        })
+        if (nextBatch.length === 0) break
+        const ids = nextBatch.map((r) => r.id)
+        const result = await prisma.conversationMessage.updateMany({
+          where: { id: { in: ids } },
+          // audit-2026-05-25 (I9): also scrub `metadata` (Json?). No
+          // current production producer fills it (verified via
+          // conversation-archiver.ts:76 which passes no extras), but the
+          // column is schema-permitted for arbitrary JSON and any future
+          // metadata writer would otherwise leak past anonymize.
+          data: {
+            content: CONVERSATION_MESSAGE_PLACEHOLDER,
+            metadata: Prisma.JsonNull,
+          },
+        })
+        if (result.count === 0) break
+      }
+    }
+  }
+
+  // ── H3 wave-a1: OrderEventLog heavy-path pre-scrub ─────────────
+  //
+  // OrderEventLog has NO customer FK — the link is via orderId →
+  // OrderProjection.customerId. Look up the customer's order ids first;
+  // if the event count exceeds the heavy threshold, batch the payload
+  // scrub OUTSIDE the main tx.
+
+  const customerOrderRows = await prisma.orderProjection.findMany({
+    where: { customerId },
+    select: { id: true },
+  })
+  const customerOrderIds = customerOrderRows.map((row) => row.id)
+
+  if (customerOrderIds.length > 0) {
+    const eventCount = await prisma.orderEventLog.count({
+      where: { orderId: { in: customerOrderIds } },
+    })
+    if (eventCount > ORDER_EVENT_LOG_BATCH_HEAVY_THRESHOLD) {
+      // The "already-scrubbed" predicate cannot trivially be expressed
+      // against a JSON column in Prisma, so we paginate by id-greater-than
+      // cursor and let the updateMany be idempotent on rerun (replacing
+      // {anonymized:true} with {anonymized:true} is a no-op).
+      const maxLoops =
+        Math.ceil(eventCount / ORDER_EVENT_LOG_BATCH_SIZE) + 1
+      let cursor: string | null = null
+      for (let i = 0; i < maxLoops; i++) {
+        const baseWhere = { orderId: { in: customerOrderIds } }
+        const where =
+          cursor === null
+            ? baseWhere
+            : { ...baseWhere, id: { gt: cursor } }
+        const nextBatch: Array<{ id: string }> =
+          await prisma.orderEventLog.findMany({
+            where,
+            select: { id: true },
+            take: ORDER_EVENT_LOG_BATCH_SIZE,
+            orderBy: { id: "asc" },
+          })
+        if (nextBatch.length === 0) break
+        const ids = nextBatch.map((r) => r.id)
+        const result = await prisma.orderEventLog.updateMany({
+          where: { id: { in: ids } },
+          data: { payload: { anonymized: true } },
+        })
+        if (result.count === 0) break
+        cursor = ids[ids.length - 1] ?? null
+      }
+    }
   }
 
   // ── Core anonymize transaction ─────────────────────────────────
@@ -637,6 +911,133 @@ export async function anonymizeCustomer(customerId: string) {
         where: { customerId },
         data: { customerId: null },
       })
+
+      // ── audit-2026-05-24 H3 wave-a1 — scope expansion (surfaces 1-7) ──
+      //
+      // The original 4-surface scrub (Customer + Address + CustomerPreferences
+      // + Review) above leaves PII in 7 other in-process tables. SYNTHESIS
+      // §G2 picks: full-replace JSON for shipping/payload, placeholder for
+      // chat content, null-out for scalars + soft FKs, sentinel substitute
+      // where UNIQUE / NOT NULL constraints block null. See
+      // docs/adjudicate-migration/audit-2026-05-24/tasks/h3-investigation/SYNTHESIS.md
+      //
+      // Heavy-customer paths (ConversationMessage + OrderEventLog) are
+      // pre-batched OUTSIDE this transaction (see "Heavy path" block above
+      // the tx) to avoid holding locks for the duration of multi-thousand-
+      // row updates. The in-tx updateMany below acts as the cleanup pass.
+
+      // (6) Surface 1: OrderProjection — scrub denormalized customer fields
+      // + full-replace shipping address JSON. customerId stays (FK SetNull
+      // semantics; the row stays linked to the anonymized Customer).
+      await tx.orderProjection.updateMany({
+        where: { customerId },
+        data: {
+          customerEmail: null,
+          customerName: null,
+          customerPhone: null,
+          shippingAddressJson: { anonymized: true },
+        },
+      })
+
+      // (7) Surface 2: ConversationMessage.content — replace free-form
+      // customer text with a placeholder. The heavy path above already
+      // scrubbed bulk rows; this cleanup pass catches any messages that
+      // landed during batching (e.g., from an in-flight LLM turn).
+      // Filter by the customer's conversation ids — no direct customer
+      // FK on the messages table.
+      if (customerConversationIds.length > 0) {
+        await tx.conversationMessage.updateMany({
+          where: { conversationId: { in: customerConversationIds } },
+          // audit-2026-05-25 (I9): also scrub `metadata` (Json?) —
+          // defensive symmetric scrub with the heavy-path above.
+          data: {
+            content: CONVERSATION_MESSAGE_PLACEHOLDER,
+            metadata: Prisma.JsonNull,
+          },
+        })
+      }
+
+      // (8) Surface 3: Conversation.customerId — null-out the FK. The
+      // column is already nullable (SetNull cascade declared); messages
+      // remain queryable via Conversation.sessionId for audit purposes.
+      await tx.conversation.updateMany({
+        where: { customerId },
+        data: { customerId: null },
+      })
+
+      // (9) Surface 4: OrderStatusHistory.actorId — null-out where the
+      // actor was the customer. The schema does NOT declare actorId as
+      // a Prisma relation (it's a raw String column that can reference
+      // Staff OR Customer, discriminated by the `actor` enum). The
+      // SYNTHESIS recommendation: filter on `actor = "customer"` AND
+      // `actorId = customerId` before nulling so we don't accidentally
+      // null Staff actor references for actions on this customer's orders.
+      await tx.orderStatusHistory.updateMany({
+        where: { actor: "customer", actorId: customerId },
+        data: { actorId: null },
+      })
+
+      // (10) Surface 5: OrderEventLog.payload — full-replace JSON for
+      // every row whose orderId belongs to this customer. The heavy path
+      // above already scrubbed bulk rows; this cleanup pass catches any
+      // events written during batching. OrderEventLog has NO customer FK
+      // — the link is via orderId → OrderProjection.customerId.
+      if (customerOrderIds.length > 0) {
+        await tx.orderEventLog.updateMany({
+          where: { orderId: { in: customerOrderIds } },
+          data: { payload: { anonymized: true } },
+        })
+      }
+
+      // (11) Surface 6: LoyaltyAccount — null the customer linkage and
+      // reset aggregate counters per G2-c pick ("scrub linkage + reset
+      // balance to 0; don't delete"). The schema follow-up that made
+      // `customerId` nullable + switched the FK to ON DELETE SET NULL
+      // closes the prior deviation: linkage is now truly broken (column
+      // set to NULL) rather than left pointing at the anonymized Customer
+      // row. The row itself is retained so historical loyalty aggregates
+      // (stamp velocity, redemption-rate cohorts) survive after PII is
+      // purged. Counters (stamps/totalEarned/redeemed) are zeroed to
+      // remove aggregate-stat reconstructability.
+      // audit-2026-05-25 (I9): use a SCRUBBED:UUID sentinel instead of
+      // null. Postgres treats NULL as non-distinct in UNIQUE indexes
+      // (`customerId String? @unique`) so a post-anonymize upsert at
+      // loyalty.service.ts:46 `loyaltyAccount.upsert({where:{customerId}})`
+      // would MISS the scrubbed row (NULL != 'X') and CREATE a new
+      // LoyaltyAccount pinned to the anonymized id — silently undoing
+      // the G2-c "scrub linkage + reset balance" guarantee on the next
+      // late-settling order.placed. The sentinel keeps the row visible
+      // (operators can find scrubbed accounts), preserves UNIQUE
+      // semantics (each scrub gets a fresh UUID), and the upsert finds
+      // no matching row → safe create branch on legitimate post-scrub
+      // calls.
+      await tx.loyaltyAccount.updateMany({
+        where: { customerId },
+        data: {
+          customerId: `SCRUBBED:${randomUUID()}`,
+          stamps: 0,
+          totalEarned: 0,
+          redeemed: 0,
+        },
+      })
+
+      // (12) Surface 7: Reservation.specialRequests — replace with empty
+      // JSON array.
+      //
+      // Schema deviation from the task prompt: Reservation.specialRequests
+      // is declared `Json @default("[]")` — NOT nullable. We cannot set it
+      // to null. The schema-investigator recommendation (schema.md §"Surface
+      // 7") explicitly handles this: "If empty array is semantically cleaner
+      // than null, use `[]`. If null is preferred, make the field nullable
+      // in a migration first (or just set to empty array)." Empty array is
+      // the column's documented default — same semantic as "no special
+      // requests" — and avoids a migration step that's out of Wave-A1
+      // scope. The free-form pt-BR notes (allergies, accessibility) the
+      // customer entered are obliterated.
+      await tx.reservation.updateMany({
+        where: { customerId },
+        data: { specialRequests: [] },
+      })
     },
     {
       timeout: ANONYMIZE_TX_TIMEOUT_MS,
@@ -644,7 +1045,142 @@ export async function anonymizeCustomer(customerId: string) {
     },
   )
 
+  // ── H3 wave-a1: per-surface audit emit ─────────────────────────
+  //
+  // Emit one AuditRecord per scrubbed surface. The records carry the
+  // system-actor envelope (this is a non-LLM operator/scheduled action)
+  // and an EXECUTE decision with a `business.rule_satisfied` basis
+  // (the LGPD-erasure business rule was satisfied by the scrub).
+  //
+  // When `predecessor` is supplied, every record's `supersedes` field
+  // chains back to the original `customer.anonymize` envelope so audit
+  // readers can follow scrub-extension records back to the originating
+  // request without join hops.
+  //
+  // Emission is best-effort: a failing sink does NOT fail the scrub
+  // (the data is already mutated by the committed tx; failing here would
+  // surface as a misleading "anonymize failed" up the stack).
+  if (options?.auditSink) {
+    emitScrubAuditRecords(customerId, options)
+  }
+
+  // ── H3 wave-b: Medusa cross-DB compensation kickoff ─────────────
+  //
+  // The 7 in-process Prisma surfaces are now scrubbed. Surface 8 — the
+  // Medusa-side customer row — lives in a separate Postgres database
+  // reachable only via HTTP admin API. Emit a NATS pending event so
+  // the Wave-B subscriber (`customer-anonymize-medusa-resolver` in
+  // apps/api) can complete the compensation chain. If the customer was
+  // never linked to a Medusa row (medusaId === null, captured before
+  // the TX), skip — there's nothing to scrub.
+  //
+  // audit-2026-05-25 (I9) — three fixes:
+  //
+  // 1. Drop `options?.predecessor` from the gate. The predecessor field
+  //    is the audit-supersession chain pointer; coupling the cross-DB
+  //    scrub kickoff to its presence meant any future caller (admin
+  //    CLI, replay tool, bulk-scrub job) that omitted predecessor would
+  //    silently skip the Medusa scrub. Now we publish whenever there's
+  //    a medusaId to scrub.
+  //
+  // 2. Await the publish instead of fire-and-forget. NATS unreachable
+  //    at publish time used to silently drop the event (only logged);
+  //    no pending-tracking record gets written by the subscriber if
+  //    the subscriber never receives the event, so the retry job
+  //    finds nothing to retry. Now we await — and `customer.anonymize.
+  //    medusa.pending` is in OUTBOX_EVENTS (see nats-client/index.ts)
+  //    so a NATS failure writes to the Redis outbox, and the
+  //    outbox-retry job re-publishes when NATS recovers. The publish
+  //    promise no longer rejects on broker downtime; only catastrophic
+  //    misconfig (no Redis at all) can fail, which we log + Sentry but
+  //    do NOT fail the anonymize — the in-process scrub is already
+  //    committed so the LGPD 30-day clock is satisfied.
+  //
+  // 3. Pass null predecessor when none supplied — the subscriber
+  //    handles either shape (it uses parkedIntentHash for audit
+  //    correlation but a null is acceptable for caller paths that
+  //    don't have one).
+  if (medusaIdForCompensation) {
+    try {
+      await publishNatsEvent("customer.anonymize.medusa.pending", {
+        customerId,
+        medusaId: medusaIdForCompensation,
+        parkedIntentHash:
+          options?.predecessor?.predecessorIntentHash ?? null,
+        parkedAt: options?.predecessor?.predecessorAt ?? null,
+        attempt: 1,
+      })
+    } catch (err) {
+      // Outbox guarantees at-least-once delivery on broker recovery;
+      // a thrown promise here means Redis itself is unreachable, which
+      // is operationally severe but not enough to fail-back the
+      // committed scrub. Log + Sentry alert.
+      options?.log?.warn?.(
+        "[anonymize-customer] medusa-pending publish failed (outbox unavailable):",
+        (err as Error).message ?? String(err),
+      )
+    }
+  }
+
   return { success: true }
+}
+
+function emitScrubAuditRecords(
+  customerId: string,
+  options: AnonymizeCustomerOptions,
+): void {
+  const auditSink = options.auditSink
+  if (!auditSink) return
+  // audit-2026-05-25 (I12 post-publish): now that @adjudicate/core@1.1.0
+  // is on npm with the `lgpd_scrub` SupersessionReason member, swap the
+  // semantically-correct value. Pre-fix the H3 implementation used
+  // `replay` as the closest fit in the closed v1.0 union — accurate
+  // intent (re-derive prior decision) but lossy (a LGPD scrub is not
+  // a generic replay; operator dashboards aggregating by reason were
+  // double-counting scrubs alongside true replays).
+  const supersedes: Supersession | undefined = options.predecessor
+    ? {
+        predecessorIntentHash: options.predecessor.predecessorIntentHash,
+        predecessorAt: options.predecessor.predecessorAt,
+        reason: "lgpd_scrub",
+      }
+    : undefined
+  for (const kind of SCRUB_AUDIT_KINDS) {
+    try {
+      const envelope = buildEnvelope({
+        kind,
+        payload: { customerId },
+        actor: {
+          principal: "system",
+          sessionId: `customer.anonymize:${customerId}`,
+        },
+        taint: "SYSTEM",
+        nonce: `${customerId}:${kind}`,
+      })
+      const decision = decisionExecute([
+        { category: "business", code: "rule_satisfied" },
+      ])
+      const record = buildAuditRecord({
+        envelope,
+        decision,
+        durationMs: 0,
+        ...(supersedes !== undefined ? { supersedes } : {}),
+      })
+      void auditSink.emit(record).catch((err: unknown) => {
+        options.log?.error?.(
+          "[anonymize-customer] audit emit failed:",
+          kind,
+          (err as Error).message ?? String(err),
+        )
+      })
+    } catch (err) {
+      options.log?.error?.(
+        "[anonymize-customer] audit record build failed:",
+        kind,
+        (err as Error).message ?? String(err),
+      )
+    }
+  }
 }
 
 /** @internal — exported for unit tests. */
@@ -653,6 +1189,11 @@ export const _anonymizeCustomerInternals = {
   REVIEW_BATCH_SIZE,
   ANONYMIZE_TX_TIMEOUT_MS,
   ANONYMIZE_TX_MAX_WAIT_MS,
+  CONVERSATION_MESSAGE_BATCH_HEAVY_THRESHOLD,
+  CONVERSATION_MESSAGE_BATCH_SIZE,
+  CONVERSATION_MESSAGE_PLACEHOLDER,
+  ORDER_EVENT_LOG_BATCH_HEAVY_THRESHOLD,
+  ORDER_EVENT_LOG_BATCH_SIZE,
 } as const
 
 /**

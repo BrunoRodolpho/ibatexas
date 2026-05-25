@@ -38,6 +38,7 @@ vi.mock("@adjudicate/core/kernel", async (orig) => {
 
 import {
   runCustomerIntent,
+  FORGERY_REJECTION_CODE,
   type CustomerIntentReply,
 } from "../__shared__/customer-intent-gateway.js";
 import { buildEnvelope, type Decision, type IntentEnvelope } from "@adjudicate/core";
@@ -295,5 +296,84 @@ describe("runCustomerIntent — enforce/shadow switch", () => {
     expect(out.statusCode).toBe(403);
     expect(mockAdjudicate).toHaveBeenCalledTimes(1);
     expect(executor).not.toHaveBeenCalled();
+  });
+});
+
+// ── P2-6 + P2-7 (audit-2026-05-24) — forgery defenses ─────────────────────
+
+describe("runCustomerIntent — forgery defenses (P2-6 + P2-7)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("P2-6 — rejects actor.principal: 'system' with 400 + forgery_attempt code", async () => {
+    const forgedEnvelope = buildEnvelope<"test.kind", { foo: string }>({
+      kind: "test.kind",
+      payload: { foo: "bar" },
+      nonce: "forgery-nonce-1",
+      actor: { principal: "system", sessionId: "cust_01" },
+      taint: "UNTRUSTED",
+    });
+    const executor = vi.fn();
+    const emit = vi.fn(async (_record: unknown) => undefined);
+    const auditSink = { emit };
+
+    const out = await runCustomerIntent({
+      envelope: forgedEnvelope,
+      state: {},
+      policy: dummyPolicy,
+      executor,
+      ctx: { customerId: "cust_01", route: "test" },
+      auditSink,
+    });
+
+    expect(out.statusCode).toBe(400);
+    expect((out.body as { code: string }).code).toBe(FORGERY_REJECTION_CODE);
+    expect(mockAdjudicate).not.toHaveBeenCalled();
+    expect(executor).not.toHaveBeenCalled();
+    // System-actor audit record emitted so the rejection leaves a trail
+    expect(emit).toHaveBeenCalledTimes(1);
+    const auditedRecord = emit.mock.calls[0]![0] as {
+      envelope: IntentEnvelope;
+      decision: Decision;
+    };
+    expect(auditedRecord.envelope.actor.principal).toBe("system");
+    expect(auditedRecord.envelope.taint).toBe("SYSTEM");
+    expect(auditedRecord.decision.kind).toBe("REFUSE");
+  });
+
+  it("P2-7 — rejects taint: 'TRUSTED' with 400 + forgery_attempt code", async () => {
+    const forgedEnvelope = buildEnvelope<"test.kind", { foo: string }>({
+      kind: "test.kind",
+      payload: { foo: "bar" },
+      nonce: "forgery-nonce-2",
+      actor: { principal: "user", sessionId: "cust_01" },
+      taint: "TRUSTED",
+    });
+    const executor = vi.fn();
+    const emit = vi.fn(async (_record: unknown) => undefined);
+    const auditSink = { emit };
+
+    const out = await runCustomerIntent({
+      envelope: forgedEnvelope,
+      state: {},
+      policy: dummyPolicy,
+      executor,
+      ctx: { customerId: "cust_01", route: "test" },
+      auditSink,
+    });
+
+    expect(out.statusCode).toBe(400);
+    expect((out.body as { code: string }).code).toBe(FORGERY_REJECTION_CODE);
+    expect(mockAdjudicate).not.toHaveBeenCalled();
+    expect(executor).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledTimes(1);
+    const auditedRecord = emit.mock.calls[0]![0] as {
+      envelope: IntentEnvelope;
+      decision: Decision;
+    };
+    expect(auditedRecord.envelope.actor.principal).toBe("system");
+    expect(auditedRecord.envelope.taint).toBe("SYSTEM");
+    expect(auditedRecord.decision.kind).toBe("REFUSE");
   });
 });

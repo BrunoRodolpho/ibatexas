@@ -28,6 +28,12 @@ const mockPaymentCreateFromEnvelope = vi.hoisted(() => vi.fn());
 const mockAddStamp = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
 );
+const mockAddStampFromEnvelope = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({
+    decision: { kind: "EXECUTE", basis: [] },
+    result: { stamps: 1, rewarded: false },
+  }),
+);
 const mockGetWhatsAppSender = vi.hoisted(() => vi.fn().mockReturnValue(null));
 const mockPushToDlq = vi.hoisted(() => vi.fn());
 const mockIsNewEvent = vi.hoisted(() => vi.fn().mockResolvedValue(true));
@@ -72,6 +78,7 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createLoyaltyService: () => ({
     addStamp: mockAddStamp,
+    addStampFromEnvelope: mockAddStampFromEnvelope,
   }),
   ConcurrencyError: class ConcurrencyError extends Error {},
   ITEMS_SCHEMA_VERSION: 1,

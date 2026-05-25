@@ -2,35 +2,79 @@
 // Adds a customer to the waitlist when a time slot is fully booked.
 // Auth: customer
 //
-// ── W7 P1 — BLOCKED on missing service-side envelope entry point ────────
+// ── W7 P1 follow-up — kernel-routed via reservation.joinWaitlistFromEnvelope ─
 //
-// This tool still calls `svc.joinWaitlist(...)` directly. Per the W6
-// governance-coverage scan, this is a kernel bypass for an LLM-proposable
-// mutation — but unlike `reservation.create/modify/cancel`, the
-// `reservation.service.ts` does NOT yet expose a `joinWaitlistFromEnvelope`
-// method. The pack-reservations package declares `reservation.waitlist.join`
-// as a valid UNTRUSTED-tolerant intent kind (packages/pack-reservations/src/types.ts:55),
-// but the corresponding service-layer wrapper does not exist.
+// Previously this tool invoked `svc.joinWaitlist(...)` directly, bypassing the
+// adjudicate kernel. Per CLAUDE.md rule #9 (LLM authority) every mutating
+// tool dispatch must flow through an IntentEnvelope. We now build a
+// `reservation.waitlist.join` envelope (UNTRUSTED, principal=llm) and route
+// via `joinWaitlistFromEnvelope`, which:
+//   - Adjudicates against `reservationsPolicyBundle`
+//   - Runs the validate-party-size + blocked-customer business guards;
+//     terminates at `executeWaitlist` for the waitlist join kind
+//   - Emits a governance audit record via the configured AuditSink
+//   - Delegates to the existing `joinWaitlist()` for the Prisma writes
 //
-// Migrating this site requires a service-side change (adding
-// `joinWaitlistFromEnvelope` to reservation.service.ts) which is OUT OF
-// SCOPE for W7-Govern-Customer (the reservation.service.ts file is
-// READ-ONLY for this agent per the W7 scope split). Surfaced as a
-// sub-finding in the W7 closure report — to be picked up in a follow-up
-// commit by an agent owning packages/domain.
+// State projection: the waitlist-join pack guards only inspect partySize +
+// the customer.blocked flag — there's no slot-capacity check at this layer
+// (the waitlist exists *because* the slot is full). We project a minimal
+// state matching the cancel/create siblings (channel + customerId + now).
 
+import { randomUUID } from "node:crypto"
 import { createReservationService } from "@ibatexas/domain"
 import { JoinWaitlistInputSchema, type JoinWaitlistInput, type JoinWaitlistOutput } from "@ibatexas/types"
+import { buildEnvelope } from "@adjudicate/core"
+import type {
+  ReservationState,
+  ReservationWaitlistJoinPayload,
+} from "@ibatexas/pack-reservations"
 
 export async function joinWaitlist(input: JoinWaitlistInput): Promise<JoinWaitlistOutput> {
   const parsed = JoinWaitlistInputSchema.parse(input)
 
-  const svc = createReservationService()
-  const { waitlistId, position } = await svc.joinWaitlist({
-    customerId: parsed.customerId,
+  const state: ReservationState = {
+    ctx: {
+      channel: "whatsapp",
+      customerId: parsed.customerId,
+      staffId: null,
+      now: new Date(),
+    },
+  }
+
+  // ── Build the IntentEnvelope ────────────────────────────────────────
+  const payload: ReservationWaitlistJoinPayload = {
     timeSlotId: parsed.timeSlotId,
     partySize: parsed.partySize,
+  }
+  const envelope = buildEnvelope<
+    "reservation.waitlist.join",
+    ReservationWaitlistJoinPayload
+  >({
+    kind: "reservation.waitlist.join",
+    payload,
+    nonce: randomUUID(),
+    actor: {
+      principal: "llm",
+      sessionId: `customer:${parsed.customerId}`,
+    },
+    taint: "UNTRUSTED",
   })
+
+  const svc = createReservationService()
+  const outcome = await svc.joinWaitlistFromEnvelope(envelope, state, {
+    customerId: parsed.customerId,
+  })
+
+  if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+    // Surface the kernel's refusal copy. The mutation did NOT run.
+    const message =
+      outcome.decision.kind === "REFUSE"
+        ? outcome.decision.refusal.userFacing
+        : "Não foi possível entrar na lista de espera no momento."
+    throw new Error(message)
+  }
+
+  const { waitlistId, position } = outcome.result!
 
   return {
     waitlistId,

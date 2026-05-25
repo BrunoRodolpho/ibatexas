@@ -91,4 +91,43 @@ describe("postgres-audit-writer — P0-14 SQL shape", () => {
     expect(onInsert).toHaveBeenCalledTimes(1)
     expect(onInsert).toHaveBeenCalledWith(row)
   })
+
+  // ── audit-2026-05-24 P1-4: onConflictNoOp dedup hook ──────────────────
+
+  it("[P1-4] fires onConflictNoOp when $executeRawUnsafe returns 0 (ON CONFLICT absorbed)", async () => {
+    // When the upstream UNIQUE constraint lands and a duplicate row is
+    // attempted, `ON CONFLICT DO NOTHING` returns affected_rows=0. The
+    // writer surfaces this via the dedup hook so apps/api can bump the
+    // `kernel_audit_dedup_total` Prometheus counter.
+    const prisma = { $executeRawUnsafe: vi.fn(async () => 0) }
+    const onConflictNoOp = vi.fn()
+    const writer = createPostgresAuditWriter({ prisma, onConflictNoOp })
+    const row = makeRow()
+
+    await writer.insertAudit(row)
+
+    expect(onConflictNoOp).toHaveBeenCalledTimes(1)
+    expect(onConflictNoOp).toHaveBeenCalledWith(row)
+  })
+
+  it("[P1-4] does NOT fire onConflictNoOp when $executeRawUnsafe returns 1 (fresh insert)", async () => {
+    const prisma = { $executeRawUnsafe: vi.fn(async () => 1) }
+    const onConflictNoOp = vi.fn()
+    const writer = createPostgresAuditWriter({ prisma, onConflictNoOp })
+    await writer.insertAudit(makeRow())
+    expect(onConflictNoOp).not.toHaveBeenCalled()
+  })
+
+  it("[P1-4] swallows errors thrown by onConflictNoOp — telemetry never blocks INSERT", async () => {
+    const prisma = { $executeRawUnsafe: vi.fn(async () => 0) }
+    const onConflictNoOp = vi.fn(() => {
+      throw new Error("metric registry exploded")
+    })
+    const writer = createPostgresAuditWriter({ prisma, onConflictNoOp })
+
+    // Even though the hook throws, insertAudit MUST resolve cleanly. A
+    // metric-registry failure cannot kill the audit pipeline.
+    await expect(writer.insertAudit(makeRow())).resolves.toBeUndefined()
+    expect(onConflictNoOp).toHaveBeenCalledOnce()
+  })
 })

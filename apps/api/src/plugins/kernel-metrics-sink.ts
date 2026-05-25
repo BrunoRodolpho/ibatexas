@@ -87,9 +87,12 @@ const PH_EVENT_DECISION_EXECUTED = "audit_decision_executed"
 const PH_EVENT_DECISION_REFUSED = "audit_decision_refused"
 const PH_EVENT_LEDGER_HIT = "audit_ledger_hit"
 const PH_EVENT_NATS_SINK_FAILED = "audit_nats_sink_failed"
-const PH_EVENT_SHADOW_DIVERGED_BASIS = "audit_kernel_shadow_diverged_basis"
-const PH_EVENT_SHADOW_DIVERGED_KIND = "audit_kernel_shadow_diverged_kind"
-const PH_EVENT_SHADOW_DIVERGED_REWRITE = "audit_kernel_shadow_diverged_rewrite"
+// IBX-IGE v3.0 cutover (f3bea43): shadow-mode plumbing was removed —
+// the kernel is always authoritative. `recordShadowDivergence` remains
+// on `MetricsSink` per the framework's interface contract, but it now
+// no-ops; the legacy `audit_kernel_shadow_diverged_{basis,kind,rewrite}`
+// PostHog events and the `kernel_shadow_divergence_total` Prometheus
+// counter were retired with the shadow path.
 
 // ── Prometheus metric definitions ────────────────────────────────────────────
 //
@@ -102,7 +105,6 @@ interface RegisteredMetrics {
     "kind" | "intent_kind" | "basis_category" | "basis_code"
   >
   readonly decisionDuration: Histogram<"intent_kind">
-  readonly shadowDivergenceTotal: Counter<"class" | "intent_kind">
   readonly ledgerOpTotal: Counter<"outcome" | "op">
   readonly auditSinkFailureTotal: Counter<"sink" | "reason">
   readonly deferResumeDuration: Histogram<"kind">
@@ -126,7 +128,7 @@ interface RegisteredMetrics {
   /** Companion: the total known intent kinds count (KNOWN_INTENT_KINDS.size). */
   readonly knownIntentKindsTotal: Gauge<never>
 
-  // ── W3 (correctness wave) — the 11 previously-GHOST metrics ──────────
+  // ── W3 (correctness wave) — the 10 previously-GHOST metrics ──────────
   //
   // Declared in `migration/06-observability-requirements.md` as "the
   // contract" but had no producer in code. Closing the gap surfaces them
@@ -136,7 +138,6 @@ interface RegisteredMetrics {
 
   readonly auditLagSeconds: Histogram<"sink">
   readonly replayDriftTotal: Counter<"class">
-  readonly killSwitchState: Gauge<"scope">
   readonly packInstallTotal: Counter<"pack">
   readonly deferPendingGauge: Gauge<never>
   readonly deferQuotaExceededTotal: Counter<"kind">
@@ -201,14 +202,6 @@ function registerMetrics(register: Registry): RegisteredMetrics {
       },
       [register],
     ),
-    shadowDivergenceTotal: counter(
-      {
-        name: "kernel_shadow_divergence_total",
-        help: "Shadow-mode divergences between legacy and adjudicate decisions.",
-        labelNames: ["class", "intent_kind"] as const,
-      },
-      [register],
-    ),
     ledgerOpTotal: counter(
       {
         name: "kernel_ledger_op_total",
@@ -260,7 +253,7 @@ function registerMetrics(register: Registry): RegisteredMetrics {
       [register],
     ),
 
-    // ── W3 — close the 11 ghost metrics ───────────────────────────────
+    // ── W3 — close the 10 ghost metrics ───────────────────────────────
 
     auditLagSeconds: histogram(
       {
@@ -276,14 +269,6 @@ function registerMetrics(register: Registry): RegisteredMetrics {
         name: "kernel_replay_drift_total",
         help: "Replay-drift verdicts produced by `ibx kernel replay`. One increment per drift event.",
         labelNames: ["class"] as const,
-      },
-      [register],
-    ),
-    killSwitchState: gauge(
-      {
-        name: "kernel_kill_switch_state",
-        help: "Current kernel kill-switch state. 0 = disengaged, 1 = engaged.",
-        labelNames: ["scope"] as const,
       },
       [register],
     ),
@@ -580,24 +565,14 @@ export function createKernelMetricsSink(
     },
 
     // ── recordShadowDivergence ───────────────────────────────────────────────
-    recordShadowDivergence(event: ShadowDivergenceEvent) {
-      safeIncr("kernel_shadow_divergence_total", () => {
-        metrics.shadowDivergenceTotal.inc({
-          class: event.divergence,
-          intent_kind: event.intentKind,
-        })
-      })
-      const phEvent = shadowDivergenceToPostHogEvent(event.divergence)
-      if (phEvent) {
-        safeTrack(phEvent, {
-          intent_kind: event.intentKind,
-          divergence_class: event.divergence,
-          legacy_kind: event.legacy.kind,
-          adjudicate_kind: event.adjudicate.kind,
-          basis_count: event.adjudicate.basis.length,
-        })
-      }
-      // No Sentry breadcrumb — divergence is metrics-only per task table.
+    //
+    // IBX-IGE v3.0 cutover (f3bea43): the shadow path was removed — the
+    // kernel is always authoritative, so the framework never produces a
+    // ShadowDivergenceEvent in this deployment. The method remains here
+    // because `MetricsSink` (from @adjudicate/core/kernel) declares it as
+    // required; production callers will never hit this path.
+    recordShadowDivergence(_event: ShadowDivergenceEvent) {
+      // No-op. Retained for interface compliance only.
     },
 
     // ── recordResourceLimit ──────────────────────────────────────────────────
@@ -627,13 +602,13 @@ export function createKernelMetricsSink(
   }
 }
 
-// ── W3 — Out-of-band recorder for the 11 ghost metrics ──────────────────────
+// ── W3 — Out-of-band recorder for the 10 ghost metrics ──────────────────────
 //
 // The `MetricsSink` interface from `@adjudicate/core/kernel` is fixed at the
 // framework boundary; we can't add new methods to it without a framework
 // change. But the W3 metrics are emitted from IbateXas-side code paths the
 // framework knows nothing about (sweepers, the audit-redactor wrap, Pack
-// installation, the kill-switch toggle, replay CLI). So we expose a separate,
+// installation, replay CLI). So we expose a separate,
 // ibatexas-internal "recorder" API that reads the same Prometheus Registry
 // and mutates the same metric instances the sink populates.
 //
@@ -654,8 +629,6 @@ export interface KernelMetricsRecorder {
   recordAuditLag(sink: string, latencySeconds: number): void
   /** W3-2: bump replay-drift counter, labelled by drift class. */
   recordReplayDrift(driftClass: string): void
-  /** W3-3: set kill-switch state (1 = engaged, 0 = disengaged). */
-  recordKillSwitchState(scope: string, engaged: boolean): void
   /** W3-4: one-shot at boot — increment per installed pack. */
   recordPackInstall(pack: string): void
   /** W3-5: set the parked-envelope count (poll output). */
@@ -720,11 +693,6 @@ export function createKernelMetricsRecorder(
       if (!c) return
       safe("kernel_replay_drift_total", () => c.inc({ class: driftClass }))
     },
-    recordKillSwitchState(scope, engaged) {
-      const g = get<Gauge<"scope">>("kernel_kill_switch_state")
-      if (!g) return
-      safe("kernel_kill_switch_state", () => g.set({ scope }, engaged ? 1 : 0))
-    },
     recordPackInstall(pack) {
       const c = get<Counter<"pack">>("kernel_pack_install_total")
       if (!c) return
@@ -769,24 +737,6 @@ export function createKernelMetricsRecorder(
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
-
-function shadowDivergenceToPostHogEvent(
-  cls: ShadowDivergenceEvent["divergence"],
-): string | null {
-  switch (cls) {
-    case "BASIS_ONLY":
-      return PH_EVENT_SHADOW_DIVERGED_BASIS
-    case "DECISION_KIND":
-      return PH_EVENT_SHADOW_DIVERGED_KIND
-    case "PAYLOAD_REWRITE":
-      return PH_EVENT_SHADOW_DIVERGED_REWRITE
-    // NONE never reaches the sink (shadow.ts only invokes telemetry on
-    // non-NONE divergence) — return null defensively.
-    case "NONE":
-    default:
-      return null
-  }
-}
 
 function serializeError(err: unknown): { message: string; name?: string } {
   if (err instanceof Error) {

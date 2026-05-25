@@ -284,4 +284,275 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
     ).toBe(true)
     warnSpy.mockRestore()
   })
+
+  // ── audit-2026-05-24 P1-4: ON CONFLICT dedup hook on the in-process path
+  //
+  // When the upstream `UNIQUE (intent_hash, recorded_at)` constraint lands
+  // on `intent_audit`, the writer's `$executeRawUnsafe` returns 0 for the
+  // second INSERT of the same row. The wiring forwards that to the
+  // `setAuditDedupHook` callback so apps/api can bump
+  // `kernel_audit_dedup_total{path="in_process"}`. This test simulates the
+  // constraint via a Prisma stub that returns 0 and asserts the hook fires
+  // with `path="in_process"`.
+
+  it("[P1-4] fires setAuditDedupHook with path='in_process' when ON CONFLICT absorbs a duplicate", async () => {
+    const redis = makeRedisStub()
+    // Stub returns 0 — simulates the upstream UNIQUE constraint absorbing
+    // the second INSERT.
+    const dedupingWriter = {
+      async $executeRawUnsafe() {
+        return 0
+      },
+    }
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter: dedupingWriter })
+
+    const dedupHook = vi.fn()
+    wiring.setAuditDedupHook(dedupHook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: { x: 1 } }),
+    )
+
+    expect(dedupHook).toHaveBeenCalledTimes(1)
+    expect(dedupHook).toHaveBeenCalledWith("in_process")
+  })
+
+  it("[P1-4] does NOT fire setAuditDedupHook on a fresh insert (writer returns 1)", async () => {
+    const redis = makeRedisStub()
+    const prismaWriter = makePrismaWriter() // returns 1
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter })
+
+    const dedupHook = vi.fn()
+    wiring.setAuditDedupHook(dedupHook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: { x: 1 } }),
+    )
+
+    expect(dedupHook).not.toHaveBeenCalled()
+  })
+})
+
+// ── Q4: recordSinkFailure wire-up ──────────────────────────────────────────
+//
+// The audit pipeline has three downstream failure paths:
+//   1. Postgres sink onError      → recordSinkFailure({ sink: "postgres" })
+//   2. NATS sink onFailure         → recordSinkFailure({ sink: "nats" })
+//   3. Buffered sink onSpill       → recordSinkFailure when reason !== "capacity"
+//
+// Each test asserts the failure-hook fires with the matching `sink` label,
+// a stable `errorClass`, and a monotonically increasing `consecutiveFailures`
+// counter. PII guard: only fixed-enum and error-class labels are emitted —
+// no record payload or actor principal.
+
+describe("intent-audit-wiring — Q4 recordSinkFailure on downstream errors", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.unstubAllEnvs()
+    vi.stubEnv("APP_ENV", "test")
+    vi.stubEnv("AUDIT_REDACT_SECRET", "test-salt-32-xxxxxxxxxxxxxxxxxxx")
+  })
+
+  afterEach(async () => {
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+  })
+
+  it("postgres sink failure bumps the hook with sink='postgres' and the error class", async () => {
+    const redis = makeRedisStub()
+    const failingWriter = {
+      async $executeRawUnsafe() {
+        throw new TypeError("pg connection refused")
+      },
+    }
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
+    const hook = vi.fn()
+    wiring.setAuditSinkFailureHook(hook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: { a: 1 } }),
+    )
+
+    const postgresCalls = hook.mock.calls
+      .map((c) => c[0] as { sink: string; errorClass: string })
+      .filter((e) => e.sink === "postgres" && e.errorClass === "TypeError")
+    expect(postgresCalls).toHaveLength(1)
+    expect(postgresCalls[0]).toMatchObject({
+      sink: "postgres",
+      subject: "audit.intent.decision.v1",
+      errorClass: "TypeError",
+      consecutiveFailures: 1,
+    })
+  })
+
+  it("postgres consecutiveFailures increments across repeated failures", async () => {
+    const redis = makeRedisStub()
+    const failingWriter = {
+      async $executeRawUnsafe() {
+        throw new Error("pg down")
+      },
+    }
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
+    const hook = vi.fn()
+    wiring.setAuditSinkFailureHook(hook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: { a: 1 } }),
+    )
+    await sink.emit(
+      makeRecord({
+        kind: "customer.profile.update",
+        payload: { a: 2 },
+        sessionId: "sess_2",
+        nonce: "n_2",
+      }),
+    )
+
+    type Ev = {
+      sink: string
+      subject: string
+      errorClass: string
+      consecutiveFailures: number
+    }
+    const postgresErrors = hook.mock.calls
+      .map((c) => c[0] as Ev)
+      .filter((e) => e.sink === "postgres" && e.errorClass === "Error")
+    // Two emits, both fail → consecutiveFailures should be [1, 2].
+    expect(postgresErrors.map((e) => e.consecutiveFailures)).toEqual([1, 2])
+  })
+
+  it("buffered sink spill-failure fires recordSinkFailure with sink='postgres' + errorClass='spill_failure'", async () => {
+    // Force the buffer to spill on inner failure. PostgresWriter throws so
+    // the buffered sink runs the spill path with reason !== "capacity".
+    vi.stubEnv("IBX_AUDIT_BUFFER_CAPACITY", "1")
+    const redis = makeRedisStub()
+    const failingWriter = {
+      async $executeRawUnsafe() {
+        throw new Error("pg down")
+      },
+    }
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
+    const hook = vi.fn()
+    wiring.setAuditSinkFailureHook(hook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: { a: 1 } }),
+    )
+    await sink.emit(
+      makeRecord({
+        kind: "customer.profile.update",
+        payload: { a: 2 },
+        sessionId: "sess_2",
+        nonce: "n_2",
+      }),
+    )
+
+    const spillFailures = hook.mock.calls
+      .map((c) => c[0] as { sink: string; errorClass: string })
+      .filter((e) => e.errorClass === "spill_failure")
+    // At least one spill_failure fired when the inner sink errored.
+    expect(spillFailures.length).toBeGreaterThanOrEqual(1)
+    expect(spillFailures[0]).toMatchObject({
+      sink: "postgres",
+      subject: "audit.intent.decision.v1",
+      errorClass: "spill_failure",
+    })
+  })
+
+  it("does not fire the failure hook on a clean emit", async () => {
+    const redis = makeRedisStub()
+    const prismaWriter = makePrismaWriter()
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter })
+    const hook = vi.fn()
+    wiring.setAuditSinkFailureHook(hook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: { x: 1 } }),
+    )
+
+    expect(hook).not.toHaveBeenCalled()
+  })
+
+  it("hook event labels are bounded (no PII): sink is fixed enum, errorClass is the error constructor name", async () => {
+    const redis = makeRedisStub()
+    const failingWriter = {
+      async $executeRawUnsafe() {
+        // Custom error with sensitive content in the message — must NOT
+        // leak into the hook label. Only the constructor name reaches it.
+        const e = new RangeError("CPF 12345678900 conflict")
+        throw e
+      },
+    }
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
+    const hook = vi.fn()
+    wiring.setAuditSinkFailureHook(hook)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({
+        kind: "customer.pix.details.save",
+        payload: { cpf: "12345678900" },
+      }),
+    )
+
+    const events = hook.mock.calls.map((c) => c[0]) as Array<{
+      sink: string
+      subject: string
+      errorClass: string
+      consecutiveFailures: number
+    }>
+    for (const ev of events) {
+      // sink is the fixed kernel enum.
+      expect(["console", "nats", "postgres"]).toContain(ev.sink)
+      // errorClass is bounded — no error-message content.
+      expect(ev.errorClass).not.toContain("12345678900")
+      expect(ev.errorClass).not.toContain("CPF")
+      // subject is a fixed string for the IbateXas audit pipeline.
+      expect(ev.subject).toBe("audit.intent.decision.v1")
+    }
+    // And at least one event was emitted (sanity).
+    expect(events.length).toBeGreaterThan(0)
+  })
+
+  it("setAuditSinkFailureHook(null) disables the hook", async () => {
+    const redis = makeRedisStub()
+    const failingWriter = {
+      async $executeRawUnsafe() {
+        throw new Error("pg down")
+      },
+    }
+    const wiring = await import("../intent-audit-wiring.js")
+    wiring._resetAuditSink()
+    wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
+    const hook = vi.fn()
+    wiring.setAuditSinkFailureHook(hook)
+    wiring.setAuditSinkFailureHook(null)
+
+    const sink = wiring.getAuditSink()
+    await sink.emit(
+      makeRecord({ kind: "customer.profile.update", payload: {} }),
+    )
+
+    expect(hook).not.toHaveBeenCalled()
+  })
 })

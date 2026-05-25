@@ -111,7 +111,7 @@ export async function startConversationArchiver(
       log?.error(err, "[conversation-archiver] Failed to persist conversation messages");
       await pushToDlq("conversation.message.appended", payload as Record<string, unknown>, err, log);
     }
-  });
+  }, { queueGroup: "conversation-archiver" });
 
   log?.info("[conversation-archiver] Subscribed to conversation.message.appended");
 }

@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W6 governance-coverage verification (2026-05-23). The ~65% coverage finding and the 19 new P0 bypass sites drove W7-W9 closure work and the IBX-IGE v3.0 cutover. For current adjudication coverage status, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Wave 6 — Governance Coverage Verification
 
 **Date**: 2026-05-23

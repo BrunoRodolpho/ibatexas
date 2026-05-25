@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover edge-case audit (2026-05-23). Empty-string principal handling, NaN refund magnitude guards, redactor regex ordering, and anonymize transaction timeout were addressed across Waves 7-9. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Hidden Bugs & Edge Cases Audit
 
 Auditor: Staff engineer. Method: enumerate input dimensions for each high-risk function, walk the unhappy values, and pursue branches the existing test suite does not exercise. Code is NOT modified — every finding is a recorded observation.

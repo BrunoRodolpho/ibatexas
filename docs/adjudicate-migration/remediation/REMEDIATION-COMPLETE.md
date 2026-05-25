@@ -1,10 +1,14 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover W6 closure report (2026-05-23). The "Cleared for Tier 1+2 shadow rollout" recommendation was overtaken by the deeper-audit "NO-GO" verdict (see `../deep-audit/MASTER-DEEP-AUDIT.md`) and then by the IBX-IGE v3.0 always-on cutover (`f3bea43`) which deleted the shadow/enforce framework entirely. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Adjudicate Migration — Remediation Complete
 
 **Status:** Final report (W6 closure)
 **Branch:** `feat/adjudicate-w6-tests-docs`
 **Period covered:** 2026-05-23 audit → 2026-05-23 remediation
 **Audit source:** `docs/adjudicate-migration/audit/AUDIT-SYNTHESIS.md`
-**Companion docs:** `runbooks/SHADOW-ENFORCE-ROLLOUT.md`, `threat-model/THREAT-MODEL.md`, `REMEDIATION-STATE.md`.
+**Companion docs:** `../superseded/SHADOW-ENFORCE-ROLLOUT.md`, `../threat-model/THREAT-MODEL.md`, `REMEDIATION-STATE.md`.
 
 ---
 
@@ -97,7 +101,7 @@ Six waves remediated the audit's 30 findings (15 P0 + 12 P1 + 3 P2).
 | W6-8 | Bypass-detection extensions (rule #10 redis.del-lock, $executeRaw outside services, twilio.messages.create direct, console.log PII) | CLOSED (4 extension scenarios; warning-only gate caught 4 real matches in seed scripts) |
 | W6-9 | DLQ CLI dynamic event discovery (P2-A) | CLOSED (3 tests + Redis SCAN replaces hardcoded list) |
 | W6-10 | pino-shaped logger correlation (P2-C) | CLOSED (11 sites migrated, 7 logger tests) |
-| W6-11 | Operator runbook: shadow → enforce rollout | CLOSED (`runbooks/SHADOW-ENFORCE-ROLLOUT.md`, ~250 lines) |
+| W6-11 | Operator runbook: shadow → enforce rollout | CLOSED (`../superseded/SHADOW-ENFORCE-ROLLOUT.md`, ~250 lines) |
 | W6-12 | STRIDE threat model | CLOSED (`threat-model/THREAT-MODEL.md`, ~210 lines) |
 | W6-13 | Final remediation report | This document |
 
@@ -213,7 +217,7 @@ These three items require operator/infrastructure work outside the code base:
 ## Recommendation
 
 **Cleared for:**
-- **Tier 1 shadow rollout** (`reservation.create`, `order.note.add`, `customer.preferences.update`, `whatsapp.message.send`): YES. All prerequisites met. Run per `runbooks/SHADOW-ENFORCE-ROLLOUT.md`.
+- **Tier 1 shadow rollout** (`reservation.create`, `order.note.add`, `customer.preferences.update`, `whatsapp.message.send`): YES. All prerequisites met. Run per `../superseded/SHADOW-ENFORCE-ROLLOUT.md`.
 - **Tier 2 shadow rollout** (`order.item.add`, `cart.delivery.update`, `order.amend`, `reservation.modify`): YES, after Tier 1 completes a 7-day clean soak.
 - **Tier 1 enforce rollout** post-soak: YES, contingent on Postgres audit-migration applied AND 7d clean divergence dashboard.
 
@@ -231,5 +235,5 @@ These three items require operator/infrastructure work outside the code base:
 - `docs/adjudicate-migration/audit/{01..08}-*.md` — eight-auditor agents' raw findings
 - `docs/adjudicate-migration/remediation/REMEDIATION-STATE.md` — wave-by-wave tracker
 - `docs/adjudicate-migration/remediation/NATS-AUTH-REQUIREMENTS.md` — P0-12 operator playbook
-- `docs/adjudicate-migration/runbooks/SHADOW-ENFORCE-ROLLOUT.md` — flip procedure (W6-11)
+- `docs/adjudicate-migration/superseded/SHADOW-ENFORCE-ROLLOUT.md` — flip procedure (W6-11)
 - `docs/adjudicate-migration/threat-model/THREAT-MODEL.md` — STRIDE model (W6-12)

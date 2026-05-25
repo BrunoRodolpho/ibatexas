@@ -24,6 +24,7 @@ import {
   createOrderEventLogService,
   createPaymentCommandService,
   ConcurrencyError,
+  type LoyaltyStampAddPayload,
   type OrderProjectionCreatePayload,
   type OrderStatusReconcilePayload,
   type PaymentCreatePayload,
@@ -250,7 +251,7 @@ export async function startCartIntelligenceSubscribers(
         Sentry.captureException(err);
       });
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.placed ──────────────────────────────────────────────────────────
   await subscribeNatsEvent("order.placed", async (payload) => {
@@ -347,9 +348,41 @@ export async function startCartIntelligenceSubscribers(
       }
 
       // 7. Award loyalty stamp — failure must NOT block order processing
+      //
+      // Audit 2026-05-23 NEW-W9-V4: kernel-gated via loyalty.stamp.add
+      // envelope (SYSTEM-only). The stamp persists to Prisma
+      // `loyaltyAccount`; previously misclassified as Redis-only in
+      // open-blockers.md. The kernel REFUSE path bails before the
+      // Prisma write — falling through to the legacy notification flow
+      // only when EXECUTE/REWRITE is returned.
       try {
-        const loyaltySvc = createLoyaltyService();
-        const { stamps, rewarded } = await loyaltySvc.addStamp(customerId);
+        const loyaltySvc = createLoyaltyService({ auditSink: getAuditSink() });
+        const loyaltyPayload: LoyaltyStampAddPayload = { customerId };
+        const loyaltyEnvelope = buildSystemEnvelope({
+          kind: "loyalty.stamp.add" as const,
+          payload: loyaltyPayload,
+          sourceSubject: "order.placed",
+          eventId: `loyalty:${orderId}`,
+        });
+        const loyaltyOutcome = await loyaltySvc.addStampFromEnvelope(
+          loyaltyEnvelope,
+          { ctx: { customerId } },
+        );
+        if (
+          loyaltyOutcome.decision.kind !== "EXECUTE" &&
+          loyaltyOutcome.decision.kind !== "REWRITE"
+        ) {
+          const refusalCode =
+            loyaltyOutcome.decision.kind === "REFUSE"
+              ? loyaltyOutcome.decision.refusal.code
+              : undefined;
+          log?.warn(
+            { customer_id: customerId, decision: loyaltyOutcome.decision.kind, refusalCode },
+            "[cart-intelligence] loyalty stamp — kernel did not authorize",
+          );
+          throw new Error(`kernel ${loyaltyOutcome.decision.kind}: ${refusalCode ?? "n/a"}`);
+        }
+        const { stamps, rewarded } = loyaltyOutcome.result!;
         log?.info({ customer_id: customerId, stamps, rewarded }, "[cart-intelligence] loyalty stamp awarded");
 
         if (rewarded) {
@@ -559,7 +592,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] order.placed handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.payment_failed ─────────────────────────────────────────────────
   await subscribeNatsEvent("order.payment_failed", async (payload) => {
@@ -581,7 +614,7 @@ export async function startCartIntelligenceSubscribers(
       payload: payload as Record<string, unknown>,
       timestamp: new Date().toISOString(),
     });
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── product.viewed ─────────────────────────────────────────────────────────
   await subscribeNatsEvent("product.viewed", async (payload) => {
@@ -612,7 +645,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ product_id: productId, customer_id: customerId, error: String(err) }, "[cart-intelligence] product.viewed handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── search.results_viewed (batch) ──────────────────────────────────────────
   // Batch event from search_products (single event instead of O(n) product.viewed)
@@ -640,7 +673,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, count: productIds.length, error: String(err) }, "[cart-intelligence] search.results_viewed handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── review.prompt.schedule ────────────────────────────────────────────────
   await subscribeNatsEvent("review.prompt.schedule", async (payload) => {
@@ -660,7 +693,7 @@ export async function startCartIntelligenceSubscribers(
         "[cart-intelligence] review.prompt.schedule handler error",
       );
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.status_changed ─────────────────────────────────────────────────
   await subscribeNatsEvent("order.status_changed", async (payload) => {
@@ -784,7 +817,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (staffErr) {
       hLog?.warn({ order_id: orderId, error: String(staffErr) }, "[cart-intelligence] staff transition alert failed");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── notification.send ────────────────────────────────────────────────────
   await subscribeNatsEvent("notification.send", async (payload) => {
@@ -838,7 +871,7 @@ export async function startCartIntelligenceSubscribers(
       log?.error({ customerId, type, error: String(err) }, "[cart-intelligence] notification.send delivery error");
       await pushToDlq("notification.send", payload as Record<string, unknown>, err, log);
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.created ─────────────────────────────────────────────────
   await subscribeNatsEvent("reservation.created", async (payload) => {
@@ -855,7 +888,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.created handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.modified ─────────────────────────────────────────────
   await subscribeNatsEvent("reservation.modified", async (payload) => {
@@ -870,7 +903,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.modified handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.cancelled ───────────────────────────────────────────────
   await subscribeNatsEvent("reservation.cancelled", async (payload) => {
@@ -885,7 +918,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.cancelled handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.no_show ─────────────────────────────────────────────────
   await subscribeNatsEvent("reservation.no_show", async (payload) => {
@@ -900,7 +933,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.no_show handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── review.prompt (delivery — sends WhatsApp review request) ────────────
   await subscribeNatsEvent("review.prompt", async (payload) => {
@@ -943,7 +976,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] review.prompt delivery error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.refunded (EVT-002) ──────────────────────────────────────────────
   await subscribeNatsEvent("order.refunded", async (payload) => {
@@ -993,7 +1026,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.refunded handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.disputed (EVT-003) ──────────────────────────────────────────────
   await subscribeNatsEvent("order.disputed", async (payload) => {
@@ -1055,7 +1088,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ dispute_id: disputeId, error: String(err) }, "[cart-intelligence] order.disputed handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.canceled (EVT-004) ──────────────────────────────────────────────
   await subscribeNatsEvent("order.canceled", async (payload) => {
@@ -1103,7 +1136,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.canceled handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── review.submitted (EVT-005) ────────────────────────────────────────────
   await subscribeNatsEvent("review.submitted", async (payload) => {
@@ -1144,7 +1177,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ product_id: productId, error: String(err) }, "[cart-intelligence] review.submitted handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── product.intelligence.purge ──────────────────────────────────────────
   await subscribeNatsEvent("product.intelligence.purge", async (payload) => {
@@ -1186,7 +1219,7 @@ export async function startCartIntelligenceSubscribers(
       log?.error({ product_id: productId, error: String(err) }, "[cart-intelligence] product.intelligence.purge handler error");
       Sentry.captureException(err);
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── outreach.sent ────────────────────────────────────────────────────────
   await subscribeNatsEvent("outreach.sent", async (payload) => {
@@ -1212,7 +1245,7 @@ export async function startCartIntelligenceSubscribers(
         "[cart-intelligence] outreach.sent handler error",
       );
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── cart.item_added (EVT-006) ─────────────────────────────────────────────
   await subscribeNatsEvent("cart.item_added", async (payload) => {
@@ -1256,7 +1289,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ cart_id: cartId, error: String(err) }, "[cart-intelligence] cart.item_added handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── follow-up.due ─────────────────────────────────────────────────────────
   await subscribeNatsEvent("follow-up.due", async (payload) => {
@@ -1300,5 +1333,5 @@ export async function startCartIntelligenceSubscribers(
         Sentry.captureException(err);
       });
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 }

@@ -15,7 +15,7 @@
 | ADRs, cross-cutting patterns | [docs/architecture/decisions.md](docs/architecture/decisions.md) |
 | Zero-Trust LLM, tool classification, intent bridge | [docs/architecture/decisions.md](docs/architecture/decisions.md) (ADR #9) |
 | PIX charge lifecycle Pack (`@adjudicate/pack-payments-pix`) | [BrunoRodolpho/adjudicate](https://github.com/BrunoRodolpho/adjudicate/blob/main/packages/pack-payments-pix/README.md), ADR #13 |
-| Kernel rollout — 4-stage shadow → enforce playbook | [docs/ops/runbooks/](docs/ops/runbooks/) |
+| Kernel operations (always-on; no shadow / enforce / kill-switch) | [docs/ops/runbooks/kernel-operations.md](docs/ops/runbooks/kernel-operations.md) |
 | Analytics events, PostHog dashboards | [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) |
 | Redis key patterns, TTLs | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
 | Claude Code plugins — what's installed, usage | [docs/setup/plugins.md](docs/setup/plugins.md) |

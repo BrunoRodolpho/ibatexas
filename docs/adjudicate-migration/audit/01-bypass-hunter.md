@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover adversarial review of mutation paths (2026-05-23). Findings drove Waves 1-3 of correctness-remediation; the always-on cutover (`f3bea43`) and subsequent waves closed most bypasses. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Bypass Hunter Audit
 
 Adversarial review of every mutation path against the claim "everything flows through `adjudicate()`."

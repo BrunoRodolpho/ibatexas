@@ -1,13 +1,21 @@
 // Tests for update_preferences tool
 // Mock-based; no database or Redis required.
 //
+// ── Kernel routing (post-W9) ──────────────────────────────────────────────
+//
+// The tool now builds a `customer.preferences.update` IntentEnvelope and
+// routes via `svc.updatePreferencesFromEnvelope`. The mock surfaces both
+// the EXECUTE happy path and the REFUSE path so we can assert that:
+//   - The envelope is built with the right kind / taint / actor
+//   - The pack's safety guards reach the executor via the wrapper
+//   - The Redis cache layer fires only on EXECUTE
+//
 // Scenarios:
 // - Auth check: throws when no customerId
-// - Happy path: writes to Prisma + Redis, returns success message
-// - Allergens always explicit array [] (CLAUDE.md hard rule)
-// - Partial updates: only provided fields go to Prisma update
-// - Empty arrays handled correctly
-// - Redis pipeline with TTL reset
+// - Happy path: builds envelope, routes via FromEnvelope, writes Redis
+// - Allergens default to [] when omitted (CLAUDE.md hard rule)
+// - REFUSE outcome surfaces refusal copy and does NOT touch Redis
+// - Empty / partial inputs
 // - pt-BR messages
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
@@ -18,7 +26,7 @@ import { PROFILE_TTL_SECONDS } from "../types.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
-const mockPrefsUpsert = vi.hoisted(() => vi.fn())
+const mockUpdatePreferencesFromEnvelope = vi.hoisted(() => vi.fn())
 const mockGetRedisClient = vi.hoisted(() => vi.fn())
 const mockRk = vi.hoisted(() => vi.fn())
 const mockHSet = vi.hoisted(() => vi.fn())
@@ -34,30 +42,8 @@ const mockMulti = vi.hoisted(() =>
 )
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: {
-    customerPreferences: {
-      upsert: mockPrefsUpsert,
-    },
-  },
   createCustomerService: () => ({
-    updatePreferences: async (
-      customerId: string,
-      input: { dietaryRestrictions?: string[]; allergenExclusions?: string[]; favoriteCategories?: string[] },
-    ) => {
-      const allergenExclusions = Array.isArray(input.allergenExclusions) ? input.allergenExclusions : []
-      const dietaryRestrictions = Array.isArray(input.dietaryRestrictions) ? input.dietaryRestrictions : []
-      const favoriteCategories = Array.isArray(input.favoriteCategories) ? input.favoriteCategories : []
-      await mockPrefsUpsert({
-        where: { customerId },
-        create: { customerId, allergenExclusions, dietaryRestrictions, favoriteCategories },
-        update: {
-          ...(input.allergenExclusions === undefined ? {} : { allergenExclusions }),
-          ...(input.dietaryRestrictions === undefined ? {} : { dietaryRestrictions }),
-          ...(input.favoriteCategories === undefined ? {} : { favoriteCategories }),
-        },
-      })
-      return { allergenExclusions, dietaryRestrictions, favoriteCategories }
-    },
+    updatePreferencesFromEnvelope: mockUpdatePreferencesFromEnvelope,
   }),
 }))
 
@@ -84,6 +70,17 @@ const CTX_GUEST = {
   userType: "guest" as const,
 }
 
+function execOutcome(result: {
+  allergenExclusions: string[]
+  dietaryRestrictions: string[]
+  favoriteCategories: string[]
+}) {
+  return {
+    decision: { kind: "EXECUTE" as const },
+    result,
+  }
+}
+
 // -- Tests ────────────────────────────────────────────────────────────────────
 
 describe("updatePreferences", () => {
@@ -91,8 +88,14 @@ describe("updatePreferences", () => {
     vi.clearAllMocks()
     mockRk.mockImplementation((key: string) => key)
     mockGetRedisClient.mockResolvedValue({ multi: mockMulti })
-    mockPrefsUpsert.mockResolvedValue({})
     mockPipelineExec.mockResolvedValue([])
+    mockUpdatePreferencesFromEnvelope.mockResolvedValue(
+      execOutcome({
+        allergenExclusions: [],
+        dietaryRestrictions: [],
+        favoriteCategories: [],
+      }),
+    )
   })
 
   // ── Auth ────────────────────────────────────────────────────────────────
@@ -101,11 +104,20 @@ describe("updatePreferences", () => {
     await expect(updatePreferences({}, CTX_GUEST as AgentContext)).rejects.toThrow(
       "Autenticação necessária",
     )
+    expect(mockUpdatePreferencesFromEnvelope).not.toHaveBeenCalled()
   })
 
-  // ── Happy path ─────────────────────────────────────────────────────────
+  // ── Envelope construction ─────────────────────────────────────────────
 
-  it("upserts preferences in Prisma on happy path", async () => {
+  it("builds a customer.preferences.update envelope with UNTRUSTED taint + llm principal", async () => {
+    mockUpdatePreferencesFromEnvelope.mockResolvedValue(
+      execOutcome({
+        allergenExclusions: ["lactose"],
+        dietaryRestrictions: ["vegetariano"],
+        favoriteCategories: ["churrasco"],
+      }),
+    )
+
     await updatePreferences(
       {
         allergenExclusions: ["lactose"],
@@ -115,20 +127,88 @@ describe("updatePreferences", () => {
       CTX_AUTH,
     )
 
-    expect(mockPrefsUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { customerId: "cus_01" },
-        create: expect.objectContaining({
-          customerId: "cus_01",
-          allergenExclusions: ["lactose"],
-          dietaryRestrictions: ["vegetariano"],
-          favoriteCategories: ["churrasco"],
-        }),
-      }),
-    )
+    expect(mockUpdatePreferencesFromEnvelope).toHaveBeenCalledOnce()
+    const [envelope, state, extras] = mockUpdatePreferencesFromEnvelope.mock.calls[0]
+    expect(envelope.kind).toBe("customer.preferences.update")
+    expect(envelope.taint).toBe("UNTRUSTED")
+    expect(envelope.actor.principal).toBe("llm")
+    expect(envelope.actor.sessionId).toBe("customer:cus_01")
+    expect(envelope.payload.allergenExclusions).toEqual(["lactose"])
+    expect(envelope.payload.dietaryFlags).toEqual(["vegetariano"])
+    expect(envelope.payload.favoriteCategories).toEqual(["churrasco"])
+    expect(state.ctx.customerId).toBe("cus_01")
+    expect(state.ctx.isAuthenticated).toBe(true)
+    expect(state.ctx.customerExists).toBe(true)
+    expect(extras).toEqual({ customerId: "cus_01" })
   })
 
-  it("writes preferences to Redis hash via pipeline", async () => {
+  // ── audit-2026-05-24 P1-1: refuse when allergens are missing ──────────
+  //
+  // CLAUDE.md rule #1: allergens MUST always be an explicit array — never
+  // inferred. The previous behavior silently coerced `undefined` → `[]`,
+  // which zeroed any stored allergens whenever the LLM omitted the
+  // field. The tool now REFUSEs at its boundary so the envelope is never
+  // built; the customer must explicitly say "no allergens" (`[]`) or
+  // list their allergens.
+  it("REFUSEs when allergenExclusions is omitted (CLAUDE.md rule #1)", async () => {
+    await expect(
+      updatePreferences({ dietaryRestrictions: ["vegano"] }, CTX_AUTH),
+    ).rejects.toThrow(/alergias precisam ser informadas/i)
+    expect(mockUpdatePreferencesFromEnvelope).not.toHaveBeenCalled()
+    expect(mockMulti).not.toHaveBeenCalled()
+    expect(mockHSet).not.toHaveBeenCalled()
+  })
+
+  it("REFUSEs when allergenExclusions is the empty object input (no fields)", async () => {
+    await expect(updatePreferences({}, CTX_AUTH)).rejects.toThrow(
+      /alergias precisam ser informadas/i,
+    )
+    expect(mockUpdatePreferencesFromEnvelope).not.toHaveBeenCalled()
+  })
+
+  it("PASSes through when caller sends explicit empty `[]` (no allergens)", async () => {
+    mockUpdatePreferencesFromEnvelope.mockResolvedValue(
+      execOutcome({
+        allergenExclusions: [],
+        dietaryRestrictions: ["vegano"],
+        favoriteCategories: [],
+      }),
+    )
+    const result = await updatePreferences(
+      { allergenExclusions: [], dietaryRestrictions: ["vegano"] },
+      CTX_AUTH,
+    )
+    expect(result.success).toBe(true)
+    expect(mockUpdatePreferencesFromEnvelope).toHaveBeenCalledOnce()
+    const [envelope] = mockUpdatePreferencesFromEnvelope.mock.calls[0]
+    expect(envelope.payload.allergenExclusions).toEqual([])
+  })
+
+  it("omits dietaryFlags from the envelope when caller does not provide one", async () => {
+    await updatePreferences({ allergenExclusions: ["lactose"] }, CTX_AUTH)
+
+    const [envelope] = mockUpdatePreferencesFromEnvelope.mock.calls[0]
+    expect(envelope.payload).not.toHaveProperty("dietaryFlags")
+  })
+
+  it("omits favoriteCategories from the envelope when caller does not provide one", async () => {
+    await updatePreferences({ allergenExclusions: ["lactose"] }, CTX_AUTH)
+
+    const [envelope] = mockUpdatePreferencesFromEnvelope.mock.calls[0]
+    expect(envelope.payload).not.toHaveProperty("favoriteCategories")
+  })
+
+  // ── Cache layer fires on EXECUTE ──────────────────────────────────────
+
+  it("writes preferences to Redis hash via pipeline on EXECUTE", async () => {
+    mockUpdatePreferencesFromEnvelope.mockResolvedValue(
+      execOutcome({
+        allergenExclusions: ["amendoim"],
+        dietaryRestrictions: ["sem glúten"],
+        favoriteCategories: ["grelhados"],
+      }),
+    )
+
     await updatePreferences(
       {
         allergenExclusions: ["amendoim"],
@@ -144,7 +224,6 @@ describe("updatePreferences", () => {
       "preferences",
       expect.any(String),
     )
-    // Verify the JSON payload contains correct data
     const jsonArg = mockHSet.mock.calls[0][2]
     const parsed = JSON.parse(jsonArg)
     expect(parsed.allergenExclusions).toEqual(["amendoim"])
@@ -153,7 +232,7 @@ describe("updatePreferences", () => {
   })
 
   it("resets Redis TTL via pipeline", async () => {
-    await updatePreferences({}, CTX_AUTH)
+    await updatePreferences({ allergenExclusions: [] }, CTX_AUTH)
 
     expect(mockPipelineExpire).toHaveBeenCalledWith(
       "customer:profile:cus_01",
@@ -163,12 +242,47 @@ describe("updatePreferences", () => {
   })
 
   it("uses rk() to build the profile key", async () => {
-    await updatePreferences({}, CTX_AUTH)
+    await updatePreferences({ allergenExclusions: [] }, CTX_AUTH)
 
     expect(mockRk).toHaveBeenCalledWith("customer:profile:cus_01")
   })
 
+  // ── REFUSE propagates ────────────────────────────────────────────────
+
+  it("surfaces the kernel refusal copy and skips Redis when decision is REFUSE", async () => {
+    mockUpdatePreferencesFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE" as const,
+        refusal: {
+          category: "BUSINESS_RULE",
+          code: "customer.allergens.must_be_explicit",
+          userFacing: "Por segurança, alergias precisam ser informadas explicitamente.",
+        },
+      },
+    })
+
+    await expect(
+      updatePreferences(
+        { allergenExclusions: ["lactose"] },
+        CTX_AUTH,
+      ),
+    ).rejects.toThrow("Por segurança, alergias precisam ser informadas explicitamente.")
+
+    expect(mockMulti).not.toHaveBeenCalled()
+    expect(mockHSet).not.toHaveBeenCalled()
+  })
+
+  // ── Output message ────────────────────────────────────────────────────
+
   it("returns success with pt-BR message listing preferences", async () => {
+    mockUpdatePreferencesFromEnvelope.mockResolvedValue(
+      execOutcome({
+        allergenExclusions: ["lactose", "gluten"],
+        dietaryRestrictions: ["vegetariano"],
+        favoriteCategories: ["churrasco"],
+      }),
+    )
+
     const result = await updatePreferences(
       {
         allergenExclusions: ["lactose", "gluten"],
@@ -188,76 +302,6 @@ describe("updatePreferences", () => {
     expect(result.message).toContain("churrasco")
   })
 
-  // ── Allergens always explicit array (CLAUDE.md hard rule) ──────────────
-
-  it("defaults allergenExclusions to [] when undefined", async () => {
-    await updatePreferences({ dietaryRestrictions: ["vegano"] }, CTX_AUTH)
-
-    expect(mockPrefsUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          allergenExclusions: [],
-        }),
-      }),
-    )
-  })
-
-  it("defaults dietaryRestrictions to [] when undefined", async () => {
-    await updatePreferences({ allergenExclusions: ["lactose"] }, CTX_AUTH)
-
-    expect(mockPrefsUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          dietaryRestrictions: [],
-        }),
-      }),
-    )
-  })
-
-  it("defaults favoriteCategories to [] when undefined", async () => {
-    await updatePreferences({}, CTX_AUTH)
-
-    expect(mockPrefsUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          favoriteCategories: [],
-        }),
-      }),
-    )
-  })
-
-  // ── Partial updates ────────────────────────────────────────────────────
-
-  it("only includes provided fields in Prisma update clause", async () => {
-    await updatePreferences(
-      { allergenExclusions: ["lactose"] },
-      CTX_AUTH,
-    )
-
-    const call = mockPrefsUpsert.mock.calls[0][0]
-    expect(call.update).toHaveProperty("allergenExclusions")
-    expect(call.update).not.toHaveProperty("dietaryRestrictions")
-    expect(call.update).not.toHaveProperty("favoriteCategories")
-  })
-
-  it("includes all fields in update when all are provided", async () => {
-    await updatePreferences(
-      {
-        allergenExclusions: ["gluten"],
-        dietaryRestrictions: ["vegano"],
-        favoriteCategories: ["sopas"],
-      },
-      CTX_AUTH,
-    )
-
-    const call = mockPrefsUpsert.mock.calls[0][0]
-    expect(call.update).toHaveProperty("allergenExclusions")
-    expect(call.update).toHaveProperty("dietaryRestrictions")
-    expect(call.update).toHaveProperty("favoriteCategories")
-  })
-
-  // ── Empty input ────────────────────────────────────────────────────────
-
   it("returns generic message when all arrays are empty", async () => {
     const result = await updatePreferences(
       {
@@ -272,23 +316,13 @@ describe("updatePreferences", () => {
     expect(result.message).toBe("Preferências atualizadas.")
   })
 
-  it("returns generic message when no fields provided", async () => {
-    const result = await updatePreferences({}, CTX_AUTH)
+  it("returns generic message when only the required `allergenExclusions: []` is provided", async () => {
+    const result = await updatePreferences(
+      { allergenExclusions: [] },
+      CTX_AUTH,
+    )
 
     expect(result.success).toBe(true)
     expect(result.message).toBe("Preferências atualizadas.")
-  })
-
-  // ── Redis always written ───────────────────────────────────────────────
-
-  it("writes to Redis even when all arrays are empty", async () => {
-    await updatePreferences({}, CTX_AUTH)
-
-    expect(mockHSet).toHaveBeenCalled()
-    const jsonArg = mockHSet.mock.calls[0][2]
-    const parsed = JSON.parse(jsonArg)
-    expect(parsed.allergenExclusions).toEqual([])
-    expect(parsed.dietaryRestrictions).toEqual([])
-    expect(parsed.favoriteCategories).toEqual([])
   })
 })

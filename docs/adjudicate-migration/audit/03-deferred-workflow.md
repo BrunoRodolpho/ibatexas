@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover DEFER park/resume audit (2026-05-23). Findings drove Wave-4 hardening (runtime-primitive park, hash-verification, NATS-auth scope). Current park/resume state is post-Wave-9; outstanding items are tracked in [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Deferred Workflow Audit
 
 > Auditor: Deferred Workflow Auditor (P0-c subsystem)

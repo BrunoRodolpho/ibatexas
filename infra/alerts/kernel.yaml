@@ -183,21 +183,6 @@ groups:
           runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/governance/05-audit-replay-requirements.md"
 
       # ── 11 ─────────────────────────────────────────────────────────────────
-      - alert: KernelKillSwitchEngaged
-        expr: kernel_kill_switch_state > 0
-        for: 0s
-        labels:
-          severity: S2
-          team: kernel
-          page: slack
-        annotations:
-          summary: "Kernel kill switch engaged: scope={{ $labels.scope }} target={{ $labels.target }}"
-          description: |
-            A kill switch is active. Track in the dashboard; review whether
-            the engagement is operator-driven or a circuit-breaker firing.
-          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/migration/05-kill-switch-strategy.md"
-
-      # ── 12 ─────────────────────────────────────────────────────────────────
       - alert: KernelAuditSinkFailureBurst
         expr: sum by(sink) (increase(kernel_audit_sink_failure_total[1m])) > 5
         for: 1m
@@ -213,7 +198,7 @@ groups:
             size and underlying sink (postgres/nats) health.
           runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/migration/05-kill-switch-strategy.md"
 
-      # ── 13 ─────────────────────────────────────────────────────────────────
+      # ── 12 ─────────────────────────────────────────────────────────────────
       - alert: KernelAuditSpillOverflow
         expr: max(kernel_audit_sink_spill_size) > 1073741824
         for: 2m
@@ -229,7 +214,7 @@ groups:
             backing sink and consider engaging the audit-sink kill switch.
           runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/migration/05-kill-switch-strategy.md"
 
-      # ── 14 ─────────────────────────────────────────────────────────────────
+      # ── 13 ─────────────────────────────────────────────────────────────────
       - alert: KernelToolCallSuccessDrop
         expr: |
           (

@@ -4,12 +4,15 @@ import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
 import { bootstrapKernel } from "./plugins/kernel-bootstrap.js";
+import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
 import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
 import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
+import { startCustomerAnonymizeMedusaResolverSubscriber } from "./subscribers/customer-anonymize-medusa-resolver.js";
+import { startPixDeferTimeoutResolverSubscriber } from "./subscribers/pix-defer-timeout-resolver.js";
 import { startAuditConsumer } from "./subscribers/audit-consumer.js";
 import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
@@ -51,6 +54,15 @@ const start = async (): Promise<void> => {
   // prevents serving traffic. See
   // docs/adjudicate-migration/tasks/01-kernel-bootstrap-plugin.md.
   await bootstrapKernel(server);
+
+  // audit-2026-05-24 H2 (A1): register the audit-sink leaf's boot-time
+  // DI BEFORE subscribers / routes / workers fire. Post-H2, `getAuditSink()`
+  // lives in `@ibatexas/audit-sink` (zero-dep leaf) and is fail-closed —
+  // any wrapper-call site that runs before this bootstrap throws
+  // `AuditSinkNotInitializedError`. Must run AFTER `bootstrapKernel`
+  // (which calls `installKernelMetricsSink` to populate the hook
+  // state read by `buildAuditSinkDependencies`).
+  await bootstrapAuditSinkDI(server.log);
 
   // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma
   const shutdown = async (): Promise<void> => {
@@ -112,11 +124,25 @@ const start = async (): Promise<void> => {
       // window. Wired alongside the defer-resolver so both subscribe to
       // the timeout fan-out from `defer-timeout-sweeper`.
       await startAnonymizeGraceResolverSubscriber(server.log);
+      // [audit-2026-05-24 H3 Wave-B] Cross-DB Medusa anonymize compensation.
+      // Consumes `customer.anonymize.medusa.pending` (emitted by
+      // anonymizeCustomer after the Prisma TX commits) and PATCHes the
+      // Medusa-side customer row. The compensation chain closes with a
+      // `.confirmed` audit record; failures emit `.failed` and remain
+      // available for the anonymize-medusa-retry BullMQ job to re-publish.
+      await startCustomerAnonymizeMedusaResolverSubscriber(server.log);
+      // [audit-2026-05-24 P1-7] PIX defer-timeout audit bridge. Consumes
+      // `intent.defer.timeout` filtered for the PIX confirmation signal
+      // and emits a `payment.pix.timeout.audit` audit record so the
+      // decision log chains `DEFER (park) → defer_timeout` for parked
+      // PIX checkouts whose customer never paid. Actual DB-side payment
+      // status transition is owned by the pix-expiry-checker cron.
+      await startPixDeferTimeoutResolverSubscriber(server.log);
       // [task 19] M4 audit-postgres redundancy consumer. Subscribes to
       // `audit.intent.decision.v1` and writes records durably to Postgres
-      // — decoupled-archiver pattern. No-op when IBX_AUDIT_POSTGRES_ENABLED
-      // is not "true"; pairs with the in-process Postgres sink composed by
-      // `intent-audit-wiring.ts`. Both flip together per runbook 04.
+      // — decoupled-archiver pattern. Always-on per IBX-IGE v3.0 cutover
+      // (CLAUDE.md rule #9); pairs with the in-process Postgres sink
+      // composed by `intent-audit-wiring.ts`.
       await startAuditConsumer(server.log);
 
       // Start all BullMQ background workers

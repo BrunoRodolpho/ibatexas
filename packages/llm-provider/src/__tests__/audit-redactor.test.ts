@@ -312,9 +312,14 @@ describe("audit-redactor — per-intent-kind field rules", () => {
     })
   })
 
-  it("redacts whatsapp.handoff.request.reason free-form text", () => {
+  // Audit-2026-05-24 F-5: the historical kind here was the typo'd
+  // `whatsapp.handoff.request` — a taxonomy-doc kind that never appeared
+  // in pack-whatsapp's `WhatsAppIntentKind` union. The real kind is
+  // `whatsapp.session.handover` (pack-whatsapp/src/types.ts). The
+  // assertion now exercises the corrected rule.
+  it("[F-5] redacts whatsapp.session.handover free-form reason text", () => {
     const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
-    const record = makeRecord("whatsapp.handoff.request", {
+    const record = makeRecord("whatsapp.session.handover", {
       reason: "Cliente João Silva pediu cancelamento urgente",
       lastMessage: "quero cancelar agora",
     })

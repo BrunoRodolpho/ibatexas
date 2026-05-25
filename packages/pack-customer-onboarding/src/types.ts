@@ -98,10 +98,16 @@ export interface CustomerProfileUpdatePayload {
  * The policy refuses if it's absent or inferred from prose — allergens
  * are safety-critical and the LLM cannot guess them. Empty array `[]`
  * is the canonical "no exclusions" shape and is accepted as-is.
+ *
+ * `favoriteCategories` is non-safety-critical preference metadata
+ * (category handles like "churrasco", "grelhados"); kept on the payload
+ * so the executor can persist it as part of the same envelope rather
+ * than threading a separate side-channel through `extras`.
  */
 export interface CustomerPreferencesUpdatePayload {
   readonly allergenExclusions: ReadonlyArray<string>
   readonly dietaryFlags?: ReadonlyArray<string>
+  readonly favoriteCategories?: ReadonlyArray<string>
 }
 
 /**
@@ -114,7 +120,15 @@ export interface CustomerPreferencesUpdatePayload {
 export interface CustomerPixDetailsSavePayload {
   readonly name: string
   readonly email: string
-  readonly cpf: string
+  /**
+   * audit-2026-05-25 (I10): optional. Customers who pay via PIX without
+   * entering a CPF (guest-style WhatsApp checkout origin) previously
+   * triggered the validateCpfShape REFUSE on an empty-string fallback,
+   * which dropped name + email persistence too. The CPF-shape policy
+   * now skips validation when cpf is absent/empty; presence still
+   * triggers Modulo-11 validation.
+   */
+  readonly cpf?: string
 }
 
 export interface CustomerAddressPayload {

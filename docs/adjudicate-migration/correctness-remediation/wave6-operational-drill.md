@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W6 on-call drill (2026-05-23). The `SHADOW-ENFORCE-ROLLOUT.md` runbook + `ibx kernel kill-switch` CLI subcommands that this drill exercised were deleted by the IBX-IGE v3.0 cutover (`f3bea43`); the always-on kernel has no kill switch. For current operator runbook, see `docs/ops/runbooks/kernel-operations.md`. Content preserved unchanged below as historical record.
+
+---
+
 # Wave 6 — Operational Drill Audit
 
 **Auditor:** Operational Drill Auditor (Wave 6)

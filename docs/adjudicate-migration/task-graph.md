@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** This is the pre-cutover M0-M6 task ledger. Both the milestones it tracks (M0-M6) and the post-M6 W1-W9 correctness-remediation waves have all landed. The IBX-IGE v3.0 always-on cutover (`f3bea43`) made the staged-rollout framework these tasks supported obsolete. For current outstanding work, see [`audit-2026-05-24/CLOSEOUT-STATUS.md`](./audit-2026-05-24/CLOSEOUT-STATUS.md). For historical record of which tasks landed in which commit, the content below is preserved unchanged.
+
+---
+
 # Task Completion Graph
 
 Per-task ID completion record. Updated as each task lands.

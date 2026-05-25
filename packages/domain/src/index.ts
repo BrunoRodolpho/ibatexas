@@ -48,7 +48,15 @@ export {
 } from "./services/__shared__/conversation-policy.js"
 export { createTableService, type TableService } from "./services/table.service.js"
 export { createDeliveryZoneService, type DeliveryZoneService } from "./services/delivery-zone.service.js"
-export { createLoyaltyService, type LoyaltyService } from "./services/loyalty.service.js"
+export { createLoyaltyService, type LoyaltyService, type LoyaltyServiceOptions } from "./services/loyalty.service.js"
+export {
+  loyaltyPolicyBundle,
+  loyaltyTaintPolicy,
+  type LoyaltyIntentKind,
+  type LoyaltyPayload,
+  type LoyaltyState,
+  type LoyaltyStampAddPayload,
+} from "./services/__shared__/loyalty-policy.js"
 export {
   createScheduleService,
   type ScheduleService,

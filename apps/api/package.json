@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@adjudicate/audit-postgres": "^1.0.1",
-    "@adjudicate/core": "^1.0.0",
+    "@adjudicate/core": "^1.1.0",
     "@adjudicate/pack-payments-pix": "^0.1.1",
     "@adjudicate/runtime": "^0.1.1",
     "@fastify/cookie": "^11.0.2",
@@ -29,6 +29,7 @@
     "@fastify/sensible": "^6.0.4",
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^5.2.5",
+    "@ibatexas/audit-sink": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/llm-provider": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",

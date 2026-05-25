@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover SRE/on-call audit (2026-05-23). The shadow-rollout, kill-switch CLI, and observability surface this audit assumed have been deleted by the always-on cutover (`f3bea43`). Current operator-facing surface is `docs/ops/runbooks/kernel-operations.md`. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Operational Readiness Audit
 
 **Date:** 2026-05-23

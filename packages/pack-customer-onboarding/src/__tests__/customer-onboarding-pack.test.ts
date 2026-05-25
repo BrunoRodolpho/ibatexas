@@ -108,6 +108,18 @@ describe("customerOnboardingPolicyBundle — allergen explicit-array guard", () 
     )
     expect(decision.kind).toBe("EXECUTE")
   })
+
+  it("EXECUTE customer.preferences.update with allergens + favoriteCategories", () => {
+    const decision = adjudicate(
+      env("customer.preferences.update", {
+        allergenExclusions: ["amendoim"],
+        favoriteCategories: ["churrasco", "grelhados"],
+      }),
+      baseState(),
+      customerOnboardingPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
 })
 
 // ── Profile rate-limit guard ────────────────────────────────────────────

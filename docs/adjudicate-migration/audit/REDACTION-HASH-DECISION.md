@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover decision note (2026-05-23, Wave 2). The decision (Option A — recompute `auditHash` after redaction) was implemented and remains in effect. This file is preserved as the institutional record of *why* that approach was chosen. For current redactor behaviour, see `packages/llm-provider/src/audit-redactor.ts` and the T3 conformance suite. Content preserved unchanged below as historical record.
+
+---
+
 # P0-15 — Redactor Hash Decision
 
 **Date:** 2026-05-23

@@ -18,7 +18,14 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@adjudicate/audit": "^1.0.1",
+    "@adjudicate/audit-postgres": "^1.0.1",
+    "@adjudicate/core": "^1.1.0",
+    "@adjudicate/locales-pt-br": "^0.1.1",
+    "@adjudicate/pack-payments-pix": "^0.1.1",
+    "@adjudicate/runtime": "^0.1.1",
     "@anthropic-ai/sdk": "^0.82.0",
+    "@ibatexas/audit-sink": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/pack-customer-onboarding": "workspace:*",
@@ -28,12 +35,6 @@
     "@ibatexas/pack-whatsapp": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
-    "@adjudicate/audit": "^1.0.1",
-    "@adjudicate/audit-postgres": "^1.0.1",
-    "@adjudicate/core": "^1.0.0",
-    "@adjudicate/locales-pt-br": "^0.1.1",
-    "@adjudicate/pack-payments-pix": "^0.1.1",
-    "@adjudicate/runtime": "^0.1.1",
     "fuse.js": "^7.1.0",
     "xstate": "^5.29.0",
     "zod": "^4.3.6"

@@ -35,10 +35,28 @@ const mockVerifyOtp = vi.hoisted(() =>
 // Redis stub — module-scoped Map so tests can pre-seed / inspect keys.
 const redisStorage = vi.hoisted(() => new Map<string, string>());
 const mockRedisSet = vi.hoisted(() =>
-  vi.fn(async (key: string, value: string, _opts?: { EX: number }) => {
-    redisStorage.set(key, value);
-    return "OK";
-  }),
+  vi.fn(
+    async (
+      key: string,
+      value: string,
+      opts?: { EX?: number; NX?: boolean },
+    ) => {
+      // audit-2026-05-24 P0-3 — the anonymize-active-lock acquire uses
+      // `SET key value EX ttl NX`. node-redis returns "OK" on acquire,
+      // null on collision; emulate that semantic here so tests of the
+      // cancel-deletion + grace-resolver race against this mock behave
+      // like real Redis.
+      if (opts?.NX === true) {
+        if (redisStorage.has(key)) {
+          return null;
+        }
+        redisStorage.set(key, value);
+        return "OK";
+      }
+      redisStorage.set(key, value);
+      return "OK";
+    },
+  ),
 );
 const mockRedisGet = vi.hoisted(() =>
   vi.fn(async (key: string) => redisStorage.get(key) ?? null),
@@ -73,12 +91,28 @@ const mockRedisExpire = vi.hoisted(() => vi.fn(async (_key: string, _seconds: nu
 // OTP_ACQUIRE_ATTEMPT_LUA script defined in anonymize-otp-gate.ts.
 // Keys: [failKey, lockoutKey]; Args: [failTtl, threshold, lockoutTtl].
 // Returns [allowed, count, fromSentinel].
+//
+// audit-2026-05-24 P0-3 — also emulates the anonymize-active-lock's
+// ownership-checked RELEASE_LOCK_SCRIPT (single-key, single-arg). We
+// dispatch by the shape of the call (single key + single arg →
+// release-lock; two keys + three args → OTP acquire).
 const mockRedisEval = vi.hoisted(() =>
   vi.fn(
     async (
       _script: string,
       opts: { keys: string[]; arguments: string[] },
     ) => {
+      // Anonymize-active-lock conditional DEL (single key, single arg).
+      if (opts.keys.length === 1 && opts.arguments.length === 1) {
+        const key = opts.keys[0]!;
+        const expectedValue = opts.arguments[0]!;
+        const stored = redisStorage.get(key);
+        if (stored === expectedValue) {
+          redisStorage.delete(key);
+          return 1;
+        }
+        return 0;
+      }
       const failKey = opts.keys[0]!;
       const lockoutKey = opts.keys[1]!;
       const threshold = Number.parseInt(opts.arguments[1] ?? "0", 10);
@@ -124,9 +158,23 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (k: string) => `ibatexas:${k}`,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}));
+// audit-2026-05-24 P0-1: re-export the real `parkDeferredIntentWithNxGuard`
+// from the leaf module so me.ts routes through the NX-guarded wrapper
+// (the brief's gap — before this fix, me.ts called the framework primitive
+// directly and a second DEFER for the same customerId could silently
+// overwrite the first parked envelope).
+vi.mock("@ibatexas/llm-provider", async () => {
+  const real = (await vi.importActual(
+    "../../../../packages/llm-provider/src/park-nx.js",
+  )) as Record<string, unknown>;
+  return {
+    getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
+    parkDeferredIntentWithNxGuard: real.parkDeferredIntentWithNxGuard,
+    PARK_COLLISION_REFUSAL_PT_BR: real.PARK_COLLISION_REFUSAL_PT_BR,
+    setDeferQuotaExceededHook: real.setDeferQuotaExceededHook,
+    ParkVerificationFieldsMissingError: real.ParkVerificationFieldsMissingError,
+  };
+});
 
 vi.mock("twilio", () => ({
   default: () => ({
@@ -864,6 +912,93 @@ describe("POST /api/me/data/cancel-deletion — clear receipt", () => {
       );
       expect(setArgs).toBeTruthy();
       expect(setArgs![2]).toEqual({ EX: 30 * 60 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  // ── audit-2026-05-24 P0-3 — anonymize-active mutex ──────────────────────
+
+  it("[P0-3] returns 409 + pt-BR copy when the resolver already holds the anonymize-active lock", async () => {
+    // Pre-seed the receipt (cancel must pass the 404 check) AND
+    // pre-acquire the active-lock as if the grace resolver SETNX'd
+    // first (its value is prefixed with `resolving:`).
+    redisStorage.set(
+      "ibatexas:anonymize:pending:cust_01",
+      JSON.stringify({
+        parkedAt: Date.now() - 23 * 60 * 60 * 1000, // T+23h, close to grace
+        intentHash: "abc123",
+        otpTokenHint: "verified",
+      }),
+    );
+    redisStorage.set(
+      "ibatexas:anonymize:active:cust_01",
+      "resolving:uuid-from-grace-resolver",
+    );
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/cancel-deletion",
+        headers: { "x-customer-id": "cust_01" },
+      });
+
+      expect(res.statusCode).toBe(409);
+      const body = res.json();
+      expect(body.error).toBe("Conflict");
+      // pt-BR copy — match the audit brief's prescribed wording.
+      expect(body.message).toContain("Solicitação de anonimização já em andamento");
+
+      // The receipt MUST NOT be cleared — we never entered the critical
+      // section. The grace resolver is responsible for the receipt now.
+      expect(redisStorage.get("ibatexas:anonymize:pending:cust_01")).toBeTruthy();
+      // Cooldown was NOT set (no cancel happened).
+      expect(redisStorage.get("ibatexas:anonymize:cancel-cooldown:cust_01")).toBeUndefined();
+      // anonymizeCustomer was NEVER called from this surface.
+      expect(mockAnonymizeCustomer).not.toHaveBeenCalled();
+      // Lock is still held by the resolver — we did NOT acquire so we
+      // MUST NOT release.
+      expect(
+        redisStorage.get("ibatexas:anonymize:active:cust_01"),
+      ).toBe("resolving:uuid-from-grace-resolver");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("[P0-3] acquires + releases the anonymize-active lock on a successful cancel", async () => {
+    redisStorage.set(
+      "ibatexas:anonymize:pending:cust_01",
+      JSON.stringify({
+        parkedAt: Date.now() - 30 * 60 * 1000,
+        intentHash: "abc123",
+        otpTokenHint: "verified",
+      }),
+    );
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/me/data/cancel-deletion",
+        headers: { "x-customer-id": "cust_01" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      // Lock was released — key absent post-cancel.
+      expect(
+        redisStorage.get("ibatexas:anonymize:active:cust_01"),
+      ).toBeUndefined();
+
+      // The lock acquire-set call happened with NX:true and TTL 60s.
+      const acquireCall = mockRedisSet.mock.calls.find(
+        (c) => (c[0] as string).endsWith("anonymize:active:cust_01"),
+      );
+      expect(acquireCall).toBeTruthy();
+      const opts = acquireCall![2] as { EX: number; NX: boolean };
+      expect(opts.EX).toBe(60);
+      expect(opts.NX).toBe(true);
     } finally {
       await app.close();
     }

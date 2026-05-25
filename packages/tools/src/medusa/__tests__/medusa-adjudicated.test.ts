@@ -70,6 +70,7 @@ beforeAll(async () => {
     method: "GET",
     path: "/store/__prime__",
     sourceSubject: "test:prime",
+    auditSink: noopAuditSink,
   })
   mockFetch.mockReset()
 })
@@ -95,6 +96,14 @@ function createMemoryAuditSink(): {
     },
   }
   return { sink, records }
+}
+
+// audit-2026-05-24 H2 (A1): `auditSink` is required on wrapper meta.
+// Tests that don't assert on emit behaviour pass an explicit no-op sink.
+const noopAuditSink: AuditSink = {
+  async emit() {
+    /* no-op */
+  },
 }
 
 // ── Path-to-intent-kind detection ───────────────────────────────────────
@@ -267,13 +276,16 @@ describe("detectMedusaIntentKind", () => {
 // ── MEDUSA_INTENT_KINDS sanity check ────────────────────────────────────
 
 describe("MEDUSA_INTENT_KINDS", () => {
-  it("exposes the 17 mapped kinds plus medusa.unknown", () => {
+  it("exposes the 18 mapped kinds plus medusa.unknown", () => {
     // P0-X9 follow-up added medusa.admin.product.update +
     // medusa.payment_session.create to the union → 16 total.
     // W7-P6 added medusa.admin.order.edit.items.remove (DELETE shape) +
     // medusa.admin.order.capture_payment → 18 total.
-    expect(MEDUSA_INTENT_KINDS).toHaveLength(18)
-    expect(new Set(MEDUSA_INTENT_KINDS).size).toBe(18)
+    // audit-2026-05-24 H3 Wave-B added medusa.admin.customer.update (POST
+    // /admin/customers/:id, for the LGPD cross-DB compensation chain)
+    // → 19 total.
+    expect(MEDUSA_INTENT_KINDS).toHaveLength(19)
+    expect(new Set(MEDUSA_INTENT_KINDS).size).toBe(19)
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.unknown")
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.product.update")
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.payment_session.create")
@@ -281,6 +293,7 @@ describe("MEDUSA_INTENT_KINDS", () => {
       "medusa.admin.order.edit.items.remove",
     )
     expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.order.capture_payment")
+    expect(MEDUSA_INTENT_KINDS).toContain("medusa.admin.customer.update")
   })
 })
 
@@ -349,6 +362,7 @@ describe("medusaAdjudicated — POST EXECUTE", () => {
       payload: { variantId: "var_01", quantity: 2 },
       idempotencyKey: "idem-abc-123",
       sourceSubject: "test:add",
+      auditSink: noopAuditSink,
     })
 
     expect(mockFetch).toHaveBeenCalledTimes(1)
@@ -462,6 +476,7 @@ describe("medusaAdjudicated — REFUSE on unmapped path", () => {
         path: "/store/no/such/route",
         payload: {},
         sourceSubject: "test:refuse-msg",
+        auditSink: noopAuditSink,
       })
     } catch (err) {
       captured = err as MedusaAdjudicateRefusedError
@@ -555,14 +570,18 @@ describe("medusaAdjudicated — audit fail-open", () => {
     expect(errorLog).toHaveBeenCalled()
   })
 
-  it("works without an audit sink", async () => {
+  // audit-2026-05-24 H2 (A1): `auditSink` is required at the type level.
+  // The legacy "works without an audit sink" semantics no longer exist;
+  // tests that don't want a real emit pass a `noopAuditSink` instead.
+  it("accepts a no-op audit sink (callers MUST pass a sink post-H2 A1)", async () => {
     mockFetch.mockResolvedValue(makeOkResponse({ ok: true }))
     const result = await medusaAdjudicated<unknown, { ok: boolean }>({
       scope: "store",
       method: "POST",
       path: "/store/carts",
       payload: {},
-      sourceSubject: "test:no-sink",
+      sourceSubject: "test:noop-sink",
+      auditSink: noopAuditSink,
     })
     expect(result).toEqual({ ok: true })
   })

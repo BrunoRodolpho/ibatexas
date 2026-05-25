@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@adjudicate/audit": "^1.0.1",
-    "@adjudicate/core": "^1.0.0",
+    "@adjudicate/core": "^1.1.0",
     "@adjudicate/primitives": "^0.1.1",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/pack-customer-onboarding": "workspace:*",

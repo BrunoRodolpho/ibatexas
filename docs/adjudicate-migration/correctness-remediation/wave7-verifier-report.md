@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W7 independent verifier report (2026-05-23). The Tier-1/3/4 verdicts reference a deleted rollout framework. NEW-W7-V1..V5 findings were processed in Waves 8-9 and the cutover. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Wave 7 — Verifier report (adversarial)
 
 > Author: W7-Verifier (independent adversarial agent)

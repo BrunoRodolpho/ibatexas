@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover test-coverage gap analysis (2026-05-23). Cross-layer composition gaps drove Wave-6 integration suite (LGPD lifecycle, fault-injection in critical path, concurrency over atomic primitives) and the conformance suites (T1, T3, T5, T6, T7, T2). For current test coverage and outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Test Coverage Gap Audit
 
 **Audit date:** 2026-05-23

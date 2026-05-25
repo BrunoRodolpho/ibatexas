@@ -1,9 +1,13 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** The rollback mechanics referenced throughout ("kill switch flip back to shadow", "per-intent enforce flip", `IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE`) describe machinery deleted by the IBX-IGE v3.0 cutover (`f3bea43`). The audit-sink loss tolerance tables, revenue-at-risk estimates, and LGPD/regulatory exposure analyses remain useful as production-safety thinking, but the framework binding them to rollout phases no longer applies. Content preserved unchanged below as historical record.
+
+---
+
 # 03 — Blast Radius Analysis
 
 **Status:** Draft v0.1
 **Owner:** Migration Planner
 **Last updated:** 2026-05-22
-**Companion docs:** `01-rollout-strategy.md`, `04-shadow-enforce-sequencing.md`, `05-kill-switch-strategy.md`, `07-production-safety-checklist.md`
+**Companion docs:** `01-rollout-strategy.md`, `../superseded/04-shadow-enforce-sequencing.md`, `../superseded/05-kill-switch-strategy.md`, `07-production-safety-checklist.md`
 
 ---
 
@@ -317,7 +321,7 @@ Tier 4 intents should use all three. Tier 1/2/3 use the standard alerting.
 
 ## Per-intent rollback playbook
 
-For each tier in `04-shadow-enforce-sequencing.md`:
+For each tier in `../superseded/04-shadow-enforce-sequencing.md`:
 
 ```mermaid
 flowchart TD
@@ -334,7 +338,7 @@ flowchart TD
     J -->|No| K[Log; add scenario fixture; revisit at next milestone]
 ```
 
-The kill switch is the always-safe rollback. The post-mortem template (`05-kill-switch-strategy.md`) standardises the recovery procedure.
+The kill switch is the always-safe rollback. The post-mortem template (`../superseded/05-kill-switch-strategy.md`) standardises the recovery procedure.
 
 ---
 

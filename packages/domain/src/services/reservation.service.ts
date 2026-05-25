@@ -16,6 +16,7 @@
 //   - modifyFromEnvelope          (reservation.modify)
 //   - cancelFromEnvelope          (reservation.cancel)
 //   - transitionFromEnvelope      (reservation.checkin/complete/no_show.mark)
+//   - joinWaitlistFromEnvelope    (reservation.waitlist.join)
 
 import { prisma } from "../client.js"
 import { assertOwnership, assertMutable } from "./shared.js"
@@ -38,6 +39,7 @@ import {
   type ReservationModifyPayload,
   type ReservationNoShowMarkPayload,
   type ReservationState,
+  type ReservationWaitlistJoinPayload,
 } from "@ibatexas/pack-reservations"
 import {
   withAdjudicate,
@@ -674,6 +676,38 @@ export function createReservationService(options?: ReservationServiceOptions) {
                 ? ("completed" as const)
                 : ("no_show" as const)
           return this.transition(payload.reservationId, newStatus)
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `reservation.waitlist.join`. UNTRUSTED
+     * (customer-initiated when the requested slot is full). Adjudicates via
+     * `reservationsPolicyBundle` — the pack's `validatePartySize` business
+     * guard catches non-positive party sizes; `executeWaitlist` is the
+     * terminal EXECUTE. The slot-presence + idempotency logic remains in
+     * the underlying `joinWaitlist` executor (which the kernel calls only
+     * on EXECUTE/REWRITE).
+     */
+    async joinWaitlistFromEnvelope(
+      envelope: IntentEnvelope<
+        "reservation.waitlist.join",
+        ReservationWaitlistJoinPayload
+      >,
+      state: ReservationState,
+      extras: { readonly customerId: string },
+    ): Promise<AdjudicatedResult<{ waitlistId: string; position: number }>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        reservationsPolicyBundle,
+        async (payload) => {
+          return this.joinWaitlist({
+            customerId: extras.customerId,
+            timeSlotId: payload.timeSlotId,
+            partySize: payload.partySize,
+          })
         },
         adjudicateOptions,
       )

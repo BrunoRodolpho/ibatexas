@@ -1,3 +1,7 @@
+> ⚠️ **PARTIALLY SUPERSEDED on 2026-05-24.** The framing — "before flipping `IBX_KERNEL_ENFORCE`" — references a deleted framework. The kernel is now always-on (`CLAUDE.md` rule #9; cutover commit `f3bea43`). However, the **operational steps below (NATS auth provisioning via `nsc`, the `.creds`/nkey/TLS env vars, the `[nats][SECURITY]` production warning gate) remain valid** for production hardening — the `packages/nats-client/src/index.ts` code path still consumes these env vars, and the production-deploy precondition has not changed in substance, only in wording (now "before production deploy" rather than "before enforce flip"). Treat this as live operator guidance with stale gate-framing. Content preserved unchanged below as historical-but-actionable record.
+
+---
+
 # NATS Authentication — OPERATOR ACTION REQUIRED (P0-12)
 
 > Wave 4 security remediation. The code path is now ready to accept NATS

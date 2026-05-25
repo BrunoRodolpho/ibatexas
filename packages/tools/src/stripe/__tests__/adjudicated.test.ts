@@ -79,6 +79,14 @@ function createMemoryAuditSink(): {
   return { sink, records }
 }
 
+// audit-2026-05-24 H2 (A1): `auditSink` is required on wrapper meta.
+// Tests that don't assert on emit behaviour pass an explicit no-op sink.
+const noopAuditSink: AuditSink = {
+  async emit() {
+    /* no-op */
+  },
+}
+
 beforeEach(() => {
   process.env["STRIPE_SECRET_KEY"] = "sk_test_dummy"
   delete process.env["IBX_STRIPE_ALLOWED_KINDS"]
@@ -303,6 +311,7 @@ describe("stripeAdjudicated — idempotency key", () => {
     await stripeAdjudicated.paymentIntents.create(
       { amount: 100, currency: "brl" },
       {
+        auditSink: noopAuditSink,
         sourceSubject: "test:idem-fwd",
         idempotencyKey: "key-pass-through",
       },
@@ -362,7 +371,7 @@ describe("stripeAdjudicated — idempotency key", () => {
 
     await stripeAdjudicated.paymentIntents.create(
       { amount: 100, currency: "brl" },
-      { sourceSubject: "test:no-opts" },
+      { sourceSubject: "test:no-opts", auditSink: noopAuditSink },
     )
 
     expect(calls).toHaveLength(1)
@@ -420,7 +429,7 @@ describe("stripeAdjudicated — IBX_STRIPE_ALLOWED_KINDS", () => {
 
     await stripeAdjudicated.paymentIntents.create(
       { amount: 100, currency: "brl" },
-      { sourceSubject: "test:empty-allowlist" },
+      { sourceSubject: "test:empty-allowlist", auditSink: noopAuditSink },
     )
 
     expect(calls).toHaveLength(1)
@@ -434,7 +443,7 @@ describe("stripeAdjudicated — IBX_STRIPE_ALLOWED_KINDS", () => {
 
     await stripeAdjudicated.paymentIntents.create(
       { amount: 100, currency: "brl" },
-      { sourceSubject: "test:typo" },
+      { sourceSubject: "test:typo", auditSink: noopAuditSink },
     )
     expect(calls).toHaveLength(1)
 
@@ -442,7 +451,7 @@ describe("stripeAdjudicated — IBX_STRIPE_ALLOWED_KINDS", () => {
     await expect(
       stripeAdjudicated.refunds.create(
         { payment_intent: "pi_x" },
-        { sourceSubject: "test:typo-2" },
+        { sourceSubject: "test:typo-2", auditSink: noopAuditSink },
       ),
     ).rejects.toBeInstanceOf(StripeAdjudicateRefusedError)
   })
@@ -476,13 +485,16 @@ describe("stripeAdjudicated — audit fail-open", () => {
     expect(errorLog).toHaveBeenCalled()
   })
 
-  it("works without an audit sink", async () => {
+  // audit-2026-05-24 H2 (A1): `auditSink` is required at the type level.
+  // The legacy "works without an audit sink" semantics no longer exist;
+  // tests that don't want a real emit pass a `noopAuditSink` instead.
+  it("accepts a no-op audit sink (callers MUST pass a sink post-H2 A1)", async () => {
     const { fake } = makeFakeStripe()
     __setStripeClientForTests(fake as never)
 
     const result = await stripeAdjudicated.paymentIntents.create(
       { amount: 100, currency: "brl" },
-      { sourceSubject: "test:no-sink" },
+      { sourceSubject: "test:noop-sink", auditSink: noopAuditSink },
     )
     expect(result).toEqual({ id: "pi_new", object: "payment_intent" })
   })
@@ -531,7 +543,7 @@ describe("stripeAdjudicated — REFUSE refusal copy", () => {
     try {
       await stripeAdjudicated.paymentIntents.create(
         { amount: 100, currency: "brl" },
-        { sourceSubject: "test:refuse-msg" },
+        { sourceSubject: "test:refuse-msg", auditSink: noopAuditSink },
       )
     } catch (err) {
       captured = err as StripeAdjudicateRefusedError

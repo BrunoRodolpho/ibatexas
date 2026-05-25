@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Phase-1 pre-cutover investigation (2026-05-22). The 0/17 + 0/27 unadjudicated route inventory and the "`defer-resolver` never started" finding drove M0-M3 + Waves 1-3. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # 02 — API & Webhook Mutation Paths
 
 > Investigator 2 of 8 — HTTP API routes & webhook handlers.

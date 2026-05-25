@@ -1,9 +1,13 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** M0-M4 (plumbing, LLM-path completion, Pack architecture, mutation-entrypoint governance, observability + audit + replay) and M6 (test coverage migration-grade) were completed via the work-arc that produced the IBX-IGE v3.0 always-on cutover (`f3bea43`). M5 (shadow-mode rollout), M7 (tier 1+2 enforce), and M8 (tier 3+4 enforce) were abandoned — the cutover replaced staged rollout with always-on. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # 02 — Milestones (M0–M8)
 
 **Status:** Draft v0.1
 **Owner:** Migration Planner
 **Last updated:** 2026-05-22
-**Companion docs:** `01-rollout-strategy.md`, `03-blast-radius-analysis.md`, `04-shadow-enforce-sequencing.md`
+**Companion docs:** `01-rollout-strategy.md`, `03-blast-radius-analysis.md`, `../superseded/04-shadow-enforce-sequencing.md`
 
 ---
 
@@ -277,7 +281,7 @@ Total: ~50–60 engineer-days. With 2 engineers parallel, ~6 weeks. Plus integra
 
 **Scope:**
 1. `IBX_KERNEL_SHADOW=*` in staging for 48h; verify no spurious divergence.
-2. Per-intent shadow rollout in production, ordered by `04-shadow-enforce-sequencing.md` tier.
+2. Per-intent shadow rollout in production, ordered by `../superseded/04-shadow-enforce-sequencing.md` tier.
 3. Build per-intent enforce-readiness dashboard (`06-observability-requirements.md` Dashboard 2).
 4. Tier 1 + 2 intents enter shadow first; Tier 3 + 4 enter after their Pack lands (M2 + M3 phase).
 
@@ -352,7 +356,7 @@ Total: ~50–60 engineer-days. With 2 engineers parallel, ~6 weeks. Plus integra
 
 ## M7 — Enforce-mode rollout, tier 1 + 2 (low risk)
 
-**Scope** (per `04-shadow-enforce-sequencing.md`):
+**Scope** (per `../superseded/04-shadow-enforce-sequencing.md`):
 - Tier 1: `reservation.create`, `order.note.add`, `customer.preferences.update`, `whatsapp.message.send` (system actor).
 - Tier 2: `order.item.add`, `cart.delivery.update`, `order.amend`, `reservation.modify`.
 
@@ -374,7 +378,7 @@ Total: ~50–60 engineer-days. With 2 engineers parallel, ~6 weeks. Plus integra
 
 **Blocking dependencies:** M5 (shadow data), M6 (test coverage).
 
-**Kill-switch coverage:** Per-intent kill switch tested and rehearsed per `05-kill-switch-strategy.md`.
+**Kill-switch coverage:** Per-intent kill switch tested and rehearsed per `../superseded/05-kill-switch-strategy.md`.
 
 **Observability requirements:** Dashboard 1 + Dashboard 3 active; Sentry alerts wired per `06-observability-requirements.md`.
 
@@ -390,7 +394,7 @@ Total: ~50–60 engineer-days. With 2 engineers parallel, ~6 weeks. Plus integra
 
 ## M8 — Enforce-mode rollout, tier 3 + 4 (high risk)
 
-**Scope** (per `04-shadow-enforce-sequencing.md`):
+**Scope** (per `../superseded/04-shadow-enforce-sequencing.md`):
 - Tier 3: `order.cancel`, `payment.pix.regenerate`, `customer.profile.update`.
 - Tier 4: `payment.refund.issue`, `payment.force.status`, `customer.anonymize`, `order.force.cancel`.
 

@@ -17,7 +17,10 @@ import { createActor } from "xstate"
 import { cancelOrder, regeneratePix, getRedisClient, rk } from "@ibatexas/tools"
 import { buildAuditRecord, type Decision, type IntentEnvelope } from "@adjudicate/core"
 import { adjudicate } from "@adjudicate/core/kernel"
-import { parkDeferredIntent } from "@adjudicate/runtime"
+import {
+  parkDeferredIntentWithNxGuard,
+  PARK_COLLISION_REFUSAL_PT_BR,
+} from "./park-nx.js"
 import { orderMachine, getStateString, createDefaultContext, isCheckoutState } from "./machine/order-machine.js"
 import type { OrderContext, KernelOutput } from "./machine/types.js"
 import { extractIllusionContext } from "./machine/types.js"
@@ -65,6 +68,12 @@ const KERNEL_REFUSAL_ESCALATE_PT_BR =
   "Estou pedindo revisão antes de seguir. Um atendente assume daqui."
 const KERNEL_REFUSAL_DEFER_PT_BR =
   "Aguardando confirmação. Te aviso assim que tudo estiver certo."
+// audit-2026-05-25 (I4): distinct refusal when Redis-side park itself
+// throws (network blip, NX SETNX timeout). Distinct from the happy-path
+// "aguardando confirmação" copy because the operation was NOT queued —
+// the customer must retry. Plain refusal, no implied resume timeline.
+const KERNEL_REFUSAL_DEFER_PARK_FAILED_PT_BR =
+  "Não foi possível registrar seu pedido agora. Tente novamente em alguns instantes."
 
 // ── Async timeout helper ─────────────────────────────────────────────────────
 
@@ -207,18 +216,17 @@ async function adjudicateKernelMutation<K extends string, P>(
       }
 
     case "DEFER": {
-      // Park the envelope via the runtime's `parkDeferredIntent` primitive.
-      // The primitive enforces a per-session quota (DEFAULT_DEFER_QUOTA_PER_SESSION = 16),
-      // populates the T-005 verification fields (`version`, `nonce`, `taint`,
-      // `actorPrincipal`) so the resume side can verify the hash, and emits
-      // `recordResourceLimit` telemetry on quota exhaustion. Bypassing this
-      // primitive (the pre-W2 behaviour) left every parked blob with
-      // `verified: null, reason: "missing_fields"` at resume time — tamper
-      // detection was structurally inert.
+      // Park the envelope via the NX-guarded wrapper. The wrapper enforces a
+      // per-session quota (DEFAULT_DEFER_QUOTA_PER_SESSION = 16), populates the
+      // T-005 verification fields (`version`, `nonce`, `taint`, `actorPrincipal`)
+      // so the resume side can verify the hash, AND — critically per
+      // audit-2026-05-24 P0-1 — refuses to overwrite an already-parked envelope
+      // for the same sessionId (the framework's raw `parkDeferredIntent` uses
+      // plain SET without NX and would silently drop the first parked payload).
       try {
         const redis = await getRedisClient()
         const ttlSeconds = Math.ceil(decision.timeoutMs / 1000) + 60
-        const parkResult = await parkDeferredIntent({
+        const parkResult = await parkDeferredIntentWithNxGuard({
           envelope: {
             intentHash: envelope.intentHash,
             kind: envelope.kind,
@@ -237,22 +245,50 @@ async function adjudicateKernelMutation<K extends string, P>(
           rk,
         })
         if (!parkResult.parked) {
-          // Quota exceeded — surface as a refusal so the user learns their
-          // additional DEFER was rejected rather than silently swallowed.
+          if (parkResult.reason === "quota_exceeded") {
+            // Quota exceeded — surface as a refusal so the user learns their
+            // additional DEFER was rejected rather than silently swallowed.
+            console.warn(
+              "[kernel-executor] DEFER park quota exceeded:",
+              parkResult.reason,
+              "observed:", parkResult.observed,
+              "limit:", parkResult.limit,
+            )
+            return {
+              proceed: false,
+              decision,
+              userFacing: "Você tem muitas operações em espera. Aguarde uma delas concluir antes de tentar novamente.",
+            }
+          }
+          // Collision — an envelope is already parked for this session.
+          // Refuse the second DEFER instead of silently EXECUTE-ing or
+          // overwriting the first parked payload.
           console.warn(
-            "[kernel-executor] DEFER park quota exceeded:",
+            "[kernel-executor] DEFER park collision:",
             parkResult.reason,
-            "observed:", parkResult.observed,
-            "limit:", parkResult.limit,
+            "sessionId:", parkResult.sessionId,
           )
           return {
             proceed: false,
             decision,
-            userFacing: "Você tem muitas operações em espera. Aguarde uma delas concluir antes de tentar novamente.",
+            userFacing: PARK_COLLISION_REFUSAL_PT_BR,
           }
         }
       } catch (err) {
+        // audit-2026-05-25 (I4): pre-fix this catch only logged and fell
+        // through to `return { ..., parked: true }`, which told the
+        // downstream caller (and ultimately the user) that the intent
+        // was deferred-and-resumable. But the throw means Redis did NOT
+        // accept the placeholder OR the envelope — no parked key exists,
+        // no defer-timeout-sweeper will surface it, no resume subscriber
+        // will fire. The customer's destructive action is silently lost.
+        // Fix: surface a distinct refusal instead of pretending success.
         console.error("[kernel-executor] DEFER park failed:", (err as Error).message)
+        return {
+          proceed: false,
+          decision,
+          userFacing: KERNEL_REFUSAL_DEFER_PARK_FAILED_PT_BR,
+        }
       }
       return {
         proceed: false,

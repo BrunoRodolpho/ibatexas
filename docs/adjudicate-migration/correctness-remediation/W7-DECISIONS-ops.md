@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W7 per-agent rationale for operational findings O1-O5 (2026-05-23). The `ibx kernel kill-switch` CLI subcommands and the kill-switch admin endpoint were deleted by the IBX-IGE v3.0 cutover (`f3bea43`) since the always-on kernel has no kill switch. For current operator surface, see `docs/ops/runbooks/kernel-operations.md`. Content preserved unchanged below as historical record.
+
+---
+
 # W7-DECISIONS — Operational findings (O1–O5)
 
 Owner: W7-Ops

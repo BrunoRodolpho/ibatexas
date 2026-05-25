@@ -4,7 +4,7 @@
 //   1. Registering the kernel command on a fresh Commander.Command instance
 //   2. Capturing console output via a stdout stub
 //   3. Asserting the structured shape of the JSON output for `status`
-//   4. Asserting graceful no-op for `replay` and `divergence` when
+//   4. Asserting graceful no-op for `replay` when
 //      `IBX_AUDIT_POSTGRES_ENABLED=false` (the task-19 default).
 //
 // We do NOT spin up a Postgres pool — the CLI's stub path is what's tested
@@ -46,8 +46,6 @@ beforeEach(() => {
   registerKernelCommands(cmd)
   stdout = captureStdout()
   savedEnv = {
-    IBX_KERNEL_SHADOW: process.env.IBX_KERNEL_SHADOW,
-    IBX_KERNEL_ENFORCE: process.env.IBX_KERNEL_ENFORCE,
     IBX_AUDIT_POSTGRES_ENABLED: process.env.IBX_AUDIT_POSTGRES_ENABLED,
     POSTHOG_API_KEY: process.env.POSTHOG_API_KEY,
     IBX_LEDGER_ENABLED: process.env.IBX_LEDGER_ENABLED,
@@ -67,53 +65,31 @@ afterEach(() => {
 // ── ibx kernel status ─────────────────────────────────────────────────────
 
 describe("ibx kernel status", () => {
+  // IBX-IGE v3.0 cutover: the legacy IBX_KERNEL_SHADOW / IBX_KERNEL_ENFORCE
+  // env vars and their JSON shape were removed — the kernel is always
+  // authoritative. Status output now reports intent kinds, ledger, audit
+  // sinks only.
   it("emits JSON when --json is set", async () => {
-    delete process.env.IBX_KERNEL_SHADOW
-    delete process.env.IBX_KERNEL_ENFORCE
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
-    expect(parsed).toHaveProperty("shadow")
-    expect(parsed).toHaveProperty("enforce")
+    expect(parsed).not.toHaveProperty("shadow")
+    expect(parsed).not.toHaveProperty("enforce")
     expect(parsed).toHaveProperty("knownIntentKinds")
     expect(parsed).toHaveProperty("ledger")
     expect(parsed).toHaveProperty("audit")
-    expect(parsed).toHaveProperty("killSwitch")
     expect(parsed.knownIntentKinds.count).toBe(32)
   })
 
   it("renders human-readable text when --json is absent", async () => {
-    delete process.env.IBX_KERNEL_SHADOW
-    delete process.env.IBX_KERNEL_ENFORCE
     await cmd.parseAsync(["status"], { from: "user" })
     const out = stdout.getOutput()
     expect(out).toContain("ibx kernel status")
-    expect(out).toContain("Modo shadow")
-    expect(out).toContain("Modo enforce")
+    expect(out).not.toContain("Modo shadow")
+    expect(out).not.toContain("Modo enforce")
     expect(out).toContain("Intent kinds conhecidos")
     expect(out).toContain("Execution Ledger")
     expect(out).toContain("Audit sink")
-    expect(out).toContain("Kill switch")
-  })
-
-  it("reflects IBX_KERNEL_SHADOW env var in JSON output", async () => {
-    process.env.IBX_KERNEL_SHADOW = "order.checkout.create,order.cancel"
-    delete process.env.IBX_KERNEL_ENFORCE
-    await cmd.parseAsync(["status", "--json"], { from: "user" })
-    const out = stdout.getOutput()
-    const parsed = JSON.parse(out)
-    expect(parsed.shadow.kinds).toContain("order.checkout.create")
-    expect(parsed.shadow.kinds).toContain("order.cancel")
-    expect(parsed.shadow.wildcard).toBe(false)
-  })
-
-  it("detects wildcard '*' in IBX_KERNEL_ENFORCE", async () => {
-    delete process.env.IBX_KERNEL_SHADOW
-    process.env.IBX_KERNEL_ENFORCE = "*"
-    await cmd.parseAsync(["status", "--json"], { from: "user" })
-    const out = stdout.getOutput()
-    const parsed = JSON.parse(out)
-    expect(parsed.enforce.wildcard).toBe(true)
   })
 
   it("includes all 32 KNOWN_INTENT_KINDS in the JSON list", async () => {
@@ -361,314 +337,6 @@ describe("ibx kernel replay (real, mocked-Postgres)", () => {
   })
 })
 
-// ── ibx kernel divergence ─────────────────────────────────────────────────
-
-describe("ibx kernel divergence", () => {
-  it("no-ops with structured TODO when audit-postgres is off", async () => {
-    delete process.env.IBX_AUDIT_POSTGRES_ENABLED
-    delete process.env.POSTHOG_API_KEY
-    await cmd.parseAsync(["divergence", "--since=24h"], { from: "user" })
-    const out = stdout.getOutput()
-    expect(out).toContain("TODO para o operador")
-    expect(out).toContain("BASIS_ONLY")
-    expect(out).toContain("DECISION_KIND")
-    expect(out).toContain("PAYLOAD_REWRITE")
-  })
-
-  it("refuses to run without DATABASE_URL when audit-postgres is enabled", async () => {
-    process.env.IBX_AUDIT_POSTGRES_ENABLED = "true"
-    delete process.env.DATABASE_URL
-    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-    await cmd.parseAsync(["divergence"], { from: "user" })
-    expect(stderrSpy).toHaveBeenCalled()
-    expect(process.exitCode).toBe(1)
-    stderrSpy.mockRestore()
-  })
-
-  it("validates --since duration syntax", async () => {
-    process.env.IBX_AUDIT_POSTGRES_ENABLED = "true"
-    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-    await cmd.parseAsync(["divergence", "--since=invalid"], { from: "user" })
-    expect(stderrSpy).toHaveBeenCalled()
-    expect(process.exitCode).toBe(1)
-    stderrSpy.mockRestore()
-  })
-
-  // W3 D4 — bug fix: --intent-kind was parsed but never threaded into
-  // the SQL WHERE clause (audit 08, kernel.ts:449). Result: operator
-  // asked for one kind, got everything in the window.
-  it("threads --intent-kind into the SQL WHERE clause", async () => {
-    pgQueryRows.reset()
-    pgQueryRows.rows = []
-    process.env.IBX_AUDIT_POSTGRES_ENABLED = "true"
-    process.env.DATABASE_URL = "postgres://mock:mock@localhost/mock"
-    await cmd.parseAsync(
-      [
-        "divergence",
-        "--since=24h",
-        "--intent-kind=order.checkout.create",
-      ],
-      { from: "user" },
-    )
-    const sqlSeen = pgQueryRows.capturedSql.join(" | ")
-    expect(sqlSeen).toMatch(/intent_kind\s*=\s*\$\d/)
-    const allParams = pgQueryRows.capturedParams.flat()
-    expect(allParams).toContain("order.checkout.create")
-    delete process.env.IBX_AUDIT_POSTGRES_ENABLED
-    delete process.env.DATABASE_URL
-  })
-})
-
-// ── ibx kernel kill-switch (W3 D1) ────────────────────────────────────────
-//
-// We mock the @ibatexas/tools Redis surface so the kernel command
-// resolves to an in-memory implementation. The same fake is shared
-// across calls so we can verify state transitions.
-//
-// Anti-theater (RULE 2): each test below was written FIRST and FAILED
-// with `Unknown command 'kill-switch'` before kernel.ts registered the
-// new subcommand. After implementation, all 8 pass; the suite is the
-// operator's documented contract.
-
-const killSwitchFakeRedis = vi.hoisted(() => {
-  const store = new Map<string, string>()
-  const channels = new Map<string, string[]>()
-  return {
-    store,
-    channels,
-    async set(key: string, value: string, _opts?: { EX?: number }) {
-      store.set(key, value)
-      return "OK"
-    },
-    async get(key: string) {
-      return store.get(key) ?? null
-    },
-    async del(key: string) {
-      return store.delete(key) ? 1 : 0
-    },
-    async publish(channel: string, msg: string) {
-      const arr = channels.get(channel) ?? []
-      arr.push(msg)
-      channels.set(channel, arr)
-      return arr.length
-    },
-    reset() {
-      store.clear()
-      channels.clear()
-    },
-  }
-})
-
-vi.mock("@ibatexas/tools", async () => {
-  const actual = await vi.importActual<typeof import("@ibatexas/tools")>(
-    "@ibatexas/tools",
-  )
-  return {
-    ...actual,
-    getRedisClient: vi.fn(async () => killSwitchFakeRedis),
-    rk: (key: string) => `test-cli:${key}`,
-  }
-})
-
-describe("ibx kernel kill-switch", () => {
-  beforeEach(() => {
-    killSwitchFakeRedis.reset()
-  })
-
-  it("enable writes a flag with metadata to Redis", async () => {
-    await cmd.parseAsync(
-      [
-        "kill-switch",
-        "enable",
-        "--reason=Refusal-rate spike at 19:35",
-        // W7-O3 — non-interactive bypass acknowledgement. Without this
-        // flag a TTY-less caller is refused (see new tests below).
-        "--yes-i-am-solo-on-call",
-      ],
-      { from: "user" },
-    )
-    const raw = killSwitchFakeRedis.store.get(
-      "test-cli:kill-switch:global",
-    )
-    expect(raw).toBeDefined()
-    const parsed = JSON.parse(raw!) as {
-      enabledBy: string
-      reason: string
-      enabledAt: string
-    }
-    expect(parsed.reason).toBe("Refusal-rate spike at 19:35")
-    expect(parsed.enabledBy).toMatch(/^cli:/)
-    expect(parsed.enabledAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
-  })
-
-  it("enable publishes an event on the events channel", async () => {
-    await cmd.parseAsync(
-      ["kill-switch", "enable", "--reason=Soak window", "--yes-i-am-solo-on-call"],
-      { from: "user" },
-    )
-    const events = killSwitchFakeRedis.channels.get(
-      "test-cli:kill-switch:events",
-    )
-    expect(events).toBeDefined()
-    expect(events).toHaveLength(1)
-    const parsed = JSON.parse(events![0]!) as {
-      action: string
-      scope: string
-      reason: string
-    }
-    expect(parsed.action).toBe("enable")
-    expect(parsed.scope).toBe("global")
-    expect(parsed.reason).toBe("Soak window")
-  })
-
-  it("status reflects the active kill switch (pt-BR human-readable)", async () => {
-    await cmd.parseAsync(
-      ["kill-switch", "enable", "--reason=incident", "--yes-i-am-solo-on-call"],
-      { from: "user" },
-    )
-    await cmd.parseAsync(["kill-switch", "status"], { from: "user" })
-    const out = stdout.getOutput()
-    expect(out).toContain("ATIVO")
-    expect(out).toContain("incident")
-    expect(out).toMatch(/motivo|reason/i)
-  })
-
-  it("status --json emits structured output", async () => {
-    await cmd.parseAsync(
-      ["kill-switch", "enable", "--reason=incident", "--yes-i-am-solo-on-call"],
-      { from: "user" },
-    )
-    // Reset stdout capture so we only see the status call's output.
-    stdout.restore()
-    stdout = captureStdout()
-    await cmd.parseAsync(["kill-switch", "status", "--json"], {
-      from: "user",
-    })
-    const out = stdout.getOutput()
-    const parsed = JSON.parse(out) as { active: boolean; reason: string }
-    expect(parsed.active).toBe(true)
-    expect(parsed.reason).toBe("incident")
-  })
-
-  it("status --json with no active switch emits active=false", async () => {
-    await cmd.parseAsync(["kill-switch", "status", "--json"], {
-      from: "user",
-    })
-    const out = stdout.getOutput()
-    const parsed = JSON.parse(out) as { active: boolean }
-    expect(parsed.active).toBe(false)
-  })
-
-  it("disable removes the flag and publishes a disable event", async () => {
-    await cmd.parseAsync(
-      ["kill-switch", "enable", "--reason=engage", "--yes-i-am-solo-on-call"],
-      { from: "user" },
-    )
-    expect(
-      killSwitchFakeRedis.store.has("test-cli:kill-switch:global"),
-    ).toBe(true)
-
-    await cmd.parseAsync(
-      ["kill-switch", "disable", "--reason=incident-resolved"],
-      { from: "user" },
-    )
-    expect(
-      killSwitchFakeRedis.store.has("test-cli:kill-switch:global"),
-    ).toBe(false)
-    const events = killSwitchFakeRedis.channels.get(
-      "test-cli:kill-switch:events",
-    )
-    expect(events).toHaveLength(2) // enable + disable
-    const disableEvt = JSON.parse(events![1]!) as { action: string }
-    expect(disableEvt.action).toBe("disable")
-  })
-
-  it("enable requires --reason", async () => {
-    const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-    let threw: unknown
-    try {
-      await cmd.parseAsync(["kill-switch", "enable"], { from: "user" })
-    } catch (err) {
-      threw = err
-    }
-    // Commander throws via exitOverride() when a required option is
-    // missing; the test asserts that *something* signaled refusal.
-    expect(threw ?? process.exitCode).toBeTruthy()
-    stderrSpy.mockRestore()
-    process.exitCode = 0
-  })
-
-  it("status pt-BR text shows 'inativo' when no flag is set", async () => {
-    await cmd.parseAsync(["kill-switch", "status"], { from: "user" })
-    const out = stdout.getOutput()
-    expect(out).toContain("inativo")
-  })
-
-  // W7-O3 — two-person bypass posture.
-  //
-  // The CLI enable surface intentionally bypasses the two-person rule
-  // applied by the admin HTTP endpoint. Each of the bypass guardrails is
-  // asserted here so a future regression that drops the prompt / flag /
-  // breadcrumb tag fails the build.
-
-  describe("W7-O3 — two-person bypass posture", () => {
-    it("refuses to enable without --yes-i-am-solo-on-call when stdin is not a TTY (and Redis stays clean)", async () => {
-      // Vitest runs under a non-TTY stdin by default. The bypass-confirmation
-      // helper must refuse rather than blocking on a hung prompt.
-      const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-      await cmd.parseAsync(
-        ["kill-switch", "enable", "--reason=incident"],
-        { from: "user" },
-      )
-      // Process exit code is set rather than thrown so the CLI shell can
-      // tail logs; the Redis flag MUST NOT have been written.
-      expect(process.exitCode).toBe(1)
-      expect(
-        killSwitchFakeRedis.store.has("test-cli:kill-switch:global"),
-      ).toBe(false)
-      stderrSpy.mockRestore()
-      process.exitCode = 0
-    })
-
-    it("allows enable with --yes-i-am-solo-on-call and the flag flows into the Redis write + breadcrumb", async () => {
-      await cmd.parseAsync(
-        [
-          "kill-switch",
-          "enable",
-          "--reason=Pager dead at 03h47",
-          "--yes-i-am-solo-on-call",
-        ],
-        { from: "user" },
-      )
-      const raw = killSwitchFakeRedis.store.get(
-        "test-cli:kill-switch:global",
-      )
-      expect(raw).toBeDefined()
-      const parsed = JSON.parse(raw!) as { reason: string }
-      expect(parsed.reason).toBe("Pager dead at 03h47")
-      // The bypass banner is part of the CLI output — assert the operator
-      // saw the warning even if non-interactive.
-      const out = stdout.getOutput()
-      expect(out).toMatch(/bypass.*dois operadores/i)
-    })
-
-    it("enable prints the bypass posture marker on the success summary", async () => {
-      await cmd.parseAsync(
-        [
-          "kill-switch",
-          "enable",
-          "--reason=Soak window",
-          "--yes-i-am-solo-on-call",
-        ],
-        { from: "user" },
-      )
-      const out = stdout.getOutput()
-      expect(out).toContain("two_person_rule")
-      expect(out).toContain("surface=cli")
-    })
-  })
-})
-
 // ── ibx kernel defer resume <sessionId> (W7-O1) ───────────────────────────
 //
 // The CLI reads the parked envelope from Redis, verifies the hash via the
@@ -679,13 +347,37 @@ describe("ibx kernel kill-switch", () => {
 //   - happy path with --json dry-run → emits the synth event without
 //     touching NATS, with verifyMode = "verified" | "legacy-no-hash"
 //
-// We use the same in-memory fake redis pattern the kill-switch tests use,
-// extended with the defer:pending:* keyspace shape. A separate integration
-// run against real Docker Redis is captured as O1-evidence (RULE H).
+// We use an in-memory fake redis, with the defer:pending:* keyspace shape.
+// A separate integration run against real Docker Redis is captured as
+// O1-evidence (RULE H).
+
+const deferFakeRedis = vi.hoisted(() => {
+  const store = new Map<string, string>()
+  return {
+    store,
+    async get(key: string) {
+      return store.get(key) ?? null
+    },
+    reset() {
+      store.clear()
+    },
+  }
+})
+
+vi.mock("@ibatexas/tools", async () => {
+  const actual = await vi.importActual<typeof import("@ibatexas/tools")>(
+    "@ibatexas/tools",
+  )
+  return {
+    ...actual,
+    getRedisClient: vi.fn(async () => deferFakeRedis),
+    rk: (key: string) => `test-cli:${key}`,
+  }
+})
 
 describe("ibx kernel defer resume (W7-O1)", () => {
   beforeEach(() => {
-    killSwitchFakeRedis.reset()
+    deferFakeRedis.reset()
   })
 
   it("refuses with exit 1 when no parked envelope exists for the sessionId", async () => {
@@ -700,7 +392,7 @@ describe("ibx kernel defer resume (W7-O1)", () => {
   })
 
   it("refuses with exit 1 when the parked blob is malformed JSON", async () => {
-    killSwitchFakeRedis.store.set(
+    deferFakeRedis.store.set(
       "test-cli:defer:pending:cust:broken",
       "{not json",
     )
@@ -749,7 +441,7 @@ describe("ibx kernel defer resume (W7-O1)", () => {
       signal: "pix.confirmed",
       parkedAt: "2026-05-23T18:00:00.000Z",
     }
-    killSwitchFakeRedis.store.set(
+    deferFakeRedis.store.set(
       `test-cli:defer:pending:${sessionId}`,
       JSON.stringify(parked),
     )
@@ -804,7 +496,7 @@ describe("ibx kernel defer resume (W7-O1)", () => {
       signal: "pix.confirmed",
       parkedAt: "2026-05-23T18:00:00.000Z",
     }
-    killSwitchFakeRedis.store.set(
+    deferFakeRedis.store.set(
       `test-cli:defer:pending:${sessionId}`,
       JSON.stringify(parked),
     )
@@ -836,7 +528,7 @@ describe("ibx kernel defer resume (W7-O1)", () => {
       signal: "pix.confirmed",
       parkedAt: "2026-05-23T18:00:00.000Z",
     }
-    killSwitchFakeRedis.store.set(
+    deferFakeRedis.store.set(
       `test-cli:defer:pending:${sessionId}`,
       JSON.stringify(parked),
     )

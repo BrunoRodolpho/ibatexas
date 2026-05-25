@@ -193,6 +193,7 @@ describe("handoff-subscriber", () => {
     expect(mockSubscribeNatsEvent).toHaveBeenCalledWith(
       "support.handoff_requested",
       expect.any(Function),
+      { queueGroup: "handoff-subscriber" },
     )
   })
 })

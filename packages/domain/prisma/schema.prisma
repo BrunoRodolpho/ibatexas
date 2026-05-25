@@ -408,8 +408,16 @@ model OrderStatusHistory {
   @@schema("ibx_domain")
 }
 
-/// Append-only, immutable event log for ALL order domain events.
-/// Observability + replay + debugging layer. Never mutated after insert.
+/// Append-only event log for ALL order domain events.
+/// Observability + replay + debugging layer.
+///
+/// EXCEPT for LGPD Art. 18 erasure: when `anonymizeCustomer()` runs in
+/// customer.service.ts, `payload` for every row keyed by an anonymized
+/// customer's orderId is overwritten to `{anonymized: true}` (in-tx
+/// scrub + heavy-path pre-batch). Downstream replay / projection-rebuild
+/// consumers must tolerate this — a `payload.anonymized === true`
+/// sentinel means the original event payload was erased to satisfy
+/// the data-subject's erasure right.
 model OrderEventLog {
   id              String   @id @default(cuid())
   orderId         String   @map("order_id")
@@ -504,14 +512,14 @@ model OrderNote {
 /// totalEarned: lifetime stamps earned (never decremented).
 /// redeemed: number of rewards redeemed (incremented when stamp 10 is earned).
 model LoyaltyAccount {
-  id          String   @id @default(cuid())
-  customerId  String   @unique @map("customer_id")
-  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  stamps      Int      @default(0)
-  totalEarned Int      @default(0) @map("total_earned")
-  redeemed    Int      @default(0)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id          String    @id @default(cuid())
+  customerId  String?   @unique @map("customer_id")
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  stamps      Int       @default(0)
+  totalEarned Int       @default(0) @map("total_earned")
+  redeemed    Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
   @@map("loyalty_accounts")
   @@schema("ibx_domain")

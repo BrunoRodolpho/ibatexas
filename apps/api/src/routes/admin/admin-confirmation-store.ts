@@ -114,6 +114,17 @@ export interface PendingAdminAction {
   readonly refundAmountCentavos?: number;
   /** Optional reason — operator-supplied at step 1. */
   readonly reason?: string;
+  /**
+   * audit-2026-05-24 P2-5: the projection's `version` snapshot captured at
+   * step 1. Step 2 forwards this into the envelope payload's
+   * `expectedVersion` so the executor can REFUSE if the projection has
+   * advanced between the operator's "approve" click and the second
+   * operator's "confirm" click. Optional because legacy receipts
+   * created before this audit didn't carry the version — those still
+   * dispatch without an optimistic-concurrency check (same behavior as
+   * before the fix).
+   */
+  readonly expectedVersion?: number;
 }
 
 export interface AdminConfirmationStore {

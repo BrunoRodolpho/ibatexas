@@ -337,12 +337,20 @@ function refuseDecision(userFacing: string) {
   };
 }
 
-function makeOrder(overrides?: Partial<{ id: string; fulfillmentStatus: string; displayId: number }>) {
+function makeOrder(overrides?: Partial<{
+  id: string;
+  fulfillmentStatus: string;
+  displayId: number;
+  version: number;
+}>) {
   return {
     id: overrides?.id ?? "order_01",
     displayId: overrides?.displayId ?? 42,
     customerId: "cust_01",
     fulfillmentStatus: overrides?.fulfillmentStatus ?? "pending",
+    // audit-2026-05-24 P2-5: the force-* routes snapshot `version` at
+    // step 1 and forward it as `expectedVersion` at step 2.
+    version: overrides?.version ?? 1,
   };
 }
 
@@ -636,6 +644,74 @@ describe("POST /api/admin/orders/:id/force-cancel — two-step receipt protocol"
         headers: MANAGER_2_HEADERS,
       });
       expect(step2.statusCode).toBe(410);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // ── audit-2026-05-24 P2-5: force-cancel forwards expectedVersion ─────
+  //
+  // Step 1 snapshots `order.version`. Step 2 builds the envelope with
+  // `expectedVersion` so the executor's optimistic-concurrency guard
+  // fires if the projection has been mutated in between. A
+  // ConcurrencyError from the executor surfaces as 409 with the
+  // canonical receipt-stale message.
+  it("step 2 forwards step-1 `order.version` as `expectedVersion` in the envelope", async () => {
+    mockGetById.mockResolvedValue(makeOrder({ version: 7 }));
+    const server = await buildOrderActionsServer(MANAGER);
+    try {
+      const step1 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/force-cancel",
+        payload: { reason: "x" },
+      });
+      const { confirmationId } = step1.json() as { confirmationId: string };
+
+      const step2 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/force-cancel/confirm",
+        payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
+      });
+      expect(step2.statusCode).toBe(200);
+
+      expect(mockTransitionStatusFromEnvelopeOrder).toHaveBeenCalledTimes(1);
+      const envelope = mockTransitionStatusFromEnvelopeOrder.mock.calls[0][0] as {
+        payload: { expectedVersion?: number };
+      };
+      // The snapshotted step-1 version was threaded into the envelope.
+      expect(envelope.payload.expectedVersion).toBe(7);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("step 2 returns 409 when executor throws ConcurrencyError (stale version)", async () => {
+    mockGetById.mockResolvedValue(makeOrder({ version: 3 }));
+    // Executor throws when the projection has been bumped between step 1 and step 2.
+    const concurrencyErr = Object.assign(new Error("Concurrency conflict: expected v3, found v5"), {
+      name: "ConcurrencyError",
+    });
+    mockTransitionStatusFromEnvelopeOrder.mockRejectedValueOnce(concurrencyErr);
+
+    const server = await buildOrderActionsServer(MANAGER);
+    try {
+      const step1 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/force-cancel",
+        payload: { reason: "x" },
+      });
+      const { confirmationId } = step1.json() as { confirmationId: string };
+
+      const step2 = await server.inject({
+        method: "POST",
+        url: "/api/admin/orders/order_01/force-cancel/confirm",
+        payload: { confirmationId },
+        headers: MANAGER_2_HEADERS,
+      });
+      expect(step2.statusCode).toBe(409);
+      const body = step2.json() as { error: string };
+      expect(body.error).toMatch(/atualizado por outro atendente/i);
     } finally {
       await server.close();
     }

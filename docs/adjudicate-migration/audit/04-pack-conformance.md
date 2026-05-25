@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover per-Pack scorecard (2026-05-23). Taxonomy and Pack alignment have evolved; the lighthouse Pack is now `@adjudicate/pack-payments-pix` (consumed from the platform repo). For current Pack inventory and conformance-suite status, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Pack Conformance Audit
 
 > Audit date: 2026-05-23. Auditor: Pack Conformance Auditor.

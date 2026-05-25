@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** This summarizes the pre-cutover overnight autonomous run (2026-05-22 → 2026-05-23). The work it describes (M0-M6 milestones, `feat/consume-adjudicate-from-platform-repo` branch) has since been merged via the IBX-IGE v3.0 cutover (`f3bea43`) and superseded by W1-W9 correctness-remediation + audit-2026-05-24 closeout. For current state, see [`audit-2026-05-24/CLOSEOUT-STATUS.md`](./audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Overnight Autonomous Run — Summary
 
 **Started:** 2026-05-22 (you signed off)

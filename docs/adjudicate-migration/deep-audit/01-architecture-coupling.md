@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover architectural-coupling audit (2026-05-23, post-W6). Findings drove Waves 7-9 hardening (dispatcher boot-ordering, audit-sink fail-closed, system-actor envelope discipline). The "domain-as-kernel-adapter" coupling pattern remains by design; the dispatcher-seam race was closed in H2. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Architecture & Coupling Deep Audit
 
 **Date:** 2026-05-23

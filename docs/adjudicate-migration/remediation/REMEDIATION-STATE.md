@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** W1-W6 wave plan + P0/P1/P2 ledger for the pre-cutover 2026-05-23 audit closure. W7-W9 remediation is tracked under [`../correctness-remediation/`](../correctness-remediation/); current outstanding work is tracked in [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Remediation State — Audit Closure
 
 **Started:** 2026-05-23 (post-audit)

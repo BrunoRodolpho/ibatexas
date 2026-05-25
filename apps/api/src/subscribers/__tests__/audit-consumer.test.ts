@@ -1,17 +1,16 @@
 // Unit tests for the audit-consumer NATS subscriber — task 19 (M4).
 //
-// Asserts the redundancy-archiver behaviour:
-//   1. Disabled when IBX_AUDIT_POSTGRES_ENABLED is not "true" (no
-//      subscribeNatsEvent call, no Postgres writes).
-//   2. Subscribes to "audit.intent.decision.v1" when enabled.
-//   3. New record → Postgres INSERT fires + dedup ledger key set.
-//   4. Duplicate via isNewEvent → no Postgres call.
-//   5. Duplicate via Postgres unique constraint (writer throws nothing
+// Asserts the redundancy-archiver behaviour (always-on per IBX-IGE v3.0
+// cutover — no env-var gate):
+//   1. Subscribes to "audit.intent.decision.v1" unconditionally.
+//   2. New record → Postgres INSERT fires + dedup ledger key set.
+//   3. Duplicate via isNewEvent → no Postgres call.
+//   4. Duplicate via Postgres unique constraint (writer throws nothing
 //      because the SQL uses ON CONFLICT DO NOTHING in the real adapter —
 //      we simulate by making the writer succeed silently for the dup
 //      case).
-//   6. Malformed payload → DLQ + no INSERT.
-//   7. Postgres connection error → DLQ + no infinite retry.
+//   5. Malformed payload → DLQ + no INSERT.
+//   6. Postgres connection error → DLQ + no infinite retry.
 //
 // External dependencies mocked at the module boundary:
 //   - @ibatexas/nats-client (subscribe)
@@ -171,25 +170,9 @@ describe("audit-consumer subscriber", () => {
     )
   })
 
-  // ── 1. Disabled by default ──────────────────────────────────────────────
+  // ── 1. Always-on subscription ───────────────────────────────────────────
 
-  it("does NOT subscribe when IBX_AUDIT_POSTGRES_ENABLED is unset", async () => {
-    const { startAuditConsumer } = await import("../audit-consumer.js")
-    await startAuditConsumer(makeLogger())
-    expect(mockSubscribeNatsEvent).not.toHaveBeenCalled()
-  })
-
-  it("does NOT subscribe when IBX_AUDIT_POSTGRES_ENABLED is 'false'", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "false")
-    const { startAuditConsumer } = await import("../audit-consumer.js")
-    await startAuditConsumer(makeLogger())
-    expect(mockSubscribeNatsEvent).not.toHaveBeenCalled()
-  })
-
-  // ── 2. Subscribed when enabled ──────────────────────────────────────────
-
-  it("subscribes to 'audit.intent.decision.v1' when enabled", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
+  it("subscribes to 'audit.intent.decision.v1' unconditionally (no env gate)", async () => {
     const writer: PostgresWriter = { insertAudit: vi.fn(async () => undefined) }
     const { startAuditConsumer, _setAuditConsumerWriter } = await import(
       "../audit-consumer.js"
@@ -199,10 +182,9 @@ describe("audit-consumer subscriber", () => {
     _setAuditConsumerWriter(null)
   })
 
-  // ── 3. New record → INSERT + dedup ledger set ──────────────────────────
+  // ── 2. New record → INSERT + dedup ledger set ──────────────────────────
 
   it("writes new record to Postgres + sets dedup key", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     const insertAudit = vi.fn(async (_row: IntentAuditRow) => undefined)
     const writer: PostgresWriter = { insertAudit }
     const { startAuditConsumer, _setAuditConsumerWriter } = await import(
@@ -230,10 +212,9 @@ describe("audit-consumer subscriber", () => {
     _setAuditConsumerWriter(null)
   })
 
-  // ── 4. Dedup ledger blocks duplicate delivery ──────────────────────────
+  // ── 3. Dedup ledger blocks duplicate delivery ──────────────────────────
 
   it("skips when isNewEvent returns false (NATS redelivery)", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     const insertAudit = vi.fn(async () => undefined)
     const writer: PostgresWriter = { insertAudit }
     const { startAuditConsumer, _setAuditConsumerWriter } = await import(
@@ -255,10 +236,9 @@ describe("audit-consumer subscriber", () => {
     _setAuditConsumerWriter(null)
   })
 
-  // ── 5. Malformed payload → DLQ, no INSERT ──────────────────────────────
+  // ── 4. Malformed payload → DLQ, no INSERT ──────────────────────────────
 
   it("DLQs malformed payload and does NOT call Postgres", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     const insertAudit = vi.fn(async () => undefined)
     const writer: PostgresWriter = { insertAudit }
     const { startAuditConsumer, _setAuditConsumerWriter } = await import(
@@ -282,10 +262,9 @@ describe("audit-consumer subscriber", () => {
     _setAuditConsumerWriter(null)
   })
 
-  // ── 6. Postgres error → DLQ ────────────────────────────────────────────
+  // ── 5. Postgres error → DLQ ────────────────────────────────────────────
 
   it("pushes to DLQ when Postgres writer throws", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     const insertAudit = vi.fn(async () => {
       throw new Error("postgres down")
     })
@@ -311,10 +290,9 @@ describe("audit-consumer subscriber", () => {
     _setAuditConsumerWriter(null)
   })
 
-  // ── 7. Dedup-ledger failure is non-fatal ───────────────────────────────
+  // ── 6. Dedup-ledger failure is non-fatal ───────────────────────────────
 
   it("proceeds to INSERT when dedup ledger check fails", async () => {
-    vi.stubEnv("IBX_AUDIT_POSTGRES_ENABLED", "true")
     // Replace redisStub with one whose `set` always throws to simulate a
     // Redis hiccup. The consumer's dedup-failure branch must still call
     // the writer (ON CONFLICT is the second-layer safety net).
@@ -341,5 +319,27 @@ describe("audit-consumer subscriber", () => {
 
     expect(insertAudit).toHaveBeenCalledOnce()
     _setAuditConsumerWriter(null)
+  })
+
+  // ── 7. [audit-2026-05-24 P1-4] consumer dedup hook is exposed ──────────
+  //
+  // The hook is wired by apps/api during `installKernelMetricsSink` and
+  // bumps `kernel_audit_dedup_total{path="consumer"}` whenever the
+  // writer's `ON CONFLICT DO NOTHING` absorbs a duplicate. Until the
+  // upstream UNIQUE constraint lands in `@adjudicate/audit-postgres`,
+  // this hook will not fire in production — every INSERT lands a fresh
+  // row. The test asserts the setter is exported and idempotent so the
+  // wiring is in place for the schema migration.
+
+  it("[P1-4] setAuditConsumerDedupHook is exported and accepts both a function and null", async () => {
+    const { setAuditConsumerDedupHook } = await import("../audit-consumer.js")
+    expect(typeof setAuditConsumerDedupHook).toBe("function")
+
+    // Should accept a function spy without throwing.
+    const hook = vi.fn()
+    expect(() => setAuditConsumerDedupHook(hook)).not.toThrow()
+
+    // Should accept null (disable) without throwing.
+    expect(() => setAuditConsumerDedupHook(null)).not.toThrow()
   })
 })

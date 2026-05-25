@@ -25,7 +25,7 @@
 //   - Duplicate insert (Redis dedup miss + NATS-replay): handled by
 //     `ON CONFLICT DO NOTHING` (P0-14, see schema note below).
 //
-// ── P0-14 schema-alignment note ─────────────────────────────────────────
+// ── P0-14 / audit-2026-05-24 P1-4 schema-alignment note ───────────────
 //
 // The previous SQL targeted `ON CONFLICT (intent_hash, recorded_at)` — a
 // constraint that does NOT exist in the @adjudicate/audit-postgres
@@ -39,17 +39,47 @@
 // CONFLICT specification") on the first INSERT with
 // `IBX_AUDIT_POSTGRES_ENABLED=true`.
 //
-// We fall back to bare `ON CONFLICT DO NOTHING` (no column list). This:
+// We use bare `ON CONFLICT DO NOTHING` (no column list / no constraint name).
+// This:
 //   - is valid SQL — matches any unique constraint violation;
-//   - is a no-op today because no row can conflict (`id` is BIGSERIAL);
-//   - is forward-compatible: if a unique constraint on intent_hash is
-//     later added upstream, the same SQL silently picks up the dedup
-//     without code changes here.
+//   - is a no-op today because no unique constraint exists on the table
+//     (the `(id, recorded_at)` PK is BIGSERIAL+ts so a fresh INSERT never
+//     conflicts);
+//   - is forward-compatible: when a `UNIQUE (intent_hash, recorded_at)`
+//     constraint lands upstream in the sibling `@adjudicate/audit-postgres`
+//     repo (audit-2026-05-24 P1-4, tracked for cross-repo coordination),
+//     this writer silently picks up the dedup without code changes here.
 //
-// Layer-1 dedup remains the Redis SETNX in `audit-consumer.ts`. Layer-2
-// dedup at the Postgres level is currently a no-op; the assumption that
-// it caught duplicates was wishful. Schema-level dedup is tracked as a
-// follow-up against the @adjudicate/audit-postgres package.
+// ── audit-2026-05-24 P1-4: dedup decision (Option A) ──────────────────
+//
+// Two paths today write the SAME AuditRecord to the same Postgres table:
+//   - The in-process Postgres sink (this writer wired through
+//     `intent-audit-wiring.ts`), called inside the responder/kernel hot
+//     paths via `getAuditSink().emit(...)`.
+//   - The audit-consumer NATS subscriber (`audit-consumer.ts`), which
+//     re-consumes records published to `audit.intent.decision.v1` and
+//     writes them durably for crash recovery.
+//
+// Pre-P1-4 each path had its OWN Redis SETNX dedup with DIFFERENT key
+// prefixes — neither saw the other. The bare `ON CONFLICT DO NOTHING`
+// was a no-op (no unique constraint). Net effect: every audit row was
+// persisted twice.
+//
+// Decision: keep the existing topology (Option A in the audit brief).
+//   - The in-process sink is authoritative — it writes in-band with the
+//     hot path so the record lands the moment the decision fires.
+//   - The audit-consumer is fault-tolerant redundancy — if the API
+//     process crashes between NATS publish and the in-process INSERT,
+//     NATS at-least-once delivery replays through the consumer.
+//   - Both attempt the INSERT. With the upstream UNIQUE constraint in
+//     place, the second writer (whichever lands last) is a no-op.
+//   - The `onConflictNoOp` hook fires on each silent dedup so ops can
+//     gauge how often the redundancy path collides with the primary
+//     (`kernel_audit_dedup_total{path}` Prometheus counter).
+//
+// Layer-1 dedup (Redis SETNX in `audit-consumer.ts`) remains the cheap
+// pre-INSERT shortcut for redelivery. Layer-2 dedup at the Postgres
+// level is the safety net that catches the race the SETNX can't see.
 
 import type {
   IntentAuditRow,
@@ -102,6 +132,23 @@ export interface CreatePostgresAuditWriterOptions {
    * Used by the wiring layer to surface lag metrics.
    */
   readonly onInsert?: (row: IntentAuditRow) => void
+  /**
+   * Audit-2026-05-24 P1-4: fires when the `ON CONFLICT DO NOTHING` clause
+   * absorbs a duplicate (the row already exists from a prior INSERT — the
+   * `$executeRawUnsafe` return value is 0). Wired to a Prometheus counter
+   * by `intent-audit-wiring.ts` / `audit-consumer.ts` so operators can
+   * gauge how often the in-process sink and the audit-consumer redundancy
+   * path collide. A high collision rate is expected and healthy when the
+   * upstream UNIQUE constraint lands; it indicates the layer-2 dedup is
+   * working as designed.
+   *
+   * Until the cross-repo schema migration ships
+   * (UNIQUE(intent_hash, recorded_at) on `intent_audit`), this hook will
+   * not fire — every INSERT lands a new row because no constraint exists
+   * to violate. The metric stays at zero until the constraint goes live;
+   * that's the operator's signal for "schema deployed."
+   */
+  readonly onConflictNoOp?: (row: IntentAuditRow) => void
 }
 
 /**
@@ -116,7 +163,12 @@ export function createPostgresAuditWriter(
 ): PostgresWriter {
   return {
     async insertAudit(row: IntentAuditRow): Promise<void> {
-      await opts.prisma.$executeRawUnsafe(
+      // Prisma's `$executeRawUnsafe` returns the number of affected rows.
+      // With `ON CONFLICT DO NOTHING`, that's 1 for a fresh insert and 0
+      // when the constraint absorbs a duplicate. Once the upstream UNIQUE
+      // constraint lands (audit-2026-05-24 P1-4), the 0 path fires the
+      // dedup observability hook so ops can gauge collision rate.
+      const affected = await opts.prisma.$executeRawUnsafe(
         INSERT_INTENT_AUDIT_SQL,
         row.intent_hash,
         row.session_id,
@@ -140,6 +192,13 @@ export function createPostgresAuditWriter(
         row.nonce,
         row.supersedes_jsonb,
       )
+      if (affected === 0 && opts.onConflictNoOp) {
+        try {
+          opts.onConflictNoOp(row)
+        } catch {
+          // Telemetry must never block audit emission.
+        }
+      }
       opts.onInsert?.(row)
     },
   }

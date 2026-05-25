@@ -52,6 +52,27 @@
 //     Audit emit is best-effort (mirrors the with-adjudicate helper in
 //     packages/domain/src/services/__shared__/with-adjudicate.ts).
 //   - #2 centavos: this wrapper is payload-agnostic — pass-through.
+//
+// ── Idempotency-key posture (audit-2026-05-24 P0-7) ────────────────────
+//
+// Callers SHOULD provide `meta.idempotencyKey` (or the top-level
+// `idempotencyKey` arg, see `MedusaAdjudicatedArgs`) for any
+// user-initiated mutation that might retry — HTTP retries, browser
+// double-clicks, WhatsApp resends, etc. Without an idempotency key,
+// each call produces a fresh `randomUUID()` nonce; the envelope's
+// `intentHash` differs per attempt and the kernel ledger treats every
+// retry as a NEW intent, executing the side effect multiple times
+// (duplicate Medusa cart writes, duplicate Stripe charges, double-
+// sent Twilio OTPs). The same applies to the sibling wrappers in
+// this repo: `medusaStoreAdjudicated`, `stripeAdjudicated`,
+// `twilioAdjudicated`. Document each route's idempotency posture
+// explicitly at the call site — either derive a stable key from
+// non-PII identifiers (orderId / cartId / customerId UUIDs + action
+// suffix) or require the `Idempotency-Key` HTTP header. See
+// `apps/api/src/routes/order-actions.ts` (cancel),
+// `apps/api/src/routes/cart.ts` (checkout),
+// `apps/api/src/routes/admin/payments.ts` (refund), and
+// `apps/api/src/routes/me.ts` (anonymize) for reference patterns.
 
 import {
   basis,
@@ -101,6 +122,7 @@ export type MedusaIntentKind =
   | "medusa.admin.order.cancel"
   | "medusa.admin.order.capture_payment"
   | "medusa.admin.product.update"
+  | "medusa.admin.customer.update"
   | "medusa.unknown"
 
 // Convenience for tests / introspection.
@@ -122,6 +144,7 @@ export const MEDUSA_INTENT_KINDS: ReadonlyArray<MedusaIntentKind> = [
   "medusa.admin.order.cancel",
   "medusa.admin.order.capture_payment",
   "medusa.admin.product.update",
+  "medusa.admin.customer.update",
   "medusa.unknown",
 ]
 
@@ -195,6 +218,16 @@ const PATH_RULES: ReadonlyArray<PathRule> = [
     method: "POST",
     pattern: /^\/admin\/products\/[^/]+\/?$/,
     kind: "medusa.admin.product.update",
+  },
+  // Admin customer update — bare POST against /admin/customers/:id. Used
+  // exclusively by the H3 Wave-B Medusa anonymize compensation chain. The
+  // endpoint is Medusa v2 RPC-style POST (NOT PATCH) per
+  // node_modules/@medusajs/medusa/dist/api/admin/customers/[id]/route.js
+  // (verified during audit-2026-05-24 H3 Wave-B).
+  {
+    method: "POST",
+    pattern: /^\/admin\/customers\/[^/]+\/?$/,
+    kind: "medusa.admin.customer.update",
   },
   // Store cart line-items — update / remove (item-scoped) before bare add.
   {
@@ -472,12 +505,14 @@ export interface MedusaAdjudicatedArgs<P> {
   /** Optional AbortSignal forwarded to the underlying fetch. */
   readonly signal?: AbortSignal
   /**
-   * Optional audit sink. When omitted, the wrapper skips audit emit
-   * — same fail-open posture as `withAdjudicate` in the domain
-   * package. Consumers in `apps/api` SHOULD inject
-   * `getAuditSink()` from `@ibatexas/llm-provider`.
+   * Audit sink. REQUIRED post audit-2026-05-24 H2 (A1) — every Medusa
+   * admin egress now emits an audit record by contract. Wrapper-call
+   * sites pass `auditSink: getAuditSink()` imported from
+   * `@ibatexas/audit-sink` (the leaf that owns the boot-time DI).
+   * Fail-closed: calling before `__setAuditSinkDependencies(...)` throws
+   * `AuditSinkNotInitializedError`.
    */
-  readonly auditSink?: AuditSink
+  readonly auditSink: AuditSink
   /**
    * Optional logger used for audit-emit failures (best-effort).
    */
@@ -556,27 +591,27 @@ export async function medusaAdjudicated<P, R = unknown>(
   // Adjudicate. The kernel is pure — no I/O.
   const decision = adjudicate(envelope, wrapperState, medusaWrapperPolicyBundle)
 
-  // Audit emit (best-effort, fire-and-forget). Mirrors the pattern
-  // in packages/domain/src/services/__shared__/with-adjudicate.ts.
-  if (args.auditSink) {
-    try {
-      const record = buildAuditRecord({
-        envelope,
-        decision,
-        durationMs: Date.now() - startedAt,
-      })
-      void args.auditSink.emit(record).catch((err: unknown) => {
-        args.log?.error?.(
-          "[medusa-adjudicated] audit emit failed:",
-          (err as Error).message ?? String(err),
-        )
-      })
-    } catch (err) {
+  // Audit emit (fire-and-forget). Mandatory post-H2 A1: the meta type
+  // now requires auditSink. Audit-2026-05-24 T2 conformance pins this
+  // contract — see apps/api/src/__tests__/bypass-detection/
+  // audit-sink-wrapper-conformance.test.ts.
+  try {
+    const record = buildAuditRecord({
+      envelope,
+      decision,
+      durationMs: Date.now() - startedAt,
+    })
+    void args.auditSink.emit(record).catch((err: unknown) => {
       args.log?.error?.(
-        "[medusa-adjudicated] audit record build failed:",
+        "[medusa-adjudicated] audit emit failed:",
         (err as Error).message ?? String(err),
       )
-    }
+    })
+  } catch (err) {
+    args.log?.error?.(
+      "[medusa-adjudicated] audit record build failed:",
+      (err as Error).message ?? String(err),
+    )
   }
 
   // Branch on Decision.

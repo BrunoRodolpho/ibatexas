@@ -1,3 +1,7 @@
+> **NOTE — load-bearing with stale rollout framing.** The `AuditRecord` v4 schema, PII redactor contract, and replay/drift policy below are still authoritative. The "before enforce flip" gating references throughout this doc point to a deleted rollout framework — the kernel is now always-on per `CLAUDE.md` rule #9 (cutover commit `f3bea43`). Read "before enforce flip" as "before production deploy" (or simply ignore the gating, since no rollout phase exists today). See `README.md` in this directory for the full classification.
+
+---
+
 # 05 — Audit & Replay Requirements
 
 > Companion to: [`01-intent-taxonomy.md`](./01-intent-taxonomy.md), [`04-decision-policy.md`](./04-decision-policy.md), [`06-deferred-execution-policy.md`](./06-deferred-execution-policy.md), [`07-rollback-recovery.md`](./07-rollback-recovery.md).
@@ -6,9 +10,9 @@
 ## Executive summary
 
 - Every adjudicated decision must produce an `AuditRecord` (v4 per investigation 05 — `AUDIT_RECORD_VERSION = 4`) that survives: process restart, NATS broker outage, Postgres maintenance window, and Redis cache eviction. Composition target: `persistentBufferedSink(multiSink(consoleSink, natsSink, postgresSink))` with a Redis-backed spill storage.
-- **PII redaction is non-negotiable.** Investigation 08 §"P0 #1" identified that today CPF/email/phone bleed into `ibatexas.audit.intent.decision.v1` because `AuditRecord.envelope.payload` is published verbatim. The `AuditRedactor` runs **before** any sink emit, masks fields per intent-kind schema (driven by PII levels in [`01-intent-taxonomy.md`](./01-intent-taxonomy.md) §"PII categorization"), and is contract-tested before any shadow flip.
+- **PII redaction is non-negotiable.** Investigation 08 §"P0 #1" identified that today CPF/email/phone bleed into `ibatexas.audit.intent.decision.v1` because `AuditRecord.envelope.payload` is published verbatim. The `AuditRedactor` runs **before** any sink emit, masks fields per intent-kind schema (driven by PII levels in [`01-intent-taxonomy.md`](./01-intent-taxonomy.md) §"PII categorization"), and is contract-tested before any production deploy. (Updated 2026-05-24 post-cutover: the legacy "shadow flip" gate was retired with the always-on kernel; the redactor contract is enforced continuously instead.)
 - Hot path: NATS subject `ibatexas.audit.intent.decision.v1` (current; per investigation 06 — already wired but unconsumed). Cold path: `@adjudicate/audit-postgres.createPostgresSink` with monthly partitioning (per investigation 05). Crash-safe buffer: `persistentBufferedSink` with Redis storage (per investigation 05 Tier 1 #7).
-- Replay runs nightly via `ibx kernel replay --since=24h` (new CLI per investigation 07 P1 #10). Uses `replayWithIntegrity` + `classifyReplayDrift` from `@adjudicate/audit` (per investigation 05). Daily drift class must be `stable` or `improving`; any other class blocks the next-day enforce flip per [`07-rollback-recovery.md`](./07-rollback-recovery.md).
+- Replay runs nightly via `ibx kernel replay --since=24h` (new CLI per investigation 07 P1 #10). Uses `replayWithIntegrity` + `classifyReplayDrift` from `@adjudicate/audit` (per investigation 05). Daily drift class must be `stable` or `improving`; any other class triggers a post-cutover regression investigation (rollback, hotfix, or pin a Pack version) per [`07-rollback-recovery.md`](./07-rollback-recovery.md). (Updated 2026-05-24 post-cutover: the legacy "next-day enforce flip" gating language was retired with the always-on kernel; the drift signal is now a continuous safety net rather than a rollout gate.)
 - Retention: **90 days hot** (Postgres partitioned monthly), **1 year warm** (S3 JSONL archive), **archival cold** (S3 Glacier; pruned only after legal hold lifted). Per intent kind, the retention tag drives the lifecycle policy.
 
 ## The `AuditRecord` (v4)
@@ -215,12 +219,14 @@ ibx kernel status
 
 ### Drift classes (per investigation 05 — `ReplayDriftClass`)
 
+> Updated 2026-05-24 post-cutover: action column originally read "enforce flips"; with the kernel always-on, read those as "continue allowing the affected kind to adjudicate normally" vs. "rollback the offending change / pin the Pack version".
+
 | Class | Meaning | Action |
 |---|---|---|
-| `stable` | Replay decisions match recorded decisions for ≥99.9% of records | proceed with planned enforce flips |
-| `improving` | Recent decisions tighter than older (more REFUSEs that match policy changes) | proceed; flag for review |
-| `regressing` | Recent decisions looser than older (more EXECUTEs where policy now says REFUSE) | **block enforce flips for the affected kind**; investigate code change |
-| `flapping` | Drift class oscillates day-over-day | block; unstable policy |
+| `stable` | Replay decisions match recorded decisions for ≥99.9% of records | continue normal operation |
+| `improving` | Recent decisions tighter than older (more REFUSEs that match policy changes) | continue; flag for review |
+| `regressing` | Recent decisions looser than older (more EXECUTEs where policy now says REFUSE) | **page on-call; consider rollback / Pack pin for the affected kind**; investigate code change |
+| `flapping` | Drift class oscillates day-over-day | page on-call; unstable policy |
 | `insufficient_data` | Window too small for confidence | rerun with larger window |
 
 ## Tamper detection
@@ -288,12 +294,12 @@ A real `MetricsSink` implementation (per investigation 06 §"Recommendations" st
 
 ## CI gates on audit/replay
 
-Required before any enforce flip per investigation 07 §"P0 — must land before Stage 1 ENFORCE":
+> Updated 2026-05-24 post-cutover: originally framed as "required before any enforce flip"; with the always-on kernel there is no flip — these gates are now required for **every merge to main** that touches a Pack or the audit pipeline.
 
-1. **AuditRedactor contract test** (CPF/email/phone regex against synthesized records) — gates Stage 1 shadow.
+1. **AuditRedactor contract test** (CPF/email/phone regex against synthesized records) — gates every audit-pipeline change.
 2. **`runConformance(pack)` matrix** (per investigation 05 Tier 3 #17) — gates any Pack version bump.
 3. **`analyze --pack --format=sarif`** in CI (per investigation 05 Tier 3 #16) — gates any policy bundle change.
-4. **Replay drift nightly** with threshold gate: drift class must be `stable` or `improving` for the affected kind before enforce flip per [`07-rollback-recovery.md`](./07-rollback-recovery.md).
+4. **Replay drift nightly** with threshold gate: drift class must be `stable` or `improving` for the affected kind — `regressing` / `flapping` triggers the post-cutover regression playbook (rollback, hotfix, or pin Pack version) per [`07-rollback-recovery.md`](./07-rollback-recovery.md).
 
 ## Cross-references
 

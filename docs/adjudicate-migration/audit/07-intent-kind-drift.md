@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover taxonomy/Pack/caller-side naming drift audit (2026-05-23). The taxonomy in `../governance/01-intent-taxonomy.md` and `KNOWN_INTENT_KINDS` runtime constant have been reconciled with caller sites across Waves 1-9. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Intent-Kind Drift Audit
 
 > Auditor: Intent-Kind Drift Auditor (overnight task 07)

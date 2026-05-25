@@ -1,3 +1,7 @@
+> **NOTE — load-bearing with localized stale refs.** The `UNTRUSTED < TRUSTED < SYSTEM` taint lattice and per-boundary identity assertions below are still authoritative for `IntentActor.taint`. **Exception:** lines 83 and 148 reference `setKillSwitch` and `IBX_KERNEL_ENFORCE` — both deleted by the IBX-IGE v3.0 cutover (`f3bea43`); ignore those bypass-callout rows. See `README.md` in this directory for the full classification.
+
+---
+
 # 03 — Trust Boundary Model
 
 > Companion to: [`01-intent-taxonomy.md`](./01-intent-taxonomy.md), [`02-capability-model.md`](./02-capability-model.md), [`04-decision-policy.md`](./04-decision-policy.md).
@@ -73,15 +77,17 @@ Each row: the crossing direction, the identity assertion that must hold to trave
 
 ### Boundary 4 — Admin → System actor
 
+> **Updated 2026-05-24 post-cutover:** the IBX-IGE v3.0 cutover (`f3bea43`) removed the `setKillSwitch()` API and the kill-switch / shadow / enforce admin surfaces. The `system.kernel.kill_switch.toggle` intent and the planned `POST /api/admin/kernel/kill*` routes are **DEPRECATED**. The remaining `system.*` intents (`replay.run`, `backfill.execute`, `pack.register`) are still meaningful at this trust boundary; the `kill_switch.toggle` row below is kept only for historical traceability.
+
 | Slot | Value |
 |---|---|
-| Where it crosses | Admin operator action triggers a system effect: `system.kernel.kill_switch.toggle`, `system.replay.run`, `system.backfill.execute` ([`01-intent-taxonomy.md`](./01-intent-taxonomy.md) §"system") |
+| Where it crosses | Admin operator action triggers a system effect: ~~`system.kernel.kill_switch.toggle`~~ (DEPRECATED post-cutover), `system.replay.run`, `system.backfill.execute` ([`01-intent-taxonomy.md`](./01-intent-taxonomy.md) §"system") |
 | Identity assertion | Admin (OWNER role OR `x-admin-key` header) + 2FA receipt (`confirmationReceipt` per investigation 05 — `AdjudicateAndAuditDeps`) |
-| New intent kinds at crossing | All `system.*` kinds |
+| New intent kinds at crossing | The remaining `system.*` kinds (kill-switch family is deprecated post-cutover) |
 | Adjudication contribution | Always REQUEST_CONFIRMATION; the receipt flow consumes a token issued from a separate admin endpoint, mirroring `pack-deployments-approval`'s deploy-approval → resolve → kernel-substitute-EXECUTE pattern |
 | Recommended TaintPolicy | Source actor stays TRUSTED; the **emitted** envelope carries `actor.taint = "SYSTEM"` because it crosses into system-only authority. Set explicitly at construction, not inherited. |
-| Current bypass | No admin endpoint exposes `setKillSwitch()` (investigation 06 §"Kill switches" — "Never called from any ibatexas source file") |
-| Migration target | New admin route `POST /api/admin/kernel/kill` builds `system.kernel.kill_switch.toggle` envelope; second admin route `POST /api/admin/kernel/kill/confirm` redeems the confirmation receipt. |
+| ~~Current bypass~~ (HISTORICAL) | Pre-cutover note: no admin endpoint exposed `setKillSwitch()`. Post-cutover this row is moot — the `setKillSwitch()` API no longer exists. |
+| ~~Migration target~~ (HISTORICAL) | The kill-switch admin routes were superseded by "no kill switch needed" — the always-on kernel removed the failure mode they were designed to recover from. |
 
 ### Boundary 5 — System actor → External webhook
 
@@ -145,7 +151,7 @@ order.status.transition [SYSTEM, subscriber emits on payment confirmation]
 
 Investigation 04 §"P0 #1" and 08 §"Webhook signature verification table" both flag that NATS has no per-message auth. Until this is fixed:
 
-1. **No subscriber-driven intent kind may be added to `IBX_KERNEL_ENFORCE` outside of staging.** Subscribers can mint system-actor envelopes from forged events; the kernel sees only the envelope, not the source.
+1. ~~**No subscriber-driven intent kind may be added to `IBX_KERNEL_ENFORCE` outside of staging.**~~ (HISTORICAL — IBX_KERNEL_ENFORCE was removed by the IBX-IGE v3.0 cutover; the kernel is always authoritative, so there is no staged-rollout allowlist to gate against. The underlying concern remains: subscribers can mint system-actor envelopes from forged events, and the kernel sees only the envelope, not the source — see item 3 below for the durable mitigation.)
 2. **Stripe webhook → NATS publish → subscriber** is the chain that bridges TRUSTED (Stripe-verified) to internal NATS (unauth). The publisher's identity disappears at the NATS boundary.
 3. **Recommended interim**: subscribers mint envelopes only when the source event's `idempotencyKey` matches an outbox entry (NATS outbox replay; investigation 04 §"Outbox subjects" lists the 8 critical events). The outbox is internal-Postgres-backed (Redis lists today, future Postgres), so a forged NATS event without a corresponding outbox row never crosses into a kernel envelope.
 

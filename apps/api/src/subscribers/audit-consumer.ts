@@ -6,19 +6,32 @@
 // writes the record durably to Postgres via `@adjudicate/audit-postgres`.
 //
 // Why a second writer alongside the in-process Postgres sink?
-//   The in-process sink (composed inside `intent-audit-wiring.ts` when
-//   IBX_AUDIT_POSTGRES_ENABLED=true) writes synchronously inside the
-//   request path. If the API process crashes between the NATS publish and
-//   the Postgres INSERT, the audit row is lost. NATS guarantees at-least-
-//   once delivery to subscribed consumers; this subscriber catches up any
-//   record the in-process sink missed.
+//   The in-process sink (composed inside `intent-audit-wiring.ts`) writes
+//   synchronously inside the request path. If the API process crashes
+//   between the NATS publish and the Postgres INSERT, the audit row is
+//   lost. NATS guarantees at-least-once delivery to subscribed consumers;
+//   this subscriber catches up any record the in-process sink missed.
 //
-//   Two layers of dedup keep the second writer idempotent:
+// audit-2026-05-24 P1-4: dedup decision (Option A in the audit brief).
+//
+//   The in-process sink is authoritative — it writes inside the
+//   responder/kernel hot path so the row lands the moment the decision
+//   fires. The audit-consumer is fault-tolerant redundancy: a duplicate
+//   for the same record is expected and healthy when both paths win the
+//   race. Two layers of dedup keep the second writer idempotent:
 //     1. `isNewEvent(audit.intent.decision.v1:<intentHash>:<recordAt>)` —
-//        Redis SETNX, 7d TTL. Suppresses re-runs from NATS redelivery.
-//     2. `ON CONFLICT (intent_hash, recorded_at) DO NOTHING` on the SQL
-//        INSERT. Suppresses duplicates the dedup ledger somehow missed
-//        (e.g. parallel handlers on multiple replicas).
+//        Redis SETNX, 7d TTL. Cheap pre-INSERT shortcut for NATS
+//        redelivery / boot-time replays.
+//     2. `ON CONFLICT DO NOTHING` on the SQL INSERT. Catches the race
+//        the SETNX can't see (parallel handlers on multiple replicas; the
+//        in-process sink committing in-band while the NATS delivery is in
+//        flight). Forward-compatible with the UNIQUE constraint on
+//        `(intent_hash, recorded_at)` tracked for cross-repo coordination
+//        against `@adjudicate/audit-postgres` — until that lands, layer 2
+//        is a structural no-op and layer 1 carries dedup alone. The
+//        writer's `onConflictNoOp` hook surfaces each layer-2 dedup
+//        through `kernel_audit_dedup_total{path="consumer"}` so ops can
+//        gauge collision rate when the constraint goes live.
 //
 // Failure mode:
 //   - Postgres unreachable: push to DLQ list `dlq:audit.intent.decision.v1`
@@ -26,9 +39,10 @@
 //   - Malformed payload: log + DLQ; never throw to the NATS subscriber
 //     loop (a throw would tear down the SCAN/dispatch loop).
 //
-// Feature flag: subscriber is a no-op (logs once, registers nothing) when
-// `IBX_AUDIT_POSTGRES_ENABLED !== "true"`. This keeps the rollout aligned
-// with the in-process sink — both off, both on.
+// Always-on durability: per IBX-IGE v3.0 cutover (CLAUDE.md rule #9), the
+// in-process Postgres sink is always composed and this consumer is always
+// subscribed. There is no env-var gate — the audit-postgres redundancy
+// path runs unconditionally alongside the in-process sink.
 
 import type { AuditRecord } from "@adjudicate/core"
 import {
@@ -58,26 +72,46 @@ export function _setAuditConsumerWriter(writer: PostgresWriter | null): void {
   _writerOverride = writer
 }
 
+// audit-2026-05-24 P1-4 — Optional hook to bump kernel_audit_dedup_total{path="consumer"}
+// when the redundancy path's INSERT is absorbed by `ON CONFLICT DO NOTHING`.
+// The hook is wired by apps/api during `installKernelMetricsSink`. Fires
+// zero times until the upstream UNIQUE constraint on
+// (intent_hash, recorded_at) lands in `@adjudicate/audit-postgres`.
+let _consumerDedupHook: (() => void) | null = null
+
 /**
- * Wire the audit-consumer subscriber. No-op when the Postgres sink is
- * disabled (the in-process sink and the consumer roll out together).
+ * Wire the consumer-side dedup metric hook. apps/api forwards each call to
+ * the Prometheus counter; tests pass a spy. Setting to `null` disables.
+ */
+export function setAuditConsumerDedupHook(hook: (() => void) | null): void {
+  _consumerDedupHook = hook
+}
+
+/**
+ * Wire the audit-consumer subscriber. Always-on per IBX-IGE v3.0 cutover:
+ * subscribes to `audit.intent.decision.v1` and durably persists each
+ * record to Postgres as the redundancy path behind the in-process sink.
  */
 export async function startAuditConsumer(
   log?: FastifyBaseLogger,
 ): Promise<void> {
-  if (process.env.IBX_AUDIT_POSTGRES_ENABLED !== "true") {
-    log?.info(
-      "[audit-consumer] IBX_AUDIT_POSTGRES_ENABLED!=true — consumer disabled",
-    )
-    return
-  }
-
   // Build the writer once at startup. `createPostgresSink` wraps it in the
   // emit-error reporting layer we want for the redundancy path too.
   const writer =
     _writerOverride ??
     createPostgresAuditWriter({
       prisma: prisma as unknown as PrismaRawExecutor,
+      // audit-2026-05-24 P1-4: forward ON CONFLICT no-ops to the
+      // consumer-path dedup counter. Fires zero times until the upstream
+      // UNIQUE constraint lands.
+      onConflictNoOp: () => {
+        if (!_consumerDedupHook) return
+        try {
+          _consumerDedupHook()
+        } catch {
+          // Telemetry must never block the consumer loop.
+        }
+      },
     })
   const sink = createPostgresSink({
     writer,
@@ -121,13 +155,14 @@ export async function startAuditConsumer(
 
       // Dedup layer 1: Redis SETNX. Composite key uses intentHash + at to
       // handle the (unlikely) case of two AuditRecords sharing an intent-
-      // Hash across distinct decisions.
-      //
-      // P0-14 note: there is currently NO unique constraint on
-      // (intent_hash, recorded_at) in the @adjudicate/audit-postgres
-      // schema. Layer-2 dedup via `ON CONFLICT DO NOTHING` is a no-op
-      // until that constraint lands upstream. Layer 1 (this Redis SETNX)
-      // is load-bearing today.
+      // Hash across distinct decisions. This is the cheap pre-INSERT
+      // shortcut for NATS redelivery; it does NOT see the in-process
+      // sink's writes (different key prefix per the audit-2026-05-24
+      // P1-4 audit). Layer 2 (`ON CONFLICT DO NOTHING` at the SQL
+      // boundary) is the cross-path safety net once the upstream UNIQUE
+      // constraint on `(intent_hash, recorded_at)` lands. Until then,
+      // both paths persist independently and the dedup counter stays at
+      // zero — the operator's signal for "schema deployed."
       const dedupKey = `audit.intent.decision.v1:${record.intentHash}:${record.at}`
       try {
         if (!(await isNewEvent(dedupKey))) {
@@ -167,6 +202,7 @@ export async function startAuditConsumer(
         )
       }
     },
+    { queueGroup: "audit-consumer" },
   )
 
   log?.info("[audit-consumer] subscribed to audit.intent.decision.v1")

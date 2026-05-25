@@ -12,7 +12,9 @@
 //   5. Store new cartId in Redis (24h TTL)
 
 import type { AgentContext } from "@ibatexas/types";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { reaisToCentavos } from "../medusa/client.js";
+import { medusaStoreAdjudicated } from "../medusa/store-adjudicated.js";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { medusaStoreFetch } from "./_shared.js";
@@ -133,10 +135,16 @@ export async function getOrCreateCart(
     }
 
     // 3. Create a new cart (customer association handled via Medusa session headers)
-    const cartData = (await medusaStoreFetch("/store/carts", {
-      method: "POST",
-      body: JSON.stringify({}),
-    })) as { cart?: { id: string } };
+    const cartData = (await medusaStoreAdjudicated.carts.create(
+      { body: {} },
+      {
+        sourceSubject: "cart:get-or-create-cart",
+        actorPrincipal: "llm",
+        auditSink: getAuditSink(),
+        ...(ctx.customerId !== undefined ? { customerId: ctx.customerId } : {}),
+        sessionId: ctx.sessionId,
+      },
+    )) as { cart?: { id: string } };
 
     const cartId = cartData.cart?.id;
     if (!cartId) {

@@ -14,11 +14,11 @@
 //
 // All session cart IDs are tracked in Redis active:carts set for abandoned-cart detection.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { buildEnvelope } from "@adjudicate/core";
+import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 import {
   getRedisClient,
   rk,
@@ -38,10 +38,13 @@ import { Channel } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
+import {
+  type CustomerOnboardingState,
+  type CustomerPixDetailsSavePayload,
+} from "@ibatexas/pack-customer-onboarding";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
-import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 
 // ── P0-X9 migration helpers ────────────────────────────────────────────────
 //
@@ -79,6 +82,31 @@ function mapMedusaErrorToReply(err: unknown, reply: FastifyReply): boolean {
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 
+// ── P0-7 (audit-2026-05-24) — deterministic idempotency-key helpers ────────
+//
+// Replays of the same logical operation MUST produce the same envelope
+// `intentHash` so the kernel's Execution Ledger can dedupe. The route
+// derives a stable idempotency key from non-PII identifiers (cartId,
+// orderId, customerId — all UUIDs) and SHA-256s it into the envelope's
+// `nonce`. Callers may override with an explicit `Idempotency-Key`
+// header (industry standard, e.g. Stripe).
+function deriveCartNonce(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
+function resolveCartIdempotencyKey(
+  headerValue: string | string[] | undefined,
+  fallback: string,
+): string {
+  if (typeof headerValue === "string" && headerValue.length > 0) {
+    return headerValue;
+  }
+  if (Array.isArray(headerValue) && headerValue[0]) {
+    return headerValue[0];
+  }
+  return fallback;
+}
+
 const PIX_CACHE_TTL = 90 * 86400; // 90 days
 
 async function loadCachedPixDetails(
@@ -112,7 +140,10 @@ async function loadCachedPixDetails(
   }
 }
 
-async function cachePixDetailsForCustomer(
+/** Cache PIX details to Redis + persist to Prisma via the kernel-adjudicated
+ *  `customer.pix.details.save` envelope. Exported for unit-test access.
+ *  @internal */
+export async function cachePixDetailsForCustomer(
   customerId: string,
   data: { name?: string; email?: string; cpf?: string },
 ): Promise<void> {
@@ -126,12 +157,49 @@ async function cachePixDetailsForCustomer(
     pipeline.expire(key, PIX_CACHE_TTL);
     await pipeline.exec();
 
-    const svc = createCustomerService();
-    await svc.updatePixDetails(customerId, {
-      name: data.name,
-      email: data.email,
-      cpf: data.cpf,
+    // ── W7 — route DB persist through customer.pix.details.save envelope.
+    //
+    // The PII (name/email/CPF) was submitted by the customer via the
+    // checkout form (or pulled from the cached pre-fill, both UNTRUSTED
+    // origin). The pack's CPF-shape guard runs first; on REFUSE we skip
+    // the DB write but keep the Redis cache (best-effort caching is the
+    // existing semantics — a checkout that completed against Medusa is
+    // already booked).
+    const svc = createCustomerService({ auditSink: getAuditSink() });
+    const payload: CustomerPixDetailsSavePayload = {
+      name: data.name ?? "",
+      email: data.email ?? "",
+      cpf: data.cpf ?? "",
+    };
+    const envelope = buildCustomerEnvelope<
+      "customer.pix.details.save",
+      CustomerPixDetailsSavePayload
+    >({
+      kind: "customer.pix.details.save",
+      payload,
+      // audit-2026-05-25 (I10): deterministic nonce so retries of the
+      // same logical PIX-details save (network blip → checkout retry)
+      // dedupe via the kernel Execution Ledger. Pre-fix the
+      // randomUUID() created a fresh intentHash on every successful
+      // checkout, defeating ledger dedup and producing N audit records
+      // + N Prisma updates for one logical save. Mirrors the
+      // deterministic-key pattern at cart.ts:856 for the checkout
+      // itself.
+      nonce: `${customerId}:pix-details-save`,
+      customerId,
     });
+    const state: CustomerOnboardingState = {
+      ctx: {
+        actor: { principal: "user", id: customerId },
+        customerId,
+        customerExists: true,
+        isAuthenticated: true,
+        otpFresh: false,
+        hasParkedAnonymize: false,
+        now: new Date(),
+      },
+    };
+    await svc.updatePixDetailsFromEnvelope(envelope, state, { customerId });
   } catch (err) {
     console.warn("[cart/checkout] Failed to cache PIX details:", (err as Error).message);
   }
@@ -787,12 +855,21 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       };
 
       const sessionId = request.customerId ?? cartId;
-      const envelope = buildEnvelope<"order.checkout.create", OrderCheckoutCreatePayload>({
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ─────────
+      //
+      // POST /api/cart/checkout creates a payment (PIX/card/cash) and
+      // an order. A retry on the same cart MUST dedupe to avoid double
+      // payment. Prefer the client's `Idempotency-Key` header; fall back
+      // to `${cartId}:checkout` (a cart is logically checked out once).
+      const checkoutIdempotencyKey = resolveCartIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${cartId}:checkout`,
+      );
+      const envelope = buildCustomerEnvelope<"order.checkout.create", OrderCheckoutCreatePayload>({
         kind: "order.checkout.create",
         payload: checkoutPayload,
-        nonce: randomUUID(),
-        actor: { principal: "user", sessionId },
-        taint: "UNTRUSTED",
+        nonce: deriveCartNonce(checkoutIdempotencyKey),
+        customerId: sessionId,
       });
 
       // The order pack adjudicates against this minimal state slice. We
@@ -891,7 +968,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
               },
             });
             if (projection) {
-              const noteEnvelope = buildEnvelope<
+              const noteEnvelope = buildCustomerEnvelope<
                 "order.note.add",
                 OrderNoteAddPayload
               >({
@@ -901,13 +978,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
                   body: request.body.notes,
                 },
                 nonce: randomUUID(),
-                actor: {
-                  principal: "user",
-                  sessionId: request.customerId
-                    ? `customer:${request.customerId}`
-                    : `cart:${cartId}`,
-                },
-                taint: "UNTRUSTED",
+                customerId: request.customerId
+                  ? `customer:${request.customerId}`
+                  : `cart:${cartId}`,
               });
               const noteOrderState: OrderState = {
                 ctx: {

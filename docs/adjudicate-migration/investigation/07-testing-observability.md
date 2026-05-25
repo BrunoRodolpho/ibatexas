@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Phase-1 pre-cutover investigation (2026-05-22). "2 kernel tests" finding drove Wave-6 test expansion + audit-2026-05-23 redo + the 6 conformance suites. The MetricsSink/observability ghosts described here no longer apply post-cutover. For current state, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # 07 — Testing & Observability
 
 > Investigator 7 of 8 — test coverage and observability of the adjudicate integration in ibatexas. Companion to investigations 01–06 (kernel surface area, policy bundle, audit/ledger wiring, runbook playbooks).

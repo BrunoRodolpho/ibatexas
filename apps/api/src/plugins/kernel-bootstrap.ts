@@ -35,7 +35,7 @@ import { installPack, PackConformanceError } from "@adjudicate/core"
 type InstalledPackLike = {
   readonly pack: { readonly intents: ReadonlyArray<string> }
 }
-import { setMetricsSink } from "@adjudicate/core/kernel"
+import { recordSinkFailure, setMetricsSink } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
@@ -43,11 +43,15 @@ import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import {
   KNOWN_INTENT_KINDS,
+  setAuditDedupHook,
   setAuditLagHook,
   setAuditRedactorFailureHook,
   setAuditSinkBufferSizeHook,
+  setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
+  setDeferQuotaExceededHook,
 } from "@ibatexas/llm-provider"
+import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { prisma } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
@@ -129,6 +133,50 @@ export function installKernelMetricsSink(
   setAuditSinkSpillSizeHook((count) =>
     recorder.recordAuditSinkSpillSize(count),
   )
+  // Q4: forward downstream-sink failures (postgres onError, NATS onFailure,
+  // buffered-sink spill-failure events) to the kernel MetricsSink.
+  // `recordSinkFailure` is a module-level helper that calls into the
+  // installed sink — installed two lines above by `setMetricsSink(sink)`.
+  setAuditSinkFailureHook((event) => {
+    recordSinkFailure(event)
+  })
+  // audit-2026-05-24 P0-1 — wire the NX-park quota-exceeded metric.
+  // The wrapper lives in `@ibatexas/llm-provider` and is intentionally
+  // decoupled from apps/api; we inject the recorder here so each
+  // `quota_exceeded` rejection bumps `kernel_defer_quota_exceeded_total{kind}`.
+  setDeferQuotaExceededHook((kind) => {
+    recorder.recordDeferQuotaExceeded(kind)
+  })
+  // audit-2026-05-25 (I11): wire the dedup hooks. PR #62 review found
+  // both setAuditDedupHook (in-process sink path) and
+  // setAuditConsumerDedupHook (NATS subscriber path) were exported but
+  // never installed at boot — so once the upstream
+  // `@adjudicate/audit-postgres` UNIQUE(intent_hash, recorded_at)
+  // constraint ships, `kernel_audit_dedup_total{path}` would have
+  // stayed at zero forever, depriving operators of the documented
+  // "schema deployed" signal.
+  //
+  // Until the constraint lands AND the recorder grows an explicit
+  // recordAuditDedup({path}) → Prometheus counter, we forward the
+  // events to the structured logger so they surface in log-search +
+  // can be aggregated by operators. The Sentry breadcrumb gives
+  // incident responders timeline visibility.
+  setAuditDedupHook((path) => {
+    logger.info({ path }, "[audit-dedup] in-process sink dropped duplicate audit row")
+    Sentry.addBreadcrumb({
+      category: "audit-dedup",
+      level: "info",
+      message: `audit dedup fired (path=${path})`,
+    })
+  })
+  setAuditConsumerDedupHook(() => {
+    logger.info({ path: "consumer" }, "[audit-dedup] NATS audit-consumer dropped duplicate audit row")
+    Sentry.addBreadcrumb({
+      category: "audit-dedup",
+      level: "info",
+      message: "audit dedup fired (path=consumer)",
+    })
+  })
   _recorder = recorder
   return register
 }

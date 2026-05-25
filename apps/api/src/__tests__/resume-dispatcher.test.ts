@@ -1,9 +1,13 @@
 // Unit tests for createResumeDispatcherAdapter (F1 follow-up).
 //
-// Coverage targets (per the task brief):
+// Coverage targets:
 //   (a) happy-path translation invokes the underlying dispatcher
 //   (b) `kind: "failed"` doesn't throw
 //   (c) unhandled exception inside adapter is caught
+//   (d) audit-2026-05-24 P1-3: `kind: "skipped"` invokes the resume-side
+//       kernel dispatcher (closes the "task 22" silent-drop gap).
+//   (e) audit-2026-05-24 P1-3: kernel-direct envelopes (non-`order.tool.propose`
+//       kinds) route to the resume-side kernel dispatcher directly.
 //
 // The adapter is fail-closed: it MUST never throw into the
 // `defer-resolver.ts` subscriber loop, since one bad envelope would
@@ -176,31 +180,88 @@ describe("createResumeDispatcherAdapter — fail-closed", () => {
     expect(String(msg)).toContain("dispatcher returned failed")
   })
 
-  it("logs at info when the dispatcher returns {kind: 'skipped'}", async () => {
+  it("[P1-3] invokes the resume-side kernel dispatcher when dispatcher returns {kind: 'skipped'}", async () => {
+    // Pre-P1-3 the adapter logged "dispatch skipped — deterministic kernel
+    // covers it" and returned void; the underlying mutation was silently
+    // dropped on the resume path (the "task 22" gap). Post-P1-3 the
+    // skipped branch routes to the kernel dispatcher which invokes the
+    // tool directly.
     const dispatcher = vi.fn<IntentDispatcher>(async () => ({
       kind: "skipped" as const,
       reason: "deterministic_kernel_covers" as const,
     }))
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
-    const resumed = buildResumedIntent(buildToolProposeEnvelope("add_to_cart"))
+    const addToCart = vi.fn(async () => ({
+      success: true,
+      cart: { items: [], total: 0 },
+    }))
+    const adapter = createResumeDispatcherAdapter({
+      dispatcher,
+      kernelDispatcherDeps: { addToCart: addToCart as never },
+    })
+    const resumed = buildResumedIntent(
+      buildToolProposeEnvelope("add_to_cart", {
+        cartId: "c1",
+        variantId: "v1",
+        quantity: 1,
+      }),
+    )
 
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
-    expect(log.info).toHaveBeenCalled()
+    // The dispatcher classifies as skipped, then the kernel dispatcher fires.
+    expect(dispatcher).toHaveBeenCalledOnce()
+    expect(addToCart).toHaveBeenCalledOnce()
     expect(log.error).not.toHaveBeenCalled()
+    // Success log was emitted.
+    expect(log.info).toHaveBeenCalled()
   })
 
-  it("warns and returns void when the parked envelope payload is not a ToolProposePayload", async () => {
+  it("[P1-3] routes a kernel-direct parked envelope (non-`order.tool.propose`) to the kernel dispatcher", async () => {
+    const dispatcher = vi.fn<IntentDispatcher>()
+    const createCheckout = vi.fn(async () => ({
+      success: true,
+      paymentMethod: "pix",
+      orderId: "ord_1",
+      message: "ok",
+    }))
+    const adapter = createResumeDispatcherAdapter({
+      dispatcher,
+      kernelDispatcherDeps: { createCheckout: createCheckout as never },
+    })
+
+    // A kernel-executor-style parked envelope: kind is the taxonomy kind,
+    // payload is the input directly — no toolName field. Pre-P1-3 this
+    // produced a "payload is not a ToolProposePayload" warn-and-return;
+    // post-P1-3 it routes through the kernel dispatcher.
+    const envelope = buildEnvelope({
+      kind: "order.checkout.create",
+      payload: { cartId: "cart_x", paymentMethod: "pix" },
+      actor: { principal: "system", sessionId: "sess_y" },
+      taint: "SYSTEM",
+      nonce: "n_y",
+    }) as IntentEnvelope
+    const resumed = buildResumedIntent(envelope)
+
+    await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
+
+    // The IntentDispatcher is NOT invoked (translation returned null).
+    expect(dispatcher).not.toHaveBeenCalled()
+    // The kernel dispatcher IS invoked.
+    expect(createCheckout).toHaveBeenCalledOnce()
+    const [input] = (createCheckout as ReturnType<typeof vi.fn>).mock.calls[0]!
+    expect(input).toEqual({ cartId: "cart_x", paymentMethod: "pix" })
+  })
+
+  it("[P1-3] warns when a parked envelope has no kernel-covered resume route", async () => {
     const dispatcher = vi.fn<IntentDispatcher>()
     const adapter = createResumeDispatcherAdapter({ dispatcher })
 
-    // Build a parked envelope whose payload is a non-tool-propose shape
-    // (e.g. a domain-specific kind under task 06's vocabulary).
+    // An envelope kind we have no resume route for. The kernel dispatcher
+    // returns `unsupported`; the adapter logs a warning and returns void.
     const envelope = buildEnvelope({
-      kind: "order.checkout.create",
-      // Deliberately omit `toolName` so translation returns null.
-      payload: { cartId: "cart_x", paymentMethod: "pix" },
-      actor: { principal: "llm", sessionId: "sess_y" },
-      taint: "UNTRUSTED",
+      kind: "future.kind.we.dont.know",
+      payload: { x: 1 },
+      actor: { principal: "system", sessionId: "sess_y" },
+      taint: "SYSTEM",
       nonce: "n_y",
     }) as IntentEnvelope
     const resumed = buildResumedIntent(envelope)
@@ -208,7 +269,36 @@ describe("createResumeDispatcherAdapter — fail-closed", () => {
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
 
     expect(dispatcher).not.toHaveBeenCalled()
-    expect(log.warn).toHaveBeenCalledOnce()
+    expect(log.warn).toHaveBeenCalled()
+    expect(log.error).not.toHaveBeenCalled()
+  })
+
+  it("[P1-3] logs error and returns void when the resume kernel tool throws", async () => {
+    const dispatcher = vi.fn<IntentDispatcher>(async () => ({
+      kind: "skipped" as const,
+      reason: "deterministic_kernel_covers" as const,
+    }))
+    const createCheckout = vi.fn(async () => {
+      throw new Error("medusa unavailable")
+    })
+    const adapter = createResumeDispatcherAdapter({
+      dispatcher,
+      kernelDispatcherDeps: { createCheckout: createCheckout as never },
+    })
+
+    const resumed = buildResumedIntent(
+      buildToolProposeEnvelope("create_checkout", {
+        cartId: "c1",
+        paymentMethod: "pix",
+      }),
+    )
+
+    await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
+
+    expect(createCheckout).toHaveBeenCalledOnce()
+    expect(log.error).toHaveBeenCalled()
+    const [, msg] = (log.error as ReturnType<typeof vi.fn>).mock.calls[0]!
+    expect(String(msg)).toContain("kernel-covered resume tool threw")
   })
 })
 

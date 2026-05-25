@@ -1,3 +1,7 @@
+> **NOTE — load-bearing with localized stale refs.** The six decision outcomes (`EXECUTE/REFUSE/DEFER/ESCALATE/REQUEST_CONFIRMATION/REWRITE`), refusal taxonomy, and pt-BR localization below are still authoritative. **Exception:** line 216 references `IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE` typo-guarding — these env vars were deleted by the IBX-IGE v3.0 cutover (`f3bea43`). The underlying `validateEnforceConfig` contract may still exist as a type-shape; verify before relying on it. See `README.md` in this directory for the full classification.
+
+---
+
 # 04 — Decision Policy
 
 > Companion to: [`01-intent-taxonomy.md`](./01-intent-taxonomy.md), [`03-trust-boundary-model.md`](./03-trust-boundary-model.md), [`05-audit-replay-requirements.md`](./05-audit-replay-requirements.md), [`06-deferred-execution-policy.md`](./06-deferred-execution-policy.md).
@@ -213,7 +217,7 @@ Per `AuditRecord` (v4) from `@adjudicate/core` (per investigation 05). See [`05-
 
 ## Default REFUSE on unmatched
 
-Per master plan §"Governance principles" #4: every PolicyBundle ends with `default: constant(decisionRefuse(...))`. The default refusal uses code `default_deny` (per `portugueseRefusalMessages.byCode.default_deny`) and basis `kernel/default_deny`. Adopting `validateEnforceConfig(KNOWN_INTENT_KINDS, env)` at boot (per investigation 06 §"P0-3") additionally guards against typos in `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE` — unknown tokens in those env vars produce a `recordSinkFailure({code: "enforce_config_typo"})` event and a console warning, but they do **not** flip an intent into the wrong gate.
+Per master plan §"Governance principles" #4: every PolicyBundle ends with `default: constant(decisionRefuse(...))`. The default refusal uses code `default_deny` (per `portugueseRefusalMessages.byCode.default_deny`) and basis `kernel/default_deny`. ~~Adopting `validateEnforceConfig(KNOWN_INTENT_KINDS, env)` at boot additionally guards against typos in `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE`...~~ (Updated 2026-05-24 post-cutover: the IBX-IGE v3.0 cutover (`f3bea43`) removed the `IBX_KERNEL_{SHADOW,ENFORCE}` env vars; there are no env-gated allowlists to typo-check anymore. The `KNOWN_INTENT_KINDS` set is still the typo gate for envelopes the kernel sees — unknown kinds default-REFUSE.)
 
 ## Decision → user surface
 

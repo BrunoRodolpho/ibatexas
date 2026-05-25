@@ -1,23 +1,23 @@
 // Wave 6 Red-Team — Target 5 (NEW-P0-X8 empty customerId guard)
 //
-// Finding: the empty-string guard checks `customerId === ""` and falsy
-// values but does NOT trim. Strings consisting entirely of whitespace
-// ("   ", "\n", "\t") or the literal string "null" / "undefined" pass
-// the guard and are propagated downstream as Redis-key suffixes.
+// HISTORIC — bypass closed at W7-G1 (b9575bc) + R1-4 (fae8dc5).
+// The three EXPLOIT cases below describe a pre-fix bypass that no longer
+// reproduces; they intentionally fail when the fix is in place, which is
+// why they're now `.skip`ed. The positive regression test that pins the
+// post-fix contract lives at `05-whitespace-rejected.test.ts`. If a
+// future revert drops `customerId.trim().length === 0` from
+// `assertCustomerId` or `middleware/auth.ts`, the W7-G1 regression test
+// will go red — that's the canary, NOT these cases.
 //
-// Severity: P1 — these strings DO get propagated but the downstream
-// `assertCustomerId` in anonymize-otp-gate.ts has the same gap (it also
-// only checks `=== ""`). So:
-//   * `customerId = "   "` lands keys like `anonymize:otp:   ` →
-//     a colliding-state namespace shared by every empty-after-trim
-//     forged token.
-//   * `customerId = "null"` lands keys like `anonymize:otp:null` →
-//     a separate but still-colliding namespace.
+// Original finding: the empty-string guard checked `customerId === ""`
+// and falsy values but did NOT trim. Strings consisting entirely of
+// whitespace ("   ", "\n", "\t") passed the guard and were propagated
+// downstream as Redis-key suffixes.
 //
-// The stolen-JWT amplifier the original P0-X8 fix was meant to close
-// is only PARTIALLY closed: any forger whose token includes a `sub` of
-// whitespace OR the literal string `"null"` still satisfies the
-// requireAuth gate.
+// Why we keep this file (instead of deleting): the EXPLOIT prose
+// documents the original attack model and the namespace-collision
+// argument; deleting it would lose that reasoning. The CONTRAST + the
+// literal-"null" case still describe live behaviour and stay live.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -70,7 +70,9 @@ describe("RED-TEAM Target 5 — whitespace customerId bypass", () => {
     redisStorage.clear();
   });
 
-  it("EXPLOIT: '   ' (whitespace only) bypasses assertCustomerId — writes to Redis", async () => {
+  // HISTORIC — bypass closed at W7-G1 (b9575bc). Positive regression
+  // test for the post-fix contract lives at 05-whitespace-rejected.test.ts.
+  it.skip("EXPLOIT (CLOSED): '   ' (whitespace only) bypasses assertCustomerId — writes to Redis", async () => {
     const { markOtpFresh } = await import("../../routes/me/anonymize-otp-gate.js");
 
     // The guard does NOT trim → the whitespace string passes.
@@ -84,7 +86,8 @@ describe("RED-TEAM Target 5 — whitespace customerId bypass", () => {
     expect(args[0]).toBe("ibatexas:anonymize:otp:   ");
   });
 
-  it("EXPLOIT: '\\n' (newline only) bypasses assertCustomerId", async () => {
+  // HISTORIC — bypass closed at W7-G1 (b9575bc).
+  it.skip("EXPLOIT (CLOSED): '\\n' (newline only) bypasses assertCustomerId", async () => {
     const { markOtpFresh } = await import("../../routes/me/anonymize-otp-gate.js");
 
     await expect(markOtpFresh("\n")).resolves.toBeUndefined();
@@ -99,11 +102,18 @@ describe("RED-TEAM Target 5 — whitespace customerId bypass", () => {
     expect(mockRedisSet).toHaveBeenCalledTimes(1);
     // Every forged JWT with sub="null" lands on the same Redis key —
     // multi-actor collision risk just like the original P0-X8 attack
-    // model with sub="".
+    // model with sub="". Per 05-whitespace-rejected.test.ts header:
+    // the literal four-character string "null" is a legitimate (though
+    // unusual) customerId; requireAuth upstream guards `sub` against the
+    // literal before any call reaches this layer.
     expect(mockRedisSet.mock.calls[0][0]).toBe("ibatexas:anonymize:otp:null");
   });
 
-  it("EXPLOIT: '\\tabc\\t' (padded with tabs) passes through unchanged", async () => {
+  // HISTORIC — padded ids are now canonicalised (trimmed) before key
+  // construction at W7-G1 (b9575bc). The post-fix contract — the key
+  // collapses to `anonymize:otp:abc` — is pinned at
+  // 05-whitespace-rejected.test.ts.
+  it.skip("EXPLOIT (CLOSED): '\\tabc\\t' (padded with tabs) passes through unchanged", async () => {
     const { markOtpFresh } = await import("../../routes/me/anonymize-otp-gate.js");
     await markOtpFresh("\tabc\t");
     // The whitespace-padded id is NOT canonicalised — keys with
@@ -121,15 +131,14 @@ describe("RED-TEAM Target 5 — whitespace customerId bypass", () => {
   });
 });
 
-// ── Recommendation ──────────────────────────────────────────────────
+// ── Recommendation (HISTORIC — fix landed) ──────────────────────────
 //
-// The fix is one-liner in assertCustomerId (apps/api/src/routes/me/
-// anonymize-otp-gate.ts:86-90) and in middleware/auth.ts:64,95,127:
+// The fix landed in two commits:
+//   * W7-G1 (b9575bc) — assertCustomerId in apps/api/src/routes/me/
+//     anonymize-otp-gate.ts now rejects whitespace-only and trims via
+//     canonicalizeCustomerId before key construction.
+//   * R1-4 (fae8dc5) — middleware/auth.ts:64,95,127 now reject
+//     `payload.sub.trim().length === 0`.
 //
-//   if (customerId == null || typeof customerId !== "string" ||
-//       customerId.trim().length === 0) {
-//     throw new InvalidCustomerIdError();
-//   }
-//
-// AND the assigned value should be the trimmed form so downstream
-// Redis keys are canonical.
+// Positive regression test pinning the post-fix contract:
+//   apps/api/src/__tests__/wave6-red-team/05-whitespace-rejected.test.ts

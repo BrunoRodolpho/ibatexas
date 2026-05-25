@@ -321,7 +321,7 @@ export async function startPaymentLifecycleSubscriber(
         "[payment-lifecycle] Error handling payment status change",
       );
     }
-  });
+  }, { queueGroup: "payment-lifecycle" });
 
   log?.info("[payment-lifecycle] Subscriber started");
 }

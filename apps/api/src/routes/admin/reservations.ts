@@ -85,9 +85,15 @@ async function snapshotReservationState(
 
 export async function reservationRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
-  const svc = createReservationService({
-    auditSink: getAuditSink(),
-    log: server.log,
+  // Defer audit-sink resolution to onReady (see adminPaymentRoutes for
+  // the full rationale — boot-order race between plugin-body execution
+  // during buildServer() and bootstrapAuditSinkDI() in index.ts).
+  let svc!: ReturnType<typeof createReservationService>;
+  server.addHook("onReady", async () => {
+    svc = createReservationService({
+      auditSink: getAuditSink(),
+      log: server.log,
+    });
   });
 
   // GET /api/admin/reservations

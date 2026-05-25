@@ -3,6 +3,8 @@
 // The machine invokes them — the LLM never sees cart/checkout tools.
 
 import type { AgentContext, SearchProductsOutput, ProductDTO } from "@ibatexas/types"
+import { randomUUID } from "node:crypto"
+import { buildEnvelope } from "@adjudicate/core"
 import {
   searchProducts,
   getOrCreateCart,
@@ -18,6 +20,11 @@ import {
 } from "@ibatexas/tools"
 import { Channel } from "@ibatexas/types"
 import { createCustomerService, createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain"
+import {
+  type CustomerOnboardingState,
+  type CustomerPixDetailsSavePayload,
+} from "@ibatexas/pack-customer-onboarding"
+import { getAuditSink } from "../intent-audit-wiring.js"
 import type { OrderContext, CartItem, ItemCategory } from "./types.js"
 
 // ── Helper: build tool context from machine context ──────────────────────────
@@ -381,7 +388,14 @@ const PIX_CACHE_TTL = 90 * 86400 // 90 days
 
 /** Cache PIX details (name, email, CPF) for returning customers.
  *  Exported so the kernel can invoke it as a machine-controlled side effect
- *  after CHECKOUT_RESULT success (via CACHE_PIX_DETAILS event). */
+ *  after CHECKOUT_RESULT success (via CACHE_PIX_DETAILS event).
+ *
+ *  W7 — DB persist routes through `customer.pix.details.save`. The
+ *  machine is a post-checkout system-driven side effect, so the
+ *  envelope is built with `actor.principal = "system"` and SYSTEM
+ *  taint per the kernel-executor-envelopes pattern. The pack's
+ *  CPF-shape guard runs first; REFUSE drops the DB write but keeps
+ *  the Redis cache (caching is best-effort by design). */
 export async function cachePixDetails(
   customerId: string,
   data: { name: string | null; email: string | null; cpf: string | null },
@@ -396,13 +410,41 @@ export async function cachePixDetails(
   pipeline.expire(key, PIX_CACHE_TTL)
   await pipeline.exec()
 
-  // Persist to Prisma
-  const svc = createCustomerService()
-  await svc.updatePixDetails(customerId, {
-    name: data.name ?? undefined,
-    email: data.email ?? undefined,
-    cpf: data.cpf ?? undefined,
+  // Persist to Prisma via envelope path.
+  const svc = createCustomerService({ auditSink: getAuditSink() })
+  // audit-2026-05-25 (I10): cpf is now optional in
+  // CustomerPixDetailsSavePayload; absence/empty is acceptable (the
+  // validateCpfShape pack guard skips validation when not present).
+  // Pre-fix the `?? ""` fallback triggered REFUSE in the policy,
+  // dropping name + email persistence too — regression vs. legacy
+  // truthy-spread path.
+  const payload: CustomerPixDetailsSavePayload = {
+    name: data.name ?? "",
+    email: data.email ?? "",
+    ...(data.cpf && data.cpf.length > 0 ? { cpf: data.cpf } : {}),
+  }
+  const envelope = buildEnvelope<
+    "customer.pix.details.save",
+    CustomerPixDetailsSavePayload
+  >({
+    kind: "customer.pix.details.save",
+    payload,
+    nonce: randomUUID(),
+    actor: { principal: "system", sessionId: customerId },
+    taint: "SYSTEM",
   })
+  const state: CustomerOnboardingState = {
+    ctx: {
+      actor: { principal: "system", id: customerId },
+      customerId,
+      customerExists: true,
+      isAuthenticated: true,
+      otpFresh: false,
+      hasParkedAnonymize: false,
+      now: new Date(),
+    },
+  }
+  await svc.updatePixDetailsFromEnvelope(envelope, state, { customerId })
 }
 
 export async function loadCachedPixDetails(

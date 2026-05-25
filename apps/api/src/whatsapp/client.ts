@@ -3,8 +3,22 @@
 // Singleton Twilio client, auto-splits at 4096 chars,
 // retry with exponential backoff on failures.
 // All sends log phone hash, never raw phone numbers.
+//
+// ── Audit-2026-05-23 — kernel-gated Twilio egress ─────────────────────────
+//
+// The two `messages.create` call sites (sendSingleMessage + sendMedia)
+// route through `twilioAdjudicated.messages.create()` so each outbound
+// WhatsApp send produces an audit record and is governed by the
+// inline policy bundle in `packages/tools/src/twilio/adjudicated.ts`.
+// The retry / 429 / exponential-backoff behaviour is preserved by
+// virtue of wrapping the wrapper call in the existing retry loop.
 
 import twilio from "twilio";
+import {
+  twilioAdjudicated,
+  TwilioAdjudicateRefusedError,
+} from "@ibatexas/tools";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import logger from "../lib/logger.js";
 import { hashPhone } from "./session.js";
 
@@ -123,15 +137,36 @@ export async function sendText(to: string, body: string): Promise<void> {
 }
 
 async function sendSingleMessage(to: string, body: string, hash: string): Promise<void> {
-  const client = getTwilioClient();
+  // Touch the legacy client factory so a missing TWILIO_* env is surfaced
+  // before the kernel-gated send is attempted (preserves the original
+  // fail-fast posture in apps/api startup).
+  getTwilioClient();
   const from = getWhatsAppNumber();
   const maxRetries = 3;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      await client.messages.create({ from, to, body });
+      await twilioAdjudicated.messages.create(
+        { from, to, body },
+        {
+          sourceSubject: "whatsapp:sendText",
+          reason: "send-text",
+          auditSink: getAuditSink(),
+        },
+      );
       return;
     } catch (err) {
+      // Classify the error: kernel REFUSE is permanent — retrying would
+      // emit a fresh audit record per attempt (3× pollution) for the same
+      // payload that will never be approved. Re-throw immediately.
+      if (err instanceof TwilioAdjudicateRefusedError) {
+        logger.warn(
+          { phone_hash: hash, code: err.code },
+          "[whatsapp.send.refused] kernel refusal, not retrying",
+        );
+        throw err;
+      }
+
       const isLast = attempt === maxRetries - 1;
       logger.error(
         { phone_hash: hash, attempt: attempt + 1, maxRetries, error: String(err) },
@@ -194,22 +229,42 @@ export async function sendInteractiveButtons(
  * Retries up to 3x with exponential backoff.
  */
 export async function sendMedia(to: string, mediaUrl: string, body?: string): Promise<void> {
-  const client = getTwilioClient();
+  // Touch the legacy client factory so a missing TWILIO_* env is surfaced
+  // before the kernel-gated send is attempted.
+  getTwilioClient();
   const from = getWhatsAppNumber();
   const hash = hashPhone(to.replace("whatsapp:", ""));
   const maxRetries = 3;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      await client.messages.create({
-        from,
-        to,
-        mediaUrl: [mediaUrl],
-        ...(body ? { body } : {}),
-      });
+      await twilioAdjudicated.messages.create(
+        {
+          from,
+          to,
+          mediaUrl: [mediaUrl],
+          ...(body ? { body } : {}),
+        },
+        {
+          sourceSubject: "whatsapp:sendMedia",
+          reason: "send-media",
+          auditSink: getAuditSink(),
+        },
+      );
       logger.info({ phone_hash: hash, media_url: mediaUrl }, "[whatsapp.sendMedia]");
       return;
     } catch (err) {
+      // Classify the error: kernel REFUSE is permanent — retrying would
+      // emit a fresh audit record per attempt (3× pollution) for the same
+      // payload that will never be approved. Re-throw immediately.
+      if (err instanceof TwilioAdjudicateRefusedError) {
+        logger.warn(
+          { phone_hash: hash, code: err.code },
+          "[whatsapp.sendMedia.refused] kernel refusal, not retrying",
+        );
+        throw err;
+      }
+
       const isLast = attempt === maxRetries - 1;
       logger.error(
         { phone_hash: hash, attempt: attempt + 1, maxRetries, error: String(err) },

@@ -23,6 +23,11 @@ const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 // We mock it as a standalone function (NOT a passthrough to medusaStore)
 // per the anti-theater rule — tests must assert the wrapper was called.
 const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
+// Polish-B follow-up: customer-intent-gateway calls `adjudicate()` from
+// `@adjudicate/core/kernel`. SEC-001 tests isolate the route's auth gate
+// from the kernel decision; default to EXECUTE so the EXECUTE/REWRITE
+// branch of `runCustomerIntent` falls through to the route's own logic.
+const mockAdjudicate = vi.hoisted(() => vi.fn());
 
 const MockMedusaRequestError = vi.hoisted(() =>
   class extends Error {
@@ -108,6 +113,14 @@ vi.mock("../routes/admin/_shared.js", () => ({
   medusaStore: mockMedusaStore,
   medusaAdmin: mockMedusaAdmin,
 }));
+
+vi.mock("@adjudicate/core/kernel", async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return {
+    ...actual,
+    adjudicate: mockAdjudicate,
+  };
+});
 
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
@@ -642,14 +655,12 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    // NEW-P0-X2: order.checkout.create is not in ALWAYS_ENFORCE; without
-    // shadow/enforce env the gateway now default-REFUSES. Tests that
-    // exercise the legacy checkout path must opt in to shadow telemetry
-    // mode (or enforce mode); shadow preserves the legacy EXECUTE.
-    vi.stubEnv("IBX_KERNEL_SHADOW", "order.checkout.create");
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
+    // SEC-001 is about the route's auth gate, not the kernel's policy
+    // decision. The kernel cutover (CLAUDE.md rule #9) made adjudicate()
+    // always-authoritative — the legacy `IBX_KERNEL_SHADOW` env-stub no
+    // longer exists. Mock the kernel to EXECUTE so each test isolates
+    // the auth-gate behavior from `order.checkout.create` policy guards.
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
   });
 
   it("guest checkout with card → 200 OK", async () => {

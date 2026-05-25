@@ -220,6 +220,14 @@ const OUTBOX_EVENTS = new Set([
   "order.disputed",
   "order.canceled",
   "order.payment_failed",
+  // audit-2026-05-25 (I9): cross-DB LGPD scrub kickoff. The in-process
+  // Prisma anonymize TX commits BEFORE this publish; if NATS is down,
+  // the Medusa-side customer row keeps PII indefinitely (no
+  // pending-tracking record gets written by the subscriber because the
+  // subscriber never receives the event, so the retry job finds
+  // nothing to retry). Outbox durability + outbox-retry job re-publish
+  // on broker recovery closes the gap.
+  "customer.anonymize.medusa.pending",
 ])
 
 // Optional Redis outbox writer (injected by apps/api at startup)
@@ -295,15 +303,30 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
  * Subscribe to domain events.
  * Callback is invoked for each message.
  * Returns an object with unsubscribe() to stop listening.
+ *
+ * ── audit-2026-05-24 P2-4 — queue groups ──────────────────────────────────
+ * Pass `options.queueGroup` so subscribers running in multiple replicas
+ * load-balance the stream instead of every replica handling every message
+ * (N-fold handler inflation). Names must be stable across deploys and
+ * unique per subscriber file — distinct queue groups on the same subject
+ * still fan out to each group, so independent consumers (e.g. defer-
+ * resolver + payment-lifecycle on `payment.status_changed`) coexist.
  */
+export interface SubscribeNatsEventOptions {
+  queueGroup?: string
+}
+
 export async function subscribeNatsEvent(
   event: string,
-  handler: (payload: Record<string, unknown>) => void | Promise<void>
+  handler: (payload: Record<string, unknown>) => void | Promise<void>,
+  options?: SubscribeNatsEventOptions,
 ): Promise<{ unsubscribe: () => void }> {
   const nats = await getNatsConnection()
   const subject = `ibatexas.${event}`
 
-  const sub = nats.subscribe(subject)
+  const sub = options?.queueGroup
+    ? nats.subscribe(subject, { queue: options.queueGroup })
+    : nats.subscribe(subject)
 
   // Handle messages asynchronously
   ;(async () => {

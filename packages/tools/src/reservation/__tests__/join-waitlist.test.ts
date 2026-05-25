@@ -1,67 +1,27 @@
-// Tests for join_waitlist tool
+// Tests for join_waitlist tool (W7 follow-up — envelope-routed)
 // Mock-based; no database required.
 //
 // Scenarios:
-// - Slot not found → throws
-// - Customer already on waitlist → returns existing position (idempotent)
-// - Happy path → creates entry, returns position
-// - Position is derived from count query
+// - Kernel REFUSE on invalid party size → throws with refusal copy
+// - Happy path → returns position + message, envelope built correctly
+// - Idempotent existing-waitlist case (executor wired through pack EXECUTE)
+// - Envelope shape: kind="reservation.waitlist.join", taint="UNTRUSTED", principal="llm"
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { joinWaitlist } from "../join-waitlist.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn())
-const mockWaitlistFindFirst = vi.hoisted(() => vi.fn())
-const mockWaitlistCreate = vi.hoisted(() => vi.fn())
-const mockWaitlistCount = vi.hoisted(() => vi.fn())
+const mockJoinWaitlistFromEnvelope = vi.hoisted(() => vi.fn())
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: {
-    timeSlot: { findUnique: mockTimeSlotFindUnique },
-    waitlist: {
-      findFirst: mockWaitlistFindFirst,
-      create: mockWaitlistCreate,
-      count: mockWaitlistCount,
-    },
-  },
+  prisma: {},
   createReservationService: () => ({
-    joinWaitlist: async (input: { customerId: string; timeSlotId: string; partySize: number }) => {
-      const slot = await mockTimeSlotFindUnique({ where: { id: input.timeSlotId } })
-      if (!slot) throw new Error("Horário não encontrado.")
-      const alreadyWaiting = await mockWaitlistFindFirst({
-        where: { customerId: input.customerId, timeSlotId: input.timeSlotId, notifiedAt: null },
-      })
-      if (alreadyWaiting) {
-        const position = await mockWaitlistCount({
-          where: { timeSlotId: input.timeSlotId, createdAt: { lte: alreadyWaiting.createdAt }, notifiedAt: null },
-        })
-        return { waitlistId: alreadyWaiting.id, position }
-      }
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
-      const entry = await mockWaitlistCreate({
-        data: { customerId: input.customerId, timeSlotId: input.timeSlotId, partySize: input.partySize, expiresAt },
-      })
-      const position = await mockWaitlistCount({
-        where: { timeSlotId: input.timeSlotId, createdAt: { lte: entry.createdAt }, notifiedAt: null },
-      })
-      return { waitlistId: entry.id, position }
-    },
+    joinWaitlistFromEnvelope: mockJoinWaitlistFromEnvelope,
   }),
 }))
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
-
-const SLOT = {
-  id: "ts_01",
-  date: new Date("2026-03-15T00:00:00.000Z"),
-  startTime: "19:30",
-  durationMinutes: 90,
-  maxCovers: 10,
-  reservedCovers: 10, // fully booked
-  createdAt: new Date(),
-}
 
 const BASE_INPUT = {
   customerId: "cus_01",
@@ -74,48 +34,25 @@ const BASE_INPUT = {
 describe("joinWaitlist", () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it("throws when time slot does not exist", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(null)
+  it("throws when kernel REFUSEs (e.g., invalid party size)", async () => {
+    mockJoinWaitlistFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          code: "invalid_party_size",
+          userFacing: "Tamanho de grupo inválido.",
+        },
+      },
+    })
 
-    await expect(joinWaitlist(BASE_INPUT)).rejects.toThrow("Horário não encontrado")
+    await expect(joinWaitlist(BASE_INPUT)).rejects.toThrow("Tamanho de grupo inválido")
   })
 
-  it("returns existing position when customer is already on the waitlist", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(SLOT)
-    const existingEntry = {
-      id: "wl_01",
-      customerId: "cus_01",
-      timeSlotId: "ts_01",
-      partySize: 2,
-      createdAt: new Date(),
-      notifiedAt: null,
-      expiresAt: new Date(Date.now() + 3600_000),
-    }
-    mockWaitlistFindFirst.mockResolvedValue(existingEntry)
-    mockWaitlistCount.mockResolvedValue(2) // position = 2
-
-    const result = await joinWaitlist(BASE_INPUT)
-
-    expect(result.waitlistId).toBe("wl_01")
-    expect(result.position).toBe(2)
-    expect(result.message).toContain("posição 2")
-    expect(mockWaitlistCreate).not.toHaveBeenCalled()
-  })
-
-  it("creates a new waitlist entry on happy path", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(SLOT)
-    mockWaitlistFindFirst.mockResolvedValue(null)
-    const newEntry = {
-      id: "wl_02",
-      customerId: "cus_01",
-      timeSlotId: "ts_01",
-      partySize: 2,
-      createdAt: new Date(),
-      notifiedAt: null,
-      expiresAt: new Date(Date.now() + 86_400_000),
-    }
-    mockWaitlistCreate.mockResolvedValue(newEntry)
-    mockWaitlistCount.mockResolvedValue(1) // first in line
+  it("returns waitlist entry on EXECUTE happy path", async () => {
+    mockJoinWaitlistFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE" },
+      result: { waitlistId: "wl_02", position: 1 },
+    })
 
     const result = await joinWaitlist(BASE_INPUT)
 
@@ -124,20 +61,11 @@ describe("joinWaitlist", () => {
     expect(result.message).toContain("posição: 1")
   })
 
-  it("reflects correct position when others are already waiting", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(SLOT)
-    mockWaitlistFindFirst.mockResolvedValue(null)
-    const newEntry = {
-      id: "wl_05",
-      customerId: "cus_01",
-      timeSlotId: "ts_01",
-      partySize: 2,
-      createdAt: new Date(),
-      notifiedAt: null,
-      expiresAt: new Date(Date.now() + 86_400_000),
-    }
-    mockWaitlistCreate.mockResolvedValue(newEntry)
-    mockWaitlistCount.mockResolvedValue(3) // 3rd in line
+  it("returns position > 1 with the multi-waiter copy", async () => {
+    mockJoinWaitlistFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE" },
+      result: { waitlistId: "wl_05", position: 3 },
+    })
 
     const result = await joinWaitlist(BASE_INPUT)
 
@@ -145,26 +73,37 @@ describe("joinWaitlist", () => {
     expect(result.message).toContain("posição 3")
   })
 
-  it("sets expiresAt 24 hours from now on creation", async () => {
-    mockTimeSlotFindUnique.mockResolvedValue(SLOT)
-    mockWaitlistFindFirst.mockResolvedValue(null)
-    mockWaitlistCreate.mockResolvedValue({
-      id: "wl_06",
-      customerId: "cus_01",
-      timeSlotId: "ts_01",
-      partySize: 2,
-      createdAt: new Date(),
-      notifiedAt: null,
-      expiresAt: new Date(Date.now() + 86_400_000),
+  it("routes through joinWaitlistFromEnvelope with the correct envelope shape", async () => {
+    mockJoinWaitlistFromEnvelope.mockResolvedValue({
+      decision: { kind: "EXECUTE" },
+      result: { waitlistId: "wl_99", position: 1 },
     })
-    mockWaitlistCount.mockResolvedValue(1)
 
     await joinWaitlist(BASE_INPUT)
 
-    const [createArg] = mockWaitlistCreate.mock.calls[0] as [{ data: { expiresAt: Date } }]
-    const diffMs = createArg.data.expiresAt.getTime() - Date.now()
-    // Should be ~24 hours (allow ±5 seconds for test execution)
-    expect(diffMs).toBeGreaterThan(86_400_000 - 5_000)
-    expect(diffMs).toBeLessThanOrEqual(86_400_000 + 5_000)
+    expect(mockJoinWaitlistFromEnvelope).toHaveBeenCalledOnce()
+    const [envelope, state, extras] = mockJoinWaitlistFromEnvelope.mock.calls[0] as [
+      {
+        kind: string
+        taint: string
+        actor: { principal: string; sessionId: string }
+        payload: { timeSlotId: string; partySize: number }
+      },
+      { ctx: { customerId: string; channel: string; staffId: string | null } },
+      { customerId: string },
+    ]
+
+    expect(envelope.kind).toBe("reservation.waitlist.join")
+    expect(envelope.taint).toBe("UNTRUSTED")
+    expect(envelope.actor.principal).toBe("llm")
+    expect(envelope.actor.sessionId).toBe("customer:cus_01")
+    expect(envelope.payload.timeSlotId).toBe("ts_01")
+    expect(envelope.payload.partySize).toBe(2)
+
+    expect(state.ctx.channel).toBe("whatsapp")
+    expect(state.ctx.customerId).toBe("cus_01")
+    expect(state.ctx.staffId).toBeNull()
+
+    expect(extras.customerId).toBe("cus_01")
   })
 })

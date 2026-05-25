@@ -170,10 +170,15 @@ function issueJwtToken(
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
+  // audit-2026-05-25 (I2): aud claim pins the token to the customer
+  // cookie. Verification at middleware/auth.ts rejects tokens whose aud
+  // does not match the cookie they arrived in — prevents the
+  // staff-token-in-customer-cookie escalation path.
   return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
     sub: customerId,
     userType: "customer",
     jti: randomUUID(),
+    aud: "token",
   }, { expiresIn: '4h' });
 }
 
@@ -186,11 +191,14 @@ function issueStaffJwtToken(
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
+  // audit-2026-05-25 (I2): aud claim pins the token to the staff cookie.
+  // See issueJwtToken for the full rationale.
   return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
     sub: staffId,
     userType: "staff",
     role,
     jti: randomUUID(),
+    aud: "staff_token",
   }, { expiresIn: '8h' });
 }
 

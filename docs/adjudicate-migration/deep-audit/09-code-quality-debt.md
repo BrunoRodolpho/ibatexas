@@ -1,3 +1,7 @@
+> ⚠️ **SUPERSEDED on 2026-05-24.** Pre-cutover tech-debt audit (2026-05-23). Parallel-surface dragging (D8) was largely closed across Waves 7-9 (kernel chokepoint enforced via wrapper meta + intent-bridge). Pack-scaffolding boilerplate and config sprawl remain open as long-horizon improvement items. For current outstanding items, see [`../audit-2026-05-24/CLOSEOUT-STATUS.md`](../audit-2026-05-24/CLOSEOUT-STATUS.md). Content preserved unchanged below as historical record.
+
+---
+
 # Code Quality & Tech Debt Audit
 
 **Date:** 2026-05-23

@@ -10,7 +10,7 @@
 //
 // All routes require authentication + ownership verification.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -41,19 +41,58 @@ import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from 
 import {
   ordersPolicyBundle,
   portugueseRefusalMessages,
+  type OrderAddressChangePayload,
   type OrderAmendRequestPayload,
   type OrderCancelPayload,
   type OrderNoteAddPayload,
   type OrderState,
+  type OrderTypeSwitchPayload,
 } from "@ibatexas/pack-orders";
 import { getAuditSink } from "@ibatexas/llm-provider";
 import { type AgentContext, Channel } from "@ibatexas/types";
 import { requireAuth } from "../middleware/auth.js";
-import { runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 
 /** Build a minimal AgentContext for API-originated tool calls. */
 function apiContext(customerId: string): AgentContext {
   return { customerId, channel: Channel.Web, sessionId: "api", userType: "customer" };
+}
+
+/**
+ * Derive a deterministic envelope `nonce` from a logical idempotency
+ * identifier (e.g. `${orderId}:cancel`). The same logical key on retry
+ * produces the same `intentHash` so the kernel's Execution Ledger can
+ * dedupe HTTP retries / double-clicks / network blips.
+ *
+ * Hex-encoded SHA-256 is collision-resistant for the small key space we
+ * derive from (orderId / customerId UUIDs + a short action suffix). Per
+ * CLAUDE.md rule 9, the inputs are non-PII identifiers only — see the
+ * `idempotency-key derivation` notes on each call site.
+ *
+ * P0-7 audit-2026-05-24 remediation.
+ */
+function deriveNonce(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
+/**
+ * Prefer the caller's explicit `Idempotency-Key` HTTP header when
+ * supplied (industry standard for client-driven dedup, e.g. Stripe).
+ * Otherwise fall back to the route's derived key. Returns the resolved
+ * value verbatim — callers SHA-256 it via `deriveNonce` for the
+ * envelope nonce.
+ */
+function resolveIdempotencyKey(
+  headerValue: string | string[] | undefined,
+  fallback: string,
+): string {
+  if (typeof headerValue === "string" && headerValue.length > 0) {
+    return headerValue;
+  }
+  if (Array.isArray(headerValue) && headerValue[0]) {
+    return headerValue[0];
+  }
+  return fallback;
 }
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
@@ -269,12 +308,23 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         orderId: id,
         reason: request.body.reason ?? "Cancelado pelo cliente",
       };
-      const envelope = buildEnvelope<"order.cancel", OrderCancelPayload>({
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ───────
+      //
+      // Each order can legitimately be cancelled exactly once by its
+      // owner. Browser retries, double-clicks, and network blips on
+      // POST /api/orders/:id/cancel MUST produce the same `intentHash`
+      // so the Execution Ledger dedupes. Prefer the client's explicit
+      // `Idempotency-Key` header; fall back to a route-derived key from
+      // `${orderId}:cancel:${customerId}` (both non-PII UUIDs).
+      const cancelIdempotencyKey = resolveIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${id}:cancel:${customerId}`,
+      );
+      const envelope = buildCustomerEnvelope<"order.cancel", OrderCancelPayload>({
         kind: "order.cancel",
         payload: cancelPayload,
-        nonce: randomUUID(),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        nonce: deriveNonce(cancelIdempotencyKey),
+        customerId,
       });
 
       const orderState: OrderState = {
@@ -300,7 +350,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
             // outer `order.cancel` envelope is already adjudicated by
             // runCustomerIntent; these inner envelopes adjudicate the
             // projection-level transitions (order + payment).
-            const orderTransitionEnvelope = buildEnvelope<
+            const orderTransitionEnvelope = buildCustomerEnvelope<
               "order.status.transition",
               OrderStatusTransitionPayload
             >({
@@ -313,8 +363,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
                 reason: request.body.reason ?? "Cancelado pelo cliente",
               },
               nonce: randomUUID(),
-              actor: { principal: "user", sessionId: customerId },
-              taint: "UNTRUSTED",
+              customerId,
             });
             const orderOutcome = await orderCmdSvc.transitionStatusFromEnvelope(
               orderTransitionEnvelope,
@@ -598,12 +647,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           },
         ],
       };
-      const envelope = buildEnvelope<"order.amend.request", OrderAmendRequestPayload>({
+      const envelope = buildCustomerEnvelope<"order.amend.request", OrderAmendRequestPayload>({
         kind: "order.amend.request",
         payload: amendPayload,
         nonce: randomUUID(),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "UNTRUSTED",
+        customerId,
       });
 
       const orderState: OrderState = {
@@ -682,7 +730,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         // Should not occur — verifyOwnership above passed — but bail safely.
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
-      const noteEnvelope = buildEnvelope<
+      const noteEnvelope = buildCustomerEnvelope<
         "order.note.add",
         OrderNoteAddPayload
       >({
@@ -692,11 +740,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           body: request.body.content,
         },
         nonce: randomUUID(),
-        actor: {
-          principal: "user",
-          sessionId: `customer:${customerId}`,
-        },
-        taint: "UNTRUSTED",
+        customerId: `customer:${customerId}`,
       });
       const noteOrderState: OrderState = {
         ctx: {
@@ -1353,15 +1397,86 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // ── Task 14 — wrap address change in adjudicate envelope ──────────
+      //
+      // The customer-facing kind is `order.address.change` (per
+      // `@ibatexas/pack-orders`). The kernel adjudicates against the
+      // outer pack-orders bundle; the inner `changeDeliveryAddress` tool
+      // then re-adjudicates against `orderProjectionPolicyBundle` at the
+      // service-layer chokepoint (`changeAddressFromEnvelope`). Map the
+      // HTTP body's IbateXas-vocab address (`address1`/`postalCode`/…)
+      // onto the Pack's canonical vocab (`street`/`zip`/…).
+      const reqBody = request.body;
+      const addressPayload: OrderAddressChangePayload = {
+        orderId: id,
+        address: {
+          street: reqBody.address.address1,
+          ...(reqBody.address.address2 !== undefined
+            ? { complement: reqBody.address.address2 }
+            : {}),
+          ...(reqBody.address.neighborhood !== undefined
+            ? { neighborhood: reqBody.address.neighborhood }
+            : {}),
+          city: reqBody.address.city,
+          state: reqBody.address.state,
+          zip: reqBody.address.postalCode,
+        },
+      };
+      const envelope = buildCustomerEnvelope<"order.address.change", OrderAddressChangePayload>({
+        kind: "order.address.change",
+        payload: addressPayload,
+        nonce: randomUUID(),
+        customerId,
+      });
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          lastAction: null,
+        },
+      };
+
       try {
-        const result = await changeDeliveryAddress(
-          { orderId: id, address: request.body.address },
-          apiContext(customerId),
-        );
-        if (!result.success) {
-          return reply.code(422).send({ error: result.message, needsEscalation: result.needsEscalation });
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            return changeDeliveryAddress(
+              { orderId: id, address: reqBody.address },
+              apiContext(customerId),
+            );
+          },
+          ctx: {
+            customerId,
+            route: "order.address.change",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        // The inner tool returns `{ success: boolean, message, needsEscalation? }`
+        // on its own — surface the legacy 422 mapping when the tool's
+        // service-layer adjudication or business validator refused even
+        // though the outer pack-orders adjudication permitted EXECUTE.
+        if (out.statusCode === 200) {
+          const toolResult = out.body as {
+            success: boolean;
+            message: string;
+            needsEscalation?: boolean;
+          };
+          if (!toolResult.success) {
+            return reply.code(422).send({
+              error: toolResult.message,
+              needsEscalation: toolResult.needsEscalation,
+            });
+          }
         }
-        return reply.send(result);
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });
@@ -1393,15 +1508,84 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // ── Task 14 — wrap type switch in adjudicate envelope ─────────────
+      //
+      // The customer-facing kind is `order.type.switch`. Pack-orders uses
+      // the binary `delivery` | `takeout` vocabulary; IbateXas's HTTP
+      // surface distinguishes `pickup` vs `dine_in` (both non-delivery).
+      // Collapse both to `takeout` for the outer envelope; the inner
+      // `switchOrderType` tool preserves the precise vocab via the
+      // projection-policy envelope it builds internally.
+      //
+      // audit-2026-05-24 P2-3: the audit record is built from the outer
+      // envelope's payload. Without preserving the original HTTP
+      // vocabulary, an operator reading the audit row can't tell
+      // whether the customer asked for `pickup` or `dine_in` — both
+      // collapse to `takeout`. We carry the original via `httpVocab`
+      // (descriptive-only, pack guards ignore it) so the audit record
+      // captures both the policy-adjudicated value AND what the customer
+      // actually said.
+      const newType = request.body.type;
+      const packNewType: "delivery" | "takeout" =
+        newType === "delivery" ? "delivery" : "takeout";
+      const typePayload: OrderTypeSwitchPayload = {
+        orderId: id,
+        newType: packNewType,
+        httpVocab: newType,
+      };
+      const envelope = buildCustomerEnvelope<"order.type.switch", OrderTypeSwitchPayload>({
+        kind: "order.type.switch",
+        payload: typePayload,
+        nonce: randomUUID(),
+        customerId,
+      });
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          lastAction: null,
+        },
+      };
+
       try {
-        const result = await switchOrderType(
-          { orderId: id, newType: request.body.type },
-          apiContext(customerId),
-        );
-        if (!result.success) {
-          return reply.code(422).send({ error: result.message, needsEscalation: result.needsEscalation });
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            return switchOrderType(
+              { orderId: id, newType },
+              apiContext(customerId),
+            );
+          },
+          ctx: {
+            customerId,
+            route: "order.type.switch",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        // Preserve legacy 422 mapping when the inner tool refuses despite
+        // the outer pack-orders adjudication permitting EXECUTE.
+        if (out.statusCode === 200) {
+          const toolResult = out.body as {
+            success: boolean;
+            message: string;
+            needsEscalation?: boolean;
+          };
+          if (!toolResult.success) {
+            return reply.code(422).send({
+              error: toolResult.message,
+              needsEscalation: toolResult.needsEscalation,
+            });
+          }
         }
-        return reply.send(result);
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });

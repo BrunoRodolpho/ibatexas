@@ -326,7 +326,7 @@ CUSTOMER_PROFILE_RATE_LIMIT_HOURS=1
 
 Direct merge. The pack is installed but no intent kinds are added to `IBX_KERNEL_SHADOW` or `IBX_KERNEL_ENFORCE` yet. Behavioural change = zero until task 14 lands routes that build envelopes for these kinds AND the rollout milestone M5 adds them to shadow.
 
-Per migration/04-shadow-enforce-sequencing.md, the order is:
+Per ../superseded/04-shadow-enforce-sequencing.md, the order is:
 - `customer.preferences.update`, `customer.profile.update` — Tier 1 (low risk, enforce first)
 - `customer.address.*`, `customer.pix.details.save` — Tier 2
 - `customer.anonymize`, `customer.anonymize.cancel` — Tier 4 (28-day shadow, legal sign-off, last to enforce)
