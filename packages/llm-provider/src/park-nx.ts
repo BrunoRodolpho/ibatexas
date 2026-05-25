@@ -38,12 +38,62 @@
 // (those packages live in a separate repo). The wrapper lives adopter-side and
 // can be removed once the framework primitive gains NX semantics.
 
+import { randomUUID } from "node:crypto"
 import { parkDeferredIntent } from "@adjudicate/runtime"
 import { deferCounterKey, deferParkKey } from "@adjudicate/runtime"
 import type {
   ParkDeferredIntentArgs,
   ParkDeferredIntentResult,
 } from "@adjudicate/runtime"
+
+/**
+ * Lua compare-and-delete script for the NX placeholder. Only deletes
+ * `parkKey` if the stored value still matches `placeholderValue` —
+ * prevents this caller's on-throw cleanup from erasing a freshly-parked
+ * legitimate envelope written by the framework's SET (between our SETNX
+ * and our catch) OR by another caller that won an unusual race.
+ * audit-2026-05-25 (I8) / CLAUDE.md rule #10.
+ */
+const RELEASE_PLACEHOLDER_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0
+end
+`
+
+/**
+ * Best-effort Lua CAD release of the NX placeholder. The `redis` param
+ * is typed loosely because @adjudicate/runtime's `ParkRedis` interface
+ * does not include `eval` — we feature-detect at call time. If the
+ * client doesn't support eval, fall back to plain del (legacy
+ * behavior). Errors are swallowed; TTL is the safety net.
+ */
+async function releaseNxPlaceholder(
+  redis: unknown,
+  parkKey: string,
+  placeholderValue: string,
+): Promise<void> {
+  const r = redis as {
+    eval?: (
+      script: string,
+      opts: { keys: string[]; arguments: string[] },
+    ) => Promise<unknown>
+    del?: (k: string) => Promise<unknown>
+  }
+  if (typeof r.eval === "function") {
+    try {
+      await r.eval(RELEASE_PLACEHOLDER_SCRIPT, {
+        keys: [parkKey],
+        arguments: [placeholderValue],
+      })
+      return
+    } catch {
+      // Fall through to plain del — TTL is the ultimate safety net.
+    }
+  }
+  await r.del?.(parkKey)?.catch(() => {})
+}
 
 // ── Injected metrics hook ────────────────────────────────────────────────────
 //
@@ -148,10 +198,20 @@ export async function parkDeferredIntentWithNxGuard(
   // the real envelope would have. If another envelope is already parked, the
   // SETNX returns null and we surface a collision refusal — the existing
   // envelope (and its real payload) is left untouched.
+  //
+  // audit-2026-05-25 (I8): the placeholder carries an `ownerToken` UUID.
+  // On-throw DEL paths (lines below) use Lua compare-and-delete against
+  // this exact value so they cannot accidentally erase a freshly-parked
+  // legitimate envelope if the framework's plain SET completed before
+  // our catch fired. Also, by the time the placeholder is detected by a
+  // future orphan-recovery scan, the ownerToken lets the scan
+  // distinguish "still mine" from "someone else claimed the slot".
+  const placeholderOwnerToken = randomUUID()
   const placeholderValue = JSON.stringify({
     __nx_placeholder__: true,
     sessionId,
     claimedAt: new Date().toISOString(),
+    ownerToken: placeholderOwnerToken,
   })
   const placeholderClaim = await argsHoisted.redis.set(
     parkKey,
@@ -205,10 +265,11 @@ export async function parkDeferredIntentWithNxGuard(
     if (!result.parked) {
       // Quota exceeded inside the framework — release the slot so the next
       // legitimate DEFER for this session isn't blocked by our placeholder.
-      // We swallow del errors; the TTL is the safety net.
-      await (argsHoisted.redis as { del?: (k: string) => Promise<unknown> })
-        .del?.(parkKey)
-        ?.catch(() => {})
+      // audit-2026-05-25 (I8): use Lua compare-and-delete against the
+      // placeholder's ownerToken so we never accidentally erase a real
+      // envelope that another caller parked between our SETNX and this
+      // path. TTL is still the safety net.
+      await releaseNxPlaceholder(argsHoisted.redis, parkKey, placeholderValue)
       // W3-6 — bump kernel_defer_quota_exceeded_total{kind} per rejection.
       if (result.reason === "quota_exceeded") {
         await bumpDeferQuotaExceededMetric(argsHoisted.envelope.kind)
@@ -217,10 +278,8 @@ export async function parkDeferredIntentWithNxGuard(
     return result
   } catch (err) {
     // Park failed mid-flight. Release the slot so subsequent DEFERs can park.
-    // Swallow del errors; TTL is the safety net.
-    await (argsHoisted.redis as { del?: (k: string) => Promise<unknown> })
-      .del?.(parkKey)
-      ?.catch(() => {})
+    // audit-2026-05-25 (I8): Lua compare-and-delete — see comment above.
+    await releaseNxPlaceholder(argsHoisted.redis, parkKey, placeholderValue)
     // audit-2026-05-24 P1-8 — DECR the quota counter to undo any INCR the
     // framework may have performed before the throw. Best-effort; the
     // counter's TTL is the safety net.

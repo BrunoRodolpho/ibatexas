@@ -1052,6 +1052,39 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
+      // (a.2) audit-2026-05-25 (I8) — TOCTOU re-read of the receipt
+      // INSIDE the lock. Pre-fix the receipt was read at the top of the
+      // handler, then the lock was acquired ~ms later; between those two
+      // steps the grace-resolver could acquire the lock first, anonymize
+      // the customer, clear the receipt, and release the lock — leaving
+      // a fresh-to-acquire lock and a now-empty receipt slot. The cancel
+      // handler would then SETNX-acquire the freed lock, proceed against
+      // an already-anonymized customer, and return 200 'cancelado.' The
+      // customer saw explicit cancel-success while their data was gone.
+      // LGPD Art. 18 silent denial.
+      //
+      // Fix: re-read inside the lock. If the receipt is gone, the
+      // resolver won the race; surface 410 Gone with an audit-trail
+      // log line (`lgpd.cancel.refused.race_lost`) and release the
+      // lock immediately.
+      const receiptStillPresent = await readPendingDeletion(customerId);
+      if (!receiptStillPresent) {
+        request.log.warn(
+          {
+            customerId,
+            originalParkedIntentHash: receipt.intentHash,
+          },
+          "[me/anonymize] cancel-deletion race_lost — resolver completed between receipt-read and lock-acquire",
+        );
+        await releaseAnonymizeActiveLock(customerId, cancelLock.lockValue);
+        return reply.code(410).send({
+          statusCode: 410,
+          error: "Gone",
+          message:
+            "A janela de cancelamento expirou. Sua solicitação de exclusão já foi processada.",
+        });
+      }
+
       // (b) Build the cancel envelope. Same actor / taint as the
       // anonymize envelope so the audit trail is consistent.
       //
