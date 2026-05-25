@@ -17,7 +17,7 @@
   "dependencies": {
     "@adjudicate/audit": "^1.0.1",
     "@adjudicate/audit-postgres": "^1.0.1",
-    "@adjudicate/core": "^1.0.0",
+    "@adjudicate/core": "^1.1.0",
     "@adjudicate/runtime": "^0.1.1",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/llm-provider": "workspace:*",

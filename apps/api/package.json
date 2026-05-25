@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@adjudicate/audit-postgres": "^1.0.1",
-    "@adjudicate/core": "^1.0.0",
+    "@adjudicate/core": "^1.1.0",
     "@adjudicate/pack-payments-pix": "^0.1.1",
     "@adjudicate/runtime": "^0.1.1",
     "@fastify/cookie": "^11.0.2",

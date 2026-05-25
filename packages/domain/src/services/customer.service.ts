@@ -1131,11 +1131,18 @@ function emitScrubAuditRecords(
 ): void {
   const auditSink = options.auditSink
   if (!auditSink) return
+  // audit-2026-05-25 (I12 post-publish): now that @adjudicate/core@1.1.0
+  // is on npm with the `lgpd_scrub` SupersessionReason member, swap the
+  // semantically-correct value. Pre-fix the H3 implementation used
+  // `replay` as the closest fit in the closed v1.0 union — accurate
+  // intent (re-derive prior decision) but lossy (a LGPD scrub is not
+  // a generic replay; operator dashboards aggregating by reason were
+  // double-counting scrubs alongside true replays).
   const supersedes: Supersession | undefined = options.predecessor
     ? {
         predecessorIntentHash: options.predecessor.predecessorIntentHash,
         predecessorAt: options.predecessor.predecessorAt,
-        reason: "replay",
+        reason: "lgpd_scrub",
       }
     : undefined
   for (const kind of SCRUB_AUDIT_KINDS) {

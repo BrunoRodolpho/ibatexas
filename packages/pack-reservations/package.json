@@ -21,7 +21,7 @@
     "@adjudicate/core": "^1.0.0"
   },
   "dependencies": {
-    "@adjudicate/core": "^1.0.0",
+    "@adjudicate/core": "^1.1.0",
     "@adjudicate/locales-pt-br": "^0.1.1",
     "@adjudicate/primitives": "^0.1.1"
   },

@@ -755,10 +755,11 @@ describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => 
         expect(record.supersedes?.predecessorAt).toBe(
           "2026-05-24T15:00:00.000Z",
         )
-        // Type system constrains reason to {confirmation_resolved,
-        // defer_resumed, rewrite_executed, replay}; "replay" is the
-        // closest semantic for scope-extension records.
-        expect(record.supersedes?.reason).toBe("replay")
+        // audit-2026-05-25 (I12 post-publish): @adjudicate/core@1.1.0
+        // added `"lgpd_scrub"` to the SupersessionReason union; per-
+        // surface LGPD scrub records now carry the semantically-precise
+        // value instead of the lossy "replay" fallback.
+        expect(record.supersedes?.reason).toBe("lgpd_scrub")
       }
     })
 
