@@ -298,37 +298,82 @@ async function processToolCalls(
         // ── Execution Ledger ────────────────────────────────────────────────
         // The ledger is always consulted. On dedup hit, the intent is
         // suppressed with an "already processed" tool result. On Redis
-        // failure, LedgerUnavailableError propagates and surfaces the
-        // intent as a refusal — fail-closed by design (correctness over
-        // availability for at-least-once delivery).
+        // failure, LedgerUnavailableError is CAUGHT and surfaced as a
+        // structured refusal (audit-2026-05-25 I5) — fail-closed by design
+        // (correctness over availability for at-least-once delivery).
+        //
+        // Pre-fix this comment promised "propagates and surfaces as
+        // refusal" but there was NO try/catch — the throw unwound the
+        // generator, killed the SSE response with an uncaught exception,
+        // and left the in-flight tool_use blocks without matching
+        // tool_result entries (breaking the next Anthropic conversation
+        // turn). The test at packages/llm-provider/src/__tests__/agent-intent-dispatch.test.ts:56-59
+        // mocks the error away with a note acknowledging the bug.
         const hash = result.intent.envelope?.intentHash
         if (hash) {
-          const ledger = await getIntentLedger()
-          const hit = await ledger.checkLedger(hash)
-          if (hit) {
-            console.warn(
-              "[llm-responder] Ledger replay suppressed (hash=%s, firstAt=%s)",
+          try {
+            const ledger = await getIntentLedger()
+            const hit = await ledger.checkLedger(hash)
+            if (hit) {
+              console.warn(
+                "[llm-responder] Ledger replay suppressed (hash=%s, firstAt=%s)",
+                hash,
+                hit.at,
+              )
+              onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
+              toolResults.push({
+                type: "tool_result",
+                tool_use_id: block.id,
+                content: JSON.stringify({
+                  status: "already_processed",
+                  message: "Essa solicitação já foi processada.",
+                  toolName: block.name,
+                }),
+              })
+              continue
+            }
+            await ledger.recordExecution({
+              intentHash: hash,
+              resourceVersion: `session:${context.sessionId}`,
+              sessionId: context.sessionId,
+              kind: result.intent.envelope?.kind ?? "order.tool.propose",
+            })
+          } catch (err) {
+            // audit-2026-05-25 (I5): LedgerUnavailableError or any other
+            // ledger-side failure is converted to a structured REFUSE
+            // tool_result so the Anthropic conversation's tool_use ↔
+            // tool_result pairing remains valid (the next turn won't
+            // break). The error is logged and surfaced to the user with
+            // a pt-BR refusal copy. Audit emission for the refusal is a
+            // follow-up — for now the kernel's audit pipeline never
+            // sees this short-circuit because adjudicate() hasn't run yet.
+            const errMsg = (err as Error).message ?? String(err)
+            const isLedgerUnavailable =
+              (err as Error).name === "LedgerUnavailableError"
+            console.error(
+              "[llm-responder] Ledger %s — refusing intent (hash=%s, kind=%s): %s",
+              isLedgerUnavailable ? "unavailable" : "error",
               hash,
-              hit.at,
+              result.intent.envelope?.kind ?? "unknown",
+              errMsg,
             )
-            onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: true })
+            onChunk({ type: "tool_result", toolName: block.name, toolUseId: block.id, success: false })
             toolResults.push({
               type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify({
-                status: "already_processed",
-                message: "Essa solicitação já foi processada.",
+                status: "refused",
+                refusalCode: isLedgerUnavailable
+                  ? "ledger_unavailable"
+                  : "ledger_error",
+                refusalKind: "ledger",
+                message:
+                  "Não foi possível processar sua solicitação agora. Tente novamente em alguns instantes.",
                 toolName: block.name,
               }),
             })
             continue
           }
-          await ledger.recordExecution({
-            intentHash: hash,
-            resourceVersion: `session:${context.sessionId}`,
-            sessionId: context.sessionId,
-            kind: result.intent.envelope?.kind ?? "order.tool.propose",
-          })
         }
 
         // ── Kernel adjudication (always-on) ────────────────────────────────
