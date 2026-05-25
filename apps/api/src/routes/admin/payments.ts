@@ -575,29 +575,43 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const reason = request.body.reason ?? "Reembolso emitido pelo admin";
       const { actorPrincipal, taint, sessionId } = principalFor(staffId);
 
-      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ─────────
+      // ── P0-7 (audit-2026-05-24) + I10 (audit-2026-05-25) — explicit
+      // Idempotency-Key required ─────────────────────────────────────────
       //
       // Refunds send money back to the customer — a retry without dedup
-      // can double-pay. Prefer the admin tool's explicit `Idempotency-Key`
-      // header; fall back to a route-derived key from
-      // `${orderId}:refund:${refundAmount}:${staffId}` so the same staff
-      // retrying the same refund on the same order dedupes via the
-      // kernel's Execution Ledger. Per CLAUDE.md rule #9, inputs are
-      // non-PII (orderId UUID, staffId, integer centavos).
-      const refundIdempotencyKey = resolveAdminIdempotencyKey(
-        request.headers["idempotency-key"],
-        `${id}:refund:${refundAmount}:${staffId ?? "api-key"}`,
-      );
-      const refundNonce = deriveAdminNonce(refundIdempotencyKey);
-      if (
-        typeof request.headers["idempotency-key"] === "undefined" &&
-        !Array.isArray(request.headers["idempotency-key"])
-      ) {
-        server.log.warn(
-          { staffId, orderId: id, refundAmount },
-          "[refund] no Idempotency-Key header — using derived key (operator should set one)",
-        );
+      // can double-pay. Pre-fix the route allowed a deterministic
+      // fallback `${id}:refund:${refundAmount}:${staffId}` when no
+      // header was supplied. PR #62 review found that fallback
+      // collides for two LEGITIMATE sequential partial refunds of the
+      // same amount on the same order by the same staff within the
+      // Execution Ledger's 14-day default TTL: the second refund's
+      // intentHash matches the first, the ledger SETNX returns
+      // "exists", the kernel flips EXECUTE → REPLAY_SUPPRESSED, the
+      // route returns 200 but no Stripe money movement happens. The
+      // customer never receives the second refund.
+      //
+      // Fix: require the `Idempotency-Key` header on every refund.
+      // Admin tooling should already be idempotency-aware; absence is
+      // a client bug worth surfacing as 400 rather than masking with a
+      // collision-prone fallback.
+      const idempotencyHeader = request.headers["idempotency-key"];
+      const normalizedHeader =
+        typeof idempotencyHeader === "string" && idempotencyHeader.length > 0
+          ? idempotencyHeader
+          : Array.isArray(idempotencyHeader) && idempotencyHeader[0]
+            ? idempotencyHeader[0]
+            : null;
+      if (normalizedHeader === null) {
+        return reply.code(400).send({
+          statusCode: 400,
+          error: "Bad Request",
+          code: "IDEMPOTENCY_KEY_REQUIRED",
+          message:
+            "Idempotency-Key header obrigatório no reembolso para garantir dedup seguro. Cada refund-click deve enviar um UUID estável (mesmo valor em retries automatizadas).",
+        });
       }
+      const refundIdempotencyKey = normalizedHeader;
+      const refundNonce = deriveAdminNonce(refundIdempotencyKey);
 
       // ── Threshold branch ──────────────────────────────────────────
       if (refundAmount < REFUND_CONFIRMATION_THRESHOLD_CENTAVOS) {
@@ -930,10 +944,31 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // advanced since step 1, REFUSE with 409. The operator must
       // restart from step 1 so the fresh snapshot of
       // refundedAmountCentavos / amountInCentavos / status is captured.
-      if (
-        pending.expectedVersion !== undefined &&
-        payment.version !== pending.expectedVersion
-      ) {
+      // audit-2026-05-25 (I10): fail-CLOSED when expectedVersion is
+      // undefined. Pre-fix this branch only fired when expectedVersion
+      // was DEFINED — in-flight receipts created BEFORE the P2-5 deploy
+      // lack the field, and any such stale receipt that survives a
+      // rolling deploy could execute a stale-version refund (the exact
+      // race P2-5 closes for fresh receipts). Now any receipt without
+      // expectedVersion is rejected; the operator restarts from step 1.
+      if (pending.expectedVersion === undefined) {
+        await eventLogSvc.append({
+          orderId: id,
+          eventType: "admin.refund.missing_expected_version_refused",
+          discriminator: confirmationId,
+          payload: {
+            confirmationId,
+            staffId,
+            actualVersion: payment.version,
+          },
+          timestamp: new Date(),
+        });
+        return reply.code(409).send({
+          error:
+            "Aprovação inválida (criada antes da atualização de segurança). Reabra a operação para gerar uma nova aprovação.",
+        });
+      }
+      if (payment.version !== pending.expectedVersion) {
         await eventLogSvc.append({
           orderId: id,
           eventType: "admin.refund.stale_version_refused",

@@ -120,7 +120,15 @@ export interface CustomerPreferencesUpdatePayload {
 export interface CustomerPixDetailsSavePayload {
   readonly name: string
   readonly email: string
-  readonly cpf: string
+  /**
+   * audit-2026-05-25 (I10): optional. Customers who pay via PIX without
+   * entering a CPF (guest-style WhatsApp checkout origin) previously
+   * triggered the validateCpfShape REFUSE on an empty-string fallback,
+   * which dropped name + email persistence too. The CPF-shape policy
+   * now skips validation when cpf is absent/empty; presence still
+   * triggers Modulo-11 validation.
+   */
+  readonly cpf?: string
 }
 
 export interface CustomerAddressPayload {

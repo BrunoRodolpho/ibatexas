@@ -177,7 +177,15 @@ export async function cachePixDetailsForCustomer(
     >({
       kind: "customer.pix.details.save",
       payload,
-      nonce: randomUUID(),
+      // audit-2026-05-25 (I10): deterministic nonce so retries of the
+      // same logical PIX-details save (network blip → checkout retry)
+      // dedupe via the kernel Execution Ledger. Pre-fix the
+      // randomUUID() created a fresh intentHash on every successful
+      // checkout, defeating ledger dedup and producing N audit records
+      // + N Prisma updates for one logical save. Mirrors the
+      // deterministic-key pattern at cart.ts:856 for the checkout
+      // itself.
+      nonce: `${customerId}:pix-details-save`,
       customerId,
     });
     const state: CustomerOnboardingState = {

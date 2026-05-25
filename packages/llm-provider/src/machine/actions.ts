@@ -412,10 +412,16 @@ export async function cachePixDetails(
 
   // Persist to Prisma via envelope path.
   const svc = createCustomerService({ auditSink: getAuditSink() })
+  // audit-2026-05-25 (I10): cpf is now optional in
+  // CustomerPixDetailsSavePayload; absence/empty is acceptable (the
+  // validateCpfShape pack guard skips validation when not present).
+  // Pre-fix the `?? ""` fallback triggered REFUSE in the policy,
+  // dropping name + email persistence too — regression vs. legacy
+  // truthy-spread path.
   const payload: CustomerPixDetailsSavePayload = {
     name: data.name ?? "",
     email: data.email ?? "",
-    cpf: data.cpf ?? "",
+    ...(data.cpf && data.cpf.length > 0 ? { cpf: data.cpf } : {}),
   }
   const envelope = buildEnvelope<
     "customer.pix.details.save",
