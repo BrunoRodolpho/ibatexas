@@ -286,15 +286,28 @@ function principalFor(staffId: string | null): {
 
 export async function adminPaymentRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
-  const paymentCmdSvc = createPaymentCommandService(server.log, {
-    auditSink: getAuditSink(),
+  // Defer audit-sink resolution to onReady. Plugin bodies execute during
+  // await server.register() inside buildServer(), which runs BEFORE
+  // bootstrapAuditSinkDI() in index.ts:start(). Calling getAuditSink()
+  // here would throw AuditSinkNotInitializedError and crash production
+  // boot. onReady fires during server.ready() (invoked implicitly by
+  // server.listen()), which is AFTER bootstrapAuditSinkDI() has run —
+  // the sink is initialized by then. Tests masked this previously
+  // because apps/api/src/__tests__/setup.ts pre-wires noop deps at
+  // module load.
+  let paymentCmdSvc!: ReturnType<typeof createPaymentCommandService>;
+  let orderCmdSvc!: ReturnType<typeof createOrderCommandService>;
+  server.addHook("onReady", async () => {
+    paymentCmdSvc = createPaymentCommandService(server.log, {
+      auditSink: getAuditSink(),
+    });
+    // W7-P4: addNoteFromEnvelope path needs an audit-wired OrderCommandService.
+    orderCmdSvc = createOrderCommandService(server.log, {
+      auditSink: getAuditSink(),
+    });
   });
   const paymentQuerySvc = createPaymentQueryService();
   const orderQuerySvc = createOrderQueryService();
-  // W7-P4: addNoteFromEnvelope path needs an audit-wired OrderCommandService.
-  const orderCmdSvc = createOrderCommandService(server.log, {
-    auditSink: getAuditSink(),
-  });
   const eventLogSvc = createOrderEventLogService(server.log);
   const confirmationStore = createAdminConfirmationStore();
 

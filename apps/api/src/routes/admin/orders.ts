@@ -45,8 +45,14 @@ const OrderPatchBody = z.object({
 
 export async function orderRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
-  const commandSvc = createOrderCommandService(server.log, {
-    auditSink: getAuditSink(),
+  // Defer audit-sink resolution to onReady (see adminPaymentRoutes for
+  // the full rationale — boot-order race between plugin-body execution
+  // during buildServer() and bootstrapAuditSinkDI() in index.ts).
+  let commandSvc!: ReturnType<typeof createOrderCommandService>;
+  server.addHook("onReady", async () => {
+    commandSvc = createOrderCommandService(server.log, {
+      auditSink: getAuditSink(),
+    });
   });
   const querySvc = createOrderQueryService();
   const paymentQuerySvc = createPaymentQueryService();

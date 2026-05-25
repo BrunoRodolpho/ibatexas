@@ -121,13 +121,20 @@ function principalFor(staffId: string | null): {
 
 export async function adminOrderActionRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
-  const orderCmdSvc = createOrderCommandService(server.log, {
-    auditSink: getAuditSink(),
+  // Defer audit-sink resolution to onReady (see adminPaymentRoutes for
+  // the full rationale — boot-order race between plugin-body execution
+  // during buildServer() and bootstrapAuditSinkDI() in index.ts).
+  let orderCmdSvc!: ReturnType<typeof createOrderCommandService>;
+  let paymentCmdSvc!: ReturnType<typeof createPaymentCommandService>;
+  server.addHook("onReady", async () => {
+    orderCmdSvc = createOrderCommandService(server.log, {
+      auditSink: getAuditSink(),
+    });
+    paymentCmdSvc = createPaymentCommandService(server.log, {
+      auditSink: getAuditSink(),
+    });
   });
   const orderQuerySvc = createOrderQueryService();
-  const paymentCmdSvc = createPaymentCommandService(server.log, {
-    auditSink: getAuditSink(),
-  });
   const paymentQuerySvc = createPaymentQueryService();
   const eventLogSvc = createOrderEventLogService(server.log);
   const confirmationStore = createAdminConfirmationStore();
