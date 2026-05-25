@@ -415,17 +415,16 @@ describe.skipIf(!RUN_REAL_POSTGRES)(
         redeemed: number
       }>
       if (postLoyalty.length > 0) {
-        // G2-c "scrub linkage" branch. NOTE: LoyaltyAccount.customerId is
-        // declared @unique + non-nullable + Cascade FK toward Customer.id
-        // (see customer.service.ts:H3-wave-a1-4 commit message and the H3
-        // CLOSEOUT-STATUS follow-up). A1 cannot null the column without a
-        // schema migration; instead it leaves the link pointing at the now-
-        // anonymized Customer row (name="Usuário Removido", email=null,
-        // phone=sentinel, cpf=null). The effective linkage break still holds
-        // — joining LoyaltyAccount → Customer for PII access yields zero PII.
-        // We assert the counters are reset, which is the actual scrub action
-        // A1 performs.
+        // G2-c "scrub linkage" branch. The schema follow-up made
+        // LoyaltyAccount.customerId nullable + switched the FK to
+        // ON DELETE SET NULL; A1 now nulls the column so the linkage is
+        // truly broken (rather than left pointing at the anonymized
+        // Customer row). Counters are reset for aggregate-stat scrub.
         for (const l of postLoyalty) {
+          expect(
+            l.customerId,
+            "LoyaltyAccount.customerId: must be null post-anonymize (G2-c scrub linkage)",
+          ).toBeNull()
           expect(
             l.stamps,
             "LoyaltyAccount.stamps: pre-anonymize value found post-anonymize (balance must reset)",

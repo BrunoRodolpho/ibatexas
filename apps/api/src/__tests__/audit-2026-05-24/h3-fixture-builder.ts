@@ -465,13 +465,20 @@ export async function snapshotCustomerReachable(
   customerId: string,
   priorSnapshot?: Record<string, unknown[]>,
 ): Promise<Record<string, unknown[]>> {
-  // Post-anonymize, A1 nulls `Conversation.customerId` so re-deriving the
-  // conversation set via that FK returns 0 rows. The optional `priorSnapshot`
-  // lets callers thread the pre-anonymize conversation IDs through so the
-  // post-snapshot can still locate the rows that A1 mutated in place.
+  // Post-anonymize, A1 nulls `Conversation.customerId` AND
+  // `LoyaltyAccount.customerId`, so re-deriving those sets via the FK
+  // returns 0 rows. The optional `priorSnapshot` lets callers thread the
+  // pre-anonymize row IDs through so the post-snapshot can still locate
+  // the rows that A1 mutated in place.
   const priorConversationIds = priorSnapshot
     ? ((priorSnapshot.conversations as Array<{ id: string }> | undefined) ?? [])
         .map((c) => c.id)
+    : []
+  const priorLoyaltyAccountIds = priorSnapshot
+    ? (
+        (priorSnapshot.loyaltyAccount as Array<{ id: string }> | undefined) ??
+        []
+      ).map((l) => l.id)
     : []
 
   // OrderProjection.customerId is NOT scrubbed by A1 (only the scalar PII
@@ -527,7 +534,13 @@ export async function snapshotCustomerReachable(
     orderIds.length > 0
       ? prisma.orderEventLog.findMany({ where: { orderId: { in: orderIds } } })
       : Promise.resolve([] as unknown[]),
-    prisma.loyaltyAccount.findMany({ where: { customerId } }),
+    priorLoyaltyAccountIds.length > 0
+      ? prisma.loyaltyAccount.findMany({
+          where: {
+            OR: [{ customerId }, { id: { in: priorLoyaltyAccountIds } }],
+          },
+        })
+      : prisma.loyaltyAccount.findMany({ where: { customerId } }),
     prisma.reservation.findMany({ where: { customerId } }),
   ])
 
