@@ -67,6 +67,10 @@
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { deferResumeHash, type ParkedEnvelope } from "@adjudicate/runtime";
+import {
+  acquireDeferResumingLock,
+  releaseDeferResumingLock,
+} from "../lib/defer-resuming-lock.js";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
@@ -321,13 +325,17 @@ export async function sweepDeferTimeouts(
           ? `defer:resuming:${deferResumeHash(intentHash, signal)}`
           : `defer:resuming:fallback:${sessionId}`,
       );
-      const mutexAcquired = await redis
-        .set(resumingMutexKey, new Date().toISOString(), {
-          NX: true,
-          EX: SWEEPER_RESUMING_TTL_SECONDS,
-        })
-        .catch(() => null);
-      if (mutexAcquired !== "OK") {
+      // audit-2026-05-25 (I7): UUID-bearing SETNX + Lua-CAD release.
+      // Pre-fix the SETNX value was a timestamp string and release was
+      // a plain redis.del — under TTL expiry + slow sweeper, the DEL
+      // could erase another acquirer's lock and reopen the double-
+      // dispatch window (CLAUDE.md rule #10 violation).
+      const mutex = await acquireDeferResumingLock(
+        resumingMutexKey,
+        SWEEPER_RESUMING_TTL_SECONDS,
+        "sweeper",
+      );
+      if (!mutex.acquired) {
         effectiveLogger?.debug(
           { sessionId, intentHash, signal, ttl },
           "[defer-timeout-sweeper] resolver mid-flight — skipping timeout publish",
@@ -357,7 +365,7 @@ export async function sweepDeferTimeouts(
         // publish failed so the next sweep retries. Also release the
         // dedup marker AND the sweeper mutex so retry can re-claim them.
         await redis.del(recoveryKey).catch(() => {});
-        await redis.del(resumingMutexKey).catch(() => {});
+        await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
         effectiveLogger?.error(
           { key, err: (publishErr as Error).message },
           "[defer-timeout-sweeper] publishNatsEvent failed — leaving key for retry",
@@ -378,12 +386,13 @@ export async function sweepDeferTimeouts(
         // garbage-collect the key.
       });
 
-      // audit-2026-05-24 P0-2: release the sweeper-vs-resolver mutex now that
-      // both the publish and the parked-key DEL have completed. The marker's
-      // TTL would clean it up anyway, but explicit release lets unrelated
-      // resumes for the same (intentHash, signal) pair re-enter without
-      // waiting on the 60s TTL.
-      await redis.del(resumingMutexKey).catch(() => {});
+      // audit-2026-05-24 P0-2 + 2026-05-25 I7: Lua compare-and-delete
+      // release of the sweeper-vs-resolver mutex now that both the
+      // publish and the parked-key DEL have completed. The marker's TTL
+      // would clean it up anyway, but explicit ownership-checked release
+      // lets unrelated resumes for the same (intentHash, signal) pair
+      // re-enter without waiting on the 60s TTL.
+      await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
 
       publishedCount++;
       effectiveLogger?.info(
@@ -558,13 +567,12 @@ export async function runRecoveryScan(
           ? `defer:resuming:${deferResumeHash(intentHash, signal)}`
           : `defer:resuming:fallback:${sessionId}`,
       );
-      const mutexAcquired = await redis
-        .set(resumingMutexKey, new Date().toISOString(), {
-          NX: true,
-          EX: SWEEPER_RESUMING_TTL_SECONDS,
-        })
-        .catch(() => null);
-      if (mutexAcquired !== "OK") {
+      const mutex = await acquireDeferResumingLock(
+        resumingMutexKey,
+        SWEEPER_RESUMING_TTL_SECONDS,
+        "sweeper",
+      );
+      if (!mutex.acquired) {
         effectiveLogger?.debug(
           { sessionId, intentHash, signal, ttl },
           "[defer-timeout-sweeper] recovery: resolver mid-flight — skipping",
@@ -589,7 +597,7 @@ export async function runRecoveryScan(
         // Same as steady-state: don't DEL key on publish failure. Release
         // the dedup marker AND the sweeper mutex so the next attempt can retry.
         await redis.del(recoveryKey).catch(() => {});
-        await redis.del(resumingMutexKey).catch(() => {});
+        await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
         effectiveLogger?.error(
           { key, err: (publishErr as Error).message },
           "[defer-timeout-sweeper] recovery: publishNatsEvent failed — leaving key for retry",
@@ -602,9 +610,8 @@ export async function runRecoveryScan(
 
       await redis.del(key).catch(() => {});
 
-      // audit-2026-05-24 P0-2: release the sweeper-vs-resolver mutex; the
-      // TTL is the safety net for crashes between publish and release.
-      await redis.del(resumingMutexKey).catch(() => {});
+      // audit-2026-05-25 I7: Lua compare-and-delete release.
+      await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
 
       recoveryFiredCount++;
       effectiveLogger?.info(

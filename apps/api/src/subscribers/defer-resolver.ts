@@ -62,6 +62,10 @@ import {
 import type { FastifyBaseLogger } from "fastify"
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js"
 import { pushToDlq } from "./dlq.js"
+import {
+  acquireDeferResumingLock,
+  releaseDeferResumingLock,
+} from "../lib/defer-resuming-lock.js"
 
 // Wire-level "this PIX has settled" status set, in IbateXas's Stripe
 // vocabulary (`paid`, `captured`, `confirmed`). Distinct from the
@@ -523,25 +527,26 @@ export async function resolveDeferredSession(
   // P0-8 — Two-phase commit, step 2: SETNX the resuming marker. If acquired,
   // we own the resume for this (intentHash, signal) pair. If not, another
   // worker is mid-flight; let them complete.
-  const claimedResumingSlot = await redis
-    .set(
-      resumingKey,
-      JSON.stringify({
-        at: new Date().toISOString(),
-        sessionId,
-        intentHash,
-        signal,
-      }),
-      { NX: true, EX: DEFER_RESUMING_TTL_SECONDS },
-    )
-    .catch(() => null)
-  if (claimedResumingSlot !== "OK") {
+  //
+  // audit-2026-05-25 (I7): UUID-bearing SETNX + Lua-CAD release.
+  // Pre-fix the SETNX value was a JSON metadata blob and release was a
+  // plain redis.del at 7 sites in this function — under TTL expiry +
+  // slow resolver path (Prisma/Medusa stall), the trailing DEL could
+  // erase another acquirer's lock and reopen the double-dispatch
+  // window (CLAUDE.md rule #10 violation).
+  const resuming = await acquireDeferResumingLock(
+    resumingKey,
+    DEFER_RESUMING_TTL_SECONDS,
+    "resolver",
+  )
+  if (!resuming.acquired) {
     log?.debug(
       { sessionId, signal, intentHash },
       "[defer-resolver] concurrent resume in-flight — duplicate suppressed",
     )
     return { kind: "duplicate_suppressed", intentHash }
   }
+  const resumingLockValue = resuming.lockValue
 
   // audit-2026-05-24 E2 (Fix-b) — post-SETNX parkKey re-check.
   //
@@ -612,7 +617,7 @@ export async function resolveDeferredSession(
         "[defer-resolver] defer.resume.skipped audit record build failed",
       )
     }
-    await redis.del(resumingKey).catch(() => {})
+    await releaseDeferResumingLock(resumingKey, resumingLockValue)
     return { kind: "park_missing_after_lock", intentHash }
   }
   if (parkRecheck.kind === "error") {
@@ -625,7 +630,7 @@ export async function resolveDeferredSession(
       },
       "[defer-resolver] parkKey re-check failed — releasing resuming slot and returning transient_error",
     )
-    await redis.del(resumingKey).catch(() => {})
+    await releaseDeferResumingLock(resumingKey, resumingLockValue)
     return {
       kind: "transient_error",
       reason: `redis_get_park_recheck_failed: ${
@@ -653,7 +658,7 @@ export async function resolveDeferredSession(
       )
       // Clear the resuming marker so the next attempt isn't blocked by it
       // even though this attempt is refused.
-      await redis.del(resumingKey).catch(() => {})
+      await releaseDeferResumingLock(resumingKey, resumingLockValue)
       return { kind: "cycle_cap_exceeded", intentHash }
     }
   } catch (err) {
@@ -661,7 +666,7 @@ export async function resolveDeferredSession(
       { sessionId, signal, intentHash, err: (err as Error).message },
       "[defer-resolver] cycle counter INCR failed — releasing resuming slot",
     )
-    await redis.del(resumingKey).catch(() => {})
+    await releaseDeferResumingLock(resumingKey, resumingLockValue)
     return { kind: "resume_failed", reason: "cycle_counter_failed" }
   }
 
@@ -686,7 +691,7 @@ export async function resolveDeferredSession(
       log,
     )
     // Release the resuming claim so retry can re-enter; leave pending intact.
-    await redis.del(resumingKey).catch(() => {})
+    await releaseDeferResumingLock(resumingKey, resumingLockValue)
     return { kind: "resume_failed", reason: "adjudicate_threw" }
   }
 
@@ -811,7 +816,7 @@ export async function resolveDeferredSession(
     // counter increment from above is retained — a dispatch failure still
     // counts as one cycle for cap accounting (the alternative is a DECR
     // that's vulnerable to its own race conditions).
-    await redis.del(resumingKey).catch(() => {})
+    await releaseDeferResumingLock(resumingKey, resumingLockValue)
     return { kind: "resume_failed", reason: "dispatcher_failed" }
   }
 
@@ -850,7 +855,7 @@ export async function resolveDeferredSession(
     })
   await redis.del(rawKey).catch(() => {})
   await redis.decr(rk(`defer:count:${sessionId}`)).catch(() => {})
-  await redis.del(resumingKey).catch(() => {})
+  await releaseDeferResumingLock(resumingKey, resumingLockValue)
 
   return {
     kind: "re_adjudicated",
