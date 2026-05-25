@@ -19,7 +19,8 @@
 //                                     order-related; the orders policy bundle
 //                                     gates rating + orderId)
 
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { Prisma } from "../generated/prisma-client/client.js"
 import { prisma } from "../client.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import type { Channel } from "@ibatexas/types"
@@ -789,7 +790,15 @@ export async function anonymizeCustomer(
         const ids = nextBatch.map((r) => r.id)
         const result = await prisma.conversationMessage.updateMany({
           where: { id: { in: ids } },
-          data: { content: CONVERSATION_MESSAGE_PLACEHOLDER },
+          // audit-2026-05-25 (I9): also scrub `metadata` (Json?). No
+          // current production producer fills it (verified via
+          // conversation-archiver.ts:76 which passes no extras), but the
+          // column is schema-permitted for arbitrary JSON and any future
+          // metadata writer would otherwise leak past anonymize.
+          data: {
+            content: CONVERSATION_MESSAGE_PLACEHOLDER,
+            metadata: Prisma.JsonNull,
+          },
         })
         if (result.count === 0) break
       }
@@ -939,7 +948,12 @@ export async function anonymizeCustomer(
       if (customerConversationIds.length > 0) {
         await tx.conversationMessage.updateMany({
           where: { conversationId: { in: customerConversationIds } },
-          data: { content: CONVERSATION_MESSAGE_PLACEHOLDER },
+          // audit-2026-05-25 (I9): also scrub `metadata` (Json?) —
+          // defensive symmetric scrub with the heavy-path above.
+          data: {
+            content: CONVERSATION_MESSAGE_PLACEHOLDER,
+            metadata: Prisma.JsonNull,
+          },
         })
       }
 
@@ -985,9 +999,26 @@ export async function anonymizeCustomer(
       // (stamp velocity, redemption-rate cohorts) survive after PII is
       // purged. Counters (stamps/totalEarned/redeemed) are zeroed to
       // remove aggregate-stat reconstructability.
+      // audit-2026-05-25 (I9): use a SCRUBBED:UUID sentinel instead of
+      // null. Postgres treats NULL as non-distinct in UNIQUE indexes
+      // (`customerId String? @unique`) so a post-anonymize upsert at
+      // loyalty.service.ts:46 `loyaltyAccount.upsert({where:{customerId}})`
+      // would MISS the scrubbed row (NULL != 'X') and CREATE a new
+      // LoyaltyAccount pinned to the anonymized id — silently undoing
+      // the G2-c "scrub linkage + reset balance" guarantee on the next
+      // late-settling order.placed. The sentinel keeps the row visible
+      // (operators can find scrubbed accounts), preserves UNIQUE
+      // semantics (each scrub gets a fresh UUID), and the upsert finds
+      // no matching row → safe create branch on legitimate post-scrub
+      // calls.
       await tx.loyaltyAccount.updateMany({
         where: { customerId },
-        data: { customerId: null, stamps: 0, totalEarned: 0, redeemed: 0 },
+        data: {
+          customerId: `SCRUBBED:${randomUUID()}`,
+          stamps: 0,
+          totalEarned: 0,
+          redeemed: 0,
+        },
       })
 
       // (12) Surface 7: Reservation.specialRequests — replace with empty
@@ -1043,25 +1074,52 @@ export async function anonymizeCustomer(
   // never linked to a Medusa row (medusaId === null, captured before
   // the TX), skip — there's nothing to scrub.
   //
-  // The publish is fire-and-forget. NATS down is handled by retry
-  // semantics on the subscriber side; if publish itself fails the
-  // event silently drops, but the destructive Prisma op is already
-  // committed so the LGPD 30-day erasure clock is satisfied. The
-  // residual Medusa-side PII window is documented as acceptable in the
-  // SYNTHESIS (`cross-db.md §"Risk 5: Eventual consistency window"`).
-  if (medusaIdForCompensation && options?.predecessor) {
-    void publishNatsEvent("customer.anonymize.medusa.pending", {
-      customerId,
-      medusaId: medusaIdForCompensation,
-      parkedIntentHash: options.predecessor.predecessorIntentHash,
-      parkedAt: options.predecessor.predecessorAt,
-      attempt: 1,
-    }).catch((err: unknown) => {
-      options.log?.warn?.(
-        "[anonymize-customer] medusa-pending publish failed:",
+  // audit-2026-05-25 (I9) — three fixes:
+  //
+  // 1. Drop `options?.predecessor` from the gate. The predecessor field
+  //    is the audit-supersession chain pointer; coupling the cross-DB
+  //    scrub kickoff to its presence meant any future caller (admin
+  //    CLI, replay tool, bulk-scrub job) that omitted predecessor would
+  //    silently skip the Medusa scrub. Now we publish whenever there's
+  //    a medusaId to scrub.
+  //
+  // 2. Await the publish instead of fire-and-forget. NATS unreachable
+  //    at publish time used to silently drop the event (only logged);
+  //    no pending-tracking record gets written by the subscriber if
+  //    the subscriber never receives the event, so the retry job
+  //    finds nothing to retry. Now we await — and `customer.anonymize.
+  //    medusa.pending` is in OUTBOX_EVENTS (see nats-client/index.ts)
+  //    so a NATS failure writes to the Redis outbox, and the
+  //    outbox-retry job re-publishes when NATS recovers. The publish
+  //    promise no longer rejects on broker downtime; only catastrophic
+  //    misconfig (no Redis at all) can fail, which we log + Sentry but
+  //    do NOT fail the anonymize — the in-process scrub is already
+  //    committed so the LGPD 30-day clock is satisfied.
+  //
+  // 3. Pass null predecessor when none supplied — the subscriber
+  //    handles either shape (it uses parkedIntentHash for audit
+  //    correlation but a null is acceptable for caller paths that
+  //    don't have one).
+  if (medusaIdForCompensation) {
+    try {
+      await publishNatsEvent("customer.anonymize.medusa.pending", {
+        customerId,
+        medusaId: medusaIdForCompensation,
+        parkedIntentHash:
+          options?.predecessor?.predecessorIntentHash ?? null,
+        parkedAt: options?.predecessor?.predecessorAt ?? null,
+        attempt: 1,
+      })
+    } catch (err) {
+      // Outbox guarantees at-least-once delivery on broker recovery;
+      // a thrown promise here means Redis itself is unreachable, which
+      // is operationally severe but not enough to fail-back the
+      // committed scrub. Log + Sentry alert.
+      options?.log?.warn?.(
+        "[anonymize-customer] medusa-pending publish failed (outbox unavailable):",
         (err as Error).message ?? String(err),
       )
-    })
+    }
   }
 
   return { success: true }

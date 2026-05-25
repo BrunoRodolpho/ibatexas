@@ -220,6 +220,14 @@ const OUTBOX_EVENTS = new Set([
   "order.disputed",
   "order.canceled",
   "order.payment_failed",
+  // audit-2026-05-25 (I9): cross-DB LGPD scrub kickoff. The in-process
+  // Prisma anonymize TX commits BEFORE this publish; if NATS is down,
+  // the Medusa-side customer row keeps PII indefinitely (no
+  // pending-tracking record gets written by the subscriber because the
+  // subscriber never receives the event, so the retry job finds
+  // nothing to retry). Outbox durability + outbox-retry job re-publish
+  // on broker recovery closes the gap.
+  "customer.anonymize.medusa.pending",
 ])
 
 // Optional Redis outbox writer (injected by apps/api at startup)
