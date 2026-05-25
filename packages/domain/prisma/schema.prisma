@@ -504,14 +504,14 @@ model OrderNote {
 /// totalEarned: lifetime stamps earned (never decremented).
 /// redeemed: number of rewards redeemed (incremented when stamp 10 is earned).
 model LoyaltyAccount {
-  id          String   @id @default(cuid())
-  customerId  String   @unique @map("customer_id")
-  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  stamps      Int      @default(0)
-  totalEarned Int      @default(0) @map("total_earned")
-  redeemed    Int      @default(0)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id          String    @id @default(cuid())
+  customerId  String?   @unique @map("customer_id")
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  stamps      Int       @default(0)
+  totalEarned Int       @default(0) @map("total_earned")
+  redeemed    Int       @default(0)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
   @@map("loyalty_accounts")
   @@schema("ibx_domain")
