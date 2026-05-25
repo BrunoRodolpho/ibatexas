@@ -607,19 +607,16 @@ describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => 
   // ── Surface 6: LoyaltyAccount ───────────────────────────────────────
 
   describe("Surface 6: LoyaltyAccount reset (G2-c)", () => {
-    it("resets aggregate counters (stamps, totalEarned, redeemed) but does NOT touch customerId (schema deviation)", async () => {
+    it("nulls customerId and resets aggregate counters (stamps, totalEarned, redeemed)", async () => {
       await anonymizeCustomer("cust_01")
       expect(mockLoyaltyAccountUpdateMany).toHaveBeenCalledWith({
         where: { customerId: "cust_01" },
-        data: { stamps: 0, totalEarned: 0, redeemed: 0 },
+        data: { customerId: null, stamps: 0, totalEarned: 0, redeemed: 0 },
       })
-      // Verify customerId is NOT included in the update payload — the FK
-      // is non-nullable per schema; the linkage break happens via the
-      // Customer-row scrub upstream (step 1 of the tx).
       const call = mockLoyaltyAccountUpdateMany.mock.calls[0]![0] as {
         data: Record<string, unknown>
       }
-      expect(call.data).not.toHaveProperty("customerId")
+      expect(call.data).toHaveProperty("customerId", null)
     })
   })
 

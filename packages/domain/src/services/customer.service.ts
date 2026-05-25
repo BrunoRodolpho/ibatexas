@@ -975,32 +975,19 @@ export async function anonymizeCustomer(
         })
       }
 
-      // (11) Surface 6: LoyaltyAccount — reset aggregate counters per
-      // G2-c pick ("scrub linkage + reset balance to 0; don't delete").
-      //
-      // Schema deviation from G2-c expectation: LoyaltyAccount.customerId
-      // is `String @unique` and NOT nullable, AND has a FK enforced via
-      // `customer Customer @relation(... onDelete: Cascade)`. We CANNOT
-      // null the column from app code without a schema migration, and we
-      // CANNOT substitute a sentinel customerId because the FK constraint
-      // requires the value to exist in Customer.id. The Customer row is
-      // kept (anonymized in place, not deleted), so the FK stays valid.
-      //
-      // The effective linkage break still happens: the Customer row
-      // pointed at by this LoyaltyAccount.customerId now carries
-      // name="Usuário Removido", email=null, phone=sentinel, cpf=null.
-      // Anyone joining LoyaltyAccount → Customer for PII access lands
-      // on the scrubbed Customer; no original-customer PII reaches the
-      // consumer. Counters (stamps/totalEarned/redeemed) are reset to
-      // zero to remove aggregate-stat reconstructability.
-      //
-      // Per H3 task acceptance criteria + schema constraint, this is
-      // the closest implementation of G2-c without a schema migration
-      // (out of Wave-A1 scope). Documented as a schema-mismatch deviation
-      // in the agent report.
+      // (11) Surface 6: LoyaltyAccount — null the customer linkage and
+      // reset aggregate counters per G2-c pick ("scrub linkage + reset
+      // balance to 0; don't delete"). The schema follow-up that made
+      // `customerId` nullable + switched the FK to ON DELETE SET NULL
+      // closes the prior deviation: linkage is now truly broken (column
+      // set to NULL) rather than left pointing at the anonymized Customer
+      // row. The row itself is retained so historical loyalty aggregates
+      // (stamp velocity, redemption-rate cohorts) survive after PII is
+      // purged. Counters (stamps/totalEarned/redeemed) are zeroed to
+      // remove aggregate-stat reconstructability.
       await tx.loyaltyAccount.updateMany({
         where: { customerId },
-        data: { stamps: 0, totalEarned: 0, redeemed: 0 },
+        data: { customerId: null, stamps: 0, totalEarned: 0, redeemed: 0 },
       })
 
       // (12) Surface 7: Reservation.specialRequests — replace with empty
