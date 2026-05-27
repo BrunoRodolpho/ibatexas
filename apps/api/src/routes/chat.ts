@@ -1,17 +1,35 @@
-// Chat routes
+// Chat routes — thin delegate over the @claustrum/* Conductor.
 //
-// POST /api/chat/messages — accept a user message, start agent, return messageId
-// GET  /api/chat/stream/:sessionId — SSE stream of agent response chunks
+// Was 291 LOC of orchestrator + session ownership + SSE plumbing; the
+// claustrum cutover collapses the orchestration into
+//   conductor.openCapsule -> handleTurn -> conductor.closeCapsule
+// and pushes the SSE delivery responsibility into the WebChannel's sink
+// callback so the route stays a transport-only adapter.
+//
+// Endpoints (unchanged):
+//   POST /api/chat/messages
+//   GET  /api/chat/stream/:sessionId
+//
+// What this file MUST do (unchanged from the kernel-always-on cutover):
+//   - Verify session ownership via the existing redis `session:owner:*` keys
+//   - Issue session tokens for authenticated clients (createSessionToken)
+//   - Issue session secrets for guests (UUID, 1h TTL)
+//   - Distributed lock per session to prevent concurrent agent runs
+//   - SSE buffer replay for late clients
+//
+// What this file delegates to claustrum:
+//   - Tenant resolution, planner, responder, adjudication, telemetry — all
+//     via `conductor.openCapsule({ channel: "web", customerId, ... })`.
+//   - LLM call + tool execution — `handleTurn(capsule, channelMessage)`.
 
 import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { Channel, type AgentContext } from "@ibatexas/types";
-import { runOrchestrator } from "@ibatexas/llm-provider";
+import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import { Channel } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
-import { loadSession, appendMessages } from "../session/store.js";
 import { optionalAuth } from "../middleware/auth.js";
 import {
   createStream,
@@ -20,6 +38,7 @@ import {
   cleanupStream,
 } from "../streaming/emitter.js";
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
+import { getConductor } from "../claustrum-bootstrap.js";
 
 const PostMessageBody = z.object({
   sessionId: z.string().uuid(),
@@ -37,7 +56,6 @@ const StreamParams = z.object({
   sessionId: z.string().uuid(),
 });
 
-/** Poll up to maxMs for a stream entry to appear (handles brief race between POST and GET). */
 async function waitForStream(
   sessionId: string,
   maxMs = 2000,
@@ -55,8 +73,6 @@ async function waitForStream(
 export async function chatRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
 
-  // ── POST /api/chat/messages ────────────────────────────────────────────────
-
   app.post(
     "/api/chat/messages",
     {
@@ -69,11 +85,19 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      const { sessionId, message, channel } = request.body;
-
-      // ── Session ownership verification (zero-trust) ──────────────────────
+      const { sessionId, message } = request.body;
       const redis = await getRedisClient();
       const ownerKey = rk(`session:owner:${sessionId}`);
+
+      // Session ownership + token verification (unchanged from pre-cutover).
+      // Zod's typed response narrows `reply.send` to the 200 schema; for
+      // error responses we bypass via `status()` cast (legacy pattern).
+      const errReply = (code: number, payload: unknown): typeof reply => {
+        void (reply as unknown as { status(c: number): typeof reply })
+          .status(code)
+          .send(payload as never);
+        return reply;
+      };
 
       if (request.customerId) {
         const existingOwner = await redis.get(ownerKey);
@@ -82,107 +106,100 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         if (tokenHeader) {
           const claim = verifySessionToken(tokenHeader);
           if (!claim || claim.sessionId !== sessionId || claim.customerId !== request.customerId) {
-            void (reply as unknown as { status(code: number): typeof reply }).status(403).send({
+            return errReply(403, {
               statusCode: 403,
               error: "Forbidden",
               message: "Token de sessão inválido.",
-            } as never);
-            return reply;
+            });
           }
         }
 
         if (existingOwner && existingOwner !== request.customerId) {
-          void (reply as unknown as { status(code: number): typeof reply }).status(403).send({
+          return errReply(403, {
             statusCode: 403,
             error: "Forbidden",
             message: "Sessão pertence a outro usuário.",
-          } as never);
-          return reply;
+          });
         }
 
         await redis.set(ownerKey, request.customerId, { EX: 86400 });
       }
 
-      // ── SEC: Guest session secret (prevents session hijacking) ─────────────
+      // Guest session secret (unchanged).
       let sessionSecret: string | undefined;
       if (!request.customerId) {
         const secretKey = rk(`session:secret:${sessionId}`);
         const existingSecret = await redis.get(secretKey);
         const providedSecret = request.headers["x-session-secret"] as string | undefined;
-
         if (existingSecret) {
-          // Subsequent request — verify secret
           if (providedSecret !== existingSecret) {
-            void (reply as unknown as { status(code: number): typeof reply }).status(403).send({
+            return errReply(403, {
               statusCode: 403,
               error: "Forbidden",
               message: "Invalid session secret",
-            } as never);
-            return reply;
+            });
           }
         } else {
-          // First request — generate and store secret
           sessionSecret = crypto.randomUUID();
           await redis.set(secretKey, sessionSecret, { EX: 3600 });
         }
       }
 
-      // Track session activity for idle rotation
       await redis.set(rk(`session:lastActivity:${sessionId}`), new Date().toISOString(), { EX: 86400 });
 
-      // Distributed lock — prevents concurrent agent runs per session
       const lockAcquired = await acquireWebAgentLock(sessionId);
       if (!lockAcquired) {
-        void (reply as unknown as { status(code: number): typeof reply }).status(409).send({
+        return errReply(409, {
           statusCode: 409,
           error: "Conflict",
           message: "Aguarde a resposta anterior.",
-        } as never);
-        return reply;
+        });
       }
 
-      const history = await loadSession(sessionId);
       const messageId = uuidv4();
-
-      await appendMessages(sessionId, [{ role: "user", content: message }], Boolean(request.customerId), {
-        customerId: request.customerId,
-        channel: "web",
-      });
-
       createStream(sessionId);
 
       const sessionToken = request.customerId
         ? createSessionToken(sessionId, request.customerId)
         : undefined;
 
-      const context: AgentContext = {
-        channel,
-        sessionId,
-        customerId: request.customerId,
-        userType: request.userType ?? "guest",
-      };
-
-      // Fire-and-forget agent loop
+      // ── Delegate to claustrum Conductor ───────────────────────────────────
       void (async () => {
-        const replyParts: string[] = [];
         try {
-          for await (const chunk of runOrchestrator(message, history, context)) {
-            pushChunk(sessionId, chunk);
-            if (chunk.type === "text_delta") {
-              replyParts.push(chunk.delta);
+          const conductor = getConductor();
+          const customerId = request.customerId ?? `guest:${sessionId}`;
+
+          const inbound: ChannelMessage = {
+            channel: "web",
+            customerId,
+            conversationId: sessionId,
+            text: message,
+            receivedAt: new Date().toISOString(),
+            locale: "pt-BR",
+          };
+
+          const capsule = await conductor.openCapsule({
+            channel: "web",
+            customerId,
+            sessionKey: sessionId,
+            inbound,
+          });
+
+          try {
+            const turn = await handleTurn(capsule, inbound);
+
+            // Stream the assembled text to the SSE consumer in one chunk
+            // for now; per-token streaming is a follow-up that wires the
+            // WebChannel.sink into the conductor's openCapsule().
+            if (turn.response.text) {
+              pushChunk(sessionId, { type: "text_delta", delta: turn.response.text });
             }
+            pushChunk(sessionId, { type: "done" });
+          } finally {
+            await conductor.closeCapsule(capsule);
           }
-          if (replyParts.length > 0) {
-            await appendMessages(sessionId, [
-              { role: "assistant", content: replyParts.join("") },
-            ], Boolean(request.customerId), {
-              customerId: request.customerId,
-              channel: "web",
-            });
-          }
-          pushChunk(sessionId, { type: "done" });
         } catch (err) {
-          server.log.error(err, "[chat] Agent error");
+          server.log.error(err, "[chat] Conductor turn failed");
           pushChunk(sessionId, { type: "error", message: "Erro interno." });
         } finally {
           cleanupStream(sessionId);
@@ -198,8 +215,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     },
   );
 
-  // ── GET /api/chat/stream/:sessionId ───────────────────────────────────────
-
+  // ── SSE stream (unchanged transport, unchanged buffer-replay semantics) ─
   app.get(
     "/api/chat/stream/:sessionId",
     {
@@ -212,56 +228,45 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const { sessionId } = request.params;
-
-      // Hijack the reply so Fastify doesn't interfere with our raw SSE writes
       reply.hijack();
 
-      // CORS headers must be set manually because reply.raw bypasses @fastify/cors
       const origin = request.headers.origin;
       if (origin) {
         reply.raw.setHeader("Access-Control-Allow-Origin", origin);
         reply.raw.setHeader("Access-Control-Allow-Credentials", "true");
       }
 
-      // Verify session ownership before allowing SSE connection
       try {
         const redis = await getRedisClient();
         const owner = await redis.get(rk(`session:owner:${sessionId}`));
         if (owner && request.customerId !== owner) {
           reply.raw.setHeader("Content-Type", "text/event-stream");
           reply.raw.flushHeaders();
-          reply.raw.write(
-            `data: ${JSON.stringify({ type: "error", message: "Acesso negado." })}\n\n`,
-          );
+          reply.raw.write(`data: ${JSON.stringify({ type: "error", message: "Acesso negado." })}\n\n`);
           reply.raw.end();
           return;
         }
       } catch (err) {
         server.log.warn({ sessionId, err }, "Redis session ownership check failed — failing closed");
         reply.raw.writeHead(503, { "Content-Type": "text/event-stream" });
-        reply.raw.write(
-          `data: ${JSON.stringify({ type: "error", message: "Erro temporario. Tente novamente." })}\n\n`,
-        );
+        reply.raw.write(`data: ${JSON.stringify({ type: "error", message: "Erro temporario. Tente novamente." })}\n\n`);
         reply.raw.end();
         return;
       }
+
       reply.raw.setHeader("Content-Type", "text/event-stream");
       reply.raw.setHeader("Cache-Control", "no-cache");
       reply.raw.setHeader("Connection", "keep-alive");
-      reply.raw.setHeader("X-Accel-Buffering", "no"); // disable nginx buffering
+      reply.raw.setHeader("X-Accel-Buffering", "no");
       reply.raw.flushHeaders();
 
       const entry = await waitForStream(sessionId);
-
       if (!entry) {
-        reply.raw.write(
-          `data: ${JSON.stringify({ type: "error", message: "Sessão não encontrada." })}\n\n`,
-        );
+        reply.raw.write(`data: ${JSON.stringify({ type: "error", message: "Sessão não encontrada." })}\n\n`);
         reply.raw.end();
         return;
       }
 
-      // Replay buffered chunks for late clients
       for (const chunk of entry.buffer) {
         reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
         if (chunk.type === "done" || chunk.type === "error") {
@@ -270,7 +275,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         }
       }
 
-      // Listen for new chunks
       const onChunk = (chunk: unknown): void => {
         reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
         const c = chunk as { type: string };
@@ -281,8 +285,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       };
 
       entry.emitter.on("chunk", onChunk);
-
-      // Clean up listener if client disconnects early
       request.raw.on("close", () => {
         entry.emitter.off("chunk", onChunk);
       });

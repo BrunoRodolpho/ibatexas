@@ -1,3 +1,6 @@
 packages:
   - "apps/*"
   - "packages/*"
+  # Sibling claustrum repo — consumed via workspace links during the cutover.
+  # Post-cutover, this can switch to a registry dep once @claustrum/* is published.
+  - "../claustrum/packages/*"
