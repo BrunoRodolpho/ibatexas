@@ -4,3 +4,7 @@ packages:
   # Sibling claustrum repo — consumed via workspace links during the cutover.
   # Post-cutover, this can switch to a registry dep once @claustrum/* is published.
   - "../claustrum/packages/*"
+  # Sibling adjudicate repo — the kernel. Linked so @adjudicate/* resolves to the
+  # live working tree (kernel fixes compose through claustrum into the app)
+  # instead of a frozen snapshot. Reverts to registry ranges once published.
+  - "../adjudicate/packages/*"

@@ -61,7 +61,15 @@
       "fast-jwt": ">=6.2.0",
       "protobufjs": ">=7.5.5",
       "fastify": ">=5.8.5",
-      "next": ">=16.2.3"
+      "next": ">=16.2.3",
+      "@adjudicate/core": "workspace:*",
+      "@adjudicate/canonical": "workspace:*",
+      "@adjudicate/runtime": "workspace:*",
+      "@adjudicate/audit": "workspace:*",
+      "@adjudicate/audit-postgres": "workspace:*",
+      "@adjudicate/admin-sdk": "workspace:*",
+      "@adjudicate/primitives": "workspace:*",
+      "@adjudicate/pack-payments-pix": "workspace:*"
     },
     "auditConfig": {
       "ignoreCves": [
