@@ -67,7 +67,9 @@ import type {
 } from "@adjudicate/core";
 import {
   adjudicate as kernelAdjudicate,
+  decisionRefuse,
   installPack,
+  refuse,
 } from "@adjudicate/core";
 
 // Pack imports — at the time of this commit, ibatexas's first-party Packs
@@ -105,11 +107,7 @@ export function getConductor(): Conductor {
 function buildAdjudicator(): Adjudicator {
   return {
     async adjudicate(envelope, state, policy): Promise<Decision> {
-      return kernelAdjudicate(
-        envelope as IntentEnvelope,
-        state as never,
-        policy as never,
-      );
+      return safeKernelAdjudicate(envelope as IntentEnvelope, state, policy);
     },
     async adjudicatePlan(envelopes, state, policy): Promise<Decision> {
       // @adjudicate/core 1.x exposes only the single-envelope verb; serialize
@@ -117,17 +115,25 @@ function buildAdjudicator(): Adjudicator {
       // `adjudicatePlan` natively, swap this out.
       let last: Decision | undefined;
       for (const env of envelopes) {
-        last = await kernelAdjudicate(
-          env as IntentEnvelope,
-          state as never,
-          policy as never,
-        );
+        last = await safeKernelAdjudicate(env as IntentEnvelope, state, policy);
         const d = last as { kind?: string };
         if (d.kind && d.kind !== "EXECUTE") return last;
       }
-      // Shape a permissive default for an empty plan.
+      // An empty plan means "no mutation was proposed" — there is nothing to
+      // authorize. Fail CLOSED rather than fabricating an EXECUTE: an empty
+      // plan must never license a side effect (an unguarded EXECUTE here would
+      // hand the dispatcher a positive decision for a mutation nobody vetted).
       return (
-        last ?? ({ kind: "EXECUTE" } as unknown as Decision)
+        last ??
+        decisionRefuse(
+          refuse(
+            "BUSINESS_RULE",
+            "empty_plan",
+            "Não há nenhuma ação para autorizar.",
+            "adjudicatePlan called with zero envelopes",
+          ),
+          [],
+        )
       );
     },
     async replayEnvelopesByCustomerId(_customerId, _since) {
@@ -150,6 +156,74 @@ function buildAdjudicator(): Adjudicator {
       return { ok: true };
     },
   };
+}
+
+// ── Fail-closed kernel call ──────────────────────────────────────────────────
+//
+// The kernel's `adjudicate(envelope, state, policy)` indexes into
+// `policy.stateGuards`, `policy.authGuards`, `policy.business` and reads
+// `policy.taint` / `policy.default`. A structurally-incomplete PolicyBundle
+// (e.g. the `{}` the single-tenant TenantResolver returns today, before the
+// per-capability policies are wired) makes the kernel throw a TypeError on
+// `undefined.length` — and that throw propagates out of `capsule.adjudicate()`
+// inside `handleTurn`, which does NOT wrap it, rejecting the whole turn.
+//
+// Until the real per-capability PolicyBundles are assembled (part of the
+// not-yet-done cutover, see register-ibatexas-tool-packs.ts), guard the kernel
+// call so an incomplete policy or an unexpected kernel throw becomes a
+// fail-CLOSED REFUSE rather than a crash. This is defense-in-depth, NOT an
+// activation: the planner still emits zero envelopes, so this path is not
+// reached by the live cognitive loop. The point is that the day someone wires
+// a planner, an un-wired policy degrades to "refuse safely", never to "throw"
+// and never to "execute ungated".
+function isWellFormedPolicyBundle(policy: unknown): boolean {
+  if (policy === null || typeof policy !== "object") return false;
+  const p = policy as Record<string, unknown>;
+  return (
+    Array.isArray(p.stateGuards) &&
+    Array.isArray(p.authGuards) &&
+    Array.isArray(p.business) &&
+    typeof p.taint === "object" &&
+    p.taint !== null &&
+    typeof (p.taint as { minimumFor?: unknown }).minimumFor === "function" &&
+    (p.default === "REFUSE" || p.default === "EXECUTE")
+  );
+}
+
+function policyNotReadyRefusal(reason: string): Decision {
+  return decisionRefuse(
+    refuse(
+      "SECURITY",
+      "policy_not_ready",
+      // pt-BR per ibatexas Hard Rule #4 — generic, leaks no internal detail.
+      "Não consigo concluir essa ação no momento. Tente novamente em instantes.",
+      reason,
+    ),
+    [],
+  );
+}
+
+async function safeKernelAdjudicate(
+  envelope: IntentEnvelope,
+  state: unknown,
+  policy: unknown,
+): Promise<Decision> {
+  if (!isWellFormedPolicyBundle(policy)) {
+    // Fail closed: no PolicyBundle => no authority to mutate.
+    return policyNotReadyRefusal(
+      "PolicyBundle is incomplete; cutover policy wiring not yet done",
+    );
+  }
+  try {
+    return kernelAdjudicate(envelope, state as never, policy as never);
+  } catch (err) {
+    // The kernel is fail-closed by design; a throw escaping it is unexpected.
+    // Surface a REFUSE so handleTurn still reaches synthesize/observe instead
+    // of rejecting the turn — and so nothing executes ungated.
+    return policyNotReadyRefusal(
+      `kernel adjudicate threw: ${(err as Error).message}`,
+    );
+  }
 }
 
 // ── First-party pack installation ────────────────────────────────────────────
