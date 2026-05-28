@@ -10,18 +10,33 @@
 //   - `intentKind` matches the kernel's IntentEnvelope.kind exactly so
 //     adjudicate() can route to the right policy guard.
 //
-// Adding more tools is mechanical: import the handler from `@ibatexas/tools`
-// (or `@ibatexas/llm-provider`), copy the existing intentKind from
-// packages/llm-provider/src/machine/types.ts TOOL_CLASSIFICATION, and add an
-// entry to `IBATEXAS_TOOLS`. The full 25-tool roster is a separate task.
+// Adding more tools is mechanical: import the handler from `@ibatexas/tools`,
+// set its intentKind, and add an entry to `IBATEXAS_TOOLS`. The full 25-tool
+// roster is a separate task.
 //
-// IMPORTANT — boundary discipline:
-//   - These handlers must NOT mutate state directly. Every mutation goes
-//     through `ctx.adjudicator.adjudicate(envelope, state, policy)` first
-//     and runs ONLY when the kernel returns EXECUTE. The existing
-//     handlers (e.g. addToCart, cancelOrder) already do that via
-//     `executeToolDirect()` (kernel-only path); we keep them as-is here
-//     because the cutover preserves their internal kernel handshake.
+// ⚠️ CUTOVER NOT COMPLETE — DO NOT activate this registry until the handler
+//    refactor lands (audit 2026-05-27 RC-A1 / P0-CUTOVER-1+2, D-REGHDR).
+//
+//    The wrapped handlers below (addToCart, createCheckout, cancelOrder) mutate
+//    Prisma/Medusa/Stripe DIRECTLY — there is no `adjudicate()` call inside them
+//    (`grep adjudicat packages/tools/src/` returns 0), and the legacy
+//    `executeToolDirect()` kernel path is dead (imported by no live module). An
+//    earlier version of this comment claimed the handlers "already" adjudicate;
+//    that was false. `registerIbatexasToolPacks()` also has no caller yet, so
+//    the conductor is intentionally inert (a full commerce regression, but SAFE
+//    — no ungated mutations flow through chat).
+//
+//    Completing the cutover requires, as ONE coordinated change:
+//      (1) call `bootstrapClaustrum()` at server start (server.ts);
+//      (2) call `registerIbatexasToolPacks(registry)` + wire a real planner;
+//      (3) route every mutation through adjudicate — the planner emits an
+//          IntentEnvelope that represents the mutation, the runtime adjudicates
+//          it exactly once per turn, the handler performs ONLY the adjudicated
+//          mutation, and the 7 direct HTTP routes (order-actions, cart,
+//          admin/{payments,orders,reservations,order-actions}, stripe-webhook)
+//          route through the conductor instead of writing inline.
+//    Doing (1)+(2) WITHOUT (3) activates the kernel-bypass at full volume.
+//    Keep the runtime inert until (3) ships.
 
 import { addToCart, cancelOrder, createCheckout } from "@ibatexas/tools";
 import type {
