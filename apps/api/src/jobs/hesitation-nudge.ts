@@ -7,9 +7,11 @@
 // 3. If no reply → send nudge mentioning R$15 credit
 // 4. If replied → skip (no-op)
 
+import * as Sentry from "@sentry/node";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import type { Queue, Worker } from "bullmq";
 import { sendText } from "../whatsapp/client.js";
+import logger from "../lib/logger.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
 
 const NUDGE_DELAY_MS = Number.parseInt(
@@ -73,6 +75,17 @@ export async function markCustomerReplied(phoneHash: string): Promise<void> {
 export function startHesitationNudgeWorker(): void {
   if (worker) return;
   worker = createWorker("hesitation-nudge", processNudge);
+
+  // Jobs are scheduled with removeOnFail, so a processor failure (e.g. a failed
+  // nudge send) would otherwise vanish silently. Make it observable.
+  worker.on("failed", (_job, err) => {
+    logger.error({ err, job: "hesitation-nudge" }, "[hesitation-nudge] job failed");
+    Sentry.withScope((scope) => {
+      scope.setTag("job", "hesitation-nudge");
+      scope.setTag("source", "background-job");
+      Sentry.captureException(err);
+    });
+  });
 }
 
 export async function stopHesitationNudgeWorker(): Promise<void> {

@@ -259,3 +259,54 @@ describe("cart.abandoned — staff high-value cart alert", () => {
     );
   });
 });
+
+// ── Idempotency: staff alert must not double-fire on redelivery (P1-SCALE-WAALERTS) ──
+describe("cart.abandoned — staff alert idempotency on redelivery", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `test:${key}`);
+    await registerSubscribers();
+    process.env.STAFF_ALERT_PHONE = "+5519900000099";
+  });
+
+  it("does NOT re-send the high-value alert when the alert key was already claimed", async () => {
+    // Simulate a redelivery: the per-cart alert dedup key (isNewEvent → SET NX)
+    // returns null = already sent. Other SET calls (nudge state) still succeed.
+    const mockRedis = createMockRedis({
+      set: vi.fn().mockImplementation(async (key: string) =>
+        String(key).includes("alert:highvalue-cart") ? null : "OK",
+      ),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaStore.mockResolvedValue({ cart: { total: 500 } }); // R$500 (high value)
+
+    await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
+
+    // Alert suppressed — neither the rate-limit incr nor the send ran.
+    expect(mockAtomicIncr).not.toHaveBeenCalled();
+    expect(mockSendText).not.toHaveBeenCalledWith(
+      "whatsapp:+5519900000099",
+      expect.stringContaining("🚨"),
+    );
+    // Main nudge flow is unaffected.
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "notification.send",
+      expect.objectContaining({ type: "cart_abandoned" }),
+    );
+  });
+
+  it("sends the high-value alert on first delivery (alert key newly claimed)", async () => {
+    // set returns OK for every key, including the alert dedup key = first time.
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
+    mockMedusaStore.mockResolvedValue({ cart: { total: 500 } });
+
+    await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
+
+    expect(mockSendText).toHaveBeenCalledWith(
+      "whatsapp:+5519900000099",
+      expect.stringContaining("🚨"),
+    );
+  });
+});

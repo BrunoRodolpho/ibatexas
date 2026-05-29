@@ -213,7 +213,10 @@ export async function startCartIntelligenceSubscribers(
           const cartData = await medusaStore(`/store/carts/${cartId}`) as { cart?: { total?: number } };
           // Medusa v2 returns total in reais — convert to centavos
           const totalCentavos = reaisToCentavos(cartData?.cart?.total ?? 0);
-          if (totalCentavos > 20000) { // R$200
+          // Idempotency: one high-value alert per cart, even under at-least-once
+          // redelivery across replicas. Guard BEFORE the hourly rate-limit incr so
+          // a duplicate delivery neither re-sends nor wastes the rate budget.
+          if (totalCentavos > 20000 && (await isNewEvent(`alert:highvalue-cart:${cartId}`))) { // R$200
             const alertKey = rk("alert:staff:hourly");
             const alertCount = await atomicIncr(redis, alertKey, 60 * 60);
             if (alertCount <= 10) {
@@ -356,10 +359,12 @@ export async function startCartIntelligenceSubscribers(
         log?.warn({ customer_id: customerId, error: String(loyaltyErr) }, "[cart-intelligence] loyalty stamp failed — order not affected");
       }
 
-      // 8. Staff WhatsApp alert for new order — must NOT block main flow
+      // 8. Staff WhatsApp alert for new order — must NOT block main flow.
+      // Per-alert idempotency guard so redelivery / multi-replica never double-sends,
+      // independent of the handler-level order:* guard above.
       try {
         const staffPhone = process.env.STAFF_ALERT_PHONE;
-        if (staffPhone) {
+        if (staffPhone && (await isNewEvent(`alert:new-order:${orderId}`))) {
           const { sendText } = await import("../whatsapp/client.js");
           const totalRaw = (payload as { total?: number }).total;
           const totalCentavos = typeof totalRaw === "number" ? totalRaw : 0;
@@ -642,10 +647,13 @@ export async function startCartIntelligenceSubscribers(
       });
     }
 
-    // 3. Staff alert on all transitions
+    // 3. Staff alert on all transitions.
+    // This handler has no handler-level dedup, so guard the alert by a stable
+    // per-transition identity (orderId + event version) to avoid duplicate staff
+    // messages under at-least-once redelivery / multi-replica.
     try {
       const staffPhone = process.env.STAFF_ALERT_PHONE;
-      if (staffPhone) {
+      if (staffPhone && (await isNewEvent(`alert:status:${orderId}:${eventVersion}`))) {
         const { ORDER_STATUS_LABELS_PT } = await import("@ibatexas/types");
         const fromLabel = ORDER_STATUS_LABELS_PT[previousStatus as OrderFulfillmentStatus] ?? previousStatus;
         const toLabel = ORDER_STATUS_LABELS_PT[newStatus as OrderFulfillmentStatus] ?? newStatus;

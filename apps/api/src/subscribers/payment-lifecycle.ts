@@ -22,7 +22,22 @@ import {
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import type { FastifyBaseLogger } from "fastify";
-import { isNewEvent } from "./dedup.js";
+import { withDedup } from "./dedup.js";
+import { pushToDlq } from "./dlq.js";
+
+// Expected, benign failures when advancing an order's status: another process
+// (or a prior delivery) already advanced it. These are info-level — NOT money-at-
+// risk. Anything else is unexpected and must be escalated (DLQ + staff alert).
+const EXPECTED_TRANSITION_ERRORS = new Set([
+  "ConcurrencyError",
+  "InvalidTransitionError",
+]);
+
+function isExpectedTransitionError(err: unknown): boolean {
+  return (
+    err instanceof Error && EXPECTED_TRANSITION_ERRORS.has(err.name)
+  );
+}
 
 export async function startPaymentLifecycleSubscriber(
   log?: FastifyBaseLogger,
@@ -35,20 +50,17 @@ export async function startPaymentLifecycleSubscriber(
     const event = payload as unknown as PaymentStatusChangedEvent & { eventType?: string };
     const { orderId, paymentId, newStatus, method } = event;
 
-    // Idempotency guard
-    try {
-      if (!(await isNewEvent(`payment-lifecycle:${paymentId}:${newStatus}`))) {
-        log?.info({ paymentId, newStatus }, "[payment-lifecycle] duplicate — skipping");
-        return;
-      }
-    } catch { /* dedup failure is non-fatal */ }
-
     log?.info(
       { orderId, paymentId, newStatus, method },
       "[payment-lifecycle] payment.status_changed received",
     );
 
-    try {
+    // Two-phase idempotency guard: the processed-key is only promoted to the
+    // full dedup TTL AFTER the body below succeeds. A handler throw releases the
+    // claim so redelivery reprocesses; a Redis error while claiming fails CLOSED
+    // (DedupUnavailableError) so the event is left for redelivery rather than
+    // processed unguarded.
+    const processed = await withDedup(`payment-lifecycle:${paymentId}:${newStatus}`, async () => {
       // Audit trail: record every payment status change
       await eventLogSvc.append({
         orderId,
@@ -98,11 +110,30 @@ export async function startPaymentLifecycleSubscriber(
 
             log?.info({ orderId }, "[payment-lifecycle] Order auto-confirmed after payment");
           } catch (err) {
-            // ConcurrencyError or InvalidTransitionError — another process may have done it
-            log?.warn(
-              { orderId, error: String(err) },
-              "[payment-lifecycle] Failed to auto-confirm order — may already be advanced",
-            );
+            if (isExpectedTransitionError(err)) {
+              // ConcurrencyError / InvalidTransitionError — another process (or a
+              // prior delivery) already advanced the order. Benign, info-level.
+              log?.info(
+                { orderId, error: String(err) },
+                "[payment-lifecycle] Auto-confirm skipped — order already advanced",
+              );
+            } else {
+              // Unexpected: money was taken but the order was NOT confirmed and
+              // nobody is watching. Escalate like the disputed branch (DLQ + staff
+              // alert) instead of silently warn-logging.
+              log?.error(
+                { orderId, paymentId, error: String(err) },
+                "[payment-lifecycle] Auto-confirm FAILED unexpectedly — escalating",
+              );
+              await pushToDlq("payment.status_changed", payload as Record<string, unknown>, err, log);
+              await publishNatsEvent("order.escalation_needed", {
+                eventType: "order.escalation_needed",
+                orderId,
+                reason: "auto_confirm_failed",
+                paymentId,
+                timestamp: new Date().toISOString(),
+              });
+            }
           }
           break;
         }
@@ -144,10 +175,28 @@ export async function startPaymentLifecycleSubscriber(
 
             log?.info({ orderId }, "[payment-lifecycle] Order canceled after full refund");
           } catch (err) {
-            log?.warn(
-              { orderId, error: String(err) },
-              "[payment-lifecycle] Failed to cancel order after refund",
-            );
+            if (isExpectedTransitionError(err)) {
+              // ConcurrencyError / InvalidTransitionError — order already moved on.
+              log?.info(
+                { orderId, error: String(err) },
+                "[payment-lifecycle] Auto-cancel skipped — order already advanced",
+              );
+            } else {
+              // Unexpected: money was refunded but the order was NOT canceled.
+              // Escalate (DLQ + staff alert) like the disputed branch.
+              log?.error(
+                { orderId, paymentId, error: String(err) },
+                "[payment-lifecycle] Auto-cancel after refund FAILED unexpectedly — escalating",
+              );
+              await pushToDlq("payment.status_changed", payload as Record<string, unknown>, err, log);
+              await publishNatsEvent("order.escalation_needed", {
+                eventType: "order.escalation_needed",
+                orderId,
+                reason: "refund_cancel_failed",
+                paymentId,
+                timestamp: new Date().toISOString(),
+              });
+            }
           }
           break;
         }
@@ -198,11 +247,14 @@ export async function startPaymentLifecycleSubscriber(
         default:
           break;
       }
-    } catch (err) {
-      log?.error(
-        { orderId, paymentId, newStatus, error: String(err) },
-        "[payment-lifecycle] Error handling payment status change",
-      );
+    });
+
+    // processed === false means the event was a duplicate (already confirmed)
+    // OR the dedup claim could not be made and withDedup threw DedupUnavailableError
+    // (which propagates above and is routed to the DLQ). A plain `false` here is
+    // therefore always a benign duplicate skip.
+    if (!processed) {
+      log?.info({ paymentId, newStatus }, "[payment-lifecycle] duplicate — skipping");
     }
   });
 
