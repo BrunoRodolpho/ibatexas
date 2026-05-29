@@ -255,6 +255,8 @@ describe("amendOrder — change_payment", () => {
           payment_method_types: ["card"],
           metadata: { orderId: "order_01" },
         }),
+        // Stable idempotency key (P0-PAY-3) — a retried method-switch reuses the PI.
+        expect.objectContaining({ idempotencyKey: expect.stringMatching(/^pi-amend:order_01:.+:card$/) }),
       )
     })
 

@@ -470,6 +470,23 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
+      // Idempotency: dedup double-submits / network retries before any payment or
+      // cart side-effect. Prefer a client Idempotency-Key; fall back to cartId so a
+      // rapid double-submit from a client that sends none is still deduped. Gate
+      // sits after the cheap validations (a fixable 4xx can be retried) and before
+      // the first side-effect (Medusa sync + createCheckout below).
+      const idemHeader = request.headers["idempotency-key"];
+      const idemToken = typeof idemHeader === "string" && idemHeader.trim() ? idemHeader.trim() : request.body.cartId;
+      const idemKey = rk(`checkout:idem:${idemToken}`);
+      if (!(await redis.set(idemKey, "1", { NX: true, EX: 120 }))) {
+        return reply.status(409).send({
+          statusCode: 409,
+          error: "Conflict",
+          message: "Este checkout já está sendo processado. Aguarde alguns instantes.",
+          code: "CHECKOUT_IN_PROGRESS",
+        });
+      }
+
       // Sync local cart items to Medusa if provided (web app keeps items in local state)
       let cartId = request.body.cartId;
 
@@ -585,6 +602,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       }, pixExtra);
 
       if (!result.success) {
+        // Fixable failure — release the idempotency gate so the customer can retry
+        // immediately rather than waiting out the TTL.
+        await redis.del(idemKey);
         return reply.status(400).send(result);
       }
 

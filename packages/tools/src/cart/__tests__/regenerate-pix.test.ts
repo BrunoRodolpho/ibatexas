@@ -187,6 +187,12 @@ describe("regeneratePix", () => {
         stripePaymentIntentId: "pi_test_new",
       }),
     )
+    // PI created with a stable idempotency key (P0-PAY-3) — a network retry of the
+    // same regeneration reuses the PI instead of minting a duplicate PIX QR code.
+    expect(mockStripePaymentIntentsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_method_types: ["pix"] }),
+      expect.objectContaining({ idempotencyKey: "pi-pix-regen:order_01:pay_01" }),
+    )
   })
 
   it("happy path — publishes payment.status_changed NATS event", async () => {

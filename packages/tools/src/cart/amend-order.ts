@@ -359,6 +359,10 @@ export async function amendOrder(
           currency: "brl",
           payment_method_types: [parsed.paymentMethod],
           metadata: { orderId: parsed.orderId },
+        }, {
+          // Stable per method-switch of this payment: a retried amend reuses the
+          // same PI instead of orphaning a second live intent for the order.
+          idempotencyKey: `pi-amend:${parsed.orderId}:${activePayment.id}:${parsed.paymentMethod}`,
         }) as Stripe.PaymentIntent;
 
         if (parsed.paymentMethod === "pix") {

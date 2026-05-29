@@ -574,6 +574,23 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
     expect(res.statusCode).toBe(200);
   });
 
+  it("duplicate checkout (idempotency gate already held) → 409 (P0-PAY-3)", async () => {
+    // SET NX returns null → a checkout for this cart is already in flight; the
+    // second submit must be rejected before any payment/cart side-effect.
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue(null) });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "card" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("CHECKOUT_IN_PROGRESS");
+  });
+
   it("guest checkout with cash → 401", async () => {
     const app = await buildTestServer();
     const res = await app.inject({

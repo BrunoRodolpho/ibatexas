@@ -101,6 +101,10 @@ export async function regeneratePix(
       currency: "brl",
       payment_method_types: ["pix"],
       metadata: { orderId: input.orderId },
+    }, {
+      // Stable per regeneration of this expired payment: a network retry of the
+      // same regen returns the same PI instead of minting duplicate PIX QR codes.
+      idempotencyKey: `pi-pix-regen:${input.orderId}:${active.id}`,
     }) as Stripe.PaymentIntent & {
       next_action?: {
         pix_display_qr_code?: {

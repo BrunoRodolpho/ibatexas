@@ -82,6 +82,10 @@ async function confirmPixAndGetQrCode(
         pix: { expires_after_seconds: PIX_EXPIRY_SECONDS },
       },
       return_url: `${returnUrl}/order/confirmation`,
+    }, {
+      // Stable per PI: a retried checkout confirm returns the same result instead
+      // of re-completing the cart / re-charging.
+      idempotencyKey: `pi-confirm:${paymentIntentId}`,
     }) as Stripe.PaymentIntent & {
       next_action?: {
         pix_display_qr_code?: {
