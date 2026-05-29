@@ -235,6 +235,122 @@ describe("GET /api/cart/:id — get cart", () => {
   });
 });
 
+// ── P2-AUTH-CARTOWN: ownership guards on read / promotions / payment-sessions ──
+// verifyCartOwnership reads cart:owner:<id> from Redis: a stored owner that
+// differs from the caller's customerId → 403. Guests (no customerId) skip the
+// check (covered by the existing guest tests above).
+describe("P2-AUTH-CARTOWN — ownership enforced on GET / promotions / payment-sessions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("GET /api/cart/:id → 403 when the cart is owned by a different customer", async () => {
+    const mockRedis = createMockRedis({ get: vi.fn().mockResolvedValue("cus_OTHER") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaStore.mockResolvedValue({ cart: { id: "cart_01" } });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/cart_01",
+      headers: { "x-customer-id": "cus_ME" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toContain("outro usuário");
+    // The cart must NOT have been fetched from Medusa after a failed ownership check.
+    expect(mockMedusaStore).not.toHaveBeenCalled();
+  });
+
+  it("GET /api/cart/:id → 200 when the caller owns the cart", async () => {
+    const mockRedis = createMockRedis({ get: vi.fn().mockResolvedValue("cus_ME") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaStore.mockResolvedValue({ cart: { id: "cart_01", total: 178 } });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/cart_01",
+      headers: { "x-customer-id": "cus_ME" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().cart.id).toBe("cart_01");
+  });
+
+  it("POST /api/cart/:id/promotions → 403 when owned by a different customer", async () => {
+    const mockRedis = createMockRedis({ get: vi.fn().mockResolvedValue("cus_OTHER") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/cart_01/promotions",
+      payload: { promo_codes: ["PROMO10"] },
+      headers: { "x-customer-id": "cus_ME" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockMedusaStore).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/cart/:id/promotions → 200 when the caller owns the cart", async () => {
+    const mockRedis = createMockRedis({ get: vi.fn().mockResolvedValue("cus_ME") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaStore.mockResolvedValue({ cart: { id: "cart_01", discount_total: 10 } });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/cart_01/promotions",
+      payload: { promo_codes: ["PROMO10"] },
+      headers: { "x-customer-id": "cus_ME" },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("POST /api/cart/:id/payment-sessions → 403 when owned by a different customer", async () => {
+    const mockRedis = createMockRedis({ get: vi.fn().mockResolvedValue("cus_OTHER") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/cart_01/payment-sessions",
+      payload: { provider_id: "pp_stripe_stripe" },
+      headers: { "x-customer-id": "cus_ME" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    // No payment collection / session work after a failed ownership check.
+    expect(mockMedusaStore).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/cart/:id/payment-sessions → proceeds when the caller owns the cart", async () => {
+    const mockRedis = createMockRedis({ get: vi.fn().mockResolvedValue("cus_ME") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockMedusaStore
+      .mockResolvedValueOnce({ cart: { id: "cart_01", payment_collection: { id: "pc_01" } } })
+      .mockResolvedValueOnce({ payment_session: { id: "ps_01" } });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/cart_01/payment-sessions",
+      payload: { provider_id: "pp_stripe_stripe" },
+      headers: { "x-customer-id": "cus_ME" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockMedusaStore).toHaveBeenCalledWith(
+      "/store/payment-collections/pc_01/payment-sessions",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+});
+
 describe("POST /api/cart/:id/line-items — add item", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -36,7 +36,9 @@ export async function addToCart(
 ): Promise<unknown> {
   const parsed = AddToCartInputSchema.parse(input);
 
-  await assertCartOwnership(parsed.cartId, ctx.customerId);
+  // Pass sessionId so guest (unowned) carts are bound to the caller's session
+  // (P2-SEC-GUESTCART) — prevents acting on another session's guest cart.
+  await assertCartOwnership(parsed.cartId, ctx.customerId, ctx.sessionId);
 
   // Guard: check availability window before adding to cart
   const product = await lookupProductByVariant(parsed.variantId);

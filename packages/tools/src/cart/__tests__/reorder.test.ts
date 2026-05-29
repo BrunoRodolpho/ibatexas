@@ -214,4 +214,53 @@ describe("reorder", () => {
     expect(result.message).toContain("Costela Bovina Defumada 500g")
     expect(result.message).toContain("Lingui\u00e7a Artesanal 1kg")
   })
+
+  // \u2500\u2500 P2-PERF-REORDER: line-items are added in parallel \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  it("dispatches all line-item adds in parallel (does not await each sequentially)", async () => {
+    // add#1 returns a promise that stays PENDING. Sequential code (await per
+    // item) would block on it and never dispatch add#2. Parallel code
+    // (Promise.allSettled over a synchronous .map) dispatches both up front, so
+    // add#2 is called while add#1 is still pending.
+    let resolveFirst!: (v: unknown) => void
+    const first = new Promise((r) => { resolveFirst = r })
+    const second = Promise.resolve({})
+
+    const addPaths: string[] = []
+    mockMedusaStoreFetch.mockImplementation((path: string) => {
+      if (path === "/store/carts") return Promise.resolve(CART_CREATED)
+      addPaths.push(path)
+      return addPaths.length === 1 ? first : second
+    })
+
+    const promise = reorder(INPUT, CTX)
+
+    // Drain all currently-pending microtasks/macrotasks (ownership check, order
+    // fetch, cart create, and the parallel dispatch) without resolving add#1.
+    await new Promise((r) => setTimeout(r, 0))
+
+    // Both adds dispatched even though add#1 never resolved \u2192 parallel.
+    expect(addPaths.filter((p) => p === "/store/carts/cart_new_01/line-items")).toHaveLength(2)
+
+    resolveFirst({})
+    const result = await promise
+    expect(result.cartId).toBe("cart_new_01")
+    expect(result.message).not.toContain("indispon\u00edvel")
+  })
+
+  it("uses Promise.allSettled so one failed add does not abort the others", async () => {
+    // Reject the FIRST item; the second must still be attempted and succeed.
+    mockMedusaStoreFetch
+      .mockResolvedValueOnce(CART_CREATED)
+      .mockRejectedValueOnce(new Error("first add fails"))
+      .mockResolvedValueOnce({})
+
+    const result = await reorder(INPUT, CTX)
+
+    // Cart creation + both item adds attempted = 3 calls (no early abort).
+    expect(mockMedusaStoreFetch).toHaveBeenCalledTimes(3)
+    expect(result.cartId).toBe("cart_new_01")
+    // Only the first item is reported unavailable.
+    expect(result.message).toContain("Costela Bovina Defumada 500g")
+    expect(result.message).not.toContain("Lingui\u00e7a Artesanal 1kg")
+  })
 })

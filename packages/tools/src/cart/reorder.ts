@@ -38,19 +38,26 @@ async function reorderImpl(
     return { message: "Erro ao criar novo carrinho." };
   }
 
-  // Add each item
-  const errors: string[] = [];
-  for (const item of items) {
-    if (!item.variant_id) continue;
-    try {
-      await medusaStoreFetch(`/store/carts/${cartId}/line-items`, {
+  // P2-PERF-REORDER: add line-items in parallel instead of one HTTP call at a
+  // time. Each add is independent (Medusa keys line-items by variant), so a
+  // failure on one must not block the others — Promise.allSettled collects per
+  // -item outcomes and we keep the existing partial-success error note.
+  const addableItems = items.filter((item) => item.variant_id);
+  const results = await Promise.allSettled(
+    addableItems.map((item) =>
+      medusaStoreFetch(`/store/carts/${cartId}/line-items`, {
         method: "POST",
         body: JSON.stringify({ variant_id: item.variant_id, quantity: item.quantity }),
-      });
-    } catch {
-      errors.push(item.title);
+      }),
+    ),
+  );
+
+  const errors: string[] = [];
+  results.forEach((result, idx) => {
+    if (result.status === "rejected") {
+      errors.push(addableItems[idx].title);
     }
-  }
+  });
 
   // TODO: Add subscriber for cart.item_added when cart analytics pipeline is built
   void publishNatsEvent("cart.item_added", {

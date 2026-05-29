@@ -49,8 +49,20 @@ const BASE_INPUT = {
   paymentMethod: "cash" as const,
 }
 
-// Cart total check response — first call in every createCheckout path
-const CART_WITH_TOTAL = { cart: { total: 8900, items: [{ id: "item_01" }] } }
+// Cart total check response — first call in every createCheckout path.
+// Carries a real line item so the P2-LOGIC-CHECKOUTREVAL snapshot (variant_id +
+// unit_price + quantity) is meaningful; the revalidation re-fetch compares
+// against this exact shape.
+const CART_WITH_TOTAL = {
+  cart: {
+    total: 8900,
+    items: [{ id: "item_01", variant_id: "var_01", quantity: 1, unit_price: 89, title: "Costela" }],
+  },
+}
+
+// Revalidation re-fetch (P2-LOGIC-CHECKOUTREVAL) — identical to the snapshot, so
+// no price/stock drift is detected and checkout proceeds.
+const CART_REVALIDATE_OK = CART_WITH_TOTAL
 
 // cartForPC response — second GET /store/carts call (after metadata update)
 // No pre-existing payment_collection, so source will POST /store/payment-collections
@@ -72,31 +84,35 @@ const PAYMENT_PROVIDERS_RESPONSE = {
 
 // ── Helper: build mock sequence for cash checkout ─────────────────────────────
 // Actual call sequence for cash:
-//   1. GET  /store/carts/cart_01          (total check)
+//   1. GET  /store/carts/cart_01          (total check + revalidation snapshot)
 //   2. POST /store/carts/cart_01          (metadata update)
 //   3. GET  /store/carts/cart_01          (cartForPC — get payment_collection)
 //   4. POST /store/payment-collections    (create PC, no existing one)
 //   5. POST /store/payment-collections/pc_test_01/payment-sessions (init session)
-//   6. POST /store/carts/cart_01/complete
+//   6. GET  /store/carts/cart_01          (P2-LOGIC-CHECKOUTREVAL re-fetch)
+//   7. POST /store/carts/cart_01/complete
 
-function setupCashMocks(_cartItemsResponse = { cart: { items: [] } }) {
+function setupCashMocks(revalidateResponse = CART_REVALIDATE_OK) {
   mockMedusaStoreFetch
     .mockResolvedValueOnce(CART_WITH_TOTAL)           // 1. cart total check
     .mockResolvedValueOnce({})                         // 2. cart metadata update
     .mockResolvedValueOnce(CART_FOR_PC_NO_PC)          // 3. cartForPC
     .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE) // 4. create payment collection
     .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE) // 5. init payment session
-    .mockResolvedValueOnce({ order: { id: "order_01" } }) // 6. complete
+    .mockResolvedValueOnce(revalidateResponse)         // 6. revalidation re-fetch
+    .mockResolvedValueOnce({ order: { id: "order_01" } }) // 7. complete
 }
 
 // Helper: build mock sequence for card/pix checkout
-// Actual call sequence for card/pix:
-//   1. GET  /store/carts/cart_01           (total check)
+// Actual call sequence for card:
+//   1. GET  /store/carts/cart_01           (total check + revalidation snapshot)
 //   2. POST /store/carts/cart_01           (metadata update)
 //   3. GET  /store/carts/cart_01           (cartForPC)
 //   4. POST /store/payment-collections     (create PC)
 //   5. GET  /store/payment-providers       (resolve stripe provider)
 //   6. POST /store/payment-collections/pc_test_01/payment-sessions (init session)
+// PIX adds, after step 6:
+//   7. GET  /store/carts/cart_01           (P2-LOGIC-CHECKOUTREVAL re-fetch before confirm)
 
 function setupStripeMocks(sessionResponse = PAYMENT_SESSION_INIT_RESPONSE) {
   mockMedusaStoreFetch
@@ -106,6 +122,27 @@ function setupStripeMocks(sessionResponse = PAYMENT_SESSION_INIT_RESPONSE) {
     .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)   // 4. create payment collection
     .mockResolvedValueOnce(PAYMENT_PROVIDERS_RESPONSE)    // 5. payment providers
     .mockResolvedValueOnce(sessionResponse)               // 6. init payment session
+}
+
+// PIX runs the revalidation re-fetch after session init (step 7). Card returns
+// before revalidation, so it does not consume this. Tests that drive PIX must
+// queue a revalidation response after setupStripeMocks().
+function queuePixRevalidation(revalidateResponse = CART_REVALIDATE_OK) {
+  mockMedusaStoreFetch.mockResolvedValueOnce(revalidateResponse) // 7. revalidation re-fetch
+}
+
+// Cash sequence that stops at the revalidation re-fetch — used when we expect
+// the cart to have DRIFTED, so createCheckout returns before /complete. Queuing
+// no trailing complete keeps the mock once-queue balanced (no bleed into the
+// next test under the suite's shared clearAllMocks()).
+function setupCashMocksExpectingDrift(driftResponse: unknown) {
+  mockMedusaStoreFetch
+    .mockResolvedValueOnce(CART_WITH_TOTAL)           // 1. cart total check
+    .mockResolvedValueOnce({})                         // 2. cart metadata update
+    .mockResolvedValueOnce(CART_FOR_PC_NO_PC)          // 3. cartForPC
+    .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE) // 4. create payment collection
+    .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE) // 5. init payment session
+    .mockResolvedValueOnce(driftResponse)              // 6. revalidation re-fetch (drift → return)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -206,6 +243,7 @@ describe("createCheckout", () => {
         })
         .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
         .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE)
+        .mockResolvedValueOnce(CART_REVALIDATE_OK)         // revalidation re-fetch
         .mockResolvedValueOnce({ order: { id: "order_01" } })
 
       await createCheckout(BASE_INPUT, CTX)
@@ -232,6 +270,7 @@ describe("createCheckout", () => {
         .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
         .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
         .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE)
+        .mockResolvedValueOnce(CART_REVALIDATE_OK)         // revalidation re-fetch
         .mockResolvedValueOnce({ order: { id: "order_42" } })
 
       const result = await createCheckout(BASE_INPUT, CTX)
@@ -247,6 +286,7 @@ describe("createCheckout", () => {
         .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
         .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
         .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE)
+        .mockResolvedValueOnce(CART_REVALIDATE_OK)         // revalidation re-fetch
         .mockResolvedValueOnce({ order: undefined })
 
       const result = await createCheckout(BASE_INPUT, CTX)
@@ -263,6 +303,7 @@ describe("createCheckout", () => {
         .mockResolvedValueOnce(CART_FOR_PC_NO_PC)
         .mockResolvedValueOnce(PAYMENT_COLLECTION_RESPONSE)
         .mockResolvedValueOnce(PAYMENT_SESSION_INIT_RESPONSE)
+        .mockResolvedValueOnce(CART_REVALIDATE_OK)         // revalidation re-fetch
         .mockResolvedValueOnce({ order: undefined })
 
       await createCheckout(BASE_INPUT, CTX)
@@ -324,10 +365,13 @@ describe("createCheckout", () => {
 
   describe("PIX payment", () => {
     const PIX_INPUT = { ...BASE_INPUT, paymentMethod: "pix" as const }
-    const PIX_EXTRA = { customerName: "João Silva", customerEmail: "joao@example.com" }
+    // P2-LOGIC-PIXIDENTITY: PIX now requires name + a checksum-valid tax_id.
+    // 529.982.247-25 is a well-known valid CPF used across the suite.
+    const PIX_EXTRA = { customerName: "João Silva", customerEmail: "joao@example.com", customerTaxId: "529.982.247-25" }
 
     it("retrieves PIX QR code from Stripe", async () => {
       setupStripeMocks()
+      queuePixRevalidation()
 
       mockStripeConfirm.mockResolvedValue({
         status: "requires_action",
@@ -352,6 +396,7 @@ describe("createCheckout", () => {
 
     it("returns success message about scanning QR code", async () => {
       setupStripeMocks()
+      queuePixRevalidation()
 
       mockStripeConfirm.mockResolvedValue({
         status: "requires_action",
@@ -371,6 +416,7 @@ describe("createCheckout", () => {
 
     it("returns success:false when PIX data is missing", async () => {
       setupStripeMocks()
+      queuePixRevalidation()
 
       mockStripeConfirm.mockResolvedValue({
         status: "requires_action",
@@ -388,6 +434,7 @@ describe("createCheckout", () => {
 
     it("returns success:false when Stripe PIX confirm throws", async () => {
       setupStripeMocks()
+      queuePixRevalidation()
 
       mockStripeConfirm.mockRejectedValue(new Error("Stripe error"))
 
@@ -415,6 +462,7 @@ describe("createCheckout", () => {
 
     it("converts expires_at timestamp to ISO string", async () => {
       setupStripeMocks()
+      queuePixRevalidation()
 
       const expiresAtUnix = 1711987200
       mockStripeConfirm.mockResolvedValue({
@@ -432,6 +480,136 @@ describe("createCheckout", () => {
       const result = await createCheckout(PIX_INPUT, CTX, PIX_EXTRA)
 
       expect(result.pixExpiresAt).toBe(new Date(expiresAtUnix * 1000).toISOString())
+    })
+  })
+
+  // ── P2-LOGIC-CHECKOUTREVAL: stock/price revalidation before completion ──────
+  describe("cart revalidation (P2-LOGIC-CHECKOUTREVAL)", () => {
+    // Snapshot = CART_WITH_TOTAL (var_01, qty 1, unit_price 89, total 8900).
+    const CART_PRICE_DRIFT = {
+      cart: { total: 9900, items: [{ id: "item_01", variant_id: "var_01", quantity: 1, unit_price: 99, title: "Costela" }] },
+    }
+    const CART_ITEM_GONE = {
+      cart: { total: 0, items: [] },
+    }
+    const CART_QTY_REDUCED = {
+      cart: { total: 8900, items: [{ id: "item_01", variant_id: "var_01", quantity: 0, unit_price: 89, title: "Costela" }] },
+    }
+
+    it("cash: returns cartChanged when a line price drifted (does not complete)", async () => {
+      setupCashMocksExpectingDrift(CART_PRICE_DRIFT)
+
+      const result = await createCheckout(BASE_INPUT, CTX)
+
+      expect(result.success).toBe(false)
+      expect(result.cartChanged).toBe(true)
+      expect(result.cartChanges?.length).toBeGreaterThan(0)
+      expect(result.message).toContain("carrinho mudou")
+      // The cart-complete side-effect must NOT have fired.
+      expect(mockMedusaStoreFetch).not.toHaveBeenCalledWith(
+        "/store/carts/cart_01/complete",
+        expect.anything(),
+      )
+    })
+
+    it("cash: returns cartChanged when an item is no longer available (out of stock)", async () => {
+      setupCashMocksExpectingDrift(CART_ITEM_GONE)
+
+      const result = await createCheckout(BASE_INPUT, CTX)
+
+      expect(result.success).toBe(false)
+      expect(result.cartChanged).toBe(true)
+      expect(mockPublishNatsEvent).not.toHaveBeenCalled()
+    })
+
+    it("cash: returns cartChanged when a line quantity was reduced", async () => {
+      setupCashMocksExpectingDrift(CART_QTY_REDUCED)
+
+      const result = await createCheckout(BASE_INPUT, CTX)
+
+      expect(result.success).toBe(false)
+      expect(result.cartChanged).toBe(true)
+    })
+
+    it("pix: returns cartChanged on price drift and never confirms the PaymentIntent", async () => {
+      setupStripeMocks()
+      queuePixRevalidation(CART_PRICE_DRIFT)
+
+      const PIX_EXTRA = { customerName: "João Silva", customerEmail: "joao@example.com", customerTaxId: "529.982.247-25" }
+      const result = await createCheckout({ ...BASE_INPUT, paymentMethod: "pix" as const }, CTX, PIX_EXTRA)
+
+      expect(result.success).toBe(false)
+      expect(result.cartChanged).toBe(true)
+      // Stripe confirm must NOT run when the cart drifted.
+      expect(mockStripeConfirm).not.toHaveBeenCalled()
+    })
+
+    it("cash: completes normally when the cart is unchanged", async () => {
+      setupCashMocks() // revalidation returns the identical snapshot
+
+      const result = await createCheckout(BASE_INPUT, CTX)
+
+      expect(result.success).toBe(true)
+      expect(result.cartChanged).toBeUndefined()
+    })
+  })
+
+  // ── P2-LOGIC-PIXIDENTITY: name + valid tax_id required for PIX ──────────────
+  describe("PIX identity (P2-LOGIC-PIXIDENTITY)", () => {
+    const PIX_INPUT = { ...BASE_INPUT, paymentMethod: "pix" as const }
+
+    it("rejects PIX when name is missing (no restaurant-name fallback)", async () => {
+      setupStripeMocks()
+
+      const result = await createCheckout(PIX_INPUT, CTX, { customerEmail: "j@e.com", customerTaxId: "529.982.247-25" })
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain("Nome completo")
+      expect(mockStripeConfirm).not.toHaveBeenCalled()
+    })
+
+    it("rejects PIX when tax_id is missing (no restaurant tax_id fallback)", async () => {
+      setupStripeMocks()
+
+      const result = await createCheckout(PIX_INPUT, CTX, { customerName: "João Silva", customerEmail: "j@e.com" })
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain("CPF ou CNPJ")
+      expect(mockStripeConfirm).not.toHaveBeenCalled()
+    })
+
+    it("rejects PIX when tax_id fails the checksum", async () => {
+      setupStripeMocks()
+
+      const result = await createCheckout(PIX_INPUT, CTX, { customerName: "João Silva", customerTaxId: "111.111.111-11" })
+
+      expect(result.success).toBe(false)
+      expect(result.message).toContain("CPF ou CNPJ")
+      expect(mockStripeConfirm).not.toHaveBeenCalled()
+    })
+
+    it("accepts PIX with a valid CNPJ and passes it to Stripe as tax_id", async () => {
+      setupStripeMocks()
+      queuePixRevalidation()
+
+      mockStripeConfirm.mockResolvedValue({
+        status: "requires_action",
+        next_action: { pix_display_qr_code: { data: "pix", image_url_svg: "https://s/qr.svg" } },
+      })
+      mockStripeUpdate.mockResolvedValue({})
+
+      // 11.222.333/0001-81 is a checksum-valid CNPJ.
+      const result = await createCheckout(PIX_INPUT, CTX, {
+        customerName: "Restaurante Parceiro LTDA",
+        customerEmail: "fin@parceiro.com",
+        customerTaxId: "11.222.333/0001-81",
+      })
+
+      expect(result.success).toBe(true)
+      const confirmArgs = mockStripeConfirm.mock.calls[0][1]
+      expect(confirmArgs.payment_method_data.billing_details.tax_id).toBe("11.222.333/0001-81")
+      // Identity name must be the customer's, never the restaurant fallback.
+      expect(confirmArgs.payment_method_data.billing_details.name).toBe("Restaurante Parceiro LTDA")
     })
   })
 

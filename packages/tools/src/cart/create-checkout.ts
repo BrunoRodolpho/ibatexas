@@ -16,6 +16,7 @@ import { getAndConsumeWelcomeCredit } from "../intelligence/welcome-credit.js";
 import { getMealPeriodFromSchedule } from "../schedule/schedule-helpers.js";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
+import { isValidTaxId } from "./set-pix-details.js";
 import { medusaStoreFetch } from "./_shared.js";
 
 function getStripe(): Stripe {
@@ -36,6 +37,11 @@ export interface CreateCheckoutOutput {
   // Cash
   orderId?: string;
   message: string;
+  // P2-LOGIC-CHECKOUTREVAL: set when the cart drifted (price/stock) between the
+  // moment it was shown and completion. The caller must re-show the cart and
+  // ask the customer to reconfirm instead of charging a stale amount.
+  cartChanged?: boolean;
+  cartChanges?: string[];
 }
 
 // PIX billing details required by Stripe:
@@ -67,17 +73,28 @@ async function confirmPixAndGetQrCode(
     console.warn("[create_checkout] Confirming PI %s with PIX (name_present=%s email_present=%s)",
       paymentIntentId, customer.name ? "true" : "false", customer.email ? "true" : "false");
 
-    // PIX requires: name, email, tax_id (CPF/CNPJ)
-    // WhatsApp users don't provide email or CPF — use restaurant defaults
-    const taxId = customer.taxId || process.env.PIX_FALLBACK_TAX_ID;
+    // PIX requires: name, email, tax_id (CPF/CNPJ).
+    // P2-LOGIC-PIXIDENTITY: name + tax_id are the payer's identity and MUST be
+    // the customer's real values (validated by the caller before reaching here).
+    // We never fall back to a restaurant tax_id/name — doing so would attribute
+    // the payment to the restaurant and break payer reconciliation. Only email
+    // (non-identity, but required by Stripe) may fall back to a default inbox.
+    if (!customer.name || !customer.taxId || !isValidTaxId(customer.taxId)) {
+      console.error("[create_checkout] PIX confirm blocked — missing/invalid payer identity for PI", paymentIntentId);
+      return {
+        success: false,
+        paymentMethod: "pix",
+        message: "Nome completo e CPF/CNPJ válido são obrigatórios para pagamento PIX.",
+      };
+    }
 
     const confirmed = await stripe.paymentIntents.confirm(paymentIntentId, {
       payment_method_data: {
         type: "pix",
         billing_details: {
-          name: customer.name || "Cliente IbateXas",
+          name: customer.name,
           email: customer.email || process.env.PIX_FALLBACK_EMAIL || "pedido@ibatexas.com.br",
-          ...(taxId ? { tax_id: taxId } : {}),
+          tax_id: customer.taxId,
         },
       },
       payment_method_options: {
@@ -165,6 +182,88 @@ async function confirmPixAndGetQrCode(
   }
 }
 
+// ── P2-LOGIC-CHECKOUTREVAL: stock + price revalidation ────────────────────────
+// Prices from the Medusa store API are in reais; we compare them as-is (the
+// snapshot uses the same unit), so no centavos conversion is needed here — we
+// only care whether a value CHANGED, not its absolute magnitude.
+
+interface CartLineSnapshot {
+  variantId: string;
+  quantity: number;
+  unitPrice: number; // reais, as returned by Medusa
+}
+
+interface CartSnapshot {
+  total: number; // reais
+  lines: CartLineSnapshot[];
+}
+
+interface RevalidatableCart {
+  total?: number;
+  items?: Array<{ variant_id: string; title?: string; quantity: number; unit_price: number }>;
+}
+
+/** Build a price/stock snapshot from a freshly-fetched Medusa cart. */
+function snapshotCart(cart: RevalidatableCart | undefined): CartSnapshot {
+  return {
+    total: cart?.total ?? 0,
+    lines: (cart?.items ?? []).map((i) => ({
+      variantId: i.variant_id,
+      quantity: i.quantity,
+      unitPrice: i.unit_price,
+    })),
+  };
+}
+
+/**
+ * Re-fetch the cart immediately before completion / PI confirm and compare it
+ * against the snapshot taken when checkout started. Returns a list of pt-BR
+ * change descriptions; an empty list means the cart is unchanged and safe to
+ * complete. Detects price drift, removed items, and quantity reductions
+ * (out-of-stock items are dropped or reduced by Medusa's cart re-pricing).
+ */
+async function revalidateCart(
+  cartId: string,
+  snapshot: CartSnapshot,
+): Promise<string[]> {
+  const fresh = (await medusaStoreFetch(`/store/carts/${cartId}`)) as { cart?: RevalidatableCart };
+  const cart = fresh.cart;
+  const changes: string[] = [];
+
+  const freshLines = new Map(
+    (cart?.items ?? []).map((i) => [i.variant_id, i] as const),
+  );
+
+  for (const line of snapshot.lines) {
+    const current = freshLines.get(line.variantId);
+    if (!current || current.quantity <= 0) {
+      // Item is no longer fulfillable (removed by re-pricing → out of stock).
+      changes.push(`Um item do seu carrinho não está mais disponível.`);
+      continue;
+    }
+    if (current.quantity < line.quantity) {
+      changes.push(
+        `A quantidade disponível de "${current.title ?? line.variantId}" mudou para ${current.quantity}.`,
+      );
+    }
+    if (current.unit_price !== line.unitPrice) {
+      changes.push(`O preço de "${current.title ?? line.variantId}" foi atualizado.`);
+    }
+  }
+
+  // Total drift catches discount/shipping changes not tied to a single line.
+  const freshTotal = cart?.total ?? 0;
+  if (freshTotal !== snapshot.total && changes.length === 0) {
+    changes.push("O valor total do seu carrinho mudou.");
+  }
+
+  if (freshTotal <= 0) {
+    changes.push("Seu carrinho está vazio ou com valor zero.");
+  }
+
+  return changes;
+}
+
 export async function createCheckout(
   input: CreateCheckoutInput,
   ctx: AgentContext,
@@ -175,7 +274,7 @@ export async function createCheckout(
 
   // Verify cart total > 0 before proceeding with checkout
   const cartData = await medusaStoreFetch(`/store/carts/${cartId}`) as {
-    cart?: { total?: number; items?: unknown[] };
+    cart?: RevalidatableCart;
   };
   const cartTotal = cartData.cart?.total ?? 0;
   if (cartTotal <= 0) {
@@ -183,6 +282,12 @@ export async function createCheckout(
       "Carrinho vazio ou com valor zero. Adicione itens antes de finalizar o pedido.",
     );
   }
+
+  // P2-LOGIC-CHECKOUTREVAL: snapshot the cart as the customer sees it now.
+  // We re-fetch and compare against this just before any irreversible step
+  // (cash complete / PIX confirm) so price drift or stock loss aborts the
+  // charge instead of silently completing at a stale amount.
+  const checkoutSnapshot = snapshotCart(cartData.cart);
 
   // Apply welcome credit if available (first-time customer coupon)
   if (ctx.customerId) {
@@ -316,6 +421,18 @@ export async function createCheckout(
   );
 
   if (paymentMethod === "cash") {
+    // P2-LOGIC-CHECKOUTREVAL: re-validate stock + price before completing.
+    const cashChanges = await revalidateCart(cartId, checkoutSnapshot);
+    if (cashChanges.length > 0) {
+      return {
+        success: false,
+        paymentMethod: "cash",
+        cartChanged: true,
+        cartChanges: cashChanges,
+        message: `Seu carrinho mudou desde a última visualização: ${cashChanges.join(" ")} Confira os itens e confirme novamente.`,
+      };
+    }
+
     // Extract cart items for the order.placed event
     const cartItems = (cartForPC.cart?.items ?? []).map((item) => ({
       productId: item.variant?.product_id ?? "",
@@ -411,17 +528,44 @@ export async function createCheckout(
 
   // PIX — confirm with PIX payment method and retrieve QR code
   if (paymentMethod === "pix" && paymentIntentId) {
-    if (!extra?.customerName && !extra?.customerEmail) {
+    // P2-LOGIC-PIXIDENTITY: PIX must carry a real payer identity. Require a full
+    // name AND a checksum-valid tax_id (CPF or CNPJ) — never silently fall back
+    // to the restaurant's tax_id/name, which would attribute the payment to the
+    // restaurant and break reconciliation. Email may still fall back (Stripe
+    // requires it but it is not identity-critical for PIX).
+    const pixName = extra?.customerName?.trim();
+    if (!pixName) {
       return {
         success: false,
         paymentMethod: "pix",
-        message: "Nome e email são obrigatórios para pagamento PIX.",
+        message: "Nome completo é obrigatório para pagamento PIX.",
       };
     }
+    if (!extra?.customerTaxId || !isValidTaxId(extra.customerTaxId)) {
+      return {
+        success: false,
+        paymentMethod: "pix",
+        message: "CPF ou CNPJ válido é obrigatório para pagamento PIX.",
+      };
+    }
+
+    // P2-LOGIC-PIXIDENTITY / CHECKOUTREVAL: re-read the cart immediately before
+    // confirming the PaymentIntent so a price/stock change aborts the charge.
+    const pixChanges = await revalidateCart(cartId, checkoutSnapshot);
+    if (pixChanges.length > 0) {
+      return {
+        success: false,
+        paymentMethod: "pix",
+        cartChanged: true,
+        cartChanges: pixChanges,
+        message: `Seu carrinho mudou desde a última visualização: ${pixChanges.join(" ")} Confira os itens e confirme novamente.`,
+      };
+    }
+
     return confirmPixAndGetQrCode(paymentIntentId, {
-      name: extra?.customerName,
+      name: pixName,
       email: extra?.customerEmail,
-      taxId: extra?.customerTaxId,
+      taxId: extra.customerTaxId,
     }, cartId, ctx.customerId);
   }
 

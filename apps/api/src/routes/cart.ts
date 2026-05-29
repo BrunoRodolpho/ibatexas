@@ -178,6 +178,11 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
+      // SEC (P2-AUTH-CARTOWN): verify ownership before reading the cart.
+      const redis = await getRedisClient();
+      if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
+        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
+      }
       const data = await medusaStore(`/store/carts/${request.params.id}`);
       return reply.send(data);
     },
@@ -332,6 +337,11 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
+      // SEC (P2-AUTH-CARTOWN): verify ownership before mutating promotions.
+      const redis = await getRedisClient();
+      if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
+        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
+      }
       const data = await medusaStore(`/store/carts/${request.params.id}/promotions`, {
         method: "POST",
         body: JSON.stringify(request.body),
@@ -353,6 +363,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
+      // SEC (P2-AUTH-CARTOWN): verify ownership before initializing payment.
+      const redis = await getRedisClient();
+      if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
+        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
+      }
+
       // Medusa v2: payment sessions live on payment collections, not carts
       const cartData = await medusaStore(`/store/carts/${request.params.id}`) as {
         cart?: { payment_collection?: { id: string } };
