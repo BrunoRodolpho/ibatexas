@@ -552,6 +552,36 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
 
     expect(res.statusCode).toBe(404);
   });
+
+  it("returns 404 for an anonymous caller reading an owned order (P1-SEC-IDOR)", async () => {
+    // The order exists and belongs to a customer, but the caller is anonymous
+    // (no x-customer-id). Display IDs are enumerable, so a missing caller
+    // identity must be treated as an ownership mismatch — not a free pass.
+    mockMedusaAdmin.mockResolvedValue({
+      order: {
+        id: "order_03",
+        status: "completed",
+        display_id: 44,
+        total: 178,
+        subtotal: 158,
+        shipping_total: 20,
+        customer_id: "cust_OWNER",
+        items: [],
+        created_at: "2026-03-18T00:00:00.000Z",
+      },
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/orders/order_03",
+      // No x-customer-id header — anonymous
+    });
+
+    expect(res.statusCode).toBe(404);
+    const body = res.json();
+    expect(body.message).toBe("Pedido não encontrado.");
+  });
 });
 
 // ── SEC-001: Cash/PIX checkout auth gate ────────────────────────────────────

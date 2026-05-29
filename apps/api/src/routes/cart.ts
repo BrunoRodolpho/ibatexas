@@ -786,9 +786,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
       }
 
-      // Verify ownership — prevent IDOR
+      // Verify ownership — prevent IDOR. A missing caller identity (anonymous
+      // request under optionalAuth) is treated as a mismatch: an owned order is
+      // never readable without proving you are the owner. Order display IDs
+      // (IBX-<n>) are sequential and enumerable, so anonymous reads must fail.
       const orderCustomerId = order.customer_id ?? order.metadata?.["customerId"];
-      if (orderCustomerId && request.customerId && orderCustomerId !== request.customerId) {
+      if (orderCustomerId && orderCustomerId !== request.customerId) {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
       }
 
@@ -869,8 +872,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         const projection = await querySvc.getById(orderId);
 
         if (projection) {
-          // Verify ownership
-          if (projection.customerId && request.customerId && projection.customerId !== request.customerId) {
+          // Verify ownership — a missing caller identity counts as a mismatch
+          // (prevents anonymous enumeration of sequential IBX-<n> order IDs).
+          if (projection.customerId && projection.customerId !== request.customerId) {
             return reply.status(404).send({ error: "Pedido nao encontrado." });
           }
           const pqs = createPaymentQueryService();
@@ -904,9 +908,10 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           return reply.status(202).send({ status: "pending", updatedAt: null });
         }
 
-        // Verify ownership
+        // Verify ownership — a missing caller identity counts as a mismatch
+        // (prevents anonymous enumeration of sequential IBX-<n> order IDs).
         const orderCustomerId = order.customer_id ?? order.metadata?.["customerId"];
-        if (orderCustomerId && request.customerId && orderCustomerId !== request.customerId) {
+        if (orderCustomerId && orderCustomerId !== request.customerId) {
           return reply.status(404).send({ error: "Pedido nao encontrado." });
         }
 
