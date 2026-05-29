@@ -11,14 +11,16 @@
 //   - GroundingPort          createPgVectorGroundingProvider (pgvector)
 //   - ChannelDriver[]        [WhatsAppChannel, WebChannel]
 //   - Adjudicator            adjudicateBridge() wrapping @adjudicate/core
-//   - PlannerPort            naivePlanner() (one envelope from one user message)
+//   - PlannerPort            createIbatexasPlanner() (LLM intent extractor over
+//                            the 5 packs' CapabilityPlanners — RC-A1 Phase A.1)
 //   - ResponderPort          anthropicResponder() (uses ModelProvider)
 //   - ExplainerPort          ibatexasExplainer() (pt-BR templates)
 //   - HandoffPort            noopHandoff() (TODO: wire Slack/PagerDuty)
 //   - TelemetryPort          fastifyTelemetry() (pino + prom-client)
 //   - SessionPort            redisSessionStore() (Redis-backed sessions)
 //   - ToolRegistry           ibatexas tool packs registered as ToolDefinitions
-//   - TenantResolver         resolveIbatexasTenantPolicy()
+//   - TenantResolver         resolveIbatexasTenantPolicy() → composePolicyRouter
+//                            (per-kind PolicyBundle over the packs — Phase A.2)
 //
 // CRITICAL: `installFirstPartyPacks()` MUST run before `assertAuditPostgresReady()`
 // because policies use shared types from the packs.
@@ -42,8 +44,8 @@ import {
   type Conductor,
   type ExplainerPort,
   type HandoffPort,
+  type CognitiveState,
   type MemoryAccess,
-  type PlannerPort,
   type ResponderPort,
   type Session,
   type SessionPort,
@@ -94,7 +96,29 @@ import {
 // once each pack's package.json is restored.
 import { prisma } from "@ibatexas/domain";
 import { getRedisClient } from "@ibatexas/tools";
+
+// ── RC-A1 cutover composition (Phase A.1/A.2) ────────────────────────────────
+// The production planner + per-kind PolicyBundle router, composed over the 5
+// first-party packs. INERT until bootstrapClaustrum() is called.
+import type { CapabilityPlanner } from "@adjudicate/core/llm";
+import type { PolicyBundle } from "@adjudicate/core/kernel";
+import { ordersPack, ordersCapabilityPlanner } from "@ibatexas/pack-orders";
+import { paymentsPack, paymentsCapabilityPlanner } from "@ibatexas/pack-payments";
+import {
+  reservationsPack,
+  reservationsCapabilityPlanner,
+} from "@ibatexas/pack-reservations";
+import {
+  customerOnboardingPack,
+  customerOnboardingCapabilityPlanner,
+} from "@ibatexas/pack-customer-onboarding";
+import { whatsappPack, whatsappCapabilityPlanner } from "@ibatexas/pack-whatsapp";
 import { requireSecret } from "./utils/require-secret.js";
+import {
+  composePolicyRouter,
+  type CapabilityPolicyPack,
+} from "./claustrum/capability-policy.js";
+import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
@@ -311,7 +335,7 @@ function installFirstPartyPacks(): void {
 
   for (const packName of packs) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const pack = require(packName);
       const value =
         pack[`${pluralCamel(stripScope(packName))}Pack`] ??
@@ -346,7 +370,7 @@ async function assertAuditPostgresReady(): Promise<void> {
     // The audit-postgres package owns its own pool; a `SELECT 1` via the
     // verify-API exercises the connection without coupling to internals.
     // If the package exposes a probe, prefer that.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ap = require("@adjudicate/audit-postgres");
     if (typeof ap.assertReady === "function") {
       await ap.assertReady();
@@ -393,21 +417,66 @@ function noopHandoff(): HandoffPort {
   };
 }
 
+// ── Production planner + policy composition (RC-A1 Phase A) ───────────────────
+
 /**
- * Minimal planner — turns the perception into a single advisory envelope.
- * Real ibatexas planning will use the XState machine + CapabilityPlanner
- * from the packs; this is the seam that gets replaced incrementally.
+ * The 5 first-party packs as policy-resolution inputs. Cast to the loose
+ * `CapabilityPolicyPack` shape (heterogeneous K/P/S erased to string/unknown) so
+ * one router can dispatch across all domains. See capability-policy.ts.
  */
-function naivePlanner(): PlannerPort {
+const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> = [
+  ordersPack,
+  paymentsPack,
+  reservationsPack,
+  customerOnboardingPack,
+  whatsappPack,
+].map((p) => ({
+  id: p.id,
+  intents: [...p.intents],
+  policy: p.policy as unknown as PolicyBundle<string, unknown, unknown>,
+}));
+
+/** One kind-dispatching PolicyBundle over every installed pack (built once). */
+const IBATEXAS_POLICY_ROUTER = composePolicyRouter(IBATEXAS_POLICY_PACKS);
+
+/** The packs' capability planners — union'd by the production planner. */
+const IBATEXAS_CAPABILITY_PLANNERS = [
+  ordersCapabilityPlanner,
+  paymentsCapabilityPlanner,
+  reservationsCapabilityPlanner,
+  customerOnboardingCapabilityPlanner,
+  whatsappCapabilityPlanner,
+] as unknown as ReadonlyArray<CapabilityPlanner<unknown, unknown>>;
+
+/**
+ * Map the claustrum CognitiveState onto the union (state, context) the pack
+ * capability planners read. Each pack reads only its own `ctx` field
+ * (orders/reservations: customerId; reservations: staffId; onboarding:
+ * isAuthenticated; payments/whatsapp: none), so a union ctx satisfies all.
+ *
+ * CONSERVATIVE: CognitiveState carries no actor/customerId, so we derive an
+ * UNAUTHENTICATED context — the capability planners then expose only the
+ * unauthenticated intent subset, and the kernel's authGuards enforce the
+ * authoritative auth check on the envelope. Production wiring of the real actor
+ * (a claustrum CognitiveState that carries customerId, or a capsule-aware
+ * planner) is a documented follow-up.
+ */
+function deriveIbatexasPlannerContext(state: CognitiveState): {
+  readonly state: unknown;
+  readonly context: unknown;
+} {
   return {
-    async propose(_state) {
-      // Empty envelopes = "no mutation, just respond". The cognitive loop
-      // still runs synthesize + observe.
-      return {
-        envelopes: [],
-        rationale: "naive-planner: ibatexas planner not yet wired",
-      };
+    state: {
+      ctx: {
+        channel: state.perception.channel,
+        customerId: null,
+        staffId: null,
+        isAuthenticated: false,
+        cartId: null,
+        orderId: null,
+      },
     },
+    context: {},
   };
 }
 
@@ -523,8 +592,10 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
       // Real SystemState is assembled by the planner + kernel from the
       // per-request Capsule (cart, customer, etc.). Static empty for now.
       state: { channel },
-      // The kernel resolves PolicyBundle by intent kind from installed Packs.
-      policy: {},
+      // Per-capability PolicyBundle resolution: one kind-dispatching router over
+      // the installed packs (RC-A1 Phase A.2 — capability-policy.ts). Replaces the
+      // `{}` that fail-closed every mutation. INERT until bootstrapClaustrum() runs.
+      policy: IBATEXAS_POLICY_ROUTER,
     };
   },
 };
@@ -631,7 +702,12 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     adjudicator,
     memory,
     grounding,
-    planner: naivePlanner(),
+    planner: createIbatexasPlanner({
+      model: modelProvider,
+      modelId: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-5-20250101",
+      capabilityPlanners: IBATEXAS_CAPABILITY_PLANNERS,
+      deriveContext: deriveIbatexasPlannerContext,
+    }),
     responder: naiveResponder(modelProvider),
     explainer: ibatexasExplainer(),
     handoff: noopHandoff(),
