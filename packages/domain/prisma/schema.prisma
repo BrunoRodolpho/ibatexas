@@ -263,6 +263,7 @@ model Customer {
   medusaId       String?   @unique @map("medusa_id")
   source         String?                            /// Origin channel: 'web' | 'whatsapp'
   firstContactAt DateTime? @map("first_contact_at") /// Timestamp of first interaction
+  erasedAt       DateTime? @map("erased_at")         /// LGPD Art. 18 erasure marker — set once erasure completes; makes erasure idempotent
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 

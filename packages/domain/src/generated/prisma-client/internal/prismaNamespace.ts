@@ -2348,6 +2348,7 @@ export const CustomerScalarFieldEnum = {
   medusaId: 'medusaId',
   source: 'source',
   firstContactAt: 'firstContactAt',
+  erasedAt: 'erasedAt',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt'
 } as const

@@ -226,31 +226,61 @@ export function createCustomerService() {
 }
 
 /**
- * LGPD Art. 18 — Anonymize a customer's personal data.
- * Preserves order items (fiscal obligation) but delinks from profile.
+ * LGPD Art. 18 — Erase a customer's personal data.
+ *
+ * Erases the primary identifiers and free-text PII (phone, CPF, review prose,
+ * conversation transcripts), not just name/email. Preserves order items (fiscal
+ * obligation) but delinks them from the profile. Idempotent via the `erasedAt`
+ * marker so a re-submit (or a retry) is a safe no-op rather than re-running.
+ *
+ * Returns `{ success, alreadyErased }`. `alreadyErased: true` means the marker
+ * was already set (nothing to do); `success: false` means no such customer.
  */
-export async function anonymizeCustomer(customerId: string) {
-  await prisma.$transaction(async (tx) => {
-    // Anonymize profile
+export async function anonymizeCustomer(
+  customerId: string,
+): Promise<{ success: boolean; alreadyErased: boolean }> {
+  return await prisma.$transaction(async (tx) => {
+    const existing = await tx.customer.findUnique({
+      where: { id: customerId },
+      select: { erasedAt: true },
+    })
+    if (!existing) return { success: false, alreadyErased: false }
+    if (existing.erasedAt) return { success: true, alreadyErased: true }
+
+    // Anonymize profile. `phone` is @unique + NON-nullable (the WhatsApp identity
+    // that re-links everything on re-contact), so it cannot be nulled — overwrite
+    // it with a per-customer tombstone so the real number no longer resolves here.
+    // `cpf` (Brazilian tax id) is nullable → null it.
     await tx.customer.update({
       where: { id: customerId },
-      data: { name: "Usuário Removido", email: null },
+      data: {
+        name: "Usuário Removido",
+        email: null,
+        phone: `removed:${customerId}`,
+        cpf: null,
+        erasedAt: new Date(),
+      },
     })
 
-    // Delete addresses
+    // Delete addresses + preferences (PII).
     await tx.address.deleteMany({ where: { customerId } })
-
-    // Delete preferences
     await tx.customerPreferences.deleteMany({ where: { customerId } })
 
-    // Delink order items (preserve for fiscal/analytics)
+    // Redact free-text review prose; keep the numeric rating for analytics.
+    await tx.review.updateMany({ where: { customerId }, data: { comment: null } })
+
+    // Delete conversation transcripts. ConversationMessage cascades on the
+    // conversation FK (onDelete: Cascade), so the message bodies go with it.
+    await tx.conversation.deleteMany({ where: { customerId } })
+
+    // Delink order items (preserve for fiscal/analytics).
     await tx.customerOrderItem.updateMany({
       where: { customerId },
       data: { customerId: null },
     })
-  })
 
-  return { success: true }
+    return { success: true, alreadyErased: false }
+  })
 }
 
 /**

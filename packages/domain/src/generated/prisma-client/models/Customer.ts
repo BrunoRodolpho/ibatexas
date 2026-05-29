@@ -33,6 +33,7 @@ export type CustomerMinAggregateOutputType = {
   medusaId: string | null
   source: string | null
   firstContactAt: Date | null
+  erasedAt: Date | null
   createdAt: Date | null
   updatedAt: Date | null
 }
@@ -46,6 +47,7 @@ export type CustomerMaxAggregateOutputType = {
   medusaId: string | null
   source: string | null
   firstContactAt: Date | null
+  erasedAt: Date | null
   createdAt: Date | null
   updatedAt: Date | null
 }
@@ -59,6 +61,7 @@ export type CustomerCountAggregateOutputType = {
   medusaId: number
   source: number
   firstContactAt: number
+  erasedAt: number
   createdAt: number
   updatedAt: number
   _all: number
@@ -74,6 +77,7 @@ export type CustomerMinAggregateInputType = {
   medusaId?: true
   source?: true
   firstContactAt?: true
+  erasedAt?: true
   createdAt?: true
   updatedAt?: true
 }
@@ -87,6 +91,7 @@ export type CustomerMaxAggregateInputType = {
   medusaId?: true
   source?: true
   firstContactAt?: true
+  erasedAt?: true
   createdAt?: true
   updatedAt?: true
 }
@@ -100,6 +105,7 @@ export type CustomerCountAggregateInputType = {
   medusaId?: true
   source?: true
   firstContactAt?: true
+  erasedAt?: true
   createdAt?: true
   updatedAt?: true
   _all?: true
@@ -186,6 +192,7 @@ export type CustomerGroupByOutputType = {
   medusaId: string | null
   source: string | null
   firstContactAt: Date | null
+  erasedAt: Date | null
   createdAt: Date
   updatedAt: Date
   _count: CustomerCountAggregateOutputType | null
@@ -220,6 +227,7 @@ export type CustomerWhereInput = {
   medusaId?: Prisma.StringNullableFilter<"Customer"> | string | null
   source?: Prisma.StringNullableFilter<"Customer"> | string | null
   firstContactAt?: Prisma.DateTimeNullableFilter<"Customer"> | Date | string | null
+  erasedAt?: Prisma.DateTimeNullableFilter<"Customer"> | Date | string | null
   createdAt?: Prisma.DateTimeFilter<"Customer"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Customer"> | Date | string
   addresses?: Prisma.AddressListRelationFilter
@@ -242,6 +250,7 @@ export type CustomerOrderByWithRelationInput = {
   medusaId?: Prisma.SortOrderInput | Prisma.SortOrder
   source?: Prisma.SortOrderInput | Prisma.SortOrder
   firstContactAt?: Prisma.SortOrderInput | Prisma.SortOrder
+  erasedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   addresses?: Prisma.AddressOrderByRelationAggregateInput
@@ -267,6 +276,7 @@ export type CustomerWhereUniqueInput = Prisma.AtLeast<{
   cpf?: Prisma.StringNullableFilter<"Customer"> | string | null
   source?: Prisma.StringNullableFilter<"Customer"> | string | null
   firstContactAt?: Prisma.DateTimeNullableFilter<"Customer"> | Date | string | null
+  erasedAt?: Prisma.DateTimeNullableFilter<"Customer"> | Date | string | null
   createdAt?: Prisma.DateTimeFilter<"Customer"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"Customer"> | Date | string
   addresses?: Prisma.AddressListRelationFilter
@@ -289,6 +299,7 @@ export type CustomerOrderByWithAggregationInput = {
   medusaId?: Prisma.SortOrderInput | Prisma.SortOrder
   source?: Prisma.SortOrderInput | Prisma.SortOrder
   firstContactAt?: Prisma.SortOrderInput | Prisma.SortOrder
+  erasedAt?: Prisma.SortOrderInput | Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
   _count?: Prisma.CustomerCountOrderByAggregateInput
@@ -308,6 +319,7 @@ export type CustomerScalarWhereWithAggregatesInput = {
   medusaId?: Prisma.StringNullableWithAggregatesFilter<"Customer"> | string | null
   source?: Prisma.StringNullableWithAggregatesFilter<"Customer"> | string | null
   firstContactAt?: Prisma.DateTimeNullableWithAggregatesFilter<"Customer"> | Date | string | null
+  erasedAt?: Prisma.DateTimeNullableWithAggregatesFilter<"Customer"> | Date | string | null
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"Customer"> | Date | string
   updatedAt?: Prisma.DateTimeWithAggregatesFilter<"Customer"> | Date | string
 }
@@ -321,6 +333,7 @@ export type CustomerCreateInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -343,6 +356,7 @@ export type CustomerUncheckedCreateInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -365,6 +379,7 @@ export type CustomerUpdateInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -387,6 +402,7 @@ export type CustomerUncheckedUpdateInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -409,6 +425,7 @@ export type CustomerCreateManyInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
 }
@@ -422,6 +439,7 @@ export type CustomerUpdateManyMutationInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -435,6 +453,7 @@ export type CustomerUncheckedUpdateManyInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -458,6 +477,7 @@ export type CustomerCountOrderByAggregateInput = {
   medusaId?: Prisma.SortOrder
   source?: Prisma.SortOrder
   firstContactAt?: Prisma.SortOrder
+  erasedAt?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -471,6 +491,7 @@ export type CustomerMaxOrderByAggregateInput = {
   medusaId?: Prisma.SortOrder
   source?: Prisma.SortOrder
   firstContactAt?: Prisma.SortOrder
+  erasedAt?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -484,6 +505,7 @@ export type CustomerMinOrderByAggregateInput = {
   medusaId?: Prisma.SortOrder
   source?: Prisma.SortOrder
   firstContactAt?: Prisma.SortOrder
+  erasedAt?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   updatedAt?: Prisma.SortOrder
 }
@@ -631,6 +653,7 @@ export type CustomerCreateWithoutReservationsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -652,6 +675,7 @@ export type CustomerUncheckedCreateWithoutReservationsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -689,6 +713,7 @@ export type CustomerUpdateWithoutReservationsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -710,6 +735,7 @@ export type CustomerUncheckedUpdateWithoutReservationsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -731,6 +757,7 @@ export type CustomerCreateWithoutWaitlistsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -752,6 +779,7 @@ export type CustomerUncheckedCreateWithoutWaitlistsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -789,6 +817,7 @@ export type CustomerUpdateWithoutWaitlistsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -810,6 +839,7 @@ export type CustomerUncheckedUpdateWithoutWaitlistsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -831,6 +861,7 @@ export type CustomerCreateWithoutReviewsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -852,6 +883,7 @@ export type CustomerUncheckedCreateWithoutReviewsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -889,6 +921,7 @@ export type CustomerUpdateWithoutReviewsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -910,6 +943,7 @@ export type CustomerUncheckedUpdateWithoutReviewsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -931,6 +965,7 @@ export type CustomerCreateWithoutAddressesInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   preferences?: Prisma.CustomerPreferencesCreateNestedOneWithoutCustomerInput
@@ -952,6 +987,7 @@ export type CustomerUncheckedCreateWithoutAddressesInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   preferences?: Prisma.CustomerPreferencesUncheckedCreateNestedOneWithoutCustomerInput
@@ -989,6 +1025,7 @@ export type CustomerUpdateWithoutAddressesInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   preferences?: Prisma.CustomerPreferencesUpdateOneWithoutCustomerNestedInput
@@ -1010,6 +1047,7 @@ export type CustomerUncheckedUpdateWithoutAddressesInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   preferences?: Prisma.CustomerPreferencesUncheckedUpdateOneWithoutCustomerNestedInput
@@ -1031,6 +1069,7 @@ export type CustomerCreateWithoutPreferencesInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -1052,6 +1091,7 @@ export type CustomerUncheckedCreateWithoutPreferencesInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -1089,6 +1129,7 @@ export type CustomerUpdateWithoutPreferencesInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -1110,6 +1151,7 @@ export type CustomerUncheckedUpdateWithoutPreferencesInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -1131,6 +1173,7 @@ export type CustomerCreateWithoutOrderItemsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -1152,6 +1195,7 @@ export type CustomerUncheckedCreateWithoutOrderItemsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -1189,6 +1233,7 @@ export type CustomerUpdateWithoutOrderItemsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -1210,6 +1255,7 @@ export type CustomerUncheckedUpdateWithoutOrderItemsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -1231,6 +1277,7 @@ export type CustomerCreateWithoutOrderProjectionsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -1252,6 +1299,7 @@ export type CustomerUncheckedCreateWithoutOrderProjectionsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -1289,6 +1337,7 @@ export type CustomerUpdateWithoutOrderProjectionsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -1310,6 +1359,7 @@ export type CustomerUncheckedUpdateWithoutOrderProjectionsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -1331,6 +1381,7 @@ export type CustomerCreateWithoutLoyaltyAccountInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -1352,6 +1403,7 @@ export type CustomerUncheckedCreateWithoutLoyaltyAccountInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -1389,6 +1441,7 @@ export type CustomerUpdateWithoutLoyaltyAccountInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -1410,6 +1463,7 @@ export type CustomerUncheckedUpdateWithoutLoyaltyAccountInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -1431,6 +1485,7 @@ export type CustomerCreateWithoutConversationsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressCreateNestedManyWithoutCustomerInput
@@ -1452,6 +1507,7 @@ export type CustomerUncheckedCreateWithoutConversationsInput = {
   medusaId?: string | null
   source?: string | null
   firstContactAt?: Date | string | null
+  erasedAt?: Date | string | null
   createdAt?: Date | string
   updatedAt?: Date | string
   addresses?: Prisma.AddressUncheckedCreateNestedManyWithoutCustomerInput
@@ -1489,6 +1545,7 @@ export type CustomerUpdateWithoutConversationsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUpdateManyWithoutCustomerNestedInput
@@ -1510,6 +1567,7 @@ export type CustomerUncheckedUpdateWithoutConversationsInput = {
   medusaId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   source?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   firstContactAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
+  erasedAt?: Prisma.NullableDateTimeFieldUpdateOperationsInput | Date | string | null
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   addresses?: Prisma.AddressUncheckedUpdateManyWithoutCustomerNestedInput
@@ -1616,6 +1674,7 @@ export type CustomerSelect<ExtArgs extends runtime.Types.Extensions.InternalArgs
   medusaId?: boolean
   source?: boolean
   firstContactAt?: boolean
+  erasedAt?: boolean
   createdAt?: boolean
   updatedAt?: boolean
   addresses?: boolean | Prisma.Customer$addressesArgs<ExtArgs>
@@ -1639,6 +1698,7 @@ export type CustomerSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Exte
   medusaId?: boolean
   source?: boolean
   firstContactAt?: boolean
+  erasedAt?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["customer"]>
@@ -1652,6 +1712,7 @@ export type CustomerSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Exte
   medusaId?: boolean
   source?: boolean
   firstContactAt?: boolean
+  erasedAt?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }, ExtArgs["result"]["customer"]>
@@ -1665,11 +1726,12 @@ export type CustomerSelectScalar = {
   medusaId?: boolean
   source?: boolean
   firstContactAt?: boolean
+  erasedAt?: boolean
   createdAt?: boolean
   updatedAt?: boolean
 }
 
-export type CustomerOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "phone" | "name" | "email" | "cpf" | "medusaId" | "source" | "firstContactAt" | "createdAt" | "updatedAt", ExtArgs["result"]["customer"]>
+export type CustomerOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "phone" | "name" | "email" | "cpf" | "medusaId" | "source" | "firstContactAt" | "erasedAt" | "createdAt" | "updatedAt", ExtArgs["result"]["customer"]>
 export type CustomerInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   addresses?: boolean | Prisma.Customer$addressesArgs<ExtArgs>
   preferences?: boolean | Prisma.Customer$preferencesArgs<ExtArgs>
@@ -1713,6 +1775,10 @@ export type $CustomerPayload<ExtArgs extends runtime.Types.Extensions.InternalAr
      * Timestamp of first interaction
      */
     firstContactAt: Date | null
+    /**
+     * LGPD Art. 18 erasure marker — set once erasure completes; makes erasure idempotent
+     */
+    erasedAt: Date | null
     createdAt: Date
     updatedAt: Date
   }, ExtArgs["result"]["customer"]>
@@ -2155,6 +2221,7 @@ export interface CustomerFieldRefs {
   readonly medusaId: Prisma.FieldRef<"Customer", 'String'>
   readonly source: Prisma.FieldRef<"Customer", 'String'>
   readonly firstContactAt: Prisma.FieldRef<"Customer", 'DateTime'>
+  readonly erasedAt: Prisma.FieldRef<"Customer", 'DateTime'>
   readonly createdAt: Prisma.FieldRef<"Customer", 'DateTime'>
   readonly updatedAt: Prisma.FieldRef<"Customer", 'DateTime'>
 }

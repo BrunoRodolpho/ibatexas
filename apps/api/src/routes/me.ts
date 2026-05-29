@@ -7,9 +7,16 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { exportCustomerData, anonymizeCustomer } from "@ibatexas/domain";
+import { withLock } from "@ibatexas/tools";
 import { requireAuth } from "../middleware/auth.js";
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
+
+const ErrorResponse = z.object({
+  statusCode: z.number(),
+  error: z.string(),
+  message: z.string(),
+});
 
 const CustomerDataResponse = z.object({
   customer: z.object({
@@ -76,12 +83,22 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       schema: {
         tags: ["me"],
         summary: "Exportar dados pessoais (LGPD Art. 18 — portabilidade)",
-        response: { 200: CustomerDataResponse },
+        response: { 200: CustomerDataResponse, 409: ErrorResponse },
       },
       preHandler: requireAuth,
     },
     async (request, reply) => {
-      const data = await exportCustomerData(request.customerId!);
+      const customerId = request.customerId!;
+      // Coordinate with erasure under one per-customer lock so an export can't
+      // read a profile mid-erase.
+      const data = await withLock(`lgpd:${customerId}`, () => exportCustomerData(customerId));
+      if (!data) {
+        return reply.status(409).send({
+          statusCode: 409,
+          error: "Conflict",
+          message: "Uma operação de privacidade está em andamento. Tente novamente em instantes.",
+        });
+      }
       return reply.send(data);
     },
   );
@@ -99,12 +116,22 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       schema: {
         tags: ["me"],
         summary: "Anonimizar dados pessoais (LGPD Art. 18 — eliminação)",
-        response: { 200: DeleteDataResponse },
+        response: { 200: DeleteDataResponse, 404: ErrorResponse },
       },
       preHandler: requireAuth,
     },
     async (request, reply) => {
-      await anonymizeCustomer(request.customerId!);
+      const customerId = request.customerId!;
+      // One per-customer lock shared with export. Lock contention means a
+      // concurrent erase is already running — idempotent, so report success.
+      const result = await withLock(`lgpd:${customerId}`, () => anonymizeCustomer(customerId));
+      if (result && !result.success) {
+        return reply.status(404).send({
+          statusCode: 404,
+          error: "Not Found",
+          message: "Cliente não encontrado.",
+        });
+      }
       return reply.send({
         success: true,
         message: "Seus dados foram anonimizados conforme a LGPD.",

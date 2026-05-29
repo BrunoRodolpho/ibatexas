@@ -20,6 +20,12 @@ vi.mock("@ibatexas/domain", () => ({
   anonymizeCustomer: mockAnonymizeCustomer,
 }));
 
+// withLock wraps the LGPD export/erase; mock as pass-through so the route logic
+// runs without loading the real @ibatexas/tools -> @adjudicate dist chain.
+vi.mock("@ibatexas/tools", () => ({
+  withLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+}));
+
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
     const customerId = request.headers["x-customer-id"] as string | undefined;
