@@ -20,6 +20,7 @@ const mockIsStreamActive = vi.hoisted(() => vi.fn());
 const mockCreateStream = vi.hoisted(() => vi.fn());
 const mockPushChunk = vi.hoisted(() => vi.fn());
 const mockGetStream = vi.hoisted(() => vi.fn());
+const mockSubscribeToStream = vi.hoisted(() => vi.fn());
 const mockCleanupStream = vi.hoisted(() => vi.fn());
 const mockAcquireWebAgentLock = vi.hoisted(() => vi.fn());
 const mockReleaseWebAgentLock = vi.hoisted(() => vi.fn());
@@ -35,6 +36,7 @@ vi.mock("../streaming/emitter.js", () => ({
   createStream: mockCreateStream,
   pushChunk: mockPushChunk,
   getStream: mockGetStream,
+  subscribeToStream: mockSubscribeToStream,
   cleanupStream: mockCleanupStream,
 }));
 vi.mock("../streaming/execution-queue.js", () => ({

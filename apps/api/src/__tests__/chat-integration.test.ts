@@ -45,12 +45,28 @@ vi.mock("../streaming/execution-queue.js", () => ({
 
 vi.mock("@ibatexas/tools", async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>
+  // Minimal Redis stub. Includes the pub/sub + replay-list surface the real
+  // streaming emitter touches so the cross-replica SSE path resolves cleanly
+  // (empty replay list ⇒ "Sessão não encontrada.") instead of crashing on a
+  // missing duplicate()/subscribe(). No data is published, so the GET-not-found
+  // assertion below is unchanged.
+  const makeRedisStub = (): Record<string, unknown> => ({
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue("OK"),
+    duplicate: () => makeRedisStub(),
+    connect: vi.fn().mockResolvedValue(undefined),
+    subscribe: vi.fn().mockResolvedValue(undefined),
+    unsubscribe: vi.fn().mockResolvedValue(undefined),
+    publish: vi.fn().mockResolvedValue(0),
+    rPush: vi.fn().mockResolvedValue(1),
+    lRange: vi.fn().mockResolvedValue([]),
+    lTrim: vi.fn().mockResolvedValue("OK"),
+    expire: vi.fn().mockResolvedValue(1),
+    quit: vi.fn().mockResolvedValue("OK"),
+  })
   return {
     ...orig,
-    getRedisClient: vi.fn().mockResolvedValue({
-      get: vi.fn().mockResolvedValue(null),
-      set: vi.fn().mockResolvedValue("OK"),
-    }),
+    getRedisClient: vi.fn().mockResolvedValue(makeRedisStub()),
   }
 })
 

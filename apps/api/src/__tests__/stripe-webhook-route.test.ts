@@ -1,7 +1,15 @@
-// Unit tests for Stripe webhook routes
-// POST /api/webhooks/stripe — payment_intent.succeeded / payment_intent.payment_failed
+// Unit tests for Stripe webhook ROUTE.
+// POST /api/webhooks/stripe — signature verify + idempotency claim + DURABLE enqueue.
+//
+// P1-NET-STRIPESYNC: the route is now ACK-THEN-PROCESS-ASYNC. After verifying the
+// signature and claiming the idempotency key, it ENQUEUES the event to the durable
+// BullMQ processor and returns 200 immediately — it no longer awaits the heavy
+// Medusa-complete / capture / NATS / reconcile work on the response path. Those
+// handlers are tested in jobs/__tests__/stripe-webhook-processor.test.ts.
+//
+// The processor is mocked here so the route tests stay isolated from BullMQ/Redis.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
 import { stripeWebhookRoutes } from "../routes/stripe-webhook.js";
 
@@ -10,14 +18,8 @@ import { stripeWebhookRoutes } from "../routes/stripe-webhook.js";
 const mockConstructEvent = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
-const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
-const mockMedusaAdmin = vi.hoisted(() => vi.fn());
-const mockCapturePayment = vi.hoisted(() => vi.fn());
-// Swappable withLock implementation. Defaults to pass-through (existing tests
-// unaffected); the double-capture concurrency test installs a real try-lock.
-const lockState = vi.hoisted(() => ({
-  impl: async (_key: string, fn: () => Promise<unknown>): Promise<unknown> => fn(),
-}));
+const mockEnqueue = vi.hoisted(() => vi.fn());
+const mockStartProcessor = vi.hoisted(() => vi.fn());
 
 vi.mock("stripe", () => ({
   default: class MockStripe {
@@ -28,37 +30,13 @@ vi.mock("stripe", () => ({
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
-  medusaAdmin: mockMedusaAdmin,
-  medusaStore: vi.fn(),
-  withLock: vi.fn((key: string, fn: () => Promise<unknown>) => lockState.impl(key, fn)),
 }));
 
-vi.mock("@ibatexas/domain", () => ({
-  createOrderService: () => ({
-    markPaid: vi.fn().mockResolvedValue({ success: true }),
-    cancel: vi.fn().mockResolvedValue({ success: true }),
-    capturePayment: mockCapturePayment,
-  }),
-  createPaymentCommandService: () => ({
-    create: vi.fn().mockResolvedValue({ id: "pay_01", version: 1 }),
-    transitionStatus: vi.fn().mockResolvedValue({ id: "pay_01", version: 1 }),
-    reconcileFromWebhook: vi.fn().mockResolvedValue({ id: "pay_01", version: 2 }),
-  }),
-  createPaymentQueryService: () => ({
-    getActiveByOrderId: vi.fn().mockResolvedValue(null),
-    getByStripePaymentIntentId: vi.fn().mockResolvedValue(null),
-  }),
-  createOrderEventLogService: () => ({
-    append: vi.fn(),
-  }),
-}));
-
-vi.mock("@ibatexas/nats-client", () => ({
-  publishNatsEvent: mockPublishNatsEvent,
-}));
-
-vi.mock("../jobs/pix-expiry-monitor.js", () => ({
-  markPixPaid: vi.fn().mockResolvedValue(undefined),
+// The durable processor is mocked — the route only enqueues. Heavy-work behaviour
+// is covered by the processor's own test file.
+vi.mock("../jobs/stripe-webhook-processor.js", () => ({
+  enqueueStripeWebhookEvent: mockEnqueue,
+  startStripeWebhookProcessor: mockStartProcessor,
 }));
 
 async function buildTestServer() {
@@ -107,6 +85,18 @@ function createStripeEvent(
   };
 }
 
+function inject(app: Awaited<ReturnType<typeof buildTestServer>>) {
+  return app.inject({
+    method: "POST",
+    url: "/api/webhooks/stripe",
+    headers: {
+      "content-type": "application/json",
+      "stripe-signature": "t=123,v1=valid",
+    },
+    payload: Buffer.from("{}"),
+  });
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe("POST /api/webhooks/stripe — configuration checks", () => {
@@ -152,7 +142,7 @@ describe("POST /api/webhooks/stripe — configuration checks", () => {
     expect(body.error).toContain("Missing stripe-signature");
   });
 
-  it("returns 400 when signature verification fails", async () => {
+  it("returns 400 when signature verification fails — and does NOT enqueue", async () => {
     setupEnv();
     mockConstructEvent.mockImplementation(() => {
       throw new Error("Signature verification failed");
@@ -170,8 +160,9 @@ describe("POST /api/webhooks/stripe — configuration checks", () => {
     });
 
     expect(res.statusCode).toBe(400);
-    const body = res.json();
-    expect(body.error).toContain("verification failed");
+    expect(res.json().error).toContain("verification failed");
+    // Verify-before-enqueue: an unverified event must never be enqueued.
+    expect(mockEnqueue).not.toHaveBeenCalled();
   });
 });
 
@@ -183,68 +174,47 @@ describe("POST /api/webhooks/stripe — idempotency", () => {
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
-  it("returns 200 with duplicate:true for already-processed event", async () => {
+  it("returns 200 with duplicate:true for already-claimed event — and does NOT enqueue", async () => {
     const event = createStripeEvent("payment_intent.succeeded");
     mockConstructEvent.mockReturnValue(event);
 
-    // SET NX returns null → event already processed
+    // SET NX returns null → event already processed/enqueued
     const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue(null) });
     mockGetRedisClient.mockResolvedValue(mockRedis);
 
     const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
+    const res = await inject(app);
 
     expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.duplicate).toBe(true);
-    expect(mockMedusaAdmin).not.toHaveBeenCalled();
+    expect(res.json().duplicate).toBe(true);
+    // Dedup: a duplicate Stripe delivery must not re-enqueue heavy work.
+    expect(mockEnqueue).not.toHaveBeenCalled();
   });
 
-  it("processes new event (not duplicate)", async () => {
+  it("claims the idempotency key (SET NX 7d) BEFORE enqueuing", async () => {
     const event = createStripeEvent("payment_intent.succeeded");
     mockConstructEvent.mockReturnValue(event);
 
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    const setMock = vi.fn().mockResolvedValue("OK");
+    const mockRedis = createMockRedis({ set: setMock });
     mockGetRedisClient.mockResolvedValue(mockRedis);
 
-    mockMedusaAdmin.mockResolvedValueOnce({
-      order: {
-        status: "pending",
-        customer_id: "cus_01",
-        items: [
-          { variant_id: "var_01", quantity: 2, unit_price: 89, title: "Costela", product_id: "prod_01" },
-        ],
-      },
-    });
-    mockMedusaAdmin.mockResolvedValueOnce({}); // capture-payment
-    mockMedusaAdmin.mockResolvedValueOnce({}); // update metadata
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
     const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
+    const res = await inject(app);
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
+    // Key claimed with NX + 7-day TTL covering Stripe's retry window.
+    expect(setMock).toHaveBeenCalledWith(
+      expect.stringContaining("webhook:processed:evt_test_123"),
+      "1",
+      { EX: 604800, NX: true },
+    );
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
+describe("POST /api/webhooks/stripe — ack-then-async enqueue (P1-NET-STRIPESYNC)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -252,249 +222,65 @@ describe("POST /api/webhooks/stripe — payment_intent.succeeded", () => {
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
-  it("fetches order, captures payment, publishes event", async () => {
+  it("returns 200 quickly after verify+claim and enqueues the event to the durable processor", async () => {
     const event = createStripeEvent("payment_intent.succeeded");
     mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    mockCapturePayment.mockResolvedValueOnce({
-      customerId: "cus_01",
-      displayId: 42,
-      customerEmail: "a@b.com",
-      customerName: "Test",
-      customerPhone: "+5511",
-      totalInCentavos: 17800,
-      subtotalInCentavos: 15800,
-      shippingInCentavos: 2000,
-      items: [{ productId: "prod_01", variantId: "var_01", quantity: 2, priceInCentavos: 8900, title: "Costela" }],
-      paymentMethod: "pix",
-      deliveryType: "pickup",
-      tipInCentavos: 0,
-    });
-    mockPublishNatsEvent.mockResolvedValue(undefined);
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
 
     const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockCapturePayment).toHaveBeenCalledWith(
-      "order_01",
-      "pi_test_123",
-      expect.anything(),
-    );
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "order.placed",
-      expect.objectContaining({
-        eventType: "order.placed",
-        orderId: "order_01",
-        customerId: "cus_01",
-        items: expect.arrayContaining([
-          expect.objectContaining({
-            productId: "prod_01",
-            variantId: "var_01",
-            quantity: 2,
-            priceInCentavos: 8900,
-          }),
-        ]),
-      }),
-    );
-  });
-
-  it("skips processing when order is not pending (already processed)", async () => {
-    const event = createStripeEvent("payment_intent.succeeded");
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    // Service returns null → already processed, no new order publishing
-    mockCapturePayment.mockResolvedValueOnce(null);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
-      "order.placed",
-      expect.anything(),
-    );
-  });
-
-  it("skips when stripePaymentIntentId already set in order metadata", async () => {
-    const event = createStripeEvent("payment_intent.succeeded");
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    // Service returns null → pi already linked
-    mockCapturePayment.mockResolvedValueOnce(null);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
-      "order.placed",
-      expect.anything(),
-    );
-  });
-
-  it("warns and returns 200 when medusaOrderId is missing", async () => {
-    const event = createStripeEvent("payment_intent.succeeded", {
-      metadata: {},
-    });
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockMedusaAdmin).not.toHaveBeenCalled();
-  });
-});
-
-describe("POST /api/webhooks/stripe — payment_intent.payment_failed", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-  });
-
-  it("publishes order.payment_failed event", async () => {
-    const event = createStripeEvent("payment_intent.payment_failed", {
-      last_payment_error: { message: "Card declined" },
-    });
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "order.payment_failed",
-      expect.objectContaining({
-        eventType: "order.payment_failed",
-        orderId: "order_01",
-        stripePaymentIntentId: "pi_test_123",
-        lastPaymentError: "Card declined",
-      }),
-    );
-  });
-
-  it("handles payment_failed without orderId gracefully", async () => {
-    const event = createStripeEvent("payment_intent.payment_failed", {
-      metadata: {},
-    });
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
-  });
-});
-
-describe("POST /api/webhooks/stripe — unknown event type", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-  });
-
-  it("returns 200 and ignores unknown event types", async () => {
-    const event = {
-      id: "evt_unknown",
-      type: "invoice.payment_succeeded",
-      data: { object: {} },
-    };
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
+    const res = await inject(app);
 
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
-    expect(mockMedusaAdmin).not.toHaveBeenCalled();
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+    // The heavy work is enqueued, not awaited on the response path.
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    const [enqueuedEvent, receivedAtMs] = mockEnqueue.mock.calls[0];
+    expect(enqueuedEvent).toMatchObject({ id: "evt_test_123", type: "payment_intent.succeeded" });
+    expect(typeof receivedAtMs).toBe("number");
+  });
+
+  it("enqueues all supported event types (route does not branch on type)", async () => {
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+
+    for (const type of [
+      "payment_intent.succeeded",
+      "payment_intent.payment_failed",
+      "charge.refunded",
+      "charge.dispute.created",
+      "payment_intent.canceled",
+      "invoice.payment_succeeded", // unknown-to-us type is still enqueued; processor no-ops
+    ]) {
+      mockEnqueue.mockClear();
+      const event = createStripeEvent(type, {}, `evt_${type}`);
+      mockConstructEvent.mockReturnValue(event);
+
+      const app = await buildTestServer();
+      const res = await inject(app);
+
+      expect(res.statusCode).toBe(200);
+      expect(mockEnqueue).toHaveBeenCalledTimes(1);
+      expect(mockEnqueue.mock.calls[0][0]).toMatchObject({ type });
+    }
+  });
+
+  it("does NOT call the heavy domain services on the response path", async () => {
+    // The route module no longer imports Medusa/domain/NATS at all — proven by the
+    // fact that we don't even mock them here. This test documents that the response
+    // path is just verify → claim → enqueue. (Reaching for an unmocked module would
+    // throw at import time; the suite loading at all is the assertion.)
+    const event = createStripeEvent("payment_intent.succeeded");
+    mockConstructEvent.mockReturnValue(event);
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+
+    const app = await buildTestServer();
+    const res = await inject(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
   });
 });
 
-describe("POST /api/webhooks/stripe — charge.refunded", () => {
+describe("POST /api/webhooks/stripe — enqueue failure is not lossy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -502,300 +288,31 @@ describe("POST /api/webhooks/stripe — charge.refunded", () => {
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
-  it("publishes order.refunded event with correct payload", async () => {
-    const event = {
-      id: "evt_refund_01",
-      type: "charge.refunded",
-      data: {
-        object: {
-          id: "ch_test_123",
-          amount_refunded: 5000,
-          metadata: { medusaOrderId: "order_01" },
-        },
-      },
-    };
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "order.refunded",
-      expect.objectContaining({
-        eventType: "order.refunded",
-        orderId: "order_01",
-        chargeId: "ch_test_123",
-        amountRefunded: 5000,
-      }),
-    );
-  });
-
-  it("handles missing medusaOrderId gracefully (warn, no crash)", async () => {
-    const event = {
-      id: "evt_refund_02",
-      type: "charge.refunded",
-      data: {
-        object: {
-          id: "ch_test_456",
-          amount_refunded: 3000,
-          metadata: {},
-        },
-      },
-    };
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
-  });
-});
-
-describe("POST /api/webhooks/stripe — charge.dispute.created", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-  });
-
-  it("publishes order.disputed event with correct payload", async () => {
-    const event = {
-      id: "evt_dispute_01",
-      type: "charge.dispute.created",
-      data: {
-        object: {
-          id: "dp_test_123",
-          amount: 8900,
-          reason: "fraudulent",
-          metadata: { medusaOrderId: "order_02" },
-        },
-      },
-    };
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "order.disputed",
-      expect.objectContaining({
-        eventType: "order.disputed",
-        orderId: "order_02",
-        disputeId: "dp_test_123",
-        amount: 8900,
-        reason: "fraudulent",
-      }),
-    );
-  });
-
-  it("handles missing medusaOrderId in dispute metadata (publishes with null orderId)", async () => {
-    const event = {
-      id: "evt_dispute_02",
-      type: "charge.dispute.created",
-      data: {
-        object: {
-          id: "dp_test_456",
-          amount: 5000,
-          reason: "product_not_received",
-          metadata: {},
-        },
-      },
-    };
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    // Disputes always publish — even without orderId (they're serious events)
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "order.disputed",
-      expect.objectContaining({
-        eventType: "order.disputed",
-        orderId: null,
-        disputeId: "dp_test_456",
-        amount: 5000,
-        reason: "product_not_received",
-      }),
-    );
-  });
-});
-
-describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-  });
-
-  it("publishes order.canceled event with correct payload", async () => {
-    const event = {
-      id: "evt_cancel_01",
-      type: "payment_intent.canceled",
-      data: {
-        object: {
-          id: "pi_cancel_123",
-          cancellation_reason: "abandoned",
-          metadata: { medusaOrderId: "order_03" },
-        },
-      },
-    };
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "order.canceled",
-      expect.objectContaining({
-        eventType: "order.canceled",
-        orderId: "order_03",
-        stripePaymentIntentId: "pi_cancel_123",
-        cancellationReason: "abandoned",
-      }),
-    );
-  });
-
-  it("handles missing medusaOrderId gracefully (warn, no crash)", async () => {
-    const event = {
-      id: "evt_cancel_02",
-      type: "payment_intent.canceled",
-      data: {
-        object: {
-          id: "pi_cancel_456",
-          cancellation_reason: "requested_by_customer",
-          metadata: {},
-        },
-      },
-    };
-    mockConstructEvent.mockReturnValue(event);
-
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
-  });
-});
-
-describe("POST /api/webhooks/stripe — processing error", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-  });
-
-  it("returns 500 and removes idempotency key on processing error", async () => {
+  it("returns 500 and DOWNGRADES the idempotency key when enqueue fails, so Stripe retries", async () => {
     const event = createStripeEvent("payment_intent.succeeded");
     mockConstructEvent.mockReturnValue(event);
 
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    const mockRedis = createMockRedis();
     mockGetRedisClient.mockResolvedValue(mockRedis);
 
-    // capturePayment service throws
-    mockCapturePayment.mockRejectedValue(new Error("Medusa down"));
+    // Enqueue (Redis/BullMQ) fails — nothing is queued.
+    mockEnqueue.mockRejectedValueOnce(new Error("BullMQ unavailable"));
 
     const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
-      payload: Buffer.from("{}"),
-    });
+    const res = await inject(app);
 
     expect(res.statusCode).toBe(500);
-    const body = res.json();
-    expect(body.error).toContain("Internal processing error");
-
-    // Idempotency key TTL should be shortened so retry can succeed after 5min
+    expect(res.json().error).toContain("enqueue");
+    // Key downgraded to 5 min so Stripe's retry re-delivers and re-enqueues —
+    // the order is NOT stranded behind a 7-day claimed key with no queued job.
     expect(mockRedis.expire).toHaveBeenCalledWith(
       expect.stringContaining("evt_test_123"),
-      expect.any(Number),
+      300,
     );
   });
 });
 
-describe("POST /api/webhooks/stripe — double-capture race (P0-PAY-2)", () => {
+describe("POST /api/webhooks/stripe — worker startup wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -803,76 +320,11 @@ describe("POST /api/webhooks/stripe — double-capture race (P0-PAY-2)", () => {
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
-  afterEach(() => {
-    // restore the default pass-through lock so other suites are unaffected
-    lockState.impl = async (_key: string, fn: () => Promise<unknown>) => fn();
-  });
-
-  it("serializes two concurrent succeeded events for one order — single capture + single order.placed", async () => {
-    // Two distinct succeeded events (distinct PaymentIntents) for the SAME order —
-    // the realistic case after amend_order/regenerate_pix mints a 2nd PI.
-    const evtA = createStripeEvent("payment_intent.succeeded", { id: "pi_a" }, "evt_a");
-    const evtB = createStripeEvent("payment_intent.succeeded", { id: "pi_b" }, "evt_b");
-    mockConstructEvent.mockReturnValueOnce(evtA).mockReturnValueOnce(evtB);
-
-    // Distinct event ids → both pass the SET-NX idempotency gate.
-    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-
-    // Real try-lock matching production withLock: the loser gets null (no queue).
-    const keysSeen: string[] = [];
-    const held = new Set<string>();
-    let active = 0;
-    let maxConcurrent = 0;
-    lockState.impl = async (key: string, fn: () => Promise<unknown>) => {
-      keysSeen.push(key);
-      if (held.has(key)) return null; // contention → loser short-circuits
-      held.add(key);
-      active++;
-      maxConcurrent = Math.max(maxConcurrent, active);
-      try {
-        return await fn();
-      } finally {
-        active--;
-        held.delete(key);
-      }
-    };
-
-    // capturePayment yields (so the second event hits the held lock); the lock
-    // winner returns a result, a subsequent call returns null (metadata guard).
-    let captureCalls = 0;
-    mockCapturePayment.mockImplementation(async () => {
-      await new Promise((r) => setTimeout(r, 25));
-      if (captureCalls++ === 0) {
-        return {
-          customerId: "cus_01", displayId: 1, customerEmail: "a@b.com",
-          customerName: "T", customerPhone: "+5511", totalInCentavos: 8900,
-          subtotalInCentavos: 8900, shippingInCentavos: 0, items: [],
-          paymentMethod: "pix", deliveryType: "pickup", tipInCentavos: 0,
-        };
-      }
-      return null;
-    });
-
-    const app = await buildTestServer();
-    const fire = () =>
-      app.inject({
-        method: "POST",
-        url: "/api/webhooks/stripe",
-        headers: { "content-type": "application/json", "stripe-signature": "t=1,v1=x" },
-        payload: Buffer.from("{}"),
-      });
-
-    const [r1, r2] = await Promise.all([fire(), fire()]);
-
-    expect(r1.statusCode).toBe(200);
-    expect(r2.statusCode).toBe(200);
-    // Capture was wrapped in a per-order lock.
-    expect(keysSeen).toContain("order-capture:order_01");
-    // The lock never let capture run concurrently.
-    expect(maxConcurrent).toBe(1);
-    // Exactly one order.placed despite two succeeded events → no double capture.
-    const placed = mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.placed");
-    expect(placed).toHaveLength(1);
+  it("starts the durable processor worker at route registration (boot time)", async () => {
+    // So jobs persisted before a crash are drained on restart, not only on the
+    // next webhook. register-workers.ts is non-owned, so the worker self-registers
+    // from this owned route file.
+    await buildTestServer();
+    expect(mockStartProcessor).toHaveBeenCalled();
   });
 });

@@ -28,13 +28,14 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
-import { Channel } from "@ibatexas/types";
+import { Channel, type StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
 import { optionalAuth } from "../middleware/auth.js";
 import {
   createStream,
   pushChunk,
   getStream,
+  subscribeToStream,
   cleanupStream,
 } from "../streaming/emitter.js";
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
@@ -55,20 +56,6 @@ const PostMessageResponse = z.object({
 const StreamParams = z.object({
   sessionId: z.string().uuid(),
 });
-
-async function waitForStream(
-  sessionId: string,
-  maxMs = 2000,
-  intervalMs = 100,
-): Promise<ReturnType<typeof getStream>> {
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    const entry = getStream(sessionId);
-    if (entry) return entry;
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  return undefined;
-}
 
 export async function chatRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
@@ -260,33 +247,79 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       reply.raw.setHeader("X-Accel-Buffering", "no");
       reply.raw.flushHeaders();
 
-      const entry = await waitForStream(sessionId);
-      if (!entry) {
+      // Same-replica fast path: if the producer ran on THIS replica, the
+      // in-memory entry exists and we serve directly off its EventEmitter.
+      const entry = getStream(sessionId);
+      if (entry) {
+        for (const chunk of entry.buffer) {
+          reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          if (chunk.type === "done" || chunk.type === "error") {
+            reply.raw.end();
+            return;
+          }
+        }
+
+        const onChunk = (chunk: unknown): void => {
+          reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          const c = chunk as { type: string };
+          if (c.type === "done" || c.type === "error") {
+            entry.emitter.off("chunk", onChunk);
+            reply.raw.end();
+          }
+        };
+
+        entry.emitter.on("chunk", onChunk);
+        request.raw.on("close", () => {
+          entry.emitter.off("chunk", onChunk);
+        });
+        return;
+      }
+
+      // Cross-replica path: the producer ran on a *different* replica, so there
+      // is no local entry. Stream via Redis Pub/Sub + replay list, polling
+      // briefly (2s) for the producer to publish its first chunk — same grace
+      // the in-memory bridge previously gave a GET that raced the POST.
+      let subscription: Awaited<ReturnType<typeof subscribeToStream>>;
+      let ended = false;
+
+      const writeChunk = (chunk: StreamChunk): void => {
+        if (ended) return;
+        reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        if (chunk.type === "done" || chunk.type === "error") {
+          ended = true;
+          void subscription?.close();
+          reply.raw.end();
+        }
+      };
+
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && !subscription) {
+        subscription = await subscribeToStream(sessionId, writeChunk);
+        if (subscription) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      if (!subscription) {
         reply.raw.write(`data: ${JSON.stringify({ type: "error", message: "Sessão não encontrada." })}\n\n`);
         reply.raw.end();
         return;
       }
 
-      for (const chunk of entry.buffer) {
-        reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        if (chunk.type === "done" || chunk.type === "error") {
-          reply.raw.end();
-          return;
-        }
+      // The whole stream (incl. a terminal done/error) can be delivered
+      // synchronously from the replay list *inside* subscribeToStream, before
+      // `subscription` was assignable — in which case writeChunk's close() ran
+      // as a no-op. Close now so we never leak the duplicated subscriber.
+      if (ended) {
+        void subscription.close();
+        return;
       }
 
-      const onChunk = (chunk: unknown): void => {
-        reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        const c = chunk as { type: string };
-        if (c.type === "done" || c.type === "error") {
-          entry.emitter.off("chunk", onChunk);
-          reply.raw.end();
-        }
-      };
-
-      entry.emitter.on("chunk", onChunk);
+      // Otherwise release the duplicated Redis subscriber if the client
+      // disconnects before the stream terminates.
       request.raw.on("close", () => {
-        entry.emitter.off("chunk", onChunk);
+        if (ended) return;
+        ended = true;
+        void subscription?.close();
       });
     },
   );
