@@ -73,8 +73,11 @@ export async function getNatsConnection(): Promise<NatsConnection> {
   // pendingConnection is harmless (natsConn check succeeds first).
 }
 
-// Critical events that require outbox durability
-const OUTBOX_EVENTS = new Set([
+// Critical events that require outbox durability.
+// MUST stay in sync with CRITICAL_EVENTS in apps/api/src/jobs/outbox-retry.ts —
+// an event in the retry set but absent here is never persisted, so the retry job
+// finds an empty list and silently loses it (see the drift-guard test).
+export const OUTBOX_EVENTS = new Set([
   "order.placed",
   "reservation.created",
   "order.status_changed",
@@ -82,6 +85,7 @@ const OUTBOX_EVENTS = new Set([
   "order.disputed",
   "order.canceled",
   "order.payment_failed",
+  "payment.status_changed",
 ])
 
 // Optional Redis outbox writer (injected by apps/api at startup)

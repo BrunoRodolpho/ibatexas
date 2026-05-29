@@ -6,23 +6,19 @@
 
 import crypto from "node:crypto";
 import { getRedisClient, rk } from "@ibatexas/tools";
-import { publishNatsEvent, outboxKey } from "@ibatexas/nats-client";
+import { publishNatsEvent, outboxKey, OUTBOX_EVENTS } from "@ibatexas/nats-client";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import { createQueue, createWorker, type Job } from "./queue.js";
 
 const REPEAT_INTERVAL_MS = 60_000; // 60 seconds
-const CRITICAL_EVENTS = [
-  "order.placed",
-  "reservation.created",
-  "order.status_changed",
-  "order.refunded",
-  "order.disputed",
-  "order.canceled",
-  "order.payment_failed",
-  "payment.status_changed",
-] as const;
+// Events the retry job re-publishes. Single source of truth: the retry set IS the
+// set actually persisted to the outbox (OUTBOX_EVENTS in @ibatexas/nats-client), so
+// an event can never be "retried but never persisted" (the P0-PAY-4 regression,
+// where payment.status_changed was retried but absent from OUTBOX_EVENTS, making
+// LRANGE always empty and silently losing order auto-confirm).
+export const CRITICAL_EVENTS: readonly string[] = [...OUTBOX_EVENTS];
 
 let queue: Queue | null = null;
 let worker: Worker | null = null;
