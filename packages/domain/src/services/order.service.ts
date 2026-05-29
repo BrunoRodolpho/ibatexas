@@ -217,9 +217,12 @@ export function createOrderService(medusaAdminFn: MedusaFetch) {
       if (order.status !== "pending") return null
       if (order.metadata?.["stripePaymentIntentId"]) return null
 
-      // Guard against stale PI from pre-amendment (total changed but old PI was captured)
+      // Guard against stale PI from pre-amendment (total changed but old PI was captured).
+      // order.total is reais (Medusa v2 — see :251); options.amountInCentavos is the Stripe
+      // minor unit. Compare in centavos, never reais-vs-centavos (CLAUDE.md rule #2): the old
+      // `!== order.total` mismatched for every order > R$0,01, so capture silently no-op'd.
       if (options?.amountInCentavos != null && order.total != null) {
-        if (options.amountInCentavos !== order.total) {
+        if (options.amountInCentavos !== Math.round(order.total * 100)) {
           return null
         }
       }
