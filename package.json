@@ -41,9 +41,10 @@
       "@rushstack/node-core-library>ajv": "@medusajs/cli>...>@rushstack/node-core-library>ajv transitive fix — GHSA-2g4f-4pwh-qvx6 ReDoS via $data option. Scoped (not global) because @eslint/eslintrc uses ajv v6 API and breaks if forced to v8 ('NOT SUPPORTED: option missingRefs' / 'Cannot set defaultMeta'). Remove when rushstack updates.",
       "esbuild": "@medusajs/framework>vite v5>esbuild transitive fix — GHSA-67mh-4wv8-2f99 dev-server CORS issue. Remove when medusa upgrades vite to v6+ (vite 6.4.2+ already pulls esbuild >=0.25).",
       "fast-jwt": "apps/api>@fastify/jwt transitive fix — (1) GHSA-rp9m-7r4c-75qg cache confusion patched 6.2.0; (2) GHSA-gmvf-9v4p-v8jc CRITICAL JWT auth-bypass (empty-HMAC-secret forgery) patched 6.2.4. Floor is >=6.2.4 to clear the critical. @fastify/jwt@10 is the only consumer and the app's sole auth gate (Twilio Verify OTP → JWT). Remove when @fastify/jwt pulls fast-jwt >=6.2.4.",
-      "protobufjs": "apps/api>@sentry/node transitive fix — GHSA-xq3m-2v4x-88gg arbitrary code execution. Patched in 7.5.5+.",
+      "protobufjs": "apps/api>@sentry/node transitive fix — GHSA-xq3m-2v4x-88gg ACE (patched 7.5.5) + the 8.0.0-8.0.1 code-injection-via-bytes-field / DoS cluster (GHSA-66ff-xgx4-vchm et al.) patched 8.0.2. Floor >=8.0.2 (the tree pulls the 8.x line).",
       "fastify": "apps/api direct dep fix — GHSA-247c-9743-5963 body schema validation bypass via leading-space Content-Type. Patched in 5.8.5+.",
-      "next": "apps/admin + apps/web direct dep fix — GHSA-q4gf-8mx6-v5v3 DoS via Server Components. Patched in 16.2.3+."
+      "next": "apps/admin + apps/web direct dep fix — GHSA-q4gf-8mx6-v5v3 DoS via Server Components (patched 16.2.3) + the <16.2.5/<16.2.6 middleware/proxy-bypass + SSRF + DoS wave (GHSA-8h8q-6873-q5fj, GHSA-c4j6-fc7j-m34r, GHSA-mg66-mrh9-m8jx, GHSA-26hh-7cqf-hhc6). Floor >=16.2.6.",
+      "axios": "transitive via twilio on the prod auth (Verify OTP) + WhatsApp send path — prototype-pollution + header-injection gadgets, all <1.15.2 (incl. CVE-2025-62718 NO_PROXY). Single root override covers api/tools/claustrum consumers."
     },
     "overrides": {
       "minimatch": "10.2.4",
@@ -59,9 +60,10 @@
       "@rushstack/node-core-library>ajv": "8.18.0",
       "esbuild": "0.25.0",
       "fast-jwt": ">=6.2.4",
-      "protobufjs": ">=7.5.5",
+      "protobufjs": ">=8.0.2",
       "fastify": ">=5.8.5",
-      "next": ">=16.2.3",
+      "next": ">=16.2.6",
+      "axios": ">=1.15.2",
       "@adjudicate/core": "workspace:*",
       "@adjudicate/canonical": "workspace:*",
       "@adjudicate/runtime": "workspace:*",
