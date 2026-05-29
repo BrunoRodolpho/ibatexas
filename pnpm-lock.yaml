@@ -926,6 +926,21 @@ importers:
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../../packages/nats-client
+      '@ibatexas/pack-customer-onboarding':
+        specifier: workspace:*
+        version: link:../../packages/pack-customer-onboarding
+      '@ibatexas/pack-orders':
+        specifier: workspace:*
+        version: link:../../packages/pack-orders
+      '@ibatexas/pack-payments':
+        specifier: workspace:*
+        version: link:../../packages/pack-payments
+      '@ibatexas/pack-reservations':
+        specifier: workspace:*
+        version: link:../../packages/pack-reservations
+      '@ibatexas/pack-whatsapp':
+        specifier: workspace:*
+        version: link:../../packages/pack-whatsapp
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../../packages/tools
