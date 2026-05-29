@@ -11,6 +11,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { withLock } from "@ibatexas/tools";
 import {
   createPaymentCommandService,
   createPaymentQueryService,
@@ -132,50 +133,91 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         });
       }
 
-      const refundAmount = request.body.amountInCentavos ?? payment.amountInCentavos;
-      const refundableAmount = payment.amountInCentavos - (payment.refundedAmountCentavos ?? 0);
+      // Serialize + make the read-check-write atomic per payment. Without a lock,
+      // two managers / a double-click both read the same refundedAmountCentavos and
+      // both pass the over-refund guard. We acquire withLock, RE-READ inside it, and
+      // recompute the refundable amount against fresh state. We bump refundedAmount
+      // BEFORE flipping status so a partial failure fails safe (over-counts refunded
+      // → blocks further refunds, never enables an over-refund). Full single-write
+      // atomicity (status + amount in one write) needs the domain command to accept
+      // the amount; tracked for the RC-A1 cutover work.
+      const outcome = await withLock(`payment:${payment.id}`, async () => {
+        const fresh = await paymentQuerySvc.getById(payment.id);
+        if (!fresh) {
+          return { code: 404 as const, body: { error: "Pagamento não encontrado." } };
+        }
+        if (!refundableStatuses.includes(fresh.status)) {
+          return {
+            code: 422 as const,
+            body: { error: "Pagamento não está em estado que permite reembolso.", currentStatus: fresh.status },
+          };
+        }
 
-      if (refundAmount > refundableAmount) {
-        return reply.code(422).send({
-          error: "Valor de reembolso excede o saldo reembolsável.",
-          code: "OVER_REFUND",
-          maxRefundable: refundableAmount,
+        const refundAmount = request.body.amountInCentavos ?? fresh.amountInCentavos;
+        const alreadyRefunded = fresh.refundedAmountCentavos ?? 0;
+        const refundableAmount = fresh.amountInCentavos - alreadyRefunded;
+
+        if (refundAmount > refundableAmount) {
+          return {
+            code: 422 as const,
+            body: { error: "Valor de reembolso excede o saldo reembolsável.", code: "OVER_REFUND", maxRefundable: refundableAmount },
+          };
+        }
+
+        const isFullRefund = refundAmount >= refundableAmount;
+        const targetStatus = isFullRefund ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED;
+        const totalRefunded = alreadyRefunded + refundAmount;
+
+        // Fail-safe ordering: bump the tracked refunded amount first, then transition.
+        await prisma.payment.update({
+          where: { id: fresh.id },
+          data: { refundedAmountCentavos: totalRefunded },
+        });
+        const result = await paymentCmdSvc.transitionStatus(fresh.id, {
+          newStatus: targetStatus,
+          actor: "admin",
+          actorId: staffId,
+          reason: request.body.reason ?? "Reembolso emitido pelo admin",
+        });
+
+        return {
+          code: 200 as const,
+          version: result.version,
+          refundAmount,
+          totalRefunded,
+          targetStatus,
+          previousStatus: fresh.status,
+          method: fresh.method,
+        };
+      });
+
+      if (!outcome) {
+        return reply.code(409).send({
+          error: "Outro reembolso para este pagamento está em andamento. Tente novamente.",
+          code: "REFUND_IN_PROGRESS",
         });
       }
-
-      const isFullRefund = refundAmount >= refundableAmount;
-      const targetStatus = isFullRefund ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED;
-
-      const result = await paymentCmdSvc.transitionStatus(payment.id, {
-        newStatus: targetStatus,
-        actor: "admin",
-        actorId: staffId,
-        reason: request.body.reason ?? "Reembolso emitido pelo admin",
-      });
-
-      // Update refunded amount
-      await prisma.payment.update({
-        where: { id: payment.id },
-        data: { refundedAmountCentavos: payment.refundedAmountCentavos + refundAmount },
-      });
+      if (outcome.code !== 200) {
+        return reply.code(outcome.code).send(outcome.body);
+      }
 
       await publishNatsEvent("payment.status_changed", {
         eventType: "payment.status_changed",
         orderId: id,
         paymentId: payment.id,
-        previousStatus: payment.status,
-        newStatus: targetStatus,
-        method: payment.method,
-        version: result.version,
+        previousStatus: outcome.previousStatus,
+        newStatus: outcome.targetStatus,
+        method: outcome.method,
+        version: outcome.version,
         timestamp: new Date().toISOString(),
       } satisfies PaymentStatusChangedEvent & { eventType: string });
 
       return reply.send({
         success: true,
-        version: result.version,
-        refundedAmount: refundAmount,
-        totalRefunded: payment.refundedAmountCentavos + refundAmount,
-        newStatus: targetStatus,
+        version: outcome.version,
+        refundedAmount: outcome.refundAmount,
+        totalRefunded: outcome.totalRefunded,
+        newStatus: outcome.targetStatus,
       });
     },
   );
