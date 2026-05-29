@@ -18,12 +18,15 @@
 //   - The Decision-handling switch is the same shape as PART X.1 §9 of
 //     the master plan brief.
 
+import { randomUUID } from "node:crypto";
 import type { FastifyReply } from "fastify";
-import type {
-  Decision,
-  IntentEnvelope,
-} from "@adjudicate/core";
-import { getConductor } from "../../claustrum-bootstrap.js";
+import type { Decision, IntentEnvelope } from "@adjudicate/core";
+import { buildEnvelope } from "@adjudicate/core";
+import {
+  getConductor,
+  policyForKind,
+  tryGetConductor,
+} from "../../claustrum-bootstrap.js";
 
 // ── Narrowed envelope shape ─────────────────────────────────────────────────
 
@@ -213,4 +216,60 @@ export function replyForIntent(reply: FastifyReply, result: IntentResult): Fasti
     case "not_customer_envelope":
       return reply.code(400).send({ ok: false, error: "not_customer_envelope" });
   }
+}
+
+// ── Lazy-conductor adapter (RC-A1 Phase B) ───────────────────────────────────
+
+export type MutationOutcome<T> =
+  | { readonly ran: true; readonly result: T }
+  | { readonly ran: false; readonly intent: IntentResult };
+
+/**
+ * Run a single customer-driven mutation under the lazy-conductor pattern.
+ *
+ * Pre-activation (`tryGetConductor()` → null): runs the legacy direct mutation,
+ * BYTE-EQUIVALENT to pre-cutover behaviour. Post-activation: builds a
+ * `principal:"user"` IntentEnvelope, resolves the per-kind PolicyBundle, submits
+ * it through the Adjudicator port, and runs the mutation ONLY on EXECUTE (as the
+ * `onExecute` callback). A non-EXECUTE decision (REFUSE/DEFER/…) runs no mutation
+ * and is returned as a typed `IntentResult` for `replyForIntent`.
+ *
+ * This is the per-route seam the activation flip closes: until
+ * `bootstrapClaustrum()` is called every caller is inert (legacy path); after,
+ * every caller routes through the kernel. The legacy branch here is removed in
+ * the same atomic commit as the flip (no permanent dual-path drift).
+ */
+export async function adjudicateCustomerMutation<T>(opts: {
+  readonly kind: string;
+  readonly payload: unknown;
+  readonly customerId: string;
+  /** Domain state the kind's PolicyBundle guards inspect (caller assembles). */
+  readonly state: unknown;
+  /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
+  readonly legacy: () => Promise<T>;
+}): Promise<MutationOutcome<T>> {
+  if (tryGetConductor() === null) {
+    return { ran: true, result: await opts.legacy() };
+  }
+  const envelope = buildEnvelope({
+    kind: opts.kind,
+    payload: opts.payload,
+    actor: { principal: "user", sessionId: `web:${opts.customerId}` },
+    taint: "UNTRUSTED",
+    nonce: randomUUID(),
+  });
+  let result: T | undefined;
+  const intent = await runCustomerIntent({
+    envelope,
+    state: opts.state,
+    policy: policyForKind(opts.kind),
+    onExecute: async () => {
+      result = await opts.legacy();
+      return result;
+    },
+  });
+  if (intent.kind === "execute") {
+    return { ran: true, result: result as T };
+  }
+  return { ran: false, intent };
 }

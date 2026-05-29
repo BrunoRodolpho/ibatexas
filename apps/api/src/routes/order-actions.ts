@@ -33,7 +33,12 @@ import {
 import { getEffectivePonr } from "@ibatexas/domain";
 import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from "@ibatexas/tools";
 import { type AgentContext, Channel } from "@ibatexas/types";
+import type { OrderNoteAddPayload } from "@ibatexas/pack-orders";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  adjudicateCustomerMutation,
+  replyForIntent,
+} from "./__shared__/customer-intent-gateway.js";
 
 /** Build a minimal AgentContext for API-originated tool calls. */
 function apiContext(customerId: string): AgentContext {
@@ -611,23 +616,46 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
-      const note = await prisma.orderNote.create({
-        data: {
+      // Legacy direct mutation — preserved verbatim. Gated by adjudication when
+      // the conductor is active (RC-A1 Phase B lazy-conductor); byte-equivalent
+      // to pre-cutover while inert.
+      const addNote = async () => {
+        const note = await prisma.orderNote.create({
+          data: {
+            orderId: id,
+            author: "customer",
+            authorId: customerId,
+            content: request.body.content,
+          },
+        });
+
+        await publishNatsEvent("order.note_added", {
+          eventType: "order.note_added",
           orderId: id,
+          noteId: note.id,
           author: "customer",
-          authorId: customerId,
-          content: request.body.content,
-        },
-      });
+          timestamp: new Date().toISOString(),
+        });
 
-      await publishNatsEvent("order.note_added", {
-        eventType: "order.note_added",
-        orderId: id,
-        noteId: note.id,
-        author: "customer",
-        timestamp: new Date().toISOString(),
-      });
+        return note;
+      };
 
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.note.add",
+        payload: {
+          orderId: id,
+          body: request.body.content,
+        } satisfies OrderNoteAddPayload,
+        customerId,
+        // OrderState the orders PolicyBundle inspects for order.note.add: auth
+        // (customerId non-null) + order presence; lastAction omitted (undefined
+        // ⇒ not "cancelled" ⇒ allowed, matching legacy "note on any owned order").
+        state: { ctx: { channel: "web", customerId, cartId: null, orderId: id } },
+        legacy: addNote,
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+
+      const note = outcome.result;
       return reply.code(201).send({ id: note.id, content: note.content, createdAt: note.createdAt.toISOString() });
     },
   );

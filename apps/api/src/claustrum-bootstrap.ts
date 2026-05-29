@@ -116,6 +116,7 @@ import { whatsappPack, whatsappCapabilityPlanner } from "@ibatexas/pack-whatsapp
 import { requireSecret } from "./utils/require-secret.js";
 import {
   composePolicyRouter,
+  resolveCapabilityPolicy,
   type CapabilityPolicyPack,
 } from "./claustrum/capability-policy.js";
 import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
@@ -130,6 +131,18 @@ export function getConductor(): Conductor {
       "Claustrum Conductor not initialized. Call bootstrapClaustrum() in server.ts before serving requests.",
     );
   }
+  return _conductor;
+}
+
+/**
+ * Non-throwing conductor accessor for the lazy-conductor route pattern (RC-A1
+ * Phase B). Returns `null` when the conductor is not yet bootstrapped (the
+ * inert, pre-activation state) so a route can fall back to its legacy direct
+ * path. Post-activation (`bootstrapClaustrum()` called) it returns the live
+ * conductor and the route adjudicates the mutation through the kernel. The
+ * legacy fallback is removed in the same commit as the activation flip.
+ */
+export function tryGetConductor(): Conductor | null {
   return _conductor;
 }
 
@@ -438,6 +451,18 @@ const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> = [
 
 /** One kind-dispatching PolicyBundle over every installed pack (built once). */
 const IBATEXAS_POLICY_ROUTER = composePolicyRouter(IBATEXAS_POLICY_PACKS);
+
+/**
+ * Resolve the concrete per-kind PolicyBundle for the explicit HTTP-route path
+ * (RC-A1 Phase B). Routes that build their own `principal:"user"` envelope pass
+ * the result to `runCustomerIntent`. Returns null for a kind no installed pack
+ * owns — the audited bridge then fails closed (REFUSE).
+ */
+export function policyForKind(
+  kind: string,
+): PolicyBundle<string, unknown, unknown> | null {
+  return resolveCapabilityPolicy(IBATEXAS_POLICY_PACKS, kind);
+}
 
 /** The packs' capability planners — union'd by the production planner. */
 const IBATEXAS_CAPABILITY_PLANNERS = [
