@@ -19,7 +19,31 @@ export async function getRedisClient(): Promise<RedisClientType> {
       connectingPromise = null
       throw new Error("REDIS_URL env var required")
     }
-    const client = createClient({ url: redisUrl })
+    // Connect timeout + bounded reconnect so a Redis stall fails fast instead of
+    // hanging callers indefinitely. All knobs are env-configurable (Hard Rule #3).
+    const connectTimeout = process.env.REDIS_CONNECT_TIMEOUT_MS
+      ? Number(process.env.REDIS_CONNECT_TIMEOUT_MS)
+      : 5_000
+    const maxReconnectAttempts = process.env.REDIS_MAX_RECONNECT_ATTEMPTS
+      ? Number(process.env.REDIS_MAX_RECONNECT_ATTEMPTS)
+      : 10
+    const maxReconnectDelay = process.env.REDIS_RECONNECT_MAX_DELAY_MS
+      ? Number(process.env.REDIS_RECONNECT_MAX_DELAY_MS)
+      : 3_000
+    const client = createClient({
+      url: redisUrl,
+      socket: {
+        connectTimeout,
+        // Bounded backoff: linear up to maxReconnectDelay; give up after
+        // maxReconnectAttempts so callers get a connection error rather than a hang.
+        reconnectStrategy: (retries: number) => {
+          if (retries >= maxReconnectAttempts) {
+            return new Error("Redis: max reconnect attempts exceeded")
+          }
+          return Math.min((retries + 1) * 200, maxReconnectDelay)
+        },
+      },
+    })
     // Only log on transient errors; do NOT nullify singleton (fights auto-reconnect)
     client.on("error", (err) => {
       console.error("[Redis] Client error:", (err as Error).message)
