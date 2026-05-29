@@ -62,8 +62,10 @@ async function confirmPixAndGetQrCode(
     const stripe = getStripe();
     const returnUrl = process.env.RESTAURANT_SITE_URL ?? process.env.NEXT_PUBLIC_URL ?? "https://ibatexas.com.br";
 
-    console.warn("[create_checkout] Confirming PI %s with PIX (name=%s email=%s)",
-      paymentIntentId, customer.name ?? "fallback", customer.email ? "present" : "fallback");
+    // LGPD: never log raw PII (name) outside the audit ledger. Log presence
+    // booleans only, mirroring the email masking already used here.
+    console.warn("[create_checkout] Confirming PI %s with PIX (name_present=%s email_present=%s)",
+      paymentIntentId, customer.name ? "true" : "false", customer.email ? "true" : "false");
 
     // PIX requires: name, email, tax_id (CPF/CNPJ)
     // WhatsApp users don't provide email or CPF — use restaurant defaults

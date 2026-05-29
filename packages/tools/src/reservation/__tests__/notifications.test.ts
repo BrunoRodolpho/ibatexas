@@ -37,14 +37,17 @@ describe("sendReservationConfirmation", () => {
     consoleWarnSpy.mockClear()
   })
 
-  it("logs a WhatsApp confirmation message", async () => {
+  it("logs a WhatsApp confirmation message (no raw phone — LGPD)", async () => {
     await sendReservationConfirmation(baseReservation, "+5511999999999")
 
     expect(consoleWarnSpy).toHaveBeenCalledOnce()
     const logArgs = consoleWarnSpy.mock.calls[0]!
     expect(logArgs[0]).toContain("[whatsapp.stub]")
-    const payload = logArgs[1] as { to: string; message: string }
-    expect(payload.to).toBe("+5511999999999")
+    const payload = logArgs[1] as { phone_present: boolean; customerId: string; message: string }
+    // The raw phone must never be logged — only a presence boolean.
+    expect(payload.phone_present).toBe(true)
+    expect(payload.customerId).toBe("cust_01")
+    expect(JSON.stringify(payload)).not.toContain("+5511999999999")
     expect(payload.message).toContain("Reserva confirmada")
     expect(payload.message).toContain("19:30")
     expect(payload.message).toContain("4 pessoas")
@@ -62,12 +65,13 @@ describe("sendReservationConfirmation", () => {
     expect(payload.message).not.toMatch(/14 de março/)
   })
 
-  it("falls back to customerId when phone not provided", async () => {
+  it("logs phone_present=false and customerId when phone not provided", async () => {
     await sendReservationConfirmation(baseReservation)
 
     const logArgs = consoleWarnSpy.mock.calls[0]!
-    const payload = logArgs[1] as { to: string }
-    expect(payload.to).toBe("cust_01")
+    const payload = logArgs[1] as { phone_present: boolean; customerId: string }
+    expect(payload.phone_present).toBe(false)
+    expect(payload.customerId).toBe("cust_01")
   })
 
   it("single person uses singular form", async () => {

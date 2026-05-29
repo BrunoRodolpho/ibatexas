@@ -43,6 +43,19 @@ export function getWhatsAppNumber(): string {
 // Re-export hashPhone as phoneHash for backward compatibility
 export { hashPhone as phoneHash } from "./session.js";
 
+/**
+ * Reduce a media URL to its origin (scheme + host) for logging. The path and
+ * query string can embed customer/order identifiers or signed access tokens
+ * (LGPD: PII not logged outside the audit ledger), so we drop them.
+ */
+function mediaUrlHost(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "invalid_url";
+  }
+}
+
 // ── Message splitting ──────────────────────────────────────────────────────────
 
 const MAX_WHATSAPP_LENGTH = 4096;
@@ -207,7 +220,7 @@ export async function sendMedia(to: string, mediaUrl: string, body?: string): Pr
         mediaUrl: [mediaUrl],
         ...(body ? { body } : {}),
       });
-      logger.info({ phone_hash: hash, media_url: mediaUrl }, "[whatsapp.sendMedia]");
+      logger.info({ phone_hash: hash, media_url_host: mediaUrlHost(mediaUrl) }, "[whatsapp.sendMedia]");
       return;
     } catch (err) {
       const isLast = attempt === maxRetries - 1;
