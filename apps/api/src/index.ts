@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/node";
-import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
+import { closeNatsConnection, setOutboxWriter, setDlqHandler } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
+import { pushToDlq } from "./subscribers/dlq.js";
 import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
@@ -73,7 +74,17 @@ const start = async (): Promise<void> => {
         server.log.warn({ error: String(err) }, "[startup] Failed to set outbox writer — outbox disabled");
       }
 
-      // Register subscribers BEFORE starting jobs to prevent race condition
+      // Route unhandled subscriber-loop errors to the DLQ (+ Sentry) instead of
+      // dropping them in the nats-client's bare console.error (P1-ERR-NATSLOOP).
+      // nats-client can't import pushToDlq directly (package → app), so inject it.
+      setDlqHandler((event, payload, error) =>
+        pushToDlq(event, payload, error, server.log),
+      );
+
+      // Register subscribers BEFORE starting jobs to prevent race condition.
+      // Each subscriber joins the stable "ibatexas-workers" queue group by default
+      // (see subscribeNatsEvent) so every event is handled once across N replicas
+      // (P1-CONC-QUEUEGROUP), with isNewEvent dedup kept as defense-in-depth.
       await startCartIntelligenceSubscribers(server.log);
       await startHandoffSubscriber(server.log);
       await startConversationArchiver(server.log);

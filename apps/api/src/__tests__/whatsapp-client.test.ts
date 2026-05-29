@@ -13,11 +13,21 @@ import {
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockMessagesCreate = vi.hoisted(() => vi.fn());
+const mockRedisSet = vi.hoisted(() => vi.fn());
+const mockRedisEval = vi.hoisted(() => vi.fn());
+const mockGetRedisClient = vi.hoisted(() =>
+  vi.fn(async () => ({ set: mockRedisSet, eval: mockRedisEval })),
+);
 
 vi.mock("twilio", () => ({
   default: vi.fn(() => ({
     messages: { create: mockMessagesCreate },
   })),
+}));
+
+vi.mock("@ibatexas/tools", () => ({
+  getRedisClient: mockGetRedisClient,
+  rk: (k: string) => `test:${k}`,
 }));
 
 // Must set env before importing client (singleton reads on first call)
@@ -31,7 +41,20 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   mockMessagesCreate.mockResolvedValue({ sid: "SM_test" });
+  // Idempotency claim succeeds (first send) by default.
+  mockRedisSet.mockResolvedValue("OK");
+  // Rate limiter grants a token immediately by default: [allowed=1, waitMs=0].
+  mockRedisEval.mockResolvedValue([1, 0]);
 });
+
+/** A retryable Twilio error: completed HTTP response that did NOT deliver (5xx). */
+function httpError(status: number): Error & { status: number } {
+  return Object.assign(new Error(`[HTTP ${status}]`), { status });
+}
+/** A client-side timeout: request may already have been delivered (no status). */
+function timeoutError(): Error & { code: string } {
+  return Object.assign(new Error("timeout of 10000ms exceeded"), { code: "ECONNABORTED" });
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -138,10 +161,10 @@ describe("sendText", () => {
     expect(mockMessagesCreate.mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("retries on Twilio failure with exponential backoff", async () => {
+  it("retries on a retryable (5xx) Twilio failure with exponential backoff", async () => {
     mockMessagesCreate
-      .mockRejectedValueOnce(new Error("Twilio error"))
-      .mockRejectedValueOnce(new Error("Twilio error again"))
+      .mockRejectedValueOnce(httpError(503))
+      .mockRejectedValueOnce(httpError(503))
       .mockResolvedValueOnce({ sid: "SM_ok" });
 
     const promise = sendText("whatsapp:+5511999887766", "Oi");
@@ -152,8 +175,8 @@ describe("sendText", () => {
     expect(mockMessagesCreate).toHaveBeenCalledTimes(3);
   });
 
-  it("throws after 3 failed attempts", async () => {
-    const err = new Error("Twilio down");
+  it("throws after 3 failed retryable attempts", async () => {
+    const err = httpError(503);
     mockMessagesCreate
       .mockRejectedValueOnce(err)
       .mockRejectedValueOnce(err)
@@ -166,8 +189,129 @@ describe("sendText", () => {
 
     const result = await promise;
     expect(result).toBeInstanceOf(Error);
-    expect((result as Error).message).toBe("Twilio down");
+    expect((result as { status?: number }).status).toBe(503);
     expect(mockMessagesCreate).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ── P1-NET-WASEND: idempotency + retry policy ───────────────────────────────────
+
+describe("send reliability — retry policy (P1-NET-WASEND)", () => {
+  it("does NOT retry after a post-send timeout (avoids duplicate billable send)", async () => {
+    // Timeout occurs AFTER the request may have been delivered → must not retry.
+    mockMessagesCreate.mockRejectedValueOnce(timeoutError());
+
+    const promise = sendText("whatsapp:+5511999887766", "Oi").catch((e) => e);
+    await vi.advanceTimersByTimeAsync(5000);
+    const result = await promise;
+
+    expect(result).toBeInstanceOf(Error);
+    // Exactly one create attempt — no retry on the ambiguous timeout.
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT retry on a non-retryable 4xx error", async () => {
+    // 400 = bad request; Twilio answered and rejected it → retrying is pointless.
+    mockMessagesCreate.mockRejectedValueOnce(httpError(400));
+
+    const promise = sendText("whatsapp:+5511999887766", "Oi").catch((e) => e);
+    await vi.advanceTimersByTimeAsync(5000);
+    await promise;
+
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a connection-refused error (request never reached Twilio)", async () => {
+    mockMessagesCreate
+      .mockRejectedValueOnce(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }))
+      .mockResolvedValueOnce({ sid: "SM_ok" });
+
+    const promise = sendText("whatsapp:+5511999887766", "Oi");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("claims a deterministic idempotency key (SET NX) before sending", async () => {
+    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    await vi.advanceTimersByTimeAsync(700);
+    await promise;
+
+    // First create is guarded by a SET NX claim through rk().
+    expect(mockRedisSet).toHaveBeenCalledTimes(1);
+    const [key, value, opts] = mockRedisSet.mock.calls[0];
+    expect(key).toMatch(/^test:wa:send:idem:[0-9a-f]{64}$/);
+    expect(value).toBe("1");
+    expect(opts).toMatchObject({ NX: true });
+  });
+
+  it("skips the create when the idempotency key is already claimed", async () => {
+    // Simulate a prior attempt that already claimed the key (e.g. timed out post-send).
+    mockRedisSet.mockResolvedValue(null);
+
+    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    await vi.advanceTimersByTimeAsync(700);
+    await promise;
+
+    // Claim attempted, but no message sent (duplicate suppressed).
+    expect(mockRedisSet).toHaveBeenCalledTimes(1);
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+  });
+
+  it("fails open: still sends when the idempotency Redis claim throws", async () => {
+    mockRedisSet.mockRejectedValue(new Error("redis down"));
+
+    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    await vi.advanceTimersByTimeAsync(700);
+    await promise;
+
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── P1-SCALE-TWILIORATE: shared send-rate limiter ───────────────────────────────
+
+describe("send rate limiter (P1-SCALE-TWILIORATE)", () => {
+  it("acquires a token (keyed by sending number) before each create", async () => {
+    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    await vi.advanceTimersByTimeAsync(700);
+    await promise;
+
+    expect(mockRedisEval).toHaveBeenCalledTimes(1);
+    const evalArgs = mockRedisEval.mock.calls[0][1];
+    // Bucket key is the SENDING number, built through rk().
+    expect(evalArgs.keys[0]).toBe("test:wa:send:rate:whatsapp:+15551234567");
+  });
+
+  it("awaits the bucket-reported wait when no token is available, then sends", async () => {
+    // First poll: no token, wait 100ms. Second poll: token granted.
+    mockRedisEval.mockResolvedValueOnce([0, 100]).mockResolvedValueOnce([1, 0]);
+
+    const sendPromise = sendText("whatsapp:+5511999887766", "Olá!");
+    // 600ms typing delay, then first bucket poll returns "wait 100ms" and the
+    // limiter must back off — at this instant the create has NOT happened.
+    await vi.advanceTimersByTimeAsync(600);
+    expect(mockMessagesCreate).not.toHaveBeenCalled();
+
+    // Advance past the 100ms backoff → second poll grants the token, then send.
+    await vi.advanceTimersByTimeAsync(200);
+    await sendPromise;
+
+    // The limiter polled twice (denied, then granted) before the single create.
+    expect(mockRedisEval).toHaveBeenCalledTimes(2);
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails open: proceeds with the send when the limiter Redis throws", async () => {
+    mockRedisEval.mockRejectedValue(new Error("redis down"));
+
+    const promise = sendText("whatsapp:+5511999887766", "Olá!");
+    await vi.advanceTimersByTimeAsync(700);
+    await promise;
+
+    // Limiter degraded gracefully — the send still went through.
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
   });
 });
 
