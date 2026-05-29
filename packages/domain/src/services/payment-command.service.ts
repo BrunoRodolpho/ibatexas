@@ -55,6 +55,48 @@ export class ActivePaymentExistsError extends Error {
   }
 }
 
+// Name of the manually-managed partial unique index that enforces the
+// "one active (non-terminal) payment per order" invariant at the DB level.
+// Defined in prisma/migrations/20260412000000_add_payment_tables/migration.sql
+// (CREATE UNIQUE INDEX ... ON payments(order_id) WHERE status NOT IN (<terminal>)).
+const ACTIVE_PAYMENT_INDEX = "payment_active_per_order"
+
+/**
+ * Returns true when `err` is a Prisma P2002 (unique constraint) violation
+ * raised by the active-payment partial unique index — i.e. a concurrent
+ * create lost the race to insert the single active payment.
+ *
+ * Detection is duck-typed on `.code` (matching the convention in
+ * conversation.service.ts and the existing P2002 test fixtures) so it works
+ * both with real Prisma.PrismaClientKnownRequestError instances — which carry
+ * `.code` — and the lightweight `{ code }` mocks used by the unit tests. The
+ * `meta.target` check narrows it to the active-payment index so that P2002s
+ * from the stripe_payment_intent_id / idempotency_key unique indexes are NOT
+ * misreported as ActivePaymentExists.
+ */
+function isActivePaymentUniqueViolation(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false
+  const code = (err as { code?: unknown }).code
+  if (code !== "P2002") return false
+
+  // meta.target may be the index name (string), a string[] of columns, or
+  // undefined depending on the Prisma version / DB driver. Treat a missing
+  // target conservatively as a match (the active-payment index is the only
+  // multi-row, order_id-scoped unique constraint on this table; the other two
+  // are single-column and surface their own column names).
+  const target = (err as { meta?: { target?: unknown } }).meta?.target
+  if (target === undefined || target === null) return true
+  if (typeof target === "string") {
+    return target.includes(ACTIVE_PAYMENT_INDEX) || target.includes("order_id")
+  }
+  if (Array.isArray(target)) {
+    return target.some(
+      (t) => typeof t === "string" && (t.includes(ACTIVE_PAYMENT_INDEX) || t.includes("order_id")),
+    )
+  }
+  return false
+}
+
 // ── Input types ─────────────────────────────────────────────────────────────
 
 export interface CreatePaymentInput {
@@ -130,58 +172,81 @@ export function createPaymentCommandService(log?: Logger): PaymentCommandService
   // Terminal status values for Prisma queries
   const terminalValues = TERMINAL_PAYMENT_STATUSES as unknown as string[]
 
-  return {
+  const svc: PaymentCommandService = {
     async create(data) {
-      return prisma.$transaction(async (tx: TxClient) => {
-        // Enforce single active payment per order
-        const existing = await tx.payment.findFirst({
-          where: {
-            orderId: data.orderId,
-            status: { notIn: terminalValues as PrismaPaymentStatus[] },
-          },
-          select: { id: true },
-        })
+      try {
+        return await prisma.$transaction(async (tx: TxClient) => {
+          // Fast path: enforce single active payment per order in app code.
+          // This catches the common (uncontended) case with a clear error and
+          // avoids a wasted INSERT. It is NOT sufficient on its own under
+          // Read-Committed concurrency — two simultaneous creates can both see
+          // "no active payment" here. The partial unique index on payments is
+          // the authoritative backstop; the catch below translates the
+          // resulting P2002 into the same domain error.
+          const existing = await tx.payment.findFirst({
+            where: {
+              orderId: data.orderId,
+              status: { notIn: terminalValues as PrismaPaymentStatus[] },
+            },
+            select: { id: true },
+          })
 
-        if (existing) {
+          if (existing) {
+            throw new ActivePaymentExistsError(data.orderId)
+          }
+
+          const initialStatus = data.method === "cash"
+            ? "cash_pending" as PrismaPaymentStatus
+            : "awaiting_payment" as PrismaPaymentStatus
+
+          const payment = await tx.payment.create({
+            data: {
+              orderId: data.orderId,
+              method: data.method,
+              status: initialStatus,
+              amountInCentavos: data.amountInCentavos,
+              stripePaymentIntentId: data.stripePaymentIntentId,
+              pixExpiresAt: data.pixExpiresAt,
+              idempotencyKey: data.idempotencyKey,
+              version: 1,
+            },
+          })
+
+          // Record initial status in history
+          await tx.paymentStatusHistory.create({
+            data: {
+              paymentId: payment.id,
+              fromStatus: initialStatus,
+              toStatus: initialStatus,
+              actor: "system" as PrismaActor,
+              version: 1,
+            },
+          })
+
+          // Update OrderProjection.currentPaymentId
+          await tx.orderProjection.update({
+            where: { id: data.orderId },
+            data: { currentPaymentId: payment.id },
+          })
+
+          return { id: payment.id, version: 1 }
+        })
+      } catch (err) {
+        // DB backstop: a concurrent create lost the race and the partial unique
+        // index rejected the duplicate active payment. Treat it as the same
+        // condition the fast path guards against — surface a clear domain error
+        // (re-reading the winning active payment for the log) instead of leaking
+        // a raw P2002 / 500. P2002s from other unique indexes are re-thrown.
+        if (isActivePaymentUniqueViolation(err)) {
+          const winner = await svc.findActiveByOrderId(data.orderId)
+          log?.warn?.(
+            { orderId: data.orderId, existingPaymentId: winner?.id, existingStatus: winner?.status },
+            "[payment-command] create: lost race to partial unique index — active payment already exists",
+          )
           throw new ActivePaymentExistsError(data.orderId)
         }
-
-        const initialStatus = data.method === "cash"
-          ? "cash_pending" as PrismaPaymentStatus
-          : "awaiting_payment" as PrismaPaymentStatus
-
-        const payment = await tx.payment.create({
-          data: {
-            orderId: data.orderId,
-            method: data.method,
-            status: initialStatus,
-            amountInCentavos: data.amountInCentavos,
-            stripePaymentIntentId: data.stripePaymentIntentId,
-            pixExpiresAt: data.pixExpiresAt,
-            idempotencyKey: data.idempotencyKey,
-            version: 1,
-          },
-        })
-
-        // Record initial status in history
-        await tx.paymentStatusHistory.create({
-          data: {
-            paymentId: payment.id,
-            fromStatus: initialStatus,
-            toStatus: initialStatus,
-            actor: "system" as PrismaActor,
-            version: 1,
-          },
-        })
-
-        // Update OrderProjection.currentPaymentId
-        await tx.orderProjection.update({
-          where: { id: data.orderId },
-          data: { currentPaymentId: payment.id },
-        })
-
-        return { id: payment.id, version: 1 }
-      })
+        throw err
+      }
     },
 
     async transitionStatus(paymentId, input) {
@@ -345,4 +410,6 @@ export function createPaymentCommandService(log?: Logger): PaymentCommandService
       return payment
     },
   }
+
+  return svc
 }

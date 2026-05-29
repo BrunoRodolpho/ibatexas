@@ -188,6 +188,57 @@ describe("PaymentCommandService", () => {
       await expect(svc.create(makeCreateInput())).rejects.toThrow(ActivePaymentExistsError)
       expect(mockPaymentCreate).not.toHaveBeenCalled()
     })
+
+    // ── DB backstop: partial unique index race (P1-CONC-ACTIVEPAY) ──────────
+    //
+    // The findFirst-then-create fast path cannot prevent two concurrent creates
+    // from both passing the "no active payment" check under Read-Committed.
+    // The partial unique index `payment_active_per_order` is the authoritative
+    // backstop: the losing insert raises Prisma P2002. The service must catch
+    // it and surface ActivePaymentExistsError rather than leaking a raw 500.
+    //
+    // NOTE: the index race itself requires a live Postgres and cannot be
+    // exercised in this mock-based suite; here we assert ONLY that a P2002
+    // raised by `create` is translated into the clean domain error and that the
+    // winning active payment is re-read.
+    it("translates P2002 from the active-payment index into ActivePaymentExistsError", async () => {
+      // 1st findFirst (fast-path guard): no active payment seen → proceeds.
+      // 2nd findFirst (catch-path re-read): the row the racing tx won.
+      mockPaymentFindFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: "pay_winner", status: "awaiting_payment", version: 1 })
+      mockPaymentCreate.mockRejectedValue(
+        Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+          meta: { target: "payment_active_per_order" },
+        }),
+      )
+
+      await expect(svc.create(makeCreateInput())).rejects.toThrow(ActivePaymentExistsError)
+
+      // create was attempted (fast path passed) but the DB rejected the duplicate.
+      expect(mockPaymentCreate).toHaveBeenCalledOnce()
+      // catch path re-read the active payment (two findFirst calls total).
+      expect(mockPaymentFindFirst).toHaveBeenCalledTimes(2)
+    })
+
+    it("re-throws a P2002 from a DIFFERENT unique index (e.g. idempotency_key) unchanged", async () => {
+      mockPaymentFindFirst.mockResolvedValue(null)
+      mockPaymentCreate.mockRejectedValue(
+        Object.assign(new Error("Unique constraint failed on idempotency_key"), {
+          code: "P2002",
+          meta: { target: ["idempotency_key"] },
+        }),
+      )
+
+      // Not the active-payment index → must NOT be relabeled as ActivePaymentExists.
+      await expect(svc.create(makeCreateInput({ idempotencyKey: "dup-key" }))).rejects.toThrow(
+        "Unique constraint failed on idempotency_key",
+      )
+      await expect(svc.create(makeCreateInput({ idempotencyKey: "dup-key" }))).rejects.not.toBeInstanceOf(
+        ActivePaymentExistsError,
+      )
+    })
   })
 
   // ── transitionStatus ──────────────────────────────────────────────────

@@ -6,7 +6,7 @@
 // - Escalates to admin when PONR has expired
 
 import type Stripe from "stripe";
-import { AmendOrderInputSchema, NonRetryableError, canPerformAction, type AmendOrderInput, type AmendOrderResult, type AgentContext, type CustomerAction, type OrderFulfillmentStatus } from "@ibatexas/types";
+import { AmendOrderInputSchema, NonRetryableError, canPerformAction, isTerminalPaymentStatus, type AmendOrderInput, type AmendOrderResult, type AgentContext, type CustomerAction, type OrderFulfillmentStatus, type PaymentStatus } from "@ibatexas/types";
 import { createOrderService, createOrderQueryService, createPaymentQueryService, createPaymentCommandService } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdmin } from "../medusa/client.js";
@@ -58,43 +58,90 @@ async function regeneratePixIfNeeded(
 }
 
 /**
- * After an amendment changes the order total, sync the Payment table:
- * 1. Cancel the old Payment row (best effort)
- * 2. Create a new Payment row with the updated amount and new Stripe PI
+ * Post-amendment payment sync, guarded by a distributed lock.
+ *
+ * P1-CONC-AMEND: `regeneratePixIfNeeded` (cancels + creates a Stripe PI) and the
+ * Payment-row swap below MUST run atomically. Without a lock, two concurrent
+ * amendments interleave — orphaning each other's active Payment row / Stripe PI
+ * and pointing order metadata at a canceled intent. Invariant: exactly one
+ * active (non-terminal) payment per order.
+ *
+ * Mirrors the `change_payment` path (~:300+ in this file) and `regenerate-pix.ts`:
+ * lock on `payment:<id>`, then RE-READ the payment state INSIDE the lock before
+ * mutating, so a concurrent amendment that already swapped this payment is observed
+ * and we skip (avoiding cancellation of the other amendment's fresh payment).
+ *
+ * The PI regeneration + Payment-row swap happen together inside the critical
+ * section. Returns the new PIX data for the customer if applicable.
  */
-async function syncPaymentAfterAmendment(
+async function syncPaymentAndPixAfterAmendment(
   orderId: string,
-  newStripePaymentIntentId: string | undefined,
-  updatedTotal: number,
-): Promise<void> {
-  if (!newStripePaymentIntentId) return;
-
+  oldPiId: string | undefined,
+  svc: ReturnType<typeof createOrderService>,
+): Promise<{ newPixQrCodeText?: string; newPixQrCodeUrl?: string; newStripePaymentIntentId?: string } | null> {
   const paymentQuerySvc = createPaymentQueryService();
   const paymentCmdSvc = createPaymentCommandService();
 
+  // Identify the payment to protect. The lock key is derived from its id — the
+  // SAME `payment:<id>` convention used by change_payment.
   const activePayment = await paymentQuerySvc.getActiveByOrderId(orderId).catch(() => null);
-  if (!activePayment) return;
 
-  // Cancel old Payment row (best effort — may already be terminal)
-  try {
-    await paymentCmdSvc.transitionStatus(activePayment.id, {
-      newStatus: "canceled",
-      actor: "system",
-      actorId: "amendment",
-      reason: "order_amended_total_changed",
-      expectedVersion: activePayment.version,
-    });
-  } catch {
-    // Already terminal or concurrent modification — non-critical
+  // No Payment row to protect (legacy orders pre-decoupled-billing): regenerate
+  // the PI from Medusa metadata without a lock — there is no Payment-row invariant
+  // at stake. Matches change_payment's no-active-payment fallback.
+  if (!activePayment) {
+    return regeneratePixIfNeeded(orderId, oldPiId, svc);
   }
 
-  // Create new Payment row with updated amount
-  await paymentCmdSvc.create({
-    orderId,
-    method: activePayment.method as "pix" | "card" | "cash",
-    amountInCentavos: updatedTotal,
-    stripePaymentIntentId: newStripePaymentIntentId,
-  });
+  const result = await withLock<{ newPixQrCodeText?: string; newPixQrCodeUrl?: string; newStripePaymentIntentId?: string } | null>(
+    `payment:${activePayment.id}`,
+    async () => {
+      // RE-READ inside the lock: a concurrent amendment may have already canceled
+      // this payment (and minted a new active one) while we were acquiring the lock.
+      const fresh = await paymentQuerySvc.getById(activePayment.id);
+      if (!fresh || isTerminalPaymentStatus(fresh.status as PaymentStatus)) {
+        // Already swapped by a concurrent amendment — do NOT cancel/recreate on top
+        // of it (that would orphan the other amendment's fresh active payment).
+        // The concurrent amendment's regeneration already reflects the latest total.
+        return null;
+      }
+
+      // 1. Cancel old Stripe PI + create the new one with the updated total,
+      //    repoint order metadata. (Inside the lock — atomic with the row swap.)
+      const pixResult = await regeneratePixIfNeeded(orderId, oldPiId, svc);
+      if (!pixResult?.newStripePaymentIntentId) return pixResult;
+
+      // 2. Swap the Payment row to the new amount + PI, using the FRESH version
+      //    read inside the lock (so a concurrent version bump is observed).
+      const { order: updated } = await svc.getOrder(orderId);
+      const updatedTotal = updated.total ?? 0;
+
+      try {
+        await paymentCmdSvc.transitionStatus(fresh.id, {
+          newStatus: "canceled",
+          actor: "system",
+          actorId: "amendment",
+          reason: "order_amended_total_changed",
+          expectedVersion: fresh.version,
+        });
+      } catch {
+        // Already terminal or concurrent modification — non-critical
+      }
+
+      await paymentCmdSvc.create({
+        orderId,
+        method: fresh.method as "pix" | "card" | "cash",
+        amountInCentavos: updatedTotal,
+        stripePaymentIntentId: pixResult.newStripePaymentIntentId,
+      });
+
+      return pixResult;
+    },
+  );
+
+  // withLock returns null if the lock could not be acquired — a concurrent
+  // amendment holds it. Skip the PI/Payment swap; the holder is performing it.
+  return result;
 }
 
 export async function amendOrder(
@@ -165,11 +212,7 @@ export async function amendOrder(
         method: "POST",
       });
 
-      const pixResult = await regeneratePixIfNeeded(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
-      if (pixResult?.newStripePaymentIntentId) {
-        const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(parsed.orderId, pixResult.newStripePaymentIntentId, updated.total ?? 0);
-      }
+      const pixResult = await syncPaymentAndPixAfterAmendment(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
       return {
         success: true,
         message: pixResult?.newPixQrCodeText
@@ -204,11 +247,7 @@ export async function amendOrder(
 
     // Regenerate PIX if item was removed successfully (total changed)
     if (result.success) {
-      const pixResult = await regeneratePixIfNeeded(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
-      if (pixResult?.newStripePaymentIntentId) {
-        const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(parsed.orderId, pixResult.newStripePaymentIntentId, updated.total ?? 0);
-      }
+      const pixResult = await syncPaymentAndPixAfterAmendment(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
       if (pixResult?.newPixQrCodeText) {
         return {
           ...result,
@@ -274,11 +313,7 @@ export async function amendOrder(
         method: "POST",
       });
 
-      const pixResult = await regeneratePixIfNeeded(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
-      if (pixResult?.newStripePaymentIntentId) {
-        const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(parsed.orderId, pixResult.newStripePaymentIntentId, updated.total ?? 0);
-      }
+      const pixResult = await syncPaymentAndPixAfterAmendment(parsed.orderId, order.metadata?.["stripePaymentIntentId"], svc);
       return {
         success: true,
         message: pixResult?.newPixQrCodeText
