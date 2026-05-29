@@ -484,9 +484,6 @@ importers:
         specifier: workspace:*
         version: link:../primitives
     devDependencies:
-      '@adjudicate/cli':
-        specifier: workspace:*
-        version: link:../cli
       '@adjudicate/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
