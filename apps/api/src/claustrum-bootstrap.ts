@@ -36,6 +36,7 @@ import {
   createConductor,
   createToolRegistry,
   type Adjudicator,
+  type AuditVerification,
   type Capsule,
   type ChannelDriver,
   type Conductor,
@@ -62,15 +63,25 @@ import { WebChannel } from "@claustrum/channel-web";
 // re-exported from @adjudicate/core's root barrel.
 import type {
   AuditRecord,
+  AuditSink,
   Decision,
   IntentEnvelope,
+  Ledger,
 } from "@adjudicate/core";
 import {
-  adjudicate as kernelAdjudicate,
+  adjudicateAndAudit,
   decisionRefuse,
   installPack,
   refuse,
+  verifyAuditRecord as kernelVerifyAuditRecord,
 } from "@adjudicate/core";
+import {
+  auditInsertParams,
+  createPostgresSink,
+  INSERT_AUDIT_SQL,
+  type IntentAuditRow,
+  type PostgresWriter,
+} from "@adjudicate/audit-postgres";
 
 // Pack imports — at the time of this commit, ibatexas's first-party Packs
 // are in packages/pack-*/ but those packages have no published package.json
@@ -101,14 +112,43 @@ export function getConductor(): Conductor {
 // ── Adjudicator bridge ───────────────────────────────────────────────────────
 
 /**
- * Wraps `@adjudicate/core/kernel` + `@adjudicate/audit-postgres` into the
- * claustrum `Adjudicator` port. This is the ONLY place in the ibatexas
- * codebase that imports from `@adjudicate/core/kernel` directly.
+ * Dependencies the audited bridge closes over. Constructed once in
+ * `bootstrapClaustrum()` from live infra (Postgres audit sink, Redis ledger);
+ * injected as mocks/in-memory doubles in unit tests.
  */
-function buildAdjudicator(): Adjudicator {
+export interface AdjudicatorBridgeDeps {
+  /**
+   * Audit sink — REQUIRED. Every adjudication emits an `AuditRecord` here.
+   * This is the load-bearing change: the bridge previously called the
+   * NON-audited `adjudicate()` and produced no record (audit RC-A1 prereq 3).
+   */
+  readonly sink: AuditSink;
+  /**
+   * Optional execution ledger for cross-turn replay-suppression / idempotency.
+   * When present, a duplicate `intentHash` is suppressed to REPLAY_SUPPRESSED
+   * so a side effect cannot double-fire across retried turns.
+   */
+  readonly ledger?: Ledger;
+}
+
+/**
+ * Wraps `@adjudicate/core`'s audited kernel verb (`adjudicateAndAudit`) +
+ * `@adjudicate/audit-postgres` into the claustrum `Adjudicator` port. This is
+ * the ONLY place in the ibatexas codebase that imports the kernel directly.
+ *
+ * Every adjudication now emits an AuditRecord via `deps.sink` — the cutover's
+ * audit-completeness invariant ("a chat turn produces an AuditRecord, no direct
+ * write"). Sink failures fail CLOSED (see `safeAuditedAdjudicate`).
+ */
+export function buildAdjudicator(deps: AdjudicatorBridgeDeps): Adjudicator {
   return {
     async adjudicate(envelope, state, policy): Promise<Decision> {
-      return safeKernelAdjudicate(envelope as IntentEnvelope, state, policy);
+      return safeAuditedAdjudicate(
+        deps,
+        envelope as IntentEnvelope,
+        state,
+        policy,
+      );
     },
     async adjudicatePlan(envelopes, state, policy): Promise<Decision> {
       // @adjudicate/core 1.x exposes only the single-envelope verb; serialize
@@ -116,7 +156,12 @@ function buildAdjudicator(): Adjudicator {
       // `adjudicatePlan` natively, swap this out.
       let last: Decision | undefined;
       for (const env of envelopes) {
-        last = await safeKernelAdjudicate(env as IntentEnvelope, state, policy);
+        last = await safeAuditedAdjudicate(
+          deps,
+          env as IntentEnvelope,
+          state,
+          policy,
+        );
         const d = last as { kind?: string };
         if (d.kind && d.kind !== "EXECUTE") return last;
       }
@@ -138,23 +183,26 @@ function buildAdjudicator(): Adjudicator {
       );
     },
     async replayEnvelopesByCustomerId(_customerId, _since) {
-      // TODO(post-cutover): wire through `@adjudicate/audit-postgres`
-      // `createPostgresAuditStore({...}).list(...)`. The audit-postgres
-      // surface is store-creation-only; the conductor needs a long-lived
-      // pre-built store, which the production bootstrap will own.
+      // TODO(loop-closure): wire to `createPostgresAuditStore` reader once the
+      // conductor's memory-recall path is exercised (Stage 3). The write-audit
+      // invariant (above) does not depend on this read path.
       return [] as ReadonlyArray<AuditRecord>;
     },
     async *streamAuditByIntentHashPrefix(_prefix): AsyncIterable<AuditRecord> {
-      // TODO(post-cutover): wire through @adjudicate/audit-postgres.
-      // For now, return an empty stream.
+      // TODO(loop-closure): wire through @adjudicate/audit-postgres reader.
     },
     async getOutcomes(_filter) {
-      // TODO(post-cutover): wire through @adjudicate/audit-postgres outcomes-store.
+      // TODO(loop-closure): wire through @adjudicate/audit-postgres outcomes-store.
       return [];
     },
-    verifyAuditRecord(_record) {
-      // TODO(post-cutover): wire through @adjudicate/core's hash verifier.
-      return { ok: true };
+    verifyAuditRecord(record): AuditVerification {
+      // Kernel tamper-evidence verifier (RC-K1 restored the v4 round-trip).
+      // Map the kernel's {verified} union → the port's {ok} shape. A
+      // missing-hash record is treated as NOT verified (fail-safe) — the
+      // previous stub returned {ok:true} unconditionally, which was a bug.
+      const v = kernelVerifyAuditRecord(record);
+      if (v.verified === true) return { ok: true };
+      return { ok: false, reason: v.reason };
     },
   };
 }
@@ -204,25 +252,40 @@ function policyNotReadyRefusal(reason: string): Decision {
   );
 }
 
-async function safeKernelAdjudicate(
+async function safeAuditedAdjudicate(
+  deps: AdjudicatorBridgeDeps,
   envelope: IntentEnvelope,
   state: unknown,
   policy: unknown,
 ): Promise<Decision> {
   if (!isWellFormedPolicyBundle(policy)) {
-    // Fail closed: no PolicyBundle => no authority to mutate.
+    // Fail closed: no PolicyBundle => no authority to mutate. The kernel
+    // never runs, so there is nothing to audit.
     return policyNotReadyRefusal(
       "PolicyBundle is incomplete; cutover policy wiring not yet done",
     );
   }
   try {
-    return kernelAdjudicate(envelope, state as never, policy as never);
+    // Audited path: adjudicateAndAudit emits an AuditRecord via deps.sink for
+    // EVERY decision (the audit-completeness invariant). Returns the Decision;
+    // the AuditRecord is the durable side effect.
+    const result = await adjudicateAndAudit(
+      envelope,
+      state as never,
+      policy as never,
+      {
+        sink: deps.sink,
+        ...(deps.ledger ? { ledger: deps.ledger } : {}),
+      },
+    );
+    return result.decision;
   } catch (err) {
-    // The kernel is fail-closed by design; a throw escaping it is unexpected.
-    // Surface a REFUSE so handleTurn still reaches synthesize/observe instead
-    // of rejecting the turn — and so nothing executes ungated.
+    // Fail CLOSED: a throw from the kernel OR a failed audit emit must never
+    // license an ungated mutation. Returning REFUSE means the handler skips
+    // execution — no AuditRecord persisted, no side effect. (An unauditable
+    // mutation is refused, not silently executed.)
     return policyNotReadyRefusal(
-      `kernel adjudicate threw: ${(err as Error).message}`,
+      `adjudicateAndAudit threw: ${(err as Error).message}`,
     );
   }
 }
@@ -486,7 +549,30 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     >[0]["client"],
   });
 
-  const adjudicator = buildAdjudicator();
+  // Audit infra — the Postgres sink is the durable AuditRecord store
+  // (`intent_audit`). The bridge fails CLOSED if this sink throws, so an
+  // unauditable mutation is refused rather than silently executed.
+  const pgPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+  });
+  const auditWriter: PostgresWriter = {
+    async insertAudit(row: IntentAuditRow): Promise<void> {
+      await pgPool.query(INSERT_AUDIT_SQL, auditInsertParams(row) as unknown[]);
+    },
+  };
+  const auditSink = createPostgresSink({
+    writer: auditWriter,
+    onError: (err) =>
+      console.error(
+        "[claustrum-bootstrap] audit sink emit failed:",
+        err.message,
+      ),
+  });
+  // TODO(Stage 3): wire createRedisLedger({ client: redis, keyFor: rk }) for
+  // cross-turn replay-suppression once EXECUTE fires. The bridge already
+  // accepts an optional `ledger` dep (AdjudicatorBridgeDeps); domain-level
+  // idempotency (cycle-2 PAY-3) guards payment double-fire meanwhile.
+  const adjudicator = buildAdjudicator({ sink: auditSink });
   const redis = await getRedisClient();
 
   const memory = createPostgresMemoryProvider({
@@ -495,9 +581,6 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     adjudicator,
   });
 
-  const pgPool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-  });
   const grounding = createPgVectorGroundingProvider({
     pool: pgPool as never,
     modelProvider,
