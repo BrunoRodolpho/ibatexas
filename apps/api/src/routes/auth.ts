@@ -6,7 +6,7 @@
 // POST /api/auth/logout      — revoke JWT, delete refresh token, clear cookies
 // GET  /api/auth/me          — return current customer from JWT
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -14,6 +14,8 @@ import twilio from "twilio";
 import { createCustomerService, createStaffService } from "@ibatexas/domain";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { requireAuth, optionalAuth } from "../middleware/auth.js";
+// Centralized keyed-HMAC phone pseudonym — safe to log, full-length, salted.
+import { hashPhone as phoneHash } from "../lib/phone-hash.js";
 
 // ── Twilio client ─────────────────────────────────────────────────────────────
 
@@ -63,10 +65,7 @@ function staffOtpChannel(): "sms" | "whatsapp" {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-/** One-way hash of a phone number — safe to log. */
-function phoneHash(phone: string): string {
-  return createHash("sha256").update(phone).digest("hex").slice(0, 12);
-}
+// phoneHash is the centralized keyed-HMAC helper (imported above).
 
 // Validate E.164 format (+55 11 999999999)
 const PhoneSchema = z

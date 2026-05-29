@@ -21,6 +21,7 @@ import type { ChannelMessage } from "@claustrum/core";
 import { handleTurn } from "@claustrum/core";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { getConductor } from "../claustrum-bootstrap.js";
+import { hashPhone } from "../lib/phone-hash.js";
 
 const MAX_RATE_PER_MINUTE = 20;
 
@@ -69,11 +70,9 @@ async function checkRateLimit(
   redis: Awaited<ReturnType<typeof getRedisClient>>,
   fromPhone: string,
 ): Promise<boolean> {
-  // Hash via SHA-256 first 12 hex chars — same as legacy hashPhone.
-  // We avoid importing whatsapp/session.ts here so this route stays
-  // independent of the legacy module (slated for deletion later).
-  const { createHash } = await import("node:crypto");
-  const hash = createHash("sha256").update(fromPhone).digest("hex").slice(0, 12);
+  // Keyed HMAC, full-length — centralized in ../lib/phone-hash.ts. (The legacy
+  // whatsapp/session.ts module re-exports the same helper.)
+  const hash = hashPhone(fromPhone);
   const key = rk(`wa:rate:${hash}`);
   const count = await atomicIncr(redis, key, 60);
   return count > MAX_RATE_PER_MINUTE;

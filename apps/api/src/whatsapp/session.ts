@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { createCustomerService } from "@ibatexas/domain";
 import { Channel, type AgentContext } from "@ibatexas/types";
+import { hashPhone } from "../lib/phone-hash.js";
 
 const SESSION_TTL_SECONDS = 24 * 60 * 60; // 24h
 const SESSION_IDLE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes — triggers session rotation
@@ -29,17 +30,9 @@ export function normalizePhone(from: string): string {
   return phone;
 }
 
-/**
- * One-way hash of a phone number — safe to log.
- *
- * Truncation to 12 hex chars provides 48-bit collision space (~50% collision at
- * ~16.8M phones). A collision would share rate limit/debounce windows (keyed by
- * hash), but NOT session data (uses actual phone for Prisma lookup).
- * If scaling to millions of phones, increase to 16+ hex chars.
- */
-export function hashPhone(phone: string): string {
-  return createHash("sha256").update(phone).digest("hex").slice(0, 12);
-}
+// Phone hashing is centralized in ../lib/phone-hash.ts (keyed HMAC, full-length).
+// Re-exported here so existing importers (whatsapp/client.ts) keep working.
+export { hashPhone };
 
 // ── Session resolution ─────────────────────────────────────────────────────────
 
@@ -339,10 +332,12 @@ export async function isMessageDuplicate(
   phoneHash: string,
   messageBody: string,
 ): Promise<boolean> {
+  // phoneHash is already the keyed, full-length pseudonym; combine it with the
+  // message body for a per-message dedup token. No truncation — truncating
+  // collided distinct messages into one dedup window.
   const hash = createHash("sha256")
     .update(`${phoneHash}:${messageBody}`)
-    .digest("hex")
-    .slice(0, 16);
+    .digest("hex");
   const redis = await getRedisClient();
   const key = rk(`wa:dedup:${hash}`);
   const result = await redis.set(key, "1", { EX: DEDUP_TTL_SECONDS, NX: true });
