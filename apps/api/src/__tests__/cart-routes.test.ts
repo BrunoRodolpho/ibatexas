@@ -30,17 +30,24 @@ const MockMedusaRequestError = vi.hoisted(() =>
   }
 );
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: mockGetRedisClient,
-  rk: mockRk,
-  estimateDelivery: vi.fn(async () => ({ success: true })),
-  createCheckout: vi.fn(async () => ({ success: true })),
-  reaisToCentavos: (amount: number) => Math.round(amount * 100),
-  MedusaRequestError: MockMedusaRequestError,
-  cancelStalePaymentIntent: vi.fn().mockResolvedValue(undefined),
-  loadSchedule: vi.fn().mockResolvedValue({ days: {} }),
-  getMealPeriodFromSchedule: vi.fn().mockReturnValue("lunch"),
-}));
+vi.mock("@ibatexas/tools", async () => {
+  // Use the real CPF checksum helpers so the validation boundary is exercised
+  // faithfully (no risk of the mock drifting from the production algorithm).
+  const actual = await vi.importActual<typeof import("@ibatexas/tools")>("@ibatexas/tools");
+  return {
+    getRedisClient: mockGetRedisClient,
+    rk: mockRk,
+    estimateDelivery: vi.fn(async () => ({ success: true })),
+    createCheckout: vi.fn(async () => ({ success: true })),
+    reaisToCentavos: (amount: number) => Math.round(amount * 100),
+    MedusaRequestError: MockMedusaRequestError,
+    cancelStalePaymentIntent: vi.fn().mockResolvedValue(undefined),
+    loadSchedule: vi.fn().mockResolvedValue({ days: {} }),
+    getMealPeriodFromSchedule: vi.fn().mockReturnValue("lunch"),
+    isValidCpf: actual.isValidCpf,
+    normalizeCpf: actual.normalizeCpf,
+  };
+});
 
 vi.mock("@ibatexas/domain", () => ({
   createCustomerService: () => ({
@@ -107,6 +114,7 @@ function createMockRedis(overrides: Record<string, unknown> = {}) {
     expire: vi.fn().mockResolvedValue(true),
     set: vi.fn().mockResolvedValue("OK"),
     get: vi.fn().mockResolvedValue(null),
+    del: vi.fn().mockResolvedValue(1),
     ...overrides,
   };
 }
@@ -678,5 +686,40 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
     });
 
     expect(res.statusCode).toBe(200);
+  });
+
+  // ── P1-DATA-CPF: CPF checksum validated at the checkout boundary ──────────
+
+  it("PIX checkout with a valid CPF → 200 OK", async () => {
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "pix", pixCpf: "529.982.247-25" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("PIX checkout with an invalid CPF checksum → 422", async () => {
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "pix", pixCpf: "123.456.789-00" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().code).toBe("INVALID_CPF");
+    // The fixable 422 must release the idempotency gate for an immediate retry.
+    expect(mockRedis.del).toHaveBeenCalled();
   });
 });

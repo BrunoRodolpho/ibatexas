@@ -36,7 +36,7 @@ export { switchOrderType } from "./cart/switch-order-type.js"
 export { reorder, ReorderTool } from "./cart/reorder.js"
 export { regeneratePix, RegeneratePixTool } from "./cart/regenerate-pix.js"
 export { cancelStalePaymentIntent } from "./cart/_stripe-helpers.js"
-export { setPixDetails, SetPixDetailsTool, SetPixDetailsInputSchema } from "./cart/set-pix-details.js"
+export { setPixDetails, SetPixDetailsTool, SetPixDetailsInputSchema, isValidCpf, normalizeCpf, maskCpf } from "./cart/set-pix-details.js"
 export type { SetPixDetailsInput } from "./cart/set-pix-details.js"
 export { addOrderNote, AddOrderNoteTool } from "./cart/add-order-note.js"
 

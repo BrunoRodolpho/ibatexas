@@ -17,7 +17,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, MedusaRequestError, cancelStalePaymentIntent, loadSchedule, getMealPeriodFromSchedule } from "@ibatexas/tools";
+import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, MedusaRequestError, cancelStalePaymentIntent, loadSchedule, getMealPeriodFromSchedule, isValidCpf, normalizeCpf } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { createCustomerService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
@@ -581,6 +581,26 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         const pixEmail = request.body.pixEmail;
         const pixCpf = request.body.pixCpf;
 
+        // P1-DATA-CPF: validate the CPF checksum at the trust boundary before it
+        // flows to Stripe (billing_details.tax_id) and Prisma. The Zod schema only
+        // checks it's a string; reuse the Receita Federal checksum validator and
+        // store the normalized (masked-format) value. A fixable 422 releases the
+        // idempotency gate so the customer can correct and resubmit immediately.
+        let normalizedFormCpf: string | undefined;
+        if (pixCpf !== undefined && pixCpf.trim() !== "") {
+          const normalized = normalizeCpf(pixCpf);
+          if (!normalized || !isValidCpf(pixCpf)) {
+            await redis.del(idemKey);
+            return reply.status(422).send({
+              statusCode: 422,
+              error: "Unprocessable Entity",
+              message: "CPF inválido. Verifique os dígitos e tente novamente. Formato: 000.000.000-00.",
+              code: "INVALID_CPF",
+            });
+          }
+          normalizedFormCpf = normalized;
+        }
+
         // Try loading cached PIX details for authenticated customers
         let cached: { name?: string; email?: string; cpf?: string } | null = null;
         if (request.customerId) {
@@ -590,7 +610,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         pixExtra = {
           customerName: pixName ?? cached?.name,
           customerEmail: pixEmail ?? cached?.email,
-          customerTaxId: pixCpf ?? cached?.cpf,
+          customerTaxId: normalizedFormCpf ?? cached?.cpf,
         };
       }
 
