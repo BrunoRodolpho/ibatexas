@@ -163,11 +163,50 @@ describe("POST /api/chat/messages", () => {
       );
     }, { timeout: 500 });
   });
+
+  // P2-I18N-CHATEN: guest secret mismatch must reject in pt-BR, not English.
+  it("rejects a guest with a wrong session secret in pt-BR", async () => {
+    mockGetRedisClient.mockResolvedValue({
+      get: vi.fn().mockImplementation(async (key: string) =>
+        key.includes("session:secret") ? "the-real-secret" : null,
+      ),
+      set: vi.fn().mockResolvedValue("OK"),
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-session-secret": "wrong-secret" },
+      payload: {
+        sessionId: VALID_SESSION_ID,
+        message: "oi",
+        channel: Channel.Web,
+      },
+    });
+
+    expect(res.statusCode).toBe(403);
+    const body = JSON.parse(res.body) as { message: string };
+    expect(body.message).toBe("Segredo de sessão inválido.");
+    // Guard against an English regression.
+    expect(body.message).not.toMatch(/invalid session secret/i);
+  });
 });
 
 describe("GET /api/chat/stream/:sessionId", () => {
+  // Stored guest secret the SSE endpoint now validates against (P2-SEC-SSECORS).
+  const GUEST_SECRET = "guest-secret-abc";
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // Guest streams (no x-session-token) must present a matching x-session-secret.
+    // Mock redis so the stored secret is GUEST_SECRET (owner key unused for guests).
+    mockGetRedisClient.mockResolvedValue({
+      get: vi.fn().mockImplementation(async (key: string) =>
+        key.includes("session:secret") ? GUEST_SECRET : null,
+      ),
+      set: vi.fn().mockResolvedValue("OK"),
+    });
   });
 
   it("replays buffered chunks and ends the stream", async () => {
@@ -185,6 +224,7 @@ describe("GET /api/chat/stream/:sessionId", () => {
     const res = await app.inject({
       method: "GET",
       url: `/api/chat/stream/${VALID_SESSION_ID}`,
+      headers: { "x-session-secret": GUEST_SECRET },
     });
 
     expect(res.headers["content-type"]).toContain("text/event-stream");
@@ -194,14 +234,91 @@ describe("GET /api/chat/stream/:sessionId", () => {
 
   it("returns error event when session not found after polling", async () => {
     mockGetStream.mockReturnValue(undefined);
+    mockSubscribeToStream.mockResolvedValue(undefined);
 
     const app = await buildTestServer();
     const res = await app.inject({
       method: "GET",
       url: `/api/chat/stream/${VALID_SESSION_ID}`,
+      headers: { "x-session-secret": GUEST_SECRET },
     });
 
     expect(res.headers["content-type"]).toContain("text/event-stream");
     expect(res.body).toContain(`"type":"error"`);
+  });
+
+  // ── P2-SEC-SSECORS regressions ──────────────────────────────────────────────
+
+  it("denies a guest stream when x-session-secret is missing", async () => {
+    mockGetStream.mockReturnValue({
+      emitter: new (await import("node:events")).EventEmitter(),
+      buffer: [{ type: "text_delta", delta: "secret-data" }, { type: "done" }],
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${VALID_SESSION_ID}`,
+      // No x-session-secret header.
+    });
+
+    expect(res.body).toContain("Acesso negado.");
+    expect(res.body).not.toContain("secret-data");
+  });
+
+  it("denies a guest stream when x-session-secret does not match", async () => {
+    mockGetStream.mockReturnValue({
+      emitter: new (await import("node:events")).EventEmitter(),
+      buffer: [{ type: "text_delta", delta: "secret-data" }, { type: "done" }],
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${VALID_SESSION_ID}`,
+      headers: { "x-session-secret": "wrong-secret" },
+    });
+
+    expect(res.body).toContain("Acesso negado.");
+    expect(res.body).not.toContain("secret-data");
+  });
+
+  it("does NOT reflect a disallowed Origin with Allow-Credentials", async () => {
+    vi.stubEnv("CORS_ORIGIN", "https://app.ibatexas.com");
+    mockGetStream.mockReturnValue({
+      emitter: new (await import("node:events")).EventEmitter(),
+      buffer: [{ type: "done" }],
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${VALID_SESSION_ID}`,
+      headers: { "x-session-secret": GUEST_SECRET, origin: "https://evil.example.com" },
+    });
+
+    // The arbitrary Origin must not be echoed back.
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(res.headers["access-control-allow-credentials"]).toBeUndefined();
+    vi.unstubAllEnvs();
+  });
+
+  it("reflects an allowed Origin from the configured allowlist", async () => {
+    vi.stubEnv("CORS_ORIGIN", "https://app.ibatexas.com");
+    mockGetStream.mockReturnValue({
+      emitter: new (await import("node:events")).EventEmitter(),
+      buffer: [{ type: "done" }],
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${VALID_SESSION_ID}`,
+      headers: { "x-session-secret": GUEST_SECRET, origin: "https://app.ibatexas.com" },
+    });
+
+    expect(res.headers["access-control-allow-origin"]).toBe("https://app.ibatexas.com");
+    expect(res.headers["access-control-allow-credentials"]).toBe("true");
+    vi.unstubAllEnvs();
   });
 });

@@ -50,8 +50,14 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
   // (empty replay list ⇒ "Sessão não encontrada.") instead of crashing on a
   // missing duplicate()/subscribe(). No data is published, so the GET-not-found
   // assertion below is unchanged.
+  //
+  // P2-SEC-SSECORS: the SSE GET now verifies a guest's x-session-secret against
+  // the stored session:secret. Return a fixed secret for that key so guest GET/
+  // POST requests carrying the matching header pass the check; null otherwise.
   const makeRedisStub = (): Record<string, unknown> => ({
-    get: vi.fn().mockResolvedValue(null),
+    get: vi.fn().mockImplementation(async (key: string) =>
+      key.includes("session:secret") ? "integration-guest-secret" : null,
+    ),
     set: vi.fn().mockResolvedValue("OK"),
     duplicate: () => makeRedisStub(),
     connect: vi.fn().mockResolvedValue(undefined),
@@ -103,6 +109,8 @@ describe("Chat routes integration", () => {
     const res = await server.inject({
       method: "POST",
       url: "/api/chat/messages",
+      // Guest with the matching stored secret (stub returns it for session:secret).
+      headers: { "x-session-secret": "integration-guest-secret" },
       payload: {
         sessionId: "11111111-2222-4333-a444-555555555555",
         message: "Quero ver o cardápio",
@@ -214,6 +222,9 @@ describe("Chat routes integration", () => {
     const res = await server.inject({
       method: "GET",
       url: "/api/chat/stream/99999999-9999-4999-a999-999999999999",
+      // Guest stream → carry the matching secret so we reach the not-found path
+      // rather than the new P2-SEC-SSECORS access-denied gate.
+      headers: { "x-session-secret": "integration-guest-secret" },
     })
 
     // SSE endpoint writes error via raw response, not JSON status
