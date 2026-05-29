@@ -398,21 +398,18 @@ function redisSessionStore(): SessionPort {
       // TODO: persist to Redis using rk() keys
       return;
     },
-    current(): Session {
-      if (!current) {
-        throw new Error("SessionPort.current() called before load()");
-      }
-      return current;
-    },
-    async parkPendingConfirmation(_envelope, _token, _prompt) {
+    // SessionPort.current() was removed (RC-R3 SessionHandle residual): park ops
+    // now name their target session explicitly by sessionId rather than acting on
+    // a process-global "last loaded" session.
+    async parkPendingConfirmation(_sessionId, _envelope, _token, _prompt) {
       // TODO
       return;
     },
-    async parkDeferred(_envelope, _signal, _until, _timeoutMs) {
+    async parkDeferred(_sessionId, _envelope, _signal, _until, _timeoutMs) {
       // TODO
       return;
     },
-    async unpark(_intentHash) {
+    async unpark(_sessionId, _intentHash) {
       // TODO
       return;
     },
