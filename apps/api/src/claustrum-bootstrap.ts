@@ -83,6 +83,7 @@ import {
 // once each pack's package.json is restored.
 import { prisma } from "@ibatexas/domain";
 import { getRedisClient } from "@ibatexas/tools";
+import { requireSecret } from "./utils/require-secret.js";
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
@@ -532,8 +533,10 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // route handler via a sink callback set up per-request. For now, no-op.
   channels.push(
     new WebChannel({
-      gatewaySigningKey:
-        process.env.WEB_GATEWAY_SIGNING_KEY ?? "dev-web-key-CHANGE-ME",
+      // Require a real signing key — no source-committed default. A known key
+      // would let anyone mint web-gateway messages the conductor trusts. Fails
+      // closed in prod/dev when WEB_GATEWAY_SIGNING_KEY is unset.
+      gatewaySigningKey: requireSecret("WEB_GATEWAY_SIGNING_KEY"),
       sink: async () => {
         // Replaced per-request by chat.ts via attachStream() pattern (TODO).
       },
