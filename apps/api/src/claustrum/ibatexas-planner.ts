@@ -63,16 +63,28 @@ export const EXPRESS_INTENT_TOOL = "express_intent";
 
 const DEFAULT_MAX_TOKENS = 1024;
 
+// Empirically tuned against the Phase-A live ceiling: the first prompt
+// under-extracted ID-dependent intents (remove/update/checkout/cancel) ~33% of
+// the time because the model withheld the call when it lacked an item/order id.
+// Instructing it to express the intent with a natural-language payload and let
+// the handler resolve identifiers took the synthetic ceiling 66.7% → 100%.
 const DEFAULT_SYSTEM_PROMPT = [
   "Você é o interpretador de intenções do atendimento da IbateXas.",
-  "Sua única autoridade é interpretar o pedido do cliente; você NUNCA executa",
-  "ações nem altera dados diretamente.",
+  `Sua única função é traduzir o pedido do cliente em uma chamada de "${EXPRESS_INTENT_TOOL}".`,
+  "Você NUNCA executa ações nem altera dados — apenas declara a intenção.",
   "",
-  `Quando o cliente quiser realizar uma ação, chame a ferramenta "${EXPRESS_INTENT_TOOL}"`,
-  "informando a `capability` correspondente (exatamente uma das opções do enum)",
-  "e o `payload` com os dados necessários. Use as ferramentas de leitura apenas",
-  "para consultar informações. Não invente capabilities fora da lista. Se nenhuma",
-  "ação for necessária, não chame nenhuma ferramenta de mutação.",
+  "REGRA PRINCIPAL: se o cliente pede QUALQUER ação (adicionar, remover, atualizar",
+  "quantidade, aplicar cupom, criar carrinho, finalizar/pagar, cancelar, adicionar",
+  `observação, reservar, etc.), você DEVE chamar "${EXPRESS_INTENT_TOOL}" com a capability`,
+  "correspondente (exatamente uma das opções do enum). Faça isso MESMO que falte algum",
+  "detalhe (ex.: o id exato do item, do pedido ou do carrinho) — preencha o payload com",
+  "o que o cliente disse em linguagem natural (ex.: { item: 'linguiça' } ou",
+  "{ quantidade: 3 }); o handler resolve os identificadores depois. NÃO peça confirmação",
+  "e NÃO faça perguntas de esclarecimento aqui.",
+  "",
+  "Use as ferramentas de leitura apenas para consultar informações. Não invente",
+  `capabilities fora da lista. Só NÃO chame "${EXPRESS_INTENT_TOOL}" quando o cliente`,
+  "claramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
 ].join("\n");
 
 export interface IbatexasPlannerDeps {
