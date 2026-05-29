@@ -4,10 +4,21 @@
 > ibatexas-side cutover IDs (`C-01..C-11`). Each row records current state,
 > evidence command, and (if it fails) which upstream agent owns the bug.
 
-**Snapshot date:** 2026-05-26
-**Branch:** `feat/claustrum-cutover` (NOT pushed)
+**Snapshot date:** 2026-05-26 · **corrected 2026-05-28 (audit remediation cycle 3, D-CUTOVERSTATUS)**
+**Branch:** `fix/audit-2026-05-27`
 **Recovery tag:** `pre-claustrum-cutover` (local-only)
 **Last cutover commit:** `4b6cb68` (Phase 6, IMPL-08)
+
+> ⚠️ **CORRECTION (cycle 3):** the original record marked C-02/C-03/C-04 CLOSED;
+> the audit found those evidence greps only matched strings in **never-invoked**
+> code. The cutover is **INERT** — `bootstrapClaustrum()` has no caller, so the
+> Conductor is never instantiated and the live commerce surface is still the
+> legacy direct-write routes. C-02/C-03/C-04 are corrected to **PARTIAL** below.
+> Cycle-3 advanced the prerequisites (5 first-party packs restored + building
+> against the fixed kernel; the Adjudicator bridge is now audited), but the
+> **activation** (real planner + full registry + ~3,671-LOC handler/route
+> refactor + boot wiring + e2e) is the RC-A1 work, **deferred to cycle 4** per
+> the all-or-nothing rule. See the remediation `RUN-LOG.md` + `RC-A1-cycle3-plan.md`.
 
 ---
 
@@ -38,14 +49,21 @@
 ## C-02 — Claustrum bootstrap exists and composes Conductor
 
 - **Maps to:** PART IX §6 (`@claustrum/core` listed as dep + bootstrap wires it)
-- **State:** **CLOSED**
-- **Evidence:**
+- **State:** **PARTIAL** (corrected — audit 2026-05-27 D-CUTOVERSTATUS). The
+  bootstrap module exists and *composes* a Conductor, and as of remediation
+  cycle 3 the Adjudicator bridge is now AUDITED (`adjudicateAndAudit` + a live
+  Postgres sink; commit `2fe46c7`). BUT `bootstrapClaustrum()` has **no caller**
+  in `server.ts`/`index.ts`, so `getConductor()` throws "not initialized" — the
+  Conductor is never instantiated at runtime. Composing ≠ wired-at-boot.
+- **Evidence (strengthened — must assert a CALLER, not just that the symbol
+  exists in never-invoked code):**
   ```bash
   cd /Users/thaisrodolpho/projects/ibatexas
-  test -f apps/api/src/claustrum-bootstrap.ts && \
-    grep -q "createConductor" apps/api/src/claustrum-bootstrap.ts && \
-    cat apps/api/package.json | jq '.dependencies."@claustrum/core"'
-  # expected: file exists, createConductor referenced, dep is "workspace:*"
+  # composition exists:
+  grep -q "createConductor" apps/api/src/claustrum-bootstrap.ts
+  # activation gate (currently FAILS by design — cutover deferred to cycle 4):
+  grep -rq "bootstrapClaustrum()" apps/api/src/server.ts apps/api/src/index.ts \
+    && echo "WIRED" || echo "INERT (expected until RC-A1 activation)"
   ```
 - **Blamed agent if fail:** `ibatexas-cutover-builder`
 
@@ -54,7 +72,11 @@
 ## C-03 — Three routes delegate to Conductor
 
 - **Maps to:** PART IX (no direct signal; supports §7 and §8)
-- **State:** **CLOSED**
+- **State:** **PARTIAL** (corrected — D-CUTOVERSTATUS). The three routes do call
+  `getConductor()`/`handleTurn`, but `getConductor()` throws because the
+  bootstrap is uncalled (C-02) — so today these routes 500 rather than delegate.
+  The delegation code is present but inert; the live commerce surface is still
+  the legacy direct-write routes. Promotes to CLOSED only once C-02 is wired.
 - **Files:**
   - `apps/api/src/routes/chat.ts` (POST flow opens capsule + handleTurn)
   - `apps/api/src/routes/whatsapp-webhook.ts` (delegates after Twilio guards)
@@ -75,9 +97,17 @@
 
 - **Maps to:** Gate E acceptance (≥1 tool registered in claustrum's
   ToolRegistry from ibatexas's bootstrap)
-- **State:** **CLOSED** (3 representative tools: cart.addItem, cart.checkout,
-  order.cancel)
-- **Note:** Full 25-tool roster is incremental, not a cutover blocker.
+- **State:** **PARTIAL** (corrected — D-CUTOVERSTATUS). Only 3 representative
+  tools are wrapped in `register-ibatexas-tool-packs.ts`, AND that function has
+  no caller + the bootstrap is uncalled, so the live ToolRegistry is empty.
+  **Cycle-3 advance:** the 5 first-party PolicyBundle/CapabilityPlanner packs
+  (`@ibatexas/pack-{orders,payments,reservations,customer-onboarding,whatsapp}`)
+  were restored from history and now BUILD against the fixed kernel (commit
+  `9f0e5f8`) — the authored policies for the full capability surface exist again.
+  Activation (real planner emitting envelopes + full registry + handler/route
+  refactor) is the deferred RC-A1 work → cycle 4.
+- **Note:** Full roster + activation is the RC-A1 cutover blocker, deferred to
+  cycle 4 (see CUTOVER-STATUS-CYCLE3 note below + the remediation RUN-LOG).
 - **Evidence:**
   ```bash
   grep -c "makeTool" apps/api/src/tools/register-ibatexas-tool-packs.ts
@@ -210,12 +240,12 @@
 | ID | State | Owner |
 |---|---|---|
 | C-01 Recovery tag | CLOSED | ibatexas-cutover-builder |
-| C-02 Bootstrap composes | CLOSED | ibatexas-cutover-builder |
-| C-03 Routes delegate | CLOSED | ibatexas-cutover-builder |
-| C-04 Tool packs registered | CLOSED | ibatexas-cutover-builder |
+| C-02 Bootstrap composes | PARTIAL — composes + bridge audited (cycle 3); bootstrap uncalled | ibatexas-cutover-builder |
+| C-03 Routes delegate | PARTIAL — delegation code present but getConductor() throws (inert) | ibatexas-cutover-builder |
+| C-04 Tool packs registered | PARTIAL — packs restored + build (cycle 3); registry not live (uncalled) | ibatexas-cutover-builder |
 | C-05 Typecheck clean (claustrum-side) | CLOSED | ibatexas-cutover-builder |
 | C-06 `ibx dev` boots | PENDING | ibatexas-cutover-builder |
-| C-07 E2E Twilio turn → AuditRecord | PENDING | multiple (see row) |
+| C-07 E2E Twilio turn → AuditRecord | PENDING (blocked on RC-A1 activation → cycle 4) | multiple (see row) |
 | C-08 llm-provider deleted | DEFERRED | user |
 | C-09 Glue files deleted | DEFERRED | user |
 | C-10 claustrum repo + npm publish | DEFERRED | user |

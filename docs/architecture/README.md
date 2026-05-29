@@ -2,6 +2,14 @@
 
 > Find anything in < 30 seconds.
 
+> ⚠️ **Cutover in progress (audit 2026-05-27, D-ARCHMAP).** The diagram below
+> describes the **legacy** live path (Claude Agent → Tool Registry → Anthropic).
+> A migration to a kernel-adjudicated runtime (`@claustrum/*` Conductor →
+> `@adjudicate/*` kernel) is **partially landed but INERT** — every commerce
+> mutation still flows through the legacy direct-write routes today. See
+> [`docs/claustrum-migration/CUTOVER-STATUS.md`](../claustrum-migration/CUTOVER-STATUS.md)
+> for the real state (RC-A1 activation deferred to remediation cycle 4).
+
 ---
 
 ## 1. Big Picture — System Context
