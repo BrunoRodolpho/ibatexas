@@ -26,6 +26,14 @@ import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 
+// Synthetic actor stamped on a money action (refund) when it is reached via the
+// bare ADMIN_API_KEY path rather than a staff JWT (requireManagerRole passes the
+// API-key path through, so request.staffId is undefined there). Stamping an
+// explicit sentinel guarantees the refund audit trail is never blank-attributed
+// (P2-AUTH-REFUNDATTR). It is a fixed identity marker, not config — so it is a
+// constant here (not process.env).
+const API_KEY_ACTOR_ID = "api-key:admin";
+
 export async function adminPaymentRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
   const paymentCmdSvc = createPaymentCommandService(server.log);
@@ -74,6 +82,11 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         actor: "admin",
         actorId: staffId,
         reason: "Dinheiro confirmado pelo atendente",
+        // P2-CONC-CONFIRMVER: pin the version read above. Correctness no longer
+        // relies solely on the state machine forbidding cash_pending→cash_pending;
+        // a concurrent transition (e.g. a customer switching method, or a second
+        // attendant) is rejected with a concurrency error instead of racing.
+        expectedVersion: payment.version,
       });
 
       await publishNatsEvent("payment.status_changed", {
@@ -118,7 +131,12 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
-      const staffId = request.staffId;
+      // P2-AUTH-REFUNDATTR: refund is reachable via the bare ADMIN_API_KEY path
+      // (requireManagerRole passes it through when there is no staff JWT), where
+      // request.staffId is undefined. Fall back to an explicit synthetic actor so
+      // this money action is never recorded with blank attribution. A real staff
+      // JWT, when present, still attributes to that staff member.
+      const actorId = request.staffId ?? API_KEY_ACTOR_ID;
 
       const payment = await paymentQuerySvc.getActiveByOrderId(id);
       if (!payment) {
@@ -176,7 +194,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         const result = await paymentCmdSvc.transitionStatus(fresh.id, {
           newStatus: targetStatus,
           actor: "admin",
-          actorId: staffId,
+          actorId,
           reason: request.body.reason ?? "Reembolso emitido pelo admin",
         });
 
