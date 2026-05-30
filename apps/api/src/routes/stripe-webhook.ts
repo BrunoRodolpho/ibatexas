@@ -29,10 +29,18 @@ import Stripe from "stripe";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { enqueueStripeWebhookEvent, startStripeWebhookProcessor } from "../jobs/stripe-webhook-processor.js";
 
+// P2-MEM-STRIPENEW: memoize a module-level Stripe client so we don't construct a
+// fresh `new Stripe(key)` (with its own HTTP agent/connection pool) on every
+// webhook request. Lazy so the key is still read from env at first use, not import
+// time. Construction-only change — signature verification / idempotency / enqueue
+// logic below is untouched.
+let stripeClient: Stripe | undefined;
+
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY not set");
-  return new Stripe(key);
+  if (!stripeClient) stripeClient = new Stripe(key);
+  return stripeClient;
 }
 
 // ── Route registration ──────────────────────────────────────────────────────

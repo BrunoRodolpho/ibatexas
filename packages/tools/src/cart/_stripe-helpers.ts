@@ -3,10 +3,17 @@
 
 import Stripe from "stripe"
 
+// P2-MEM-STRIPENEW: memoize a module-level Stripe client so cart tools reuse one
+// HTTP agent/connection pool instead of constructing `new Stripe(key)` on every
+// call. Lazy so the key is still read from env at first use. Construction-only —
+// no Stripe config options change.
+let stripeClient: Stripe | undefined
+
 export function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY
   if (!key) throw new Error("STRIPE_SECRET_KEY not set")
-  return new Stripe(key)
+  if (!stripeClient) stripeClient = new Stripe(key)
+  return stripeClient
 }
 
 /**

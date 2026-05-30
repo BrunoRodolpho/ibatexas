@@ -19,10 +19,17 @@ import { rk } from "../redis/key.js";
 import { isValidTaxId } from "./set-pix-details.js";
 import { medusaStoreFetch } from "./_shared.js";
 
+// P2-MEM-STRIPENEW: memoize a module-level Stripe client so each checkout reuses
+// one HTTP agent/connection pool instead of constructing `new Stripe(key)` per
+// call. Lazy so the key is still read from env at first use. Construction-only —
+// no Stripe config options change; all PI confirm/update calls below are untouched.
+let stripeClient: Stripe | undefined;
+
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY not set");
-  return new Stripe(key);
+  if (!stripeClient) stripeClient = new Stripe(key);
+  return stripeClient;
 }
 
 export interface CreateCheckoutOutput {
