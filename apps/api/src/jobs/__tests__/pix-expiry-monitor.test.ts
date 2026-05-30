@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PaymentStatus } from "@ibatexas/types";
 
 const mockRedisGet = vi.hoisted(() => vi.fn());
+const mockRedisSet = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockGetActiveByOrderId = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
@@ -106,7 +107,9 @@ describe("isPixPaid — PIXPAIDFLAG DB fallback", () => {
 describe("processPixExpiry — suppresses messaging on DB-confirmed payment", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetRedisClient.mockResolvedValue({ get: mockRedisGet });
+    mockGetRedisClient.mockResolvedValue({ get: mockRedisGet, set: mockRedisSet });
+    // Default: NX claim succeeds (first run for this {orderId,stage}).
+    mockRedisSet.mockResolvedValue("OK");
   });
 
   it("does NOT send a reminder when the flag is absent but the Payment is PAID", async () => {
@@ -125,5 +128,59 @@ describe("processPixExpiry — suppresses messaging on DB-confirmed payment", ()
     await processPixExpiry(buildJob("reminder", "order_unpaid"));
 
     expect(mockSendText).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("processPixExpiry — P3-NET-PIXREMINDER per-stage send idempotency", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetRedisClient.mockResolvedValue({ get: mockRedisGet, set: mockRedisSet });
+    // Unpaid in every case here — we are isolating the NX send guard.
+    mockRedisGet.mockResolvedValue(null);
+    mockGetActiveByOrderId.mockResolvedValue(null);
+  });
+
+  it("claims the send with SET NX before messaging (keyed by orderId+stage)", async () => {
+    mockRedisSet.mockResolvedValue("OK");
+
+    await processPixExpiry(buildJob("reminder", "order_idem"));
+
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "ibatexas:pix:reminder-sent:order_idem:reminder",
+      "1",
+      { NX: true, EX: 3600 },
+    );
+    expect(mockSendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT re-send when the NX claim fails (key already set by a prior run)", async () => {
+    mockRedisSet.mockResolvedValue(null); // NX → null: another run already sent it
+
+    await processPixExpiry(buildJob("reminder", "order_dupe"));
+
+    expect(mockSendText).not.toHaveBeenCalled();
+  });
+
+  it("a retry of the same {orderId,stage} sends exactly once across two invocations", async () => {
+    // First invocation claims the key; the second sees it already set.
+    mockRedisSet.mockResolvedValueOnce("OK").mockResolvedValueOnce(null);
+
+    await processPixExpiry(buildJob("expired", "order_retry"));
+    await processPixExpiry(buildJob("expired", "order_retry"));
+
+    expect(mockSendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses a stage-scoped key so reminder and expired are independent claims", async () => {
+    mockRedisSet.mockResolvedValue("OK");
+
+    await processPixExpiry(buildJob("reminder", "order_two_stage"));
+    await processPixExpiry(buildJob("expired", "order_two_stage"));
+
+    const keys = mockRedisSet.mock.calls.map((c) => c[0]);
+    expect(keys).toContain("ibatexas:pix:reminder-sent:order_two_stage:reminder");
+    expect(keys).toContain("ibatexas:pix:reminder-sent:order_two_stage:expired");
+    // Both distinct stages send (the guard is per-stage, not per-order).
+    expect(mockSendText).toHaveBeenCalledTimes(2);
   });
 });
