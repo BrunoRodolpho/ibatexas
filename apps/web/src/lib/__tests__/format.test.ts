@@ -69,8 +69,16 @@ describe('Format Utilities', () => {
       expect(splitBRL(50)).toEqual({ prefix: 'R$', value: '0,50' })
     })
 
-    it('handles large values', () => {
-      expect(splitBRL(1500000)).toEqual({ prefix: 'R$', value: '15000,00' })
+    it('includes thousands separator for large values', () => {
+      // 1_500_000 centavos = R$15.000,00 — dot is pt-BR thousands separator
+      expect(splitBRL(1500000)).toEqual({ prefix: 'R$', value: '15.000,00' })
+    })
+
+    it('includes thousands separator for very large values', () => {
+      // 12_345_600 centavos = R$123.456,00
+      const result = splitBRL(12345600)
+      expect(result.prefix).toBe('R$')
+      expect(result.value).toBe('123.456,00')
     })
   })
 })
