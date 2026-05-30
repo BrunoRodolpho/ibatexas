@@ -17,8 +17,13 @@ import {
 function isTableMissing(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "P2021";
 }
+import type { OrderStatusTransitionPayload } from "@ibatexas/pack-orders";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { medusaAdmin } from "./_shared.js";
+import {
+  adjudicateStaffMutation,
+  replyForIntent,
+} from "../__shared__/customer-intent-gateway.js";
 
 const OrdersAdminQuery = z.object({
   status: z.string().optional(),
@@ -283,6 +288,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
       const { id } = request.params;
       const { fulfillment_status, version: clientVersion } = request.body;
       const requestId = request.headers["x-request-id"] as string | undefined;
+      const staffId = request.staffId;
 
       try {
         // Idempotency guard via x-request-id (catches double-clicks)
@@ -302,12 +308,38 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
 
         if (fulfillment_status) {
           try {
-            // Primary: transition via projection (validates, updates, audits in one transaction)
-            transitionResult = await commandSvc.transitionStatus(id, {
-              newStatus: fulfillment_status as OrderFulfillmentStatus,
-              actor: "admin",
-              expectedVersion: clientVersion,
+            // Primary: transition via projection (validates, updates, audits in one
+            // transaction). RC-A1 Phase B — gated through the staff conductor as a
+            // privileged status override (order.status.transition); byte-equivalent
+            // legacy while inert. The legacy closure throws
+            // ConcurrencyError/InvalidTransitionError/ProjectionNotFoundError straight
+            // through to the existing catch below (adjudicateStaffMutation does not
+            // swallow throws). Only the primary projection transition is the
+            // adjudicated mutation — the Medusa backfill fallback below does no DB
+            // write (read + canTransition + event only), so it has nothing to gate.
+            const staffOutcome = await adjudicateStaffMutation({
+              kind: "order.status.transition",
+              payload: {
+                orderId: id,
+                newStatus: fulfillment_status,
+                actor: "admin",
+                actorId: staffId ?? "staff",
+                reason: "Admin status update",
+                expectedVersion: clientVersion,
+              } satisfies OrderStatusTransitionPayload,
+              staffId: staffId ?? "staff",
+              // OrderState for order.status.transition: requireOrderIdForMutation
+              // (orderId present). Auth-exempt (SYSTEM_OR_ANON_KINDS) so customerId:null ok.
+              state: { ctx: { channel: "web", customerId: null, cartId: null, orderId: id } },
+              legacy: () =>
+                commandSvc.transitionStatus(id, {
+                  newStatus: fulfillment_status as OrderFulfillmentStatus,
+                  actor: "admin",
+                  expectedVersion: clientVersion,
+                }),
             });
+            if (!staffOutcome.ran) return replyForIntent(reply, staffOutcome.intent);
+            transitionResult = staffOutcome.result;
 
             // Fetch displayId + customerId from projection for the event
             const projection = await querySvc.getById(id);
