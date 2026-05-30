@@ -40,11 +40,17 @@ export interface CustomerEnvelope extends IntentEnvelope {
 }
 
 /**
- * Type guard — narrows to a customer-actor envelope.
+ * Type guard — narrows to a user-principal envelope.
  *
- * The runtime contract is "principal === 'user'"; staff/admin paths use
- * a different gateway (`runStaffIntent`) so HTTP-level RBAC stays out
- * of the kernel-bridge layer.
+ * The kernel envelope actor is `principal: "llm" | "user" | "system"` only —
+ * there is no `"staff"` principal (adding one is a kernel-wide change deferred
+ * per the cycle-5 guest/staff decision). So BOTH customer and staff mutations
+ * ride `principal: "user"`; the distinction is carried by `taint` (customer =
+ * UNTRUSTED, staff = TRUSTED, attached after `requireManagerRole`) and the
+ * payload's own actor field (e.g. `PaymentRefundIssuePayload.actor: "admin"`),
+ * NOT by principal. This guard therefore accepts a staff envelope too, by design;
+ * authorization is the pack policy's job (taint gate + business guards), not this
+ * narrowing. The name is retained for back-compat with existing customer routes.
  */
 export function isCustomerEnvelope(env: IntentEnvelope): env is CustomerEnvelope {
   const actor = (env as { actor?: { principal?: string } }).actor;
@@ -252,6 +258,64 @@ export async function adjudicateCustomerMutation<T>(opts: {
     payload: opts.payload,
     actor: { principal: "user", sessionId: `web:${opts.customerId}` },
     taint: "UNTRUSTED",
+    nonce: randomUUID(),
+  });
+  let result: T | undefined;
+  const intent = await runCustomerIntent({
+    envelope,
+    state: opts.state,
+    policy: policyForKind(opts.kind),
+    onExecute: async () => {
+      result = await opts.legacy();
+      return result;
+    },
+  });
+  if (intent.kind === "execute") {
+    return { ran: true, result: result as T };
+  }
+  return { ran: false, intent };
+}
+
+/**
+ * Staff sibling of {@link adjudicateCustomerMutation} (RC-A1 Phase B).
+ *
+ * Same lazy-conductor seam, two deliberate differences for the staff/admin path:
+ *   - `taint: "TRUSTED"` (vs UNTRUSTED) — the route attaches it AFTER
+ *     `requireStaff`/`requireManagerRole` has authenticated a staff JWT, so the
+ *     LLM can never forge a staff money action. (The pack's own doc: "the route
+ *     layer attaches that taint after requireManagerRole succeeds.")
+ *   - `sessionId: "staff:<id>"` — staff identity. The kernel envelope actor is
+ *     `{ principal, sessionId }` only (no `staffId` slot and no `"staff"`
+ *     principal), so the staff id rides the sessionId; the durable staff
+ *     attribution lives in the payload (e.g. `actor:"admin"`, `actorId`) which the
+ *     audit record preserves.
+ *
+ * Decision routing is actor-agnostic, so this reuses `runCustomerIntent` (a
+ * staff envelope is `principal:"user"`, so it passes `isCustomerEnvelope`); the
+ * customer/staff distinction is taint + payload, enforced by the pack policy, not
+ * by this gateway. Pre-activation (`tryGetConductor()` → null): legacy direct
+ * mutation, byte-equivalent. Post-activation: TRUSTED envelope → adjudicate →
+ * mutate ONLY on EXECUTE; non-EXECUTE (e.g. the refund magnitude ladder's
+ * REQUEST_CONFIRMATION / ESCALATE) → typed IntentResult for `replyForIntent`.
+ */
+export async function adjudicateStaffMutation<T>(opts: {
+  readonly kind: string;
+  readonly payload: unknown;
+  /** Authenticated staff id (request.staffId), or a synthetic API-key actor. */
+  readonly staffId: string;
+  /** Domain state the kind's PolicyBundle guards inspect (caller assembles). */
+  readonly state: unknown;
+  /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
+  readonly legacy: () => Promise<T>;
+}): Promise<MutationOutcome<T>> {
+  if (tryGetConductor() === null) {
+    return { ran: true, result: await opts.legacy() };
+  }
+  const envelope = buildEnvelope({
+    kind: opts.kind,
+    payload: opts.payload,
+    actor: { principal: "user", sessionId: `staff:${opts.staffId}` },
+    taint: "TRUSTED",
     nonce: randomUUID(),
   });
   let result: T | undefined;
