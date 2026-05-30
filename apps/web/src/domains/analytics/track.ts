@@ -69,7 +69,26 @@ export function getSessionId(): string {
   return sessionId
 }
 
-const PII_KEYS = ['email', 'phone', 'cpf', 'nome', 'telefone', 'endereco'];
+const PII_KEYS = new Set(['email', 'phone', 'cpf', 'nome', 'telefone', 'endereco']);
+
+/**
+ * Recursively strip PII keys from an object or array at every nesting level.
+ * Returns a new value (does not mutate the input).
+ */
+function scrubPii(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(scrubPii);
+  }
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (PII_KEYS.has(k)) continue;
+      result[k] = scrubPii(v);
+    }
+    return result;
+  }
+  return value;
+}
 
 /** Enrich raw event properties with session/timestamp context. */
 function enrichProperties(properties?: Record<string, unknown>): Record<string, unknown> {
@@ -81,11 +100,7 @@ function enrichProperties(properties?: Record<string, unknown>): Record<string, 
     url: globalThis.window === undefined ? undefined : (globalThis.window as Window)?.location?.pathname,
   }
 
-  for (const key of PII_KEYS) {
-    delete merged[key];
-  }
-
-  return merged;
+  return scrubPii(merged) as Record<string, unknown>;
 }
 
 /** Fire-and-forget beacon/fetch to the analytics API. */
