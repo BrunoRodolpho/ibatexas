@@ -9,6 +9,7 @@
 
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { getRedisClient, rk } from "@ibatexas/tools";
+import { createStaffService } from "@ibatexas/domain";
 
 // Extend Fastify's request type with our custom fields
 declare module "fastify" {
@@ -83,6 +84,15 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
 
     // SEC-004: Check revocation for staff token too
     await checkRevocation(payload.jti);
+
+    // STAFFREVOKE: re-check the staff member is still active on every request.
+    // Deactivation is a DB change (admin panel / seed) with NO token-revocation
+    // event, so otherwise a deactivated staff's staff_token would keep working
+    // until its 8h expiry. Staff traffic is admin-panel volume (not the customer
+    // hot path), so this per-request PK lookup is negligible. getById throws if
+    // the row was deleted → caught below → treated as unauthenticated (fail-closed).
+    const staff = await createStaffService().getById(payload.sub);
+    if (!staff.active) return; // deactivated → do not attach staff identity
 
     request.userType = "staff";
     request.staffId = payload.sub;

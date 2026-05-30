@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import Fastify from "fastify";
+import cookie from "@fastify/cookie";
 import type { FastifyInstance } from "fastify";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
@@ -14,10 +15,17 @@ import type { FastifyInstance } from "fastify";
 const mockJwtVerify = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
+// Staff path: server.jwt.verify (staff_token) + createStaffService().getById (active re-check)
+const mockStaffJwtVerify = vi.hoisted(() => vi.fn());
+const mockStaffGetById = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
   rk: mockRk,
+}));
+
+vi.mock("@ibatexas/domain", () => ({
+  createStaffService: () => ({ getById: mockStaffGetById }),
 }));
 
 // ── Server factory ─────────────────────────────────────────────────────────────
@@ -66,6 +74,39 @@ async function buildTestServer() {
 
   await app.ready();
   return { app, sideEffects };
+}
+
+/**
+ * Build a server that exercises the REAL extractAuth STAFF path (staff_token cookie
+ * → server.jwt.verify → checkRevocation → staff.active re-check). /staff-probe uses
+ * optionalAuth and echoes the staff fields so tests can assert authentication outcome.
+ */
+async function buildStaffTestServer() {
+  const app = Fastify({ logger: false });
+  await app.register(cookie);
+  // Staff path reads request.server.jwt.verify(staff_token)
+  app.decorate("jwt", { verify: mockStaffJwtVerify } as never);
+  // Customer path runs first and must fail so extractAuth falls through to staff
+  app.decorateRequest("jwtVerify", async function () {
+    throw new Error("no customer token");
+  });
+  app.decorateRequest("user", null as never);
+  app.decorateRequest("customerId", undefined);
+  app.decorateRequest("userType", undefined);
+  app.decorateRequest("staffId", undefined);
+  app.decorateRequest("staffRole", undefined);
+
+  const { optionalAuth } = await import("../middleware/auth.js");
+
+  app.get("/staff-probe", { preHandler: optionalAuth }, async (request, reply) => {
+    return reply.send({
+      staffId: request.staffId ?? null,
+      userType: request.userType ?? null,
+    });
+  });
+
+  await app.ready();
+  return app;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -273,5 +314,69 @@ describe("JWT revocation (SEC-004)", () => {
     expect(response.statusCode).toBe(200);
     // Redis should not have been called (no jti to check)
     expect(mockGetRedisClient).not.toHaveBeenCalled();
+  });
+});
+
+// ── STAFFREVOKE: per-request staff.active re-check in extractAuth staff path ─────
+
+describe("staff.active re-check (STAFFREVOKE)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = await buildStaffTestServer();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `test:${key}`);
+    // staff_token not revoked
+    mockGetRedisClient.mockResolvedValue({ get: vi.fn().mockResolvedValue(null) });
+    // valid staff JWT
+    mockStaffJwtVerify.mockReturnValue({ sub: "staff_1", userType: "staff", role: "MANAGER", jti: "staff-jti" });
+  });
+
+  it("authenticates an active staff member (and re-checks active status)", async () => {
+    mockStaffGetById.mockResolvedValue({ id: "staff_1", active: true });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/staff-probe",
+      headers: { cookie: "staff_token=tok" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ staffId: "staff_1", userType: "staff" });
+    // The active re-check actually ran against the DB
+    expect(mockStaffGetById).toHaveBeenCalledWith("staff_1");
+  });
+
+  it("rejects a deactivated staff member (active=false → not authenticated)", async () => {
+    mockStaffGetById.mockResolvedValue({ id: "staff_1", active: false });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/staff-probe",
+      headers: { cookie: "staff_token=tok" },
+    });
+
+    // optionalAuth does not 401; it simply must NOT attach staff identity
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ staffId: null, userType: null });
+  });
+
+  it("rejects when the staff row no longer exists (getById throws → not authenticated)", async () => {
+    mockStaffGetById.mockRejectedValue(new Error("No Staff found"));
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/staff-probe",
+      headers: { cookie: "staff_token=tok" },
+    });
+
+    expect(res.json()).toEqual({ staffId: null, userType: null });
   });
 });
