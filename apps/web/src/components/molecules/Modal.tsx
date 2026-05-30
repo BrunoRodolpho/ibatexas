@@ -1,4 +1,4 @@
-import React, { useRef } from 'react'
+import React, { useRef, useEffect, useId } from 'react'
 import clsx from 'clsx'
 import { useTranslations } from 'next-intl'
 import { useEscapeAndFocusTrap, useScrollLock } from '@ibatexas/ui'
@@ -30,6 +30,21 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const t = useTranslations('common')
   const dialogRef = useRef<HTMLDialogElement>(null)
+  const triggerRef = useRef<Element | null>(null)
+  const titleId = useId()
+
+  // Capture the currently-focused element on open; restore it on close.
+  useEffect(() => {
+    if (isOpen) {
+      triggerRef.current = document.activeElement
+    } else {
+      const el = triggerRef.current
+      triggerRef.current = null
+      if (el && 'focus' in el) {
+        (el as HTMLElement).focus()
+      }
+    }
+  }, [isOpen])
 
   useEscapeAndFocusTrap(isOpen, onClose, dialogRef)
   useScrollLock(isOpen)
@@ -49,7 +64,7 @@ export const Modal: React.FC<ModalProps> = ({
         ref={dialogRef}
         open
         className="fixed inset-0 z-50 overflow-y-auto flex items-center justify-center w-full h-full m-0 max-w-none max-h-none p-0 border-none bg-transparent pointer-events-none"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
       >
         <div
           className={clsx(
@@ -58,7 +73,7 @@ export const Modal: React.FC<ModalProps> = ({
           )}
         >
           <div className="sticky top-0 bg-smoke-50 border-b border-smoke-200 px-6 py-4 flex items-center justify-between rounded-t-card">
-            <h2 id="modal-title" className="text-base font-semibold text-charcoal-900">
+            <h2 id={titleId} className="text-base font-semibold text-charcoal-900">
               {title}
             </h2>
             {closeButton && (
@@ -109,6 +124,21 @@ export const Sheet: React.FC<SheetProps> = ({
 }) => {
   const t = useTranslations('common')
   const sheetRef = useRef<HTMLDialogElement>(null)
+  const sheetTriggerRef = useRef<Element | null>(null)
+  const sheetTitleId = useId()
+
+  // Capture the currently-focused element on open; restore it on close.
+  useEffect(() => {
+    if (isOpen) {
+      sheetTriggerRef.current = document.activeElement
+    } else {
+      const el = sheetTriggerRef.current
+      sheetTriggerRef.current = null
+      if (el && 'focus' in el) {
+        (el as HTMLElement).focus()
+      }
+    }
+  }, [isOpen])
 
   useEscapeAndFocusTrap(isOpen, onClose, sheetRef)
   useScrollLock(isOpen)
@@ -143,11 +173,11 @@ export const Sheet: React.FC<SheetProps> = ({
           position === 'right' && 'right-0 left-auto animate-slide-in-right',
           position === 'left' && 'left-0 right-auto animate-slide-in-left',
         )}
-        aria-labelledby="sheet-title"
+        aria-labelledby={sheetTitleId}
       >
         <div className="h-full flex flex-col">
           <div className="flex-shrink-0 bg-smoke-50/95 backdrop-blur-sm border-b border-smoke-200 px-4 py-4 flex items-center justify-between">
-            <h2 id="sheet-title" className="text-base font-semibold text-charcoal-900">
+            <h2 id={sheetTitleId} className="text-base font-semibold text-charcoal-900">
               {title}
             </h2>
             {closeButton && (
