@@ -3,7 +3,12 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createReservationService, prisma } from "@ibatexas/domain";
 import type { ReservationDTO } from "@ibatexas/types";
+import type { ReservationCancelPayload } from "@ibatexas/pack-reservations";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
+import {
+  adjudicateStaffMutation,
+  replyForIntent,
+} from "../__shared__/customer-intent-gateway.js";
 
 /** Map a ReservationDTO + customer data into the admin-friendly shape the UI expects. */
 function toAdminReservation(
@@ -152,17 +157,50 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(422).send({ error: "Reserva não pode ser cancelada neste status." });
       }
 
-      await prisma.$transaction([
-        prisma.reservation.update({
-          where: { id },
-          data: { status: "cancelled", cancelledAt: new Date() },
-        }),
-        prisma.reservationTable.deleteMany({ where: { reservationId: id } }),
-        prisma.timeSlot.update({
-          where: { id: reservation.timeSlotId },
-          data: { reservedCovers: { decrement: reservation.partySize } },
-        }),
-      ]);
+      // RC-A1 Phase B — gate the admin reservation cancel through the staff conductor.
+      // D-B: reservation.cancel is a CUSTOMER-facing kind (the pack's requireAuthenticated
+      // guard needs a customerId). Rather than relax that tested guard, we carry the
+      // reservation OWNER's customerId into the adjudication state so it passes on the
+      // REAL owner's identity; requireManagerRole (route preHandler) enforces staff
+      // authority. The pack invariant is kept intact. now/slot are intentionally omitted
+      // so confirmLastMinuteCancel stays dormant — an admin override is not subject to the
+      // customer last-minute-cancel prompt, which keeps post-flip behaviour byte-equivalent
+      // to the legacy direct cancel. (Owner customerId is assumed present — reservations are
+      // always created by a customer; a null owner would REFUSE post-flip, surfacing as a
+      // visible failure rather than a silent ungated mutation.)
+      const doCancel = () =>
+        prisma.$transaction([
+          prisma.reservation.update({
+            where: { id },
+            data: { status: "cancelled", cancelledAt: new Date() },
+          }),
+          prisma.reservationTable.deleteMany({ where: { reservationId: id } }),
+          prisma.timeSlot.update({
+            where: { id: reservation.timeSlotId },
+            data: { reservedCovers: { decrement: reservation.partySize } },
+          }),
+        ]);
+
+      const outcome = await adjudicateStaffMutation({
+        kind: "reservation.cancel",
+        payload: { reservationId: id } satisfies ReservationCancelPayload,
+        staffId: request.staffId ?? "staff",
+        state: {
+          ctx: {
+            channel: "staff",
+            customerId: reservation.customerId,
+            staffId: request.staffId ?? null,
+            reservation: {
+              id: reservation.id,
+              status: reservation.status,
+              partySize: reservation.partySize,
+              timeSlotId: reservation.timeSlotId,
+            },
+          },
+        },
+        legacy: doCancel,
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
 
       return reply.send({ success: true });
     },
