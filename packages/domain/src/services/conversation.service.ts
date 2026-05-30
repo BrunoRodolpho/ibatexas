@@ -81,7 +81,39 @@ export function createConversationService() {
     },
 
     /**
-     * Return all messages for a conversation ordered by sentAt (oldest first).
+     * Batch-append multiple messages in a single createMany call.
+     * Preserves insertion order (Postgres assigns sentAt server-side, ordering
+     * is stable within a transaction for the batch). Idempotent per
+     * (conversationId, role, content, sentAt) — duplicates are silently skipped
+     * via skipDuplicates.
+     * P3-PERF-ARCHIVER: replaces sequential per-message INSERT loop in the subscriber.
+     */
+    async appendMessages(params: {
+      conversationId: string
+      messages: Array<{
+        role: "user" | "assistant" | "system"
+        content: string
+        metadata?: Record<string, unknown>
+      }>
+    }): Promise<{ count: number }> {
+      if (params.messages.length === 0) return { count: 0 }
+      const result = await prisma.conversationMessage.createMany({
+        data: params.messages.map((msg) => ({
+          conversationId: params.conversationId,
+          role: msg.role,
+          content: msg.content,
+          metadata: msg.metadata as Parameters<typeof prisma.conversationMessage.create>[0]["data"]["metadata"],
+        })),
+        skipDuplicates: true,
+      })
+      return { count: result.count }
+    },
+
+    /**
+     * Return the most-recent messages for a conversation ordered by sentAt (oldest first).
+     * Capped at 500 rows — enough to cover any realistic LLM context window while
+     * preventing unbounded memory consumption on runaway conversations.
+     * P2-PERF-TRANSCRIPT: unbounded findMany replaced with a bounded take.
      */
     async getTranscript(conversationId: string): Promise<
       Array<{
@@ -91,11 +123,14 @@ export function createConversationService() {
         metadata: unknown
       }>
     > {
-      return prisma.conversationMessage.findMany({
+      // Fetch desc + take so we get the newest 500, then reverse for asc presentation.
+      const rows = await prisma.conversationMessage.findMany({
         where: { conversationId },
-        orderBy: { sentAt: "asc" },
+        orderBy: { sentAt: "desc" },
+        take: 500,
         select: { role: true, content: true, sentAt: true, metadata: true },
       })
+      return rows.reverse()
     },
 
     /**
