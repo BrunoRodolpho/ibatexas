@@ -21,7 +21,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyReply } from "fastify";
 import type { Decision, IntentEnvelope } from "@adjudicate/core";
-import { buildEnvelope } from "@adjudicate/core";
+import { buildEnvelope, deriveIntentHash } from "@adjudicate/core";
 import {
   getConductor,
   policyForKind,
@@ -56,28 +56,24 @@ export function isCustomerEnvelope(env: IntentEnvelope): env is CustomerEnvelope
  * envelope bytes and compares to the supplied hash. Returns `true` iff
  * the envelope has been altered after signing.
  *
- * The cutover preserves the public function name; under the hood we
- * delegate to the kernel's canonical-hash helper (re-exported via
- * @adjudicate/core), which is the only place that knows the canonical
- * byte layout.
+ * Uses `deriveIntentHash` from `@adjudicate/core` — the kernel's single
+ * canonical-hashing primitive (it rebuilds the hash-input fields from the
+ * envelope and re-hashes; the same primitive `buildEnvelope` uses and the kernel
+ * itself re-verifies with at adjudicate-time). So a legit envelope round-trips
+ * (re-derived === declared) and any post-signing tamper (payload, actor, kind,
+ * taint, nonce, …) yields a hash that no longer matches.
+ *
+ * (Previously this `require()`d a kernel export `canonicalIntentHash` that never
+ * existed; the `typeof !== "function"` guard then fell through to "not forged",
+ * making the whole check a silent no-op. The kernel re-verifies the hash at
+ * adjudicate-time regardless, so this was inactive defense-in-depth, not an open
+ * hole — but the gateway-level check is now real.)
  */
 export function detectForgery(envelope: IntentEnvelope): boolean {
   const declared = (envelope as { intentHash?: string }).intentHash;
   if (!declared) return true;
   try {
-    // Lazy-load the kernel helper to avoid pulling kernel internals into
-    // adjudicate-free build paths.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-    const kernel = require("@adjudicate/core/kernel") as {
-      canonicalIntentHash?: (e: IntentEnvelope) => string;
-    };
-    if (typeof kernel.canonicalIntentHash !== "function") {
-      // Older kernel — accept by default (fail-open for the helper that
-      // didn't exist yet). The kernel itself will still re-verify the
-      // hash during adjudicate().
-      return false;
-    }
-    return kernel.canonicalIntentHash(envelope) !== declared;
+    return deriveIntentHash(envelope) !== declared;
   } catch {
     // Defensive: surface as forgery rather than crash.
     return true;
