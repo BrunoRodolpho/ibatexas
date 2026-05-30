@@ -74,7 +74,16 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         });
       }
 
-      try {
+      // RC-A1 Phase B — gate the manager force-cancel through the conductor as a
+      // privileged status override (D-A: order.status.transition, NOT order.cancel).
+      // order.cancel carries escalateLargeCancel (≥R$1000 → ESCALATE-to-human),
+      // which is backwards for an admin override — the manager IS the human
+      // authority, and the route's own terminal-state pre-check above already gates
+      // eligibility. Trade-off accepted: admin cancels carry the status-transition
+      // basis, not cancel-specific codes — accurate for a privileged override.
+      // Byte-equivalent legacy path while inert; HTTP pre-checks (order exists, not
+      // already terminal) stay OUTSIDE the adjudicated mutation.
+      const doForceCancel = async () => {
         const result = await orderCmdSvc.transitionStatus(id, {
           newStatus: OrderFulfillmentStatus.CANCELED,
           actor: "admin",
@@ -106,6 +115,28 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
           timestamp: new Date().toISOString(),
         } satisfies OrderCanceledEvent);
 
+        return result;
+      };
+
+      try {
+        const outcome = await adjudicateStaffMutation({
+          kind: "order.status.transition",
+          payload: {
+            orderId: id,
+            newStatus: OrderFulfillmentStatus.CANCELED,
+            actor: "admin",
+            actorId: staffId,
+            reason: request.body.reason ?? "Cancelado pelo admin",
+          } satisfies OrderStatusTransitionPayload,
+          staffId: staffId ?? "staff",
+          // OrderState for order.status.transition: requireOrderIdForMutation
+          // (orderId present). Auth-exempt (SYSTEM_OR_ANON_KINDS) so customerId:null ok.
+          state: { ctx: { channel: "web", customerId: null, cartId: null, orderId: id } },
+          legacy: doForceCancel,
+        });
+        if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+
+        const result = outcome.result;
         return reply.send({
           success: true,
           version: result.version,
