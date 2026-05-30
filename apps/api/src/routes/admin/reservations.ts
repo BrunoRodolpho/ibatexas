@@ -3,7 +3,11 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createReservationService, prisma } from "@ibatexas/domain";
 import type { ReservationDTO } from "@ibatexas/types";
-import type { ReservationCancelPayload } from "@ibatexas/pack-reservations";
+import type {
+  ReservationCancelPayload,
+  ReservationCheckinPayload,
+  ReservationCompletePayload,
+} from "@ibatexas/pack-reservations";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import {
   adjudicateStaffMutation,
@@ -107,7 +111,31 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      await svc.transition(id, "seated");
+      // RC-A1 Phase B — checkin is a STAFF-ONLY pack kind (requireStaff needs
+      // staffId !== null). Carry staffId into the state so the guard passes; the
+      // route's requireManagerRole preHandler already authenticated the staff member.
+      // The reservation snapshot satisfies requireReservationPresent. The findUnique
+      // is OUTSIDE the legacy closure (state assembly only) so the inert path stays
+      // byte-equivalent — svc.transition still runs unconditionally and handles a
+      // missing row exactly as before.
+      const r = await prisma.reservation.findUnique({ where: { id } });
+      const outcome = await adjudicateStaffMutation({
+        kind: "reservation.checkin",
+        payload: { reservationId: id } satisfies ReservationCheckinPayload,
+        staffId: request.staffId ?? "staff",
+        state: {
+          ctx: {
+            channel: "staff",
+            customerId: r?.customerId ?? null,
+            staffId: request.staffId ?? null,
+            reservation: r
+              ? { id: r.id, status: r.status as never, partySize: r.partySize, timeSlotId: r.timeSlotId }
+              : null,
+          },
+        },
+        legacy: () => svc.transition(id, "seated"),
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
       return reply.send({ success: true });
     },
   );
@@ -125,7 +153,28 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      await svc.transition(id, "completed");
+      // RC-A1 Phase B — complete is a STAFF-ONLY pack kind. Same shape as checkin:
+      // staffId into state for requireStaff; reservation snapshot for
+      // requireReservationPresent; findUnique outside the legacy closure so inert
+      // stays byte-equivalent.
+      const r = await prisma.reservation.findUnique({ where: { id } });
+      const outcome = await adjudicateStaffMutation({
+        kind: "reservation.complete",
+        payload: { reservationId: id } satisfies ReservationCompletePayload,
+        staffId: request.staffId ?? "staff",
+        state: {
+          ctx: {
+            channel: "staff",
+            customerId: r?.customerId ?? null,
+            staffId: request.staffId ?? null,
+            reservation: r
+              ? { id: r.id, status: r.status as never, partySize: r.partySize, timeSlotId: r.timeSlotId }
+              : null,
+          },
+        },
+        legacy: () => svc.transition(id, "completed"),
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
       return reply.send({ success: true });
     },
   );
