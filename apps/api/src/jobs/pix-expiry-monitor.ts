@@ -23,6 +23,15 @@ const PIX_EXPIRED_DELAY_MS = Number.parseInt(
   process.env.PIX_EXPIRED_DELAY_MS || "1800000", // 30 minutes
   10,
 );
+// P3-NET-PIXREMINDER: TTL (seconds) for the per-stage "already sent" idempotency
+// key. BullMQ schedules these jobs with removeOnComplete, so a retry re-runs the
+// processor and would re-send the WhatsApp message. The NX key suppresses the
+// duplicate send. TTL only needs to outlive the job's retry window; default 1h
+// comfortably covers the 25/30-min schedule plus any backoff.
+const PIX_REMINDER_SENT_TTL_SECONDS = Number.parseInt(
+  process.env.PIX_REMINDER_SENT_TTL_SECONDS || "3600", // 1 hour
+  10,
+);
 
 export interface PixExpiryJobData {
   phone: string;
@@ -65,6 +74,20 @@ export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void
 
   // Skip if already paid
   if (await isPixPaid(orderId)) return;
+
+  // P3-NET-PIXREMINDER: per-stage idempotency around the message send. Jobs are
+  // scheduled with removeOnComplete, so a retry re-runs this processor; without
+  // a guard the customer gets a duplicate reminder/expiry WhatsApp. Claim the
+  // send with SET NX (first runner wins); a null reply means another run already
+  // sent this {orderId,stage}, so skip. This wraps ONLY the message send — the
+  // isPixPaid() paid-check and all payment logic above are untouched.
+  const redis = await getRedisClient();
+  const claimed = await redis.set(
+    rk(`pix:reminder-sent:${orderId}:${stage}`),
+    "1",
+    { NX: true, EX: PIX_REMINDER_SENT_TTL_SECONDS },
+  );
+  if (!claimed) return;
 
   if (stage === "reminder") {
     await sendText(
