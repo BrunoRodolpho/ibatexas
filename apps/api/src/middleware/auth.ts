@@ -77,8 +77,10 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
   if (!staffTokenRaw) return;
 
   try {
-    const jwtInstance = (request as unknown as { server: { jwt: { verify: (token: string) => JwtPayload } } }).server.jwt;
-    const payload = jwtInstance.verify(staffTokenRaw);
+    // JWTSPLIT: verify the staff token with the DEDICATED staff instance (separate secret
+    // + audience). A customer token presented here fails signature/audience verification.
+    const staffJwt = (request as unknown as { server: { jwt: { staff: { verify: (token: string) => JwtPayload } } } }).server.jwt.staff;
+    const payload = staffJwt.verify(staffTokenRaw);
 
     if (payload.userType !== "staff") return; // Unexpected — not a staff token
 

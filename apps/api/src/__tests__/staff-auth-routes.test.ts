@@ -78,17 +78,39 @@ async function buildTestServer() {
   await app.register(sensible);
   await app.register(cookie);
 
-  const signedPayloads: object[] = [];
+  // JWTSPLIT: track which JWT instance signs + with what options. Customer tokens go
+  // through the default instance (server.jwt.sign); staff tokens through the dedicated
+  // namespaced instance (server.jwt.staff.sign) with its own secret + audience (aud is
+  // passed per-call because @fastify/jwt drops registration sign-options when a per-call
+  // options object is supplied).
+  const customerSignedPayloads: object[] = [];
+  const customerSignOptions: Array<{ aud?: string; expiresIn?: string }> = [];
+  const staffSignedPayloads: object[] = [];
+  const staffSignOptions: Array<{ aud?: string; expiresIn?: string }> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (app as any).jwt = {
-    sign: (payload: object, _options?: object) => {
-      signedPayloads.push(payload);
-      return `mock-staff-jwt-${(payload as { sub: string }).sub}`;
+    sign: (payload: object, options?: { aud?: string; expiresIn?: string }) => {
+      customerSignedPayloads.push(payload);
+      customerSignOptions.push(options ?? {});
+      return `mock-customer-jwt-${(payload as { sub: string }).sub}`;
+    },
+    staff: {
+      sign: (payload: object, options?: { aud?: string; expiresIn?: string }) => {
+        staffSignedPayloads.push(payload);
+        staffSignOptions.push(options ?? {});
+        return `mock-staff-jwt-${(payload as { sub: string }).sub}`;
+      },
     },
     decode: () => null,
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (app as any)._signedPayloads = signedPayloads;
+  (app as any)._customerSignedPayloads = customerSignedPayloads;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any)._customerSignOptions = customerSignOptions;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any)._staffSignedPayloads = staffSignedPayloads;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any)._staffSignOptions = staffSignOptions;
 
   await app.register(authRoutes);
   await app.ready();
@@ -114,6 +136,8 @@ function setupEnv() {
   vi.stubEnv("TWILIO_VERIFY_SID", "VA_test_verify_sid");
   vi.stubEnv("TWILIO_OTP_CHANNEL", "sms");
   vi.stubEnv("JWT_SECRET", "test-jwt-secret-key");
+  // JWTSPLIT: staff token signing requires the dedicated staff secret (distinct from JWT_SECRET).
+  vi.stubEnv("STAFF_JWT_SECRET", "test-staff-jwt-secret-key");
   vi.stubEnv("NODE_ENV", "test");
 }
 
@@ -292,12 +316,22 @@ describe("POST /api/auth/staff/verify-otp", () => {
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const payloads = (app as any)._signedPayloads as Array<{ sub: string; userType: string; role: string; jti?: string }>;
-    expect(payloads).toHaveLength(1);
-    expect(payloads[0].sub).toBe("staff_01");
-    expect(payloads[0].userType).toBe("staff");
-    expect(payloads[0].role).toBe("MANAGER");
-    expect(payloads[0].jti).toBeDefined();
+    const staffPayloads = (app as any)._staffSignedPayloads as Array<{ sub: string; userType: string; role: string; jti?: string }>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const customerPayloads = (app as any)._customerSignedPayloads as Array<object>;
+    expect(staffPayloads).toHaveLength(1);
+    expect(staffPayloads[0].sub).toBe("staff_01");
+    expect(staffPayloads[0].userType).toBe("staff");
+    expect(staffPayloads[0].role).toBe("MANAGER");
+    expect(staffPayloads[0].jti).toBeDefined();
+    // JWTSPLIT: the staff token must be signed by the dedicated staff instance,
+    // NOT the customer/default one (separate secret + audience).
+    expect(customerPayloads).toHaveLength(0);
+    // JWTSPLIT: and it carries the staff audience so the customer verifier rejects it.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const staffOpts = (app as any)._staffSignOptions as Array<{ aud?: string; expiresIn?: string }>;
+    expect(staffOpts[0].aud).toBe("ibatexas-staff");
+    expect(staffOpts[0].expiresIn).toBe("8h");
   });
 
   it("returns 404 when phone not found", async () => {

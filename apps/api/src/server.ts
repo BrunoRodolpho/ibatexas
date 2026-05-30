@@ -15,6 +15,7 @@ import { genRequestId, registerRequestId } from "./plugins/request-id.js";
 import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
 import { requireSecret } from "./utils/require-secret.js";
+import { JWT_AUDIENCE_CUSTOMER, JWT_AUDIENCE_STAFF } from "./jwt-audiences.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   // Request/connection timeouts prevent slowloris; trustProxy for reverse proxy (ALB, nginx)
@@ -50,11 +51,39 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Cookie parser — must be registered before JWT (JWT reads from cookies)
   await server.register(fastifyCookie);
 
-  // JWT — reads from `token` cookie automatically when cookie is set
+  // JWT — JWTSPLIT (audit): customer and staff tiers use SEPARATE signing secrets +
+  // audiences, so a leak of one tier's secret cannot forge the other, and a token minted
+  // for one tier is cryptographically invalid for the other (defense beyond the
+  // application-level `userType` claim check).
+  //
+  // Customer = the DEFAULT instance: request.jwtVerify() auto-reads the `token` cookie;
+  // server.jwt.sign issues customer tokens; allowedAud rejects any non-customer token.
+  // (The customer `aud` is set per-call in issueJwtToken — @fastify/jwt drops
+  // registration-level sign options whenever a per-call options object is supplied.)
   const jwtSecret = requireSecret("JWT_SECRET");
   await server.register(fastifyJwt, {
     secret: jwtSecret,
     cookie: { cookieName: "token", signed: false },
+    verify: { allowedAud: JWT_AUDIENCE_CUSTOMER },
+  });
+
+  // Staff = a dedicated NAMESPACED instance reachable at server.jwt.staff.{sign,verify}
+  // (read by middleware/auth.ts staff path + routes/auth.ts issueStaffJwtToken). No cookie
+  // config: the staff path reads `staff_token` and verifies it explicitly. MUST register
+  // AFTER the default instance — @fastify/jwt only sets up the shared `jwt`/`user`
+  // decorators on the first (non-namespaced) registration; reversing the order
+  // double-decorates and throws at boot.
+  const staffJwtSecret = requireSecret("STAFF_JWT_SECRET");
+  if (staffJwtSecret === jwtSecret) {
+    // The entire point of the split is two distinct keys — fail closed if they coincide.
+    throw new Error(
+      "STAFF_JWT_SECRET must differ from JWT_SECRET (separate staff/customer signing keys)",
+    );
+  }
+  await server.register(fastifyJwt, {
+    secret: staffJwtSecret,
+    namespace: "staff",
+    verify: { allowedAud: JWT_AUDIENCE_STAFF },
   });
 
   await registerSensible(server);

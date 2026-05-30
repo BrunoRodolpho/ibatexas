@@ -92,10 +92,12 @@ async function buildTestServer() {
 
   // Decorate with jwt.sign and jwt.decode for issueJwtToken + logout revocation
   const signedPayloads: object[] = [];
+  const signOptions: Array<{ aud?: string; expiresIn?: string }> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (app as any).jwt = {
-    sign: (payload: object, _options?: object) => {
+    sign: (payload: object, options?: { aud?: string; expiresIn?: string }) => {
       signedPayloads.push(payload);
+      signOptions.push(options ?? {});
       return `mock-jwt-token-${(payload as { sub: string }).sub}`;
     },
     decode: () => null, // overridden per-test where needed
@@ -103,6 +105,8 @@ async function buildTestServer() {
   // Expose for assertion
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (app as any)._signedPayloads = signedPayloads;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any)._signOptions = signOptions;
 
   await app.register(authRoutes);
   await app.ready();
@@ -582,6 +586,12 @@ describe("SEC-004: JWT jti issuance", () => {
     expect(payloads[0].jti).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
+    // JWTSPLIT: the customer token carries the customer audience + 4h expiry so the
+    // staff verifier (allowedAud=ibatexas-staff) rejects it cross-tier.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opts = (app as any)._signOptions as Array<{ aud?: string; expiresIn?: string }>;
+    expect(opts[0].aud).toBe("ibatexas-customer");
+    expect(opts[0].expiresIn).toBe("4h");
   });
 });
 

@@ -15,9 +15,14 @@ import type { FastifyInstance } from "fastify";
 const mockJwtVerify = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
-// Staff path: server.jwt.verify (staff_token) + createStaffService().getById (active re-check)
+// Staff path (JWTSPLIT): server.jwt.staff.verify (dedicated staff instance/secret) +
+// createStaffService().getById (active re-check).
 const mockStaffJwtVerify = vi.hoisted(() => vi.fn());
 const mockStaffGetById = vi.hoisted(() => vi.fn());
+// JWTSPLIT: the CUSTOMER/default jwt instance method. A staff_token is signed with the
+// staff secret, so feeding it to the customer instance must fail — this spy lets the
+// tests assert the staff path routes through server.jwt.staff, NOT the shared instance.
+const mockCustomerInstanceVerify = vi.hoisted(() => vi.fn());
 
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
@@ -84,8 +89,14 @@ async function buildTestServer() {
 async function buildStaffTestServer() {
   const app = Fastify({ logger: false });
   await app.register(cookie);
-  // Staff path reads request.server.jwt.verify(staff_token)
-  app.decorate("jwt", { verify: mockStaffJwtVerify } as never);
+  // JWTSPLIT: staff verification uses the dedicated namespaced instance at
+  // server.jwt.staff.verify; the shared/customer instance (server.jwt.verify) must
+  // NOT be used for staff tokens (separate secret). Both are decorated so tests can
+  // assert which one the middleware routed the staff_token through.
+  app.decorate("jwt", {
+    verify: mockCustomerInstanceVerify,
+    staff: { verify: mockStaffJwtVerify },
+  } as never);
   // Customer path runs first and must fail so extractAuth falls through to staff
   app.decorateRequest("jwtVerify", async function () {
     throw new Error("no customer token");
@@ -335,8 +346,13 @@ describe("staff.active re-check (STAFFREVOKE)", () => {
     mockRk.mockImplementation((key: string) => `test:${key}`);
     // staff_token not revoked
     mockGetRedisClient.mockResolvedValue({ get: vi.fn().mockResolvedValue(null) });
-    // valid staff JWT
+    // valid staff JWT (dedicated staff instance)
     mockStaffJwtVerify.mockReturnValue({ sub: "staff_1", userType: "staff", role: "MANAGER", jti: "staff-jti" });
+    // JWTSPLIT: the customer/shared instance does NOT recognise a staff token (separate
+    // secret) — if the middleware wrongly used it for the staff path, verification fails.
+    mockCustomerInstanceVerify.mockImplementation(() => {
+      throw new Error("invalid signature: staff_token is not signed with the customer secret");
+    });
   });
 
   it("authenticates an active staff member (and re-checks active status)", async () => {
@@ -378,5 +394,22 @@ describe("staff.active re-check (STAFFREVOKE)", () => {
     });
 
     expect(res.json()).toEqual({ staffId: null, userType: null });
+  });
+
+  it("JWTSPLIT: routes staff_token through the dedicated staff instance, not the shared/customer one", async () => {
+    mockStaffGetById.mockResolvedValue({ id: "staff_1", active: true });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/staff-probe",
+      headers: { cookie: "staff_token=tok" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ staffId: "staff_1", userType: "staff" });
+    // The dedicated staff verifier handled the token…
+    expect(mockStaffJwtVerify).toHaveBeenCalledWith("tok");
+    // …and the customer/shared instance was NOT used for the staff token (separate secret).
+    expect(mockCustomerInstanceVerify).not.toHaveBeenCalled();
   });
 });

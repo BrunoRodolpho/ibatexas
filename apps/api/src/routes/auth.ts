@@ -14,6 +14,7 @@ import twilio from "twilio";
 import { createCustomerService, createStaffService } from "@ibatexas/domain";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { requireAuth, optionalAuth } from "../middleware/auth.js";
+import { JWT_AUDIENCE_CUSTOMER, JWT_AUDIENCE_STAFF } from "../jwt-audiences.js";
 // Centralized keyed-HMAC phone pseudonym — safe to log, full-length, salted.
 import { hashPhone as phoneHash } from "../lib/phone-hash.js";
 
@@ -164,11 +165,13 @@ function issueJwtToken(
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
-  return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
+  // JWTSPLIT: customer (default) instance + customer audience (set per-call — @fastify/jwt
+  // drops registration sign options when a per-call options object is supplied).
+  return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string; aud: string }) => string } }).jwt.sign({
     sub: customerId,
     userType: "customer",
     jti: randomUUID(),
-  }, { expiresIn: '4h' });
+  }, { expiresIn: '4h', aud: JWT_AUDIENCE_CUSTOMER });
 }
 
 /** DOM-001: Issue a staff JWT with role claim. */
@@ -177,15 +180,18 @@ function issueStaffJwtToken(
   staffId: string,
   role: string,
 ): string {
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret) throw new Error("JWT_SECRET not set");
+  const staffJwtSecret = process.env.STAFF_JWT_SECRET;
+  if (!staffJwtSecret) throw new Error("STAFF_JWT_SECRET not set");
 
-  return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
+  // JWTSPLIT: sign with the DEDICATED staff instance (server.jwt.staff) — separate secret
+  // + staff audience (set per-call, see issueJwtToken note). A staff token is therefore
+  // unverifiable on the customer instance and vice versa.
+  return (server as unknown as { jwt: { staff: { sign: (payload: object, options?: { expiresIn: string; aud: string }) => string } } }).jwt.staff.sign({
     sub: staffId,
     userType: "staff",
     role,
     jti: randomUUID(),
-  }, { expiresIn: '8h' });
+  }, { expiresIn: '8h', aud: JWT_AUDIENCE_STAFF });
 }
 
 // ── Refresh token helpers ───────────────────────────────────────────────────
