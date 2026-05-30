@@ -58,13 +58,27 @@ const MAX_TITLE_LEN = 24;
 const MAX_DESC_LEN = 72;
 const MAX_BUTTON_LEN = 20;
 
+// P3-DATA-EMOJI: use Array.from to slice by Unicode code points instead of
+// UTF-16 code units — prevents splitting surrogate pairs in emoji sequences.
 function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max - 1) + "…";
+  const codePoints = Array.from(text);
+  if (codePoints.length <= max) return text;
+  return codePoints.slice(0, max - 1).join("") + "…";
 }
 
+// P2-I18N-BRL: use Intl.NumberFormat for correct BRL formatting including
+// thousands separators (e.g. "R$ 1.234,56") instead of a raw toFixed/replace.
+// Node.js pt-BR emits U+00A0 (non-breaking space) between "R$" and the number;
+// normalize to regular space for consistent string comparisons and WhatsApp rendering.
+const _brlFormatter = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+});
+
 function formatPrice(centavos: number): string {
-  return `R$ ${(centavos / 100).toFixed(2).replace(".", ",")}`;
+  // Replace U+00A0 (non-breaking space) and U+202F (narrow no-break space) with
+  // regular space so the output is consistent across Node.js ICU versions.
+  return _brlFormatter.format(centavos / 100).replace(/[\u00a0\u202f]/g, " ");
 }
 
 // ── Builders ────────────────────────────────────────────────────────────────────

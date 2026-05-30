@@ -29,13 +29,15 @@ export async function startConversationArchiver(
         channel,
       });
 
-      for (const msg of messages) {
-        await svc.appendMessage({
-          conversationId,
+      // P3-PERF-ARCHIVER: batch-insert all messages in one createMany call instead
+      // of a sequential per-message await loop.
+      await svc.appendMessages({
+        conversationId,
+        messages: messages.map((msg) => ({
           role: msg.role as "user" | "assistant" | "system",
           content: msg.content,
-        });
-      }
+        })),
+      });
 
       log?.info(
         { session_id: sessionId, message_count: messages.length },
