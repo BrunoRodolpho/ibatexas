@@ -247,6 +247,56 @@ describe("GET /api/chat/stream/:sessionId", () => {
     expect(res.body).toContain(`"type":"error"`);
   });
 
+  // ── P2-MEM-SSEHEARTBEAT ─────────────────────────────────────────────────────
+
+  it("writes a keep-alive heartbeat comment while the stream stays open", async () => {
+    // Tiny interval so a couple of pings fire before we close the stream.
+    vi.stubEnv("SSE_HEARTBEAT_MS", "5");
+
+    const { EventEmitter } = await import("node:events");
+    const emitter = new EventEmitter();
+    // Non-terminal buffer: the response stays open and the heartbeat ticks
+    // until we emit a terminal `done` below.
+    mockGetStream.mockReturnValue({ emitter, buffer: [{ type: "text_delta", delta: "oi" }] });
+
+    const app = await buildTestServer();
+    // Emit the terminal chunk after a few heartbeat intervals have elapsed so
+    // inject() resolves with the pings already written.
+    setTimeout(() => emitter.emit("chunk", { type: "done" }), 40);
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${VALID_SESSION_ID}`,
+      headers: { "x-session-secret": GUEST_SECRET },
+    });
+
+    // The SSE comment line proves the periodic keep-alive ran.
+    expect(res.body).toContain(": ping");
+    expect(res.body).toContain(`"type":"done"`);
+    vi.unstubAllEnvs();
+  });
+
+  it("does not start a heartbeat when SSE_HEARTBEAT_MS is 0 (disabled)", async () => {
+    vi.stubEnv("SSE_HEARTBEAT_MS", "0");
+
+    const { EventEmitter } = await import("node:events");
+    const emitter = new EventEmitter();
+    mockGetStream.mockReturnValue({ emitter, buffer: [{ type: "text_delta", delta: "oi" }] });
+
+    const app = await buildTestServer();
+    setTimeout(() => emitter.emit("chunk", { type: "done" }), 30);
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/chat/stream/${VALID_SESSION_ID}`,
+      headers: { "x-session-secret": GUEST_SECRET },
+    });
+
+    expect(res.body).not.toContain(": ping");
+    expect(res.body).toContain(`"type":"done"`);
+    vi.unstubAllEnvs();
+  });
+
   // ── P2-SEC-SSECORS regressions ──────────────────────────────────────────────
 
   it("denies a guest stream when x-session-secret is missing", async () => {

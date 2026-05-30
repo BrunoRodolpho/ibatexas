@@ -86,6 +86,24 @@ function isOriginAllowed(origin: string): boolean {
   );
 }
 
+// ── SSE keep-alive heartbeat (P2-MEM-SSEHEARTBEAT) ────────────────────────────
+// The hijacked SSE response only reacts to a *clean* socket close via
+// `request.raw.on("close", …)`. A half-open socket (NAT/LB idle drop, dead
+// peer) never fires "close", so without proactive traffic the connection — and
+// its in-memory emitter listener / Redis subscriber — can leak indefinitely.
+// We write a periodic SSE comment line (`: ping\n\n`, ignored by EventSource)
+// to keep intermediaries from idling the socket and to surface a dead peer as a
+// write error (which our error path then cleans up). The interval is ALWAYS
+// cleared on close/error/terminal-chunk so no interval is ever orphaned.
+// Read at request time (mirrors resolveAllowedOrigins) so it stays env-driven
+// (rule 3). 0/negative disables the heartbeat.
+function resolveSseHeartbeatMs(): number {
+  return Number.parseInt(
+    process.env.SSE_HEARTBEAT_MS || "15000", // 15s — below typical 30-60s LB idle
+    10,
+  );
+}
+
 // ── Per-session turn abort registry (P2-CONC-ABORT) ───────────────────────────
 // The producer (POST) fires the agent turn fire-and-forget; the SSE consumer
 // (GET) is a *separate* request. When the consumer disconnects we want to stop
@@ -352,12 +370,43 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       reply.raw.setHeader("X-Accel-Buffering", "no");
       reply.raw.flushHeaders();
 
+      // P2-MEM-SSEHEARTBEAT: proactive keep-alive so a half-open socket (which
+      // never fires "close") cannot leak this response and its emitter/Redis
+      // subscriber forever. Idempotent stop; ALWAYS cleared on any termination
+      // path (terminal chunk, error, client close) so the interval never leaks.
+      let heartbeat: ReturnType<typeof setInterval> | null = null;
+      const stopHeartbeat = (): void => {
+        if (heartbeat) {
+          clearInterval(heartbeat);
+          heartbeat = null;
+        }
+      };
+      const heartbeatMs = resolveSseHeartbeatMs();
+      if (heartbeatMs > 0) {
+        heartbeat = setInterval(() => {
+          // A comment line is ignored by EventSource but keeps the socket warm;
+          // a write to a dead half-open peer surfaces as an error → stop+cleanup.
+          try {
+            reply.raw.write(`: ping\n\n`);
+          } catch {
+            stopHeartbeat();
+          }
+        }, heartbeatMs);
+        // Don't let a lone heartbeat timer keep the process alive at shutdown.
+        heartbeat.unref?.();
+      }
+
       // P2-CONC-ABORT: when this SSE consumer disconnects, signal the producing
       // turn (if it ran on THIS replica) so it stops delivering after the client
       // is gone. Same-replica only — see turnAbortControllers above.
       const abortTurnOnDisconnect = (): void => {
         turnAbortControllers.get(sessionId)?.abort();
       };
+
+      // Safety net: whatever path ends this request, the heartbeat is stopped.
+      // (Each terminal branch also stops it eagerly; this guards the half-open
+      // case where only "close" eventually fires.)
+      request.raw.on("close", stopHeartbeat);
 
       // Same-replica fast path: if the producer ran on THIS replica, the
       // in-memory entry exists and we serve directly off its EventEmitter.
@@ -366,6 +415,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         for (const chunk of entry.buffer) {
           reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
           if (chunk.type === "done" || chunk.type === "error") {
+            stopHeartbeat();
             reply.raw.end();
             return;
           }
@@ -376,6 +426,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           const c = chunk as { type: string };
           if (c.type === "done" || c.type === "error") {
             entry.emitter.off("chunk", onChunk);
+            stopHeartbeat();
             reply.raw.end();
           }
         };
@@ -400,6 +451,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
         reply.raw.write(`data: ${JSON.stringify(chunk)}\n\n`);
         if (chunk.type === "done" || chunk.type === "error") {
           ended = true;
+          stopHeartbeat();
           void subscription?.close();
           reply.raw.end();
         }
@@ -413,6 +465,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       }
 
       if (!subscription) {
+        stopHeartbeat();
         reply.raw.write(`data: ${JSON.stringify({ type: "error", message: "Sessão não encontrada." })}\n\n`);
         reply.raw.end();
         return;
@@ -423,6 +476,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // `subscription` was assignable — in which case writeChunk's close() ran
       // as a no-op. Close now so we never leak the duplicated subscriber.
       if (ended) {
+        stopHeartbeat();
         void subscription.close();
         return;
       }
