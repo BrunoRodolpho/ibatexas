@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import { Button } from '@ibatexas/ui/atoms'
 import { Modal } from '@ibatexas/ui/molecules'
 import { apiFetch } from '@/lib/api'
+import { formatBRL as formatBRLLib } from '@/lib/format'
 import type { OrderActionItem } from './OrderActions'
 
 interface AmendOrderDialogProps {
@@ -22,7 +23,9 @@ type SubmitState = 'idle' | 'loading' | 'error'
 function formatBRL(centavos: number): string {
   const sign = centavos < 0 ? '−' : '+'
   const abs = Math.abs(centavos)
-  return `${sign}R$ ${(abs / 100).toFixed(2).replace('.', ',')}`
+  // Use lib formatter for correct thousands separators, strip "R$ " prefix
+  const absFormatted = formatBRLLib(abs).replace(/^R\$\s*/, '')
+  return `${sign}R$ ${absFormatted}`
 }
 
 export function AmendOrderDialog({ orderId, items, fulfillmentStatus, isOpen, onClose, onMutate }: AmendOrderDialogProps) {
@@ -301,11 +304,11 @@ export function AmendOrderDialog({ orderId, items, fulfillmentStatus, isOpen, on
           <div className="border-t border-smoke-200 pt-3 space-y-1">
             <div className="flex justify-between text-sm text-smoke-400">
               <span>{t('amend_diff_previous')}</span>
-              <span>R$ {(previousSubtotal / 100).toFixed(2).replace('.', ',')}</span>
+              <span>{formatBRLLib(previousSubtotal)}</span>
             </div>
             <div className="flex justify-between text-sm font-semibold text-charcoal-900">
               <span>{t('amend_diff_new')}</span>
-              <span>R$ {(newSubtotal / 100).toFixed(2).replace('.', ',')}</span>
+              <span>{formatBRLLib(newSubtotal)}</span>
             </div>
             <div className={`flex justify-between text-sm font-medium ${totalDelta < 0 ? 'text-accent-red' : 'text-accent-green'}`}>
               <span>{t('amend_diff_delta')}</span>

@@ -32,12 +32,15 @@ export function formatPerPerson(centavos: number, servings: number): string {
 
 /**
  * Split a BRL price into prefix and value for display-oriented layouts.
+ * Uses Intl.NumberFormat (same as formatBRL) so thousands separators are correct.
  * @param centavos — integer price in centavos
- * @returns { prefix: "R$", value: "89,00" }
+ * @returns { prefix: "R$", value: "1.234,56" }
  */
 export function splitBRL(centavos: number): { prefix: string; value: string } {
-  const formatted = (centavos / 100).toFixed(2).replace('.', ',')
-  return { prefix: 'R$', value: formatted }
+  const formatted = brlFormatter.format(centavos / 100)
+  // Intl.NumberFormat pt-BR produces "R$ 1.234,56" — strip the currency symbol and NBSP
+  const value = formatted.replace(/^R\$ /, '').replace(/^R\$\s*/, '')
+  return { prefix: 'R$', value }
 }
 
 /** Format a numeric rating for display (e.g., 4.7 → "4,7"). Uses comma for pt-BR. */

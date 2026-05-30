@@ -10,6 +10,7 @@ import { Package } from "lucide-react"
 import { apiFetch } from '@/lib/api'
 import { PaymentStatusBadge } from '@/components/molecules/PaymentStatusBadge'
 import { mapMedusaOrderToSummary, formatOrderId, type MedusaOrderRaw, type OrderSummary } from '@ibatexas/types'
+import { formatBRL } from '@/lib/format'
 
 interface CurrentPaymentSummary {
   id: string
@@ -33,7 +34,7 @@ interface OrderSummaryWithPayment extends OrderSummary {
 }
 
 function formatCentavos(total: number): string {
-  return `R$ ${(total / 100).toFixed(2).replace('.', ',')}`
+  return formatBRL(total)
 }
 
 function formatDate(iso: string): string {
