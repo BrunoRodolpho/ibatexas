@@ -47,6 +47,8 @@ NATS subscribers MUST register before background jobs start. Sequence:
 
 ### 7. Hybrid State-Flow Architecture (XState)
 
+> Being superseded by the in-flight ADR-16 (see `docs/claustrum-migration/ADR-16-DRAFT.md`). ADR-16 is still a draft; this entry remains authoritative until activation completes.
+
 WhatsApp bot moved from a monolithic LLM prompt (3,400 tokens, all rules every turn)
 to a Hybrid State-Flow architecture using XState v5.
 
@@ -70,6 +72,8 @@ deterministic state machine eliminates these failures entirely.
 
 ### 8. Conversation Persistence via CDC
 
+> Being superseded by the in-flight ADR-16 (see `docs/claustrum-migration/ADR-16-DRAFT.md`). ADR-16 is still a draft; this entry remains authoritative until activation completes.
+
 WhatsApp/web conversations were stored only in Redis with 24-48h TTL. No durable log existed for debugging, analytics, or admin visibility.
 
 **Decision:** CDC (Change Data Capture) pattern — `appendMessages()` publishes a NATS event (`conversation.message.appended`) after writing to Redis. A subscriber (`conversation-archiver.ts`) writes to Postgres asynchronously. Redis stays the hot path for the LLM.
@@ -89,6 +93,8 @@ WhatsApp/web conversations were stored only in Redis with 24-48h TTL. No durable
 - Tests: `packages/llm-provider/src/__tests__/scenarios/` (11 fixtures)
 
 ### 9. Zero-Trust LLM Architecture (Final Alignment)
+
+> Being superseded by the in-flight ADR-16 (see `docs/claustrum-migration/ADR-16-DRAFT.md`). ADR-16 is still a draft; this entry remains authoritative until activation completes.
 
 The system moved from "LLM calls tools directly" to a strict Semantic Parser model where the LLM has zero authority to mutate state.
 

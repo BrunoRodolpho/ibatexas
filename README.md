@@ -51,7 +51,7 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | Layer | Technology |
 |-------|-----------|
 | Frontend | Next.js 14, Tailwind CSS, PostHog analytics |
-| API | Fastify, TypeScript 5+, Swagger/OpenAPI, Node.js 20+ |
+| API | Fastify, TypeScript 5+, Swagger/OpenAPI, Node.js 22+ |
 | Agent | Claude Sonnet (Anthropic), tool-use API — 25 tools |
 | Commerce | Medusa.js v2 — catalog, cart, orders, payments |
 | Auth | Twilio Verify — WhatsApp OTP (no passwords, no Clerk) |
