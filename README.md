@@ -103,3 +103,9 @@ For a full list of services and their URLs, see the [Local URLs](docs/setup/loca
 | [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) | Event taxonomy, PostHog dashboards, KPIs |
 | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) | Redis key patterns, TTLs, ops commands |
 | [docs/features/wishlist.md](docs/features/wishlist.md) | Wishlist feature — client-only, localStorage, MVP scope |
+
+---
+
+## License
+
+Third-party dependencies: Medusa.js (FSL-1.1), Sentry SDK (FSL-1.1). No GPL, AGPL, or SSPL components.

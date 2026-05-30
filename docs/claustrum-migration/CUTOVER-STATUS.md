@@ -185,6 +185,10 @@
   cd /Users/thaisrodolpho/projects/ibatexas
   rm -rf packages/llm-provider/
   # Remove @ibatexas/llm-provider dep from apps/api/package.json
+  # ALSO remove the `predev` script from apps/api/package.json — it runs
+  # `cd ../../packages/llm-provider && npx tsc --outDir dist` and will
+  # break `ibx dev` / `pnpm dev` as soon as the package directory is gone.
+  # Both the dep entry AND the predev script must be removed together.
   pnpm install
   pnpm --filter @ibatexas/api typecheck
   git add -A && git commit -m "chore: delete @ibatexas/llm-provider package"
