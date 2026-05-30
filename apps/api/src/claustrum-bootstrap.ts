@@ -10,10 +10,10 @@
 //   - MemoryPort             createPostgresMemoryProvider (Prisma + Redis)
 //   - GroundingPort          createPgVectorGroundingProvider (pgvector)
 //   - ChannelDriver[]        [WhatsAppChannel, WebChannel]
-//   - Adjudicator            adjudicateBridge() wrapping @adjudicate/core
+//   - Adjudicator            buildAdjudicator() wrapping @adjudicate/core
 //   - PlannerPort            createIbatexasPlanner() (LLM intent extractor over
 //                            the 5 packs' CapabilityPlanners — RC-A1 Phase A.1)
-//   - ResponderPort          anthropicResponder() (uses ModelProvider)
+//   - ResponderPort          naiveResponder() (uses ModelProvider)
 //   - ExplainerPort          ibatexasExplainer() (pt-BR templates)
 //   - HandoffPort            noopHandoff() (TODO: wire Slack/PagerDuty)
 //   - TelemetryPort          fastifyTelemetry() (pino + prom-client)
