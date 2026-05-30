@@ -203,31 +203,54 @@ async function handlePaymentSucceeded(
   // that payment has succeeded, creating the Medusa order.
   const cartId = paymentIntent.metadata?.["cartId"];
   if (!orderId && cartId) {
-    try {
-      const completedData = await medusaStore(`/store/carts/${cartId}/complete`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      }) as { type?: string; order?: { id: string; display_id?: number } };
-
-      orderId = completedData.order?.display_id
-        ? formatOrderId(completedData.order.display_id)
-        : completedData.order?.id;
-
-      if (orderId) {
-        // Persist orderId back to the PaymentIntent for future reference
-        const stripe = getStripe();
-        await stripe.paymentIntents.update(paymentIntent.id, {
-          metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
-        });
-        log.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
+    // PIXDUP: serialize concurrent payment_intent.succeeded events for the SAME
+    // cart with a distributed lock (realistic after amend_order/regenerate_pix
+    // mints a 2nd PI — the same scenario the order-capture lock below guards).
+    // withLock is a non-blocking try-lock: the loser gets null and retries below.
+    //
+    // Retry-correctness is guaranteed by Medusa's complete-cart workflow being
+    // IDEMPOTENT (verified against @medusajs/core-flows@2.13.5
+    // cart/workflows/complete-cart.js + the store route): it creates an order only
+    // `when(!order_id)`, otherwise returns the cart's already-linked order. So a
+    // partial-failure retry (cart completed, but the PI-metadata update below
+    // failed) re-runs /complete and gets the SAME order back — never a strand or a
+    // duplicate. This is exactly why we do NOT guard with a local `SET pix:completed
+    // NX` before /complete: a crash between the flag and completion would strand the
+    // order behind a flag that suppresses the retry. The cart's own state +
+    // Medusa's idempotency are the source of truth, not a local flag.
+    const completion = await withLock(`cart-complete:${cartId}`, async () => {
+      try {
+        return (await medusaStore(`/store/carts/${cartId}/complete`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        })) as { type?: string; order?: { id: string; display_id?: number } };
+      } catch (err) {
+        log.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
+        // Re-throw so the BullMQ job FAILS and is retried rather than stranding the
+        // order with the idempotency key already claimed.
+        throw err;
       }
-    } catch (err) {
-      log.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
-      // Re-throw so the BullMQ job FAILS and is retried. Previously this was
-      // swallowed and the route still returned 200; with the durable async path
-      // a failed cart-completion MUST retry rather than strand the order with the
-      // idempotency key already claimed.
-      throw err;
+    });
+
+    if (completion === null) {
+      // Another worker holds the cart-complete lock (mid-completion). Retry; by the
+      // next attempt the winner has finished and Medusa's idempotent /complete
+      // returns the existing order. No strand — the winner is completing it.
+      log.info({ event_id: event.id, cart_id: cartId }, "PIX: cart completion in progress on another worker — will retry");
+      throw new Error(`cart-complete in progress for cart ${cartId}`);
+    }
+
+    orderId = completion.order?.display_id
+      ? formatOrderId(completion.order.display_id)
+      : completion.order?.id;
+
+    if (orderId) {
+      // Persist orderId back to the PaymentIntent for future reference
+      const stripe = getStripe();
+      await stripe.paymentIntents.update(paymentIntent.id, {
+        metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
+      });
+      log.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
     }
   }
 

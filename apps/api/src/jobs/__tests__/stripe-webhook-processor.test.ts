@@ -207,6 +207,49 @@ describe("processStripeEvent — payment_intent.succeeded (heavy work moved off 
   });
 });
 
+// ── PIXDUP: concurrent PIX cart-completion is serialized + idempotent on retry ──
+
+describe("processStripeEvent — PIX cart-completion concurrency (PIXDUP)", () => {
+  beforeEach(() => {
+    // Reset to pass-through (a prior describe may have installed a try-lock).
+    lockState.impl = async (_key: string, fn: () => Promise<unknown>) => fn();
+  });
+
+  it("retries (throws) when another worker holds the cart-complete lock — no concurrent /complete", async () => {
+    // Distributed cart-complete lock already held by another worker → withLock → null.
+    lockState.impl = async (key: string, fn: () => Promise<unknown>) =>
+      key.startsWith("cart-complete:") ? null : fn();
+
+    await expect(
+      processStripeEvent(
+        { event: succeededEvent({ metadata: { cartId: "cart_99" } }), receivedAtMs: Date.now() },
+        log,
+      ),
+    ).rejects.toThrow(/cart-complete in progress/);
+
+    // The loser did NOT issue a concurrent Medusa /complete, and published nothing.
+    expect(mockMedusaStore).not.toHaveBeenCalledWith("/store/carts/cart_99/complete", expect.anything());
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith("order.placed", expect.anything());
+  });
+
+  it("uses the EXISTING order when Medusa idempotently returns an already-completed cart (no strand)", async () => {
+    // Partial-failure retry: the cart was already completed on a prior attempt, so
+    // Medusa's idempotent complete-cart returns the existing order (type:"order").
+    mockMedusaStore.mockResolvedValueOnce({ type: "order", order: { id: "order_existing", display_id: 42 } });
+    mockCapturePayment.mockResolvedValueOnce(captureResult);
+
+    await processStripeEvent(
+      { event: succeededEvent({ metadata: { cartId: "cart_99" } }), receivedAtMs: Date.now() },
+      log,
+    );
+
+    // Proceeds with the existing order — captures + publishes, never re-creates/strands.
+    expect(mockMedusaStore).toHaveBeenCalledWith("/store/carts/cart_99/complete", expect.anything());
+    expect(mockCapturePayment).toHaveBeenCalled();
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith("order.placed", expect.anything());
+  });
+});
+
 // ── The durability invariant: failure RETRIES, never strands the order ──────────
 
 describe("processStripeEvent — failures are retryable (durable path, P1-NET-STRIPESYNC)", () => {
