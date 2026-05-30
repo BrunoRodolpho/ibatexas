@@ -25,7 +25,13 @@ import {
   type OrderCanceledEvent,
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
+import type { OrderStatusTransitionPayload } from "@ibatexas/pack-orders";
+import type { PaymentWaivePayload } from "@ibatexas/pack-payments";
 import { requireStaff, requireManager } from "../../middleware/staff-auth.js";
+import {
+  adjudicateStaffMutation,
+  replyForIntent,
+} from "../__shared__/customer-intent-gateway.js";
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 
@@ -142,7 +148,12 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         });
       }
 
-      try {
+      // RC-A1 Phase B — gate the staff status-advance through the conductor;
+      // byte-equivalent legacy path while inert. order.status.transition is
+      // auth-exempt (SYSTEM_OR_ANON_KINDS) + UNTRUSTED-floor, so the TRUSTED staff
+      // envelope passes; HTTP pre-checks (order exists, next-status computable) stay
+      // OUTSIDE the adjudicated mutation.
+      const doAdvance = async () => {
         const result = await orderCmdSvc.transitionStatus(id, {
           newStatus: nextStatus,
           actor: "admin",
@@ -161,6 +172,28 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
           timestamp: new Date().toISOString(),
         } satisfies OrderStatusChangedEvent);
 
+        return result;
+      };
+
+      try {
+        const outcome = await adjudicateStaffMutation({
+          kind: "order.status.transition",
+          payload: {
+            orderId: id,
+            newStatus: nextStatus,
+            actor: "admin",
+            actorId: staffId,
+            reason: `Status avançado por ${request.staffRole}`,
+          } satisfies OrderStatusTransitionPayload,
+          staffId: staffId ?? "staff",
+          // OrderState for order.status.transition: requireOrderIdForMutation
+          // (orderId present). Auth-exempt so customerId:null is fine.
+          state: { ctx: { channel: "web", customerId: null, cartId: null, orderId: id } },
+          legacy: doAdvance,
+        });
+        if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+
+        const result = outcome.result;
         return reply.send({
           success: true,
           version: result.version,
@@ -214,23 +247,54 @@ export async function adminOrderActionRoutes(server: FastifyInstance): Promise<v
         });
       }
 
-      const result = await paymentCmdSvc.transitionStatus(activePayment.id, {
-        newStatus: PaymentStatus.WAIVED,
-        actor: "admin",
-        actorId: staffId,
-        reason: request.body.reason,
+      // RC-A1 Phase B — gate the OWNER waive through the conductor; byte-equivalent
+      // legacy path while inert. payment.waive has NO pack auth guard + UNTRUSTED
+      // floor (TRUSTED staff passes); HTTP pre-checks (OWNER gate, payment exists,
+      // not terminal) stay OUTSIDE the adjudicated mutation.
+      //
+      // FLIP-TIME CHANGE (inert today; fires only post-bootstrap): the pack maps
+      // payment.waive to ALWAYS REQUEST_CONFIRMATION (confirmAlwaysOnWaive) —
+      // irreversible debt forgiveness is intentionally two-step. Post-flip /waive
+      // returns 202 needs-confirmation rather than executing directly. Documented
+      // governance feature, carried to the Phase-C checklist (sits with the
+      // refund-ladder + status-force always-confirm changes).
+      const doWaive = async () => {
+        const result = await paymentCmdSvc.transitionStatus(activePayment.id, {
+          newStatus: PaymentStatus.WAIVED,
+          actor: "admin",
+          actorId: staffId,
+          reason: request.body.reason,
+        });
+
+        await publishNatsEvent("payment.status_changed", {
+          orderId: id,
+          paymentId: activePayment.id,
+          previousStatus: activePayment.status,
+          newStatus: PaymentStatus.WAIVED,
+          method: activePayment.method,
+          version: result.version,
+          timestamp: new Date().toISOString(),
+        } satisfies PaymentStatusChangedEvent);
+
+        return result;
+      };
+
+      const outcome = await adjudicateStaffMutation({
+        kind: "payment.waive",
+        payload: {
+          paymentId: activePayment.id,
+          reason: request.body.reason,
+          adminId: staffId ?? "owner",
+        } satisfies PaymentWaivePayload,
+        staffId: staffId ?? "owner",
+        // PaymentState for payment.waive: requirePaymentExists (exists). Not in
+        // KINDS_BLOCKED_ON_TERMINAL; the HTTP terminal pre-check above stays.
+        state: { ctx: { actor: { principal: "admin", id: staffId }, exists: true, currentStatus: activePayment.status } },
+        legacy: doWaive,
       });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
 
-      await publishNatsEvent("payment.status_changed", {
-        orderId: id,
-        paymentId: activePayment.id,
-        previousStatus: activePayment.status,
-        newStatus: PaymentStatus.WAIVED,
-        method: activePayment.method,
-        version: result.version,
-        timestamp: new Date().toISOString(),
-      } satisfies PaymentStatusChangedEvent);
-
+      const result = outcome.result;
       return reply.send({
         success: true,
         version: result.version,
