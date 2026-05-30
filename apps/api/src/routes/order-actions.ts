@@ -821,6 +821,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       const notes = await prisma.orderNote.findMany({
         where: { orderId: id, isInternal: false },
         orderBy: { createdAt: "asc" },
+        take: 200,
       });
 
       return reply.send({

@@ -1472,6 +1472,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const notes = await prisma.orderNote.findMany({
         where: { orderId: request.params.id },
         orderBy: { createdAt: "asc" },
+        take: 200,
       });
 
       return reply.send({
