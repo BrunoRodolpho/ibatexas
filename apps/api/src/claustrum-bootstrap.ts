@@ -576,9 +576,9 @@ function redisSessionStore(): SessionPort {
       // TODO
       return;
     },
-    isStale(): boolean {
-      return false;
-    },
+    // SessionPort.isStale() was removed upstream (claustrum APIReviewer-011,
+    // commit 21c5393 — it was unused in the runtime). This consumer stub is
+    // kept in sync with the port; do not re-add isStale.
   };
 }
 
