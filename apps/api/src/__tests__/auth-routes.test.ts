@@ -691,6 +691,57 @@ describe("POST /api/auth/logout", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
   });
+
+  // STAFFREVOKE: logout must also revoke + clear the `staff_token` cookie, not just
+  // the customer `token`. Staff JWTs are consulted against the same jwt:revoked:<jti>
+  // key by middleware/auth.ts checkRevocation on the staff path.
+  it("revokes the staff JWT by setting the revocation key in Redis on logout", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+
+    const futureExp = Math.floor(Date.now() / 1000) + 28800; // 8h — matches staff JWT TTL
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (app as any).jwt.decode = (token: string) => {
+      if (token === "mock-staff-token") {
+        return { sub: "stf_01", userType: "staff", role: "MANAGER", jti: "staff-jti-uuid", exp: futureExp };
+      }
+      return null;
+    };
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: { cookie: "staff_token=mock-staff-token" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      expect.stringContaining("jwt:revoked:staff-jti-uuid"),
+      "1",
+      expect.objectContaining({ EX: expect.any(Number) }),
+    );
+  });
+
+  it("clears the staff_token cookie on logout", async () => {
+    setupEnv();
+    const mockRedis = createMockRedis();
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: { cookie: "staff_token=mock-staff-token" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const setCookieHeaders = res.headers["set-cookie"];
+    const cookieStr = Array.isArray(setCookieHeaders) ? setCookieHeaders.join("; ") : String(setCookieHeaders);
+    expect(cookieStr).toContain("staff_token=");
+  });
 });
 
 describe("GET /api/auth/me", () => {
