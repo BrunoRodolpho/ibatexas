@@ -12,10 +12,15 @@ import {
 // can push raw bytes here; the iterator drains them then ends the loop.
 let pendingMessages: Uint8Array[] = []
 
+// In-flight backlog reported by sub.getPending(). Default 0 (never trips the
+// P2-MEM-NATSPENDING cap); a test can raise it to exercise the drop path.
+let pendingCount = 0
+
 // Mock the nats module with a proper implementation
 vi.mock("nats", () => {
   const mockSubscription = {
     unsubscribe: vi.fn(),
+    getPending: () => pendingCount,
     [Symbol.asyncIterator]: () => {
       const queue = pendingMessages
       pendingMessages = []
@@ -56,6 +61,7 @@ describe("NATS Client", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     pendingMessages = []
+    pendingCount = 0
     // Reset module-level singletons so test order never matters.
     setDlqHandler(() => {})
     setOutboxWriter({ lPush: vi.fn(), lRem: vi.fn() })
@@ -177,6 +183,38 @@ describe("NATS Client", () => {
     await flushMicrotasks()
 
     expect(dlq).not.toHaveBeenCalled()
+  })
+
+  // ── P2-MEM-NATSPENDING (pending backpressure) ───────────────────────────────
+  it("drops a message and routes it to the DLQ when pending exceeds the cap", async () => {
+    const dlq = vi.fn()
+    setDlqHandler(dlq)
+
+    const handler = vi.fn().mockResolvedValue(undefined)
+    // Report a backlog above the default cap (10000) so the guard sheds load.
+    pendingCount = 10_001
+    pendingMessages = [encode({ orderId: "ord_overflow" })]
+
+    await subscribeNatsEvent("order.placed", handler)
+    await flushMicrotasks()
+
+    // Handler is skipped; the dropped message is surfaced via the DLQ.
+    expect(handler).not.toHaveBeenCalled()
+    expect(dlq).toHaveBeenCalledTimes(1)
+    const [evt, payload] = dlq.mock.calls[0] as [string, Record<string, unknown>]
+    expect(evt).toBe("order.placed")
+    expect(payload._dropped).toBe("nats-pending-overflow")
+  })
+
+  it("processes normally when pending is within the cap", async () => {
+    const handler = vi.fn().mockResolvedValue(undefined)
+    pendingCount = 5 // well under the default cap
+    pendingMessages = [encode({ orderId: "ord_ok" })]
+
+    await subscribeNatsEvent("order.placed", handler)
+    await flushMicrotasks()
+
+    expect(handler).toHaveBeenCalledWith({ orderId: "ord_ok" })
   })
 
   // ── P1-SCALE-OUTBOXMEM (writer-side cap) ─────────────────────────────────────

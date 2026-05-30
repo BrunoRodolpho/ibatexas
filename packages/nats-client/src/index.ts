@@ -197,6 +197,17 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
 // Overridable via NATS_QUEUE_GROUP for multi-pool deployments.
 const DEFAULT_QUEUE_GROUP = process.env.NATS_QUEUE_GROUP || "ibatexas-workers"
 
+// P2-MEM-NATSPENDING: bound the in-flight (pending) backlog per subscription so
+// a burst of events while a handler is slow can't grow the iterator's internal
+// queue without limit (unbounded memory). nats.js v2 exposes no public pending-
+// limit *setter* (the `max` SubscriptionOption auto-unsubscribes after N msgs,
+// which would tear down a fire-and-forget subscriber), so we enforce the bound
+// at the application layer: when sub.getPending() exceeds the cap we drop the
+// current message (Core NATS is already at-most-once / lossy — JetStream
+// durability is deferred) and surface it via the DLQ/log instead of buffering.
+// Configurable (rule 3); <= 0 disables the bound (unbounded, prior behavior).
+const NATS_MAX_PENDING_MSGS = Number.parseInt(process.env.NATS_MAX_PENDING_MSGS || "10000", 10)
+
 /**
  * Subscribe to domain events.
  * Callback is invoked for each message.
@@ -223,6 +234,33 @@ export async function subscribeNatsEvent(
   // Handle messages asynchronously
   ;(async () => {
     for await (const msg of sub) {
+      // P2-MEM-NATSPENDING: shed load when the in-flight backlog exceeds the cap
+      // so a burst against a slow handler can't grow the iterator queue without
+      // bound. getPending() is only meaningful for the iterator path (which this
+      // is) and may be absent on test doubles — guard the call. Dropped messages
+      // go to the DLQ (best-effort, fire-and-forget loss is acceptable here).
+      if (
+        NATS_MAX_PENDING_MSGS > 0 &&
+        typeof sub.getPending === "function" &&
+        sub.getPending() > NATS_MAX_PENDING_MSGS
+      ) {
+        console.warn(
+          `[nats] Pending backlog over ${NATS_MAX_PENDING_MSGS} for ${event} — dropping message (backpressure)`,
+        )
+        if (_dlqHandler) {
+          try {
+            await _dlqHandler(
+              event,
+              { _raw: safeDecode(msg.data), _dropped: "nats-pending-overflow" },
+              new Error(`NATS pending backlog exceeded ${NATS_MAX_PENDING_MSGS}`),
+            )
+          } catch (dlqErr) {
+            console.error(`DLQ handler failed for ${event} (backpressure drop):`, (dlqErr as Error).message)
+          }
+        }
+        continue
+      }
+
       let payload: Record<string, unknown> | null = null
       try {
         const parsed = JSON.parse(new TextDecoder().decode(msg.data)) as Record<string, unknown>
