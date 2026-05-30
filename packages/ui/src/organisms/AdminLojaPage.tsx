@@ -29,14 +29,15 @@ function formatBRL(centavos: number) {
 
 function renderShopImage(
   url: string | null,
+  title: string,
   ImageComponent?: // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ComponentType<any>,
 ) {
   if (!url) return <div className="h-10 w-10 rounded-sm bg-smoke-100" />
   if (ImageComponent) {
-    return <ImageComponent src={url} alt="" className="h-10 w-10 rounded-sm object-cover" width={40} height={40} unoptimized />
+    return <ImageComponent src={url} alt={title} className="h-10 w-10 rounded-sm object-cover" width={40} height={40} unoptimized />
   }
-  return <img src={url} alt="" className="h-10 w-10 rounded-sm object-cover" width={40} height={40} />
+  return <img src={url} alt={title} className="h-10 w-10 rounded-sm object-cover" width={40} height={40} />
 }
 
 function renderStockSwitch(product: AdminProductRow, onToggle: (p: AdminProductRow) => void) {
@@ -159,7 +160,7 @@ export function AdminLojaPage({
     col.accessor('imageUrl', {
       header: '',
       enableSorting: false,
-      cell: (i) => renderShopImage(i.getValue() as string | null, ImageComponent),
+      cell: (i) => renderShopImage(i.getValue() as string | null, i.row.original.title, ImageComponent),
     }),
     col.accessor('title', { header: PRODUCT_COLUMN_HEADERS.name }),
     col.accessor('category', { header: PRODUCT_COLUMN_HEADERS.category }),
