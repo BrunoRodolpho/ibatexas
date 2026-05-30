@@ -18,7 +18,7 @@
 //   - The Decision-handling switch is the same shape as PART X.1 §9 of
 //     the master plan brief.
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { FastifyReply } from "fastify";
 import type { Decision, IntentEnvelope } from "@adjudicate/core";
 import { buildEnvelope, deriveIntentHash } from "@adjudicate/core";
@@ -74,12 +74,31 @@ export function isCustomerEnvelope(env: IntentEnvelope): env is CustomerEnvelope
  * making the whole check a silent no-op. The kernel re-verifies the hash at
  * adjudicate-time regardless, so this was inactive defense-in-depth, not an open
  * hole — but the gateway-level check is now real.)
+ *
+ * The derived-vs-declared comparison is constant-time (P3-CRYPTO-TIMINGSAFE):
+ * a `!==` string compare short-circuits on the first differing char, leaking —
+ * via timing — how many leading hex chars of a forged hash matched the real
+ * digest. `crypto.timingSafeEqual` compares the full buffers in fixed time.
+ * Semantics are unchanged: a genuine envelope (derived === declared) returns
+ * `false` (not forged); any mismatch — including a length mismatch or a
+ * non-hex declared value, which can't form an equal-length buffer — returns
+ * `true` (forged).
  */
 export function detectForgery(envelope: IntentEnvelope): boolean {
   const declared = (envelope as { intentHash?: string }).intentHash;
   if (!declared) return true;
   try {
-    return deriveIntentHash(envelope) !== declared;
+    const derived = deriveIntentHash(envelope);
+    // Length mismatch can never be equal; bail before allocating buffers (and
+    // timingSafeEqual would throw on unequal lengths anyway). This is not a
+    // timing leak: a near-match must have the same length as the real digest.
+    if (derived.length !== declared.length) return true;
+    const a = Buffer.from(derived);
+    const b = Buffer.from(declared);
+    // Buffer.from(string) is byte-length, not char-length; guard equal byte
+    // length too (non-ASCII declared could differ) before the constant-time eq.
+    if (a.length !== b.length) return true;
+    return !timingSafeEqual(a, b);
   } catch {
     // Defensive: surface as forgery rather than crash.
     return true;

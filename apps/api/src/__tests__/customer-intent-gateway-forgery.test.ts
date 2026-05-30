@@ -64,4 +64,21 @@ describe("detectForgery — tamper evidence", () => {
   it("a swapped-in wrong hash IS forged", () => {
     expect(detectForgery({ ...good, intentHash: "deadbeef" })).toBe(true);
   });
+
+  it("a same-length (64-hex) but wrong hash IS forged (constant-time branch)", () => {
+    // Exercises the equal-length timingSafeEqual path specifically: a 64-char
+    // hex string that is NOT the real digest must still be rejected. (The
+    // "deadbeef" case above is a length-mismatch fast-reject; this one forces
+    // the byte-wise constant-time comparison.)
+    const wrong64 = "0".repeat(64);
+    expect(wrong64).toHaveLength(good.intentHash.length);
+    expect(detectForgery({ ...good, intentHash: wrong64 })).toBe(true);
+  });
+
+  it("a non-hex / odd-length declared hash IS forged, never throws", () => {
+    // A declared hash that can't be parsed as an equal-length hex buffer must
+    // fail closed (forged), not throw out of detectForgery.
+    expect(detectForgery({ ...good, intentHash: "zzzz" })).toBe(true);
+    expect(() => detectForgery({ ...good, intentHash: "zzzz" })).not.toThrow();
+  });
 });
