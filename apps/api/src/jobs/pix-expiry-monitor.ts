@@ -10,6 +10,8 @@
 
 import * as Sentry from "@sentry/node";
 import { getRedisClient, rk, medusaAdmin } from "@ibatexas/tools";
+import { createPaymentQueryService } from "@ibatexas/domain";
+import { PaymentStatus } from "@ibatexas/types";
 import type { Queue, Worker } from "bullmq";
 import { sendText } from "../whatsapp/client.js";
 import logger from "../lib/logger.js";
@@ -40,14 +42,27 @@ function getQueue(): Queue {
 }
 
 /** Check if PIX payment was already confirmed (stripe webhook sets this key). */
-async function isPixPaid(orderId: string): Promise<boolean> {
+export async function isPixPaid(orderId: string): Promise<boolean> {
   const redis = await getRedisClient();
   const paid = await redis.get(rk(`pix:paid:${orderId}`));
-  return !!paid;
+  if (paid) return true;
+
+  // PIXPAIDFLAG: the Redis flag is best-effort — markPixPaid runs AFTER the DB write
+  // and is catch-and-ignored on failure (stripe-webhook-processor handlePaymentSucceeded),
+  // and the key carries a 2h TTL. If it is absent, confirm against the Payment projection
+  // (the billing source of truth) so a customer who already paid never gets a spurious
+  // "your PIX expired" message. Pure added read; no money movement.
+  try {
+    const payment = await createPaymentQueryService().getActiveByOrderId(orderId);
+    return payment?.status === PaymentStatus.PAID;
+  } catch {
+    // DB unavailable — preserve the unpaid default (a stray reminder is harmless).
+    return false;
+  }
 }
 
 /** BullMQ processor — sends reminder or expiry message if PIX is unpaid. */
-async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void> {
+export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void> {
   const { phone, orderId, stage } = job.data;
 
   // Skip if already paid
