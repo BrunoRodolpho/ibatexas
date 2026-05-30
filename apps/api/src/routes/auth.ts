@@ -441,12 +441,16 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      // SEC-004: Revoke the JWT so it cannot be reused after logout
-      try {
-        const token = request.cookies?.["token"];
-        if (token) {
+      // SEC-004 / STAFFREVOKE: Revoke the JWT so it cannot be reused after logout.
+      // Both the customer `token` and the staff `staff_token` cookie are revoked via the
+      // shared `jwt:revoked:<jti>` key that middleware/auth.ts checkRevocation consults on
+      // both the customer and staff paths. Best-effort — logout must always succeed.
+      const revokeJwtCookie = async (cookieName: string): Promise<void> => {
+        try {
+          const raw = request.cookies?.[cookieName];
+          if (!raw) return;
           const jwt = server as unknown as { jwt: { decode: (t: string) => { jti?: string; exp?: number } | null } };
-          const payload = jwt.jwt.decode(token);
+          const payload = jwt.jwt.decode(raw);
           if (payload?.jti && payload.exp) {
             const nowSec = Math.floor(Date.now() / 1000);
             const remainingTtl = payload.exp - nowSec;
@@ -455,10 +459,12 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
               await redis.set(rk(`jwt:revoked:${payload.jti}`), "1", { EX: remainingTtl });
             }
           }
+        } catch {
+          // Best-effort revocation — logout must always succeed
         }
-      } catch {
-        // Best-effort revocation — logout must always succeed
-      }
+      };
+      await revokeJwtCookie("token");
+      await revokeJwtCookie("staff_token");
 
       // AUTH-001: Delete refresh token from Redis
       try {
@@ -472,6 +478,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
 
       return reply
         .clearCookie("token", { path: "/" })
+        .clearCookie("staff_token", { path: "/" })
         .clearCookie("refresh_token", { path: "/api/auth/refresh" })
         .code(200)
         .send({ ok: true });
