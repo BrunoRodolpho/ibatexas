@@ -39,6 +39,11 @@ import type {
   OrderNoteAddPayload,
   OrderTypeSwitchPayload,
 } from "@ibatexas/pack-orders";
+import type {
+  PaymentMethodSwitchPayload,
+  PaymentPixRegeneratePayload,
+  PaymentRetryPayload,
+} from "@ibatexas/pack-payments";
 import { requireAuth } from "../middleware/auth.js";
 import {
   adjudicateCustomerMutation,
@@ -822,22 +827,44 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Cancel current payment + create the retry attempt as a single
-      // compensating sequence (P1-ERR-PAYSWITCH). Retry uses the SAME method,
-      // so the replacement and the compensation target are identical.
+      // RC-A1 Phase B — gate the retry (cancel-old + create-new compensating
+      // sequence, P1-ERR-PAYSWITCH) through the conductor; byte-equivalent legacy
+      // path while inert. The HTTP-layer guards above (order retryable, 10/order
+      // attempt cap, active-payment status) stay OUTSIDE the adjudicated mutation.
+      // Retry uses the SAME method, so replacement and compensation target match.
       const method = currentPayment.method as PaymentMethodLiteral;
-      const result = await replaceActivePayment({
-        paymentCmdSvc,
-        orderId: id,
-        currentPaymentId: currentPayment.id,
-        currentMethod: method,
-        newMethod: method,
-        amountInCentavos: currentPayment.amountInCentavos,
+      const outcome = await adjudicateCustomerMutation({
+        kind: "payment.retry",
+        payload: {
+          orderId: id,
+          previousPaymentId: currentPayment.id,
+          newMethod: method,
+        } satisfies PaymentRetryPayload,
         customerId,
-        cancelReason: "Nova tentativa de pagamento",
-        log: server.log,
+        // PaymentState the payments PolicyBundle inspects for payment.retry:
+        // requirePaymentExists (exists) + retryDailyCapGuard (dailyRetryCount).
+        // exists:true — the active payment was just fetched + status-checked above.
+        // dailyRetryCount omitted (⇒ 0): the kernel's per-day cap stays dormant so
+        // post-flip behaviour matches the legacy per-order 10-attempt cap (HTTP,
+        // above). Wiring the real per-day counter is a Phase-C follow-up — a
+        // NET-NEW guard the legacy route never had, so dormant ≠ regression.
+        state: { ctx: { actor: { principal: "user", id: customerId }, exists: true } },
+        legacy: () =>
+          replaceActivePayment({
+            paymentCmdSvc,
+            orderId: id,
+            currentPaymentId: currentPayment.id,
+            currentMethod: method,
+            newMethod: method,
+            amountInCentavos: currentPayment.amountInCentavos,
+            customerId,
+            cancelReason: "Nova tentativa de pagamento",
+            log: server.log,
+          }),
       });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
 
+      const result = outcome.result;
       if (result.kind === "orphaned") {
         // Both create and compensation failed — actionable error, not a 500.
         return reply.code(503).send({
@@ -912,21 +939,46 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Cancel current payment + create the regenerated PIX as a single
-      // compensating sequence (P1-ERR-PAYSWITCH). Method is always pix here, so
-      // the replacement and the compensation target are identical.
-      const result = await replaceActivePayment({
-        paymentCmdSvc,
-        orderId: id,
-        currentPaymentId: currentPayment.id,
-        currentMethod: "pix",
-        newMethod: "pix",
-        amountInCentavos: currentPayment.amountInCentavos,
+      // RC-A1 Phase B — gate the PIX regeneration (cancel-old + create-new
+      // compensating sequence, P1-ERR-PAYSWITCH) through the conductor;
+      // byte-equivalent legacy path while inert. HTTP-layer guards above (3/hr +
+      // 5/order regen caps, PIX method, expired status) stay OUTSIDE the
+      // adjudicated mutation. Method is always pix, so replacement == compensation.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "payment.pix.regenerate",
+        payload: {
+          orderId: id,
+          paymentId: currentPayment.id,
+          currentRegenerationCount: currentPayment.regenerationCount,
+        } satisfies PaymentPixRegeneratePayload,
         customerId,
-        cancelReason: "Regeneração de PIX",
-        log: server.log,
+        // PaymentState for payment.pix.regenerate: requirePaymentExists (exists)
+        // + regenerationCountCapGuard (state.regenerationCount vs payload snapshot,
+        // cap 5). State count === payload snapshot ⇒ no divergence refuse; the cap
+        // boundary (refuse at count ≥ 5) matches the legacy 5/order HTTP guard.
+        state: {
+          ctx: {
+            actor: { principal: "user", id: customerId },
+            exists: true,
+            regenerationCount: currentPayment.regenerationCount,
+          },
+        },
+        legacy: () =>
+          replaceActivePayment({
+            paymentCmdSvc,
+            orderId: id,
+            currentPaymentId: currentPayment.id,
+            currentMethod: "pix",
+            newMethod: "pix",
+            amountInCentavos: currentPayment.amountInCentavos,
+            customerId,
+            cancelReason: "Regeneração de PIX",
+            log: server.log,
+          }),
       });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
 
+      const result = outcome.result;
       if (result.kind === "orphaned") {
         // Both create and compensation failed — actionable error, not a 500.
         return reply.code(503).send({
@@ -1011,7 +1063,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       // Held under the per-payment lock (cycle-2 invariant) so the whole
       // cancel→create→compensate sequence is serialized.
       const currentMethod = currentPayment.method as PaymentMethodLiteral;
-      const result = await withLock(`payment:${currentPayment.id}`, async () => {
+      const doSwitch = () => withLock(`payment:${currentPayment.id}`, async () => {
         const replaced = await replaceActivePayment({
           paymentCmdSvc,
           orderId: id,
@@ -1052,6 +1104,34 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return replaced;
       }, 15);
 
+      // RC-A1 Phase B — authorize-then-mutate: adjudicate the switch, then run the
+      // locked compensating sequence (doSwitch) ONLY on EXECUTE. Byte-equivalent
+      // legacy path while inert.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "payment.method.switch",
+        payload: {
+          orderId: id,
+          fromMethod: currentMethod,
+          toMethod: newMethod,
+          customerId,
+        } satisfies PaymentMethodSwitchPayload,
+        customerId,
+        // PaymentState for payment.method.switch: NOT in requirePaymentExists (the
+        // kind can run before the new method's row exists); only validateMethodSwitch
+        // fires (methods valid + different) — a strict subset of the HTTP guards above.
+        state: {
+          ctx: {
+            actor: { principal: "user", id: customerId },
+            exists: true,
+            currentStatus: currentPayment.status,
+            currentMethod,
+          },
+        },
+        legacy: doSwitch,
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+
+      const result = outcome.result;
       if (!result) {
         return reply.code(409).send({ error: "Operação em andamento. Tente novamente.", code: "LOCK_CONFLICT" });
       }
