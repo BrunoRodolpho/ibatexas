@@ -35,6 +35,12 @@ interface SignatureError {
 
 function verifySig(request: FastifyRequest, body: TwilioWebhookBody): SignatureError | null {
   const authToken = process.env.TWILIO_AUTH_TOKEN;
+  // D-AUTHURL: webhookUrl MUST be the exact public URL Twilio posted to — it is
+  // hashed verbatim with the sorted POST params into X-Twilio-Signature. No proxy
+  // rewrite, no extra query string, and http/https must match byte-for-byte, or
+  // verifyTwilioSignature below rejects every request. The shape (no query, https
+  // in prod) is asserted at startup in ../config.ts; see .env.example for the full
+  // contract.
   const webhookUrl = process.env.TWILIO_WEBHOOK_URL;
   if (!authToken || !webhookUrl) {
     return { code: 500, error: "Webhook not configured", logMessage: "TWILIO_AUTH_TOKEN or TWILIO_WEBHOOK_URL not set" };

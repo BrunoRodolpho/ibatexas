@@ -28,7 +28,27 @@ const envSchema = z.object({
 
   // WhatsApp channel (Step 12)
   TWILIO_WHATSAPP_NUMBER: z.string().startsWith("whatsapp:").optional(),
-  TWILIO_WEBHOOK_URL: z.string().url().optional(),
+  // D-AUTHURL: TWILIO_WEBHOOK_URL must be the EXACT public URL Twilio posts to —
+  // it is fed verbatim into Twilio's X-Twilio-Signature HMAC (over base URL +
+  // sorted POST params). Any deviation breaks signature verification in
+  // routes/whatsapp-webhook.ts. Assert the two foot-guns that silently fail:
+  //   • no query string — Twilio signs the base URL; a "?foo=bar" suffix is fatal.
+  //   • https in production — http:// vs https:// must match byte-for-byte; a
+  //     proxy that terminates TLS but advertises http here will mis-sign.
+  // (No proxy rewrite / path transformation either — see .env.example for the
+  // full contract. This refine is the startup backstop for the documented rule.)
+  TWILIO_WEBHOOK_URL: z
+    .string()
+    .url()
+    .refine((u) => !new URL(u).search, {
+      message:
+        "TWILIO_WEBHOOK_URL must not include a query string — Twilio signs the base URL; a ?query suffix breaks X-Twilio-Signature verification",
+    })
+    .refine((u) => process.env.NODE_ENV !== "production" || new URL(u).protocol === "https:", {
+      message:
+        "TWILIO_WEBHOOK_URL must use https:// in production — the protocol is part of the signed URL and must match what Twilio posts byte-for-byte",
+    })
+    .optional(),
 
   // Payments — Stripe
   STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
@@ -56,11 +76,18 @@ if (!result.success) {
     .map((i) => `  ${i.path.join(".")}: ${i.message}`)
     .join("\n");
   logger.error({ missing }, "[config] Missing or invalid environment variables");
-  // Don't crash in test environment — tests set env vars dynamically
+  // Fail fast: a malformed config must HALT, never silently fall through to an
+  // unvalidated `process.env` cast (whose values are all string|undefined and do
+  // NOT satisfy the parsed/coerced schema). In non-test runtime exit the process;
+  // the throw is a hard backstop so we never export a malformed config even if
+  // process.exit is stubbed (and gives tests a clear failure if they import this
+  // module without a complete env, instead of an object that lies about its types).
   if (process.env.NODE_ENV !== "test") {
     process.exit(1);
   }
+  throw new Error(`[config] Invalid environment configuration:\n${missing}`);
 }
 
-// Export with fallbacks for test environment where validation may fail
-export const config = result.success ? result.data : (process.env as unknown as z.infer<typeof envSchema>);
+// `result.success` is true here, so `result.data` is the fully-parsed, typed and
+// defaulted config — no casting.
+export const config: z.infer<typeof envSchema> = result.data;
