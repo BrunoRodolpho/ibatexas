@@ -1,14 +1,21 @@
 // Register ibatexas's domain tools as @claustrum/core ToolDefinitions.
 //
-// First-pass registration of 5 representative tools spanning cart, orders,
-// schedule, and customer identity. Each existing @ibatexas/tools handler is
-// wrapped with the capability/id split that the LLM-facing surface requires:
+// First-pass registration of a few representative tools spanning cart, orders,
+// and order lifecycle. Each existing @ibatexas/tools handler is wrapped with the
+// capability/id split that the runtime requires:
 //
-//   - `id` is internal (e.g. "ibatexas.cart.addItem.v1")
-//   - `capability` is what the planner advertises to the LLM
-//     (e.g. "cart.add_item")
+//   - `id` is internal (e.g. "ibatexas.cart.addItem.v1") — NEVER LLM-facing.
 //   - `intentKind` matches the kernel's IntentEnvelope.kind exactly so
-//     adjudicate() can route to the right policy guard.
+//     adjudicate() routes to the right policy guard.
+//   - `capability` is the ToolRegistry RESOLUTION key. RC-A1 Phase A reconciles
+//     it to EQUAL `intentKind`: claustrum's dispatchDecision resolves a tool via
+//     `capsule.tools.resolveTool(envelope.kind)`, and the registry keys by
+//     `capability` (tool-registry.ts `byCapability`). A tool is therefore found
+//     only when `capability === intentKind`; the prior `cart.add_item`-style
+//     keys would have failed every EXECUTE with `tool_unresolved`.
+//     (The LLM-facing surface is the planner's `express_intent` enum, built from
+//     the packs' `allowedIntents` — NOT this field; see ibatexas-planner.ts. So
+//     reconciling `capability` to the intent kind leaks nothing new to the LLM.)
 //
 // Adding more tools is mechanical: import the handler from `@ibatexas/tools`,
 // set its intentKind, and add an entry to `IBATEXAS_TOOLS`. The full 25-tool
@@ -94,11 +101,14 @@ function makeTool(opts: {
   };
 }
 
-// First batch: 5 representative tools. Full registration is incremental.
+// First batch: 3 representative tools. Full registration is incremental.
+// INVARIANT (RC-A1 Phase A.3): `capability === intentKind` for every entry, and
+// that kind is owned by an installed pack — enforced by `toolRosterDrift()` below
+// (unit test + boot-time assertion). Keep new entries compliant.
 const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
   makeTool({
     id: "ibatexas.cart.addItem.v1",
-    capability: "cart.add_item",
+    capability: "order.item.add", // RC-A1 Phase A: was "cart.add_item" (== intentKind)
     intentKind: "order.item.add",
     description: "Adicionar um item ao carrinho do cliente.",
     riskLevel: "low",
@@ -108,7 +118,7 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
   }),
   makeTool({
     id: "ibatexas.cart.checkout.v1",
-    capability: "cart.checkout",
+    capability: "order.checkout.create", // RC-A1 Phase A: was "cart.checkout" (== intentKind)
     intentKind: "order.checkout.create",
     description: "Criar checkout (sessão de pagamento) a partir do carrinho.",
     riskLevel: "high",
@@ -119,7 +129,7 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
   }),
   makeTool({
     id: "ibatexas.order.cancel.v1",
-    capability: "order.cancel",
+    capability: "order.cancel", // RC-A1 Phase A: already == intentKind
     intentKind: "order.cancel",
     description: "Cancelar um pedido do cliente (irreversível).",
     riskLevel: "irreversible",
@@ -149,6 +159,47 @@ export function registerIbatexasToolPacks(registry: TR): void {
  */
 export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
   return IBATEXAS_TOOLS;
+}
+
+/**
+ * Integrity gate (RC-A1 Phase A.3) — the drift detector that prevents the
+ * capability-key blocker from ever silently returning.
+ *
+ * For every registered tool, two properties must hold or a kernel-approved
+ * EXECUTE will fail to dispatch:
+ *   1. `capability === intentKind` — the registry keys by `capability` but
+ *      dispatchDecision resolves by `envelope.kind` (= `intentKind`); a mismatch
+ *      is a `tool_unresolved` at dispatch time.
+ *   2. `intentKind ∈ union(installed packs' intents)` — a tool whose kind no
+ *      pack owns has no PolicyBundle, so the bridge fails closed (REFUSE) and the
+ *      tool is unreachable anyway.
+ *
+ * Pure: the caller supplies the pack intent union (the registrar deliberately
+ * does not import `@ibatexas/pack-*` to stay dependency-light). Returns a list of
+ * human-readable problems; empty array means the roster is healthy.
+ */
+export function toolRosterDrift(
+  tools: ReadonlyArray<TD<unknown, unknown>>,
+  packIntentKinds: ReadonlyArray<string>,
+): string[] {
+  const union = new Set(packIntentKinds);
+  const problems: string[] = [];
+  for (const t of tools) {
+    const cap = t.capability as unknown as string;
+    const kind = t.intentKind as unknown as string;
+    if (cap !== kind) {
+      problems.push(
+        `tool ${t.id}: capability "${cap}" !== intentKind "${kind}" — ` +
+          `dispatchDecision resolves by intentKind, so this would be tool_unresolved`,
+      );
+    }
+    if (!union.has(kind)) {
+      problems.push(
+        `tool ${t.id}: intentKind "${kind}" is not owned by any installed pack`,
+      );
+    }
+  }
+  return problems;
 }
 
 // Defensive re-export so the surface is import-friendly from routes.

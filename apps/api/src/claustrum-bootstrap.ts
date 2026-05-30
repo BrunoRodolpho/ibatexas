@@ -120,6 +120,11 @@ import {
   type CapabilityPolicyPack,
 } from "./claustrum/capability-policy.js";
 import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
+import {
+  listIbatexasToolPacks,
+  registerIbatexasToolPacks,
+  toolRosterDrift,
+} from "./tools/register-ibatexas-tool-packs.js";
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
@@ -671,6 +676,27 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   const adjudicator = buildAdjudicator({ sink: auditSink });
   const redis = await getRedisClient();
 
+  // Tool registry (RC-A1 Phase A) — register the ibatexas tool packs and assert
+  // roster integrity before the conductor goes live. The registry keys tools by
+  // `capability`; claustrum's dispatchDecision resolves by `envelope.kind`
+  // (= `intentKind`), so every tool must have `capability === intentKind` and an
+  // owning pack, else a kernel-approved EXECUTE would `tool_unresolved`. Fail
+  // CLOSED at boot if drift exists — a failed boot beats a live conductor that
+  // can't honor the decisions it makes. (Previously this passed an EMPTY registry,
+  // so the chat path had no tools at all.)
+  const toolRegistry = createToolRegistry();
+  registerIbatexasToolPacks(toolRegistry);
+  const rosterDrift = toolRosterDrift(
+    listIbatexasToolPacks(),
+    IBATEXAS_POLICY_PACKS.flatMap((p) => p.intents),
+  );
+  if (rosterDrift.length > 0) {
+    throw new Error(
+      "[claustrum-bootstrap] tool roster integrity check failed (RC-A1 Phase A):\n  " +
+        rosterDrift.join("\n  "),
+    );
+  }
+
   const memory = createPostgresMemoryProvider({
     prisma: prisma as never,
     redis: redis as never,
@@ -738,7 +764,7 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     handoff: noopHandoff(),
     telemetry: fastifyTelemetry(),
     session: redisSessionStore(),
-    tools: createToolRegistry(),
+    tools: toolRegistry,
     channels,
     tenantResolver: resolveIbatexasTenantPolicy,
   });
