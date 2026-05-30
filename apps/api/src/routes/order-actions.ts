@@ -33,7 +33,7 @@ import {
 import { getEffectivePonr } from "@ibatexas/domain";
 import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from "@ibatexas/tools";
 import { type AgentContext, Channel } from "@ibatexas/types";
-import type { OrderNoteAddPayload } from "@ibatexas/pack-orders";
+import type { OrderCancelPayload, OrderNoteAddPayload } from "@ibatexas/pack-orders";
 import { requireAuth } from "../middleware/auth.js";
 import {
   adjudicateCustomerMutation,
@@ -309,7 +309,16 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      try {
+      // RC-A1 Phase B — gate the cancel through the conductor when active;
+      // byte-equivalent legacy path while inert. The whole cancel (status
+      // transition + active-payment cancellation + conditional order.canceled
+      // emit) is the adjudicated mutation; the HTTP-layer pre-checks above (rate
+      // limit, ownership, PONR) stay outside it. The mutation returns a typed
+      // result so the 409 (payment-not-terminal) outcome survives the wrapper.
+      const doCancel = async (): Promise<
+        | { readonly ok: true; readonly version: number; readonly fulfillmentStatus: string }
+        | { readonly ok: false; readonly code: "PAYMENT_CANCEL_FAILED" }
+      > => {
         const result = await orderCmdSvc.transitionStatus(id, {
           newStatus: OrderFulfillmentStatus.CANCELED,
           actor: "customer",
@@ -360,10 +369,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
             { orderId: id, paymentId: activePayment?.id },
             "order canceled but active payment is not terminal — withholding order.canceled (P2-LOGIC-CANCELPAY)",
           );
-          return reply.code(409).send({
-            error: "Não foi possível cancelar o pagamento do pedido. Tente novamente em instantes.",
-            code: "PAYMENT_CANCEL_FAILED",
-          });
+          return { ok: false, code: "PAYMENT_CANCEL_FAILED" };
         }
 
         await publishNatsEvent("order.canceled", {
@@ -376,10 +382,39 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           timestamp: new Date().toISOString(),
         });
 
+        return { ok: true, version: result.version, fulfillmentStatus: result.newStatus };
+      };
+
+      try {
+        const outcome = await adjudicateCustomerMutation({
+          kind: "order.cancel",
+          payload: {
+            orderId: id,
+            reason: request.body.reason ?? "Cancelado pelo cliente",
+          } satisfies OrderCancelPayload,
+          customerId,
+          // OrderState the orders PolicyBundle inspects for order.cancel:
+          // requireAuthenticated (customerId non-null) + canCancelOrder
+          // (hasOrderId && lastAction !== "cancelled"). lastAction omitted
+          // (undefined ⇒ not "cancelled" ⇒ allowed). PONR is enforced above at
+          // the HTTP layer (canPerformAction), not in the pack state.
+          state: { ctx: { channel: "web", customerId, cartId: null, orderId: id } },
+          legacy: doCancel,
+        });
+        if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+
+        const result = outcome.result;
+        if (!result.ok) {
+          return reply.code(409).send({
+            error: "Não foi possível cancelar o pagamento do pedido. Tente novamente em instantes.",
+            code: "PAYMENT_CANCEL_FAILED",
+          });
+        }
+
         return reply.send({
           success: true,
           version: result.version,
-          fulfillmentStatus: result.newStatus,
+          fulfillmentStatus: result.fulfillmentStatus,
         });
       } catch (err) {
         if (err instanceof InvalidTransitionError) {
