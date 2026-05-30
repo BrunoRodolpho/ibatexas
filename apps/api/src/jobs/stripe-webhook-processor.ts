@@ -33,10 +33,12 @@ import {
   PaymentStatus,
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
+import type { PaymentStatusReconcilePayload } from "@ibatexas/pack-payments";
 import type { Queue, Worker } from "bullmq";
 import logger from "../lib/logger.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
 import { markPixPaid } from "./pix-expiry-monitor.js";
+import { adjudicateSystemMutation } from "../routes/__shared__/customer-intent-gateway.js";
 
 const QUEUE_NAME = "stripe-webhook";
 
@@ -96,14 +98,52 @@ async function reconcilePaymentFromStripe(
     return;
   }
 
-  const result = await withLock(`payment:${payment.id}`, async () => {
-    return paymentCmdSvc.reconcileFromWebhook(payment.id, {
+  // RC-A1 Phase B (system path) — gate the payment-projection reconcile through the
+  // conductor as a SYSTEM mutation (principal:"system", taint:"TRUSTED"). All five
+  // webhook handlers funnel their mutation through here, so this single seam covers
+  // succeeded/failed/refunded/dispute/canceled uniformly via payment.status.reconcile
+  // — the pack kind purpose-built for "reconciliation from a Stripe webhook", which
+  // is EXECUTE-clean and EXEMPT from the terminal-transition block (correct for
+  // out-of-order Stripe events). Byte-equivalent legacy path while inert (the
+  // withLock + reconcileFromWebhook closure runs unconditionally). Only the
+  // reconcile is gated: capturePayment / Medusa cart-complete / order.placed in
+  // handlePaymentSucceeded stay as order-creation side effects (consistent with the
+  // HTTP cutover leaving order.placed ungated).
+  const outcome = await adjudicateSystemMutation({
+    kind: "payment.status.reconcile",
+    payload: {
+      paymentId: payment.id,
       newStatus,
       stripeEventId: event.id,
-      stripeEventTimestamp: new Date(event.created * 1000),
+      stripeEventTimestamp: new Date(event.created * 1000).toISOString(),
       expectedOrderId: payment.orderId,
-    });
-  }, 30);
+    } satisfies PaymentStatusReconcilePayload,
+    sessionId: `stripe:${event.id}`,
+    // PaymentState for payment.status.reconcile: requirePaymentExists (exists:true —
+    // payment was just fetched above) + taint gate (systemOnlyKind → TRUSTED ✓);
+    // executeAll → EXECUTE. Exempt from refuseTerminalTransition by design.
+    state: { ctx: { actor: { principal: "system" }, exists: true } },
+    legacy: () =>
+      withLock(`payment:${payment.id}`, async () => {
+        return paymentCmdSvc.reconcileFromWebhook(payment.id, {
+          newStatus,
+          stripeEventId: event.id,
+          stripeEventTimestamp: new Date(event.created * 1000),
+          expectedOrderId: payment.orderId,
+        });
+      }, 30),
+  });
+
+  if (!outcome.ran) {
+    // Deterministic policy REFUSE — do NOT throw (a throw would fail the BullMQ job
+    // and retry a decision that will never change). Skip + log, like the null case.
+    log.info(
+      { event_id: event.id, paymentId: payment.id },
+      "[stripe-webhook] Payment reconciliation REFUSED by policy — skipped (no retry)",
+    );
+    return;
+  }
+  const result = outcome.result;
 
   if (result === null) {
     log.info(

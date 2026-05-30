@@ -333,3 +333,61 @@ export async function adjudicateStaffMutation<T>(opts: {
   }
   return { ran: false, intent };
 }
+
+/**
+ * System sibling of {@link adjudicateCustomerMutation} / {@link adjudicateStaffMutation}
+ * (RC-A1 Phase B — the background/webhook path).
+ *
+ * For SYSTEM-originated mutations (Stripe webhook reconciliation, cron jobs): a
+ * `principal:"system"` envelope with `taint:"TRUSTED"`. Unlike the customer/staff
+ * gateways this does NOT route through `runCustomerIntent` — that helper narrows via
+ * `isCustomerEnvelope` (`principal === "user"`), which a system envelope deliberately
+ * fails. The forgery check is also moot: the envelope is built locally in-process
+ * (not received across a trust boundary), and the kernel re-verifies the `intentHash`
+ * at adjudicate-time regardless. So this adjudicates directly through the Adjudicator
+ * port.
+ *
+ * Pre-activation (`tryGetConductor()` → null): runs the legacy mutation directly,
+ * byte-equivalent. Post-activation: TRUSTED system envelope → adjudicate → run the
+ * mutation ONLY on EXECUTE. A non-EXECUTE decision runs no mutation and is returned as
+ * a typed refuse `IntentResult` so the caller can log/observe it — a webhook caller
+ * should SKIP (not throw) on a deterministic policy REFUSE, to avoid an infinite retry.
+ */
+export async function adjudicateSystemMutation<T>(opts: {
+  readonly kind: string;
+  readonly payload: unknown;
+  /** Stable system session id, e.g. `stripe:<eventId>`. Rides the envelope actor. */
+  readonly sessionId: string;
+  /** Domain state the kind's PolicyBundle guards inspect (caller assembles). */
+  readonly state: unknown;
+  /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
+  readonly legacy: () => Promise<T>;
+}): Promise<MutationOutcome<T>> {
+  if (tryGetConductor() === null) {
+    return { ran: true, result: await opts.legacy() };
+  }
+  const envelope = buildEnvelope({
+    kind: opts.kind,
+    payload: opts.payload,
+    actor: { principal: "system", sessionId: opts.sessionId },
+    taint: "TRUSTED",
+    nonce: randomUUID(),
+  });
+  const conductor = getConductor();
+  const decision = await conductor.adjudicator.adjudicate(
+    envelope,
+    opts.state,
+    policyForKind(opts.kind),
+  );
+  const d = decision as { kind: string } & Decision;
+  if (d.kind === "EXECUTE") {
+    return { ran: true, result: await opts.legacy() };
+  }
+  // Non-EXECUTE: no mutation. Surface a typed refuse IntentResult (a system reconcile
+  // only ever EXECUTEs or REFUSEs in practice; map any other variant defensively to
+  // refuse so the caller has a single "did not run" signal).
+  const userText =
+    (d as unknown as { refusal?: { userFacing?: string } }).refusal?.userFacing ??
+    "Ação do sistema não autorizada pela política.";
+  return { ran: false, intent: { kind: "refuse", decision, userText } };
+}
