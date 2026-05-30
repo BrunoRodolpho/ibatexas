@@ -33,7 +33,12 @@ import {
 import { getEffectivePonr } from "@ibatexas/domain";
 import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from "@ibatexas/tools";
 import { type AgentContext, Channel } from "@ibatexas/types";
-import type { OrderCancelPayload, OrderNoteAddPayload } from "@ibatexas/pack-orders";
+import type {
+  OrderAddressChangePayload,
+  OrderCancelPayload,
+  OrderNoteAddPayload,
+  OrderTypeSwitchPayload,
+} from "@ibatexas/pack-orders";
 import { requireAuth } from "../middleware/auth.js";
 import {
   adjudicateCustomerMutation,
@@ -1108,11 +1113,33 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // RC-A1 Phase B — single-call order mutation through the lazy-conductor;
+      // byte-equivalent legacy path while inert.
       try {
-        const result = await changeDeliveryAddress(
-          { orderId: id, address: request.body.address },
-          apiContext(customerId),
-        );
+        const a = request.body.address;
+        const outcome = await adjudicateCustomerMutation({
+          kind: "order.address.change",
+          // Map the HTTP address shape onto the canonical pack payload (the
+          // envelope is the adjudicated/audited representation; the legacy
+          // closure performs the mutation with the original HTTP shape).
+          payload: {
+            orderId: id,
+            address: {
+              street: a.address1,
+              complement: a.address2,
+              neighborhood: a.neighborhood,
+              city: a.city,
+              state: a.state,
+              zip: a.postalCode,
+            },
+          } satisfies OrderAddressChangePayload,
+          customerId,
+          state: { ctx: { channel: "web", customerId, cartId: null, orderId: id } },
+          legacy: () =>
+            changeDeliveryAddress({ orderId: id, address: request.body.address }, apiContext(customerId)),
+        });
+        if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+        const result = outcome.result;
         if (!result.success) {
           return reply.code(422).send({ error: result.message, needsEscalation: result.needsEscalation });
         }
@@ -1148,11 +1175,25 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // RC-A1 Phase B — single-call order mutation through the lazy-conductor;
+      // byte-equivalent legacy path while inert.
       try {
-        const result = await switchOrderType(
-          { orderId: id, newType: request.body.type },
-          apiContext(customerId),
-        );
+        const outcome = await adjudicateCustomerMutation({
+          kind: "order.type.switch",
+          // HTTP vocab (delivery|pickup|dine_in) collapses to the pack's binary
+          // newType (delivery|takeout); httpVocab preserves the original for audit.
+          payload: {
+            orderId: id,
+            newType: request.body.type === "delivery" ? "delivery" : "takeout",
+            httpVocab: request.body.type,
+          } satisfies OrderTypeSwitchPayload,
+          customerId,
+          state: { ctx: { channel: "web", customerId, cartId: null, orderId: id } },
+          legacy: () =>
+            switchOrderType({ orderId: id, newType: request.body.type }, apiContext(customerId)),
+        });
+        if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+        const result = outcome.result;
         if (!result.success) {
           return reply.code(422).send({ error: result.message, needsEscalation: result.needsEscalation });
         }
