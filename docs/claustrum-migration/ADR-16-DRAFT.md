@@ -51,8 +51,11 @@ ibatexas is now an **adopter** of claustrum. Adopters provide tools as
 - **Boundary enforcement.** The old `executeToolDirect()` bypass path
   (see ADR #9) was a convention, not a constraint — every new mutation
   could re-introduce the unauthenticated execution path by forgetting to
-  register in `TOOL_CLASSIFICATION`. The packaging boundary makes that
-  bypass impossible: there is no second entry point in `@claustrum/core`.
+  register in `TOOL_CLASSIFICATION`. The packaging boundary is designed
+  to make that bypass impossible (there is no second entry point in
+  `@claustrum/core`). **[IN-FLIGHT / TARGET — the runtime is INERT today;
+  the bypass-impossible invariant is structural intent, not yet live
+  enforcement. It becomes effective when RC-A1 activation completes.]**
 - **Reciprocal-imports invariant.** With `@adjudicate/*` and `@claustrum/*`
   both extracted, ibatexas never imports from kernel directly — only
   through the runtime's `Adjudicator` port. The dependency direction
@@ -144,9 +147,13 @@ after C-07 in `docs/claustrum-migration/CUTOVER-STATUS.md` flips CLOSED):**
   cognitive loop, channel drivers, memory, and grounding adapters by
   registering its own tool packs and tenant policy. Estimated boot wiring
   for a new adopter: ~150 LOC.
-- **Kernel boundary is now type-enforced.** `Capsule.adjudicator` is the
-  only path. Direct `import "@adjudicate/core"` from routes or packs is
-  flagged by claustrum's ESLint config.
+- **Kernel boundary is type-enforced (target).** `Capsule.adjudicator` is
+  the only path. Direct `import "@adjudicate/core"` from routes or packs
+  is flagged by claustrum's ESLint config. **[IN-FLIGHT / TARGET — the
+  Conductor runtime is INERT today (`bootstrapClaustrum()` is uncalled);
+  the type-enforced boundary describes the live state only after RC-A1
+  activation. The legacy `@ibatexas/llm-provider` path is currently active
+  and does not carry this constraint.]**
 - **Audit-trail completeness improves.** Every LLM call now records a
   prompt manifest (`{ fragmentIds, hashes, totalTokens }`) — the old
   pipeline had no such record. Property test in `@claustrum/core` asserts

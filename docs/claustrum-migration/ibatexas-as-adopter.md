@@ -1,7 +1,23 @@
 # ibatexas as a Claustrum Adopter
 
-> Reference for how ibatexas now consumes `@claustrum/*`. Use this as the
-> template for any other application that wants to adopt the runtime.
+> **⚠️ CORRECTION — IN-PROGRESS / TARGET SHAPE, NOT CURRENT REALITY**
+>
+> The `@claustrum/*` Conductor runtime is **INERT** today.
+> `bootstrapClaustrum()` exists in source but is **not called** from
+> `server.ts`; RC-A1 activation is a deferred deployment task (see
+> `docs/claustrum-migration/CUTOVER-STATUS.md`, item C-07).
+>
+> The code snippets and wiring diagrams below describe the **target shape
+> post-activation**. They accurately reflect the source-code intent and
+> the structure of `claustrum-bootstrap.ts`, but the runtime does NOT
+> execute this path in the current live process.
+>
+> Until RC-A1 activates, the live chat path is still the legacy
+> `@ibatexas/llm-provider` pipeline (see CLAUDE.md Hard Rule #9 caveat).
+
+> Reference for how ibatexas will consume `@claustrum/*` after activation.
+> Use this as the template for any other application that wants to adopt
+> the runtime.
 >
 > ibatexas is the **first** adopter; a second example
 > (`examples/healthcare-stub/` or `examples/scheduling-stub/`) lives in the
