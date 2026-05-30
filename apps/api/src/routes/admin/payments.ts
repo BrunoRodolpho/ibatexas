@@ -20,9 +20,19 @@ import {
 } from "@ibatexas/domain";
 import {
   PaymentStatus,
+  isTerminalPaymentStatus,
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
+import type {
+  PaymentCashConfirmPayload,
+  PaymentRefundIssuePayload,
+  PaymentStatusForcePayload,
+} from "@ibatexas/pack-payments";
 import { requireStaff, requireManagerRole } from "../../middleware/staff-auth.js";
+import {
+  adjudicateStaffMutation,
+  replyForIntent,
+} from "../__shared__/customer-intent-gateway.js";
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 
@@ -77,29 +87,55 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         });
       }
 
-      const result = await paymentCmdSvc.transitionStatus(payment.id, {
-        newStatus: PaymentStatus.PAID,
-        actor: "admin",
-        actorId: staffId,
-        reason: "Dinheiro confirmado pelo atendente",
-        // P2-CONC-CONFIRMVER: pin the version read above. Correctness no longer
-        // relies solely on the state machine forbidding cash_pending→cash_pending;
-        // a concurrent transition (e.g. a customer switching method, or a second
-        // attendant) is rejected with a concurrency error instead of racing.
-        expectedVersion: payment.version,
+      // RC-A1 Phase B — gate cash confirmation (staff TRUSTED path) through the
+      // conductor; byte-equivalent legacy path while inert. The transition +
+      // status_changed emit is the adjudicated mutation; the HTTP pre-checks
+      // (staff auth, order/payment existence, method===cash, status===cash_pending)
+      // stay OUTSIDE it. P2-CONC-CONFIRMVER (expectedVersion pin) preserved verbatim.
+      const confirmCash = async () => {
+        const result = await paymentCmdSvc.transitionStatus(payment.id, {
+          newStatus: PaymentStatus.PAID,
+          actor: "admin",
+          actorId: staffId,
+          reason: "Dinheiro confirmado pelo atendente",
+          // P2-CONC-CONFIRMVER: pin the version read above. Correctness no longer
+          // relies solely on the state machine forbidding cash_pending→cash_pending;
+          // a concurrent transition (e.g. a customer switching method, or a second
+          // attendant) is rejected with a concurrency error instead of racing.
+          expectedVersion: payment.version,
+        });
+
+        await publishNatsEvent("payment.status_changed", {
+          eventType: "payment.status_changed",
+          orderId: id,
+          paymentId: payment.id,
+          previousStatus: "cash_pending",
+          newStatus: PaymentStatus.PAID,
+          method: "cash",
+          version: result.version,
+          timestamp: new Date().toISOString(),
+        } satisfies PaymentStatusChangedEvent & { eventType: string });
+
+        return result;
+      };
+
+      const outcome = await adjudicateStaffMutation({
+        kind: "payment.cash.confirm",
+        payload: {
+          orderId: id,
+          paymentId: payment.id,
+          amountCentavos: payment.amountInCentavos,
+          staffId: staffId ?? "staff",
+        } satisfies PaymentCashConfirmPayload,
+        staffId: staffId ?? "staff",
+        // PaymentState for payment.cash.confirm: requirePaymentExists (exists) +
+        // executeAll → EXECUTE. exists:true (payment fetched + status-checked above).
+        state: { ctx: { actor: { principal: "admin", id: staffId }, exists: true, currentMethod: "cash" } },
+        legacy: confirmCash,
       });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
 
-      await publishNatsEvent("payment.status_changed", {
-        eventType: "payment.status_changed",
-        orderId: id,
-        paymentId: payment.id,
-        previousStatus: "cash_pending",
-        newStatus: PaymentStatus.PAID,
-        method: "cash",
-        version: result.version,
-        timestamp: new Date().toISOString(),
-      } satisfies PaymentStatusChangedEvent & { eventType: string });
-
+      const result = outcome.result;
       return reply.send({
         success: true,
         version: result.version,
@@ -159,7 +195,24 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // → blocks further refunds, never enables an over-refund). Full single-write
       // atomicity (status + amount in one write) needs the domain command to accept
       // the amount; tracked for the RC-A1 cutover work.
-      const outcome = await withLock(`payment:${payment.id}`, async () => {
+      // RC-A1 Phase B — adjudicate the refund (staff TRUSTED path) BEFORE running
+      // the locked compensating sequence. The magnitude ladder lives in the
+      // pack-payments PolicyBundle: ≤R$500 EXECUTE, R$500–1000 REQUEST_CONFIRMATION,
+      // >R$1000 ESCALATE (governance §04-decision-policy). We adjudicate with the
+      // OUTER-read amounts (the authorization decision); the legacy closure keeps
+      // its FULL withLock + fresh re-read + over-refund guard + bump-before-transition
+      // (P0-PAY-5 concurrency safety) intact — authorization and concurrency-safety
+      // are separate concerns, both preserved.
+      //
+      // FLIP-TIME BEHAVIOR CHANGE (inert today; fires only post-bootstrap): refunds
+      // in the R$500–1000 band become 202 needs-confirmation and >R$1000 become 503
+      // escalate, instead of executing directly under manager auth. This is the
+      // governance feature the cutover adds — documented, not accidental.
+      const outerAlreadyRefunded = payment.refundedAmountCentavos ?? 0;
+      const outerRefundable = payment.amountInCentavos - outerAlreadyRefunded;
+      const refundAmountForLadder = request.body.amountInCentavos ?? outerRefundable;
+
+      const doRefund = () => withLock(`payment:${payment.id}`, async () => {
         const fresh = await paymentQuerySvc.getById(payment.id);
         if (!fresh) {
           return { code: 404 as const, body: { error: "Pagamento não encontrado." } };
@@ -208,6 +261,38 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
           method: fresh.method,
         };
       });
+
+      const staffOutcome = await adjudicateStaffMutation({
+        kind: "payment.refund.issue",
+        payload: {
+          paymentId: payment.id,
+          refundAmountCentavos: refundAmountForLadder,
+          refundableBalanceCentavos: outerRefundable,
+          amountInCentavos: payment.amountInCentavos,
+          currentRefundedCentavos: outerAlreadyRefunded,
+          actor: "admin",
+          actorId,
+          reason: request.body.reason,
+        } satisfies PaymentRefundIssuePayload,
+        staffId: actorId,
+        // PaymentState for payment.refund.issue: requirePaymentExists (exists) +
+        // refuseTerminalTransition (isTerminal — false here, refundableStatuses are
+        // PAID/PARTIALLY_REFUNDED, neither terminal) + refundMagnitudeGuard
+        // (refundedAmountCentavos vs payload.currentRefundedCentavos — equal, no
+        // divergence; the legacy closure does the authoritative fresh-state check).
+        state: {
+          ctx: {
+            actor: { principal: "admin", id: actorId },
+            exists: true,
+            isTerminal: isTerminalPaymentStatus(payment.status as PaymentStatus),
+            refundedAmountCentavos: outerAlreadyRefunded,
+            amountInCentavos: payment.amountInCentavos,
+          },
+        },
+        legacy: doRefund,
+      });
+      if (!staffOutcome.ran) return replyForIntent(reply, staffOutcome.intent);
+      const outcome = staffOutcome.result;
 
       if (!outcome) {
         return reply.code(409).send({
@@ -288,24 +373,65 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         return reply.code(404).send({ error: "Nenhum pagamento ativo encontrado." });
       }
 
-      const result = await paymentCmdSvc.transitionStatus(payment.id, {
-        newStatus: request.body.status as PaymentStatus,
-        actor: "admin",
-        actorId: staffId,
-        reason: request.body.reason,
+      // RC-A1 Phase B — gate the OWNER force-status override through the conductor;
+      // byte-equivalent legacy path while inert. The transition + status_changed
+      // emit is the adjudicated mutation; the OWNER-only gate + existence checks stay
+      // OUTSIDE it.
+      //
+      // FLIP-TIME BEHAVIOR CHANGE (inert today; fires only post-bootstrap): the pack
+      // maps payment.status.force to ALWAYS REQUEST_CONFIRMATION (confirmAlwaysOnStatusForce)
+      // — a manual force-override is intentionally a two-step action. Post-flip this
+      // returns 202 needs-confirmation rather than executing directly. Documented,
+      // governance-intended. (Also: the pack REFUSEs force on a terminal payment,
+      // which the legacy route did not pre-check — the state machine rejected it via
+      // InvalidTransitionError instead; net behaviour is equivalent — terminal stays
+      // unmovable — with a cleaner audited refusal post-flip.)
+      const forceStatus = async () => {
+        const result = await paymentCmdSvc.transitionStatus(payment.id, {
+          newStatus: request.body.status as PaymentStatus,
+          actor: "admin",
+          actorId: staffId,
+          reason: request.body.reason,
+        });
+
+        await publishNatsEvent("payment.status_changed", {
+          eventType: "payment.status_changed",
+          orderId: id,
+          paymentId: payment.id,
+          previousStatus: result.previousStatus,
+          newStatus: result.newStatus,
+          method: payment.method,
+          version: result.version,
+          timestamp: new Date().toISOString(),
+        } satisfies PaymentStatusChangedEvent & { eventType: string });
+
+        return result;
+      };
+
+      const outcome = await adjudicateStaffMutation({
+        kind: "payment.status.force",
+        payload: {
+          paymentId: payment.id,
+          newStatus: request.body.status,
+          reason: request.body.reason,
+          adminId: staffId ?? "owner",
+        } satisfies PaymentStatusForcePayload,
+        staffId: staffId ?? "owner",
+        // PaymentState for payment.status.force: requirePaymentExists (exists) +
+        // refuseTerminalTransition (isTerminal) + confirmAlwaysOnStatusForce.
+        state: {
+          ctx: {
+            actor: { principal: "admin", id: staffId },
+            exists: true,
+            isTerminal: isTerminalPaymentStatus(payment.status as PaymentStatus),
+            currentStatus: payment.status,
+          },
+        },
+        legacy: forceStatus,
       });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
 
-      await publishNatsEvent("payment.status_changed", {
-        eventType: "payment.status_changed",
-        orderId: id,
-        paymentId: payment.id,
-        previousStatus: result.previousStatus,
-        newStatus: result.newStatus,
-        method: payment.method,
-        version: result.version,
-        timestamp: new Date().toISOString(),
-      } satisfies PaymentStatusChangedEvent & { eventType: string });
-
+      const result = outcome.result;
       return reply.send({
         success: true,
         version: result.version,
