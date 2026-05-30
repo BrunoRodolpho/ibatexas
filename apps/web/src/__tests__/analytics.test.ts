@@ -456,6 +456,113 @@ describe("Analytics Layer", () => {
     })
   })
 
+  // ── PII scrubbing (P2-SEC-PHCLIENT) ──────────────────────────────────────
+
+  describe("PII scrubbing", () => {
+    it("strips top-level PII keys before sending to PostHog", () => {
+      const mockPostHog = { capture: vi.fn(), register: vi.fn() }
+      mockGetPostHogClient.mockReturnValue(mockPostHog)
+      sessionStore.set("ibx_session_started", "1")
+
+      track("product_card_clicked", {
+        productId: "prod_01",
+        email: "user@example.com",
+        phone: "+5511999999999",
+        cpf: "123.456.789-00",
+      })
+
+      const call = mockPostHog.capture.mock.calls.find(
+        (c: unknown[]) => c[0] === "product_card_clicked",
+      )
+      expect(call).toBeDefined()
+      const props = call![1] as Record<string, unknown>
+      expect(props["email"]).toBeUndefined()
+      expect(props["phone"]).toBeUndefined()
+      expect(props["cpf"]).toBeUndefined()
+      expect(props["productId"]).toBe("prod_01")
+    })
+
+    it("strips PII keys nested inside objects", () => {
+      const mockPostHog = { capture: vi.fn(), register: vi.fn() }
+      mockGetPostHogClient.mockReturnValue(mockPostHog)
+      sessionStore.set("ibx_session_started", "1")
+
+      track("checkout_started", {
+        cartTotal: 8900,
+        user: {
+          email: "nested@example.com",
+          nome: "João Silva",
+          id: "cust_01",
+        },
+      })
+
+      const call = mockPostHog.capture.mock.calls.find(
+        (c: unknown[]) => c[0] === "checkout_started",
+      )
+      expect(call).toBeDefined()
+      const props = call![1] as Record<string, unknown>
+      const user = props["user"] as Record<string, unknown>
+      expect(user["email"]).toBeUndefined()
+      expect(user["nome"]).toBeUndefined()
+      expect(user["id"]).toBe("cust_01")
+      expect(props["cartTotal"]).toBe(8900)
+    })
+
+    it("strips PII keys nested inside arrays of objects", () => {
+      const mockPostHog = { capture: vi.fn(), register: vi.fn() }
+      mockGetPostHogClient.mockReturnValue(mockPostHog)
+      sessionStore.set("ibx_session_started", "1")
+
+      track("add_to_cart", {
+        productId: "prod_01",
+        recipients: [
+          { email: "a@example.com", label: "comprador" },
+          { email: "b@example.com", label: "presenteado" },
+        ],
+      })
+
+      const call = mockPostHog.capture.mock.calls.find(
+        (c: unknown[]) => c[0] === "add_to_cart",
+      )
+      expect(call).toBeDefined()
+      const props = call![1] as Record<string, unknown>
+      const recipients = props["recipients"] as Record<string, unknown>[]
+      expect(recipients[0]["email"]).toBeUndefined()
+      expect(recipients[0]["label"]).toBe("comprador")
+      expect(recipients[1]["email"]).toBeUndefined()
+      expect(recipients[1]["label"]).toBe("presenteado")
+    })
+
+    it("strips PII at multiple nesting levels (deeply nested)", () => {
+      const mockPostHog = { capture: vi.fn(), register: vi.fn() }
+      mockGetPostHogClient.mockReturnValue(mockPostHog)
+      sessionStore.set("ibx_session_started", "1")
+
+      track("search_performed", {
+        query: "costela",
+        meta: {
+          session: {
+            user: {
+              email: "deep@example.com",
+              telefone: "11999999999",
+            },
+          },
+        },
+      })
+
+      const call = mockPostHog.capture.mock.calls.find(
+        (c: unknown[]) => c[0] === "search_performed",
+      )
+      expect(call).toBeDefined()
+      const props = call![1] as Record<string, unknown>
+      const meta = props["meta"] as Record<string, unknown>
+      const session = meta["session"] as Record<string, unknown>
+      const user = session["user"] as Record<string, unknown>
+      expect(user["email"]).toBeUndefined()
+      expect(user["telefone"]).toBeUndefined()
+    })
+  })
+
   // ── checkout_completed guard (ref-based idempotency) ──────────────────────
 
   describe("checkout_completed guard pattern", () => {
