@@ -229,6 +229,12 @@ export async function acquireAgentLock(phoneHash: string): Promise<string | null
     }
   }, AGENT_LOCK_HEARTBEAT_MS);
 
+  // P3-MEM-HEARTBEAT: if a previous heartbeat for this phone is still tracked
+  // (e.g. a prior lock cycle whose release path didn't run), clear it before
+  // overwriting the Map entry so the old interval can't leak and keep firing.
+  // NX-lock semantics are unchanged — we only reacquired above on a fresh SET.
+  const existing = heartbeats.get(phoneHash);
+  if (existing) clearInterval(existing);
   heartbeats.set(phoneHash, interval);
   return lockValue;
 }
