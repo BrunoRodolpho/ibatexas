@@ -75,14 +75,21 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
             offset,
           });
 
-          // Projection query succeeded — use results even if empty
+          // Projection query succeeded — use results even if empty.
+          // N1PAY: resolve the active payment for every listed order in ONE batched
+          // query (getActiveByOrderIds) instead of N getActiveByOrderId calls. A
+          // lookup failure degrades gracefully — the list still renders and
+          // currentPayment is null, so payment_status falls back to the projection
+          // (matching the prior per-order `.catch(() => null)` resilience).
           const orderIds = orders.map((o) => o.id);
-          const payments = orderIds.length > 0
-            ? await Promise.all(
-                orderIds.map((oid) => paymentQuerySvc.getActiveByOrderId(oid).catch(() => null)),
-              )
-            : [];
-          const paymentByOrder = new Map(orderIds.map((oid, i) => [oid, payments[i]]));
+          let paymentByOrder: Awaited<ReturnType<typeof paymentQuerySvc.getActiveByOrderIds>> = new Map();
+          if (orderIds.length > 0) {
+            try {
+              paymentByOrder = await paymentQuerySvc.getActiveByOrderIds(orderIds);
+            } catch (err) {
+              server.log.warn({ err }, "active-payment batch lookup failed — orders list renders without currentPayment");
+            }
+          }
 
           const mapped = orders.map((o) => {
             const cp = paymentByOrder.get(o.id);
