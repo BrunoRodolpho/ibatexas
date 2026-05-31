@@ -17,7 +17,7 @@
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, MedusaRequestError, cancelStalePaymentIntent, loadSchedule, getMealPeriodFromSchedule, isValidCpf, normalizeCpf } from "@ibatexas/tools";
+import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, MedusaRequestError, cancelStalePaymentIntent, loadSchedule, getMealPeriodFromSchedule, isValidCpf, normalizeCpf, getTypesenseClient, COLLECTION } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { createCustomerService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
@@ -135,6 +135,38 @@ async function verifyCartOwnership(
   return actualOwner === customerId;
 }
 
+/**
+ * Resolve a variant's catalog-authoritative allergens for order.item.add
+ * (RC-A1 Chunk 1b / D-21.4). The kernel's `requireExplicitAllergens` guard
+ * demands an explicit array (CLAUDE.md Hard Rule #1 — never infer). A published
+ * Typesense product always carries an explicit `allergens: string[]` (possibly
+ * empty = genuinely allergen-free → EXECUTE). FAIL-CLOSED: a missing product /
+ * unavailable Typesense / absent field → `null`, which makes the kernel REFUSE
+ * rather than add an item with unknown allergens. Mirrors add-to-cart's
+ * `lookupProductByVariant` search (by `variantsJson`), but fail-CLOSED not -open.
+ *
+ * Invoked ONLY on the routed path (via the wrapper's `resolvePayload` thunk), so
+ * it never runs while the cutover is inert — the legacy add-item path stays
+ * byte-equivalent (no Typesense call).
+ */
+async function resolveVariantAllergens(variantId: string): Promise<string[] | null> {
+  try {
+    const client = getTypesenseClient();
+    const results = await client.collections(COLLECTION).documents().search({
+      q: variantId,
+      query_by: "variantsJson",
+      filter_by: "status:published",
+      per_page: 1,
+    });
+    const doc = results.hits?.[0]?.document as { allergens?: unknown } | undefined;
+    return Array.isArray(doc?.allergens)
+      ? (doc.allergens as unknown[]).filter((a): a is string => typeof a === "string")
+      : null;
+  } catch {
+    return null; // fail-closed: unresolved ⇒ kernel REFUSEs (never guess allergens)
+  }
+}
+
 export async function cartRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
 
@@ -228,15 +260,45 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
-      // Ensure cart is tracked for abandoned-cart detection
-      await trackCartId(request.params.id, request.customerId ? "customer" : "guest");
+      // RC-A1 Phase B — gate the add through the conductor when active;
+      // byte-equivalent legacy path while inert. Ownership stays OUTSIDE.
+      // order.item.add requires explicit catalog allergens (CLAUDE.md Hard Rule #1);
+      // they are resolved LAZILY via resolvePayload so the Typesense lookup runs ONLY
+      // on the routed path — the inert legacy path makes NO catalog call (byte-equiv).
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.item.add",
+        // Eager payload is unused (resolvePayload overrides on the routed path; the
+        // inert path never builds an envelope) — kept to document the shape.
+        payload: {
+          cartId: request.params.id,
+          variantId: request.body.variant_id,
+          quantity: request.body.quantity,
+        },
+        resolvePayload: async () => ({
+          cartId: request.params.id,
+          variantId: request.body.variant_id,
+          quantity: request.body.quantity,
+          // null ⇒ requireExplicitAllergens REFUSEs (fail-closed; never infer).
+          allergens: await resolveVariantAllergens(request.body.variant_id),
+        }),
+        customerId: request.customerId ?? null,
+        // OrderState for order.item.add: requireCartIdForCartOps (payload.cartId) +
+        // requireExplicitAllergens (payload.allergens) + validateQuantity
+        // (payload.quantity) + executeCartOps. Guest-tolerant. IGNORED while inert.
+        state: { ctx: { channel: "web", customerId: request.customerId ?? null, cartId: request.params.id, orderId: null } },
+        legacy: async () => {
+          // Ensure cart is tracked for abandoned-cart detection
+          await trackCartId(request.params.id, request.customerId ? "customer" : "guest");
 
-      const data = await medusaStore(`/store/carts/${request.params.id}/line-items`, {
-        method: "POST",
-        body: JSON.stringify(request.body),
-        headers: { "Content-Type": "application/json" },
+          return medusaStore(`/store/carts/${request.params.id}/line-items`, {
+            method: "POST",
+            body: JSON.stringify(request.body),
+            headers: { "Content-Type": "application/json" },
+          });
+        },
       });
-      return reply.code(201).send(data);
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+      return reply.code(201).send(outcome.result);
     },
   );
 

@@ -264,6 +264,17 @@ export async function adjudicateCustomerMutation<T>(opts: {
   readonly kind: string;
   readonly payload: unknown;
   /**
+   * Optional LAZY payload resolver (RC-A1 Chunk 1b / D-21.4). When present it is
+   * invoked ONLY on the routed (post-activation) path and its result OVERRIDES
+   * `payload` for the envelope. The inert branch returns BEFORE building the
+   * envelope, so an expensive payload assembly (e.g. catalog allergen lookup for
+   * order.item.add) never runs while inert — keeping the legacy path byte-equivalent
+   * (no extra call/latency/failure surface). Fail-closed: the resolver should return
+   * a payload the kernel REFUSEs (e.g. `allergens: null`) rather than one that
+   * guesses, when it cannot produce a guard-valid value.
+   */
+  readonly resolvePayload?: () => Promise<unknown>;
+  /**
    * Authenticated customer id, or `null` for an unauthenticated GUEST cart
    * mutation (cart routes use `optionalAuth`). A guest builds a guest-session
    * envelope — we NEVER mint a synthetic customerId (that would lie about
@@ -283,9 +294,12 @@ export async function adjudicateCustomerMutation<T>(opts: {
   if (tryGetConductor() === null) {
     return { ran: true, result: await opts.legacy() };
   }
+  // Routed path only — resolve a lazy payload here so its (possibly expensive)
+  // assembly never runs on the inert path above. Overrides the eager `payload`.
+  const payload = opts.resolvePayload ? await opts.resolvePayload() : opts.payload;
   const envelope = buildEnvelope({
     kind: opts.kind,
-    payload: opts.payload,
+    payload,
     // Guest (customerId === null): a faithful guest-session marker, NOT a
     // synthetic customer id. principal stays "user" (a customer-side actor); the
     // ABSENCE of an authenticated customer is carried by state.ctx.customerId ===
