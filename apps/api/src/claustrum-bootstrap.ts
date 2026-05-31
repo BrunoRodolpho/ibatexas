@@ -34,6 +34,14 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { Pool } from "pg";
+import { createRequire } from "node:module";
+
+// apps/api is ESM ("type": "module"); `require` is not a global here. The
+// pack-install + audit-postgres-probe paths below use a dynamic require() to
+// skip-if-missing — shim a working require bound to this module's URL so the
+// bootstrap composes when actually called (it was latent while INERT). Node's
+// require() handles both CJS and ESM (>=22) workspace packages.
+const require = createRequire(import.meta.url);
 import {
   createConductor,
   createToolRegistry,
