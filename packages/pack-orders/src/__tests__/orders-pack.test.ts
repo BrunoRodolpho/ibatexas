@@ -65,7 +65,7 @@ function state(overrides: Partial<OrderState["ctx"]> = {}): OrderState {
 // ── Auth phase ──────────────────────────────────────────────────────────
 
 describe("ordersPolicyBundle — auth guards", () => {
-  it("REFUSE when customer is not authenticated for a mutating intent", () => {
+  it("Allow guest cart-building (order.item.add) — identity is gated at checkout, not here (RC-A1 Chunk 0 / D-20.4)", () => {
     const decision = adjudicate(
       env("order.item.add", {
         cartId: "cart-1",
@@ -76,9 +76,10 @@ describe("ordersPolicyBundle — auth guards", () => {
       state({ customerId: null, channel: "web" }),
       ordersPolicyBundle,
     )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("auth.required")
+    // A guest may build a cart (mirrors the HTTP optionalAuth cart routes);
+    // requireAuthenticated exempts GUEST_CART_KINDS. The guest-identity REFUSE
+    // assertion for a mutating intent lives on order.review.submit below.
+    expect(decision.kind).toBe("EXECUTE")
   })
 
   it("Allow anonymous order.cart.ensure (bootstrap intent)", () => {
