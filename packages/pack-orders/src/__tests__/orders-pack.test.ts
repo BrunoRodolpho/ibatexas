@@ -514,6 +514,37 @@ describe("ordersPolicyBundle — DEFER for pending PIX checkout", () => {
     )
     expect(decision.kind).toBe("EXECUTE")
   })
+
+  it("EXECUTE fresh PIX checkout (null status) — QR-first, not DEFER (D-24 Ruling 1)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "pix" }),
+      state({ paymentMethod: "pix", paymentStatus: null, totalInCentavos: 5_000 }),
+      ordersPolicyBundle,
+    )
+    // A fresh PIX checkout EXECUTEs immediately — createCheckout generates the QR;
+    // the routed payment.status.reconcile webhook governs confirmation.
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("EXECUTE guest CARD checkout — SEC-001 allows guest card (D-24 Ruling 2)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "card" }),
+      state({ customerId: null, channel: "web", paymentMethod: "card" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE guest PIX checkout — the guest exemption is CARD-only (cash/PIX still need auth)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "pix" }),
+      state({ customerId: null, channel: "web", paymentMethod: "pix", paymentStatus: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("auth.required")
+  })
 })
 
 // ── Default-deny invariant (CLAUDE.md / master plan #4) ─────────────────
