@@ -288,15 +288,23 @@ export async function adjudicateCustomerMutation<T>(opts: {
   readonly customerId: string | null;
   /** Domain state the kind's PolicyBundle guards inspect (caller assembles). */
   readonly state: unknown;
+  /**
+   * Optional LAZY state resolver (RC-A1 Chunk 7 / D-24), sibling of `resolvePayload`.
+   * Invoked ONLY on the routed path and OVERRIDES `state` — so an expensive state
+   * assembly (e.g. reading the Medusa cart total for `confirmLargeTicket` at checkout)
+   * never runs while inert, keeping the legacy path byte-equivalent.
+   */
+  readonly resolveState?: () => Promise<unknown>;
   /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
   readonly legacy: () => Promise<T>;
 }): Promise<MutationOutcome<T>> {
   if (tryGetConductor() === null) {
     return { ran: true, result: await opts.legacy() };
   }
-  // Routed path only — resolve a lazy payload here so its (possibly expensive)
-  // assembly never runs on the inert path above. Overrides the eager `payload`.
+  // Routed path only — resolve lazy payload/state here so their (possibly expensive)
+  // assembly never runs on the inert path above. Override the eager values.
   const payload = opts.resolvePayload ? await opts.resolvePayload() : opts.payload;
+  const state = opts.resolveState ? await opts.resolveState() : opts.state;
   const envelope = buildEnvelope({
     kind: opts.kind,
     payload,
@@ -314,7 +322,7 @@ export async function adjudicateCustomerMutation<T>(opts: {
   let result: T | undefined;
   const intent = await runCustomerIntent({
     envelope,
-    state: opts.state,
+    state,
     policy: policyForKind(opts.kind),
     onExecute: async () => {
       result = await opts.legacy();

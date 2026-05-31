@@ -782,12 +782,79 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         };
       }
 
-      const result = await createCheckout({ ...request.body, cartId }, {
-        channel: Channel.Web,
-        sessionId: cartId,
-        customerId: request.customerId,
-        userType: request.userType ?? "guest",
-      }, pixExtra);
+      // RC-A1 Phase B — gate the checkout through the conductor when active;
+      // byte-equivalent legacy path while inert. ALL the pre-checks above (ownership,
+      // KITCHEN_CLOSED, delivery/payment validation, SEC-001, idempotency SET-NX,
+      // cart-sync + stale-PI cancellation + completed_at, CPF checksum) stay OUTSIDE
+      // the wrapper; `createCheckout` (the money mutation — Stripe PI / PIX QR / off-
+      // by-100 / livemode, all inside) is moved VERBATIM into the legacy closure.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.checkout.create",
+        // OrderCheckoutCreatePayload fields the checkout guards inspect: cartId
+        // (requireCartIdForCartOps), paymentMethod (validatePaymentMethod /
+        // isCardCheckout guest-card exemption). Eager — all from the request.
+        payload: {
+          cartId,
+          paymentMethod,
+          deliveryType: reqDeliveryType,
+          tipInCentavos: request.body.tipInCentavos,
+        },
+        // Guest-tolerant: a guest CARD checkout is allowed (D-24 Ruling 2); guest
+        // cash/PIX are 401'd by SEC-001 above before reaching here.
+        customerId: request.customerId ?? null,
+        // Eager state is minimal/superseded by resolveState below (and unused while inert).
+        state: { ctx: { channel: "web", customerId: request.customerId ?? null, cartId, orderId: null } },
+        // LAZY state (routed-path only → inert checkout makes NO extra Medusa call,
+        // staying byte-equivalent). createCheckout computes the total today, so the
+        // kernel's confirmLargeTicket/refuseAmountAboveCap (totalInCentavos) +
+        // requireCartItemsForCheckout (items) read the synced Medusa cart here. A
+        // fresh PIX checkout has paymentStatus null ⇒ EXECUTE (D-24 Ruling 1).
+        resolveState: async () => {
+          let items: Array<{ variantId: string; quantity: number; priceInCentavos: number }> = [];
+          let totalInCentavos: number | null = null;
+          try {
+            const c = (await medusaStore(`/store/carts/${cartId}`)) as {
+              cart?: { total?: number; items?: Array<{ variant_id?: string; quantity?: number; unit_price?: number }> };
+            };
+            items = (c.cart?.items ?? []).map((i) => ({
+              variantId: i.variant_id ?? "",
+              quantity: i.quantity ?? 0,
+              priceInCentavos: typeof i.unit_price === "number" ? reaisToCentavos(i.unit_price) : 0,
+            }));
+            totalInCentavos = typeof c.cart?.total === "number" ? reaisToCentavos(c.cart.total) : null;
+          } catch {
+            // fail-open: best-effort kernel state; the money mutation (legacy) is unaffected.
+          }
+          return {
+            ctx: {
+              channel: "web",
+              customerId: request.customerId ?? null,
+              cartId,
+              orderId: null,
+              paymentMethod,
+              fulfillment: reqDeliveryType ?? null,
+              paymentStatus: null,
+              items,
+              totalInCentavos,
+            },
+          };
+        },
+        legacy: () =>
+          createCheckout({ ...request.body, cartId }, {
+            channel: Channel.Web,
+            sessionId: cartId,
+            customerId: request.customerId,
+            userType: request.userType ?? "guest",
+          }, pixExtra),
+      });
+
+      if (!outcome.ran) {
+        // Kernel REFUSE/DEFER — no checkout ran. Release the idempotency gate so the
+        // customer can retry (mirrors the fixable-failure release below).
+        await redis.del(idemKey);
+        return replyForIntent(reply, outcome.intent);
+      }
+      const result = outcome.result;
 
       if (!result.success) {
         // Fixable failure — release the idempotency gate so the customer can retry
