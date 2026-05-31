@@ -9,6 +9,7 @@ export { createOrderService, type OrderService, type MedusaFetch } from "./servi
 export { getEffectivePonr, isWithinPonr, getItemPonrStatus, type PonrConfig, type ItemPonrStatus } from "./services/ponr.js"
 export { createCustomerService, type CustomerService, anonymizeCustomer, exportCustomerData } from "./services/customer.service.js"
 export { createStaffService, type StaffService } from "./services/staff.service.js"
+export { toE164BR } from "./phone.js"
 export { assertOwnership, assertMutable } from "./services/shared.js"
 export { createReviewService, type ReviewService } from "./services/review.service.js"
 export { createConversationService, type ConversationService } from "./services/conversation.service.js"

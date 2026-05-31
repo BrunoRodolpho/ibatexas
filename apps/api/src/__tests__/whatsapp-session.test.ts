@@ -40,7 +40,10 @@ vi.mock("@ibatexas/tools", () => ({
   atomicIncr: mockAtomicIncr,
 }));
 
-vi.mock("@ibatexas/domain", () => ({
+vi.mock("@ibatexas/domain", async (importOriginal) => ({
+  // Keep the real pure helpers (e.g. toE164BR, used by normalizePhone); only
+  // the Prisma-backed customer service is mocked.
+  ...(await importOriginal<typeof import("@ibatexas/domain")>()),
   createCustomerService: () => ({
     upsertFromWhatsApp: mockUpsertFromWhatsApp,
   }),

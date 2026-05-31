@@ -4,6 +4,7 @@
 // Cache (Redis profile hash) stays in the tools layer — services are pure Prisma.
 
 import { prisma } from "../client.js"
+import { toE164BR } from "../phone.js"
 import type { Channel } from "@ibatexas/types"
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -15,9 +16,14 @@ export function createCustomerService() {
      * Called after OTP verification.
      */
     async upsertFromPhone(phone: string, name?: string) {
+      // P2-DATA-PHONENORM: canonicalize at the @unique boundary so the same
+      // number never splits into two rows because a caller passed `whatsapp:+…`
+      // or a formatted variant. Idempotent on the already-validated `+<digits>`
+      // the callers pass today; never touches the BR 9th digit (no merge risk).
+      const canonical = toE164BR(phone)
       return prisma.customer.upsert({
-        where: { phone },
-        create: { phone, name: name ?? null },
+        where: { phone: canonical },
+        create: { phone: canonical, name: name ?? null },
         update: { ...(name ? { name } : {}) },
       })
     },
