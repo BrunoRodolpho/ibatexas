@@ -35,6 +35,7 @@ import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from 
 import { type AgentContext, Channel } from "@ibatexas/types";
 import type {
   OrderAddressChangePayload,
+  OrderAmendRequestPayload,
   OrderCancelPayload,
   OrderNoteAddPayload,
   OrderTypeSwitchPayload,
@@ -546,30 +547,80 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // ── Apply all changes sequentially ────────────────────────────────
-      const results: Array<{ itemTitle: string; success: boolean; message?: string }> = [];
-      let hasFailure = false;
+      // RC-A1 Phase B — gate the batch APPLY through the conductor; byte-equivalent
+      // legacy path while inert. The HTTP-layer pre-checks above (rate limit,
+      // ownership, projection/Medusa fetch, per-change canPerformAction + ACTION
+      // _NOT_ALLOWED, food-locked-during-preparing ITEM_NOW_LOCKED, all-items-removed
+      // ALL_ITEMS_REMOVED, and the whole pre-validate loop) stay OUTSIDE the
+      // adjudicated mutation. The apply loop — with its stop-on-first-failure break
+      // and the accumulated results array — is the adjudicated mutation and stays
+      // intact inside the legacy closure (atomic-batch invariant preserved verbatim).
+      // The closure returns { hasFailure, results } so the 422 PARTIAL_FAILURE / 200
+      // success responses survive the wrapper unchanged.
+      const doBatchAmend = async (): Promise<{
+        readonly hasFailure: boolean;
+        readonly results: Array<{ itemTitle: string; success: boolean; message?: string }>;
+      }> => {
+        // ── Apply all changes sequentially ────────────────────────────────
+        const results: Array<{ itemTitle: string; success: boolean; message?: string }> = [];
+        let hasFailure = false;
 
-      for (const change of request.body.changes) {
-        try {
-          const result = await amendOrder(
-            {
-              orderId: id,
-              action: change.type,
-              itemTitle: change.itemTitle,
-              quantity: change.quantity,
-            },
-            apiContext(customerId),
-          );
-          results.push({ itemTitle: change.itemTitle, success: result.success, message: result.message });
-          if (!result.success) hasFailure = true;
-        } catch (err) {
-          results.push({ itemTitle: change.itemTitle, success: false, message: (err as Error).message });
-          hasFailure = true;
-          break; // Stop on first failure to prevent partial state
+        for (const change of request.body.changes) {
+          try {
+            const result = await amendOrder(
+              {
+                orderId: id,
+                action: change.type,
+                itemTitle: change.itemTitle,
+                quantity: change.quantity,
+              },
+              apiContext(customerId),
+            );
+            results.push({ itemTitle: change.itemTitle, success: result.success, message: result.message });
+            if (!result.success) hasFailure = true;
+          } catch (err) {
+            results.push({ itemTitle: change.itemTitle, success: false, message: (err as Error).message });
+            hasFailure = true;
+            break; // Stop on first failure to prevent partial state
+          }
         }
-      }
 
+        return { hasFailure, results };
+      };
+
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.amend.request",
+        // Map the HTTP batch changes onto the canonical pack payload (the envelope
+        // is the adjudicated/audited representation; the legacy closure applies the
+        // mutation with the original HTTP shape). HTTP `type` "remove"|"update_qty"
+        // maps to the pack `op` "remove"|"update"; the HTTP surface targets items by
+        // `itemTitle`, which the pack payload carries in its optional `itemId` slot
+        // (the pack's amend-request guards — requireAmendable + executeAmend — do not
+        // inspect per-change fields, so this title→itemId carry is audit-descriptive
+        // only and changes no decision).
+        payload: {
+          orderId: id,
+          changes: request.body.changes.map((c) => ({
+            op: c.type === "remove" ? ("remove" as const) : ("update" as const),
+            itemId: c.itemTitle,
+            quantity: c.quantity,
+          })),
+        } satisfies OrderAmendRequestPayload,
+        customerId,
+        // OrderState the orders PolicyBundle inspects for order.amend.request:
+        // requireAuthenticated (customerId non-null) + requireOrderIdForMutation +
+        // requireAmendable (hasOrderId && lastAction !== "cancelled"). lastAction
+        // omitted (undefined ⇒ not "cancelled" ⇒ allowed). The amend-window / food-
+        // locked-during-preparing checks are enforced above at the HTTP layer
+        // (canPerformAction + ITEM_NOW_LOCKED), not in the pack state — the pack
+        // state has no fulfillmentStatus/item-product-type slot, so that gap is
+        // intentional and documented (state is ignored while inert).
+        state: { ctx: { channel: "web", customerId, cartId: null, orderId: id, lastAction: undefined } },
+        legacy: doBatchAmend,
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+
+      const { hasFailure, results } = outcome.result;
       if (hasFailure) {
         return reply.code(422).send({
           error: "Algumas alterações falharam.",
@@ -619,18 +670,65 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // RC-A1 Phase B — gate the single amendOrder call through the conductor;
+      // byte-equivalent legacy path while inert. The HTTP-layer pre-checks above
+      // (rate limit, ownership) stay OUTSIDE the adjudicated mutation. The
+      // try/catch stays OUTSIDE the wrapper so the existing NonRetryableError→422
+      // and generic→500 error responses are preserved exactly (the conductor's
+      // legacy branch runs doAmend synchronously and rethrows, so a thrown
+      // NonRetryableError surfaces here unchanged).
       try {
-        const result = await amendOrder(
-          {
+        const doAmend = () =>
+          amendOrder(
+            {
+              orderId: id,
+              action: request.body.action,
+              variantId: request.body.variantId,
+              itemTitle: request.body.itemTitle,
+              quantity: request.body.quantity,
+            },
+            apiContext(customerId),
+          );
+
+        const outcome = await adjudicateCustomerMutation({
+          kind: "order.amend.request",
+          // Map the single HTTP amend onto the canonical pack payload (the envelope
+          // is the adjudicated/audited representation; the legacy closure applies the
+          // mutation with the original HTTP shape). HTTP `action` "add"|"remove"|
+          // "update_qty" maps to the pack `op` "add"|"remove"|"update"; variantId /
+          // itemTitle / quantity ride the matching optional payload slots (itemTitle
+          // carried in `itemId` — the request-level amend guards do not inspect
+          // per-change fields, so this is audit-descriptive only and changes no
+          // decision).
+          payload: {
             orderId: id,
-            action: request.body.action,
-            variantId: request.body.variantId,
-            itemTitle: request.body.itemTitle,
-            quantity: request.body.quantity,
-          },
-          apiContext(customerId),
-        );
-        return reply.send(result);
+            changes: [
+              {
+                op:
+                  request.body.action === "add"
+                    ? ("add" as const)
+                    : request.body.action === "remove"
+                      ? ("remove" as const)
+                      : ("update" as const),
+                variantId: request.body.variantId,
+                itemId: request.body.itemTitle,
+                quantity: request.body.quantity,
+              },
+            ],
+          } satisfies OrderAmendRequestPayload,
+          customerId,
+          // OrderState for order.amend.request: requireAuthenticated (customerId
+          // non-null) + requireOrderIdForMutation + requireAmendable (hasOrderId &&
+          // lastAction !== "cancelled"). lastAction omitted (undefined ⇒ allowed).
+          // The amend-window eligibility lives inside amendOrder (the legacy tool),
+          // which throws NonRetryableError handled below; the pack state has no slot
+          // for it, so that gap is intentional and documented (state ignored while
+          // inert).
+          state: { ctx: { channel: "web", customerId, cartId: null, orderId: id, lastAction: undefined } },
+          legacy: doAmend,
+        });
+        if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+        return reply.send(outcome.result);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });
