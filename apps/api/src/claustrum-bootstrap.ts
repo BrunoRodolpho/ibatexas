@@ -96,6 +96,9 @@ import {
   type IntentAuditRow,
   type PostgresWriter,
 } from "@adjudicate/audit-postgres";
+// pt-BR refusal registry (code → curated, detail-free pt-BR text). The kernel +
+// pack refusals carry a stable `code`; the explainer localizes by it.
+import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br";
 
 // Pack imports — at the time of this commit, ibatexas's first-party Packs
 // are in packages/pack-*/ but those packages have no published package.json
@@ -422,22 +425,35 @@ async function assertAuditPostgresReady(): Promise<void> {
 // ── Ibatexas-specific port adapters ──────────────────────────────────────────
 
 /**
- * Minimal pt-BR explainer. Production-grade implementation lives in a
- * dedicated module under `apps/api/src/explainer/` (TODO).
+ * pt-BR refusal explainer. Localizes a kernel/pack `Refusal` to user-facing
+ * pt-BR by its stable `code`, via the `@adjudicate/locales-pt-br` registry.
+ * Exported for unit testing (claustrum-explainer.test.ts).
  */
-function ibatexasExplainer(): ExplainerPort {
+export function ibatexasExplainer(): ExplainerPort {
+  // Generic, detail-free pt-BR fallbacks — used when the registry has no entry
+  // for `code` (and, for SECURITY, instead of `userFacing`).
+  const GENERIC_PTBR = "Desculpe, não consegui atender ao pedido.";
+  const GENERIC_SECURITY_PTBR =
+    "Não consigo continuar com essa solicitação. Pode tentar de outra forma?";
+
   return {
     render(refusal): string {
-      // SECURITY refusals MUST NOT leak `detail` to the user. We fall back to
-      // a generic message; the operator-facing `detail` is logged via
-      // telemetry, not surfaced here.
+      const fromRegistry = portugueseRefusalMessages.byCode[refusal.code];
+
+      // SECURITY refusals MUST NOT surface the operator-facing `detail`, and we
+      // do NOT trust pack-supplied `userFacing` here either: render the curated
+      // pt-BR registry entry if one exists, else a generic pt-BR security
+      // message. This branch references neither `detail` nor `userFacing`, so
+      // no sensitive text can leak through a SECURITY render by construction.
       if (refusal.kind === "SECURITY") {
-        return (
-          refusal.userFacing ??
-          "Não consigo continuar com essa solicitação. Pode tentar de outra forma?"
-        );
+        return fromRegistry ?? GENERIC_SECURITY_PTBR;
       }
-      return refusal.userFacing ?? "Desculpe, não consegui atender ao pedido.";
+
+      // Non-SECURITY: registry first (canonical localized text for kernel +
+      // mapped codes), then the pack's embedded pt-BR `userFacing` (every
+      // @ibatexas/pack-* refusal ships pt-BR userFacing at construction), then a
+      // generic pt-BR fallback. Never returns empty.
+      return fromRegistry ?? refusal.userFacing ?? GENERIC_PTBR;
     },
   };
 }

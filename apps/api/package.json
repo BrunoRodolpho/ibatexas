@@ -19,6 +19,7 @@
   "dependencies": {
     "@adjudicate/audit-postgres": "^1.0.1",
     "@adjudicate/core": "^1.1.0",
+    "@adjudicate/locales-pt-br": "^0.1.1",
     "@adjudicate/pack-payments-pix": "^0.1.1",
     "@adjudicate/runtime": "^0.1.1",
     "@anthropic-ai/sdk": "^0.82.0",
