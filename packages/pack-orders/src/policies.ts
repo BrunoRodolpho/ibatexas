@@ -127,8 +127,36 @@ const SYSTEM_OR_ANON_KINDS: ReadonlySet<string> = new Set([
   "order.status.reconcile",
 ])
 
+/**
+ * Cart-building intents a GUEST (unauthenticated web visitor) may perform
+ * BEFORE authenticating at checkout. These mirror the HTTP cart routes
+ * (`apps/api/src/routes/cart.ts`), which gate on `optionalAuth` + a
+ * cart-scoped `verifyCartOwnership` (Redis cart:owner claim) — NOT on a
+ * customer principal. The identity gate for this flow lives at CHECKOUT
+ * (`requireCheckoutEligibility` / `canCheckout`), not at cart-building, so
+ * routing these through the kernel must not regress guest shopping. `cartId`
+ * presence is still enforced by `requireCartIdForCartOps`, explicit allergens
+ * by `requireExplicitAllergens`, and cart ownership at the route layer.
+ *
+ * RC-A1 cutover Chunk 0 (cycle 20, DECISIONS-cycle20 D-20.4): a pack-guard
+ * change only — it does NOT alter the envelope/principal shape or any hashed
+ * byte (guest cart needs a pack-guard change, not a principal). adj core is
+ * untouched (stays at its tripwire count).
+ */
+const GUEST_CART_KINDS: ReadonlySet<string> = new Set([
+  "order.item.add",
+  "order.item.update",
+  "order.item.remove",
+  "order.cart.sync",
+  "order.coupon.apply",
+])
+
 const requireAuthenticated: OrderGuard = (envelope, state) => {
   if (SYSTEM_OR_ANON_KINDS.has(envelope.kind)) {
+    return null
+  }
+  // Guests may build a cart; the identity gate is at checkout, not here.
+  if (GUEST_CART_KINDS.has(envelope.kind)) {
     return null
   }
   if (isAuthenticated(state)) return null

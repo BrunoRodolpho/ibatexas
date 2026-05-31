@@ -212,7 +212,12 @@ const corpus: ReadonlyArray<Fixture> = [
 
   // ── REFUSE (12 cases) ────────────────────────────────────────────────
   {
-    name: "REFUSE: unauthenticated order.item.add",
+    // RC-A1 cutover Chunk 0 (D-20.4): a guest (customerId:null) web visitor
+    // may BUILD a cart — the kernel mirrors the HTTP cart route (optionalAuth),
+    // and identity is gated at checkout, not cart-building. Was previously
+    // "REFUSE: unauthenticated order.item.add"; the guest-identity REFUSE
+    // assertion now lives on the guest-checkout fixture immediately below.
+    name: "EXECUTE: guest order.item.add (cart-building allowed pre-checkout)",
     envelope: env("order.item.add", {
       cartId: "cart-1",
       variantId: "v-1",
@@ -220,6 +225,21 @@ const corpus: ReadonlyArray<Fixture> = [
       allergens: [],
     }),
     state: authenticatedState({ customerId: null, channel: "web" }),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "REFUSE: guest order.checkout.create (identity gate still blocks guest checkout)",
+    envelope: env("order.checkout.create", {
+      cartId: "cart-1",
+      paymentMethod: "card",
+    }),
+    // The guest-cart exemption (D-20.4) deliberately does NOT extend to
+    // checkout: a guest web checkout is still refused at the auth gate.
+    state: authenticatedState({
+      customerId: null,
+      channel: "web",
+      paymentMethod: "card",
+    }),
     expect: { kind: "REFUSE", refusalCode: "auth.required" },
   },
   {
