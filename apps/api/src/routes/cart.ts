@@ -146,31 +146,48 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      // If authenticated, resolve the customer's Medusa ID so the resulting
-      // order is linked to the customer and appears in /account/orders.
-      let cartBody: Record<string, unknown> = {};
-      if (request.customerId) {
-        try {
-          const customerSvc = createCustomerService();
-          const customer = await customerSvc.getById(request.customerId);
-          if (customer.medusaId) {
-            cartBody = { customer_id: customer.medusaId };
+      // RC-A1 Phase B — gate the cart create/ensure through the conductor when
+      // active; byte-equivalent legacy path while inert. order.cart.ensure is the
+      // anonymous get-or-create kind (auth-exempt, no cartId required). The whole
+      // create (customer-Medusa-id resolve + cart POST + abandoned-cart tracking)
+      // is the adjudicated mutation; it moves verbatim into the legacy closure.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.cart.ensure",
+        payload: {}, // OrderCartEnsurePayload: { cartId? } — a create has no input cartId.
+        customerId: request.customerId ?? null,
+        // OrderState for order.cart.ensure: auth-exempt (SYSTEM_OR_ANON_KINDS) +
+        // executeCartOps EXECUTE; no cartId guard. Guest-tolerant. IGNORED inert.
+        state: { ctx: { channel: "web", customerId: request.customerId ?? null, cartId: null, orderId: null } },
+        legacy: async () => {
+          // If authenticated, resolve the customer's Medusa ID so the resulting
+          // order is linked to the customer and appears in /account/orders.
+          let cartBody: Record<string, unknown> = {};
+          if (request.customerId) {
+            try {
+              const customerSvc = createCustomerService();
+              const customer = await customerSvc.getById(request.customerId);
+              if (customer.medusaId) {
+                cartBody = { customer_id: customer.medusaId };
+              }
+            } catch {
+              // Customer lookup failed — create cart without binding (guest mode)
+            }
           }
-        } catch {
-          // Customer lookup failed — create cart without binding (guest mode)
-        }
-      }
 
-      const data = await medusaStore("/store/carts", {
-        method: "POST",
-        body: JSON.stringify(cartBody),
-        headers: { "Content-Type": "application/json" },
+          const data = await medusaStore("/store/carts", {
+            method: "POST",
+            body: JSON.stringify(cartBody),
+            headers: { "Content-Type": "application/json" },
+          });
+
+          const cartId = (data as { cart?: { id: string } }).cart?.id;
+          if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest");
+
+          return data;
+        },
       });
-
-      const cartId = (data as { cart?: { id: string } }).cart?.id;
-      if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest");
-
-      return reply.code(201).send(data);
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+      return reply.code(201).send(outcome.result);
     },
   );
 
@@ -343,24 +360,43 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
-      await trackCartId(id, request.customerId ? "customer" : "guest");
+      // RC-A1 Phase B — gate the bulk sync through the conductor when active;
+      // byte-equivalent legacy path while inert. Ownership stays OUTSIDE; the
+      // trackCartId + per-item fail-soft add loop + synced-cart read are the
+      // adjudicated mutation, moved verbatim into the legacy closure.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.cart.sync",
+        // OrderCartSyncPayload declares per-item `allergens`, but order.cart.sync
+        // is NOT in KINDS_REQUIRING_EXPLICIT_ALLERGENS (the guard does not enforce
+        // them for sync — by pack design), so we carry {variantId, quantity} as the
+        // HTTP body provides. Catalog allergen enrichment (same source as item.add)
+        // is a documented audit-fidelity follow-up; the EXECUTE decision is correct
+        // without it. Payload is audit-descriptive and IGNORED while inert.
+        payload: { cartId: id, items: items.map((i) => ({ variantId: i.variantId, quantity: i.quantity })) },
+        customerId: request.customerId ?? null,
+        state: { ctx: { channel: "web", customerId: request.customerId ?? null, cartId: id, orderId: null } },
+        legacy: async () => {
+          await trackCartId(id, request.customerId ? "customer" : "guest");
 
-      // Add each item sequentially (Medusa store API doesn't support batch add)
-      for (const item of items) {
-        try {
-          await medusaStore(`/store/carts/${id}/line-items`, {
-            method: "POST",
-            body: JSON.stringify({ variant_id: item.variantId, quantity: item.quantity }),
-            headers: { "Content-Type": "application/json" },
-          });
-        } catch (err) {
-          server.log.warn({ variantId: item.variantId, err }, "line item Medusa sync failed — skipping");
-        }
-      }
+          // Add each item sequentially (Medusa store API doesn't support batch add)
+          for (const item of items) {
+            try {
+              await medusaStore(`/store/carts/${id}/line-items`, {
+                method: "POST",
+                body: JSON.stringify({ variant_id: item.variantId, quantity: item.quantity }),
+                headers: { "Content-Type": "application/json" },
+              });
+            } catch (err) {
+              server.log.warn({ variantId: item.variantId, err }, "line item Medusa sync failed — skipping");
+            }
+          }
 
-      // Return the synced cart
-      const data = await medusaStore(`/store/carts/${id}`);
-      return reply.send(data);
+          // Return the synced cart
+          return medusaStore(`/store/carts/${id}`);
+        },
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+      return reply.send(outcome.result);
     },
   );
 
@@ -382,12 +418,26 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
-      const data = await medusaStore(`/store/carts/${request.params.id}/promotions`, {
-        method: "POST",
-        body: JSON.stringify(request.body),
-        headers: { "Content-Type": "application/json" },
+      // RC-A1 Phase B — gate the coupon apply through the conductor when active;
+      // byte-equivalent legacy path while inert. Ownership stays OUTSIDE.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.coupon.apply",
+        // OrderCouponApplyPayload is { cartId, code } (single); the HTTP surface
+        // takes promo_codes[]. The amend guards (requireCartIdForCartOps +
+        // executeCartOps) do not inspect `code`, so we join for an audit-descriptive
+        // value; the legacy applies the full promo_codes array verbatim. IGNORED inert.
+        payload: { cartId: request.params.id, code: request.body.promo_codes.join(",") },
+        customerId: request.customerId ?? null,
+        state: { ctx: { channel: "web", customerId: request.customerId ?? null, cartId: request.params.id, orderId: null } },
+        legacy: () =>
+          medusaStore(`/store/carts/${request.params.id}/promotions`, {
+            method: "POST",
+            body: JSON.stringify(request.body),
+            headers: { "Content-Type": "application/json" },
+          }),
       });
-      return reply.send(data);
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+      return reply.send(outcome.result);
     },
   );
 
