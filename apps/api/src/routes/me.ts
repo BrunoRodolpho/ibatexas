@@ -9,6 +9,10 @@ import { z } from "zod";
 import { exportCustomerData, anonymizeCustomer } from "@ibatexas/domain";
 import { withLock } from "@ibatexas/tools";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  adjudicateCustomerMutation,
+  replyForIntent,
+} from "./__shared__/customer-intent-gateway.js";
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -122,9 +126,35 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const customerId = request.customerId!;
-      // One per-customer lock shared with export. Lock contention means a
-      // concurrent erase is already running — idempotent, so report success.
-      const result = await withLock(`lgpd:${customerId}`, () => anonymizeCustomer(customerId));
+      // RC-A1 Phase B (LGPD Option B, D-25) — gate the erasure through the conductor
+      // when active; byte-equivalent legacy path while inert. The whole locked
+      // anonymize (phone tombstone / cpf+email null / review redact / conversation
+      // delete / erasedAt) moves VERBATIM into the legacy closure; requireAuth stays
+      // outside. The erasure is IMMEDIATE (no OTP, no 24h grace) — the route sets
+      // state.ctx.immediateErasure so the pack EXECUTEs now, matching today's behavior.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "customer.anonymize",
+        payload: { customerId, scope: "lgpd_art_18" },
+        customerId,
+        // Authenticated immediate-erasure state: requireAuthenticated (isAuthenticated)
+        // + requireCustomerExists (customerExists) pass; immediateErasure skips
+        // requireFreshOtp + deferAnonymizeForGrace → executeAnonymize EXECUTE.
+        state: {
+          ctx: {
+            customerId,
+            customerExists: true,
+            isAuthenticated: true,
+            otpFresh: false,
+            hasParkedAnonymize: false,
+            immediateErasure: true,
+          },
+        },
+        // One per-customer lock shared with export. Lock contention means a
+        // concurrent erase is already running — idempotent, so report success.
+        legacy: () => withLock(`lgpd:${customerId}`, () => anonymizeCustomer(customerId)),
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+      const result = outcome.result;
       if (result && !result.success) {
         return reply.status(404).send({
           statusCode: 404,
