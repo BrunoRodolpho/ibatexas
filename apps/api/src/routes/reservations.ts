@@ -20,6 +20,10 @@ import {
 } from "@ibatexas/tools"
 import { SpecialRequestSchema, ReservationStatus } from "@ibatexas/types"
 import { requireAuth } from "../middleware/auth.js"
+import {
+  adjudicateCustomerMutation,
+  replyForIntent,
+} from "./__shared__/customer-intent-gateway.js"
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -95,8 +99,42 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const customerId = request.customerId!
-      const result = await createReservation({ ...request.body, customerId })
-      return reply.status(201).send(result)
+      // RC-A1 Phase B — gate the create through the conductor when active;
+      // byte-equivalent legacy path while inert. The whole createReservation
+      // mutation is the adjudicated side effect; the requireAuth pre-check and
+      // Zod body validation stay outside the wrapper. Moved verbatim.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "reservation.create",
+        // ReservationCreatePayload: { timeSlotId, partySize, specialRequests? }.
+        payload: {
+          timeSlotId: request.body.timeSlotId,
+          partySize: request.body.partySize,
+          specialRequests: request.body.specialRequests,
+        },
+        customerId,
+        // ReservationState the reservations PolicyBundle inspects for
+        // reservation.create: requireAuthenticated (customerId non-null) +
+        // requireSlotWithCapacity / requireSlotInFuture (slot snapshot) +
+        // validatePartySize + escalateHighNoShowRate / refuseBlockedCustomer
+        // (customer snapshot). GAP: the thin HTTP handler has neither the slot
+        // capacity/startAt snapshot nor the customer no-show/blocked snapshot —
+        // those live in reservation.service.ts under a FOR UPDATE lock. Set to
+        // null here; full state-correctness is validated at the witnessed flip.
+        // IGNORED while inert (legacy runs).
+        state: {
+          ctx: {
+            channel: "web",
+            customerId,
+            staffId: null,
+            now: null,
+            slot: null,
+            customer: null,
+          },
+        },
+        legacy: async () => createReservation({ ...request.body, customerId }),
+      })
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent)
+      return reply.status(201).send(outcome.result)
     },
   )
 
@@ -132,11 +170,45 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const customerId = request.customerId!
-      const result = await modifyReservation({
-        ...request.body,
+      // RC-A1 Phase B — gate the modify through the conductor when active;
+      // byte-equivalent legacy path while inert. requireAuth + Zod validation
+      // stay outside; the modifyReservation call is moved verbatim into legacy.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "reservation.modify",
+        // ReservationModifyPayload: { reservationId, newTimeSlotId?,
+        // newPartySize?, specialRequests? }.
+        payload: {
+          reservationId: request.params.id,
+          newTimeSlotId: request.body.newTimeSlotId,
+          newPartySize: request.body.newPartySize,
+          specialRequests: request.body.specialRequests,
+        },
         customerId,
-        reservationId: request.params.id,
+        // ReservationState for reservation.modify: requireReservationPresent /
+        // requireReservationModifiable (existing-reservation snapshot),
+        // refuseModifyOnFullNewSlot (newSlot snapshot), validatePartySize.
+        // GAP: the thin handler holds neither the existing-reservation snapshot
+        // nor the target-slot capacity snapshot (both fetched under lock inside
+        // reservation.service.ts) — set null. IGNORED while inert (legacy runs).
+        state: {
+          ctx: {
+            channel: "web",
+            customerId,
+            staffId: null,
+            now: null,
+            reservation: null,
+            newSlot: null,
+          },
+        },
+        legacy: async () =>
+          modifyReservation({
+            ...request.body,
+            customerId,
+            reservationId: request.params.id,
+          }),
       })
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent)
+      const result = outcome.result
       if (!result.success) {
         return reply.status(400).send({ statusCode: 400, message: result.message })
       }
@@ -158,11 +230,42 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const customerId = request.customerId!
-      const result = await cancelReservation({
-        ...request.body,
+      // RC-A1 Phase B — gate the cancel through the conductor when active;
+      // byte-equivalent legacy path while inert. requireAuth + Zod validation
+      // stay outside; the cancelReservation call is moved verbatim into legacy.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "reservation.cancel",
+        // ReservationCancelPayload: { reservationId, reason? }.
+        payload: {
+          reservationId: request.params.id,
+          reason: request.body.reason,
+        },
         customerId,
-        reservationId: request.params.id,
+        // ReservationState for reservation.cancel: requireReservationPresent /
+        // requireReservationCancellable (existing-reservation snapshot),
+        // confirmLastMinuteCancel (slot.startAt + now → REQUEST_CONFIRMATION).
+        // GAP: the thin handler has neither the existing-reservation snapshot
+        // nor the slot start time (both inside reservation.service.ts) — set
+        // null; `now` left null too. IGNORED while inert (legacy runs).
+        state: {
+          ctx: {
+            channel: "web",
+            customerId,
+            staffId: null,
+            now: null,
+            slot: null,
+            reservation: null,
+          },
+        },
+        legacy: async () =>
+          cancelReservation({
+            ...request.body,
+            customerId,
+            reservationId: request.params.id,
+          }),
       })
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent)
+      const result = outcome.result
       if (!result.success) {
         return reply.status(400).send({ statusCode: 400, message: result.message })
       }
@@ -184,12 +287,37 @@ export async function reservationRoutes(server: FastifyInstance): Promise<void> 
     },
     async (request, reply) => {
       const customerId = request.customerId!
-      const result = await joinWaitlist({
-        ...request.body,
+      // RC-A1 Phase B — gate the waitlist-join through the conductor when
+      // active; byte-equivalent legacy path while inert. requireAuth + Zod
+      // validation stay outside; the joinWaitlist call is moved verbatim.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "reservation.waitlist.join",
+        // ReservationWaitlistJoinPayload: { timeSlotId, partySize }.
+        payload: {
+          timeSlotId: request.params.id,
+          partySize: request.body.partySize,
+        },
         customerId,
-        timeSlotId: request.params.id,
+        // ReservationState for reservation.waitlist.join: requireAuthenticated
+        // (customerId non-null) + validatePartySize (payload only). No slot /
+        // reservation snapshot is consulted by any guard for this kind, so the
+        // snapshot fields are simply absent. IGNORED while inert (legacy runs).
+        state: {
+          ctx: {
+            channel: "web",
+            customerId,
+            staffId: null,
+          },
+        },
+        legacy: async () =>
+          joinWaitlist({
+            ...request.body,
+            customerId,
+            timeSlotId: request.params.id,
+          }),
       })
-      return reply.status(201).send(result)
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent)
+      return reply.status(201).send(outcome.result)
     },
   )
 }
