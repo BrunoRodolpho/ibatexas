@@ -70,10 +70,14 @@ function createStripeEvent(
   type: string,
   paymentIntent: Record<string, unknown> = {},
   id = "evt_test_123",
+  // Real Stripe events always carry `livemode`. Default false → matches the
+  // sk_test_123 key stubbed in setupEnv (P3-SEC-STRIPESRC livemode binding).
+  livemode = false,
 ) {
   return {
     id,
     type,
+    livemode,
     data: {
       object: {
         id: "pi_test_123",
@@ -211,6 +215,56 @@ describe("POST /api/webhooks/stripe — idempotency", () => {
       { EX: 604800, NX: true },
     );
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/webhooks/stripe — livemode binding (P3-SEC-STRIPESRC)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv(); // STRIPE_SECRET_KEY = sk_test_123 → expected livemode false
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  it("rejects a live-mode event under a test key (mode mismatch) — 400, no claim, no enqueue", async () => {
+    const event = createStripeEvent("payment_intent.succeeded", {}, "evt_live_1", true);
+    mockConstructEvent.mockReturnValue(event);
+    const setMock = vi.fn().mockResolvedValue("OK");
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: setMock }));
+
+    const app = await buildTestServer();
+    const res = await inject(app);
+
+    expect(res.statusCode).toBe(400);
+    // Refused right after signature verification — before any side-effect.
+    expect(setMock).not.toHaveBeenCalled();
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("accepts a test-mode event under a test key (modes match)", async () => {
+    const event = createStripeEvent("payment_intent.succeeded", {}, "evt_test_ok", false);
+    mockConstructEvent.mockReturnValue(event);
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+
+    const app = await buildTestServer();
+    const res = await inject(app);
+
+    expect(res.statusCode).toBe(200);
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a test-mode event under a LIVE key (mode mismatch the other way)", async () => {
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_realkey");
+    const event = createStripeEvent("payment_intent.succeeded", {}, "evt_test_under_live", false);
+    mockConstructEvent.mockReturnValue(event);
+    const setMock = vi.fn().mockResolvedValue("OK");
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: setMock }));
+
+    const app = await buildTestServer();
+    const res = await inject(app);
+
+    expect(res.statusCode).toBe(400);
+    expect(mockEnqueue).not.toHaveBeenCalled();
   });
 });
 
