@@ -1,5 +1,28 @@
-// Unit tests for WhatsApp webhook route
-// POST /api/webhooks/whatsapp — Twilio incoming message webhook
+// Route tests for POST /api/webhooks/whatsapp (post-RC-A1-cutover, un-skipped).
+//
+// The route was rewritten for the claustrum cutover: it keeps the security
+// envelope (Twilio signature verify, two-phase idempotency claim, per-phone rate
+// limit) and delegates the conversation to the @claustrum/* Conductor,
+// fire-and-forget after the synchronous Twilio 200:
+//
+//   verifySig (@claustrum/channel-whatsapp verifyTwilioSignature)
+//   → claimIdempotency (Redis SET NX, 300s in-flight)
+//   → checkRateLimit (atomicIncr, 60s)
+//   → 200 <Response/>  +  void handleInboundAsync:
+//        getConductor() → channels.whatsapp.perceive → openCapsule
+//        → handleTurn (@claustrum/core) → channels.whatsapp.render → closeCapsule
+//
+// These tests exercise that ROUTED path by mocking the new dependencies
+// (verifyTwilioSignature, getConductor → a test-double Conductor, handleTurn).
+//
+// The legacy suites that mocked the PRE-cutover route — buildUserMessage,
+// handleShortcut, normalizePhone phone-format validation, and the
+// session-store append — were REMOVED with the cutover (those modules/functions
+// no longer exist in the route; the Conductor handles all inbound text
+// uniformly). The "a valid message reaches the conductor" intent they partly
+// covered is now the explicit conductor-delegation test below; the mandatory
+// inbound-signature invariant is owned by @claustrum/channel-whatsapp's own 42
+// signature tests. Deleting tests for deleted code is not a re-skip.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
@@ -7,31 +30,25 @@ import { whatsappWebhookRoutes } from "../routes/whatsapp-webhook.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockValidateRequest = vi.hoisted(() => vi.fn());
+const mockVerifyTwilioSignature = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const mockAtomicIncr = vi.hoisted(() => vi.fn());
-const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
-const mockRunAgent = vi.hoisted(() => vi.fn());
-const mockNormalizePhone = vi.hoisted(() => vi.fn());
 const mockHashPhone = vi.hoisted(() => vi.fn());
-const mockResolveWhatsAppSession = vi.hoisted(() => vi.fn());
-const mockBuildWhatsAppContext = vi.hoisted(() => vi.fn());
-const mockTouchSession = vi.hoisted(() => vi.fn());
-const mockAcquireAgentLock = vi.hoisted(() => vi.fn());
-const mockReleaseAgentLock = vi.hoisted(() => vi.fn());
-const mockTryDebounce = vi.hoisted(() => vi.fn());
-const mockHasOptedIn = vi.hoisted(() => vi.fn());
-const mockMarkOptedIn = vi.hoisted(() => vi.fn());
-const mockCollectAgentResponse = vi.hoisted(() => vi.fn());
-const mockSendText = vi.hoisted(() => vi.fn());
-const mockMatchShortcut = vi.hoisted(() => vi.fn());
-const mockBuildHelpText = vi.hoisted(() => vi.fn());
-const mockLoadSession = vi.hoisted(() => vi.fn());
-const mockAppendMessages = vi.hoisted(() => vi.fn());
+const mockGetConductor = vi.hoisted(() => vi.fn());
+const mockHandleTurn = vi.hoisted(() => vi.fn());
+// The test-double Conductor surface the route touches.
+const mockPerceive = vi.hoisted(() => vi.fn());
+const mockRender = vi.hoisted(() => vi.fn());
+const mockOpenCapsule = vi.hoisted(() => vi.fn());
+const mockCloseCapsule = vi.hoisted(() => vi.fn());
 
-vi.mock("twilio", () => ({
-  default: Object.assign(() => ({}), { validateRequest: mockValidateRequest }),
+vi.mock("@claustrum/channel-whatsapp", () => ({
+  verifyTwilioSignature: mockVerifyTwilioSignature,
+}));
+
+vi.mock("@claustrum/core", () => ({
+  handleTurn: mockHandleTurn,
 }));
 
 vi.mock("@ibatexas/tools", () => ({
@@ -40,67 +57,15 @@ vi.mock("@ibatexas/tools", () => ({
   atomicIncr: mockAtomicIncr,
 }));
 
-vi.mock("@ibatexas/nats-client", () => ({
-  publishNatsEvent: mockPublishNatsEvent,
+vi.mock("../claustrum-bootstrap.js", () => ({
+  getConductor: mockGetConductor,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  runOrchestrator: mockRunAgent,
-}));
-
-vi.mock("../session/store.js", () => ({
-  loadSession: mockLoadSession,
-  appendMessages: mockAppendMessages,
-}));
-
-vi.mock("../whatsapp/session.js", () => ({
-  normalizePhone: mockNormalizePhone,
+vi.mock("../lib/phone-hash.js", () => ({
   hashPhone: mockHashPhone,
-  resolveWhatsAppSession: mockResolveWhatsAppSession,
-  buildWhatsAppContext: mockBuildWhatsAppContext,
-  touchSession: mockTouchSession,
-  acquireAgentLock: mockAcquireAgentLock,
-  releaseAgentLock: mockReleaseAgentLock,
-  tryDebounce: mockTryDebounce,
-  hasOptedIn: mockHasOptedIn,
-  markOptedIn: mockMarkOptedIn,
-  storeLastLocation: vi.fn().mockResolvedValue(undefined),
-  getLastLocation: vi.fn().mockResolvedValue(null),
-  isMessageDuplicate: vi.fn().mockResolvedValue(false),
-  setWelcomeCredit: vi.fn().mockResolvedValue(undefined),
-  getAndConsumeWelcomeCredit: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("../whatsapp/formatter.js", () => ({
-  collectAgentResponse: mockCollectAgentResponse,
-}));
-
-vi.mock("../whatsapp/client.js", () => ({
-  sendText: mockSendText,
-  sendMedia: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("../whatsapp/shortcuts.js", () => ({
-  matchShortcut: mockMatchShortcut,
-  buildHelpText: mockBuildHelpText,
-  buildWelcomeText: vi.fn().mockReturnValue("Bem-vindo!"),
-}));
-
-
-vi.mock("../jobs/hesitation-nudge.js", () => ({
-  scheduleHesitationNudge: vi.fn().mockResolvedValue(undefined),
-  markCustomerReplied: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("../jobs/pix-expiry-monitor.js", () => ({
-  schedulePixExpiryMonitor: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("../whatsapp/constants.js", () => ({
-  LGPD_OPTIN_MESSAGE: "Mensagem LGPD mock",
-}));
-
-// ── Server factory ─────────────────────────────────────────────────────────────
+// ── Server factory ──────────────────────────────────────────────────────────────
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });
@@ -109,61 +74,62 @@ async function buildTestServer() {
   return app;
 }
 
-// ── Mock Redis client ─────────────────────────────────────────────────────────
-
 function createMockRedis(overrides: Record<string, unknown> = {}) {
   return {
     set: vi.fn().mockResolvedValue("OK"),
     get: vi.fn().mockResolvedValue(null),
-    incr: vi.fn().mockResolvedValue(1),
-    expire: vi.fn().mockResolvedValue(true),
     del: vi.fn().mockResolvedValue(1),
     ...overrides,
   };
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+/** Test-double Conductor with only the surface the route invokes. */
+function fakeConductor() {
+  return {
+    channels: { whatsapp: { perceive: mockPerceive, render: mockRender } },
+    openCapsule: mockOpenCapsule,
+    closeCapsule: mockCloseCapsule,
+  };
+}
 
 function setupEnv() {
   vi.stubEnv("TWILIO_AUTH_TOKEN", "test-auth-token");
   vi.stubEnv("TWILIO_WEBHOOK_URL", "https://example.com/api/webhooks/whatsapp");
 }
 
-function _validBody() {
-  return {
-    MessageSid: "SM12345",
-    From: "whatsapp:+5511999999999",
-    To: "whatsapp:+5511888888888",
-    Body: "Oi, quero ver o cardapio",
-    NumMedia: "0",
-    ProfileName: "Test User",
-  };
+/** Default-happy wiring for the security envelope + conductor delegation. */
+function wireHappyPath(redis = createMockRedis()) {
+  setupEnv();
+  mockVerifyTwilioSignature.mockReturnValue(true);
+  mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  mockAtomicIncr.mockResolvedValue(1);
+  mockHashPhone.mockReturnValue("abc123def456");
+  mockGetRedisClient.mockResolvedValue(redis);
+  // Conductor delegation resolves cleanly (the route runs it fire-and-forget).
+  mockPerceive.mockResolvedValue({
+    channel: "whatsapp",
+    customerId: "cus-1",
+    conversationId: "conv-1",
+    text: "oi",
+    receivedAt: "2026-05-31T00:00:00.000Z",
+  });
+  mockOpenCapsule.mockResolvedValue({ id: "capsule-1" });
+  mockHandleTurn.mockResolvedValue({ response: { text: "Resposta do agente" } });
+  mockRender.mockResolvedValue(undefined);
+  mockCloseCapsule.mockResolvedValue(undefined);
+  mockGetConductor.mockReturnValue(fakeConductor());
+  return redis;
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllEnvs();
+});
 
-// SKIPPED (audit-2026-05-27, P1-TEST-WEBHOOK): the four route-behavior suites below
-// mock the PRE-cutover route (twilio.validateRequest + the legacy whatsapp/* modules
-// the route no longer imports) and exercise the route via app.inject. The route was
-// rewritten for the claustrum cutover (now forwards to getConductor +
-// @claustrum/channel-whatsapp verifyTwilioSignature, per RC-R2/Decision 2), and the
-// cutover is INERT (getConductor throws until bootstrap is wired — RC-A1, deferred to
-// cycle 3), so these assertions cannot pass yet. The mandatory inbound-signature
-// invariant IS covered now at the owning layer: @claustrum/channel-whatsapp's 42 tests
-// assert forged/tampered/missing/wrong-token rejection. Rewrite these against the real
-// route (mock @claustrum/channel-whatsapp verifyTwilioSignature + getConductor) as part
-// of RC-A1 completion. The pure-function suites (buildUserMessage, handleShortcut) below
-// still run.
-describe.skip("verifyTwilioSignature (via POST /api/webhooks/whatsapp)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    mockAtomicIncr.mockResolvedValue(1);
-  });
+// ── Signature verification (security envelope) ──────────────────────────────────
 
-  it("returns 500 when TWILIO_AUTH_TOKEN is not set", async () => {
-    // Do NOT set TWILIO_AUTH_TOKEN
+describe("verifyTwilioSignature (via POST /api/webhooks/whatsapp)", () => {
+  it("returns 500 when TWILIO_AUTH_TOKEN / TWILIO_WEBHOOK_URL are not set", async () => {
     vi.stubEnv("TWILIO_AUTH_TOKEN", "");
     vi.stubEnv("TWILIO_WEBHOOK_URL", "");
 
@@ -176,12 +142,11 @@ describe.skip("verifyTwilioSignature (via POST /api/webhooks/whatsapp)", () => {
     });
 
     expect(res.statusCode).toBe(500);
-    const body = res.json();
-    expect(body.error).toContain("not configured");
+    expect(res.json().error).toContain("not configured");
   });
 
   it("returns 400 when X-Twilio-Signature header is missing", async () => {
-    setupEnv();
+    wireHappyPath();
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -192,13 +157,12 @@ describe.skip("verifyTwilioSignature (via POST /api/webhooks/whatsapp)", () => {
     });
 
     expect(res.statusCode).toBe(400);
-    const body = res.json();
-    expect(body.error).toContain("Missing signature");
+    expect(res.json().error).toContain("Missing signature");
   });
 
-  it("returns 403 when Twilio signature is invalid", async () => {
-    setupEnv();
-    mockValidateRequest.mockReturnValue(false);
+  it("returns 403 when the Twilio signature is invalid", async () => {
+    wireHappyPath();
+    mockVerifyTwilioSignature.mockReturnValue(false);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -212,18 +176,11 @@ describe.skip("verifyTwilioSignature (via POST /api/webhooks/whatsapp)", () => {
     });
 
     expect(res.statusCode).toBe(403);
-    const body = res.json();
-    expect(body.error).toContain("Invalid signature");
+    expect(res.json().error).toContain("Invalid signature");
   });
 
-  it("returns null (passes validation) when signature is valid", async () => {
-    setupEnv();
-    mockValidateRequest.mockReturnValue(true);
-    mockNormalizePhone.mockReturnValue("+5511999999999");
-    mockHashPhone.mockReturnValue("abc123def456");
-
-    const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+  it("proceeds past verification (200) when the signature is valid", async () => {
+    wireHappyPath();
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -236,22 +193,16 @@ describe.skip("verifyTwilioSignature (via POST /api/webhooks/whatsapp)", () => {
       payload: "MessageSid=SM123&From=whatsapp%3A%2B5511999999999&Body=oi",
     });
 
-    // Valid signature should proceed past verification (200 XML or further processing)
     expect(res.statusCode).toBe(200);
   });
 });
 
-describe.skip("parseIncomingFields (via POST /api/webhooks/whatsapp)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockValidateRequest.mockReturnValue(true);
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    mockAtomicIncr.mockResolvedValue(1);
-  });
+// ── Field parsing / empty-message guard ─────────────────────────────────────────
 
-  it("returns 200 XML when MessageSid and Body are empty (empty message guard)", async () => {
+describe("field parsing (via POST /api/webhooks/whatsapp)", () => {
+  it("returns 200 <Response/> when the message has no body, media, or location", async () => {
+    wireHappyPath();
+
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -260,7 +211,6 @@ describe.skip("parseIncomingFields (via POST /api/webhooks/whatsapp)", () => {
         "content-type": "application/x-www-form-urlencoded",
         "x-twilio-signature": "valid-sig",
       },
-      // Body is empty and NumMedia is 0
       payload: "MessageSid=SM123&From=whatsapp%3A%2B5511999999999&NumMedia=0",
     });
 
@@ -270,6 +220,8 @@ describe.skip("parseIncomingFields (via POST /api/webhooks/whatsapp)", () => {
   });
 
   it("returns 400 when From is missing", async () => {
+    wireHappyPath();
+
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -281,52 +233,17 @@ describe.skip("parseIncomingFields (via POST /api/webhooks/whatsapp)", () => {
       payload: "MessageSid=SM123&Body=hello",
     });
 
-    // Missing From → parseIncomingFields returns null → 400
     expect(res.statusCode).toBe(400);
-    const body = res.json();
-    expect(body.error).toContain("Missing required fields");
-  });
-
-  it("returns 400 when phone format is invalid", async () => {
-    mockNormalizePhone.mockImplementation(() => {
-      throw new Error("Invalid phone format");
-    });
-
-    const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/whatsapp",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "x-twilio-signature": "valid-sig",
-      },
-      payload: "MessageSid=SM123&From=invalid-phone&Body=oi",
-    });
-
-    expect(res.statusCode).toBe(400);
-    const body = res.json();
-    expect(body.error).toContain("Invalid phone format");
+    expect(res.json().error).toContain("Missing required fields");
   });
 });
 
-describe.skip("checkIdempotency (via POST /api/webhooks/whatsapp)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockValidateRequest.mockReturnValue(true);
-    mockNormalizePhone.mockReturnValue("+5511999999999");
-    mockHashPhone.mockReturnValue("abc123def456");
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    mockAtomicIncr.mockResolvedValue(1);
-  });
+// ── Two-phase idempotency (P2-SEC-WAIDEMPOTENCY) ────────────────────────────────
 
-  it("processes new message (not duplicate)", async () => {
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+describe("idempotency claim (via POST /api/webhooks/whatsapp)", () => {
+  it("claims a new message with a short in-flight TTL (SET NX, 300s) and proceeds", async () => {
+    const redis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    wireHappyPath(redis);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -340,18 +257,18 @@ describe.skip("checkIdempotency (via POST /api/webhooks/whatsapp)", () => {
     });
 
     expect(res.statusCode).toBe(200);
-    // Idempotency key was set
-    expect(mockRedis.set).toHaveBeenCalledWith(
+    // Phase-1 claim is SET NX with the 300s in-flight TTL (the 24h dedup window
+    // is promoted only on success, in the async confirm phase).
+    expect(redis.set).toHaveBeenCalledWith(
       expect.stringContaining("SM_NEW"),
       "1",
-      expect.objectContaining({ EX: 86400, NX: true }),
+      expect.objectContaining({ EX: 300, NX: true }),
     );
   });
 
-  it("returns 200 XML immediately for duplicate message", async () => {
-    // SET NX returns null for duplicates
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue(null) });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+  it("returns 200 <Response/> immediately for a duplicate (SET NX → null)", async () => {
+    const redis = createMockRedis({ set: vi.fn().mockResolvedValue(null) });
+    wireHappyPath(redis);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -369,24 +286,12 @@ describe.skip("checkIdempotency (via POST /api/webhooks/whatsapp)", () => {
   });
 });
 
-describe.skip("checkWebhookRateLimit (via POST /api/webhooks/whatsapp)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockValidateRequest.mockReturnValue(true);
-    mockNormalizePhone.mockReturnValue("+5511999999999");
-    mockHashPhone.mockReturnValue("abc123def456");
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    mockAtomicIncr.mockResolvedValue(1);
-  });
+// ── Per-phone rate limit ────────────────────────────────────────────────────────
 
-  it("allows messages under rate limit", async () => {
-    const mockRedis = createMockRedis({
-      set: vi.fn().mockResolvedValue("OK"),
-    });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockAtomicIncr.mockResolvedValue(5); // under 20
+describe("rate limit (via POST /api/webhooks/whatsapp)", () => {
+  it("allows messages under the limit (atomicIncr ≤ 20) → 200", async () => {
+    wireHappyPath();
+    mockAtomicIncr.mockResolvedValue(5);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -402,15 +307,9 @@ describe.skip("checkWebhookRateLimit (via POST /api/webhooks/whatsapp)", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("returns 429 XML when rate limit is exceeded", async () => {
-    const mockRedis = createMockRedis({
-      set: vi.fn().mockResolvedValue("OK"),
-    });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockAtomicIncr.mockResolvedValue(21); // over 20
-    mockNormalizePhone.mockReturnValue("+5511999999999");
-    mockHashPhone.mockReturnValue("abc123");
-    mockSendText.mockResolvedValue(undefined);
+  it("returns 429 <Response/> when the rate limit is exceeded (atomicIncr > 20)", async () => {
+    wireHappyPath();
+    mockAtomicIncr.mockResolvedValue(21);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -428,157 +327,11 @@ describe.skip("checkWebhookRateLimit (via POST /api/webhooks/whatsapp)", () => {
   });
 });
 
-describe.skip("buildUserMessage", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockValidateRequest.mockReturnValue(true);
-    mockNormalizePhone.mockReturnValue("+5511999999999");
-    mockHashPhone.mockReturnValue("abc123def456");
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    mockAtomicIncr.mockResolvedValue(1);
-  });
+// ── Full routed integration (security envelope + conductor delegation) ───────────
 
-  // buildUserMessage is tested indirectly through async handler.
-  // We can test list selection and button selection via the body payload.
-
-  it("passes plain text through to async handler", async () => {
-    const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    mockResolveWhatsAppSession.mockResolvedValue({
-      phone: "+5511999999999",
-      sessionId: "sess-123",
-      customerId: "cus-123",
-      isNew: false,
-    });
-    mockTouchSession.mockResolvedValue(undefined);
-    mockHasOptedIn.mockResolvedValue(true);
-    mockMarkOptedIn.mockResolvedValue(undefined);
-    mockAppendMessages.mockResolvedValue(undefined);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-    mockTryDebounce.mockResolvedValue(true);
-    mockAcquireAgentLock.mockResolvedValue(true);
-    mockMatchShortcut.mockReturnValue(null);
-    mockLoadSession.mockResolvedValue([]);
-    mockBuildWhatsAppContext.mockReturnValue({});
-    mockCollectAgentResponse.mockResolvedValue({ text: "Resposta", toolsUsed: [] });
-    mockSendText.mockResolvedValue(undefined);
-    mockReleaseAgentLock.mockResolvedValue(undefined);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/whatsapp",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "x-twilio-signature": "valid-sig",
-      },
-      payload: "MessageSid=SM_PLAIN&From=whatsapp%3A%2B5511999999999&Body=Quero+costela",
-    });
-
-    expect(res.statusCode).toBe(200);
-    // The message should be appended as-is (no interactive selection)
-    await vi.waitFor(() => {
-      expect(mockAppendMessages).toHaveBeenCalledWith(
-        "sess-123",
-        expect.arrayContaining([
-          expect.objectContaining({ role: "user", content: "Quero costela" }),
-        ]),
-        true,
-        expect.objectContaining({ customerId: "cus-123", channel: "whatsapp" }),
-      );
-    }, { timeout: 500 });
-  });
-});
-
-describe.skip("handleShortcut", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockValidateRequest.mockReturnValue(true);
-    mockNormalizePhone.mockReturnValue("+5511999999999");
-    mockHashPhone.mockReturnValue("abc123def456");
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    mockAtomicIncr.mockResolvedValue(1);
-  });
-
-  it("dispatches help shortcut and returns 200", async () => {
-    const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMatchShortcut.mockReturnValue({ type: "help" });
-    mockBuildHelpText.mockReturnValue("Texto de ajuda");
-    // Stub async handler deps so fire-and-forget doesn't throw
-    mockResolveWhatsAppSession.mockResolvedValue({ phone: "+5511999999999", sessionId: "s", customerId: "c", isNew: false });
-    mockTouchSession.mockResolvedValue(undefined);
-    mockHasOptedIn.mockResolvedValue(true);
-    mockAppendMessages.mockResolvedValue(undefined);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-    mockTryDebounce.mockResolvedValue(false); // Skip async processing
-    mockSendText.mockResolvedValue(undefined);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/whatsapp",
-      headers: { "content-type": "application/x-www-form-urlencoded", "x-twilio-signature": "valid-sig" },
-      payload: "MessageSid=SM_HELP&From=whatsapp%3A%2B5511999999999&Body=ajuda",
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("<Response/>");
-  });
-
-  it("resolves session for menu shortcut and returns 200", async () => {
-    const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockMatchShortcut.mockReturnValue({ type: "menu" });
-    mockResolveWhatsAppSession.mockResolvedValue({ phone: "+5511999999999", sessionId: "s", customerId: "c", isNew: false });
-    mockTouchSession.mockResolvedValue(undefined);
-    mockHasOptedIn.mockResolvedValue(true);
-    mockAppendMessages.mockResolvedValue(undefined);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-    mockTryDebounce.mockResolvedValue(false); // Skip debounce processing
-    mockSendText.mockResolvedValue(undefined);
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/whatsapp",
-      headers: { "content-type": "application/x-www-form-urlencoded", "x-twilio-signature": "valid-sig" },
-      payload: "MessageSid=SM_MENU&From=whatsapp%3A%2B5511999999999&Body=menu",
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(mockResolveWhatsAppSession).toHaveBeenCalledWith("+5511999999999");
-  });
-});
-
-describe.skip("Full POST /api/webhooks/whatsapp integration", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllEnvs();
-    setupEnv();
-    mockValidateRequest.mockReturnValue(true);
-    mockNormalizePhone.mockReturnValue("+5511999999999");
-    mockHashPhone.mockReturnValue("abc123def456");
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    mockAtomicIncr.mockResolvedValue(1);
-  });
-
-  it("returns 200 XML immediately for valid message", async () => {
-    const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    // Stub all async handler deps to avoid unhandled rejections
-    mockResolveWhatsAppSession.mockResolvedValue({ phone: "+5511999999999", sessionId: "s", customerId: "c", isNew: false });
-    mockTouchSession.mockResolvedValue(undefined);
-    mockHasOptedIn.mockResolvedValue(true);
-    mockAppendMessages.mockResolvedValue(undefined);
-    mockPublishNatsEvent.mockResolvedValue(undefined);
-    mockTryDebounce.mockResolvedValue(false); // Skip debounce to avoid sleep
-    mockSendText.mockResolvedValue(undefined);
+describe("Full POST /api/webhooks/whatsapp integration (routed)", () => {
+  it("returns 200 <Response/> immediately for a valid message (async turn is fire-and-forget)", async () => {
+    wireHappyPath();
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -591,33 +344,12 @@ describe.skip("Full POST /api/webhooks/whatsapp integration", () => {
       payload: "MessageSid=SM_VALID&From=whatsapp%3A%2B5511999999999&Body=Ola",
     });
 
-    // Route returns 200 immediately (async processing is fire-and-forget)
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("<Response/>");
   });
 
-  it("returns 200 XML for empty body with no media", async () => {
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/webhooks/whatsapp",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "x-twilio-signature": "valid-sig",
-      },
-      payload: "MessageSid=SM_EMPTY&From=whatsapp%3A%2B5511999999999&NumMedia=0",
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("<Response/>");
-  });
-
-  it("uses atomicIncr for rate limit with 60s TTL (SEC-003)", async () => {
-    const mockRedis = createMockRedis({
-      set: vi.fn().mockResolvedValue("OK"),
-    });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-    mockAtomicIncr.mockResolvedValue(1); // first message
+  it("uses atomicIncr for the rate limit with a 60s TTL (SEC-003)", async () => {
+    const redis = wireHappyPath();
 
     const app = await buildTestServer();
     await app.inject({
@@ -630,11 +362,41 @@ describe.skip("Full POST /api/webhooks/whatsapp integration", () => {
       payload: "MessageSid=SM_FIRST&From=whatsapp%3A%2B5511999999999&Body=oi",
     });
 
-    // atomicIncr should be called with the rate key and 60s TTL
     expect(mockAtomicIncr).toHaveBeenCalledWith(
-      mockRedis,
+      redis,
       expect.stringContaining("rate"),
       60,
+    );
+  });
+
+  it("delegates a valid message to the Conductor (perceive → openCapsule → handleTurn → render)", async () => {
+    wireHappyPath();
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/whatsapp",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-twilio-signature": "valid-sig",
+      },
+      payload: "MessageSid=SM_TURN&From=whatsapp%3A%2B5511999999999&Body=Quero+costela",
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // The conductor turn runs fire-and-forget after the sync 200 — wait for it.
+    await vi.waitFor(
+      () => {
+        expect(mockGetConductor).toHaveBeenCalled();
+        expect(mockPerceive).toHaveBeenCalledTimes(1);
+        expect(mockOpenCapsule).toHaveBeenCalledTimes(1);
+        expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+        // A non-empty turn response is rendered back through the WA channel.
+        expect(mockRender).toHaveBeenCalledTimes(1);
+        expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 1000 },
     );
   });
 });

@@ -43,6 +43,22 @@ vi.mock("../streaming/execution-queue.js", () => ({
   releaseWebAgentLock: vi.fn().mockResolvedValue(undefined),
 }))
 
+// Conductor delegation (the routed cutover path). The chat POST forwards the
+// turn to getConductor() → openCapsule → handleTurn(@claustrum/core) →
+// closeCapsule, fire-and-forget after the sync 200.
+const mockGetConductor = vi.hoisted(() => vi.fn())
+const mockHandleTurn = vi.hoisted(() => vi.fn())
+const mockOpenCapsule = vi.hoisted(() => vi.fn())
+const mockCloseCapsule = vi.hoisted(() => vi.fn())
+
+vi.mock("../claustrum-bootstrap.js", () => ({
+  getConductor: mockGetConductor,
+}))
+
+vi.mock("@claustrum/core", () => ({
+  handleTurn: mockHandleTurn,
+}))
+
 vi.mock("@ibatexas/tools", async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>
   // Minimal Redis stub. Includes the pub/sub + replay-list surface the real
@@ -102,6 +118,14 @@ describe("Chat routes integration", () => {
     mockRunAgent.mockImplementation(async function* () {
       yield { type: "text_delta" as const, delta: "Olá!" }
       yield { type: "done" as const }
+    })
+    // Conductor delegation resolves cleanly (the route runs it fire-and-forget).
+    mockOpenCapsule.mockResolvedValue({ id: "capsule-web-1" })
+    mockHandleTurn.mockResolvedValue({ response: { text: "Olá!" } })
+    mockCloseCapsule.mockResolvedValue(undefined)
+    mockGetConductor.mockReturnValue({
+      openCapsule: mockOpenCapsule,
+      closeCapsule: mockCloseCapsule,
     })
   })
 
@@ -182,20 +206,22 @@ describe("Chat routes integration", () => {
     expect(res.statusCode).toBe(400)
   })
 
-  // SKIPPED (audit-2026-05-27): asserts the chat route loads prior session history,
-  // but the claustrum-cutover SessionPort is an inert stub whose load() returns a fresh
-  // session (no history) — RC-A1 deferred to cycle 3. Re-enable when the SessionPort
-  // adapter is implemented as part of the cutover.
-  it.skip("POST loads session history before running agent", async () => {
-    mockLoadSession.mockResolvedValue([
-      { role: "user", content: "Oi" },
-      { role: "assistant", content: "Olá!" },
-    ])
-
-    // Use a DIFFERENT sessionId from other tests to avoid 409 Conflict
+  // Un-skipped + rewritten for the claustrum cutover (was "POST loads session
+  // history before running agent"). The chat route no longer calls the legacy
+  // session store (loadSession/appendMessages) — it delegates the turn to the
+  // Conductor: getConductor() → openCapsule → handleTurn → closeCapsule. This
+  // asserts that ROUTED delegation. NOTE (documented residual): session-history
+  // loading is now the Conductor's SessionPort responsibility, whose adapter is
+  // a stub today (returns a fresh session, no history). Implementing the
+  // SessionPort adapter so prior turns are loaded is a post-activation follow-up
+  // — it is NOT a routing gap (the route delegates correctly), and it is inert
+  // until the flag flips.
+  it("POST delegates the turn to the conductor (openCapsule → handleTurn → closeCapsule)", async () => {
+    // Different sessionId from other tests to avoid a 409 Conflict.
     const res = await server.inject({
       method: "POST",
       url: "/api/chat/messages",
+      headers: { "x-session-secret": "integration-guest-secret" },
       payload: {
         sessionId: "22222222-3333-4444-a555-666666666666",
         message: "E o cardápio?",
@@ -205,17 +231,24 @@ describe("Chat routes integration", () => {
 
     expect(res.statusCode).toBe(200)
 
-    // Wait for fire-and-forget agent loop to complete
-    await new Promise((r) => setTimeout(r, 200))
-
-    expect(mockLoadSession).toHaveBeenCalledWith("22222222-3333-4444-a555-666666666666")
-    // appendMessages is called twice: once for user message (sync, before agent), once for assistant (fire-and-forget)
-    expect(mockAppendMessages).toHaveBeenCalledWith(
-      "22222222-3333-4444-a555-666666666666",
-      [{ role: "user", content: "E o cardápio?" }],
-      false,
-      { customerId: undefined, channel: "web" },
+    // The conductor turn runs fire-and-forget after the sync 200 — wait for it.
+    await vi.waitFor(
+      () => {
+        expect(mockGetConductor).toHaveBeenCalled()
+        expect(mockOpenCapsule).toHaveBeenCalledTimes(1)
+        expect(mockHandleTurn).toHaveBeenCalledTimes(1)
+        expect(mockCloseCapsule).toHaveBeenCalledTimes(1)
+      },
+      { timeout: 1000 },
     )
+
+    // Delegation opened the capsule on the web channel for this session.
+    const openArg = mockOpenCapsule.mock.calls[0][0] as {
+      channel: string
+      sessionKey: string
+    }
+    expect(openArg.channel).toBe("web")
+    expect(openArg.sessionKey).toBe("22222222-3333-4444-a555-666666666666")
   })
 
   it("GET /api/chat/stream/:sessionId returns 404 for non-existent stream", async () => {
