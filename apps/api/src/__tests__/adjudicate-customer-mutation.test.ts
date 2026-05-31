@@ -71,4 +71,50 @@ describe("adjudicateCustomerMutation — lazy-conductor", () => {
     if (!out.ran) expect(out.intent.kind).toBe("refuse");
     expect(legacy).not.toHaveBeenCalled();
   });
+
+  it("authenticated: envelope actor is principal:user + sessionId web:<customerId>", async () => {
+    let captured: { actor?: { principal?: string; sessionId?: string } } = {};
+    h.conductor = {
+      adjudicator: {
+        adjudicate: async (env: unknown) => {
+          captured = env as typeof captured;
+          return decisionExecute([]);
+        },
+      },
+    };
+    const out = await adjudicateCustomerMutation({ ...base, customerId: "c1", legacy: async () => "ok" });
+    expect(out).toEqual({ ran: true, result: "ok" });
+    expect(captured.actor?.principal).toBe("user");
+    expect(captured.actor?.sessionId).toBe("web:c1");
+  });
+
+  it("guest (customerId null): builds a guest-principal envelope (web:guest), never a synthetic customer id", async () => {
+    // RC-A1 Chunk 1 prerequisite (D-21.1): the guest-tolerant wrapper faithfully
+    // represents an unauthenticated cart mutation — principal stays "user", the
+    // sessionId is the honest "web:guest" marker (NOT a fabricated customerId), and
+    // the absence of a customer rides state.ctx.customerId === null.
+    let captured: { actor?: { principal?: string; sessionId?: string } } = {};
+    h.conductor = {
+      adjudicator: {
+        adjudicate: async (env: unknown) => {
+          captured = env as typeof captured;
+          return decisionExecute([]);
+        },
+      },
+    };
+    const legacy = vi.fn(async () => "added");
+    const out = await adjudicateCustomerMutation({
+      kind: "order.item.add",
+      payload: { cartId: "cart1", variantId: "v1", quantity: 1, allergens: [] },
+      customerId: null,
+      state: { ctx: { channel: "web", customerId: null, cartId: "cart1", orderId: null } },
+      legacy,
+    });
+    expect(out).toEqual({ ran: true, result: "added" });
+    expect(captured.actor?.principal).toBe("user");
+    expect(captured.actor?.sessionId).toBe("web:guest");
+    // never leak a synthetic id (no "null"/"undefined" smuggled into the session)
+    expect(captured.actor?.sessionId).not.toMatch(/null|undefined/);
+    expect(legacy).toHaveBeenCalledTimes(1);
+  });
 });

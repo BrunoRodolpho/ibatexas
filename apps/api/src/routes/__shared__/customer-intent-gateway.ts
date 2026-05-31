@@ -263,7 +263,18 @@ export type MutationOutcome<T> =
 export async function adjudicateCustomerMutation<T>(opts: {
   readonly kind: string;
   readonly payload: unknown;
-  readonly customerId: string;
+  /**
+   * Authenticated customer id, or `null` for an unauthenticated GUEST cart
+   * mutation (cart routes use `optionalAuth`). A guest builds a guest-session
+   * envelope — we NEVER mint a synthetic customerId (that would lie about
+   * provenance; the kernel principal is provenance, not authz — see
+   * project_adjudicate_principal_is_provenance). Guest-vs-authenticated is decided
+   * at the guard layer (pack-orders GUEST_CART_KINDS exemption, RC-A1 Chunk 0);
+   * checkout stays gated (a guest → `auth.required`). The envelope actor SHAPE is
+   * unchanged (`{principal:"user", sessionId}`) — only the sessionId VALUE differs
+   * for a guest — so this touches no hashed-byte recipe / golden vector.
+   */
+  readonly customerId: string | null;
   /** Domain state the kind's PolicyBundle guards inspect (caller assembles). */
   readonly state: unknown;
   /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
@@ -275,7 +286,14 @@ export async function adjudicateCustomerMutation<T>(opts: {
   const envelope = buildEnvelope({
     kind: opts.kind,
     payload: opts.payload,
-    actor: { principal: "user", sessionId: `web:${opts.customerId}` },
+    // Guest (customerId === null): a faithful guest-session marker, NOT a
+    // synthetic customer id. principal stays "user" (a customer-side actor); the
+    // ABSENCE of an authenticated customer is carried by state.ctx.customerId ===
+    // null, which the GUEST_CART_KINDS guard exemption permits for cart ops.
+    actor: {
+      principal: "user",
+      sessionId: opts.customerId !== null ? `web:${opts.customerId}` : "web:guest",
+    },
     taint: "UNTRUSTED",
     nonce: randomUUID(),
   });
