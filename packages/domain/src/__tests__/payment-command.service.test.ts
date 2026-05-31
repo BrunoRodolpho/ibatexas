@@ -351,6 +351,58 @@ describe("PaymentCommandService", () => {
       const historyCall = mockHistoryCreate.mock.calls[0][0]
       expect(historyCall.data.actorId).toBe("staff_01")
     })
+
+    // ── REFUNDSPLIT: status + refunded-amount single atomic write ───────────
+    //
+    // The refund path (admin/payments.ts doRefund) used to bump
+    // refundedAmountCentavos in a SEPARATE prisma.payment.update before calling
+    // transitionStatus — two writes with a fail-safe ordering but a real
+    // partial-failure window. transitionStatus now accepts the refunded amount
+    // and writes it INSIDE its existing $transaction, so status + version +
+    // refundedAmountCentavos land in ONE atomic write (the window is gone;
+    // P0-PAY-5's bump-before-flip safety is subsumed by atomicity).
+    it("writes refundedAmountCentavos inside the same transaction when provided (REFUNDSPLIT atomicity)", async () => {
+      mockPaymentFindUnique.mockResolvedValue(
+        makePayment({ status: "paid", version: 4 }),
+      )
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      const result = await svc.transitionStatus("pay_01", {
+        newStatus: "refunded",
+        actor: "admin",
+        actorId: "staff_01",
+        reason: "Reembolso emitido pelo admin",
+        refundedAmountCentavos: 8900,
+      })
+
+      expect(result.newStatus).toBe("refunded")
+
+      // ONE update carries status + version + refundedAmountCentavos.
+      expect(mockPaymentUpdate).toHaveBeenCalledOnce()
+      const updateCall = mockPaymentUpdate.mock.calls[0][0]
+      expect(updateCall.data.status).toBe("refunded")
+      expect(updateCall.data.version).toBe(5)
+      expect(updateCall.data.refundedAmountCentavos).toBe(8900)
+    })
+
+    it("omits refundedAmountCentavos from the update when not provided (byte-equivalent for non-refund transitions)", async () => {
+      mockPaymentFindUnique.mockResolvedValue(
+        makePayment({ status: "payment_pending", version: 1 }),
+      )
+      mockPaymentUpdate.mockResolvedValue({})
+      mockHistoryCreate.mockResolvedValue({})
+
+      await svc.transitionStatus("pay_01", {
+        newStatus: "paid",
+        actor: "system",
+      })
+
+      // Non-refund transitions must not touch refundedAmountCentavos at all
+      // (an explicit `undefined` key would still be a behavioral change).
+      const updateCall = mockPaymentUpdate.mock.calls[0][0]
+      expect(updateCall.data).not.toHaveProperty("refundedAmountCentavos")
+    })
   })
 
   // ── reconcileFromWebhook ──────────────────────────────────────────────

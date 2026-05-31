@@ -114,6 +114,15 @@ interface TransitionPaymentStatusInput {
   actorId?: string
   reason?: string
   expectedVersion?: number
+  /**
+   * Optional refunded-amount bump folded into this transition (REFUNDSPLIT).
+   * When supplied — only by the refund path (admin/payments.ts doRefund) — the
+   * new cumulative refunded total is written to `refundedAmountCentavos` inside
+   * the SAME $transaction as the status + version, so status and amount land in
+   * one atomic write (no separate pre-bump, no partial-failure window). Omitted
+   * for every other caller ⇒ the column is left untouched ⇒ byte-equivalent.
+   */
+  refundedAmountCentavos?: number
 }
 
 interface ReconcileFromWebhookInput {
@@ -273,12 +282,19 @@ export function createPaymentCommandService(log?: Logger): PaymentCommandService
 
         const newVersion = payment.version + 1
 
-        // Update payment
+        // Update payment.
+        // REFUNDSPLIT: when the refund path supplies refundedAmountCentavos, fold
+        // it into this same atomic write so status + amount move together. Omitted
+        // ⇒ the key is absent (NOT an explicit `undefined`) ⇒ non-refund
+        // transitions write exactly { status, version } as before.
         await tx.payment.update({
           where: { id: paymentId },
           data: {
             status: to as PrismaPaymentStatus,
             version: newVersion,
+            ...(input.refundedAmountCentavos !== undefined && {
+              refundedAmountCentavos: input.refundedAmountCentavos,
+            }),
           },
         })
 

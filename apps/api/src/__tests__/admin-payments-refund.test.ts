@@ -93,7 +93,7 @@ describe("admin refund — atomicity + over-refund (P0-PAY-5)", () => {
     expect(mockTransitionStatus).not.toHaveBeenCalled();
   });
 
-  it("acquires the per-payment lock and bumps amount BEFORE transitioning (fail-safe order)", async () => {
+  it("acquires the per-payment lock and records amount + status in ONE atomic write (REFUNDSPLIT)", async () => {
     const payment = {
       id: "pay_1", status: PaymentStatus.PAID, amountInCentavos: 8900, refundedAmountCentavos: 0, method: "pix",
     };
@@ -105,14 +105,21 @@ describe("admin refund — atomicity + over-refund (P0-PAY-5)", () => {
 
     expect(res.statusCode).toBe(200);
     expect(lockKeys).toContain("payment:pay_1");
-    expect(mockPaymentUpdate).toHaveBeenCalledWith({
-      where: { id: "pay_1" },
-      data: { refundedAmountCentavos: 8900 },
-    });
+
+    // The refunded amount is folded INTO transitionStatus's $transaction, so
+    // status + refundedAmountCentavos land in a single atomic write.
     expect(mockTransitionStatus).toHaveBeenCalledWith(
       "pay_1",
-      expect.objectContaining({ newStatus: PaymentStatus.REFUNDED }),
+      expect.objectContaining({
+        newStatus: PaymentStatus.REFUNDED,
+        refundedAmountCentavos: 8900,
+      }),
     );
-    expect(callOrder).toEqual(["update", "transition"]); // amount bumped before status flip
+
+    // No separate pre-transition bump write any more — the partial-failure
+    // window the bump-before-flip ordering guarded is gone (atomicity subsumes
+    // P0-PAY-5's ordering safety).
+    expect(mockPaymentUpdate).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(["transition"]);
   });
 });

@@ -190,19 +190,18 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // Serialize + make the read-check-write atomic per payment. Without a lock,
       // two managers / a double-click both read the same refundedAmountCentavos and
       // both pass the over-refund guard. We acquire withLock, RE-READ inside it, and
-      // recompute the refundable amount against fresh state. We bump refundedAmount
-      // BEFORE flipping status so a partial failure fails safe (over-counts refunded
-      // → blocks further refunds, never enables an over-refund). Full single-write
-      // atomicity (status + amount in one write) needs the domain command to accept
-      // the amount; tracked for the RC-A1 cutover work.
+      // recompute the refundable amount against fresh state. REFUNDSPLIT: status +
+      // the refunded-amount bump are then a SINGLE atomic write inside
+      // transitionStatus's $transaction (the domain command now accepts the amount),
+      // so there is no partial-failure window — either both land or neither does.
       // RC-A1 Phase B — adjudicate the refund (staff TRUSTED path) BEFORE running
       // the locked compensating sequence. The magnitude ladder lives in the
       // pack-payments PolicyBundle: ≤R$500 EXECUTE, R$500–1000 REQUEST_CONFIRMATION,
       // >R$1000 ESCALATE (governance §04-decision-policy). We adjudicate with the
       // OUTER-read amounts (the authorization decision); the legacy closure keeps
-      // its FULL withLock + fresh re-read + over-refund guard + bump-before-transition
-      // (P0-PAY-5 concurrency safety) intact — authorization and concurrency-safety
-      // are separate concerns, both preserved.
+      // its FULL withLock + fresh re-read + over-refund guard + atomic status+amount
+      // write (P0-PAY-5's bump-before-flip safety is subsumed by atomicity) intact —
+      // authorization and concurrency-safety are separate concerns, both preserved.
       //
       // FLIP-TIME BEHAVIOR CHANGE (inert today; fires only post-bootstrap): refunds
       // in the R$500–1000 band become 202 needs-confirmation and >R$1000 become 503
@@ -239,16 +238,17 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         const targetStatus = isFullRefund ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED;
         const totalRefunded = alreadyRefunded + refundAmount;
 
-        // Fail-safe ordering: bump the tracked refunded amount first, then transition.
-        await prisma.payment.update({
-          where: { id: fresh.id },
-          data: { refundedAmountCentavos: totalRefunded },
-        });
+        // REFUNDSPLIT: status + the cumulative refunded amount in ONE atomic write.
+        // transitionStatus folds refundedAmountCentavos into its own $transaction,
+        // so the prior separate bump-then-flip (and its partial-failure window) is
+        // gone — the over-refund guard above + withLock still serialize concurrent
+        // refunds; atomicity now also closes the intra-refund window.
         const result = await paymentCmdSvc.transitionStatus(fresh.id, {
           newStatus: targetStatus,
           actor: "admin",
           actorId,
           reason: request.body.reason ?? "Reembolso emitido pelo admin",
+          refundedAmountCentavos: totalRefunded,
         });
 
         return {
