@@ -62,7 +62,11 @@ import {
   type TurnRecord,
 } from "@claustrum/core";
 import { AnthropicProvider } from "@claustrum/anthropic";
-import { createPostgresMemoryProvider } from "@claustrum/memory-postgres";
+import {
+  createPostgresMemoryProvider,
+  type PrismaClientLike,
+  type RedisClientLike,
+} from "@claustrum/memory-postgres";
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
@@ -319,10 +323,16 @@ async function safeAuditedAdjudicate(
     // Audited path: adjudicateAndAudit emits an AuditRecord via deps.sink for
     // EVERY decision (the audit-completeness invariant). Returns the Decision;
     // the AuditRecord is the durable side effect.
+    // `isWellFormedPolicyBundle` is a runtime check returning boolean (not a
+    // type predicate), so `policy` is still statically `unknown` here. The kernel
+    // dispatches across heterogeneous kinds, so the honest erased shape is
+    // PolicyBundle<string, unknown, unknown>; `state` infers to `unknown` (= S).
+    // (Was `state as never`/`policy as never` — `never` is an unsound lie that
+    // would hide a real shape mismatch; the routed-but-inert path made it linger.)
     const result = await adjudicateAndAudit(
       envelope,
-      state as never,
-      policy as never,
+      state,
+      policy as PolicyBundle<string, unknown, unknown>,
       {
         sink: deps.sink,
         ...(deps.ledger ? { ledger: deps.ledger } : {}),
@@ -478,13 +488,19 @@ export function policyForKind(
 }
 
 /** The packs' capability planners — union'd by the production planner. */
-const IBATEXAS_CAPABILITY_PLANNERS = [
+// CapabilityPlanner<S, C>.plan is declared method-style, so its params compare
+// bivariantly — each pack's concrete planner widens to CapabilityPlanner<unknown,
+// unknown> with no cast. A plain annotation states the erased element type
+// honestly (was an unnecessary `as unknown as` that hid that the widening is free).
+const IBATEXAS_CAPABILITY_PLANNERS: ReadonlyArray<
+  CapabilityPlanner<unknown, unknown>
+> = [
   ordersCapabilityPlanner,
   paymentsCapabilityPlanner,
   reservationsCapabilityPlanner,
   customerOnboardingCapabilityPlanner,
   whatsappCapabilityPlanner,
-] as unknown as ReadonlyArray<CapabilityPlanner<unknown, unknown>>;
+];
 
 /**
  * Map the claustrum CognitiveState onto the union (state, context) the pack
@@ -705,14 +721,20 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     );
   }
 
+  // The ibx prisma/redis are real clients that legitimately lack the memory
+  // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),
+  // so the cast is irreducible — but name the exact contracts the adapter consumes
+  // (`as unknown as <T>`) instead of `as never`, which would swallow real drift.
   const memory = createPostgresMemoryProvider({
-    prisma: prisma as never,
-    redis: redis as never,
+    prisma: prisma as unknown as PrismaClientLike,
+    redis: redis as unknown as RedisClientLike,
     adjudicator,
   });
 
   const grounding = createPgVectorGroundingProvider({
-    pool: pgPool as never,
+    // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
+    // no cast needed (was a redundant `as never`).
+    pool: pgPool,
     modelProvider,
     modelId: process.env.EMBEDDING_MODEL_ID ?? "text-embedding-3-small",
     tenantId: "ibatexas",
