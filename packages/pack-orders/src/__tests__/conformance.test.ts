@@ -228,17 +228,34 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "EXECUTE" },
   },
   {
-    name: "REFUSE: guest order.checkout.create (identity gate still blocks guest checkout)",
+    name: "EXECUTE: guest CARD order.checkout.create (SEC-001 allows guest card; D-24 Ruling 2)",
     envelope: env("order.checkout.create", {
       cartId: "cart-1",
       paymentMethod: "card",
     }),
-    // The guest-cart exemption (D-20.4) deliberately does NOT extend to
-    // checkout: a guest web checkout is still refused at the auth gate.
+    // Guest (customerId:null) CARD checkout is a supported flow — Stripe validates the
+    // card; the pack exempts it (isCardCheckout). Was "REFUSE: guest ... checkout";
+    // D-24 Ruling 2 allows guest CARD checkout (cash/PIX still refused — next fixture).
     state: authenticatedState({
       customerId: null,
       channel: "web",
       paymentMethod: "card",
+    }),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "REFUSE: guest PIX order.checkout.create (cash/PIX still require auth — SEC-001)",
+    envelope: env("order.checkout.create", {
+      cartId: "cart-1",
+      paymentMethod: "pix",
+    }),
+    // The guest-card exemption (D-24 Ruling 2) is scoped to CARD only; a guest PIX
+    // checkout is still refused at the auth gate (SEC-001 401s it at the HTTP layer too).
+    state: authenticatedState({
+      customerId: null,
+      channel: "web",
+      paymentMethod: "pix",
+      paymentStatus: null,
     }),
     expect: { kind: "REFUSE", refusalCode: "auth.required" },
   },
@@ -373,7 +390,7 @@ const corpus: ReadonlyArray<Fixture> = [
     },
   },
 
-  // ── DEFER (2 cases) ──────────────────────────────────────────────────
+  // ── DEFER (1 case; the null-status case became EXECUTE — D-24 Ruling 1) ──
   {
     name: "DEFER: order.checkout.create with PIX pending",
     envelope: env("order.checkout.create", {
@@ -388,17 +405,20 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "DEFER", signal: "payment.confirmed" },
   },
   {
-    name: "DEFER: PIX with null status (not yet started)",
+    name: "EXECUTE: fresh PIX order.checkout.create (null status — QR-first; D-24 Ruling 1)",
     envelope: env("order.checkout.create", {
       cartId: "cart-1",
       paymentMethod: "pix",
     }),
+    // A fresh PIX checkout (paymentStatus null) EXECUTEs immediately — createCheckout
+    // generates the QR; the routed payment.status.reconcile webhook governs confirmation.
+    // (Was "DEFER: PIX with null status"; D-24 Ruling 1 inverted it.)
     state: authenticatedState({
       paymentMethod: "pix",
       paymentStatus: null,
       totalInCentavos: 5_000,
     }),
-    expect: { kind: "DEFER", signal: "payment.confirmed" },
+    expect: { kind: "EXECUTE" },
   },
 
   // ── REWRITE (2 cases) ────────────────────────────────────────────────

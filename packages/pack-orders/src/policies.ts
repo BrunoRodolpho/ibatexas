@@ -82,6 +82,26 @@ function canCheckout(state: OrderState): boolean {
   return state.ctx.channel === "whatsapp" || state.ctx.customerId !== null
 }
 
+/**
+ * Guest CARD checkout is a supported flow. SEC-001 (apps/api/src/routes/cart.ts)
+ * allows an unauthenticated checkout ONLY for `paymentMethod === "card"` (Stripe
+ * validates the card identity); cash/PIX still require auth (and SEC-001 401s a
+ * guest cash/PIX checkout before the kernel is reached). RC-A1 cutover D-24 Ruling 2:
+ * exempt guest CARD checkout from the identity gates, scoped to card PRECISELY — NOT
+ * a blanket guest-checkout exemption (over-widening would open guest cash/PIX, which
+ * the live system does not support). Pack-guard layer only — reads
+ * `envelope.payload.paymentMethod`; no principal/hash change.
+ */
+function isCardCheckout(envelope: {
+  readonly kind: string
+  readonly payload: unknown
+}): boolean {
+  return (
+    envelope.kind === "order.checkout.create" &&
+    (envelope.payload as { paymentMethod?: unknown }).paymentMethod === "card"
+  )
+}
+
 function hasCartItems(state: OrderState): boolean {
   return (state.ctx.items?.length ?? 0) > 0
 }
@@ -159,6 +179,12 @@ const requireAuthenticated: OrderGuard = (envelope, state) => {
   if (GUEST_CART_KINDS.has(envelope.kind)) {
     return null
   }
+  // Guest CARD checkout is allowed (SEC-001 / D-24 Ruling 2) — card only; cash/PIX
+  // checkout still require auth (a guest cash/PIX checkout is 401'd by SEC-001 before
+  // it reaches the kernel, so this never under-protects them).
+  if (isCardCheckout(envelope)) {
+    return null
+  }
   if (isAuthenticated(state)) return null
   return decisionRefuse(refuseNotAuthenticated(), [
     basis("auth", BASIS_CODES.auth.IDENTITY_MISSING),
@@ -174,6 +200,8 @@ const requireAuthenticated: OrderGuard = (envelope, state) => {
 const requireCheckoutEligibility: OrderGuard = (envelope, state) => {
   if (envelope.kind !== "order.checkout.create") return null
   if (canCheckout(state)) return null
+  // Guest CARD checkout is allowed (SEC-001 / D-24 Ruling 2) — card only.
+  if (isCardCheckout(envelope)) return null
   return decisionRefuse(refuseGuestCheckoutBlocked(), [
     basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT),
   ])
@@ -306,14 +334,29 @@ const requireAmendable: OrderGuard = (envelope, state) => {
  * `payment.confirmed` NATS event back to the kernel via
  * `resumeDeferredIntent` from `@adjudicate/runtime`.
  */
+const pixPendingDeferBase = createPixPendingDeferGuard<OrderState>({
+  readPaymentMethod: (state) => state.ctx.paymentMethod ?? null,
+  readPaymentStatus: (state) => state.ctx.paymentStatus ?? null,
+  matchesIntent: (kind) => kind === "order.checkout.create",
+  confirmedStatuses: ORDER_PIX_CONFIRMED_STATUSES,
+})
+
+/**
+ * RC-A1 cutover D-24 Ruling 1: a FRESH PIX checkout (paymentStatus null/undefined)
+ * EXECUTEs immediately — `createCheckout` generates the PIX QR and the already-routed
+ * `payment.status.reconcile` webhook path governs confirmation (the architecture is
+ * QR-first-then-confirm, NOT defer-until-paid; you cannot confirm a payment that was
+ * never generated). Only an explicitly in-flight, non-null UNCONFIRMED PIX status
+ * still DEFERs (the cognitive-loop re-entry scenario). This scopes the lighthouse
+ * PIX-defer guard at the orders-pack composition layer without touching the
+ * `@adjudicate/pack-payments-pix` factory (zero hashed byte).
+ */
 const deferOnPendingPix = nameGuard(
   "deferOnPendingPix",
-  createPixPendingDeferGuard<OrderState>({
-    readPaymentMethod: (state) => state.ctx.paymentMethod ?? null,
-    readPaymentStatus: (state) => state.ctx.paymentStatus ?? null,
-    matchesIntent: (kind) => kind === "order.checkout.create",
-    confirmedStatuses: ORDER_PIX_CONFIRMED_STATUSES,
-  }),
+  (envelope, state) => {
+    if ((state as OrderState).ctx.paymentStatus == null) return null
+    return pixPendingDeferBase(envelope, state as OrderState)
+  },
 ) as OrderGuard
 
 // ── Business guards ─────────────────────────────────────────────────────
