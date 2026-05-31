@@ -22,6 +22,10 @@ import { Channel } from "@ibatexas/types";
 import { createCustomerService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
+import {
+  adjudicateCustomerMutation,
+  replyForIntent,
+} from "./__shared__/customer-intent-gateway.js";
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 
@@ -238,15 +242,38 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
-      const data = await medusaStore(
-        `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
-        {
-          method: "POST",
-          body: JSON.stringify(request.body),
-          headers: { "Content-Type": "application/json" },
+      // RC-A1 Phase B — gate the line-item quantity update through the conductor
+      // when active; byte-equivalent legacy path while inert. Ownership stays
+      // OUTSIDE the wrapper; the Medusa update is the adjudicated mutation.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.item.update",
+        // OrderItemUpdatePayload: { cartId, itemId, quantity }.
+        payload: {
+          cartId: request.params.id,
+          itemId: request.params.itemId,
+          quantity: request.body.quantity,
         },
-      );
-      return reply.send(data);
+        // Guest-tolerant: optionalAuth ⇒ customerId may be null; GUEST_CART_KINDS
+        // (Chunk 0) permits guest cart-building, so the wrapper builds a guest
+        // envelope rather than minting a synthetic id.
+        customerId: request.customerId ?? null,
+        // OrderState for order.item.update: requireCartIdForCartOps (payload.cartId)
+        // + validateQuantity (payload.quantity) + clampUpdateToStockCap (reads
+        // state.ctx.items[].stockCap — omitted ⇒ no clamp; the thin Medusa proxy has
+        // no stock snapshot). IGNORED while inert (legacy runs).
+        state: { ctx: { channel: "web", customerId: request.customerId ?? null, cartId: request.params.id, orderId: null } },
+        legacy: () =>
+          medusaStore(
+            `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
+            {
+              method: "POST",
+              body: JSON.stringify(request.body),
+              headers: { "Content-Type": "application/json" },
+            },
+          ),
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+      return reply.send(outcome.result);
     },
   );
 
@@ -268,11 +295,24 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
-      const data = await medusaStore(
-        `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
-        { method: "DELETE" },
-      );
-      return reply.send(data);
+      // RC-A1 Phase B — gate the line-item removal through the conductor when
+      // active; byte-equivalent legacy path while inert. Ownership stays OUTSIDE.
+      const outcome = await adjudicateCustomerMutation({
+        kind: "order.item.remove",
+        // OrderItemRemovePayload: { cartId, itemId }.
+        payload: { cartId: request.params.id, itemId: request.params.itemId },
+        customerId: request.customerId ?? null,
+        // OrderState for order.item.remove: requireCartIdForCartOps (payload.cartId)
+        // + executeCartOps (EXECUTE). Guest-tolerant. IGNORED while inert.
+        state: { ctx: { channel: "web", customerId: request.customerId ?? null, cartId: request.params.id, orderId: null } },
+        legacy: () =>
+          medusaStore(
+            `/store/carts/${request.params.id}/line-items/${request.params.itemId}`,
+            { method: "DELETE" },
+          ),
+      });
+      if (!outcome.ran) return replyForIntent(reply, outcome.intent);
+      return reply.send(outcome.result);
     },
   );
 
