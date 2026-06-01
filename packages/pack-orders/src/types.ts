@@ -337,6 +337,13 @@ export interface OrderContext {
  */
 export interface OrderState {
   readonly ctx: OrderContext & {
+    /**
+     * The tenant this request operates on (AuthReviewer-009 / RC-A1 D-12).
+     * Single-tenant today — the conductor resolver supplies "ibatexas"; the
+     * `requireTenantBinding` authGuard REFUSEs a mismatch. Optional: absent on
+     * the gateway/legacy path, where the guard is a no-op (lenient).
+     */
+    readonly tenantId?: string
     readonly items?: ReadonlyArray<{
       readonly variantId: string
       readonly quantity: number

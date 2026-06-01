@@ -312,6 +312,9 @@ export interface PaymentContext {
  */
 export interface PaymentState {
   readonly ctx: PaymentContext & {
+    /** Tenant this request operates on (AuthReviewer-009 / RC-A1 D-12). Single-tenant
+     *  today; the `requireTenantBinding` authGuard REFUSEs a mismatch, no-op when absent. */
+    readonly tenantId?: string
     readonly exists: boolean
     readonly currentStatus?: string
     readonly currentMethod?: "pix" | "card" | "cash"

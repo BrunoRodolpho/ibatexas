@@ -41,6 +41,7 @@ import {
   createConfirmGuard,
   createEscalateGuard,
   createRewriteGuard,
+  requireTenantBinding,
 } from "@adjudicate/primitives"
 import { createPixPendingDeferGuard } from "@adjudicate/pack-payments-pix"
 import {
@@ -130,6 +131,24 @@ function allSlotsFilled(state: OrderState): boolean {
 const VALID_PAYMENT_METHODS = new Set(["pix", "card", "cash"])
 
 // ── Auth guards ─────────────────────────────────────────────────────────
+
+/**
+ * Tenant binding (AuthReviewer-009 / RC-A1 D-12). The app supplies the request's
+ * tenant in `state.ctx.tenantId` (the conductor resolver sets the single tenant);
+ * this REFUSEs a request whose state tenant is not the configured tenant. Lenient
+ * when absent (the gateway/legacy path does not yet supply it) so it is a correct
+ * no-op today AND a real seam once the multi-tenant actor model lands. Reads
+ * (actor, state) → Decision — touches no principal shape / hashed byte (D-12).
+ * Tenant id is env-driven (Hard Rule #3), defaulting to the single tenant.
+ */
+const requireTenantBindingGuard: OrderGuard = requireTenantBinding<
+  OrderIntentKind,
+  OrderPayload,
+  OrderState
+>((_actor, state) => {
+  const tenant = state.ctx.tenantId
+  return tenant === undefined || tenant === (process.env.KERNEL_TENANT_ID ?? "ibatexas")
+})
 
 /**
  * Most user-touching intents require a known customer principal. The
@@ -713,7 +732,7 @@ export const ordersPolicyBundle: PolicyBundle<
     requireSlotsFilledForCheckout,
     deferOnPendingPix,
   ],
-  authGuards: [requireAuthenticated, requireCheckoutEligibility],
+  authGuards: [requireTenantBindingGuard, requireAuthenticated, requireCheckoutEligibility],
   taint: orderTaintPolicy,
   business: [
     requireExplicitAllergens,
