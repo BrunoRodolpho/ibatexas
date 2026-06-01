@@ -36,7 +36,7 @@ import {
   type Guard,
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
-import { createStateDeferGuard } from "@adjudicate/primitives"
+import { createStateDeferGuard, requireTenantBinding } from "@adjudicate/primitives"
 import { CUSTOMER_ANONYMIZE_GRACE_SIGNAL } from "./signals.js"
 import {
   refuseAllergenInferred,
@@ -64,6 +64,20 @@ type CustomerGuard = Guard<
   CustomerOnboardingPayload,
   CustomerOnboardingState
 >
+
+/**
+ * Tenant binding (AuthReviewer-009 / RC-A1 D-12). REFUSEs a request whose
+ * `state.ctx.tenantId` is not the configured tenant; lenient (no-op) when absent.
+ * Reads (actor, state) → Decision — no principal/hashed-byte change. Env-driven (Rule #3).
+ */
+const requireTenantBindingGuard: CustomerGuard = requireTenantBinding<
+  CustomerOnboardingIntentKind,
+  CustomerOnboardingPayload,
+  CustomerOnboardingState
+>((_actor, state) => {
+  const tenant = state.ctx.tenantId
+  return tenant === undefined || tenant === (process.env.KERNEL_TENANT_ID ?? "ibatexas")
+})
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -529,7 +543,7 @@ export const customerOnboardingPolicyBundle: PolicyBundle<
     requireFreshOtp,
     refuseAnonymizeIfAlreadyPending,
   ],
-  authGuards: [requireAuthenticated],
+  authGuards: [requireTenantBindingGuard, requireAuthenticated],
   taint: customerOnboardingTaintPolicy,
   business: [
     validateAllergenExplicitArray,

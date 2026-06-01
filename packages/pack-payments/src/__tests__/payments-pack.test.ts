@@ -56,6 +56,32 @@ function existsState(overrides: Partial<PaymentState["ctx"]> = {}): PaymentState
   }
 }
 
+// ── Tenant binding (AuthReviewer-009 / RC-A1 D-12) ──────────────────────
+
+describe("paymentsPolicyBundle — tenant binding (AuthReviewer-009)", () => {
+  it("REFUSEs a cross-tenant request; no-op when the tenant matches/absent", () => {
+    // requireTenantBindingGuard is the SOLE authGuard for this pack — confirm it
+    // fires (the create otherwise EXECUTEs) on a state-tenant mismatch.
+    const crossTenant = adjudicate(
+      env("payment.create", { orderId: "ord-1", method: "pix", amountInCentavos: 50_000 }),
+      { ctx: { actor: { principal: "system" }, exists: false, tenantId: "another-tenant" } },
+      paymentsPolicyBundle,
+    )
+    expect(crossTenant.kind).toBe("REFUSE")
+    if (crossTenant.kind === "REFUSE") {
+      expect(crossTenant.refusal.kind).toBe("SECURITY")
+      expect(crossTenant.refusal.code).toBe("tenant_binding_violation")
+    }
+
+    const sameTenant = adjudicate(
+      env("payment.create", { orderId: "ord-1", method: "pix", amountInCentavos: 50_000 }),
+      { ctx: { actor: { principal: "system" }, exists: false, tenantId: "ibatexas" } },
+      paymentsPolicyBundle,
+    )
+    expect(sameTenant.kind).toBe("EXECUTE")
+  })
+})
+
 // ── State phase ─────────────────────────────────────────────────────────
 
 describe("paymentsPolicyBundle — state guards", () => {

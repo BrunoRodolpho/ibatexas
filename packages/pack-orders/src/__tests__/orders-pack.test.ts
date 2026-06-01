@@ -114,6 +114,57 @@ describe("ordersPolicyBundle — auth guards", () => {
   })
 })
 
+// ── Tenant binding (AuthReviewer-009 / RC-A1 D-12) ──────────────────────
+
+describe("ordersPolicyBundle — tenant binding (AuthReviewer-009)", () => {
+  it("REFUSEs a write whose state tenant is not the configured tenant (cross-tenant)", () => {
+    const decision = adjudicate(
+      env("order.item.add", {
+        cartId: "cart-1",
+        variantId: "v-1",
+        quantity: 1,
+        allergens: [],
+      }),
+      state({ tenantId: "another-tenant" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.kind).toBe("SECURITY")
+    expect(decision.refusal.code).toBe("tenant_binding_violation")
+  })
+
+  it("EXECUTEs the single-tenant happy path (state tenant === configured)", () => {
+    const decision = adjudicate(
+      env("order.item.add", {
+        cartId: "cart-1",
+        variantId: "v-1",
+        quantity: 1,
+        allergens: [],
+      }),
+      state({ tenantId: "ibatexas" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("is a no-op when the tenant is not supplied in state (gateway/legacy path)", () => {
+    // The default state carries no tenantId — the guard must NOT refuse (so the
+    // gateway path, which does not yet supply a tenant, is unaffected).
+    const decision = adjudicate(
+      env("order.item.add", {
+        cartId: "cart-1",
+        variantId: "v-1",
+        quantity: 1,
+        allergens: [],
+      }),
+      state({}),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+})
+
 // ── State phase ─────────────────────────────────────────────────────────
 
 describe("ordersPolicyBundle — state guards", () => {

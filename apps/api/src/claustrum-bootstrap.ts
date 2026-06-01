@@ -554,6 +554,10 @@ function deriveIbatexasPlannerContext(state: CognitiveState): {
   return {
     state: {
       ctx: {
+        // Single-tenant supply for the pack tenant-binding authGuard
+        // (AuthReviewer-009): the app names the request's tenant in state. The
+        // guard REFUSEs a mismatch; env-driven (Hard Rule #3).
+        tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
         channel: state.perception.channel,
         customerId: null,
         staffId: null,
