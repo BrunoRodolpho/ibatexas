@@ -5,6 +5,7 @@ import ora from "ora"
 import { execa } from "execa"
 import { ROOT } from "../utils/root.js"
 import { diagnoseDockerFailure } from "../lib/docker.js"
+import { migrateAuditDatabase } from "./kernel.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -20,7 +21,7 @@ interface BootstrapOpts {
 }
 
 async function runBootstrap(opts: BootstrapOpts) {
-  const TOTAL = opts.skipSeed ? 4 : 6
+  const TOTAL = opts.skipSeed ? 5 : 7
   console.log(chalk.bold.blue("\n  🚀  IbateXas Bootstrap\n"))
 
   let stepNum = 0
@@ -75,7 +76,32 @@ async function runBootstrap(opts: BootstrapOpts) {
     process.exit(1)
   }
 
-  // ── [4] Medusa admin user ─────────────────────────────────────────────────
+  // ── [4] Kernel audit schema (intent_audit) ────────────────────────────────
+  // The RC-A1 cutover's audit sink writes one intent_audit row before every
+  // money side-effect. That table lives in @adjudicate/audit-postgres migrations
+  // (a set the Medusa + Prisma steps above do NOT run). Provision it here so the
+  // runtime DB is activation-ready. Idempotent (apply-once tracking table) and
+  // inert until the conductor is activated (RC_A1_ACTIVATE=true).
+  step(++stepNum, TOTAL, "Provisioning kernel audit schema…")
+  const kernelSpinner = ora({ text: "intent_audit + partitions", indent: 4 }).start()
+  try {
+    const result = await migrateAuditDatabase()
+    const applied =
+      result.applied.length > 0
+        ? `${result.applied.length} migration(s)`
+        : "already up to date"
+    kernelSpinner.succeed(
+      chalk.green(
+        `Kernel audit schema ready (${applied}, ${result.partitionsEnsured.length} partitions)`,
+      ),
+    )
+  } catch (err) {
+    kernelSpinner.fail(chalk.red("Kernel audit-schema migration failed"))
+    console.error(chalk.gray(`    ${String(err)}`))
+    process.exit(1)
+  }
+
+  // ── [5] Medusa admin user ─────────────────────────────────────────────────
   step(++stepNum, TOTAL, "Creating Medusa admin user…")
   const adminEmail = process.env.MEDUSA_ADMIN_EMAIL
   const adminPassword = process.env.MEDUSA_ADMIN_PASSWORD
@@ -96,7 +122,7 @@ async function runBootstrap(opts: BootstrapOpts) {
     }
   }
 
-  // ── [5] Seed data ─────────────────────────────────────────────────────────
+  // ── [6] Seed data ─────────────────────────────────────────────────────────
   if (!opts.skipSeed) {
     step(++stepNum, TOTAL, "Seeding data…")
 
@@ -117,7 +143,7 @@ async function runBootstrap(opts: BootstrapOpts) {
       }
     }
 
-    // ── [6] Verify ────────────────────────────────────────────────────────
+    // ── [7] Verify ────────────────────────────────────────────────────────
     step(++stepNum, TOTAL, "Verifying infrastructure…")
     try {
       await execa("node", [

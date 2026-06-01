@@ -24,6 +24,7 @@ import { registerTunnelCommands } from "./commands/tunnel.js"
 import { registerAuthCommands } from "./commands/auth.js"
 import { registerRateCommands } from "./commands/rate.js"
 import { registerBootstrapCommands } from "./commands/bootstrap.js"
+import { registerKernelCommands } from "./commands/kernel.js"
 import { registerDepsCommands } from "./commands/deps.js"
 import { registerInfraCommands } from "./commands/infra.js"
 import { registerStripeCommands } from "./commands/stripe.js"
@@ -321,6 +322,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "stripe",  register: registerStripeCommands, description: "Stripe — payments and webhook testing" },
   { name: "dlq",     register: registerDlqCommands,     description: "Dead Letter Queue — inspect, replay, and purge failed events" },
   { name: "orders",  register: registerOrdersCommands,  description: "Orders — projection management and debugging" },
+  { name: "kernel",  register: registerKernelCommands,  description: "Kernel — RC-A1 audit schema provisioning (intent_audit)" },
 ]
 
 for (const { name, register, description } of groupedCommands) {
