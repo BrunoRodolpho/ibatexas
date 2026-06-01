@@ -404,15 +404,31 @@ function pluralCamel(name: string): string {
 
 // ── Audit-postgres readiness probe ───────────────────────────────────────────
 
-async function assertAuditPostgresReady(): Promise<void> {
+async function assertAuditPostgresReady(pool: Pool): Promise<void> {
   try {
-    // The audit-postgres package owns its own pool; a `SELECT 1` via the
-    // verify-API exercises the connection without coupling to internals.
-    // If the package exposes a probe, prefer that.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const ap = require("@adjudicate/audit-postgres");
-    if (typeof ap.assertReady === "function") {
-      await ap.assertReady();
+    // Probe the SAME connection the audit sink will write through. The kernel
+    // emits one `intent_audit` row BEFORE every money side-effect; a missing or
+    // unwritable table must fail the boot CLOSED here, not silently at the first
+    // payment. The table + partitions are provisioned by the
+    // @adjudicate/audit-postgres migrations — `ibx kernel migrate` (run as part
+    // of `ibx bootstrap`).
+    //
+    // (1) Parent table exists — to_regclass returns NULL when absent.
+    const reg = await pool.query("SELECT to_regclass('intent_audit') AS oid");
+    if (!reg.rows[0]?.oid) {
+      throw new Error("table 'intent_audit' is absent");
+    }
+    // (2) At least one partition exists. `intent_audit` is RANGE-partitioned by
+    // recorded_at; the parent rejects any row that no partition covers, so a
+    // partitionless parent would throw on the first audited decision.
+    const parts = await pool.query(
+      `SELECT count(*)::int AS n FROM pg_catalog.pg_inherits ` +
+        `WHERE inhparent = 'intent_audit'::regclass`,
+    );
+    if (Number(parts.rows[0]?.n ?? 0) < 1) {
+      throw new Error(
+        "table 'intent_audit' has no partitions — a write would be rejected",
+      );
     }
   } catch (err) {
     throw new Error(
@@ -676,7 +692,15 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   if (_conductor) return _conductor;
 
   installFirstPartyPacks();
-  await assertAuditPostgresReady();
+
+  // Audit infra — the Postgres sink is the durable AuditRecord store
+  // (`intent_audit`). The bridge fails CLOSED if this sink throws, so an
+  // unauditable mutation is refused rather than silently executed. Create the
+  // pool first so the readiness probe runs on the very connection the sink uses.
+  const pgPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+  });
+  await assertAuditPostgresReady(pgPool);
 
   const anthropicClient = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY ?? "",
@@ -690,12 +714,8 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     >[0]["client"],
   });
 
-  // Audit infra — the Postgres sink is the durable AuditRecord store
-  // (`intent_audit`). The bridge fails CLOSED if this sink throws, so an
-  // unauditable mutation is refused rather than silently executed.
-  const pgPool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-  });
+  // pgPool (created above, before the audit-readiness probe) backs both the
+  // durable AuditRecord writer and the pgvector grounding provider.
   const auditWriter: PostgresWriter = {
     async insertAudit(row: IntentAuditRow): Promise<void> {
       await pgPool.query(INSERT_AUDIT_SQL, auditInsertParams(row) as unknown[]);
