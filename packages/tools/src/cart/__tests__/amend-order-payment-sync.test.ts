@@ -247,6 +247,22 @@ describe("amendOrder — post-edit payment sync (P1-CONC-AMEND concurrency guard
     )
   })
 
+  // NetworkReviewer-001 (money residual): the regenerated PIX PaymentIntent MUST
+  // carry an idempotency key. Without it, a retried amendment (HTTP/Twilio retry,
+  // or our own re-invocation) creates a SECOND live PIX intent for the same order —
+  // a duplicate-charge surface. The key is stable per (order, replaced-PI) so a
+  // retry of the same amendment reuses the intent, while a genuinely-distinct
+  // amendment (different oldPiId) still keys a fresh PI. Mirrors the change_payment
+  // site's `pi-amend:` key. RED before the key is added; GREEN after.
+  it("creates the regenerated PIX PI with a stable idempotency key (NetworkReviewer-001)", async () => {
+    await amendOrder(ADD_INPUT, CTX)
+
+    expect(mockStripePaymentIntentsCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_method_types: ["pix"] }),
+      expect.objectContaining({ idempotencyKey: "pi-amend-regen:order_01:pi_old_01" }),
+    )
+  })
+
   it("skips the Payment swap when a concurrent amendment already finalized it (re-read terminal)", async () => {
     // Concurrent amendment canceled this payment while we were acquiring the lock.
     mockGetById.mockResolvedValue(makeActivePayment({ status: "canceled" }))

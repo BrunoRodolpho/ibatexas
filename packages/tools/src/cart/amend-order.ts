@@ -37,6 +37,14 @@ async function regeneratePixIfNeeded(
     currency: "brl",
     payment_method_types: ["pix"],
     metadata: { medusaOrderId: orderId },
+  }, {
+    // NetworkReviewer-001: stable per (order, replaced-PI) so a retried amendment
+    // (HTTP/Twilio retry, or a re-invocation of this sync) reuses the regenerated
+    // intent instead of orphaning a SECOND live PIX PaymentIntent for the order —
+    // a duplicate-charge surface. `oldPiId` is the intent being canceled just above,
+    // so a genuinely-distinct amendment keys a fresh PI while a retry of THIS one
+    // dedups. Mirrors the change_payment site's `pi-amend:` key.
+    idempotencyKey: `pi-amend-regen:${orderId}:${oldPiId}`,
   }) as Stripe.PaymentIntent & {
     next_action?: { pix_display_qr_code?: { data?: string; image_url_svg?: string } };
   };
