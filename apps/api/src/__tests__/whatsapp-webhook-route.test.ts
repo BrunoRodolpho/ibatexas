@@ -36,7 +36,9 @@ const mockRk = vi.hoisted(() => vi.fn());
 const mockAtomicIncr = vi.hoisted(() => vi.fn());
 const mockHashPhone = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
+const mockTryGetConductor = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
+const mockHandleInboundLegacy = vi.hoisted(() => vi.fn());
 // The test-double Conductor surface the route touches.
 const mockPerceive = vi.hoisted(() => vi.fn());
 const mockRender = vi.hoisted(() => vi.fn());
@@ -59,6 +61,14 @@ vi.mock("@ibatexas/tools", () => ({
 
 vi.mock("../claustrum-bootstrap.js", () => ({
   getConductor: mockGetConductor,
+  tryGetConductor: mockTryGetConductor,
+}));
+
+// The flag-OFF legacy brain is a separate module; mock it to a spy so the routed
+// tests never load its heavy transitive deps (whatsapp/session, client, jobs, …)
+// and the dispatch can be asserted directly.
+vi.mock("../routes/whatsapp-legacy.js", () => ({
+  handleInboundLegacy: mockHandleInboundLegacy,
 }));
 
 vi.mock("../lib/phone-hash.js", () => ({
@@ -118,6 +128,10 @@ function wireHappyPath(redis = createMockRedis()) {
   mockRender.mockResolvedValue(undefined);
   mockCloseCapsule.mockResolvedValue(undefined);
   mockGetConductor.mockReturnValue(fakeConductor());
+  // Conductor bootstrapped (flag ON) by default → the routed conductor path is
+  // taken. The flag-OFF legacy-fallback test below overrides this to null.
+  mockTryGetConductor.mockReturnValue(fakeConductor());
+  mockHandleInboundLegacy.mockResolvedValue(undefined);
   return redis;
 }
 
@@ -398,5 +412,56 @@ describe("Full POST /api/webhooks/whatsapp integration (routed)", () => {
       },
       { timeout: 1000 },
     );
+  });
+});
+
+// ── Flag-OFF legacy fallback ─────────────────────────────────────────────────
+
+describe("Flag-OFF legacy fallback (via POST /api/webhooks/whatsapp)", () => {
+  // RC_A1_ACTIVATE unset (the shipping default) → conductor not bootstrapped →
+  // tryGetConductor() returns null. The route MUST dispatch the async turn to the
+  // legacy runOrchestrator brain (handleInboundLegacy), NOT call getConductor()
+  // (which throws when unbootstrapped) — the regression MERGE-READINESS flagged:
+  // the routed tests above always wired a non-null conductor, so they never
+  // exercised the flag-OFF production path. RED against the conductor-only route
+  // (handleInboundAsync → getConductor() throws → customer gets no reply, legacy
+  // never invoked); GREEN once the tryGetConductor()===null dispatch lands.
+  it("dispatches a valid message to the legacy brain when the conductor is not bootstrapped", async () => {
+    wireHappyPath();
+    mockTryGetConductor.mockReturnValue(null);
+    // getConductor() throws when unbootstrapped — the legacy branch must NOT reach it.
+    mockGetConductor.mockImplementation(() => {
+      throw new Error("Claustrum Conductor not initialized");
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/whatsapp",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-twilio-signature": "valid-sig",
+      },
+      payload: "MessageSid=SM_OFF&From=whatsapp%3A%2B5511999999999&Body=Quero+costela",
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // The legacy turn runs fire-and-forget after the sync 200 — wait for it.
+    await vi.waitFor(
+      () => {
+        expect(mockHandleInboundLegacy).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 1000 },
+    );
+
+    // Dispatched with the parsed Twilio body + the message SID.
+    const [bodyArg, sidArg] = mockHandleInboundLegacy.mock.calls[0];
+    expect(sidArg).toBe("SM_OFF");
+    expect((bodyArg as { MessageSid?: string }).MessageSid).toBe("SM_OFF");
+
+    // The legacy path must never touch the (unbootstrapped) conductor.
+    expect(mockGetConductor).not.toHaveBeenCalled();
+    expect(mockPerceive).not.toHaveBeenCalled();
   });
 });

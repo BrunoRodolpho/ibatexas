@@ -30,6 +30,8 @@ const mockRk = vi.hoisted(() => vi.fn((key: string) => `ibatexas:${key}`));
 const mockAtomicIncr = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
+const mockTryGetConductor = vi.hoisted(() => vi.fn());
+const mockHandleInboundLegacy = vi.hoisted(() => vi.fn());
 const mockHashPhone = vi.hoisted(() => vi.fn(() => "phone-hash"));
 const mockPerceive = vi.hoisted(() => vi.fn());
 const mockRender = vi.hoisted(() => vi.fn());
@@ -46,6 +48,13 @@ vi.mock("@claustrum/core", () => ({
 
 vi.mock("../claustrum-bootstrap.js", () => ({
   getConductor: mockGetConductor,
+  tryGetConductor: mockTryGetConductor,
+}));
+
+// These idempotency tests exercise the conductor path; mock the flag-OFF legacy
+// brain to a spy so its heavy transitive deps never load (it is never invoked here).
+vi.mock("../routes/whatsapp-legacy.js", () => ({
+  handleInboundLegacy: mockHandleInboundLegacy,
 }));
 
 vi.mock("@ibatexas/tools", () => ({
@@ -100,11 +109,15 @@ describe("P2-SEC-WAIDEMPOTENCY — two-phase idempotency", () => {
     mockRender.mockResolvedValue(undefined);
     mockOpenCapsule.mockResolvedValue({ id: "capsule-1" });
     mockCloseCapsule.mockResolvedValue(undefined);
-    mockGetConductor.mockReturnValue({
+    const conductorDouble = {
       channels: { whatsapp: { perceive: mockPerceive, render: mockRender } },
       openCapsule: mockOpenCapsule,
       closeCapsule: mockCloseCapsule,
-    });
+    };
+    mockGetConductor.mockReturnValue(conductorDouble);
+    // Conductor bootstrapped (flag ON) → the routed conductor path is taken, so
+    // these confirm/release assertions exercise handleInboundAsync (not the legacy brain).
+    mockTryGetConductor.mockReturnValue(conductorDouble);
     mockHandleTurn.mockResolvedValue({ response: { text: "Olá!" } });
   });
 

@@ -20,8 +20,14 @@ import { verifyTwilioSignature, type TwilioWebhookBody } from "@claustrum/channe
 import type { ChannelMessage } from "@claustrum/core";
 import { handleTurn } from "@claustrum/core";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
-import { getConductor } from "../claustrum-bootstrap.js";
+import { getConductor, tryGetConductor } from "../claustrum-bootstrap.js";
 import { hashPhone } from "../lib/phone-hash.js";
+import {
+  claimIdempotency,
+  confirmProcessed,
+  releaseClaim,
+} from "./whatsapp-idempotency.js";
+import { handleInboundLegacy } from "./whatsapp-legacy.js";
 
 const MAX_RATE_PER_MINUTE = 20;
 
@@ -63,63 +69,9 @@ function verifySig(request: FastifyRequest, body: TwilioWebhookBody): SignatureE
 
 // ── Idempotency (two-phase) + rate-limit, Redis-keyed ───────────────────────
 //
-// P2-SEC-WAIDEMPOTENCY: the old guard set the dedup key (SET NX, 24h) BEFORE the
-// async turn ran, so any failure black-holed the message for 24h — Twilio's
-// retries dedup'd against a key for work that never completed. We now mirror the
-// subscribers' `withDedup` / the Stripe webhook two-phase pattern:
-//
-//   1. CLAIM — SET NX with a SHORT in-flight TTL (route, before the 200). A
-//      Redis error here FAILS CLOSED (caller returns 500 → Twilio retries)
-//      rather than proceeding unguarded.
-//   2. RUN  — the async turn.
-//   3a. CONFIRM — on success, promote the key to the full 24h dedup window.
-//   3b. RELEASE — on failure, DEL the claim so Twilio's retry reprocesses
-//       (the short TTL is the backstop if the DEL itself fails).
-
-const WA_DEDUP_TTL = 86400; // 24h — full dedup window (matches Twilio retry horizon)
-const WA_INFLIGHT_TTL = 300; // 5 min — claim lifetime before the turn confirms
-
-function webhookKey(messageSid: string): string {
-  return rk(`wa:webhook:${messageSid}`);
-}
-
-type IdempotencyClaim = "claimed" | "duplicate" | "unavailable";
-
-/**
- * Phase 1 — claim the message for processing with a short in-flight TTL.
- *  • "claimed"     → first delivery, safe to process.
- *  • "duplicate"   → already claimed/processed, drop with 200.
- *  • "unavailable" → Redis error; FAIL CLOSED so Twilio retries.
- */
-async function claimIdempotency(
-  redis: Awaited<ReturnType<typeof getRedisClient>>,
-  messageSid: string,
-): Promise<IdempotencyClaim> {
-  try {
-    const wasSet = await redis.set(webhookKey(messageSid), "1", { EX: WA_INFLIGHT_TTL, NX: true });
-    return wasSet ? "claimed" : "duplicate";
-  } catch {
-    return "unavailable";
-  }
-}
-
-/** Phase 3a — promote the in-flight claim to the full dedup window on success. */
-async function confirmProcessed(
-  redis: Awaited<ReturnType<typeof getRedisClient>>,
-  messageSid: string,
-): Promise<void> {
-  // SET without NX overwrites the short in-flight marker. Best-effort: if it
-  // fails the in-flight TTL still suppresses duplicates until it expires.
-  await redis.set(webhookKey(messageSid), "1", { EX: WA_DEDUP_TTL });
-}
-
-/** Phase 3b — release the claim so a Twilio retry can reprocess after failure. */
-async function releaseClaim(
-  redis: Awaited<ReturnType<typeof getRedisClient>>,
-  messageSid: string,
-): Promise<void> {
-  await redis.del(webhookKey(messageSid));
-}
+// The two-phase idempotency primitives (claim → confirm/release) live in
+// ./whatsapp-idempotency.ts so the conductor path (handleInboundAsync) and the
+// flag-OFF legacy path (whatsapp-legacy.ts) share ONE dedup-key source of truth.
 
 async function checkRateLimit(
   redis: Awaited<ReturnType<typeof getRedisClient>>,
@@ -203,9 +155,21 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
         // Twilio expects synchronous 200; agent runs async. The async handler
         // owns Phase 3: promote the claim on success / release it on failure.
         void reply.code(200).type("text/xml").send("<Response/>");
-        void handleInboundAsync(body, messageSid, server.log).catch((err) => {
-          server.log.error(err, "[whatsapp.async] Conductor turn failed");
-        });
+        // Flag-OFF (RC_A1_ACTIVATE unset → conductor not bootstrapped): fall back
+        // to the legacy runOrchestrator brain so WhatsApp keeps replying, instead
+        // of getConductor() throwing and the customer getting NO reply. Flag-ON:
+        // route through the conductor. Mirrors the customer-intent-gateway
+        // tryGetConductor()===null pattern; the legacy branch is removed in the
+        // same atomic change as the production flag flip.
+        if (tryGetConductor() === null) {
+          void handleInboundLegacy(body, messageSid, server.log).catch((err) => {
+            server.log.error(err, "[whatsapp.async.legacy] Turn failed");
+          });
+        } else {
+          void handleInboundAsync(body, messageSid, server.log).catch((err) => {
+            server.log.error(err, "[whatsapp.async] Conductor turn failed");
+          });
+        }
         return reply;
       },
     );
