@@ -69,8 +69,8 @@ function verifySig(request: FastifyRequest, body: TwilioWebhookBody): SignatureE
 // ── Idempotency (two-phase) + rate-limit, Redis-keyed ───────────────────────
 //
 // The two-phase idempotency primitives (claim → confirm/release) live in
-// ./whatsapp-idempotency.ts so the conductor path (handleInboundAsync) and the
-// flag-OFF legacy path (whatsapp-legacy.ts) share ONE dedup-key source of truth.
+// ./whatsapp-idempotency.ts — the conductor path (handleInboundAsync) uses them
+// as the single dedup-key source of truth.
 
 async function checkRateLimit(
   redis: Awaited<ReturnType<typeof getRedisClient>>,

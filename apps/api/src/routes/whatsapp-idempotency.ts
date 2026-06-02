@@ -1,9 +1,8 @@
 // WhatsApp webhook idempotency — two-phase claim primitives (P2-SEC-WAIDEMPOTENCY).
 //
-// Extracted from whatsapp-webhook.ts so BOTH the conductor path (handleInboundAsync)
-// and the flag-OFF legacy path (whatsapp-legacy.ts handleInboundLegacy) promote/release
-// the SAME dedup key — there is exactly one source of truth for `webhookKey`, so the
-// claim and its confirm/release can never target different keys.
+// Extracted from whatsapp-webhook.ts so the conductor path (handleInboundAsync)
+// promotes/releases the dedup key through exactly one source of truth for
+// `webhookKey` — the claim and its confirm/release can never target different keys.
 //
 //   1. CLAIM   — SET NX with a SHORT in-flight TTL (route, before the 200). A Redis
 //      error FAILS CLOSED (caller returns 503 → Twilio retries) rather than proceeding.

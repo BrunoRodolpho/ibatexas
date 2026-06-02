@@ -38,7 +38,6 @@ const mockHashPhone = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockTryGetConductor = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
-const mockHandleInboundLegacy = vi.hoisted(() => vi.fn());
 // The test-double Conductor surface the route touches.
 const mockPerceive = vi.hoisted(() => vi.fn());
 const mockRender = vi.hoisted(() => vi.fn());
@@ -62,13 +61,6 @@ vi.mock("@ibatexas/tools", () => ({
 vi.mock("../claustrum-bootstrap.js", () => ({
   getConductor: mockGetConductor,
   tryGetConductor: mockTryGetConductor,
-}));
-
-// The flag-OFF legacy brain is a separate module; mock it to a spy so the routed
-// tests never load its heavy transitive deps (whatsapp/session, client, jobs, …)
-// and the dispatch can be asserted directly.
-vi.mock("../routes/whatsapp-legacy.js", () => ({
-  handleInboundLegacy: mockHandleInboundLegacy,
 }));
 
 vi.mock("../lib/phone-hash.js", () => ({
@@ -131,7 +123,6 @@ function wireHappyPath(redis = createMockRedis()) {
   // Conductor bootstrapped (flag ON) by default → the routed conductor path is
   // taken. The flag-OFF legacy-fallback test below overrides this to null.
   mockTryGetConductor.mockReturnValue(fakeConductor());
-  mockHandleInboundLegacy.mockResolvedValue(undefined);
   return redis;
 }
 

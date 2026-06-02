@@ -31,7 +31,6 @@ const mockAtomicIncr = vi.hoisted(() => vi.fn());
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockTryGetConductor = vi.hoisted(() => vi.fn());
-const mockHandleInboundLegacy = vi.hoisted(() => vi.fn());
 const mockHashPhone = vi.hoisted(() => vi.fn(() => "phone-hash"));
 const mockPerceive = vi.hoisted(() => vi.fn());
 const mockRender = vi.hoisted(() => vi.fn());
@@ -49,12 +48,6 @@ vi.mock("@claustrum/core", () => ({
 vi.mock("../claustrum-bootstrap.js", () => ({
   getConductor: mockGetConductor,
   tryGetConductor: mockTryGetConductor,
-}));
-
-// These idempotency tests exercise the conductor path; mock the flag-OFF legacy
-// brain to a spy so its heavy transitive deps never load (it is never invoked here).
-vi.mock("../routes/whatsapp-legacy.js", () => ({
-  handleInboundLegacy: mockHandleInboundLegacy,
 }));
 
 vi.mock("@ibatexas/tools", () => ({
