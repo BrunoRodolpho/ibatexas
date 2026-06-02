@@ -259,55 +259,6 @@ describe("Chat routes integration", () => {
     expect(openArg.sessionKey).toBe("22222222-3333-4444-a555-666666666666")
   })
 
-  // ── Flag-OFF legacy fallback (RC-A1 inert) ──────────────────────────────────
-  // When the conductor is NOT bootstrapped (RC_A1_ACTIVATE unset — the shipping
-  // default) tryGetConductor() returns null. The route MUST fall back to the
-  // legacy @ibatexas/llm-provider runOrchestrator brain (byte-equivalent to
-  // pre-cutover main), NOT call getConductor() (which throws when unbootstrapped).
-  // This is the regression MERGE-READINESS flagged: the mocked suite above always
-  // wired a non-null conductor, so it never exercised the flag-OFF production path.
-  // RED against the conductor-only code (getConductor() throws → "Erro interno.",
-  // runOrchestrator never called); GREEN once the tryGetConductor()===null guard lands.
-  it("POST falls back to the legacy runOrchestrator brain when the conductor is not bootstrapped (flag OFF)", async () => {
-    mockTryGetConductor.mockReturnValue(null)
-    // getConductor() throws when unbootstrapped — the legacy path must NOT reach it.
-    mockGetConductor.mockImplementation(() => {
-      throw new Error("Claustrum Conductor not initialized")
-    })
-
-    const res = await server.inject({
-      method: "POST",
-      url: "/api/chat/messages",
-      headers: { "x-session-secret": "integration-guest-secret" },
-      payload: {
-        sessionId: "33333333-4444-4555-a666-777777777777",
-        message: "Quero costela",
-        channel: "web",
-      },
-    })
-
-    expect(res.statusCode).toBe(200)
-
-    // The legacy turn runs fire-and-forget after the sync 200 — wait for it.
-    await vi.waitFor(
-      () => {
-        // The legacy brain was invoked with the user message + loaded history.
-        expect(mockRunAgent).toHaveBeenCalledTimes(1)
-        // The assistant reply ("Olá!" from the mocked generator) was persisted.
-        expect(mockAppendMessages).toHaveBeenCalledWith(
-          "33333333-4444-4555-a666-777777777777",
-          [{ role: "assistant", content: "Olá!" }],
-          expect.any(Boolean),
-          expect.objectContaining({ channel: "web" }),
-        )
-      },
-      { timeout: 1000 },
-    )
-
-    // Legacy path must never touch the (unbootstrapped) conductor.
-    expect(mockGetConductor).not.toHaveBeenCalled()
-    expect(mockOpenCapsule).not.toHaveBeenCalled()
-  })
 
   it("GET /api/chat/stream/:sessionId returns 404 for non-existent stream", async () => {
     const res = await server.inject({

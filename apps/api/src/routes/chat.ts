@@ -28,7 +28,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
-import { Channel, type StreamChunk, type AgentContext } from "@ibatexas/types";
+import { Channel, type StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken } from "@ibatexas/tools";
 import { optionalAuth } from "../middleware/auth.js";
 import {
@@ -39,9 +39,7 @@ import {
   cleanupStream,
 } from "../streaming/emitter.js";
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
-import { runOrchestrator } from "@ibatexas/llm-provider";
-import { loadSession, appendMessages } from "../session/store.js";
-import { getConductor, tryGetConductor } from "../claustrum-bootstrap.js";
+import { getConductor } from "../claustrum-bootstrap.js";
 
 // ── CORS allowlist for the SSE endpoint (P2-SEC-SSECORS) ──────────────────────
 // The SSE GET is `reply.hijack()`-ed, so the global @fastify/cors plugin (which
@@ -150,7 +148,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      const { sessionId, message, channel } = request.body;
+      const { sessionId, message } = request.body;
       const redis = await getRedisClient();
       const ownerKey = rk(`session:owner:${sessionId}`);
 
@@ -242,47 +240,6 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
       // ── Delegate to claustrum Conductor ───────────────────────────────────
       void (async () => {
         try {
-          // ── Flag-OFF legacy fallback (RC-A1 inert) ──────────────────────────
-          // With RC_A1_ACTIVATE unset (the shipping default) the conductor is
-          // never bootstrapped, so getConductor() throws. Mirror the
-          // customer-intent-gateway's `tryGetConductor()===null → legacy()`
-          // pattern and fall back to the pre-cutover @ibatexas/llm-provider
-          // runOrchestrator brain — byte-equivalent to `main` — so web chat keeps
-          // working with the flag OFF instead of streaming "Erro interno.". This
-          // legacy branch is removed in the same atomic change as the flag flip.
-          if (tryGetConductor() === null) {
-            const history = await loadSession(sessionId);
-            await appendMessages(
-              sessionId,
-              [{ role: "user", content: message }],
-              Boolean(request.customerId),
-              { customerId: request.customerId, channel: "web" },
-            );
-            const context: AgentContext = {
-              channel,
-              sessionId,
-              customerId: request.customerId,
-              userType: request.userType ?? "guest",
-            };
-            const replyParts: string[] = [];
-            for await (const chunk of runOrchestrator(message, history, context)) {
-              if (turnAbort.signal.aborted) return;
-              pushChunk(sessionId, chunk);
-              if (chunk.type === "text_delta") replyParts.push(chunk.delta);
-            }
-            if (turnAbort.signal.aborted) return;
-            if (replyParts.length > 0) {
-              await appendMessages(
-                sessionId,
-                [{ role: "assistant", content: replyParts.join("") }],
-                Boolean(request.customerId),
-                { customerId: request.customerId, channel: "web" },
-              );
-            }
-            pushChunk(sessionId, { type: "done" });
-            return;
-          }
-
           const conductor = getConductor();
           const customerId = request.customerId ?? `guest:${sessionId}`;
 

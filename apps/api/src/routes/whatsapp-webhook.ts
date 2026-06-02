@@ -20,14 +20,13 @@ import { verifyTwilioSignature, type TwilioWebhookBody } from "@claustrum/channe
 import type { ChannelMessage } from "@claustrum/core";
 import { handleTurn } from "@claustrum/core";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
-import { getConductor, tryGetConductor } from "../claustrum-bootstrap.js";
+import { getConductor } from "../claustrum-bootstrap.js";
 import { hashPhone } from "../lib/phone-hash.js";
 import {
   claimIdempotency,
   confirmProcessed,
   releaseClaim,
 } from "./whatsapp-idempotency.js";
-import { handleInboundLegacy } from "./whatsapp-legacy.js";
 
 const MAX_RATE_PER_MINUTE = 20;
 
@@ -152,24 +151,12 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
           return reply.code(429).type("text/xml").send("<Response/>");
         }
 
-        // Twilio expects synchronous 200; agent runs async. The async handler
-        // owns Phase 3: promote the claim on success / release it on failure.
+        // Twilio expects synchronous 200; the conductor turn runs async. The async
+        // handler owns Phase 3: promote the claim on success / release it on failure.
         void reply.code(200).type("text/xml").send("<Response/>");
-        // Flag-OFF (RC_A1_ACTIVATE unset → conductor not bootstrapped): fall back
-        // to the legacy runOrchestrator brain so WhatsApp keeps replying, instead
-        // of getConductor() throwing and the customer getting NO reply. Flag-ON:
-        // route through the conductor. Mirrors the customer-intent-gateway
-        // tryGetConductor()===null pattern; the legacy branch is removed in the
-        // same atomic change as the production flag flip.
-        if (tryGetConductor() === null) {
-          void handleInboundLegacy(body, messageSid, server.log).catch((err) => {
-            server.log.error(err, "[whatsapp.async.legacy] Turn failed");
-          });
-        } else {
-          void handleInboundAsync(body, messageSid, server.log).catch((err) => {
-            server.log.error(err, "[whatsapp.async] Conductor turn failed");
-          });
-        }
+        void handleInboundAsync(body, messageSid, server.log).catch((err) => {
+          server.log.error(err, "[whatsapp.async] Conductor turn failed");
+        });
         return reply;
       },
     );
