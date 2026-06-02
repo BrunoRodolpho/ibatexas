@@ -95,13 +95,17 @@ const start = async (): Promise<void> => {
       // Each subscriber joins the stable "ibatexas-workers" queue group by default
       // (see subscribeNatsEvent) so every event is handled once across N replicas
       // (P1-CONC-QUEUEGROUP), with isNewEvent dedup kept as defense-in-depth.
-      await startCartIntelligenceSubscribers(server.log);
-      await startHandoffSubscriber(server.log);
-      await startConversationArchiver(server.log);
-      await startPaymentLifecycleSubscriber(server.log);
+      // Bind component=subscriber / component=job at this single root point so
+      // every line from these subsystems is filterable in VictoriaLogs
+      // (`ibx logs subscriber`, `ibx logs job`) — no per-call-site churn.
+      const subscriberLog = server.log.child({ component: "subscriber" });
+      await startCartIntelligenceSubscribers(subscriberLog);
+      await startHandoffSubscriber(subscriberLog);
+      await startConversationArchiver(subscriberLog);
+      await startPaymentLifecycleSubscriber(subscriberLog);
 
       // Start all BullMQ background workers
-      registerWorkers(server.log);
+      registerWorkers(server.log.child({ component: "job" }));
     }
   } catch (err) {
     server.log.error(err);

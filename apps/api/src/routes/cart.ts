@@ -21,6 +21,7 @@ import { getRedisClient, rk, estimateDelivery, createCheckout, reaisToCentavos, 
 import { Channel } from "@ibatexas/types";
 import { createCustomerService, createPaymentQueryService, prisma } from "@ibatexas/domain";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
+import { logger } from "../lib/logger.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 import {
   adjudicateCustomerMutation,
@@ -83,7 +84,10 @@ async function cachePixDetailsForCustomer(
       cpf: data.cpf,
     });
   } catch (err) {
-    console.warn("[cart/checkout] Failed to cache PIX details:", (err as Error).message);
+    logger.warn(
+      { component: "route", event: "pix_cache_failed", customerId, err: (err as Error).message },
+      "failed to cache PIX details",
+    );
   }
 }
 
