@@ -18,6 +18,11 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
 
+// These route tests do trivial work (~65ms in isolation) but the default 5000ms
+// timeout is sporadically exceeded under the full-suite vitest thread pool when the
+// cross-workspace gate runs many packages concurrently — spurious red. Give headroom.
+vi.setConfig({ testTimeout: 20000 });
+
 async function buildTestServer() {
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
