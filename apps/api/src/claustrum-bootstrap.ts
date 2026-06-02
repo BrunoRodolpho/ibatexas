@@ -405,9 +405,9 @@ function installFirstPartyPacks(): void {
         installPack(value);
       }
     } catch (err) {
-      console.warn(
-        `[claustrum-bootstrap] Pack '${packName}' could not be installed (likely not yet workspace-published):`,
-        (err as Error).message,
+      logger.warn(
+        { component: "startup", pack: packName, err: (err as Error).message },
+        "Pack could not be installed (likely not yet workspace-published)",
       );
     }
   }
@@ -498,8 +498,13 @@ function noopHandoff(): HandoffPort {
   return {
     async queue(envelope: IntentEnvelope, reason: string): Promise<void> {
       // TODO: wire Slack/PagerDuty. For now, fail-loud in logs only.
-      console.warn(
-        `[handoff.noop] envelope intentHash=${(envelope as { intentHash?: string }).intentHash ?? "?"} reason=${reason}`,
+      logger.warn(
+        {
+          component: "handoff",
+          intentHash: (envelope as { intentHash?: string }).intentHash ?? "?",
+          reason,
+        },
+        "handoff queued (noop — Slack/PagerDuty not wired)",
       );
     },
   };
@@ -762,9 +767,9 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   const auditSink = createPostgresSink({
     writer: auditWriter,
     onError: (err) =>
-      console.error(
-        "[claustrum-bootstrap] audit sink emit failed:",
-        err.message,
+      logger.error(
+        { component: "audit-sink", err: err.message },
+        "audit sink emit failed",
       ),
   });
   // TODO(Stage 3): wire createRedisLedger({ client: redis, keyFor: rk }) for
@@ -832,8 +837,9 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
       }),
     );
   } else {
-    console.warn(
-      "[claustrum-bootstrap] WhatsApp channel disabled — TWILIO_* env vars not set",
+    logger.warn(
+      { component: "startup" },
+      "WhatsApp channel disabled — TWILIO_* env vars not set",
     );
   }
 

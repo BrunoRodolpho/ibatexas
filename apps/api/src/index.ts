@@ -97,8 +97,8 @@ const start = async (): Promise<void> => {
       }
 
       // Route unhandled subscriber-loop errors to the DLQ (+ Sentry) instead of
-      // dropping them in the nats-client's bare console.error (P1-ERR-NATSLOOP).
-      // nats-client can't import pushToDlq directly (package → app), so inject it.
+      // only logging them in nats-client (P1-ERR-NATSLOOP). nats-client can't
+      // import pushToDlq directly (package → app), so inject it.
       setDlqHandler((event, payload, error) =>
         pushToDlq(event, payload, error, server.log),
       );

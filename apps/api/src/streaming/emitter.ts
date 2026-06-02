@@ -27,6 +27,7 @@
 import { EventEmitter } from "node:events";
 import type { StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk } from "@ibatexas/tools";
+import logger from "../lib/logger.js";
 
 /** A chunk as carried over Redis: the payload plus its monotonic sequence. */
 interface SeqChunk {
@@ -123,9 +124,9 @@ async function publishChunk(sessionId: string, payload: SeqChunk): Promise<void>
     // Non-fatal: a same-replica consumer still gets chunks via the EventEmitter,
     // and a cross-replica consumer will surface "Sessão não encontrada." rather
     // than a crash. Mirrors the existing best-effort Redis logging convention.
-    console.error(
-      "[stream] Redis fan-out failed:",
-      (err as Error).message,
+    logger.error(
+      { component: "stream", err: (err as Error).message },
+      "Redis fan-out failed",
     );
   }
 }
@@ -200,7 +201,7 @@ export async function subscribeToStream(
   try {
     history = await base.lRange(replayKey(sessionId), 0, -1);
   } catch (err) {
-    console.error("[stream] Redis replay read failed:", (err as Error).message);
+    logger.error({ component: "stream", err: (err as Error).message }, "Redis replay read failed");
   }
 
   // Nothing in history and nothing buffered live → session unknown to cluster.
