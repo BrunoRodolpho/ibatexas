@@ -755,6 +755,10 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     client: anthropicClient as unknown as ConstructorParameters<
       typeof AnthropicProvider
     >[0]["client"],
+    // Route the provider's non-fatal warnings (max_tokens fallback) through the
+    // structured logger so they reach VictoriaLogs (cycle-36 L5 sweep) instead
+    // of a bare console.warn in the adapter.
+    onWarn: (message, fields) => logger.warn(fields, message),
   });
 
   // pgPool (created above, before the audit-readiness probe) backs both the
