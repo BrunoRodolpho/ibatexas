@@ -76,8 +76,7 @@ async function checkRateLimit(
   redis: Awaited<ReturnType<typeof getRedisClient>>,
   fromPhone: string,
 ): Promise<boolean> {
-  // Keyed HMAC, full-length — centralized in ../lib/phone-hash.ts. (The legacy
-  // whatsapp/session.ts module re-exports the same helper.)
+  // Keyed HMAC, full-length — centralized in ../lib/phone-hash.ts.
   const hash = hashPhone(fromPhone);
   const key = rk(`wa:rate:${hash}`);
   const count = await atomicIncr(redis, key, 60);
@@ -172,8 +171,8 @@ type LogFn = {
 };
 
 // Max wall-clock for a single WhatsApp turn (P2-CONC-ABORT). A hung provider
-// must not pin the turn open forever (Twilio already got its 200). Mirrors the
-// 60s guard in whatsapp/formatter.ts; overridable via env (Hard Rule #3).
+// must not pin the turn open forever (Twilio already got its 200); overridable
+// via env (Hard Rule #3).
 const WA_TURN_TIMEOUT_MS = Number.parseInt(process.env.WA_TURN_TIMEOUT_MS ?? "60000", 10);
 
 async function handleInboundAsync(
