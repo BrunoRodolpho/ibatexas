@@ -1,6 +1,20 @@
 // Unit tests for /api/me routes — LGPD data export and anonymization
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Conductor is unconditional post-cutover; a permissive EXECUTE conductor lets the
+// gateway run the route's domain mutation (behaviour-preserving for these tests).
+vi.mock("../claustrum-bootstrap.js", () => {
+  const conductor = { adjudicator: { adjudicate: async () => ({ kind: "EXECUTE", basis: [] }) } };
+  return {
+    getConductor: () => conductor,
+    tryGetConductor: () => conductor,
+    policyForKind: () => ({
+      stateGuards: [], authGuards: [], business: [],
+      taint: { minimumFor: () => "UNTRUSTED" }, default: "EXECUTE",
+    }),
+  };
+});
 import Fastify from "fastify";
 import {
   serializerCompiler,

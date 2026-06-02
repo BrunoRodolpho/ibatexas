@@ -25,7 +25,6 @@ import { buildEnvelope, deriveIntentHash } from "@adjudicate/core";
 import {
   getConductor,
   policyForKind,
-  tryGetConductor,
 } from "../../claustrum-bootstrap.js";
 
 // ── Narrowed envelope shape ─────────────────────────────────────────────────
@@ -298,11 +297,8 @@ export async function adjudicateCustomerMutation<T>(opts: {
   /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
   readonly legacy: () => Promise<T>;
 }): Promise<MutationOutcome<T>> {
-  if (tryGetConductor() === null) {
-    return { ran: true, result: await opts.legacy() };
-  }
-  // Routed path only — resolve lazy payload/state here so their (possibly expensive)
-  // assembly never runs on the inert path above. Override the eager values.
+  // Resolve lazy payload/state here so an expensive assembly happens only as the
+  // mutation is adjudicated. Override the eager values.
   const payload = opts.resolvePayload ? await opts.resolvePayload() : opts.payload;
   const state = opts.resolveState ? await opts.resolveState() : opts.state;
   const envelope = buildEnvelope({
@@ -367,9 +363,6 @@ export async function adjudicateStaffMutation<T>(opts: {
   /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
   readonly legacy: () => Promise<T>;
 }): Promise<MutationOutcome<T>> {
-  if (tryGetConductor() === null) {
-    return { ran: true, result: await opts.legacy() };
-  }
   const envelope = buildEnvelope({
     kind: opts.kind,
     payload: opts.payload,
@@ -422,9 +415,6 @@ export async function adjudicateSystemMutation<T>(opts: {
   /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
   readonly legacy: () => Promise<T>;
 }): Promise<MutationOutcome<T>> {
-  if (tryGetConductor() === null) {
-    return { ran: true, result: await opts.legacy() };
-  }
   const envelope = buildEnvelope({
     kind: opts.kind,
     payload: opts.payload,

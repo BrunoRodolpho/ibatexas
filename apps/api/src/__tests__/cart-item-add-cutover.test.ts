@@ -115,18 +115,6 @@ describe("order.item.add cutover — lazy allergen resolution", () => {
     mockMedusaStore.mockResolvedValue({ id: "li_1" });
   });
 
-  it("INERT: legacy add runs and NO Typesense lookup happens (byte-equivalent)", async () => {
-    const app = await buildServer();
-    const res = await addItem(app, { variant_id: "v_1", quantity: 2 });
-    expect(res.statusCode).toBe(201);
-    expect(mockMedusaStore).toHaveBeenCalledWith(
-      "/store/carts/cart_1/line-items",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ variant_id: "v_1", quantity: 2 }) }),
-    );
-    // Lazy resolver must NOT run while inert.
-    expect(mockTypesenseSearch).not.toHaveBeenCalled();
-  });
-
   it("ROUTED: resolves catalog allergens into the envelope payload, then runs legacy on EXECUTE", async () => {
     routeConductor();
     mockTypesenseSearch.mockResolvedValue({ hits: [{ document: { allergens: ["gluten", "lactose"] } }] });

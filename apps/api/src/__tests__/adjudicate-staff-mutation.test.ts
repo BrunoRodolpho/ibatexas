@@ -64,14 +64,6 @@ const base = {
 };
 
 describe("adjudicateStaffMutation — lazy-conductor (staff path)", () => {
-  it("legacy path (no conductor) runs the mutation directly", async () => {
-    h.conductor = null;
-    const legacy = vi.fn(async () => "done");
-    const out = await adjudicateStaffMutation({ ...base, legacy });
-    expect(out).toEqual({ ran: true, result: "done" });
-    expect(legacy).toHaveBeenCalledTimes(1);
-  });
-
   it("routed EXECUTE: adjudicates, then runs the mutation as onExecute", async () => {
     setConductor(async () => decisionExecute([]));
     const legacy = vi.fn(async () => "confirmed");

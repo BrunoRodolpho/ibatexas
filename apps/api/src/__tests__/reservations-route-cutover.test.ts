@@ -54,16 +54,19 @@ vi.mock("../middleware/auth.js", () => ({
   },
 }))
 
-// INERT conductor: tryGetConductor() → null forces the legacy direct path, the
-// only branch exercised pre-activation. getConductor / policyForKind are stubbed
-// so the module imports cleanly without the real (Postgres-backed) bootstrap.
-vi.mock("../claustrum-bootstrap.js", () => ({
-  tryGetConductor: () => null,
-  getConductor: () => {
-    throw new Error("getConductor must not be called on the inert legacy path")
-  },
-  policyForKind: () => null,
-}))
+// Conductor is unconditional post-cutover: a permissive EXECUTE conductor so the
+// route adjudicates and then runs its domain mutation (behaviour-preserving here).
+vi.mock("../claustrum-bootstrap.js", () => {
+  const conductor = { adjudicator: { adjudicate: async () => ({ kind: "EXECUTE", basis: [] }) } }
+  return {
+    tryGetConductor: () => conductor,
+    getConductor: () => conductor,
+    policyForKind: () => ({
+      stateGuards: [], authGuards: [], business: [],
+      taint: { minimumFor: () => "UNTRUSTED" }, default: "EXECUTE",
+    }),
+  }
+})
 
 async function buildTestServer() {
   const app = Fastify({ logger: false })

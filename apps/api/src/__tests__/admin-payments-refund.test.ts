@@ -2,6 +2,20 @@
 // All heavy deps mocked so the route collects without the @ibatexas/domain chain.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Conductor is unconditional post-cutover; a permissive EXECUTE conductor lets the
+// gateway run the route's domain mutation (behaviour-preserving for these tests).
+vi.mock("../claustrum-bootstrap.js", () => {
+  const conductor = { adjudicator: { adjudicate: async () => ({ kind: "EXECUTE", basis: [] }) } };
+  return {
+    getConductor: () => conductor,
+    tryGetConductor: () => conductor,
+    policyForKind: () => ({
+      stateGuards: [], authGuards: [], business: [],
+      taint: { minimumFor: () => "UNTRUSTED" }, default: "EXECUTE",
+    }),
+  };
+});
 import Fastify from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 import type { FastifyRequest, FastifyReply } from "fastify";

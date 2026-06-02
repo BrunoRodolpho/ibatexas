@@ -59,14 +59,6 @@ const base = {
 };
 
 describe("adjudicateSystemMutation — lazy-conductor (system path)", () => {
-  it("legacy path (no conductor) runs the mutation directly", async () => {
-    h.conductor = null;
-    const legacy = vi.fn(async () => "reconciled");
-    const out = await adjudicateSystemMutation({ ...base, legacy });
-    expect(out).toEqual({ ran: true, result: "reconciled" });
-    expect(legacy).toHaveBeenCalledTimes(1);
-  });
-
   it("routed EXECUTE: adjudicates, then runs the mutation", async () => {
     setConductor(async () => decisionExecute([]));
     const legacy = vi.fn(async () => "reconciled");
