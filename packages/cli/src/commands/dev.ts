@@ -139,6 +139,17 @@ async function pcStart(
   console.log(chalk.bold.blue("\n  IbateXas Dev Environment\n"))
   console.log(chalk.gray(`  process-compose ${args.join(" ")}\n`))
 
+  // Layer 6 — surface where to watch the system once it's up. Shown whenever the
+  // bring-up includes infra (default / "all"), i.e. when VictoriaLogs is started.
+  if (!skipDocker && (processes.length === 0 || processes.includes("infra"))) {
+    const vlUrl = process.env.VICTORIALOGS_URL ?? "http://localhost:9428"
+    const level = process.env.LOG_LEVEL ?? "info"
+    console.log(chalk.bold("  Observability"))
+    console.log(`    ${chalk.cyan("Logs UI")}  ${vlUrl}  ${chalk.gray("(VictoriaLogs — LogsQL + web UI)")}`)
+    console.log(`    ${chalk.cyan("Watch  ")}  ${chalk.gray("ibx logs --follow  ·  ibx obs decisions -f  ·  ibx status")}`)
+    console.log(`    ${chalk.cyan("Level  ")}  LOG_LEVEL=${level}  ${chalk.gray("(set LOG_LEVEL=debug for verbose)")}\n`)
+  }
+
   try {
     await execa("process-compose", args, {
       cwd: ROOT,
