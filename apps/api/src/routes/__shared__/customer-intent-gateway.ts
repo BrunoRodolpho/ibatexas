@@ -238,39 +238,30 @@ export function replyForIntent(reply: FastifyReply, result: IntentResult): Fasti
   }
 }
 
-// ── Lazy-conductor adapter (RC-A1 Phase B) ───────────────────────────────────
+// ── Kernel-adjudicated mutation wrappers ─────────────────────────────────────
 
 export type MutationOutcome<T> =
   | { readonly ran: true; readonly result: T }
   | { readonly ran: false; readonly intent: IntentResult };
 
 /**
- * Run a single customer-driven mutation under the lazy-conductor pattern.
+ * Run a single customer-driven mutation through the kernel.
  *
- * Pre-activation (`tryGetConductor()` → null): runs the legacy direct mutation,
- * BYTE-EQUIVALENT to pre-cutover behaviour. Post-activation: builds a
- * `principal:"user"` IntentEnvelope, resolves the per-kind PolicyBundle, submits
- * it through the Adjudicator port, and runs the mutation ONLY on EXECUTE (as the
- * `onExecute` callback). A non-EXECUTE decision (REFUSE/DEFER/…) runs no mutation
- * and is returned as a typed `IntentResult` for `replyForIntent`.
- *
- * This is the per-route seam the activation flip closes: until
- * `bootstrapClaustrum()` is called every caller is inert (legacy path); after,
- * every caller routes through the kernel. The legacy branch here is removed in
- * the same atomic commit as the flip (no permanent dual-path drift).
+ * Builds a `principal:"user"` IntentEnvelope, resolves the per-kind PolicyBundle,
+ * submits it through the Adjudicator port, and runs the mutation ONLY on EXECUTE
+ * (as the `onExecute` callback). A non-EXECUTE decision (REFUSE/DEFER/…) runs no
+ * mutation and is returned as a typed `IntentResult` for `replyForIntent`.
  */
 export async function adjudicateCustomerMutation<T>(opts: {
   readonly kind: string;
   readonly payload: unknown;
   /**
-   * Optional LAZY payload resolver (RC-A1 Chunk 1b / D-21.4). When present it is
-   * invoked ONLY on the routed (post-activation) path and its result OVERRIDES
-   * `payload` for the envelope. The inert branch returns BEFORE building the
-   * envelope, so an expensive payload assembly (e.g. catalog allergen lookup for
-   * order.item.add) never runs while inert — keeping the legacy path byte-equivalent
-   * (no extra call/latency/failure surface). Fail-closed: the resolver should return
-   * a payload the kernel REFUSEs (e.g. `allergens: null`) rather than one that
-   * guesses, when it cannot produce a guard-valid value.
+   * Optional LAZY payload resolver. When present it is invoked before the envelope
+   * is built and its result OVERRIDES `payload`, so an expensive payload assembly
+   * (e.g. catalog allergen lookup for order.item.add) runs only as the mutation is
+   * adjudicated. Fail-closed: the resolver should return a payload the kernel
+   * REFUSEs (e.g. `allergens: null`) rather than one that guesses, when it cannot
+   * produce a guard-valid value.
    */
   readonly resolvePayload?: () => Promise<unknown>;
   /**
@@ -288,13 +279,13 @@ export async function adjudicateCustomerMutation<T>(opts: {
   /** Domain state the kind's PolicyBundle guards inspect (caller assembles). */
   readonly state: unknown;
   /**
-   * Optional LAZY state resolver (RC-A1 Chunk 7 / D-24), sibling of `resolvePayload`.
-   * Invoked ONLY on the routed path and OVERRIDES `state` — so an expensive state
-   * assembly (e.g. reading the Medusa cart total for `confirmLargeTicket` at checkout)
-   * never runs while inert, keeping the legacy path byte-equivalent.
+   * Optional LAZY state resolver, sibling of `resolvePayload`. Invoked before the
+   * envelope is built and OVERRIDES `state` — so an expensive state assembly (e.g.
+   * reading the Medusa cart total for `confirmLargeTicket` at checkout) runs only as
+   * the mutation is adjudicated.
    */
   readonly resolveState?: () => Promise<unknown>;
-  /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
+  /** The mutation closure — run only on an EXECUTE decision (as `onExecute`). */
   readonly legacy: () => Promise<T>;
 }): Promise<MutationOutcome<T>> {
   // Resolve lazy payload/state here so an expensive assembly happens only as the
@@ -332,9 +323,9 @@ export async function adjudicateCustomerMutation<T>(opts: {
 }
 
 /**
- * Staff sibling of {@link adjudicateCustomerMutation} (RC-A1 Phase B).
+ * Staff sibling of {@link adjudicateCustomerMutation}.
  *
- * Same lazy-conductor seam, two deliberate differences for the staff/admin path:
+ * Two deliberate differences for the staff/admin path:
  *   - `taint: "TRUSTED"` (vs UNTRUSTED) — the route attaches it AFTER
  *     `requireStaff`/`requireManagerRole` has authenticated a staff JWT, so the
  *     LLM can never forge a staff money action. (The pack's own doc: "the route
@@ -348,10 +339,9 @@ export async function adjudicateCustomerMutation<T>(opts: {
  * Decision routing is actor-agnostic, so this reuses `runCustomerIntent` (a
  * staff envelope is `principal:"user"`, so it passes `isCustomerEnvelope`); the
  * customer/staff distinction is taint + payload, enforced by the pack policy, not
- * by this gateway. Pre-activation (`tryGetConductor()` → null): legacy direct
- * mutation, byte-equivalent. Post-activation: TRUSTED envelope → adjudicate →
- * mutate ONLY on EXECUTE; non-EXECUTE (e.g. the refund magnitude ladder's
- * REQUEST_CONFIRMATION / ESCALATE) → typed IntentResult for `replyForIntent`.
+ * by this gateway. TRUSTED envelope → adjudicate → mutate ONLY on EXECUTE;
+ * non-EXECUTE (e.g. the refund magnitude ladder's REQUEST_CONFIRMATION /
+ * ESCALATE) → typed IntentResult for `replyForIntent`.
  */
 export async function adjudicateStaffMutation<T>(opts: {
   readonly kind: string;
@@ -360,7 +350,7 @@ export async function adjudicateStaffMutation<T>(opts: {
   readonly staffId: string;
   /** Domain state the kind's PolicyBundle guards inspect (caller assembles). */
   readonly state: unknown;
-  /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
+  /** The mutation closure — run only on an EXECUTE decision (as `onExecute`). */
   readonly legacy: () => Promise<T>;
 }): Promise<MutationOutcome<T>> {
   const envelope = buildEnvelope({
@@ -388,7 +378,7 @@ export async function adjudicateStaffMutation<T>(opts: {
 
 /**
  * System sibling of {@link adjudicateCustomerMutation} / {@link adjudicateStaffMutation}
- * (RC-A1 Phase B — the background/webhook path).
+ * (the background/webhook path).
  *
  * For SYSTEM-originated mutations (Stripe webhook reconciliation, cron jobs): a
  * `principal:"system"` envelope with `taint:"TRUSTED"`. Unlike the customer/staff
@@ -399,11 +389,10 @@ export async function adjudicateStaffMutation<T>(opts: {
  * at adjudicate-time regardless. So this adjudicates directly through the Adjudicator
  * port.
  *
- * Pre-activation (`tryGetConductor()` → null): runs the legacy mutation directly,
- * byte-equivalent. Post-activation: TRUSTED system envelope → adjudicate → run the
- * mutation ONLY on EXECUTE. A non-EXECUTE decision runs no mutation and is returned as
- * a typed refuse `IntentResult` so the caller can log/observe it — a webhook caller
- * should SKIP (not throw) on a deterministic policy REFUSE, to avoid an infinite retry.
+ * TRUSTED system envelope → adjudicate → run the mutation ONLY on EXECUTE. A
+ * non-EXECUTE decision runs no mutation and is returned as a typed refuse
+ * `IntentResult` so the caller can log/observe it — a webhook caller should SKIP
+ * (not throw) on a deterministic policy REFUSE, to avoid an infinite retry.
  */
 export async function adjudicateSystemMutation<T>(opts: {
   readonly kind: string;
@@ -412,7 +401,7 @@ export async function adjudicateSystemMutation<T>(opts: {
   readonly sessionId: string;
   /** Domain state the kind's PolicyBundle guards inspect (caller assembles). */
   readonly state: unknown;
-  /** Legacy direct mutation. Unconditional pre-activation; EXECUTE-gated post. */
+  /** The mutation closure — run only on an EXECUTE decision (as `onExecute`). */
   readonly legacy: () => Promise<T>;
 }): Promise<MutationOutcome<T>> {
   const envelope = buildEnvelope({

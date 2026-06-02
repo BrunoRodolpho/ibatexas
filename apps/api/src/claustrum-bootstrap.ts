@@ -158,18 +158,6 @@ export function getConductor(): Conductor {
   return _conductor;
 }
 
-/**
- * Non-throwing conductor accessor for the lazy-conductor route pattern (RC-A1
- * Phase B). Returns `null` when the conductor is not yet bootstrapped (the
- * inert, pre-activation state) so a route can fall back to its legacy direct
- * path. Post-activation (`bootstrapClaustrum()` called) it returns the live
- * conductor and the route adjudicates the mutation through the kernel. The
- * legacy fallback is removed in the same commit as the activation flip.
- */
-export function tryGetConductor(): Conductor | null {
-  return _conductor;
-}
-
 // ── Adjudicator bridge ───────────────────────────────────────────────────────
 
 /**
