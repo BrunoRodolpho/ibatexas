@@ -31,6 +31,9 @@ import { registerStripeCommands } from "./commands/stripe.js"
 import { registerChatCommands } from "./commands/chat.js"
 import { registerDlqCommands } from "./commands/dlq.js"
 import { registerOrdersCommands } from "./commands/orders.js"
+import { registerLogsCommands } from "./commands/logs.js"
+import { registerObsCommands } from "./commands/obs.js"
+import { registerStatusCommands } from "./commands/status.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Load CLI-specific config first, then root config (root config takes priority)
@@ -198,6 +201,15 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Observability",
+      commands: [
+        { usage: "status",                 desc: "Fast stack health — infra + api/conductor + logs UI" },
+        { usage: "logs [component]",       desc: "Query/tail structured logs (--level, --turn, --decisions, -f)" },
+        { usage: "obs decisions",          desc: "Watch kernel decisions + refusals (-f to follow)" },
+        { usage: "obs turn <turnId>",      desc: "Show one turn's full trace by correlationId" },
+      ],
+    },
+    {
       title: "Network",
       commands: [
         { usage: "tunnel [-p port]",     desc: "Expose local API via ngrok for WhatsApp webhook testing" },
@@ -324,7 +336,10 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "stripe",  register: registerStripeCommands, description: "Stripe — payments and webhook testing" },
   { name: "dlq",     register: registerDlqCommands,     description: "Dead Letter Queue — inspect, replay, and purge failed events" },
   { name: "orders",  register: registerOrdersCommands,  description: "Orders — projection management and debugging" },
-  { name: "kernel",  register: registerKernelCommands,  description: "Kernel — RC-A1 audit schema provisioning (intent_audit)" },
+  { name: "kernel",  register: registerKernelCommands,  description: "Kernel — audit schema provisioning (intent_audit)" },
+  { name: "status",  register: registerStatusCommands,  description: "Status — fast stack health (infra + api/conductor + logs UI)" },
+  { name: "logs",    register: registerLogsCommands,    description: "Logs — query/tail the structured app logs (VictoriaLogs)" },
+  { name: "obs",     register: registerObsCommands,     description: "Observability — watch kernel decisions and per-turn traces" },
 ]
 
 for (const { name, register, description } of groupedCommands) {

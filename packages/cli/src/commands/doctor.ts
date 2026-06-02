@@ -116,6 +116,7 @@ export function registerDoctorCommands(program: Command): void {
       await runInfraCheck(results, "Postgres", checkPostgresHealth)
       await runInfraCheck(results, "Redis", checkRedisHealth)
       await runInfraCheck(results, "Typesense", checkTypesenseHealth)
+      await runInfraCheck(results, "VictoriaLogs", checkVictoriaLogsHealth)
 
       // ── 2. Data Integrity ─────────────────────────────────────────────
       console.log(chalk.bold("\n  Data Integrity"))
@@ -201,6 +202,22 @@ async function checkTypesenseHealth(): Promise<{ status: DiagStatus; detail: str
     return { status: "ok", detail: "connected (8108)" }
   } catch {
     return { status: "error", detail: "connection failed" }
+  }
+}
+
+async function checkVictoriaLogsHealth(): Promise<{ status: DiagStatus; detail: string }> {
+  const url = process.env.VICTORIALOGS_URL
+  // Observability is non-critical: a down/absent log store degrades visibility
+  // but never fails a turn (logs still go to stdout). So these are warns, not
+  // errors — --ci stays green on them.
+  if (!url) return { status: "warn", detail: "VICTORIALOGS_URL not set — log shipping off (ibx logs disabled)" }
+  try {
+    const res = await fetch(`${url.replace(/\/+$/, "")}/health`, { signal: AbortSignal.timeout(5000) })
+    return res.ok
+      ? { status: "ok", detail: `connected (${url})` }
+      : { status: "warn", detail: `HTTP ${res.status} — logs still go to stdout` }
+  } catch {
+    return { status: "warn", detail: "unreachable — run 'ibx dev start'; logs still go to stdout" }
   }
 }
 
