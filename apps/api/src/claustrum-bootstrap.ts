@@ -118,6 +118,9 @@ import { getRedisClient } from "@ibatexas/tools";
 // first-party packs. INERT until bootstrapClaustrum() is called.
 import type { CapabilityPlanner } from "@adjudicate/core/llm";
 import type { PolicyBundle } from "@adjudicate/core/kernel";
+import { setMetricsSink } from "@adjudicate/core/kernel";
+import { createIbatexasMetricsSink } from "./observability/metrics-sink.js";
+import { logger } from "./lib/logger.js";
 import { ordersPack, ordersCapabilityPlanner } from "@ibatexas/pack-orders";
 import { paymentsPack, paymentsCapabilityPlanner } from "@ibatexas/pack-payments";
 import {
@@ -679,7 +682,16 @@ function redisSessionStore(): SessionPort {
 function fastifyTelemetry(): TelemetryPort {
   return {
     async emitTurn(record: TurnRecord) {
-      console.log(`[telemetry.turn] ${record.turnId} ${record.durationMs}ms`);
+      logger.info(
+        {
+          component: "conductor",
+          event: "turn",
+          correlationId: record.turnId,
+          turnId: record.turnId,
+          durationMs: record.durationMs,
+        },
+        `turn ${record.turnId} ${record.durationMs}ms`,
+      );
     },
     async emitLLMTrace(_trace) {
       // TODO: persist to dedicated LLM-trace store (NOT the audit ledger).
@@ -725,6 +737,12 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   if (_conductor) return _conductor;
 
   installFirstPartyPacks();
+
+  // Live decision observability — install the structured MetricsSink so every
+  // kernel decision / refusal / ledger op / audit-sink failure emits a
+  // correlated log line (joined to the intent_audit row by intentHash). This is
+  // an OBSERVER: the kernel's hashed/canonical path is untouched (core 456).
+  setMetricsSink(createIbatexasMetricsSink(logger));
 
   // Audit infra — the Postgres sink is the durable AuditRecord store
   // (`intent_audit`). The bridge fails CLOSED if this sink throws, so an
