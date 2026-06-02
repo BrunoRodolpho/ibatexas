@@ -49,6 +49,7 @@ import {
   type AuditVerification,
   type Capsule,
   type ChannelDriver,
+  type ConfirmationReceipt,
   type Conductor,
   type ExplainerPort,
   type HandoffPort,
@@ -207,6 +208,25 @@ export function buildAdjudicator(deps: AdjudicatorBridgeDeps): Adjudicator {
         policy,
       );
     },
+    async resume(envelope, state, policy, receipt): Promise<Decision> {
+      // Resume = RE-ADJUDICATE a parked envelope through the SAME audited
+      // kernel path (one AuditRecord emitted BEFORE the caller dispatches).
+      // The kernel re-runs every state/taint/auth guard against the supplied
+      // (fresh, this-turn) state; the confirmation receipt only satisfies the
+      // "ask the user first" threshold (REQUEST_CONFIRMATION → EXECUTE) and is
+      // ignored if the re-adjudication returns anything else. A state change
+      // that now REFUSEs is returned unchanged — never overridden by the
+      // receipt (money-safety / the audit invariant). Omitting the receipt
+      // (a deferred envelope whose condition is now met) is a plain
+      // re-adjudication: EXECUTE only if the guards naturally pass.
+      return safeAuditedAdjudicate(
+        deps,
+        envelope as IntentEnvelope,
+        state,
+        policy,
+        receipt,
+      );
+    },
     async adjudicatePlan(envelopes, state, policy): Promise<Decision> {
       // @adjudicate/core 1.x exposes only the single-envelope verb; serialize
       // multi-envelope plans (kill-all-or-execute-all). When 2.x ships
@@ -314,6 +334,7 @@ async function safeAuditedAdjudicate(
   envelope: IntentEnvelope,
   state: unknown,
   policy: unknown,
+  receipt?: ConfirmationReceipt,
 ): Promise<Decision> {
   if (!isWellFormedPolicyBundle(policy)) {
     // Fail closed: no PolicyBundle => no authority to mutate. The kernel
@@ -332,6 +353,13 @@ async function safeAuditedAdjudicate(
     // PolicyBundle<string, unknown, unknown>; `state` infers to `unknown` (= S).
     // (Was `state as never`/`policy as never` — `never` is an unsound lie that
     // would hide a real shape mismatch; the routed-but-inert path made it linger.)
+    //
+    // `receipt` (the resume path) maps onto the kernel's confirmationReceipt:
+    // when present and the re-adjudication returns REQUEST_CONFIRMATION for the
+    // matching intentHash, the kernel substitutes EXECUTE + a
+    // `confirmation_resolved` supersession link. Absent → ordinary adjudication.
+    // The ConfirmationReceipt shape is structurally identical to the kernel's
+    // confirmationReceipt dep (intentHash/at/originalAt?/token?).
     const result = await adjudicateAndAudit(
       envelope,
       state,
@@ -339,6 +367,7 @@ async function safeAuditedAdjudicate(
       {
         sink: deps.sink,
         ...(deps.ledger ? { ledger: deps.ledger } : {}),
+        ...(receipt ? { confirmationReceipt: receipt } : {}),
       },
     );
     return result.decision;
