@@ -6,6 +6,9 @@ import { SubmitReviewInputSchema, NonRetryableError, type SubmitReviewInput, typ
 import { createCustomerService } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
+import { toolLog } from "../logger.js";
+
+const log = toolLog("tools:intelligence");
 
 export async function submitReview(
   input: SubmitReviewInput,
@@ -49,7 +52,7 @@ export async function submitReview(
     rating,
     reviewCount,
     newAvgRating: avgRating,
-  }).catch((err) => console.error("[submit_review] NATS publish error:", (err as Error).message));
+  }).catch((err) => log.error({ err: (err as Error).message }, "submit_review: NATS publish error"));
 
   const stars = "⭐".repeat(rating);
   return {

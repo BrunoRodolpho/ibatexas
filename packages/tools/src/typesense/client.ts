@@ -4,6 +4,9 @@
 import { Client } from "typesense"
 import { EMBED_DIM } from "../config.js"
 import { isTypesenseError } from "./types.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:typesense")
 
 /** Collection name — allows test isolation and multi-tenant deployments */
 export const COLLECTION = process.env.TYPESENSE_COLLECTION_NAME || "products"
@@ -85,7 +88,7 @@ export async function ensureCollectionExists(): Promise<void> {
       // Collection doesn't exist; create it
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await typesenseClient.collections().create(PRODUCTS_COLLECTION_SCHEMA as any)
-      console.warn(`[Typesense] Created ${COLLECTION} collection`)
+      log.info({ collection: COLLECTION }, "Created collection")
     } else {
       throw err
     }
@@ -108,5 +111,5 @@ export async function recreateCollection(): Promise<void> {
   }
 
   await ensureCollectionExists()
-  console.warn(`[Typesense] Recreated ${COLLECTION} collection`)
+  log.info({ collection: COLLECTION }, "Recreated collection")
 }

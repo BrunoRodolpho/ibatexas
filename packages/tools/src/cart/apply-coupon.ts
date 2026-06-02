@@ -3,6 +3,9 @@
 import { ApplyCouponInputSchema, type ApplyCouponInput, type AgentContext } from "@ibatexas/types";
 import { medusaStoreFetch } from "./_shared.js";
 import { assertCartOwnership } from "./assert-cart-ownership.js";
+import { toolLog } from "../logger.js";
+
+const log = toolLog("tools:cart");
 
 export async function applyCoupon(
   input: ApplyCouponInput,
@@ -16,7 +19,7 @@ export async function applyCoupon(
       body: JSON.stringify({ promo_codes: [parsed.code] }),
     });
   } catch (err) {
-    console.error("[apply_coupon] Medusa error:", (err as Error).message);
+    log.error({ err: (err as Error).message }, "apply_coupon: Medusa error");
     return { success: false, message: "Cupom inválido ou erro ao aplicar desconto. Verifique o código e tente novamente." };
   }
 }

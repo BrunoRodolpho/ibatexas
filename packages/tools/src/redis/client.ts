@@ -2,6 +2,9 @@
 // Single connection reused across embeddings, query cache, and embedding cache
 
 import { createClient } from "redis"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:redis")
 
 type RedisClientType = ReturnType<typeof createClient>
 
@@ -46,7 +49,7 @@ export async function getRedisClient(): Promise<RedisClientType> {
     })
     // Only log on transient errors; do NOT nullify singleton (fights auto-reconnect)
     client.on("error", (err) => {
-      console.error("[Redis] Client error:", (err as Error).message)
+      log.error({ err: (err as Error).message }, "Client error")
     })
     // Only nullify on permanent disconnect ('end' event) so next call reconnects
     client.on("end", () => {

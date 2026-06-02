@@ -3,13 +3,24 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { ReservationStatus, TableLocation, type ReservationDTO, type WaitlistDTO } from "@ibatexas/types"
+import { setToolsLogger } from "../../logger.js"
 import {
   sendReservationConfirmation,
   notifyWaitlistSpotAvailable,
 } from "../notifications.js"
 
-// Capture console.warn calls to verify message content
-const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+// Capture structured log calls via the injected logger to verify payload content.
+// notifications.ts now logs through @ibatexas/tools' StructuredLogger port; the
+// stub/error payload is the first arg, the human message the second.
+const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+setToolsLogger(logger)
+
+type StubPayload = {
+  event: string
+  phone_present: boolean
+  customerId?: string
+  message: string
+}
 
 const baseReservation: ReservationDTO = {
   id: "res_01",
@@ -34,16 +45,15 @@ const baseReservation: ReservationDTO = {
 
 describe("sendReservationConfirmation", () => {
   beforeEach(() => {
-    consoleWarnSpy.mockClear()
+    logger.warn.mockClear()
   })
 
   it("logs a WhatsApp confirmation message (no raw phone — LGPD)", async () => {
     await sendReservationConfirmation(baseReservation, "+5511999999999")
 
-    expect(consoleWarnSpy).toHaveBeenCalledOnce()
-    const logArgs = consoleWarnSpy.mock.calls[0]!
-    expect(logArgs[0]).toContain("[whatsapp.stub]")
-    const payload = logArgs[1] as { phone_present: boolean; customerId: string; message: string }
+    expect(logger.warn).toHaveBeenCalledOnce()
+    const payload = logger.warn.mock.calls[0]![0] as StubPayload
+    expect(payload.event).toBe("whatsapp_stub")
     // The raw phone must never be logged — only a presence boolean.
     expect(payload.phone_present).toBe(true)
     expect(payload.customerId).toBe("cust_01")
@@ -58,8 +68,7 @@ describe("sendReservationConfirmation", () => {
     // Fix: appending T12:00:00Z before parsing prevents the off-by-one
     await sendReservationConfirmation(baseReservation)
 
-    const logArgs = consoleWarnSpy.mock.calls[0]!
-    const payload = logArgs[1] as { message: string }
+    const payload = logger.warn.mock.calls[0]![0] as StubPayload
     // Should contain "15" (the correct day), not "14"
     expect(payload.message).toMatch(/15/)
     expect(payload.message).not.toMatch(/14 de março/)
@@ -68,8 +77,7 @@ describe("sendReservationConfirmation", () => {
   it("logs phone_present=false and customerId when phone not provided", async () => {
     await sendReservationConfirmation(baseReservation)
 
-    const logArgs = consoleWarnSpy.mock.calls[0]!
-    const payload = logArgs[1] as { phone_present: boolean; customerId: string }
+    const payload = logger.warn.mock.calls[0]![0] as StubPayload
     expect(payload.phone_present).toBe(false)
     expect(payload.customerId).toBe("cust_01")
   })
@@ -78,8 +86,7 @@ describe("sendReservationConfirmation", () => {
     const solo = { ...baseReservation, partySize: 1 }
     await sendReservationConfirmation(solo)
 
-    const logArgs = consoleWarnSpy.mock.calls[0]!
-    const payload = logArgs[1] as { message: string }
+    const payload = logger.warn.mock.calls[0]![0] as StubPayload
     expect(payload.message).toContain("1 pessoa")
     expect(payload.message).not.toContain("pessoas")
   })
@@ -98,14 +105,14 @@ describe("notifyWaitlistSpotAvailable", () => {
   }
 
   beforeEach(() => {
-    consoleWarnSpy.mockClear()
+    logger.warn.mockClear()
   })
 
   it("logs a waitlist notification message", async () => {
     await notifyWaitlistSpotAvailable(baseWaitlist, "2026-03-15", "19:30")
 
-    expect(consoleWarnSpy).toHaveBeenCalledOnce()
-    const payload = consoleWarnSpy.mock.calls[0]![1] as { message: string }
+    expect(logger.warn).toHaveBeenCalledOnce()
+    const payload = logger.warn.mock.calls[0]![0] as StubPayload
     expect(payload.message).toContain("Vaga disponível")
     expect(payload.message).toContain("19:30")
     expect(payload.message).toContain("30 minutos")
@@ -114,7 +121,7 @@ describe("notifyWaitlistSpotAvailable", () => {
   it("date does NOT show previous day (timezone safety)", async () => {
     await notifyWaitlistSpotAvailable(baseWaitlist, "2026-03-15", "19:30")
 
-    const payload = consoleWarnSpy.mock.calls[0]![1] as { message: string }
+    const payload = logger.warn.mock.calls[0]![0] as StubPayload
     expect(payload.message).toMatch(/15/)
   })
 })

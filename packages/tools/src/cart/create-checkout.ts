@@ -18,6 +18,9 @@ import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { isValidTaxId } from "./set-pix-details.js";
 import { medusaStoreFetch } from "./_shared.js";
+import { toolLog } from "../logger.js";
+
+const log = toolLog("tools:checkout");
 
 // P2-MEM-STRIPENEW: memoize a module-level Stripe client so each checkout reuses
 // one HTTP agent/connection pool instead of constructing `new Stripe(key)` per
@@ -77,8 +80,10 @@ async function confirmPixAndGetQrCode(
 
     // LGPD: never log raw PII (name) outside the audit ledger. Log presence
     // booleans only, mirroring the email masking already used here.
-    console.warn("[create_checkout] Confirming PI %s with PIX (name_present=%s email_present=%s)",
-      paymentIntentId, customer.name ? "true" : "false", customer.email ? "true" : "false");
+    log.info(
+      { paymentIntentId, namePresent: !!customer.name, emailPresent: !!customer.email },
+      "Confirming PI with PIX",
+    );
 
     // PIX requires: name, email, tax_id (CPF/CNPJ).
     // P2-LOGIC-PIXIDENTITY: name + tax_id are the payer's identity and MUST be
@@ -87,7 +92,7 @@ async function confirmPixAndGetQrCode(
     // the payment to the restaurant and break payer reconciliation. Only email
     // (non-identity, but required by Stripe) may fall back to a default inbox.
     if (!customer.name || !customer.taxId || !isValidTaxId(customer.taxId)) {
-      console.error("[create_checkout] PIX confirm blocked — missing/invalid payer identity for PI", paymentIntentId);
+      log.error({ paymentIntentId }, "PIX confirm blocked — missing/invalid payer identity");
       return {
         success: false,
         paymentMethod: "pix",
@@ -124,12 +129,12 @@ async function confirmPixAndGetQrCode(
       };
     };
 
-    console.warn("[create_checkout] PI status=%s next_action=%s", confirmed.status, !!confirmed.next_action);
+    log.info({ paymentIntentId, status: confirmed.status, nextAction: !!confirmed.next_action }, "PIX PI confirmed");
 
     const pixData = confirmed.next_action?.pix_display_qr_code;
 
     if (!pixData?.data && !pixData?.image_url_svg) {
-      console.error("[create_checkout] Stripe PI has no PIX QR data after confirm:", paymentIntentId);
+      log.error({ paymentIntentId }, "Stripe PI has no PIX QR data after confirm");
       return {
         success: false,
         paymentMethod: "pix",
@@ -146,7 +151,7 @@ async function confirmPixAndGetQrCode(
         metadata: { cartId },
       });
     } catch (err) {
-      console.warn("[create_checkout] Failed to set cartId metadata on PI:", (err as Error).message);
+      log.warn({ paymentIntentId, err: (err as Error).message }, "Failed to set cartId metadata on PI");
     }
 
     // Track pending checkout so /account/orders can show it before webhook fires
@@ -177,7 +182,7 @@ async function confirmPixAndGetQrCode(
       message: "PIX gerado com sucesso! Escaneie o QR code ou copie o código PIX. O pedido é confirmado automaticamente após o pagamento.",
     };
   } catch (err) {
-    console.error("[create_checkout] PIX confirm error:", (err as Error).message);
+    log.error({ paymentIntentId, err: (err as Error).message }, "PIX confirm error");
     return {
       success: false,
       paymentMethod: "pix",
@@ -305,11 +310,11 @@ export async function createCheckout(
           method: "POST",
           body: JSON.stringify({ promo_codes: [welcomeCode] }),
         });
-        console.warn(`[checkout] Welcome credit ${welcomeCode} applied for customer ${ctx.customerId}`);
+        log.info({ welcomeCode, customerId: ctx.customerId }, "Welcome credit applied");
       }
     } catch (err) {
       // Medusa rejected the code (expired, already used, or not configured) — continue without discount
-      console.warn(`[checkout] Welcome credit application failed for customer ${ctx.customerId}: ${(err as Error).message}`);
+      log.warn({ customerId: ctx.customerId, err: (err as Error).message }, "Welcome credit application failed");
     }
   }
 
@@ -389,11 +394,11 @@ export async function createCheckout(
         (p) => p.id.includes("stripe"),
       );
       providerId = stripeProvider?.id ?? "pp_stripe_stripe";
-      console.warn("[create_checkout] Resolved Stripe provider_id: %s", providerId);
+      log.debug({ providerId }, "Resolved Stripe provider_id");
     } catch {
       // Fallback to common default
       providerId = "pp_stripe_stripe";
-      console.warn("[create_checkout] Could not query payment providers — using default: %s", providerId);
+      log.warn({ providerId }, "Could not query payment providers — using default");
     }
   }
 
@@ -407,7 +412,7 @@ export async function createCheckout(
   );
 
   // Debug: log the response shape to diagnose Stripe data extraction
-  console.warn("[create_checkout] payment session response: %s", JSON.stringify(rawSessionData).slice(0, 1500));
+  log.debug({ response: JSON.stringify(rawSessionData).slice(0, 1500) }, "payment session response");
 
   // Medusa v2 response shape varies — try multiple extraction paths
   const sessionObj = rawSessionData as Record<string, unknown>;
@@ -422,9 +427,12 @@ export async function createCheckout(
   const clientSecret = (stripeData as { client_secret?: string }).client_secret;
   const paymentIntentId = (stripeData as { id?: string }).id;
 
-  console.warn("[create_checkout] extracted clientSecret=%s paymentIntentId=%s",
-    clientSecret ? "present" : "MISSING",
-    paymentIntentId ?? "MISSING",
+  log.debug(
+    {
+      clientSecret: clientSecret ? "present" : "MISSING",
+      paymentIntentId: paymentIntentId ?? "MISSING",
+    },
+    "extracted payment session fields",
   );
 
   if (paymentMethod === "cash") {
@@ -477,7 +485,7 @@ export async function createCheckout(
         deliveryType: metadata["deliveryType"] ?? "pickup",
         tipInCentavos: tipInCentavos ?? 0,
         items: cartItems,
-      }).catch((err) => console.error("[create_checkout] NATS publish error:", (err as Error).message));
+      }).catch((err) => log.error({ err: (err as Error).message }, "NATS publish error"));
     }
 
     // Untrack completed cart

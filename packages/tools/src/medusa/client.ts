@@ -15,6 +15,10 @@
 // subscribers, catalog enrichment. Throws MedusaRequestError with structured
 // fields (statusCode, responseText).
 
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:medusa")
+
 const MEDUSA_URL = process.env.MEDUSA_URL ?? "http://localhost:9000"
 const DEFAULT_TIMEOUT_MS = 10_000
 
@@ -113,7 +117,7 @@ export async function medusaAdmin(path: string, options?: RequestInit): Promise<
   }
   if (!res.ok) {
     const text = await res.text()
-    console.error(`[medusa-admin] ${res.status} ${path}: ${text}`)
+    log.error({ status: res.status, path, response: text }, "Medusa admin request failed")
     throw new MedusaRequestError(res.status, text, path)
   }
   return res.json()
@@ -170,8 +174,9 @@ export async function medusaStore(path: string, options?: RequestInit): Promise<
   if (!res.ok) {
     const text = await res.text()
     const reqBody = options?.body ? String(options.body).slice(0, 500) : "(no body)"
-    console.error(
-      `[medusa-store] ${res.status} ${path}\n  request: ${reqBody}\n  response: ${text.slice(0, 500)}`,
+    log.error(
+      { status: res.status, path, request: reqBody, response: text.slice(0, 500) },
+      "Medusa store request failed",
     )
     throw new MedusaRequestError(res.status, text, path)
   }

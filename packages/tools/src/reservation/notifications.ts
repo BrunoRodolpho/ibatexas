@@ -4,6 +4,9 @@
 import type { ReservationDTO, WaitlistDTO } from "@ibatexas/types"
 import { getWhatsAppSender } from "../whatsapp/sender.js"
 import { locationLabel, formatDateBR } from "./utils.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:reservation")
 
 const APP_BASE_URL = process.env.APP_BASE_URL || "https://ibatexas.com.br"
 
@@ -35,27 +38,35 @@ export async function sendReservationConfirmation(
   const sender = getWhatsAppSender()
   if (!sender) {
     // LGPD: never log the raw phone — presence boolean + internal id only.
-    console.warn("[whatsapp.stub] Reservation confirmation:", {
+    log.warn({
+      event: "whatsapp_stub",
+      kind: "reservation_confirmation",
       reservationId: reservation.id,
       customerId: reservation.customerId,
       phone_present: !!phone,
       message,
-    })
+    }, "WhatsApp confirmation (sender not configured)")
     return
   }
 
   if (!phone) {
-    console.warn("[whatsapp.notification] No phone number for reservation confirmation:", reservation.id)
+    log.warn({
+      event: "whatsapp_no_phone",
+      kind: "reservation_confirmation",
+      reservationId: reservation.id,
+    }, "No phone number for reservation confirmation")
     return
   }
 
   try {
     await sender.sendText(`whatsapp:${phone}`, message)
   } catch (err) {
-    console.error("[whatsapp.notification.error] Reservation confirmation failed:", {
+    log.error({
+      event: "whatsapp_send_failed",
+      kind: "reservation_confirmation",
       reservationId: reservation.id,
-      error: String(err),
-    })
+      err: String(err),
+    }, "Reservation confirmation failed")
   }
 }
 
@@ -82,7 +93,7 @@ export async function sendReservationModified(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.warn("[whatsapp.stub] Reservation modified:", { reservationId: reservation.id, customerId: reservation.customerId, phone_present: !!phone, message })
+    log.warn({ event: "whatsapp_stub", kind: "reservation_modified", reservationId: reservation.id, customerId: reservation.customerId, phone_present: !!phone, message }, "WhatsApp reservation-modified (sender not configured)")
     return
   }
   if (!phone) return
@@ -90,7 +101,7 @@ export async function sendReservationModified(
   try {
     await sender.sendText(`whatsapp:${phone}`, message)
   } catch (err) {
-    console.error("[whatsapp.notification.error] Reservation modified notification failed:", { reservationId: reservation.id, error: String(err) })
+    log.error({ event: "whatsapp_send_failed", kind: "reservation_modified", reservationId: reservation.id, err: String(err) }, "Reservation modified notification failed")
   }
 }
 
@@ -115,7 +126,7 @@ export async function sendReservationCancelled(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.warn("[whatsapp.stub] Reservation cancelled:", { reservationId, phone_present: !!phone, message })
+    log.warn({ event: "whatsapp_stub", kind: "reservation_cancelled", reservationId, phone_present: !!phone, message }, "WhatsApp reservation-cancelled (sender not configured)")
     return
   }
   if (!phone) return
@@ -123,7 +134,7 @@ export async function sendReservationCancelled(
   try {
     await sender.sendText(`whatsapp:${phone}`, message)
   } catch (err) {
-    console.error("[whatsapp.notification.error] Reservation cancelled notification failed:", { reservationId, error: String(err) })
+    log.error({ event: "whatsapp_send_failed", kind: "reservation_cancelled", reservationId, err: String(err) }, "Reservation cancelled notification failed")
   }
 }
 
@@ -148,7 +159,7 @@ export async function sendReservationReminder(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.warn("[whatsapp.stub] Reservation reminder:", { reservationId: reservation.id, customerId: reservation.customerId, phone_present: !!phone, message })
+    log.warn({ event: "whatsapp_stub", kind: "reservation_reminder", reservationId: reservation.id, customerId: reservation.customerId, phone_present: !!phone, message }, "WhatsApp reservation-reminder (sender not configured)")
     return
   }
   if (!phone) return
@@ -156,7 +167,7 @@ export async function sendReservationReminder(
   try {
     await sender.sendText(`whatsapp:${phone}`, message)
   } catch (err) {
-    console.error("[whatsapp.notification.error] Reservation reminder failed:", { reservationId: reservation.id, error: String(err) })
+    log.error({ event: "whatsapp_send_failed", kind: "reservation_reminder", reservationId: reservation.id, err: String(err) }, "Reservation reminder failed")
   }
 }
 
@@ -187,26 +198,34 @@ export async function notifyWaitlistSpotAvailable(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.warn("[whatsapp.stub] Waitlist notification:", {
+    log.warn({
+      event: "whatsapp_stub",
+      kind: "waitlist_notification",
       waitlistId: waitlist.id,
       customerId: waitlist.customerId,
       phone_present: !!phone,
       message,
-    })
+    }, "WhatsApp waitlist-notification (sender not configured)")
     return
   }
 
   if (!phone) {
-    console.warn("[whatsapp.notification] No phone number for waitlist notification:", waitlist.id)
+    log.warn({
+      event: "whatsapp_no_phone",
+      kind: "waitlist_notification",
+      waitlistId: waitlist.id,
+    }, "No phone number for waitlist notification")
     return
   }
 
   try {
     await sender.sendText(`whatsapp:${phone}`, message)
   } catch (err) {
-    console.error("[whatsapp.notification.error] Waitlist notification failed:", {
+    log.error({
+      event: "whatsapp_send_failed",
+      kind: "waitlist_notification",
       waitlistId: waitlist.id,
-      error: String(err),
-    })
+      err: String(err),
+    }, "Waitlist notification failed")
   }
 }

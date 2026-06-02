@@ -4,6 +4,9 @@
 import { getRedisClient } from "../redis/client.js"
 import { rk } from "../redis/key.js"
 import { EMBED_DIM } from "../config.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:embeddings")
 
 // Use OpenAI embeddings (most reliable)
 async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
@@ -28,7 +31,7 @@ async function generateEmbeddingViaOpenAI(text: string): Promise<number[]> {
 
   if (!response.ok) {
     const errorText = await response.text()
-    console.error("[embeddings] OpenAI API error:", { status: response.status, error: errorText })
+    log.error({ status: response.status, err: errorText }, "OpenAI embeddings API error")
     throw new Error(`Embedding API failed: ${response.statusText}`)
   }
 
@@ -92,7 +95,7 @@ export async function generateEmbedding(
   try {
     embedding = await generateEmbeddingViaOpenAI(text)
   } catch (error) {
-    console.error("[embeddings] Failed to generate embedding:", (error as Error).message)
+    log.error({ err: (error as Error).message }, "Failed to generate embedding (using deterministic fallback)")
     embedding = generateDeterministicEmbedding(text)
   }
 
@@ -103,7 +106,7 @@ export async function generateEmbedding(
   try {
     await redisClient.setEx(cacheKey, ttlSeconds, JSON.stringify(embedding))
   } catch (error) {
-    console.warn("Failed to cache embedding:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Failed to cache embedding")
   }
 
   return embedding
@@ -130,7 +133,7 @@ export async function generateEmbeddingsBatch(
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
       failures.push({ key, error: msg })
-      console.warn(`Embedding failed for ${key}: ${msg}`)
+      log.warn({ key, err: msg }, "Embedding failed")
     }
   }
 

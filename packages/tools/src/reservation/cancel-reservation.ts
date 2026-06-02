@@ -7,6 +7,9 @@ import { CancelReservationInputSchema, type CancelReservationInput, type CancelR
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { withReservationOwnership } from "../guards/with-ownership.js"
 import { notifyWaitlistSpotAvailable, sendReservationCancelled } from "./notifications.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:reservation")
 
 // SEC-002: Ownership guard wrapper — rejects before any business logic
 export const cancelReservation = withReservationOwnership(cancelReservationImpl)
@@ -29,7 +32,7 @@ async function cancelReservationImpl(
       parsed.reservationId,
       reservationDetails.timeSlot.date,
       reservationDetails.timeSlot.startTime,
-    ).catch((err) => console.error("[cancel_reservation] Notification error:", (err as Error).message))
+    ).catch((err) => log.error({ reservationId: parsed.reservationId, err: (err as Error).message }, "cancel_reservation: notification error"))
 
     // Promote next waitlist entry and notify
     const { promoted } = await svc.promoteWaitlist(timeSlotId)
@@ -60,7 +63,7 @@ async function cancelReservationImpl(
         reservationId: parsed.reservationId,
         reason: parsed.reason ?? null,
       },
-    }).catch((err) => console.error("[cancel_reservation] NATS publish error:", (err as Error).message))
+    }).catch((err) => log.error({ reservationId: parsed.reservationId, err: (err as Error).message }, "cancel_reservation: NATS publish error"))
 
     return {
       success: true,

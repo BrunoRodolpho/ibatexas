@@ -4,6 +4,9 @@ import { ReorderInputSchema, NonRetryableError, type ReorderInput, type AgentCon
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { withOrderOwnership } from "../guards/with-ownership.js";
 import { medusaAdminFetch, medusaStoreFetch } from "./_shared.js";
+import { toolLog } from "../logger.js";
+
+const log = toolLog("tools:cart");
 
 async function reorderImpl(
   input: ReorderInput,
@@ -66,7 +69,7 @@ async function reorderImpl(
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
     reorderFromOrderId: parsed.orderId,
-  }).catch((err) => console.error("[reorder] NATS publish error:", (err as Error).message));
+  }).catch((err) => log.error({ err: (err as Error).message }, "reorder: NATS publish error"));
 
   const errorNote = errors.length > 0 ? ` (item(ns) indisponível(is): ${errors.join(", ")})` : "";
   return {

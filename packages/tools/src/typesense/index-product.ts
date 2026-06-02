@@ -6,6 +6,9 @@ import { generateEmbedding } from "../embeddings/client.js"
 import { rk } from "../redis/key.js"
 import { getTypesenseClient, COLLECTION } from "./client.js"
 import { isTypesenseError, type TypesenseImportResult } from "./types.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:typesense")
 
 /**
  * Index (upsert) a single product into Typesense.
@@ -33,11 +36,11 @@ export async function indexProduct(
       Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
     )
   } catch (error) {
-    console.warn(`[Typesense] Embedding generation failed for ${product.id} — indexing without embedding:`, (error as Error).message)
+    log.warn({ productId: product.id, err: (error as Error).message }, "Embedding generation failed — indexing without embedding")
   }
 
   await typesenseClient.collections(COLLECTION).documents().upsert(doc)
-  console.warn(`[Typesense] Indexed: ${product.id} (${product.title})`)
+  log.debug({ productId: product.id, title: product.title }, "Indexed product")
 }
 
 /**
@@ -48,13 +51,13 @@ export async function deleteProductFromIndex(productId: string): Promise<void> {
   try {
     const typesenseClient = getTypesenseClient()
     await typesenseClient.collections(COLLECTION).documents(productId).delete()
-    console.warn(`[Typesense] Deleted from index: ${productId}`)
+    log.info({ productId }, "Deleted from index")
   } catch (err: unknown) {
     if (isTypesenseError(err) && err.httpStatus === 404) {
-      console.warn(`[Typesense] Product not in index (already removed): ${productId}`)
+      log.debug({ productId }, "Product not in index (already removed)")
       return
     }
-    console.error(`[Typesense] Failed to delete product ${productId}:`, (err as Error).message)
+    log.error({ productId, err: (err as Error).message }, "Failed to delete product")
     throw err
   }
 }
@@ -78,7 +81,7 @@ export async function indexProductsBatch(
         const embeddingText = [product.title, product.description || ""].join(". ")
         doc.embedding = await embedFn(embeddingText, rk(`product_embedding:${product.id}`), ttl)
       } catch (error) {
-        console.warn(`[Typesense] Embedding skipped for ${product.id}:`, (error as Error).message)
+        log.warn({ productId: product.id, err: (error as Error).message }, "Embedding skipped")
       }
       return doc
     })
@@ -92,8 +95,8 @@ export async function indexProductsBatch(
 
   const failures = results.filter((r) => !r.success)
   if (failures.length > 0) {
-    console.error(`[Typesense] ${failures.length}/${docs.length} batch index failures:`, failures)
+    log.error({ failures: failures.length, total: docs.length, details: failures }, "Batch index failures")
   }
 
-  console.warn(`[Typesense] Batch indexed ${docs.length - failures.length}/${docs.length} products`)
+  log.info({ indexed: docs.length - failures.length, total: docs.length }, "Batch indexed products")
 }

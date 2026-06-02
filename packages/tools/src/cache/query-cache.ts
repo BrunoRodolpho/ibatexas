@@ -12,6 +12,9 @@ import { createHash } from "node:crypto"
 import { Channel, type QueryCacheEntry, type QueryLogEntry, type ProductDTO } from "@ibatexas/types"
 import { getRedisClient } from "../redis/client.js"
 import { rk } from "../redis/key.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:cache")
 
 // ── Shared filter context ─────────────────────────────────────────────────────
 
@@ -101,7 +104,7 @@ export async function getExactQueryCache(
     incrStat("cache:stats:l0:miss")
     return { hit: false }
   } catch (error) {
-    console.warn("[Cache] L0 exact cache read failed:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "L0 exact cache read failed")
     incrStat("cache:stats:l0:miss")
     return { hit: false }
   }
@@ -119,7 +122,7 @@ export async function setExactQueryCache(
     const payload = { results, cachedAt: new Date().toISOString() }
     await redisClient.setEx(key, ttl, JSON.stringify(payload))
   } catch (error) {
-    console.warn("[Cache] L0 exact cache write failed:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "L0 exact cache write failed")
   }
 }
 
@@ -147,7 +150,7 @@ export async function getQueryCache(
     incrStat("cache:stats:l1:miss")
     return { hit: false }
   } catch (error) {
-    console.warn("[Cache] L1 semantic cache read failed:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "L1 semantic cache read failed")
     incrStat("cache:stats:l1:miss")
     return { hit: false }
   }
@@ -180,7 +183,7 @@ export async function setQueryCache(
 
     await redisClient.setEx(key, ttlSeconds, JSON.stringify(entry))
   } catch (error) {
-    console.warn("[Cache] L1 semantic cache write failed:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "L1 semantic cache write failed")
   }
 }
 
@@ -208,7 +211,7 @@ export async function incrementQueryCacheHits(
 
     await redisClient.setEx(key, ttl, JSON.stringify(entry))
   } catch (error) {
-    console.warn("[Cache] Hit increment failed:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Hit increment failed")
   }
 }
 
@@ -236,12 +239,12 @@ export async function invalidateAllQueryCache(): Promise<number> {
 
     if (keys.length > 0) {
       await redisClient.del(keys)
-      console.warn(`[Cache] Invalidated ${keys.length} query cache entries`)
+      log.info({ count: keys.length }, "Invalidated query cache entries")
     }
 
     return keys.length
   } catch (error) {
-    console.warn("[Cache] Query cache invalidation failed:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Query cache invalidation failed")
     return 0
   }
 }
@@ -279,7 +282,7 @@ export async function logQuery(
 
     await redisClient.setEx(rk(`query_log:${timestamp}:${sessionId}:${keyHash}`), ttl, JSON.stringify(entry))
   } catch (error) {
-    console.warn("[Cache] Query logging failed:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Query logging failed")
   }
 }
 

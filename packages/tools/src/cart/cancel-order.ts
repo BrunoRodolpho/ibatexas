@@ -7,6 +7,9 @@ import { createOrderService, createPaymentQueryService, createPaymentCommandServ
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdmin } from "../medusa/client.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
+import { toolLog } from "../logger.js";
+
+const log = toolLog("tools:cart");
 
 export async function cancelOrder(
   input: CancelOrderInput,
@@ -59,7 +62,7 @@ export async function cancelOrder(
       }
     } catch (paymentErr) {
       // Log but don't fail — order is already canceled, payment cleanup is best-effort
-      console.error("[cancel_order] Failed to cancel payment:", (paymentErr as Error).message);
+      log.error({ err: (paymentErr as Error).message }, "cancel_order: failed to cancel payment");
     }
 
     // Also cancel Stripe PI from order metadata (legacy path)

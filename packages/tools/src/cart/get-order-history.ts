@@ -5,6 +5,9 @@ import { createCustomerService } from "@ibatexas/domain";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { medusaAdminFetch } from "./_shared.js";
+import { toolLog } from "../logger.js";
+
+const log = toolLog("tools:cart");
 
 export async function getOrderHistory(
   input: GetOrderHistoryInput,
@@ -85,7 +88,7 @@ export async function getOrderHistory(
 
     return result;
   } catch (err) {
-    console.error("[get_order_history] Medusa error:", (err as Error).message);
+    log.error({ err: (err as Error).message }, "get_order_history: Medusa error");
     return { success: false, message: "Erro ao buscar histórico de pedidos. Tente novamente." };
   }
 }

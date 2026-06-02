@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/node";
 import { closeNatsConnection, setOutboxWriter, setDlqHandler, setNatsLogger } from "@ibatexas/nats-client";
-import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
+import { closeRedisClient, getRedisClient, setToolsLogger } from "@ibatexas/tools";
 import { pushToDlq } from "./subscribers/dlq.js";
 import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
@@ -39,6 +39,12 @@ const PORT = Number(process.env.PORT ?? 3001);
 
 const start = async (): Promise<void> => {
   const server = await buildServer();
+
+  // Inject the structured (pino) logger into @ibatexas/tools so tool-execution
+  // diagnostics (cart / search / checkout / typesense / cache / medusa / redis
+  // / embeddings / reservations) ship to VictoriaLogs with their component tag
+  // (cycle-36 L5 sweep). Before injection a structured console default is used.
+  setToolsLogger(logger);
 
   // ── Conductor bootstrap ────────────────────────────────────────────────────
   // bootstrapClaustrum() composes the live @claustrum/* Conductor and registers

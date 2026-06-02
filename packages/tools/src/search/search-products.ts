@@ -40,6 +40,9 @@ import { typesenseDocToDTO, type TypesenseProductDoc } from "../mappers/product-
 import { rk } from "../redis/key.js"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
 import type { TypesenseHit, TypesenseFacetCount } from "../typesense/types.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:search")
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -355,7 +358,7 @@ async function generateQueryEmbedding(query: string, isWildcard: boolean): Promi
       rk(`embedding:query:${Buffer.from(query).toString("base64")}`)
     )
   } catch (error) {
-    console.warn("[Search] Query embedding failed; falling back to keyword search:", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Query embedding failed; falling back to keyword search")
     return []
   }
 }
@@ -374,7 +377,7 @@ async function checkL1Cache(
     await incrementQueryCacheHits(queryEmbedding, cacheCtx)
     await setExactQueryCache(query, cacheCtx, l1.results)
   } catch (error) {
-    console.warn("[Search] Cache backfill failed (non-critical):", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Cache backfill failed (non-critical)")
   }
   return {
     query,
@@ -404,7 +407,7 @@ async function searchTypesense(
     }
   } catch (error) {
     // Surface Typesense error instead of silently returning empty results
-    console.error("[Search] Typesense search failed:", (error as Error).message)
+    log.error({ err: (error as Error).message }, "Typesense search failed")
     searchError = true
   }
 
@@ -429,14 +432,14 @@ async function cacheAndLogResults(
     }
     await setExactQueryCache(query, cacheCtx, products)
   } catch (error) {
-    console.warn("[Search] Cache write failed (non-critical):", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Cache write failed (non-critical)")
   }
 
   try {
     const bucket = queryEmbedding.length > 0 ? embeddingToBucket(queryEmbedding) : "no-embedding"
     await logQuery(sessionId, query, bucket, products.length, cacheCtx.channel, userType)
   } catch (error) {
-    console.warn("[Search] Query log failed (non-critical):", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Query log failed (non-critical)")
   }
 }
 
@@ -477,7 +480,7 @@ async function singleQuerySearch(opts: SingleQuerySearchOptions): Promise<Single
     try {
       noResultsReason = await diagnoseNoResults(query, queryEmbedding, limit, rawDTOs, filters)
     } catch (error) {
-      console.warn("[Search] Diagnostic query failed (non-critical):", (error as Error).message)
+      log.warn({ err: (error as Error).message }, "Diagnostic query failed (non-critical)")
     }
   }
 
@@ -674,7 +677,7 @@ export async function searchProducts(
       await publishViewedEvents(products, context, queryStr)
     }
   } catch (error) {
-    console.warn("[Search] Event publish failed (non-critical):", (error as Error).message)
+    log.warn({ err: (error as Error).message }, "Event publish failed (non-critical)")
   }
 
   // ── Build output ─────────────────────────────────────────────────────────

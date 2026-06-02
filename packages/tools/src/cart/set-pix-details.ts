@@ -4,6 +4,9 @@
 
 import { z } from "zod"
 import type { AgentContext } from "@ibatexas/types"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:extraction")
 
 export const SetPixDetailsInputSchema = z.object({
   name: z.string().optional().describe("Nome completo do cliente (nome e sobrenome)"),
@@ -151,13 +154,12 @@ export async function setPixDetails(
   // If semantic errors were found, return early
   if (errors.length > 0) {
     const durationMs = Date.now() - startMs
-    console.warn(
-      "[extraction] tool=%s valid=%s fields=%s errors=%s latency=%dms",
-      "set_pix_details",
-      false,
-      [],
-      errors,
-      durationMs,
+    // PII hygiene: log validity + error COUNT only, never the raw `errors`
+    // strings (they embed the submitted CPF/email/name) — these ship to the
+    // log store (cycle-36 L5 sweep). The full errors still return to the caller.
+    log.info(
+      { tool: "set_pix_details", valid: false, fields: [], errorCount: errors.length, latencyMs: durationMs },
+      "pix details extraction",
     )
     return { valid: false, errors, missing: [], message: errors.join(". ") }
   }
@@ -217,13 +219,11 @@ export async function setPixDetails(
   })
 
   const durationMs = Date.now() - startMs
-  console.warn(
-    "[extraction] tool=%s valid=%s fields=%s errors=%s latency=%dms",
-    "set_pix_details",
-    hasAnyValid,
-    validFields,
-    errors,
-    durationMs,
+  // PII hygiene: field NAMES + error count only (errors embed the submitted
+  // CPF/email/name); the full errors still return to the caller below.
+  log.info(
+    { tool: "set_pix_details", valid: hasAnyValid, fields: validFields, errorCount: errors.length, latencyMs: durationMs },
+    "pix details extraction",
   )
 
   let message: string

@@ -8,6 +8,9 @@ import { isAvailableNow, describeAvailabilityWindow } from "../catalog/availabil
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js";
 import { assertCartOwnership } from "./assert-cart-ownership.js";
 import { medusaStoreFetch } from "./_shared.js";
+import { toolLog } from "../logger.js";
+
+const log = toolLog("tools:cart");
 
 /** Lightweight lookup: get a product's availability window from its variant ID via Typesense.
  *  Medusa v2 removed /store/variants/{id} — search Typesense's variantsJson field instead.
@@ -64,7 +67,7 @@ export async function addToCart(
 
     if (isStaleVariant) {
       void invalidateAllQueryCache().catch((e) =>
-        console.warn("[add_to_cart] Cache invalidation failed:", (e as Error).message)
+        log.warn({ err: (e as Error).message }, "add_to_cart: cache invalidation failed")
       );
       return {
         success: false,
@@ -73,7 +76,7 @@ export async function addToCart(
       };
     }
 
-    console.error("[add_to_cart] Medusa error:", (err as Error).message);
+    log.error({ err: (err as Error).message }, "add_to_cart: Medusa error");
     return { success: false, message: "Erro ao adicionar item ao carrinho. Verifique o produto e tente novamente." };
   }
 
@@ -85,7 +88,7 @@ export async function addToCart(
     quantity: parsed.quantity,
     customerId: ctx.customerId,
     sessionId: ctx.sessionId,
-  }).catch((err) => console.error("[add_to_cart] NATS publish error:", (err as Error).message));
+  }).catch((err) => log.error({ err: (err as Error).message }, "add_to_cart: NATS publish error"));
 
   return data;
 }

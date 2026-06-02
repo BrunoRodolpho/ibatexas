@@ -7,6 +7,9 @@ import { CreateReservationInputSchema, ReservationStatus, type CreateReservation
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { buildDateTime, formatDateBR, locationLabel } from "./utils.js"
 import { sendReservationConfirmation } from "./notifications.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:reservation")
 
 export async function createReservation(
   input: CreateReservationInput,
@@ -45,7 +48,7 @@ export async function createReservation(
       startTime: reservation.timeSlot.startTime,
       tableLocation,
     },
-  }).catch((err) => console.error("[create_reservation] NATS publish error:", (err as Error).message))
+  }).catch((err) => log.error({ reservationId: reservation.id, err: (err as Error).message }, "create_reservation: NATS publish error"))
 
   await sendReservationConfirmation({
     ...reservation,

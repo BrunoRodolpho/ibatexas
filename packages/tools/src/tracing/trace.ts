@@ -6,6 +6,9 @@
 import { randomUUID } from "node:crypto"
 import { getRedisClient } from "../redis/client.js"
 import { rk } from "../redis/key.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:trace")
 
 const TRACE_TTL = Number.parseInt(process.env.TRACE_TTL_SECONDS || "3600", 10) // 1h
 
@@ -104,10 +107,12 @@ export async function loadTrace(traceId: string): Promise<unknown | null> {
  * Log a span completion at debug level.
  */
 export function logSpan(trace: TraceContext, span: Span): void {
-  console.warn(
-    "[trace:%s] [span:%s] %dms",
-    trace.traceId,
-    span.name,
-    span.durationMs ?? (Date.now() - span.startMs),
+  log.debug(
+    {
+      correlationId: trace.traceId,
+      span: span.name,
+      durationMs: span.durationMs ?? (Date.now() - span.startMs),
+    },
+    "span complete",
   )
 }

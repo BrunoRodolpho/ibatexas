@@ -7,6 +7,9 @@ import { ModifyReservationInputSchema, type ModifyReservationInput, type ModifyR
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { withReservationOwnership } from "../guards/with-ownership.js"
 import { sendReservationModified } from "./notifications.js"
+import { toolLog } from "../logger.js"
+
+const log = toolLog("tools:reservation")
 
 // SEC-002: Ownership guard wrapper — rejects before any business logic
 export const modifyReservation = withReservationOwnership(modifyReservationImpl)
@@ -27,7 +30,7 @@ async function modifyReservationImpl(
 
     // Notify customer of modification (fire-and-forget)
     void sendReservationModified(dto).catch((err) =>
-      console.error("[modify_reservation] Notification error:", (err as Error).message),
+      log.error({ reservationId: parsed.reservationId, err: (err as Error).message }, "modify_reservation: notification error"),
     )
 
     void publishNatsEvent("reservation.modified", {
@@ -37,7 +40,7 @@ async function modifyReservationImpl(
       channel: "web",
       timestamp: new Date().toISOString(),
       metadata: { reservationId: parsed.reservationId },
-    }).catch((err) => console.error("[modify_reservation] NATS publish error:", (err as Error).message))
+    }).catch((err) => log.error({ reservationId: parsed.reservationId, err: (err as Error).message }, "modify_reservation: NATS publish error"))
 
     return {
       success: true,

@@ -57,6 +57,13 @@ export { PROFILE_TTL_SECONDS, RECENTLY_VIEWED_MAX } from "./intelligence/types.j
 export { getRedisClient, closeRedisClient } from "./redis/client.js"
 export { rk } from "./redis/key.js"
 
+// ── Observability (dependency injection) ─────────────────────────────────────
+// The api injects its pino logger via setToolsLogger() so tool diagnostics ship
+// to VictoriaLogs with their component tag (cycle-36 L5 sweep). Until injected,
+// a structured console default keeps output visible. See ./logger.ts.
+export { setToolsLogger, toolLog } from "./logger.js"
+export type { StructuredLogger, ComponentLogger } from "./logger.js"
+
 // ── Session claims ───────────────────────────────────────────────────────────
 export { createSessionToken, verifySessionToken, signSessionClaim } from "./session/signed-claims.js"
 export type { SessionClaim } from "./session/signed-claims.js"
