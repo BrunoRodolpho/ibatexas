@@ -77,11 +77,10 @@ async function runBootstrap(opts: BootstrapOpts) {
   }
 
   // ── [4] Kernel audit schema (intent_audit) ────────────────────────────────
-  // The RC-A1 cutover's audit sink writes one intent_audit row before every
-  // money side-effect. That table lives in @adjudicate/audit-postgres migrations
+  // The kernel's audit sink writes one intent_audit row before every money
+  // side-effect. That table lives in @adjudicate/audit-postgres migrations
   // (a set the Medusa + Prisma steps above do NOT run). Provision it here so the
-  // runtime DB is activation-ready. Idempotent (apply-once tracking table) and
-  // inert until the conductor is activated (RC_A1_ACTIVATE=true).
+  // runtime DB is ready. Idempotent (apply-once tracking table).
   step(++stepNum, TOTAL, "Provisioning kernel audit schema…")
   const kernelSpinner = ora({ text: "intent_audit + partitions", indent: 4 }).start()
   try {

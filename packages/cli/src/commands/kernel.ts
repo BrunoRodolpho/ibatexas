@@ -24,8 +24,7 @@ export interface MigrateAuditDbOptions {
  * Connect to the runtime DATABASE_URL (the same DB the kernel audit sink writes
  * to) and apply the audit-postgres migrations + partitions. Idempotent — see
  * lib/kernel-migrate.ts. Owns the pg connection lifecycle so callers don't have
- * to. Provisions `intent_audit` for the RC-A1 cutover; inert until the conductor
- * is activated (RC_A1_ACTIVATE=true).
+ * to. Provisions the `intent_audit` table the kernel audit sink writes to.
  */
 export async function migrateAuditDatabase(
   opts: MigrateAuditDbOptions = {},

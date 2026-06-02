@@ -613,7 +613,7 @@ ibx git log                # recent commits + open PR link
 | `web`       | 3000 | ✅        | No       |
 | `admin`     | 3002 | ✅        | No       |
 
-> **Note:** The agent orchestrator (`runAgent`) is a library (`packages/llm-provider`) used by `apps/api` — it is not a separate service.
+> **Note:** The turn logic runs in-process in `apps/api` via the claustrum Conductor (`@claustrum/core`) → the `@adjudicate` kernel — it is not a separate service.
 
 To start specific services alongside Medusa:
 ```bash

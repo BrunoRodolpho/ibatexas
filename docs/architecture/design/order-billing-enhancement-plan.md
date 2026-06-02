@@ -474,7 +474,7 @@ Extended version of customer order detail:
 |-----|---------|
 | `agent-tools.md` | Add change_delivery_address, switch_order_type, add_order_note |
 | `bounded-contexts.md` | Add OrderType to Order context |
-| `hybrid-state-flow.md` | Add new tools to post_order state |
+| `turn-pipeline.md` | Wire new intent kinds through the conductor + a PolicyBundle |
 | `redis-memory.md` | New lock keys for address change, type switch |
 | `analytics-dashboards.md` | New events: address_changed, type_switched, admin actions |
 | `domain-model.md` | OrderType enum, isInternal on OrderNote |

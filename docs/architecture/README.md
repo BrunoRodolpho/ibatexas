@@ -2,13 +2,11 @@
 
 > Find anything in < 30 seconds.
 
-> ⚠️ **Cutover in progress (audit 2026-05-27, D-ARCHMAP).** The diagram below
-> describes the **legacy** live path (Claude Agent → Tool Registry → Anthropic).
-> A migration to a kernel-adjudicated runtime (`@claustrum/*` Conductor →
-> `@adjudicate/*` kernel) is **partially landed but INERT** — every commerce
-> mutation still flows through the legacy direct-write routes today. See
-> [`docs/claustrum-migration/CUTOVER-STATUS.md`](../claustrum-migration/CUTOVER-STATUS.md)
-> for the real state (RC-A1 activation deferred to remediation cycle 4).
+> **Live architecture: the clean three-repo system.** Every customer/staff
+> mutation flows through the **claustrum Conductor** → the **`@adjudicate` kernel**
+> (kernel-adjudicated; only an EXECUTE decision runs the mutation). The diagrams
+> below are a component map; for the authoritative turn flow see
+> [turn-pipeline.md](design/turn-pipeline.md).
 
 ---
 
@@ -117,7 +115,7 @@ graph LR
     direction TB
     TOOLS["tools/<br/>cart, search, reservation,<br/>redis, typesense, guards,<br/>intelligence, embeddings"]
     DOMAIN["domain/<br/>prisma schema + migrations<br/>services: reservation, customer, order"]
-    LLM["llm-provider/<br/>agent.ts, tool-registry.ts,<br/>system-prompt.ts"]
+    PACKS["pack-orders/payments/<br/>reservations/whatsapp/<br/>onboarding (PolicyBundles)"]
     CLI_PKG["cli/<br/>19 commands"]
     OTHER["nats-client, types, ui"]
   end
@@ -134,7 +132,7 @@ graph LR
   style ADMIN_APP fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style TOOLS fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style DOMAIN fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
-  style LLM fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style PACKS fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style CLI_PKG fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style OTHER fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style TF fill:#3e2723,stroke:#ffab91,color:#ffccbc
@@ -340,9 +338,9 @@ flowchart LR
 | Checkout | `packages/tools/src/cart/create-checkout.ts` | `createCheckout()` |
 | Product search | `packages/tools/src/search/search-products.ts` | `searchProducts()` |
 | Reservations | `packages/tools/src/reservation/` | `check-availability.ts` |
-| AI Agent loop | `packages/llm-provider/src/agent.ts` | `runAgent()` |
-| Tool registry | `packages/llm-provider/src/tool-registry.ts` | tool definitions |
-| WhatsApp | `apps/api/src/whatsapp/state-machine.ts` | state machine |
+| Turn orchestration | claustrum Conductor (`@claustrum/core` `handleTurn`) | perceive → … → reply |
+| Kernel adjudication | `@adjudicate/core` (`adjudicate`) + `packages/pack-*` | PolicyBundles per intent kind |
+| WhatsApp inbound | `apps/api/src/routes/whatsapp-webhook.ts` | Twilio webhook → conductor |
 | Analytics events | `apps/web/src/domains/analytics/events.ts` | `AnalyticsEvent` union |
 | Typesense indexing | `packages/tools/src/typesense/index-product.ts` | `indexProduct()` |
 | Delivery/shipping | `packages/tools/src/catalog/estimate-delivery.ts` | fee calculation |

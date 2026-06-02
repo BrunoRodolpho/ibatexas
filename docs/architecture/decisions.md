@@ -47,7 +47,7 @@ NATS subscribers MUST register before background jobs start. Sequence:
 
 ### 7. Hybrid State-Flow Architecture (XState)
 
-> Being superseded by the in-flight ADR-16 (see `docs/claustrum-migration/ADR-16-DRAFT.md`). ADR-16 is still a draft; this entry remains authoritative until activation completes.
+> **SUPERSEDED.** The XState `@ibatexas/llm-provider` brain described here was retired; the live architecture is the claustrum Conductor + `@adjudicate` kernel — see [turn-pipeline.md](design/turn-pipeline.md). Retained as a historical record of the decision.
 
 WhatsApp bot moved from a monolithic LLM prompt (3,400 tokens, all rules every turn)
 to a Hybrid State-Flow architecture using XState v5.
@@ -67,12 +67,12 @@ deterministic state machine eliminates these failures entirely.
 - XState snapshot persisted to Redis (`wa:machine:{sessionId}`, 24h TTL) for stateless handling
 - Guards are deterministic: `isAvailableNow`, `isAuthenticated`, `isInDeliveryZone`
 - Token reduction: 3,400 → ~400 tokens/turn (88% savings)
-- Machine definition: `packages/llm-provider/src/machine/order-machine.ts`
-- Full design: [docs/architecture/design/hybrid-state-flow.md](design/hybrid-state-flow.md)
+- Machine definition: `packages/llm-provider/src/machine/order-machine.ts` (retired)
+- Live design: [docs/architecture/design/turn-pipeline.md](design/turn-pipeline.md)
 
 ### 8. Conversation Persistence via CDC
 
-> Being superseded by the in-flight ADR-16 (see `docs/claustrum-migration/ADR-16-DRAFT.md`). ADR-16 is still a draft; this entry remains authoritative until activation completes.
+> **SUPERSEDED.** The XState `@ibatexas/llm-provider` brain described here was retired; the live architecture is the claustrum Conductor + `@adjudicate` kernel — see [turn-pipeline.md](design/turn-pipeline.md). Retained as a historical record of the decision.
 
 WhatsApp/web conversations were stored only in Redis with 24-48h TTL. No durable log existed for debugging, analytics, or admin visibility.
 
@@ -89,12 +89,11 @@ WhatsApp/web conversations were stored only in Redis with 24-48h TTL. No durable
 - Publisher: `apps/api/src/session/store.ts` (fire-and-forget NATS publish)
 - Subscriber: `apps/api/src/subscribers/conversation-archiver.ts`
 - Domain service: `packages/domain/src/services/conversation.service.ts`
-- CLI: `packages/cli/src/commands/chat.ts` (`ibx chat list/dump/clean/scenarios`)
-- Tests: `packages/llm-provider/src/__tests__/scenarios/` (11 fixtures)
+- CLI: `packages/cli/src/commands/chat.ts` (`ibx chat list/dump/clean`)
 
 ### 9. Zero-Trust LLM Architecture (Final Alignment)
 
-> Being superseded by the in-flight ADR-16 (see `docs/claustrum-migration/ADR-16-DRAFT.md`). ADR-16 is still a draft; this entry remains authoritative until activation completes.
+> **SUPERSEDED.** The XState `@ibatexas/llm-provider` brain described here was retired; the live architecture is the claustrum Conductor + `@adjudicate` kernel — see [turn-pipeline.md](design/turn-pipeline.md). Retained as a historical record of the decision.
 
 The system moved from "LLM calls tools directly" to a strict Semantic Parser model where the LLM has zero authority to mutate state.
 
@@ -127,8 +126,7 @@ All distributed locks (WhatsApp agent lock, web chat lock) now use UUID lock val
 **Decision:** Store `crypto.randomUUID()` as lock value. Release via Lua: `if GET == myValue then DEL`. Heartbeat extends via Lua: `if GET == myValue then EXPIRE`. Web chat lock now has 10s heartbeat (was missing).
 
 **Files:**
-- WhatsApp: `apps/api/src/whatsapp/session.ts` (`acquireAgentLock`, `releaseAgentLock`)
-- Web: `apps/api/src/streaming/execution-queue.ts` (`acquireWebAgentLock`, `releaseWebAgentLock`)
+- `apps/api/src/streaming/execution-queue.ts` (`acquireWebAgentLock`, `releaseWebAgentLock`) — the canonical ownership-checked Lua lock pattern.
 
 ---
 
