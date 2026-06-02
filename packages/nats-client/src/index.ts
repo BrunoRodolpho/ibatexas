@@ -5,6 +5,10 @@
 // TODO: Full JetStream migration needed for production reliability
 
 import { connect, type NatsConnection } from "nats"
+import { natsLog } from "./logger.js"
+
+export { setNatsLogger } from "./logger.js"
+export type { StructuredLogger } from "./logger.js"
 
 let natsConn: NatsConnection | null = null
 let pendingConnection: Promise<NatsConnection> | null = null
@@ -43,16 +47,16 @@ export async function getNatsConnection(): Promise<NatsConnection> {
           for await (const status of conn.status()) {
             switch (status.type) {
               case "disconnect":
-                console.warn("[nats] Disconnected from server")
+                natsLog().warn({ event: "nats_disconnect" }, "Disconnected from server")
                 break
               case "reconnect":
-                console.info("[nats] Reconnected to server")
+                natsLog().info({ event: "nats_reconnect" }, "Reconnected to server")
                 break
               case "error":
-                console.error("[nats] Connection error:", status.data)
+                natsLog().error({ event: "nats_error", err: status.data }, "Connection error")
                 break
               case "reconnecting":
-                console.info("[nats] Reconnecting...")
+                natsLog().info({ event: "nats_reconnecting" }, "Reconnecting")
                 break
             }
           }
@@ -162,7 +166,10 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
         await _outboxWriter.lTrim(key, 0, OUTBOX_MAX_LEN - 1)
       }
     } catch (outboxErr) {
-      console.error(`[nats] Outbox write failed for ${event}:`, (outboxErr as Error).message)
+      natsLog().error(
+        { event: "outbox_write_failed", natsEvent: event, err: (outboxErr as Error).message },
+        "Outbox write failed",
+      )
       // Continue with NATS publish even if outbox write fails
     }
   }
@@ -178,12 +185,18 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
       try {
         await _outboxWriter.lRem(outboxKey(envPrefix, event), 1, data)
       } catch (removeErr) {
-        console.error(`[nats] Outbox remove failed for ${event}:`, (removeErr as Error).message)
+        natsLog().error(
+          { event: "outbox_remove_failed", natsEvent: event, err: (removeErr as Error).message },
+          "Outbox remove failed",
+        )
         // Non-fatal: outbox-retry job will re-publish (idempotent on subscriber side)
       }
     }
   } catch (error) {
-    console.error(`Failed to publish event ${event}:`, (error as Error).message)
+    natsLog().error(
+      { event: "publish_failed", natsEvent: event, err: (error as Error).message },
+      "Failed to publish event",
+    )
     // Non-critical; don't throw (event publishing is async)
     // If NATS publish fails, event stays in outbox for retry
   }
@@ -244,8 +257,9 @@ export async function subscribeNatsEvent(
         typeof sub.getPending === "function" &&
         sub.getPending() > NATS_MAX_PENDING_MSGS
       ) {
-        console.warn(
-          `[nats] Pending backlog over ${NATS_MAX_PENDING_MSGS} for ${event} — dropping message (backpressure)`,
+        natsLog().warn(
+          { event: "pending_backlog_drop", natsEvent: event, maxPending: NATS_MAX_PENDING_MSGS },
+          "Pending backlog over limit — dropping message (backpressure)",
         )
         if (_dlqHandler) {
           try {
@@ -255,7 +269,10 @@ export async function subscribeNatsEvent(
               new Error(`NATS pending backlog exceeded ${NATS_MAX_PENDING_MSGS}`),
             )
           } catch (dlqErr) {
-            console.error(`DLQ handler failed for ${event} (backpressure drop):`, (dlqErr as Error).message)
+            natsLog().error(
+              { event: "dlq_handler_failed", natsEvent: event, cause: "backpressure_drop", err: (dlqErr as Error).message },
+              "DLQ handler failed (backpressure drop)",
+            )
           }
         }
         continue
@@ -269,14 +286,20 @@ export async function subscribeNatsEvent(
       } catch (error) {
         // Anything escaping the subscriber's own try/catch reaches here. Route
         // it through the injected DLQ (+ Sentry) instead of dropping silently
-        // (P1-ERR-NATSLOOP). console.error is kept as a local breadcrumb.
-        console.error(`Event handler failed for ${event}:`, (error as Error).message)
+        // (P1-ERR-NATSLOOP); the structured log line is the local breadcrumb.
+        natsLog().error(
+          { event: "handler_failed", natsEvent: event, err: (error as Error).message },
+          "Event handler failed",
+        )
         if (_dlqHandler) {
           try {
             await _dlqHandler(event, payload ?? { _raw: safeDecode(msg.data) }, error)
           } catch (dlqErr) {
             // Never let DLQ failure kill the subscription loop.
-            console.error(`DLQ handler failed for ${event}:`, (dlqErr as Error).message)
+            natsLog().error(
+              { event: "dlq_handler_failed", natsEvent: event, err: (dlqErr as Error).message },
+              "DLQ handler failed",
+            )
           }
         }
       }

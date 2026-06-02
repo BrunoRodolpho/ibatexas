@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/node";
-import { closeNatsConnection, setOutboxWriter, setDlqHandler } from "@ibatexas/nats-client";
+import { closeNatsConnection, setOutboxWriter, setDlqHandler, setNatsLogger } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { pushToDlq } from "./subscribers/dlq.js";
 import { prisma, createScheduleService } from "@ibatexas/domain";
@@ -76,6 +76,12 @@ const start = async (): Promise<void> => {
     initWhatsAppSender();
     // Start background jobs and NATS subscribers after server is listening
     if (process.env.NODE_ENV !== "test") {
+      // Inject the structured (pino) logger into @ibatexas/nats-client so its
+      // connection-lifecycle, outbox, and subscriber-error diagnostics flow to
+      // VictoriaLogs with component:"nats-client" (cycle-36 L5 sweep). Mirrors
+      // the setOutboxWriter / setDlqHandler injections below.
+      setNatsLogger(logger);
+
       // Inject Redis client as outbox writer for critical NATS events
       try {
         const redis = await getRedisClient();
