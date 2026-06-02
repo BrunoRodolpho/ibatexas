@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import twilio from "twilio";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import logger from "../lib/logger.js";
-import { hashPhone } from "./session.js";
+import { hashPhone } from "../lib/phone-hash.js";
 
 /** Compute retry delay: uses Retry-After header for 429, exponential backoff otherwise. */
 function getRetryDelay(err: unknown, attempt: number): number {
@@ -157,7 +157,7 @@ export function getWhatsAppNumber(): string {
 }
 
 // Re-export hashPhone as phoneHash for backward compatibility
-export { hashPhone as phoneHash } from "./session.js";
+export { hashPhone as phoneHash } from "../lib/phone-hash.js";
 
 /**
  * Reduce a media URL to its origin (scheme + host) for logging. The path and

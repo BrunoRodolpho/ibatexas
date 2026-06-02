@@ -80,7 +80,7 @@ vi.mock("../../session/store.js", () => ({
   loadSession: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("../../whatsapp/session.js", () => ({
+vi.mock("../../lib/phone-hash.js", () => ({
   hashPhone: vi.fn((phone: string) => `hash_${phone}`),
 }));
 

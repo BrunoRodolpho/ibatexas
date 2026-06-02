@@ -317,7 +317,7 @@ export async function startCartIntelligenceSubscribers(
           await atomicIncr(redis, waOrderKey, 48 * 60 * 60);
 
           // Update exponential moving average of messages-to-checkout
-          const { hashPhone } = await import("../whatsapp/session.js");
+          const { hashPhone } = await import("../lib/phone-hash.js");
           const phoneHash = hashPhone(phone);
           const sessionId = await redis.hGet(rk(`wa:phone:${phoneHash}`), "sessionId");
           if (sessionId) {
