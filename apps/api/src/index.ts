@@ -40,22 +40,14 @@ const PORT = Number(process.env.PORT ?? 3001);
 const start = async (): Promise<void> => {
   const server = await buildServer();
 
-  // ── RC-A1 activation seam (Law 4 / Law 5) ──────────────────────────────────
+  // ── Conductor bootstrap ────────────────────────────────────────────────────
   // bootstrapClaustrum() composes the live @claustrum/* Conductor and registers
-  // it as the process singleton, so tryGetConductor()/getConductor() return it
-  // and the routed cognitive-loop (chat + WhatsApp) + the inert gateway wrappers
-  // go live through the kernel. It also runs the boot roster-integrity assertion
-  // (fail-closed). This is GATED OFF by default: with RC_A1_ACTIVATE !== "true"
-  // the conductor stays null and every routed wrapper keeps taking its
-  // byte-equivalent tryGetConductor()===null legacy branch — ZERO behavior
-  // change vs today. The live flip (set the flag + the witnessed live-Anthropic
-  // money-path turn) is the terminal step and is NOT taken here.
-  if (process.env.RC_A1_ACTIVATE === "true") {
-    await bootstrapClaustrum();
-    server.log.info(
-      "[startup] RC_A1_ACTIVATE=true — claustrum Conductor bootstrapped (cutover ACTIVE)",
-    );
-  }
+  // it as the process singleton, so getConductor() returns it and the cognitive
+  // loop (chat + WhatsApp) plus the commerce gateway run mutations through the
+  // @adjudicate/* kernel — one intent_audit row before every side-effect. Also
+  // runs the boot roster-integrity assertion (fail-closed).
+  await bootstrapClaustrum();
+  server.log.info("[startup] claustrum Conductor bootstrapped and live");
 
   // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma
   const shutdown = async (): Promise<void> => {
