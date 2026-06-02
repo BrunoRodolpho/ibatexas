@@ -195,7 +195,6 @@ function buildHelpText(): string {
         { usage: "chat list",              desc: "List active Redis sessions" },
         { usage: "chat dump <sessionId>",  desc: "Pretty-print conversation (--source, --json)" },
         { usage: "chat clean [sessionId]", desc: "Delete conversation data (--dry-run)" },
-        { usage: "chat scenarios",         desc: "Run E2E conversation test scenarios (--filter, --list)" },
       ],
     },
     {

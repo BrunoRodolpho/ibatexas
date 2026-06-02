@@ -1,14 +1,10 @@
-// ibx chat — conversation session management and scenario test runner.
+// ibx chat — conversation session management.
 // list: active Redis sessions; dump: pretty-print transcript;
-// clean: delete Redis + Postgres conversation data; scenarios: run E2E tests.
+// clean: delete Redis + Postgres conversation data.
 
-import path from "node:path"
-import fs from "node:fs"
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
-import { execa } from "execa"
-import { ROOT } from "../utils/root.js"
 import {
   rk,
   getRedis,
@@ -346,56 +342,6 @@ async function runClean(
   }
 }
 
-// ── chat scenarios ────────────────────────────────────────────────────────────
-
-const SCENARIOS_FIXTURES_DIR = path.join(ROOT, "packages/llm-provider/src/__tests__/scenarios/fixtures")
-const SCENARIO_TEST_FILE = "packages/llm-provider/src/__tests__/scenarios/scenario-runner.test.ts"
-
-async function runScenarios(opts: { list: boolean; filter?: string }): Promise<void> {
-  if (opts.list) {
-    try {
-      const files = fs.readdirSync(SCENARIOS_FIXTURES_DIR).filter((f) => f.endsWith(".json")).sort()
-      if (files.length === 0) {
-        console.log(chalk.gray("\n  No scenario fixtures found.\n"))
-        return
-      }
-      console.log(chalk.bold("\n  Available scenario fixtures:\n"))
-      for (const file of files) {
-        const fullPath = path.join(SCENARIOS_FIXTURES_DIR, file)
-        try {
-          const content = fs.readFileSync(fullPath, "utf8")
-          const fixture = JSON.parse(content) as { name?: string; description?: string }
-          const name = fixture.name ?? file
-          const desc = fixture.description ?? ""
-          console.log(`  ${chalk.cyan(file.replace(".json", "").padEnd(40))}  ${chalk.gray(name)}`)
-          if (desc) console.log(`  ${"".padEnd(40)}  ${chalk.gray(desc)}`)
-        } catch {
-          console.log(`  ${chalk.cyan(file)}`)
-        }
-      }
-      console.log()
-    } catch {
-      console.log(chalk.yellow(`\n  Fixtures directory not found: ${SCENARIOS_FIXTURES_DIR}\n`))
-    }
-    return
-  }
-
-  const args = ["vitest", "run", SCENARIO_TEST_FILE]
-  if (opts.filter) {
-    args.push("--reporter=verbose", `-t`, opts.filter)
-  }
-
-  console.log(chalk.bold("\n  Running conversation scenario tests…\n"))
-  console.log(chalk.gray(`  $ pnpm ${args.join(" ")}\n`))
-
-  try {
-    await execa("pnpm", args, { cwd: ROOT, stdio: "inherit" })
-  } catch {
-    // execa throws on non-zero exit — test failures are expected output
-    process.exit(1)
-  }
-}
-
 // ── Command registration ──────────────────────────────────────────────────────
 
 export function registerChatCommands(group: Command): void {
@@ -429,13 +375,4 @@ export function registerChatCommands(group: Command): void {
       await runClean(sessionId, opts)
     })
 
-  // ─── chat scenarios ──────────────────────────────────────────────────────
-  group
-    .command("scenarios")
-    .description("Run E2E conversation scenario tests")
-    .option("--list", "List available scenario fixtures")
-    .option("--filter <pattern>", "Filter tests by name pattern")
-    .action(async (opts: { list: boolean; filter?: string }) => {
-      await runScenarios(opts)
-    })
 }

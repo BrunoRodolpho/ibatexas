@@ -1,7 +1,7 @@
 // Integration test: Chat POST → Stream coordination
 // Tests POST /api/chat/messages validation and stream lifecycle
 //
-// Mocks: runAgent, Redis (session store), uuid
+// Mocks: Redis (session store), uuid, the claustrum conductor
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest"
 import Fastify from "fastify"
@@ -15,19 +15,8 @@ import { chatRoutes } from "../routes/chat.js"
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 
-const mockRunAgent = vi.hoisted(() =>
-  vi.fn(async function* () {
-    yield { type: "text_delta" as const, delta: "Olá!" }
-    yield { type: "done" as const }
-  }),
-)
-
 const mockLoadSession = vi.hoisted(() => vi.fn().mockResolvedValue([]))
 const mockAppendMessages = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
-
-vi.mock("@ibatexas/llm-provider", () => ({
-  runOrchestrator: mockRunAgent,
-}))
 
 vi.mock("../session/store.js", () => ({
   loadSession: mockLoadSession,
@@ -117,10 +106,6 @@ describe("Chat routes integration", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    mockRunAgent.mockImplementation(async function* () {
-      yield { type: "text_delta" as const, delta: "Olá!" }
-      yield { type: "done" as const }
-    })
     // Conductor delegation resolves cleanly (the route runs it fire-and-forget).
     mockOpenCapsule.mockResolvedValue({ id: "capsule-web-1" })
     mockHandleTurn.mockResolvedValue({ response: { text: "Olá!" } })

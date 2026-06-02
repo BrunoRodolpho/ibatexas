@@ -1,5 +1,5 @@
 // Unit tests for POST /api/chat/messages and GET /api/chat/stream/:sessionId
-// Mocks runAgent, loadSession, appendMessages, and the streaming emitter.
+// Mocks loadSession, appendMessages, the streaming emitter, and Redis.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
@@ -13,7 +13,6 @@ import { chatRoutes } from "../routes/chat.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockRunAgent = vi.hoisted(() => vi.fn());
 const mockLoadSession = vi.hoisted(() => vi.fn());
 const mockAppendMessages = vi.hoisted(() => vi.fn());
 const mockIsStreamActive = vi.hoisted(() => vi.fn());
@@ -26,7 +25,6 @@ const mockAcquireWebAgentLock = vi.hoisted(() => vi.fn());
 const mockReleaseWebAgentLock = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 
-vi.mock("@ibatexas/llm-provider", () => ({ runOrchestrator: mockRunAgent }));
 vi.mock("../session/store.js", () => ({
   loadSession: mockLoadSession,
   appendMessages: mockAppendMessages,
@@ -82,13 +80,7 @@ describe("POST /api/chat/messages", () => {
     });
   });
 
-  it("returns { messageId } and starts agent", async () => {
-    // Agent produces one text chunk and done
-    mockRunAgent.mockImplementation(async function* () {
-      yield { type: "text_delta", delta: "Olá!" };
-      yield { type: "done" };
-    });
-
+  it("returns { messageId } and opens a stream", async () => {
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -137,13 +129,7 @@ describe("POST /api/chat/messages", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("pushes error chunk when agent throws", async () => {
-    mockRunAgent.mockImplementation(async function* () {
-      throw new Error("Agent crashed");
-       
-      yield { type: "done" };
-    });
-
+  it("pushes an error chunk when the conductor turn fails", async () => {
     const app = await buildTestServer();
     await app.inject({
       method: "POST",
