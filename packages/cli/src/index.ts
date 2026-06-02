@@ -68,6 +68,9 @@ function buildHelpText(): string {
         { usage: "dev restart [service]",     desc: "Restart service(s) in-place" },
         { usage: "dev build [filter]",        desc: "Build packages" },
         { usage: "dev test [filter]",         desc: "Run tests" },
+        { usage: "dev lint [filter]",         desc: "Lint packages (turbo lint)" },
+        { usage: "dev typecheck [filter]",    desc: "Typecheck packages (turbo typecheck)" },
+        { usage: "dev gate",                  desc: "Full gate: build + typecheck + lint + test (--force)" },
       ],
     },
     {

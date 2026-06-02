@@ -285,24 +285,50 @@ async function stopDockerContainers(): Promise<void> {
 
 // ── Build/test runner ────────────────────────────────────────────────────────
 
-async function runPnpmCommand(rawFilter: string | undefined, command: "build" | "test"): Promise<void> {
+type DevTask = "build" | "test" | "lint" | "typecheck"
+
+const TASK_LABELS: Record<DevTask, { active: string; ok: string; fail: string }> = {
+  build:     { active: "Building",      ok: "Build complete", fail: "Build failed" },
+  test:      { active: "Running tests", ok: "Tests passed",   fail: "Tests failed" },
+  lint:      { active: "Linting",       ok: "Lint clean",     fail: "Lint failed" },
+  typecheck: { active: "Typechecking",  ok: "Types clean",    fail: "Typecheck failed" },
+}
+
+async function runPnpmCommand(rawFilter: string | undefined, command: DevTask): Promise<void> {
   const filter = rawFilter ? resolveFilter(rawFilter) : undefined
   const args = filter
     ? ["--filter", filter, command]
     : ["turbo", command]
   const label = filter ? `pnpm --filter ${filter} ${command}` : `pnpm turbo ${command}`
+  const labels = TASK_LABELS[command]
 
-  const action = command === "build" ? "Building" : "Running tests"
-  console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${action}…\n`))
+  console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${labels.active}…\n`))
   console.log(chalk.gray(`    ${label}\n`))
 
   try {
     await execa("pnpm", args, { cwd: ROOT, stdio: "inherit" })
-    const success = command === "build" ? "Build complete" : "Tests passed"
-    console.log(chalk.green(`\n  ${success}\n`))
+    console.log(chalk.green(`\n  ${labels.ok}\n`))
   } catch {
-    const failure = command === "build" ? "Build failed" : "Tests failed"
-    console.error(chalk.red(`\n  ${failure}\n`))
+    console.error(chalk.red(`\n  ${labels.fail}\n`))
+    process.exit(1)
+  }
+}
+
+// ── Full cross-workspace gate ────────────────────────────────────────────────
+// The green-at-commit gate across the whole pnpm workspace (ibatexas + the
+// linked claustrum + adjudicate packages): build → typecheck → lint → test in
+// one turbo run. --concurrency=3 is mandatory on this machine (the CPU-bound
+// property/async suites time out and produce spurious red at higher concurrency).
+async function runGate(opts: { force?: boolean }): Promise<void> {
+  const args = ["turbo", "build", "typecheck", "lint", "test", "--concurrency=3"]
+  if (opts.force) args.push("--force")
+  console.log(chalk.bold(`\n  ${chalk.cyan("→")} Gate — build · typecheck · lint · test (concurrency 3)…\n`))
+  console.log(chalk.gray(`    pnpm ${args.join(" ")}\n`))
+  try {
+    await execa("pnpm", args, { cwd: ROOT, stdio: "inherit" })
+    console.log(chalk.green(`\n  ✅  Gate green\n`))
+  } catch {
+    console.error(chalk.red(`\n  ❌  Gate failed\n`))
     process.exit(1)
   }
 }
@@ -363,4 +389,23 @@ export function registerDevCommands(dev: Command) {
     .command("test [filter]")
     .description("Run tests (runs vitest via turbo)")
     .action((rawFilter: string | undefined) => runPnpmCommand(rawFilter, "test"))
+
+  // ── ibx dev lint [filter] ───────────────────────────────────────────────
+  dev
+    .command("lint [filter]")
+    .description("Lint packages (runs turbo lint)")
+    .action((rawFilter: string | undefined) => runPnpmCommand(rawFilter, "lint"))
+
+  // ── ibx dev typecheck [filter] ──────────────────────────────────────────
+  dev
+    .command("typecheck [filter]")
+    .description("Typecheck packages (runs turbo typecheck)")
+    .action((rawFilter: string | undefined) => runPnpmCommand(rawFilter, "typecheck"))
+
+  // ── ibx dev gate ────────────────────────────────────────────────────────
+  dev
+    .command("gate")
+    .description("Full cross-workspace gate: build + typecheck + lint + test (--force busts cache)")
+    .option("--force", "Bust the turbo cache (0 cached — the honest green-at-commit bar)")
+    .action((opts: { force?: boolean }) => runGate(opts))
 }
