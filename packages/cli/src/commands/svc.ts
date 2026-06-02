@@ -100,6 +100,25 @@ export async function checkNats(natsUrl: string): Promise<ServiceHealth> {
   })
 }
 
+export async function checkVictoriaLogs(baseUrl: string): Promise<ServiceHealth> {
+  const start = Date.now()
+  const timeoutMs = Number(process.env.HEALTH_CHECK_TIMEOUT_MS ?? 5000)
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (res.ok) return { service: "VictoriaLogs", status: "ok", latencyMs: Date.now() - start }
+    return { service: "VictoriaLogs", status: "error", latencyMs: Date.now() - start, error: `HTTP ${res.status}` }
+  } catch (err) {
+    return {
+      service: "VictoriaLogs",
+      status: "error",
+      latencyMs: Date.now() - start,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
 // ── Detailed health check functions ───────────────────────────────────────────
 
 async function latencySamples(
@@ -428,6 +447,12 @@ async function checkAllSummary(): Promise<void> {
     checkTypesense(typesenseHost, typesensePort),
     checkNats(natsUrl),
   ])
+
+  // VictoriaLogs is optional observability infra — only probe it when configured,
+  // so a stack without it never reports a spurious failure.
+  if (process.env.VICTORIALOGS_URL) {
+    results.push(await checkVictoriaLogs(process.env.VICTORIALOGS_URL))
+  }
 
   const allOk = printHealthResults(results)
 

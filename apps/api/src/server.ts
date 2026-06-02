@@ -1,10 +1,12 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { multistream, stdTimeFunctions } from "pino";
 import fastifyJwt from "@fastify/jwt";
 import fastifyCookie from "@fastify/cookie";
 import {
   serializerCompiler,
   validatorCompiler,
 } from "fastify-type-provider-zod";
+import { buildLogStreams } from "./lib/logger.js";
 import { registerSentry } from "./plugins/sentry.js";
 import { registerCors } from "./plugins/cors.js";
 import { registerHelmet } from "./plugins/helmet.js";
@@ -22,10 +24,11 @@ export async function buildServer(): Promise<FastifyInstance> {
   const server = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
-      transport:
-        process.env.NODE_ENV === "production"
-          ? undefined
-          : { target: "pino-pretty", options: { colorize: true } },
+      timestamp: stdTimeFunctions.isoTime,
+      // Same fan-out as the standalone logger: pretty-in-dev / json-in-prod to
+      // the terminal, plus failure-isolated shipping to VictoriaLogs when
+      // VICTORIALOGS_URL is set. Fastify keeps its req/res/err serializers.
+      stream: multistream(buildLogStreams()),
     },
     trustProxy: process.env.TRUST_PROXY === "true",
     connectionTimeout: 30_000,

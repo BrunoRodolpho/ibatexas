@@ -80,8 +80,32 @@ services:
         limits:
           memory: 128M
 
+  # Observability log store — structured JSON (pino) ingest + LogsQL web UI.
+  # The api ships its pino stream to /insert/jsonline (failure-isolated; an
+  # outage here never affects a turn). UI + LogsQL at http://localhost:9428.
+  # Single Go binary built FROM scratch → no shell, so no container healthcheck;
+  # `ibx svc health` / `ibx doctor` probe http://localhost:9428/health from the
+  # host. Image: docker.io/victoriametrics/victoria-logs (bump the tag if the
+  # pull 404s — old tags never disappear, newer ones add features).
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.0.0-victorialogs
+    container_name: ibatexas-victorialogs
+    command:
+      - "--storageDataPath=/vlogs"
+      - "--httpListenAddr=:9428"
+      - "--retentionPeriod=7d"
+    ports:
+      - "127.0.0.1:${VICTORIALOGS_PORT:-9428}:9428"
+    volumes:
+      - victorialogs_data:/vlogs
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
 volumes:
   postgres_data:
   redis_data:
   typesense_data:
   nats_data:
+  victorialogs_data:
