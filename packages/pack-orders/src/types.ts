@@ -310,10 +310,9 @@ export type OrderPayload =
 // ── Context (per-turn caller identity / channel surface) ────────────────
 
 /**
- * Per-turn context the planner consumes. Mirrors the relevant slice of
- * IbateXas's `OrderContext` (in `@ibatexas/llm-provider/machine/types.ts`)
- * but is structurally independent — the Pack must not import the
- * llm-provider state shape (Pack is upstream of consumers).
+ * Per-turn context the planner consumes. A structurally independent slice of
+ * the caller's per-turn context — the Pack must not import a consumer's state
+ * shape (the Pack is upstream of its consumers).
  */
 export interface OrderContext {
   readonly channel: "whatsapp" | "web"

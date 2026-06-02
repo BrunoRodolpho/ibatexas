@@ -9,7 +9,6 @@
     }
   },
   "scripts": {
-    "predev": "cd ../../packages/llm-provider && npx tsc --outDir dist",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
@@ -39,7 +38,6 @@
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^5.2.5",
     "@ibatexas/domain": "workspace:*",
-    "@ibatexas/llm-provider": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/pack-customer-onboarding": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",

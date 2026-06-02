@@ -227,6 +227,9 @@ importers:
       eslint:
         specifier: ^9.0.0
         version: 9.39.4(jiti@2.6.1)
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -923,9 +926,6 @@ importers:
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../../packages/domain
-      '@ibatexas/llm-provider':
-        specifier: workspace:*
-        version: link:../../packages/llm-provider
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../../packages/nats-client
@@ -1270,49 +1270,6 @@ importers:
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
-
-  packages/llm-provider:
-    dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.82.0
-        version: 0.82.0(zod@4.3.6)
-      '@ibatexas/domain':
-        specifier: workspace:*
-        version: link:../domain
-      '@ibatexas/tools':
-        specifier: workspace:*
-        version: link:../tools
-      '@ibatexas/types':
-        specifier: workspace:*
-        version: link:../types
-      fuse.js:
-        specifier: ^7.1.0
-        version: 7.2.0
-      xstate:
-        specifier: ^5.29.0
-        version: 5.30.0
-      zod:
-        specifier: ^4.3.6
-        version: 4.3.6
-    devDependencies:
-      '@eslint/eslintrc':
-        specifier: ^3.0.0
-        version: 3.3.5
-      '@ibatexas/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@vitest/coverage-v8':
-        specifier: ^3.2.0
-        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
-      eslint:
-        specifier: ^9.0.0
-        version: 9.39.4(jiti@2.6.1)
-      typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.0
-        version: 3.2.4(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
 
   packages/nats-client:
     dependencies:
@@ -8029,10 +7986,6 @@ packages:
   functions-have-names@1.2.3:
     resolution: {integrity: sha512-xckBUXyTIqT97tq2x2AMb+g163b5JFysYk0x4qxNFwbfQkmNZoiRHb6sPzI9/QV33WeuvVYBUIiD4NzNIyqaRQ==}
 
-  fuse.js@7.2.0:
-    resolution: {integrity: sha512-zf4vdcIGpjNKTuXwug33Hm2okqX6a0t2ZEbez+o9oBJQSNhVJ5AqERfeiRD3r8HcLqP66MrjdkmzxrncbAOTUQ==}
-    engines: {node: '>=10'}
-
   generate-function@2.3.1:
     resolution: {integrity: sha512-eeB5GfMNeevm/GRYq20ShmsaGcmI81kIX2K9XQx5miC8KdHaC6Jm0qQ8ZNeGOi7wYB8OsdxKs+Y2oVuTFuVwKQ==}
 
@@ -11014,9 +10967,6 @@ packages:
   xmlbuilder@13.0.2:
     resolution: {integrity: sha512-Eux0i2QdDYKbdbA6AM6xE4m6ZTZr4G4xF9kahI2ukSEMCzwce2eX9WlTI5J3s+NU7hpasFsr8hWIONae7LluAQ==}
     engines: {node: '>=6.0'}
-
-  xstate@5.30.0:
-    resolution: {integrity: sha512-mIzIuMjtYVkqXq9dUzYQoag7b/dF1CBS/yhliuPLfR0FwKPC18HiUivb/crcqY2gknhR8gJEhnppLg6ubQ0gGw==}
 
   xtend@4.0.2:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
@@ -19433,8 +19383,6 @@ snapshots:
 
   functions-have-names@1.2.3: {}
 
-  fuse.js@7.2.0: {}
-
   generate-function@2.3.1:
     dependencies:
       is-property: 1.0.2
@@ -22654,8 +22602,6 @@ snapshots:
   xdg-basedir@4.0.0: {}
 
   xmlbuilder@13.0.2: {}
-
-  xstate@5.30.0: {}
 
   xtend@4.0.2: {}
 

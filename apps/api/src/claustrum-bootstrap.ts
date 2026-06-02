@@ -591,9 +591,8 @@ function deriveIbatexasPlannerContext(state: CognitiveState): {
 }
 
 /**
- * Minimal responder — direct Anthropic completion. The full ibatexas
- * responder uses the prompt synthesizer in `@ibatexas/llm-provider`;
- * that integration is incremental work.
+ * Minimal responder — a direct Anthropic completion. Richer prompt synthesis
+ * (system prompt, tool framing) is incremental work layered on top.
  */
 function naiveResponder(model: AnthropicProvider): ResponderPort {
   return {
