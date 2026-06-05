@@ -30,6 +30,7 @@ import {
   createIbatexasPlanner,
   EXPRESS_INTENT_TOOL,
 } from "../claustrum/ibatexas-planner.js";
+import { deriveIbatexasPlannerContext } from "../claustrum-bootstrap.js";
 
 // ── Doubles ──────────────────────────────────────────────────────────────────
 
@@ -306,5 +307,91 @@ describe("createIbatexasPlanner — invariants (property)", () => {
     }
 
     expect(checked).toBeGreaterThanOrEqual(100);
+  });
+});
+
+// ── WS3 — deriveIbatexasPlannerContext (real actor threading) ────────────────
+
+/** Build a CognitiveState whose recalled memory carries `customerId`. */
+function mkStateWithCustomer(
+  customerId: string | undefined,
+  channel: "web" | "whatsapp" = "web",
+): CognitiveState {
+  return {
+    perception: { text: "oi", channel, receivedAt: "2026-06-05T00:00:00.000Z" },
+    memory:
+      customerId === undefined
+        ? {}
+        : {
+            customerId,
+            episodic: [],
+            semantic: [],
+            procedural: [],
+            relational: [],
+            assembledAt: "2026-06-05T00:00:00.000Z",
+          },
+    retrieval: { docs: [], retrievedAt: "2026-06-05T00:00:00.000Z", modelId: "m" },
+    tenantId: "ibatexas",
+    locale: "pt-BR",
+    conversationId: "conv-1",
+    turnId: "turn-1",
+  } as unknown as CognitiveState;
+}
+
+interface DerivedCtx {
+  customerId: string | null;
+  isAuthenticated: boolean;
+  channel: string;
+  staffId: string | null;
+}
+
+function ctxOf(state: CognitiveState): DerivedCtx {
+  const derived = deriveIbatexasPlannerContext(state);
+  return (derived.state as { ctx: DerivedCtx }).ctx;
+}
+
+describe("deriveIbatexasPlannerContext — real actor threading", () => {
+  it("derives an AUTHENTICATED context from a real recalled customerId", () => {
+    const ctx = ctxOf(mkStateWithCustomer("cus_42"));
+    expect(ctx.customerId).toBe("cus_42");
+    expect(ctx.isAuthenticated).toBe(true);
+  });
+
+  it("derives an UNAUTHENTICATED context when no customer is recalled", () => {
+    const ctx = ctxOf(mkStateWithCustomer(undefined));
+    expect(ctx.customerId).toBeNull();
+    expect(ctx.isAuthenticated).toBe(false);
+  });
+
+  it("treats a guest: marker as unauthenticated (mirrors agentCtxFromCapsule)", () => {
+    const ctx = ctxOf(mkStateWithCustomer("guest:abc"));
+    expect(ctx.customerId).toBeNull();
+    expect(ctx.isAuthenticated).toBe(false);
+  });
+
+  it("carries the perception channel through", () => {
+    expect(ctxOf(mkStateWithCustomer("cus_1", "whatsapp")).channel).toBe("whatsapp");
+  });
+
+  it("makes authenticated order intents proposable end-to-end", async () => {
+    // With a real customer, the orders pack planner exposes the authenticated
+    // subset (order.checkout.create etc.). Prove the derived ctx flips that on.
+    const { ordersCapabilityPlanner } = await import("@ibatexas/pack-orders");
+    // The production planner unions over CapabilityPlanner<unknown, unknown>;
+    // calling the typed pack planner directly here requires erasing the
+    // (state, context) to its declared param shape — the derived ctx is exactly
+    // what the union'd planner feeds in production.
+    const plan = (s: { state: unknown; context: unknown }) =>
+      (
+        ordersCapabilityPlanner as unknown as {
+          plan: (state: unknown, context: unknown) => { allowedIntents: string[] };
+        }
+      ).plan(s.state, s.context).allowedIntents;
+    const authedIntents = plan(deriveIbatexasPlannerContext(mkStateWithCustomer("cus_99")));
+    const guestIntents = plan(deriveIbatexasPlannerContext(mkStateWithCustomer(undefined)));
+    expect(authedIntents).toContain("order.checkout.create");
+    expect(authedIntents).toContain("order.cancel");
+    expect(guestIntents).not.toContain("order.checkout.create");
+    expect(guestIntents).toContain("order.item.add"); // always proposable
   });
 });

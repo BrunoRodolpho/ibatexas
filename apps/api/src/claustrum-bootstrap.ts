@@ -566,17 +566,45 @@ const IBATEXAS_CAPABILITY_PLANNERS: ReadonlyArray<
  * (orders/reservations: customerId; reservations: staffId; onboarding:
  * isAuthenticated; payments/whatsapp: none), so a union ctx satisfies all.
  *
- * CONSERVATIVE: CognitiveState carries no actor/customerId, so we derive an
- * UNAUTHENTICATED context — the capability planners then expose only the
- * unauthenticated intent subset, and the kernel's authGuards enforce the
- * authoritative auth check on the envelope. Production wiring of the real actor
- * (a claustrum CognitiveState that carries customerId, or a capsule-aware
- * planner) is a documented follow-up.
+ * WS3 — thread the real actor. The Capsule carries the authoritative actor, but
+ * `PlannerPort.propose` (and therefore `deriveContext`) is handed only a
+ * `CognitiveState`, never the Capsule. The faithful in-CognitiveState carrier of
+ * the customer identity is `state.memory.customerId`: `handleTurn` assembles
+ * `cognition.memory = capsule.memory.recall(capsule.customerId, …)` and
+ * `MemorySnapshot.customerId` is exactly the Capsule's customerId. We derive the
+ * customer/auth context from it so that AUTHENTICATED intent kinds
+ * (`order.checkout.create`, `order.cancel`, `order.amend.request`,
+ * `order.note.add`, every `reservation.*`, both `customer.*`) become proposable
+ * when a real customer is present — previously hardcoded `customerId:null,
+ * isAuthenticated:false` exposed only the unauthenticated subset.
+ *
+ * Guest convention mirrors `agentCtxFromCapsule` (register-ibatexas-tool-packs):
+ * an empty or `guest:`/`anon:`-prefixed customerId is NOT a real customer — it
+ * yields `customerId:null, isAuthenticated:false`. The kernel's authGuards remain
+ * the authoritative auth check on the envelope; this only widens what the planner
+ * is *willing to propose*. `staffId` stays null: a staff actor lives on the
+ * Capsule's `actor.role`, which CognitiveState does not carry, so staff-only
+ * reservation kinds (`reservation.checkin`/`.complete`) remain non-proposable via
+ * the chat planner (they are staff-route only) — a documented follow-up if a
+ * staff chat surface is ever wired.
  */
-function deriveIbatexasPlannerContext(state: CognitiveState): {
+const PLANNER_GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
+
+function plannerCustomerIdFromState(state: CognitiveState): string | null {
+  const raw = (state.memory as { customerId?: unknown } | undefined)?.customerId;
+  if (typeof raw !== "string") return null;
+  const id = raw.trim();
+  if (id === "") return null;
+  if (PLANNER_GUEST_ID_PREFIXES.some((p) => id.startsWith(p))) return null;
+  return id;
+}
+
+export function deriveIbatexasPlannerContext(state: CognitiveState): {
   readonly state: unknown;
   readonly context: unknown;
 } {
+  const customerId = plannerCustomerIdFromState(state);
+  const isAuthenticated = customerId !== null;
   return {
     state: {
       ctx: {
@@ -585,9 +613,12 @@ function deriveIbatexasPlannerContext(state: CognitiveState): {
         // guard REFUSEs a mismatch; env-driven (Hard Rule #3).
         tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
         channel: state.perception.channel,
-        customerId: null,
+        // Real actor, derived from the recalled memory snapshot (= Capsule
+        // customerId). orders/reservations read `customerId`; onboarding reads
+        // `isAuthenticated`.
+        customerId,
         staffId: null,
-        isAuthenticated: false,
+        isAuthenticated,
         cartId: null,
         orderId: null,
       },

@@ -1,8 +1,9 @@
 // Register ibatexas's domain tools as @claustrum/core ToolDefinitions.
 //
-// First-pass registration of a few representative tools spanning cart, orders,
-// and order lifecycle. Each existing @ibatexas/tools handler is wrapped with the
-// capability/id split that the runtime requires:
+// WS3 (claustrum-on-dev): the full LLM-callable MUTATING tool roster — every
+// `@ibatexas/tools` handler whose intent kind is proposable by an installed
+// pack's CapabilityPlanner. Each handler is wrapped with the capability/id
+// split the runtime requires:
 //
 //   - `id` is internal (e.g. "ibatexas.cart.addItem.v1") — NEVER LLM-facing.
 //   - `intentKind` matches the kernel's IntentEnvelope.kind exactly so
@@ -17,35 +18,49 @@
 //     the packs' `allowedIntents` — NOT this field; see ibatexas-planner.ts. So
 //     reconciling `capability` to the intent kind leaks nothing new to the LLM.)
 //
-// Adding more tools is mechanical: import the handler from `@ibatexas/tools`,
-// set its intentKind, and add an entry to `IBATEXAS_TOOLS`. The full 25-tool
-// roster is a separate task.
+// Handler ⇄ ctx contract. The dev tool handlers live in `@ibatexas/tools` and
+// expect an `AgentContext` (`@ibatexas/types`) — NOT a Capsule. The runtime
+// hands each tool a per-turn `Capsule`; `agentCtxFromCapsule()` adapts it. Two
+// handler shapes exist and the wrapper calls each correctly:
+//   - `(input, ctx: AgentContext)` — orders / customer-onboarding / payments.
+//   - `(input)` — the 4 reservation handlers. `createReservation`/`joinWaitlist`
+//     take a single arg; `modify`/`cancelReservation` are wrapped by
+//     `withReservationOwnership`, whose type is `(input) => Promise<R>`. They
+//     carry `customerId` INSIDE the input payload and do their own ownership
+//     check, so the adapter ctx is intentionally not threaded into them.
 //
-// ⚠️ CUTOVER NOT COMPLETE — DO NOT activate this registry until the handler
-//    refactor lands (audit 2026-05-27 RC-A1 / P0-CUTOVER-1+2, D-REGHDR).
-//
-//    The wrapped handlers below (addToCart, createCheckout, cancelOrder) mutate
-//    Prisma/Medusa/Stripe DIRECTLY — there is no `adjudicate()` call inside them
-//    (`grep adjudicat packages/tools/src/` returns 0), and the legacy
-//    `executeToolDirect()` kernel path is dead (imported by no live module). An
-//    earlier version of this comment claimed the handlers "already" adjudicate;
-//    that was false. `registerIbatexasToolPacks()` also has no caller yet, so
-//    the conductor is intentionally inert (a full commerce regression, but SAFE
-//    — no ungated mutations flow through chat).
-//
-//    Completing the cutover requires, as ONE coordinated change:
-//      (1) call `bootstrapClaustrum()` at server start (server.ts);
-//      (2) call `registerIbatexasToolPacks(registry)` + wire a real planner;
-//      (3) route every mutation through adjudicate — the planner emits an
-//          IntentEnvelope that represents the mutation, the runtime adjudicates
-//          it exactly once per turn, the handler performs ONLY the adjudicated
-//          mutation, and the 7 direct HTTP routes (order-actions, cart,
-//          admin/{payments,orders,reservations,order-actions}, stripe-webhook)
-//          route through the conductor instead of writing inline.
-//    Doing (1)+(2) WITHOUT (3) activates the kernel-bypass at full volume.
-//    Keep the runtime inert until (3) ships.
+// ⚠️ INERT — `registerIbatexasToolPacks()` has no caller in the live graph
+//    (bootstrapClaustrum is not invoked at server start). The wrapped handlers
+//    below mutate Prisma/Medusa/Stripe directly; until the conductor is wired
+//    AND every mutation routes through adjudicate(), the registry stays inert —
+//    a full commerce regression but SAFE (no ungated mutation flows through
+//    chat). Activating the conductor without routing the direct HTTP routes
+//    through it would re-open the kernel bypass at full volume. See WS4+.
 
-import { addToCart, cancelOrder, createCheckout } from "@ibatexas/tools";
+import {
+  addOrderNote,
+  addToCart,
+  amendOrder,
+  applyCoupon,
+  cancelOrder,
+  cancelReservation,
+  createCheckout,
+  createReservation,
+  getOrCreateCart,
+  joinWaitlist,
+  modifyReservation,
+  regeneratePix,
+  removeFromCart,
+  setPixDetails,
+  submitReview,
+  updateCart,
+  updatePreferences,
+} from "@ibatexas/tools";
+import {
+  Channel,
+  type AgentContext,
+  type UserType,
+} from "@ibatexas/types";
 import type {
   Capsule,
   CapabilityId as CapId,
@@ -54,10 +69,6 @@ import type {
   ToolRegistry as TR,
 } from "@claustrum/core";
 
-// Re-export for callers; the inline `import { ... } from "@ibatexas/tools"`
-// above is intentionally permissive — the existing handlers each export
-// their schema as a side-export.
-
 function asCapability(s: string): CapId {
   return s as CapId;
 }
@@ -65,11 +76,83 @@ function asIntentKind(s: string): IntK {
   return s as IntK;
 }
 
+// ── Capsule → AgentContext adapter ───────────────────────────────────────────
+//
+// The runtime's per-turn `Capsule` carries the authoritative actor; the
+// `@ibatexas/tools` handlers read a flat `AgentContext` ({channel, sessionId,
+// customerId?, userType}). Map between them here so a handler never sees a
+// Capsule (and the cycle on Capsule stays inside this module).
+//
+// VERIFIED field shapes (installed .d.ts):
+//   - Capsule: { customerId: string; actor: Actor; channel: "whatsapp"|"web";
+//       conversationId; turnId; ... }   (capsule.d.ts — customerId is a REQUIRED
+//       string; the adopter names a guest marker there, it is never absent).
+//   - Actor:  { principal: "llm"|"user"|"system"; role?: "customer"|"staff"|
+//       "admin"|"support"|"system"; sessionId: string; customerId?; staffId? }
+//   - AgentContext: { channel: Channel; sessionId: string; customerId?: string;
+//       userType: "guest"|"customer"|"staff" }   (agent.types.ts).
+//
+// Guest convention (mirrors apps/api/src/routes/chat.ts, where a guest turn is
+// `{ customerId: undefined, userType: "guest" }`): a Capsule customerId that is
+// empty or carries a `guest:`/`anon:` marker prefix is NOT a real customer id —
+// drop it (undefined) and force userType "guest". A staff/admin/support actor
+// role maps to userType "staff" (the only non-customer authenticated bucket
+// AgentContext models); everything else with a real id is "customer".
+
+const GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
+
+function isGuestCustomerId(id: string | undefined): boolean {
+  if (id === undefined) return true;
+  const trimmed = id.trim();
+  if (trimmed === "") return true;
+  return GUEST_ID_PREFIXES.some((p) => trimmed.startsWith(p));
+}
+
+/** Map a ChannelKind ("whatsapp"|"web") onto the `Channel` enum the handlers use.
+ *  The enum VALUES are byte-identical to ChannelKind, so this is a value lookup
+ *  that defaults to web for any unexpected kind (fail-safe, not fail-loud — the
+ *  channel only scopes a cart redis key, never an authorization decision). */
+function channelFromKind(kind: string): Channel {
+  return kind === "whatsapp" ? Channel.WhatsApp : Channel.Web;
+}
+
+/** Derive the AgentContext `userType` from the Capsule actor + customerId. */
+function userTypeFromCapsule(capsule: Capsule): UserType {
+  const role = capsule.actor.role;
+  if (role === "staff" || role === "admin" || role === "support") {
+    return "staff";
+  }
+  if (isGuestCustomerId(capsule.customerId)) {
+    return "guest";
+  }
+  return "customer";
+}
+
 /**
- * Wrap an existing ibatexas tool handler in the claustrum ToolDefinition
- * shape. Defensive about missing schemas (some legacy tools don't ship a
- * Zod schema; passing the literal `unknown` is fine — the planner doesn't
- * read schemas, only the runtime validator does).
+ * Build the flat `AgentContext` an `@ibatexas/tools` handler expects from the
+ * per-turn `Capsule`. Pure; no I/O. Exported for unit testing.
+ */
+export function agentCtxFromCapsule(capsule: Capsule): AgentContext {
+  const guest = isGuestCustomerId(capsule.customerId);
+  return {
+    channel: channelFromKind(capsule.channel),
+    // AgentContext.sessionId is the conversation handle the cart-key + ownership
+    // helpers use. The Capsule's conversationId is that per-conversation key
+    // (the actor.sessionId mirrors it for envelopes); prefer conversationId.
+    sessionId: capsule.conversationId,
+    // Drop guest/empty markers — a guest cart is unowned and the handlers treat
+    // `customerId: undefined` as "guest" (assert-cart-ownership.ts allows an
+    // unowned cart only when customerId is absent).
+    ...(guest ? {} : { customerId: capsule.customerId }),
+    userType: userTypeFromCapsule(capsule),
+  };
+}
+
+/**
+ * Wrap an existing ibatexas tool handler in the claustrum ToolDefinition shape.
+ * The runtime hands `execute` the per-turn Capsule (typed `unknown` in the port
+ * to avoid a cycle on Capsule); we narrow it here and pass the handler a derived
+ * AgentContext — never the raw Capsule.
  */
 function makeTool(opts: {
   id: string;
@@ -80,7 +163,7 @@ function makeTool(opts: {
   requiresConfirmation?: boolean;
   inputSchema?: unknown;
   outputSchema?: unknown;
-  execute: (input: unknown, capsule: Capsule) => Promise<unknown>;
+  execute: (input: unknown, ctx: AgentContext) => Promise<unknown>;
 }): TD<unknown, unknown> {
   return {
     id: opts.id,
@@ -93,55 +176,203 @@ function makeTool(opts: {
     ...(opts.requiresConfirmation
       ? { requiresConfirmation: opts.requiresConfirmation }
       : {}),
-    // The port declares `ctx: unknown` to avoid a cycle on Capsule. The
-    // runtime hands us a Capsule at call-time; we narrow inside each
-    // tool wrapper.
-    execute: (input, ctx) =>
-      opts.execute(input, ctx as Capsule),
+    execute: (input, ctx) => opts.execute(input, agentCtxFromCapsule(ctx as Capsule)),
   };
 }
 
-// First batch: 3 representative tools. Full registration is incremental.
+/**
+ * Variant for the reservation handlers, which take ONLY `(input)` — the ctx is
+ * not threaded (they carry `customerId` in the payload and assert ownership
+ * themselves). Kept separate from `makeTool` so the single-arg call is explicit
+ * and type-checked rather than hidden behind a discarded second argument.
+ */
+function makeReservationTool(opts: {
+  id: string;
+  capability: string;
+  intentKind: string;
+  description: string;
+  riskLevel: TD<unknown, unknown>["riskLevel"];
+  requiresConfirmation?: boolean;
+  execute: (input: unknown) => Promise<unknown>;
+}): TD<unknown, unknown> {
+  return {
+    id: opts.id,
+    capability: asCapability(opts.capability),
+    intentKind: asIntentKind(opts.intentKind),
+    description: opts.description,
+    inputSchema: {},
+    outputSchema: {},
+    riskLevel: opts.riskLevel,
+    ...(opts.requiresConfirmation
+      ? { requiresConfirmation: opts.requiresConfirmation }
+      : {}),
+    // ctx intentionally discarded — reservation handlers are single-arg.
+    execute: (input) => opts.execute(input),
+  };
+}
+
+// ── The roster ────────────────────────────────────────────────────────────────
 // INVARIANT (RC-A1 Phase A.3): `capability === intentKind` for every entry, and
 // that kind is owned by an installed pack — enforced by `toolRosterDrift()` below
-// (unit test + boot-time assertion). Keep new entries compliant.
+// (unit test + boot-time assertion). Every `capability` string here was verified
+// against its pack's `intents` array (pack-{orders,reservations,customer-
+// onboarding,payments}/src/index.ts) on the WS3 sweep.
+//
+// 17 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
+// `allowedIntents` that has a `@ibatexas/tools` handler. The two payment kinds
+// the pack planner advertises but ships no handler for — see TODO(WS4) below.
 const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
+  // ── pack-orders (10) ──────────────────────────────────────────────────────
+  makeTool({
+    id: "ibatexas.cart.ensure.v1",
+    capability: "order.cart.ensure",
+    intentKind: "order.cart.ensure",
+    description: "Garantir um carrinho ativo para a sessão do cliente.",
+    riskLevel: "low",
+    execute: (input, ctx) => getOrCreateCart(input, ctx),
+  }),
   makeTool({
     id: "ibatexas.cart.addItem.v1",
-    capability: "order.item.add", // RC-A1 Phase A: was "cart.add_item" (== intentKind)
+    capability: "order.item.add",
     intentKind: "order.item.add",
     description: "Adicionar um item ao carrinho do cliente.",
     riskLevel: "low",
-    async execute(input, capsule) {
-      return addToCart(input as never, capsule as never);
-    },
+    execute: (input, ctx) => addToCart(input as never, ctx),
+  }),
+  makeTool({
+    id: "ibatexas.cart.updateItem.v1",
+    capability: "order.item.update",
+    intentKind: "order.item.update",
+    description: "Atualizar a quantidade de um item no carrinho.",
+    riskLevel: "low",
+    execute: (input, ctx) => updateCart(input as never, ctx),
+  }),
+  makeTool({
+    id: "ibatexas.cart.removeItem.v1",
+    capability: "order.item.remove",
+    intentKind: "order.item.remove",
+    description: "Remover um item do carrinho do cliente.",
+    riskLevel: "low",
+    execute: (input, ctx) => removeFromCart(input as never, ctx),
+  }),
+  makeTool({
+    id: "ibatexas.cart.applyCoupon.v1",
+    capability: "order.coupon.apply",
+    intentKind: "order.coupon.apply",
+    description: "Aplicar um cupom de desconto ao carrinho.",
+    riskLevel: "low",
+    execute: (input, ctx) => applyCoupon(input as never, ctx),
   }),
   makeTool({
     id: "ibatexas.cart.checkout.v1",
-    capability: "order.checkout.create", // RC-A1 Phase A: was "cart.checkout" (== intentKind)
+    capability: "order.checkout.create",
     intentKind: "order.checkout.create",
     description: "Criar checkout (sessão de pagamento) a partir do carrinho.",
     riskLevel: "high",
     requiresConfirmation: true,
-    async execute(input, capsule) {
-      return createCheckout(input as never, capsule as never);
-    },
+    execute: (input, ctx) => createCheckout(input as never, ctx),
   }),
   makeTool({
     id: "ibatexas.order.cancel.v1",
-    capability: "order.cancel", // RC-A1 Phase A: already == intentKind
+    capability: "order.cancel",
     intentKind: "order.cancel",
     description: "Cancelar um pedido do cliente (irreversível).",
     riskLevel: "irreversible",
     requiresConfirmation: true,
-    async execute(input, capsule) {
-      return cancelOrder(input as never, capsule as never);
-    },
+    execute: (input, ctx) => cancelOrder(input as never, ctx),
   }),
-  // TODO(post-cutover): wire up
-  //   - "schedule.reserve"   -> ScheduleReservationTool (pack-reservations)
-  //   - "customer.anonymize" -> CustomerAnonymizeTool (pack-customer-onboarding)
-  // when their packages publish proper package.json files.
+  makeTool({
+    id: "ibatexas.order.amend.v1",
+    capability: "order.amend.request",
+    intentKind: "order.amend.request",
+    description: "Solicitar alteração em um pedido já realizado.",
+    riskLevel: "medium",
+    execute: (input, ctx) => amendOrder(input as never, ctx),
+  }),
+  makeTool({
+    id: "ibatexas.order.addNote.v1",
+    capability: "order.note.add",
+    intentKind: "order.note.add",
+    description: "Adicionar uma observação a um pedido.",
+    riskLevel: "low",
+    execute: (input, ctx) => addOrderNote(input as never, ctx),
+  }),
+  makeTool({
+    id: "ibatexas.order.submitReview.v1",
+    capability: "order.review.submit",
+    intentKind: "order.review.submit",
+    description: "Enviar uma avaliação de um pedido concluído.",
+    riskLevel: "low",
+    execute: (input, ctx) => submitReview(input as never, ctx),
+  }),
+
+  // ── pack-reservations (4) — single-arg handlers ────────────────────────────
+  makeReservationTool({
+    id: "ibatexas.reservation.create.v1",
+    capability: "reservation.create",
+    intentKind: "reservation.create",
+    description: "Criar uma reserva de mesa.",
+    riskLevel: "medium",
+    execute: (input) => createReservation(input as never),
+  }),
+  makeReservationTool({
+    id: "ibatexas.reservation.modify.v1",
+    capability: "reservation.modify",
+    intentKind: "reservation.modify",
+    description: "Modificar uma reserva existente.",
+    riskLevel: "medium",
+    execute: (input) => modifyReservation(input as never),
+  }),
+  makeReservationTool({
+    id: "ibatexas.reservation.cancel.v1",
+    capability: "reservation.cancel",
+    intentKind: "reservation.cancel",
+    description: "Cancelar uma reserva existente.",
+    riskLevel: "medium",
+    execute: (input) => cancelReservation(input as never),
+  }),
+  makeReservationTool({
+    id: "ibatexas.reservation.joinWaitlist.v1",
+    capability: "reservation.waitlist.join",
+    intentKind: "reservation.waitlist.join",
+    description: "Entrar na lista de espera de um horário lotado.",
+    riskLevel: "low",
+    execute: (input) => joinWaitlist(input as never),
+  }),
+
+  // ── pack-customer-onboarding (2) ────────────────────────────────────────────
+  makeTool({
+    id: "ibatexas.customer.updatePreferences.v1",
+    capability: "customer.preferences.update",
+    intentKind: "customer.preferences.update",
+    description: "Atualizar as preferências do cliente.",
+    riskLevel: "low",
+    execute: (input, ctx) => updatePreferences(input as never, ctx),
+  }),
+  makeTool({
+    id: "ibatexas.customer.setPixDetails.v1",
+    capability: "customer.pix.details.save",
+    intentKind: "customer.pix.details.save",
+    description: "Salvar os dados PIX do cliente para reembolsos.",
+    riskLevel: "medium",
+    execute: (input, ctx) => setPixDetails(input as never, ctx),
+  }),
+
+  // ── pack-payments (1) ────────────────────────────────────────────────────────
+  // NOTE: `payment.method.switch` and `payment.retry` are advertised by
+  // paymentsCapabilityPlanner but have NO `@ibatexas/tools` handler, so they are
+  // intentionally NOT registered. They remain valid pack-owned intents (the
+  // roster test asserts registered ⊆ pack-owned, not the reverse). See
+  // TODO(WS4) on toolRosterDrift below.
+  makeTool({
+    id: "ibatexas.payment.regeneratePix.v1",
+    capability: "payment.pix.regenerate",
+    intentKind: "payment.pix.regenerate",
+    description: "Gerar um novo código PIX para um pagamento pendente.",
+    riskLevel: "high",
+    requiresConfirmation: true,
+    execute: (input, ctx) => regeneratePix(input as never, ctx),
+  }),
 ];
 
 /**
@@ -173,6 +404,17 @@ export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
  *   2. `intentKind ∈ union(installed packs' intents)` — a tool whose kind no
  *      pack owns has no PolicyBundle, so the bridge fails closed (REFUSE) and the
  *      tool is unreachable anyway.
+ *
+ * This is the `registered ⊆ pack-owned` direction (every registered tool is
+ * valid). It deliberately does NOT assert the reverse (pack-owned ⊆ registered):
+ *
+ * TODO(WS4): `payment.method.switch` and `payment.retry` are pack-owned intents
+ *   advertised by paymentsCapabilityPlanner with NO `@ibatexas/tools` handler, so
+ *   they are correctly absent from the roster. Wiring (or de-advertising) them is
+ *   a WS4 domain decision; do NOT edit the payment pack here. They are dangling
+ *   allowlist entries the LLM could propose but no tool can dispatch — a planner
+ *   would emit the envelope and the kernel would adjudicate it, but
+ *   dispatchDecision would `tool_unresolved` on EXECUTE.
  *
  * Pure: the caller supplies the pack intent union (the registrar deliberately
  * does not import `@ibatexas/pack-*` to stay dependency-light). Returns a list of
