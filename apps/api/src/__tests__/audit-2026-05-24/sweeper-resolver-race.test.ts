@@ -133,11 +133,6 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (k: string) => `t6-race:${k}`,
 }))
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockAuditSinkEmit }),
-  orderPolicyBundle: {},
-}))
-
 vi.mock("@adjudicate/core/kernel", async () => {
   const real = await vi.importActual<typeof import("@adjudicate/core/kernel")>(
     "@adjudicate/core/kernel",

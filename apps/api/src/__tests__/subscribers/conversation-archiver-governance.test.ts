@@ -27,10 +27,6 @@ vi.mock("@ibatexas/domain", () => ({
   }),
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
-}));
-
 vi.mock("../../subscribers/dlq.js", () => ({
   pushToDlq: mockPushToDlq,
 }));

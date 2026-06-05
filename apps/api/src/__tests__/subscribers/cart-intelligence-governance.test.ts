@@ -84,10 +84,6 @@ vi.mock("@ibatexas/domain", () => ({
   ITEMS_SCHEMA_VERSION: 1,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
-}));
-
 vi.mock("../../subscribers/dedup.js", () => ({
   isNewEvent: mockIsNewEvent,
 }));

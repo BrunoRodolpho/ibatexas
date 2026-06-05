@@ -86,18 +86,6 @@ vi.mock("@ibatexas/domain", () => ({
   prisma: { $executeRawUnsafe: vi.fn(async () => 0) },
 }))
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  // The audit-consumer imports `createPostgresAuditWriter` to build its
-  // default writer when no override is set. We surface a no-op factory —
-  // tests that exercise the writer path use `_setAuditConsumerWriter`
-  // directly.
-  createPostgresAuditWriter: vi.fn(() => ({
-    async insertAudit() {
-      return undefined
-    },
-  })),
-}))
-
 vi.mock("@sentry/node", () => ({
   withScope: mockSentryWithScope,
   captureMessage: mockSentryCaptureMessage,

@@ -105,10 +105,6 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: vi.fn(),
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}));
-
 vi.mock("../routes/admin/_shared.js", () => ({
   medusaStore: mockMedusaStore,
   medusaAdmin: mockMedusaAdmin,

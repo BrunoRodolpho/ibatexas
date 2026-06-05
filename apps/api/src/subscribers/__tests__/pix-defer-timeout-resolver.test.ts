@@ -25,10 +25,6 @@ vi.mock("@ibatexas/audit-sink", () => ({
   getAuditSink: () => ({ emit: mockAuditSinkEmit }),
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockAuditSinkEmit }),
-}));
-
 vi.mock("twilio", () => ({
   default: () => ({}),
 }));

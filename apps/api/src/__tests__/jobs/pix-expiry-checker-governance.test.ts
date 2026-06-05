@@ -38,10 +38,6 @@ vi.mock("@ibatexas/domain", () => ({
   }),
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
-}));
-
 vi.mock("@sentry/node", () => ({
   withScope: (cb: (s: unknown) => void) =>
     cb({ setTag: vi.fn(), setContext: vi.fn(), setLevel: vi.fn() }),

@@ -38,10 +38,6 @@ vi.mock("@ibatexas/domain", () => ({
   },
 }))
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}))
-
 // Bypass auth — set staffId on the request so requireManagerRole resolves.
 // `vi.mock` paths are resolved against the SUT file's relative imports;
 // `routes/admin/reservations.ts` imports `../../middleware/staff-auth.js`,

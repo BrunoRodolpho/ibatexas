@@ -4,10 +4,17 @@ import { confirm } from "@inquirer/prompts"
 import chalk from "chalk"
 import ora from "ora"
 import { execa } from "execa"
+import { Client } from "pg"
 import { ROOT } from "../utils/root.js"
 import { guardDestructive } from "../lib/pipeline.js"
 import { getMedusaUrl, getAdminToken, medusaFetch } from "../lib/medusa.js"
 import { cleanDomainTables } from "../lib/clean.js"
+import {
+  resolveAuditMigrationsDir,
+  runAuditMigrations,
+} from "../lib/kernel-migrate.js"
+import { migrateClaustrumDatabase } from "./claustrum.js"
+import type { SqlMigrateResult } from "../lib/sql-migrate.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -135,6 +142,83 @@ async function runSeedOrders() {
   }
 }
 
+// ── Kernel + claustrum schema provisioning ─────────────────────────────────────
+//
+// One shared DATABASE_URL holds four logical layers. The Medusa + domain-Prisma
+// migrations (above) cover the first two; these helpers provision the other two —
+// the @adjudicate/audit-postgres `intent_audit` kernel schema and the @claustrum/*
+// memory + grounding schema — using the apply-once + monthly-partition runner in
+// lib/sql-migrate.ts (idempotent; safe to re-run). The claustrum-on-dev cutover
+// made these required: the conductor writes intent_audit before every money
+// side-effect and the memory/grounding providers read claustrum_* tables, but
+// nothing in `ibx` applied them — a fresh `db reset` would leave them missing.
+
+/**
+ * Connect to DATABASE_URL and apply the @adjudicate/audit-postgres migrations +
+ * intent_audit partitions. Owns the pg connection lifecycle. Mirrors
+ * migrateClaustrumDatabase() in commands/claustrum.ts.
+ */
+async function migrateKernelDatabase(opts: {
+  log?: (msg: string) => void
+} = {}): Promise<SqlMigrateResult> {
+  const databaseUrl = process.env.DATABASE_URL
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is not set. Run: ibx env check")
+  }
+  const client = new Client({ connectionString: databaseUrl })
+  await client.connect()
+  try {
+    return await runAuditMigrations(client, {
+      migrationsDir: resolveAuditMigrationsDir(ROOT),
+      now: new Date(),
+      log: opts.log,
+    })
+  } finally {
+    await client.end()
+  }
+}
+
+/**
+ * `ibx db provision` — ensure the kernel audit-postgres + claustrum memory/
+ * grounding schema layers exist in DATABASE_URL. Idempotent. Exits non-zero if
+ * either layer fails so CI catches an incomplete provision. The Medusa + domain
+ * (Prisma) layers are provisioned by `db migrate` / `db migrate:domain`.
+ */
+async function runProvision() {
+  console.log(chalk.bold.blue("\n  🧱  ibx db provision — kernel + claustrum schema\n"))
+  let failed = false
+
+  const kernelSpinner = ora({ text: "kernel audit schema (intent_audit + partitions)", indent: 2 }).start()
+  try {
+    const r = await migrateKernelDatabase()
+    const applied = r.applied.length > 0 ? `${r.applied.length} new` : "up to date"
+    kernelSpinner.succeed(
+      chalk.green(`Kernel audit schema ${applied} · ${r.partitionsEnsured.length} partitions`),
+    )
+  } catch (err) {
+    kernelSpinner.fail(chalk.red(`Kernel provision failed: ${(err as Error).message}`))
+    failed = true
+  }
+
+  const claustrumSpinner = ora({ text: "claustrum memory + grounding (pgvector)", indent: 2 }).start()
+  try {
+    const r = await migrateClaustrumDatabase()
+    const applied = r.applied.length > 0 ? `${r.applied.length} new` : "up to date"
+    claustrumSpinner.succeed(
+      chalk.green(`Claustrum schema ${applied} · ${r.partitionsEnsured.length} partitions`),
+    )
+  } catch (err) {
+    claustrumSpinner.fail(chalk.red(`Claustrum provision failed: ${(err as Error).message}`))
+    failed = true
+  }
+
+  if (failed) {
+    console.log(chalk.red("\n  ❌  One or more schema layers failed to provision\n"))
+    process.exit(1)
+  }
+  console.log(chalk.green("\n  ✅  Kernel + claustrum schema provisioned\n"))
+}
+
 async function runReset(force = false) {
   guardDestructive("db reset")
   if (!force) {
@@ -204,6 +288,21 @@ async function runReset(force = false) {
   await execa("pnpm", ["--filter", "@ibatexas/domain", "db:push"], {
     cwd: ROOT,
     stdio: "inherit",
+  })
+
+  // Re-provision the kernel + claustrum schema layers — a DROP DATABASE wiped
+  // intent_audit and the claustrum_* tables, and neither the Medusa nor the
+  // Prisma migration above recreates them. Idempotent (apply-once + IF NOT
+  // EXISTS), so safe even on the rare re-run. Warn-and-continue if the runtime
+  // DB isn't reachable, matching the seed-step resilience below.
+  await tryStep("Provisioning kernel audit schema (intent_audit)…", async () => {
+    const r = await migrateKernelDatabase({ log: (m) => console.log(chalk.gray(`    ${m}`)) })
+    console.log(chalk.green(`    Kernel schema ready (${r.applied.length} applied, ${r.partitionsEnsured.length} partitions)`))
+  })
+
+  await tryStep("Provisioning claustrum schema (memory + grounding)…", async () => {
+    const r = await migrateClaustrumDatabase({ log: (m) => console.log(chalk.gray(`    ${m}`)) })
+    console.log(chalk.green(`    Claustrum schema ready (${r.applied.length} applied, ${r.partitionsEnsured.length} partitions)`))
   })
 
   const adminEmail = process.env.MEDUSA_ADMIN_EMAIL
@@ -830,6 +929,10 @@ export function registerDbCommands(program: Command) {
     .description("Backfill payment rows from order projections (idempotent, safe to re-run)")
     .action(runBackfillPayments)
 
+  db.command("provision")
+    .description("Provision the kernel audit-postgres + claustrum memory/grounding schema (idempotent)")
+    .action(runProvision)
+
   db.command("clean")
     .description("⚠️  Delete all domain data (--all to also clean Medusa + Typesense)")
     .option("-f, --force", "Skip the confirmation prompt")
@@ -850,5 +953,5 @@ export function registerDbCommands(program: Command) {
     .description("Show migration status for Medusa and domain (Prisma) schemas")
     .action(runStatus)
 
-  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runSeedDelivery, runSeedOrders, runBackfillOrderProjections, runClean, runReset, runReindex }
+  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runSeedDelivery, runSeedOrders, runBackfillOrderProjections, runProvision, runClean, runReset, runReindex }
 }

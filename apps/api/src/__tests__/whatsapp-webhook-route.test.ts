@@ -44,10 +44,6 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  runOrchestrator: mockRunAgent,
-}));
-
 vi.mock("../session/store.js", () => ({
   loadSession: mockLoadSession,
   appendMessages: mockAppendMessages,
@@ -85,7 +81,6 @@ vi.mock("../whatsapp/shortcuts.js", () => ({
   buildHelpText: mockBuildHelpText,
   buildWelcomeText: vi.fn().mockReturnValue("Bem-vindo!"),
 }));
-
 
 vi.mock("../jobs/hesitation-nudge.js", () => ({
   scheduleHesitationNudge: vi.fn().mockResolvedValue(undefined),

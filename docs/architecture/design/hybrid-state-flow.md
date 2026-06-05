@@ -1,5 +1,21 @@
 # Hybrid State-Flow Architecture
 
+> **⚠️ SUPERSEDED (claustrum-on-dev cutover).** The XState 10-layer pipeline and the
+> `@ibatexas/llm-provider` brain described below **no longer exist** — the legacy
+> package was deleted and the conversational turn now runs through the
+> **`@claustrum` Conductor**. The Conductor composition root is
+> `apps/api/src/claustrum-bootstrap.ts` (process-wide; opens a per-turn `Capsule`);
+> the chat (`apps/api/src/routes/chat.ts`) and WhatsApp
+> (`apps/api/src/routes/whatsapp-webhook.ts`) routes call `getConductor()` and run
+> one turn via the Conductor instead of `runOrchestrator(...)`. The production
+> planner is `createIbatexasPlanner` (`apps/api/src/claustrum/ibatexas-planner.ts`):
+> the LLM sees exactly one mutating tool (`express_intent`) and never an internal
+> tool id. Tool visibility per state is still governed by the per-Pack
+> `CapabilityPlanner` contracts in `@adjudicate/core/llm`, and the kernel
+> (`adjudicate()`) remains the sole authority for every state mutation. See
+> **CLAUDE.md rule #9** for the current contract. The text below is retained as
+> historical context for the pre-cutover design only; do not treat it as current.
+
 The IbateXas WhatsApp/Web chatbot is driven by a **10-layer deterministic pipeline** built on XState v5, with verified execution, adaptive runtime, and observability. This document describes why the architecture exists, how each layer behaves, and where every file lives.
 
 ---

@@ -51,10 +51,6 @@ vi.mock("@ibatexas/domain", () => ({
   })),
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn().mockResolvedValue(undefined) }),
-}));
-
 vi.mock("@ibatexas/tools", () => ({
   withLock: mockWithLock,
   cancelStalePaymentIntent: mockCancelStalePaymentIntent,

@@ -199,28 +199,6 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (k: string) => `ibatexas:${k}`,
 }));
 
-// audit-2026-05-24 P0-1 / WS5: import the real NX-guarded park wrapper so
-// me.ts's initiate-deletion / DELETE flows route through it. Without it, the
-// wrapper resolves to undefined and the park call throws.
-//
-// WS5 (claustrum-on-dev): the wrapper relocated to
-// `apps/api/src/adapters/park-nx.ts` (me.ts now imports it via the
-// `park-deferred-intent-nx` seam, real + unmocked). `vi.importActual` is
-// repointed to that new home so it survives the WS8 deletion of
-// `@ibatexas/llm-provider`; the llm-provider mock stays import-safe.
-vi.mock("@ibatexas/llm-provider", async () => {
-  const real = (await vi.importActual(
-    "../../../adapters/park-nx.js",
-  )) as Record<string, unknown>;
-  return {
-    getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-    parkDeferredIntentWithNxGuard: real.parkDeferredIntentWithNxGuard,
-    PARK_COLLISION_REFUSAL_PT_BR: real.PARK_COLLISION_REFUSAL_PT_BR,
-    setDeferQuotaExceededHook: real.setDeferQuotaExceededHook,
-    ParkVerificationFieldsMissingError: real.ParkVerificationFieldsMissingError,
-  };
-});
-
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
   subscribeNatsEvent: vi.fn(),

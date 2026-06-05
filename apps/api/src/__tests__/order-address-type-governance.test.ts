@@ -123,10 +123,6 @@ vi.mock("@ibatexas/domain", () => ({
   getEffectivePonr: () => ({ cancelMinutes: 30 }),
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}));
-
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));

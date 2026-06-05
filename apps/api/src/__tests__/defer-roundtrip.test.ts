@@ -93,11 +93,6 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (key: string) => `test:${key}`,
 }))
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
-  orderPolicyBundle: {},
-}))
-
 vi.mock("@adjudicate/core/kernel", async () => {
   const real = await vi.importActual<typeof import("@adjudicate/core/kernel")>(
     "@adjudicate/core/kernel",

@@ -76,10 +76,6 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockAuditSinkEmit }),
-}));
-
 vi.mock("@sentry/node", () => ({
   withScope: vi.fn((cb: (s: { setTag: () => void; setLevel: () => void; setContext: () => void }) => void) =>
     cb({ setTag: vi.fn(), setLevel: vi.fn(), setContext: vi.fn() }),

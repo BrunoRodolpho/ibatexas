@@ -162,30 +162,49 @@ describe("audit-2026-05-24 T3 — per-intent-kind redactor conformance", () => {
     // Mirror of F-5: a rule keyed on a non-existent kind silently disables
     // itself. We allow synthesised rule kinds (e.g., `validation.text.*`,
     // which are NOT in KNOWN_INTENT_KINDS by design — they're kernel-emitted
-    // validation events) by only flagging keys that LOOK like Pack kinds.
+    // validation events) by only flagging keys that LOOK like user-facing
+    // Pack kinds.
     //
-    // Heuristic: any rule key with a `.` and a known domain prefix
+    // Heuristic: any rule key with a `.` and a user-facing domain prefix
     // (order., reservation., whatsapp., conversation., payment., customer.,
-    // pix., validation.) is a real Pack-or-validation kind. Validation
-    // kinds are exempt — they're documented above the rule entries.
-    const VALIDATION_PREFIX = "validation."
+    // pix.) is a real Pack kind, so it MUST resolve in KNOWN_INTENT_KINDS or
+    // it's an F-5 typo.
+    //
+    // Exempt prefixes — rule keys that are intentionally NOT in
+    // KNOWN_INTENT_KINDS by design and are documented above their rule
+    // entries in audit-redactor.ts:
+    //   - `validation.`              kernel-emitted text-validation events.
+    //   - `medusa.` `stripe.` `twilio.`  wire-egress wrapper kinds. These
+    //     are the internal REST/PSP proxy egress namespaces governed by
+    //     their own inline policy (NOT the user-facing intent taxonomy) —
+    //     see `@ibatexas/intent-kinds` index.ts §"medusa.* namespace is
+    //     EXCLUDED" (D10). They legitimately carry per-kind redactor rules
+    //     (email/metadata/body PII vectors) while staying out of the union,
+    //     so the F-5 typo-sentinel must not flag them.
+    const EXEMPT_RULE_KEY_PREFIXES = [
+      "validation.",
+      "medusa.",
+      "stripe.",
+      "twilio.",
+    ] as const
     const orphanRuleKeys: string[] = []
     for (const ruleKey of Object.keys(INTENT_KIND_FIELD_RULES)) {
-      if (ruleKey.startsWith(VALIDATION_PREFIX)) continue
+      if (EXEMPT_RULE_KEY_PREFIXES.some((p) => ruleKey.startsWith(p))) continue
       if (KNOWN_INTENT_KINDS.has(ruleKey)) continue
       orphanRuleKeys.push(ruleKey)
     }
     if (orphanRuleKeys.length > 0) {
       throw new Error(
         `INTENT_KIND_FIELD_RULES contains orphan keys — the rule key does not ` +
-          `match any kind in KNOWN_INTENT_KINDS (and is not a synthesised ` +
-          `validation.* event). This is the F-5 regression class: a typo in ` +
-          `the key silently disables the rule.\n\n` +
+          `match any kind in KNOWN_INTENT_KINDS (and is not an exempt ` +
+          `synthesised/egress-wrapper kind). This is the F-5 regression class: ` +
+          `a typo in the key silently disables the rule.\n\n` +
           `Orphan keys (${orphanRuleKeys.length}):\n` +
           orphanRuleKeys.map((k) => `  - ${k}`).join("\n") +
           `\n\nFix at ${RULES_FILE} → ${RULES_HEADER}. If the kind was renamed, ` +
           `update the rule key. If the kind was deleted, remove the rule entry. ` +
-          `Synthesised validation.* events bypass this check by design.`,
+          `Synthesised validation.* events and the medusa./stripe./twilio. ` +
+          `egress-wrapper namespaces bypass this check by design.`,
       )
     }
     expect(orphanRuleKeys).toEqual([])

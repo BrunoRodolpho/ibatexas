@@ -32,10 +32,6 @@ vi.mock("@ibatexas/tools", () => ({
   clearMedusaAnonymizePending: mockClearPending,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockAuditSinkEmit }),
-}));
-
 // ── SUT ───────────────────────────────────────────────────────────────────
 
 import { handleMedusaAnonymizePending } from "../customer-anonymize-medusa-resolver.js";
