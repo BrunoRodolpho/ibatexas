@@ -16,8 +16,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockAuditSinkEmit = vi.hoisted(() => vi.fn(async () => undefined));
 
-// llm-provider's audit sink seam. Mocked at the module boundary so we don't
-// drag in the full LLM tool registry / @ibatexas/domain.
+// WS5 (claustrum-on-dev): the SUT (`pix-defer-timeout-resolver.ts`) reads
+// `getAuditSink` from `@ibatexas/audit-sink` (the real one is fail-closed before
+// boot wiring), so the audit spy must be installed there. The
+// `@ibatexas/llm-provider` mock is kept import-safe so we don't drag in the full
+// LLM tool registry / @ibatexas/domain via any transitive import.
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: () => ({ emit: mockAuditSinkEmit }),
+}));
+
 vi.mock("@ibatexas/llm-provider", () => ({
   getAuditSink: () => ({ emit: mockAuditSinkEmit }),
 }));

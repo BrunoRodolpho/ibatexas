@@ -158,14 +158,21 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (k: string) => `ibatexas:${k}`,
 }));
 
-// audit-2026-05-24 P0-1: re-export the real `parkDeferredIntentWithNxGuard`
-// from the leaf module so me.ts routes through the NX-guarded wrapper
-// (the brief's gap — before this fix, me.ts called the framework primitive
-// directly and a second DEFER for the same customerId could silently
-// overwrite the first parked envelope).
+// audit-2026-05-24 P0-1 / WS5: re-export the real `parkDeferredIntentWithNxGuard`
+// so me.ts routes through the NX-guarded wrapper (the brief's gap — before this
+// fix, me.ts called the framework primitive directly and a second DEFER for the
+// same customerId could silently overwrite the first parked envelope).
+//
+// WS5 (claustrum-on-dev): the wrapper relocated to
+// `apps/api/src/adapters/park-nx.ts` and me.ts now imports it via the
+// `park-deferred-intent-nx` seam (real, unmocked). The `vi.importActual` below
+// is repointed to that new home so it survives the WS8 deletion of
+// `@ibatexas/llm-provider`. The `@ibatexas/llm-provider` mock is kept
+// import-safe (me.ts no longer reads park from it) so any transitive importer
+// of llm-provider still resolves.
 vi.mock("@ibatexas/llm-provider", async () => {
   const real = (await vi.importActual(
-    "../../../../packages/llm-provider/src/park-nx.js",
+    "../../adapters/park-nx.js",
   )) as Record<string, unknown>;
   return {
     getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),

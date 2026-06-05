@@ -47,10 +47,14 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { getRedisClient, rk } from "@ibatexas/tools";
+// WS5: park guard now lives in apps/api (the `park-deferred-intent-nx` seam
+// re-exports `apps/api/src/adapters/park-nx.ts`). me.ts's DEFER call sites
+// (LGPD-grace / PIX-pending parks) and the quota-metric hook must share the
+// same park-nx module instance — see kernel-bootstrap.ts.
 import {
   parkDeferredIntentWithNxGuard,
   PARK_COLLISION_REFUSAL_PT_BR,
-} from "@ibatexas/llm-provider";
+} from "../adapters/park-deferred-intent-nx.js";
 import {
   createCustomerService,
   exportCustomerData,
