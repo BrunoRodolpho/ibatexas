@@ -58,3 +58,37 @@ const STEP_VALIDATORS: Record<CheckoutStep, (ctx: StepContext) => boolean> = {
 export function canProceed(step: CheckoutStep, context: StepContext): boolean {
   return STEP_VALIDATORS[step](context)
 }
+
+// ── Field Validators ────────────────────────────────────────────────────
+// Pure rules for the checkout form fields. Shared by the inline per-field
+// validation feedback and the submit-button gating so the two never drift.
+
+/**
+ * Brazilian CPF validation (format + both check digits).
+ * Accepts a value with or without the `.`/`-` mask.
+ */
+export function isValidCpf(cpf: string): boolean {
+  const digits = cpf.replace(/\D/g, "")
+  if (digits.length !== 11) return false
+  if (/^(\d)\1+$/.test(digits)) return false
+  let sum = 0
+  for (let i = 0; i < 9; i++) sum += Number(digits[i]) * (10 - i)
+  let check = 11 - (sum % 11)
+  if (check >= 10) check = 0
+  if (check !== Number(digits[9])) return false
+  sum = 0
+  for (let i = 0; i < 10; i++) sum += Number(digits[i]) * (11 - i)
+  check = 11 - (sum % 11)
+  if (check >= 10) check = 0
+  return check === Number(digits[10])
+}
+
+/** A PIX payer name must have at least two words (first + last name). */
+export function isValidPixName(value: string): boolean {
+  return value.trim().split(/\s+/).filter(Boolean).length >= 2
+}
+
+/** Basic email shape check. */
+export function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}

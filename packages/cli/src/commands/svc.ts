@@ -119,6 +119,26 @@ export async function checkVictoriaLogs(baseUrl: string): Promise<ServiceHealth>
   }
 }
 
+export async function checkGrafana(baseUrl: string): Promise<ServiceHealth> {
+  const start = Date.now()
+  const timeoutMs = Number(process.env.HEALTH_CHECK_TIMEOUT_MS ?? 5000)
+  try {
+    // Grafana's liveness endpoint returns {"database":"ok",...} and needs no auth.
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (res.ok) return { service: "Grafana", status: "ok", latencyMs: Date.now() - start }
+    return { service: "Grafana", status: "error", latencyMs: Date.now() - start, error: `HTTP ${res.status}` }
+  } catch (err) {
+    return {
+      service: "Grafana",
+      status: "error",
+      latencyMs: Date.now() - start,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
 // ── Detailed health check functions ───────────────────────────────────────────
 
 async function latencySamples(
@@ -448,10 +468,13 @@ async function checkAllSummary(): Promise<void> {
     checkNats(natsUrl),
   ])
 
-  // VictoriaLogs is optional observability infra — only probe it when configured,
-  // so a stack without it never reports a spurious failure.
+  // VictoriaLogs + Grafana are optional observability infra — only probe them when
+  // configured, so a stack without them never reports a spurious failure.
   if (process.env.VICTORIALOGS_URL) {
     results.push(await checkVictoriaLogs(process.env.VICTORIALOGS_URL))
+  }
+  if (process.env.GRAFANA_URL) {
+    results.push(await checkGrafana(process.env.GRAFANA_URL))
   }
 
   const allOk = printHealthResults(results)

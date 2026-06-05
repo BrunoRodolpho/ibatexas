@@ -22,6 +22,35 @@ processes:
       timeout_seconds: 10
       failure_threshold: 10
 
+  # ── Observability health gate (one-shot) ─────────────────────────────────────
+  # `infra`'s `docker compose --wait` only confirms VictoriaLogs + Grafana are
+  # RUNNING, not SERVING — VictoriaLogs is a scratch image (no container
+  # healthcheck possible) and Grafana's first boot pulls the LogsQL datasource
+  # plugin (slow). This one-shot polls both HTTP endpoints from the host so
+  # `ibx dev start` shows a clear ✓/✗ for observability. It does NOT gate the app
+  # (best-effort sidecars) — add it to a process's depends_on to hard-gate.
+  observability:
+    command: |
+      VL=${VICTORIALOGS_PORT:-9428}; GF=${GRAFANA_PORT:-3100}
+      echo "Waiting for VictoriaLogs :$VL and Grafana :$GF …"
+      for i in $(seq 1 60); do
+        vl=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$VL/health" 2>/dev/null)
+        gf=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$GF/api/health" 2>/dev/null)
+        if [ "$vl" = "200" ] && [ "$gf" = "200" ]; then
+          echo "✓ VictoriaLogs :$VL OK   ·   ✓ Grafana :$GF OK   (UI http://localhost:$GF)"
+          exit 0
+        fi
+        sleep 2
+      done
+      echo "✗ observability not ready after 120s — VictoriaLogs=$vl Grafana=$gf"
+      echo "  inspect: ibx svc health   ·   docker compose logs grafana victorialogs"
+      exit 1
+    depends_on:
+      infra:
+        condition: process_completed_successfully
+    availability:
+      restart: "no"
+
   # ── Package build (one-shot) ────────────────────────────────────────────────
   # Rebuild shared packages so dist/ matches source. Dependency order matters.
   build-packages:

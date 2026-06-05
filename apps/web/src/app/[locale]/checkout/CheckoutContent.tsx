@@ -17,7 +17,9 @@ import { KitchenClosedBanner } from "@/components/molecules/KitchenClosedBanner"
 import Image from "next/image"
 import { Flame, Lock, ShieldCheck } from "lucide-react"
 import { useOrderHistory } from "@/domains/cart/useOrderHistory"
+import { isValidCpf, isValidPixName, isValidEmail } from "@/domains/checkout"
 import InlineCardInput from "./_components/InlineCardInput"
+import { ValidatedInput } from "./_components/ValidatedInput"
 
 const stripePromise = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
   ? loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY)
@@ -97,6 +99,11 @@ function CheckoutForm() {
   const [pixCpfMasked, setPixCpfMasked] = useState(false)
   const [deliveryError, setDeliveryError] = useState<string | null>(null)
   const pixDetailsFetched = useRef(false)
+  // Fields the user has left at least once — gate validation so errors appear
+  // on blur ("focus change"), not on a pristine page load.
+  const [touched, setTouched] = useState<Record<string, boolean>>({})
+  const markTouched = (field: string) =>
+    setTouched((prev) => (prev[field] ? prev : { ...prev, [field]: true }))
 
   const subtotal = getTotal()
   const deliveryFeeAmount = deliveryType === "delivery" ? (deliveryEstimate?.feeInCentavos ?? 0) : 0
@@ -248,27 +255,18 @@ function CheckoutForm() {
     return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`
   }
 
-  function isValidCpf(cpf: string): boolean {
-    const digits = cpf.replace(/\D/g, "")
-    if (digits.length !== 11) return false
-    if (/^(\d)\1+$/.test(digits)) return false
-    let sum = 0
-    for (let i = 0; i < 9; i++) sum += Number(digits[i]) * (10 - i)
-    let check = 11 - (sum % 11)
-    if (check >= 10) check = 0
-    if (check !== Number(digits[9])) return false
-    sum = 0
-    for (let i = 0; i < 10; i++) sum += Number(digits[i]) * (11 - i)
-    check = 11 - (sum % 11)
-    if (check >= 10) check = 0
-    return check === Number(digits[10])
-  }
-
   const pixFieldsValid = paymentMethod !== "pix" || (
-    pixName.trim().split(/\s+/).length >= 2 &&
-    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pixEmail) &&
+    isValidPixName(pixName) &&
+    isValidEmail(pixEmail) &&
     isValidCpf(pixCpf)
   )
+
+  // ── Per-field validation feedback — shown once a field is left ("touched") ──
+  const nameError = touched.name && !isValidPixName(pixName) ? t('pix_name_invalid') : undefined
+  const emailError = touched.email && !isValidEmail(pixEmail) ? t('pix_email_invalid') : undefined
+  const cpfError = touched.cpf && !isValidCpf(pixCpf) ? t('pix_cpf_invalid') : undefined
+  const cepInvalid = touched.cep && deliveryType === "delivery" && !deliveryEstimate && !loadingEstimate
+  const anyTouched = Object.keys(touched).length > 0
 
   async function handleCheckout() {
     setLoading(true)
@@ -638,7 +636,9 @@ function CheckoutForm() {
                   aria-label={t('cep_placeholder')}
                   value={cepInput}
                   onChange={(e) => setCepInput(e.target.value.replaceAll(/\D/g, "").slice(0, 8))}
-                  className="w-full border-0 border-b border-smoke-300 bg-transparent rounded-none px-1 py-3 text-sm focus:border-charcoal-900 focus:outline-none transition-[border-color] duration-[200ms] ease-luxury"
+                  onBlur={() => markTouched('cep')}
+                  aria-invalid={cepInvalid ? true : undefined}
+                  className={`w-full border-0 border-b bg-transparent rounded-none px-1 py-3 text-sm focus:outline-none transition-[border-color] duration-[200ms] ease-luxury ${cepInvalid ? 'border-accent-red focus:border-accent-red' : 'border-smoke-300 focus:border-charcoal-900'}`}
                 />
                 {loadingEstimate && (
                   <div className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -656,9 +656,11 @@ function CheckoutForm() {
                 </div>
               )}
               <div aria-live="polite" aria-atomic="true">
-                {deliveryError && (
+                {deliveryError ? (
                   <p className="text-sm text-accent-red">{deliveryError}</p>
-                )}
+                ) : cepInvalid && cepInput.length < 8 ? (
+                  <p className="text-sm text-accent-red">{t('cep_invalid')}</p>
+                ) : null}
               </div>
             </div>
           )}
@@ -727,34 +729,37 @@ function CheckoutForm() {
           {paymentMethod === "pix" && (
             <div className="space-y-2 mt-3 pt-3 border-t border-smoke-200">
               <p className="text-xs font-medium text-[var(--color-text-secondary)]">{t('pix_billing_label')}</p>
-              <input
+              <ValidatedInput
+                id="pix-name"
                 type="text"
                 placeholder={t('pix_name_placeholder')}
                 aria-label={t('pix_name_placeholder')}
                 value={pixName}
                 onChange={(e) => setPixName(e.target.value)}
-                className="w-full border-0 border-b border-smoke-300 bg-transparent rounded-none px-1 py-3 text-sm focus:border-charcoal-900 focus:outline-none transition-[border-color] duration-[200ms] ease-luxury"
+                onBlur={() => markTouched('name')}
+                error={nameError}
               />
-              <input
+              <ValidatedInput
+                id="pix-email"
                 type="email"
                 placeholder={t('pix_email_placeholder')}
                 aria-label={t('pix_email_placeholder')}
                 value={pixEmail}
                 onChange={(e) => setPixEmail(e.target.value)}
-                className="w-full border-0 border-b border-smoke-300 bg-transparent rounded-none px-1 py-3 text-sm focus:border-charcoal-900 focus:outline-none transition-[border-color] duration-[200ms] ease-luxury"
+                onBlur={() => markTouched('email')}
+                error={emailError}
               />
-              <input
+              <ValidatedInput
+                id="pix-cpf"
                 type="text"
                 placeholder={t('pix_cpf_placeholder')}
                 aria-label={t('pix_cpf_placeholder')}
                 value={pixCpfMasked ? `***.${pixCpf.slice(-6)}` : pixCpf}
                 onFocus={() => setPixCpfMasked(false)}
                 onChange={(e) => { setPixCpfMasked(false); setPixCpf(formatCpf(e.target.value)) }}
-                className="w-full border-0 border-b border-smoke-300 bg-transparent rounded-none px-1 py-3 text-sm focus:border-charcoal-900 focus:outline-none transition-[border-color] duration-[200ms] ease-luxury"
+                onBlur={() => markTouched('cpf')}
+                error={cpfError}
               />
-              {pixCpf.replace(/\D/g, "").length === 11 && !isValidCpf(pixCpf) && (
-                <p className="text-xs text-accent-red">{t('pix_cpf_invalid')}</p>
-              )}
             </div>
           )}
 
@@ -800,18 +805,25 @@ function CheckoutForm() {
         </div>
 
         {/* Terms acceptance */}
-        <div className="flex items-start gap-3">
-          <Checkbox
-            id="checkout-terms"
-            checked={termsAccepted}
-            onChange={(e) => setTermsAccepted(e.target.checked)}
-          />
-          <label htmlFor="checkout-terms" className="text-sm text-charcoal-700 cursor-pointer select-none">
-            Li e aceito os{" "}
-            <Link href="/termos" className="text-brand-600 hover:underline" target="_blank" onClick={(e) => e.stopPropagation()}>
-              termos de uso
-            </Link>
-          </label>
+        <div>
+          <div className="flex items-start gap-3">
+            <Checkbox
+              id="checkout-terms"
+              checked={termsAccepted}
+              onChange={(e) => setTermsAccepted(e.target.checked)}
+            />
+            <label htmlFor="checkout-terms" className="text-sm text-charcoal-700 cursor-pointer select-none">
+              Li e aceito os{" "}
+              <Link href="/termos" className="text-brand-600 hover:underline" target="_blank" onClick={(e) => e.stopPropagation()}>
+                termos de uso
+              </Link>
+            </label>
+          </div>
+          <div aria-live="polite" aria-atomic="true">
+            {anyTouched && !termsAccepted && (
+              <p className="text-xs text-accent-red mt-1" role="alert">{t('terms_required')}</p>
+            )}
+          </div>
         </div>
 
         {/* Inline validation hints */}

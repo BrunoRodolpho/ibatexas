@@ -8,6 +8,7 @@
 | System diagrams, module map, "where is X?" | [docs/architecture/](docs/architecture/) |
 | Pre-launch backlog (13 items) | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) |
 | Full CLI reference (20 commands) | [docs/cli/reference.md](docs/cli/reference.md) |
+| DB lifecycle — provision/clean/status across all 4 table layers | [docs/ops/db-lifecycle.md](docs/ops/db-lifecycle.md) |
 | Deployment guide, CI/CD pipeline | [docs/setup/deployment.md](docs/setup/deployment.md) |
 | Bounded contexts, entity ownership | [docs/architecture/design/bounded-contexts.md](docs/architecture/design/bounded-contexts.md) |
 | Prisma schema, entities, NATS events | [docs/architecture/design/domain-model.md](docs/architecture/design/domain-model.md) |

@@ -245,8 +245,10 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
 
         // Fallback: projection not found or table missing — read from Medusa
         server.log.warn({ orderId: id }, "projection_fallback_used — order detail");
+        // Medusa v2: `*relation` in `fields` replaces the removed v1 `expand` param
+        // (mixing in `&expand=` 400s "Unrecognized fields: 'expand'").
         const data = await medusaAdmin(
-          `/admin/orders/${id}?fields=id,display_id,email,total,subtotal,shipping_total,status,payment_status,fulfillment_status,created_at,metadata&expand=items,customer,shipping_address`,
+          `/admin/orders/${id}?fields=id,display_id,email,total,subtotal,shipping_total,status,payment_status,fulfillment_status,created_at,metadata,*items,*customer,*shipping_address`,
         ) as Record<string, unknown>;
         const order = data.order as Record<string, unknown> | undefined;
         if (!order) {

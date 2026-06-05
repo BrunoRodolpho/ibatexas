@@ -149,8 +149,10 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { id } = request.params;
       try {
+        // Medusa v2: `*relation` in `fields` replaces the removed v1 `expand` param
+        // (`?expand=` 400s "Unrecognized fields: 'expand'").
         const data = await medusaAdmin(
-          `/admin/products/${id}?expand=variants,variants.prices,categories,tags`,
+          `/admin/products/${id}?fields=*variants,*variants.prices,*categories,*tags`,
         ) as Record<string, unknown>;
         const p = data.product as {
           id: string;

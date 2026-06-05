@@ -84,12 +84,19 @@ export async function adminRoutes(server: FastifyInstance): Promise<void> {
     }
   });
 
-  // Audit logging — log all admin operations (includes staff identity when available)
+  // Audit logging — record admin MUTATIONS (and any non-2xx) with staff identity.
+  // The dashboard polls GET /api/admin/orders every ~30s; logging every benign GET
+  // buried the audit trail, so those are skipped. component:"admin" gives these lines
+  // a VictoriaLogs stream label (filterable via `ibx logs --component admin`).
   server.addHook("onResponse", async (request, reply) => {
+    const isMutation = !["GET", "HEAD", "OPTIONS"].includes(request.method);
+    const isError = reply.statusCode >= 400;
+    if (!isMutation && !isError) return;
     server.log.info({
+      component: "admin",
       admin: true,
       method: request.method,
-      url: request.url,
+      url: request.routeOptions?.url ?? request.url.split("?")[0],
       statusCode: reply.statusCode,
       durationMs: Math.round(reply.elapsedTime),
       ...(request.staffId ? { staffId: request.staffId, staffRole: request.staffRole } : {}),

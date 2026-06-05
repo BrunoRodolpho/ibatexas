@@ -75,11 +75,15 @@ services:
   # ── Infrastructure services ───────────────────────────────────────────────
 
   postgres:
-    # DOCKERDRIFT: aligned to dev docker-compose.yml (was 15-alpine). ⚠️ Major
-    # version jump (15→17): the PGDATA dir is NOT binary-compatible across major
-    # versions — an existing v15 volume must be migrated (pg_upgrade or
+    # DOCKERDRIFT: aligned to dev docker-compose.yml. pgvector/pgvector:pg17 =
+    # Postgres 17 + the pgvector extension (claustrum_grounding_docs needs
+    # `CREATE EXTENSION vector`; stock postgres fails with "extension not available").
+    # ⚠️ Major version compatibility: the PGDATA dir is NOT binary-compatible across
+    # major versions — an existing v15 volume must be migrated (pg_upgrade or
     # dump+restore) BEFORE starting v17. Do NOT point v17 at a v15 data volume.
-    image: postgres:17-alpine
+    # (Managed Postgres — Supabase/RDS — enables pgvector differently; this image
+    # only matters when self-hosting Postgres via this compose file.)
+    image: pgvector/pgvector:pg17
     container_name: ibatexas-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}

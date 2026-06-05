@@ -4,10 +4,25 @@ import { confirm } from "@inquirer/prompts"
 import chalk from "chalk"
 import ora from "ora"
 import { execa } from "execa"
+import { Client } from "pg"
 import { ROOT } from "../utils/root.js"
 import { guardDestructive } from "../lib/pipeline.js"
 import { getMedusaUrl, getAdminToken, medusaFetch } from "../lib/medusa.js"
-import { cleanDomainTables } from "../lib/clean.js"
+import {
+  cleanDomainTables,
+  cleanReferenceTables,
+  truncateRawTables,
+  countDomainTables,
+  countRawTables,
+} from "../lib/clean.js"
+import {
+  DOMAIN_DELETE_ORDER,
+  DOMAIN_REFERENCE,
+  KERNEL_TABLES,
+  MEMORY_TABLES,
+} from "../lib/db-tables.js"
+import { migrateAuditDatabase } from "./kernel.js"
+import { migrateClaustrumDatabase } from "./claustrum.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -206,6 +221,23 @@ async function runReset(force = false) {
     stdio: "inherit",
   })
 
+  // Kernel + claustrum schemas live in sibling-repo SQL migrations that the
+  // Medusa + Prisma steps above do NOT apply. Provision them here so a reset
+  // restores ALL four table layers — without this, intent_audit / claustrum_*
+  // are destroyed by the DROP DATABASE above and never recreated.
+  await tryStep("Provisioning kernel audit schema…", async () => {
+    const r = await migrateAuditDatabase()
+    console.log(
+      chalk.gray(`    intent_audit ready (${r.applied.length} migration(s), ${r.partitionsEnsured.length} partitions)`),
+    )
+  })
+  await tryStep("Provisioning claustrum schema…", async () => {
+    const r = await migrateClaustrumDatabase()
+    console.log(
+      chalk.gray(`    claustrum ready (${r.applied.length} migration(s), ${r.partitionsEnsured.length} partitions)`),
+    )
+  })
+
   const adminEmail = process.env.MEDUSA_ADMIN_EMAIL
   const adminPassword = process.env.MEDUSA_ADMIN_PASSWORD
   if (!adminEmail || !adminPassword) {
@@ -275,13 +307,124 @@ async function runReset(force = false) {
   console.log(chalk.green("\n  ✅  Database reset and reseed complete\n"))
 }
 
-async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
+/**
+ * Ensure every schema layer exists in DATABASE_URL — Medusa, domain (Prisma),
+ * kernel audit, and claustrum memory/grounding. Idempotent and non-destructive
+ * (no data is touched), so it's safe to re-run; it's also the building block
+ * `reset`/`bootstrap` lean on. Attempts all layers, reports per-layer, exits 1
+ * if any layer failed so CI catches an incomplete provision.
+ */
+async function runProvision() {
+  console.log(chalk.bold.blue("\n  🧱  ibx db provision — ensure all schema layers\n"))
+  const step = (msg: string) =>
+    console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${msg}`))
+  let failures = 0
+  const fail = (label: string, err: unknown) => {
+    failures++
+    console.log(chalk.yellow(`    ${label}: ${(err as Error).message}`))
+  }
+
+  step("Medusa migrations…")
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:migrate"], { cwd: ROOT, stdio: "inherit" })
+    console.log(chalk.green("    Medusa schema up to date"))
+  } catch (err) {
+    fail("Medusa migrate failed", err)
+  }
+
+  step("Domain (Prisma) migrations…")
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/domain", "db:push"], { cwd: ROOT, stdio: "inherit" })
+    console.log(chalk.green("    Domain schema up to date"))
+  } catch (err) {
+    fail("Domain migrate failed", err)
+  }
+
+  step("Kernel audit schema (intent_audit)…")
+  try {
+    const r = await migrateAuditDatabase({ log: (m) => console.log(chalk.gray(m)) })
+    console.log(
+      chalk.green(`    Kernel ready (${r.applied.length} new migration(s), ${r.partitionsEnsured.length} partitions)`),
+    )
+  } catch (err) {
+    fail("Kernel provision failed", err)
+  }
+
+  step("Claustrum memory + grounding schema…")
+  try {
+    const r = await migrateClaustrumDatabase({ log: (m) => console.log(chalk.gray(m)) })
+    console.log(
+      chalk.green(`    Claustrum ready (${r.applied.length} new migration(s), ${r.partitionsEnsured.length} partitions)`),
+    )
+  } catch (err) {
+    fail("Claustrum provision failed", err)
+  }
+
+  if (failures > 0) {
+    console.log(chalk.red(`\n  ❌  Provision incomplete — ${failures} layer(s) failed (see above)\n`))
+    process.exit(1)
+  }
+  console.log(chalk.green("\n  ✅  All schema layers provisioned\n"))
+}
+
+interface CleanOptions {
+  force?: boolean
+  all?: boolean
+  kernel?: boolean
+  memory?: boolean
+  reference?: boolean
+  dryRun?: boolean
+}
+
+interface CleanScope {
+  reference: boolean
+  kernel: boolean
+  memory: boolean
+  infra: boolean // Medusa products + Typesense (Redis cache is always cleared)
+}
+
+function resolveCleanScope(opts: CleanOptions): CleanScope {
+  const all = !!opts.all
+  return {
+    reference: all || !!opts.reference,
+    kernel: all || !!opts.kernel,
+    memory: all || !!opts.memory,
+    infra: all,
+  }
+}
+
+/** Open a connected pg client to DATABASE_URL; caller must close it. */
+async function withPgClient<T>(fn: (client: Client) => Promise<T>): Promise<T> {
+  const databaseUrl = process.env.DATABASE_URL
+  if (!databaseUrl) throw new Error("DATABASE_URL is not set. Run: ibx env check")
+  const client = new Client({ connectionString: databaseUrl })
+  await client.connect()
+  try {
+    return await fn(client)
+  } finally {
+    await client.end()
+  }
+}
+
+async function runClean(opts: CleanOptions = {}) {
   guardDestructive("db clean")
-  const scope = opts.all ? "ALL data (domain + Medusa products + Typesense + Redis)" : "domain data (customers, reservations, reviews, etc.)"
+  const scope = resolveCleanScope(opts)
+
+  if (opts.dryRun) {
+    await printCleanPlan(scope)
+    return
+  }
+
+  const scopeParts = ["domain business data"]
+  if (scope.reference) scopeParts.push("reference config (staff + schedules)")
+  if (scope.kernel) scopeParts.push("kernel audit trail")
+  if (scope.memory) scopeParts.push("claustrum memory")
+  if (scope.infra) scopeParts.push("Medusa products + Typesense index")
+  scopeParts.push("Redis cache")
 
   if (!opts.force) {
     const confirmed = await confirm({
-      message: chalk.yellow(`⚠️  This will DELETE ${scope}. Continue?`),
+      message: chalk.yellow(`⚠️  This will DELETE: ${scopeParts.join(", ")}. Continue?`),
       default: false,
     })
     if (!confirmed) {
@@ -293,21 +436,47 @@ async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
   const step = (msg: string) =>
     console.log(chalk.bold(`\n  ${chalk.cyan("→")} ${msg}`))
 
-  // ── Domain tables (FK-safe order: children first) ───────────────────────
+  // ── Domain (+ reference) tables via Prisma (FK-safe: children first) ─────
   step("Cleaning domain tables…")
   try {
     const { prisma } = await import("@ibatexas/domain")
-
     await cleanDomainTables(prisma)
-
-    console.log(chalk.green("    All domain tables emptied"))
+    if (scope.reference) {
+      await cleanReferenceTables(prisma)
+      console.log(chalk.green("    Domain + reference tables emptied"))
+    } else {
+      console.log(chalk.green("    Domain tables emptied (reference config preserved)"))
+    }
     await prisma.$disconnect()
   } catch (err) {
     console.log(chalk.red(`    Domain clean failed: ${(err as Error).message}`))
   }
 
-  // ── Medusa products (--all only) ────────────────────────────────────────
-  if (opts.all) {
+  // ── Kernel audit + claustrum memory via raw-SQL TRUNCATE (keeps schema) ──
+  if (scope.kernel || scope.memory) {
+    const rawTables = [
+      ...(scope.kernel ? KERNEL_TABLES : []),
+      ...(scope.memory ? MEMORY_TABLES : []),
+    ]
+    step("Truncating kernel/claustrum tables…")
+    try {
+      await withPgClient(async (client) => {
+        const truncated = await truncateRawTables(client, rawTables)
+        const skipped = rawTables.length - truncated.length
+        console.log(
+          chalk.green(`    Truncated ${truncated.length} table(s)`) +
+            (skipped > 0
+              ? chalk.gray(` (${skipped} not yet provisioned, skipped)`)
+              : ""),
+        )
+      })
+    } catch (err) {
+      console.log(chalk.yellow(`    Kernel/claustrum clean skipped: ${(err as Error).message}`))
+    }
+  }
+
+  // ── Medusa products + Typesense (--all only) ────────────────────────────
+  if (scope.infra) {
     step("Deleting Medusa products…")
     try {
       const token = await getAdminToken()
@@ -336,7 +505,7 @@ async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
     }
   }
 
-  // ── Redis cache ─────────────────────────────────────────────────────────
+  // ── Redis cache (always) ─────────────────────────────────────────────────
   step("Clearing Redis cache…")
   try {
     const { invalidateAllQueryCache, closeRedisClient } = await import("@ibatexas/tools")
@@ -348,6 +517,59 @@ async function runClean(opts: { force?: boolean; all?: boolean } = {}) {
   }
 
   console.log(chalk.green("\n  ✅  Clean complete\n"))
+}
+
+/** `db clean --dry-run` — count rows per table per in-scope layer; delete nothing. */
+async function printCleanPlan(scope: CleanScope) {
+  console.log(chalk.bold("\n  ibx db clean — dry run (nothing will be deleted)\n"))
+
+  const printGroup = (
+    title: string,
+    rows: Array<{ name: string; count: number; exists?: boolean }>,
+  ) => {
+    console.log(chalk.bold(`  ${chalk.cyan("●")} ${title}`))
+    let total = 0
+    for (const r of rows) {
+      if (r.exists === false) {
+        console.log(`    ${r.name.padEnd(28)} ${chalk.gray("not provisioned")}`)
+        continue
+      }
+      total += r.count
+      const color = r.count > 0 ? chalk.yellow : chalk.gray
+      console.log(`    ${r.name.padEnd(28)} ${color(String(r.count))}`)
+    }
+    console.log(`    ${chalk.gray("would delete".padEnd(28))} ${chalk.bold(String(total))}\n`)
+  }
+
+  try {
+    const { prisma } = await import("@ibatexas/domain")
+    printGroup("Domain business data", await countDomainTables(prisma, DOMAIN_DELETE_ORDER))
+    if (scope.reference) {
+      printGroup("Reference config", await countDomainTables(prisma, DOMAIN_REFERENCE))
+    }
+    await prisma.$disconnect()
+  } catch (err) {
+    console.log(chalk.yellow(`    Cannot count domain tables: ${(err as Error).message}`))
+  }
+
+  if (scope.kernel || scope.memory) {
+    try {
+      await withPgClient(async (client) => {
+        if (scope.kernel) {
+          printGroup("Kernel audit trail", await countRawTables(client, KERNEL_TABLES))
+        }
+        if (scope.memory) {
+          printGroup("Claustrum memory", await countRawTables(client, MEMORY_TABLES))
+        }
+      })
+    } catch (err) {
+      console.log(chalk.yellow(`    Cannot count kernel/claustrum tables: ${(err as Error).message}`))
+    }
+  }
+
+  const caches = [...(scope.infra ? ["Medusa products", "Typesense index"] : []), "Redis cache"]
+  console.log(chalk.bold(`  ${chalk.cyan("●")} Caches / external`))
+  console.log(`    ${chalk.gray("would clear: " + caches.join(", "))}\n`)
 }
 
 async function runReindex(fresh = false) {
@@ -492,35 +714,59 @@ async function checkPrismaMigrations(): Promise<void> {
 async function printDomainTableCounts(): Promise<void> {
   try {
     const { prisma } = await import("@ibatexas/domain")
-
-    const tableNames = [
-      "Customer", "Table", "TimeSlot", "Reservation",
-      "DeliveryZone", "CustomerOrderItem", "Address", "CustomerPreferences",
-    ] as const
-
-    const countFns: Record<typeof tableNames[number], () => Promise<number>> = {
-      Customer: () => prisma.customer.count(),
-      Table: () => prisma.table.count(),
-      TimeSlot: () => prisma.timeSlot.count(),
-      Reservation: () => prisma.reservation.count(),
-      DeliveryZone: () => prisma.deliveryZone.count(),
-      CustomerOrderItem: () => prisma.customerOrderItem.count(),
-      Address: () => prisma.address.count(),
-      CustomerPreferences: () => prisma.customerPreferences.count(),
-    }
-
-    const counts = await Promise.all(
-      tableNames.map(async (table) => ({ table, count: await countFns[table]() }))
-    )
-
-    for (const { table, count } of counts) {
+    // Registry-driven so it never drifts from the schema (business tables only;
+    // reference/config tables are restored by seeds and not interesting here).
+    const counts = await countDomainTables(prisma, DOMAIN_DELETE_ORDER)
+    for (const { name, count } of counts) {
       const color = count > 0 ? chalk.green : chalk.yellow
-      console.log(`    ${table.padEnd(22)} ${color(String(count))}`)
+      console.log(`    ${name.padEnd(24)} ${color(String(count))}`)
     }
-
     await prisma.$disconnect()
   } catch (err) {
     console.log(chalk.yellow(`    Cannot query domain tables: ${(err as Error).message}`))
+  }
+}
+
+/**
+ * Raw-SQL layer status (kernel / claustrum): per-table row counts (or "missing"
+ * when not provisioned), partition count of the RANGE-partitioned parent, and —
+ * for claustrum — whether the pgvector extension is installed.
+ */
+async function printRawLayerStatus(
+  label: string,
+  tables: readonly string[],
+  opts: { partitionParent?: string; checkVectorExtension?: boolean } = {},
+): Promise<void> {
+  try {
+    await withPgClient(async (client) => {
+      const rows = await countRawTables(client, tables)
+      for (const r of rows) {
+        if (!r.exists) {
+          console.log(`    ${r.name.padEnd(28)} ${chalk.red("missing")}`)
+        } else {
+          const color = r.count > 0 ? chalk.green : chalk.yellow
+          console.log(`    ${r.name.padEnd(28)} ${color(String(r.count))}`)
+        }
+      }
+      if (opts.partitionParent) {
+        const p = await client.query(
+          "SELECT count(*)::int AS n FROM pg_inherits WHERE inhparent = to_regclass($1)",
+          [opts.partitionParent],
+        )
+        const n = Number(p.rows[0]?.n ?? 0)
+        const color = n > 0 ? chalk.green : chalk.yellow
+        console.log(`    ${`partitions (${opts.partitionParent})`.padEnd(28)} ${color(String(n))}`)
+      }
+      if (opts.checkVectorExtension) {
+        const e = await client.query("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+        const present = e.rows.length > 0
+        console.log(
+          `    ${"pgvector extension".padEnd(28)} ${present ? chalk.green("installed") : chalk.red("missing")}`,
+        )
+      }
+    })
+  } catch (err) {
+    console.log(chalk.yellow(`    Cannot query ${label}: ${(err as Error).message}`))
   }
 }
 
@@ -541,6 +787,17 @@ async function runStatus() {
   console.log()
   step("Domain table counts")
   await printDomainTableCounts()
+
+  console.log()
+  step("Kernel audit (@adjudicate/audit-postgres)")
+  await printRawLayerStatus("kernel tables", KERNEL_TABLES, { partitionParent: "intent_audit" })
+
+  console.log()
+  step("Claustrum memory + grounding (@claustrum/*)")
+  await printRawLayerStatus("claustrum tables", MEMORY_TABLES, {
+    partitionParent: "claustrum_memory_episodic",
+    checkVectorExtension: true,
+  })
 
   console.log()
 }
@@ -831,13 +1088,21 @@ export function registerDbCommands(program: Command) {
     .action(runBackfillPayments)
 
   db.command("clean")
-    .description("⚠️  Delete all domain data (--all to also clean Medusa + Typesense)")
+    .description("⚠️  Delete domain data (--kernel/--memory/--reference to extend, --all for everything)")
     .option("-f, --force", "Skip the confirmation prompt")
-    .option("-a, --all", "Also delete Medusa products, Typesense index, and Redis cache")
-    .action((opts: { force?: boolean; all?: boolean }) => runClean(opts))
+    .option("-a, --all", "Everything: domain + reference + kernel + claustrum + Medusa + Typesense + Redis")
+    .option("--kernel", "Also truncate the adjudicate kernel audit tables (intent_audit + companions)")
+    .option("--memory", "Also truncate the claustrum memory + grounding tables")
+    .option("--reference", "Also wipe operational config (staff, schedules)")
+    .option("--dry-run", "Show per-table row counts that would be deleted; delete nothing")
+    .action((opts: CleanOptions) => runClean(opts))
+
+  db.command("provision")
+    .description("Ensure all schema layers exist (Medusa + domain + kernel + claustrum) — idempotent, non-destructive")
+    .action(runProvision)
 
   db.command("reset")
-    .description("⚠️  Drop + migrate (Medusa + domain) + reseed (destructive)")
+    .description("⚠️  Drop + migrate (Medusa + domain + kernel + claustrum) + reseed (destructive)")
     .option("-f, --force", "Skip the confirmation prompt")
     .action((opts: { force?: boolean }) => runReset(opts.force))
 
@@ -847,8 +1112,8 @@ export function registerDbCommands(program: Command) {
     .action((opts: { fresh?: boolean }) => runReindex(opts.fresh))
 
   db.command("status")
-    .description("Show migration status for Medusa and domain (Prisma) schemas")
+    .description("Show migration + table status across all 4 layers (Medusa, domain, kernel, claustrum)")
     .action(runStatus)
 
-  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runSeedDelivery, runSeedOrders, runBackfillOrderProjections, runClean, runReset, runReindex }
+  return { runMigrate, runMigrateDomain, runSeed, runSeedDomain, runSeedHomepage, runSeedDelivery, runSeedOrders, runBackfillOrderProjections, runClean, runReset, runProvision, runReindex }
 }

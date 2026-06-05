@@ -1,7 +1,10 @@
 services:
 
   postgres:
-    image: postgres:17-alpine
+    # pgvector/pgvector:pg17 = official Postgres 17 + the pgvector extension
+    # pre-installed (claustrum_grounding_docs needs `CREATE EXTENSION vector`).
+    # Drop-in for postgres:17 — same entrypoint, env vars, and on-disk format.
+    image: pgvector/pgvector:pg17
     container_name: ibatexas-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -103,9 +106,44 @@ services:
         limits:
           memory: 256M
 
+  # Observability dashboards — Grafana with the VictoriaLogs LogsQL datasource,
+  # provisioned read-only from observability/grafana/. The checkout/payments debug
+  # dashboard (payment funnel, failed webhook jobs, stuck orders, errors-by-component,
+  # Medusa API errors) is at observability/grafana/dashboards/checkout-payments.json.
+  # UI at http://localhost:3100 (3000/3001/3002 are web/api/admin). Best-effort sidecar
+  # like victorialogs — no container healthcheck; `ibx svc health` probes it from the
+  # host. Anonymous admin + bound to 127.0.0.1 (dev only — never expose this port).
+  # Bump the image tag if the pull 404s.
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: ibatexas-grafana
+    depends_on:
+      - victorialogs
+    environment:
+      # Auto-install the official VictoriaLogs datasource on first boot. Listed in the
+      # unsigned allow-list too, so an older/unsigned plugin build still loads.
+      GF_INSTALL_PLUGINS: "victoriametrics-logs-datasource"
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "victoriametrics-logs-datasource"
+      # Dev-only: open the dashboards without a login (port is localhost-bound).
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: "dark"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3100}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
 volumes:
   postgres_data:
   redis_data:
   typesense_data:
   nats_data:
   victorialogs_data:
+  grafana_data:

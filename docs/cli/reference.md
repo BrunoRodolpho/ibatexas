@@ -102,21 +102,37 @@ ibx api chat "cardápio do almoço" --channel web  # specify channel (web | what
 ibx db migrate             # run pending Medusa migrations (Medusa must NOT be running)
 ibx db migrate:domain      # run Prisma migrations for ibx_domain schema
 ibx db migrate:domain --name add_order_event_log  # create a named migration
+ibx db provision           # ensure ALL schema layers exist (Medusa + domain + kernel + claustrum) — idempotent
 ibx db seed                # seed products into Medusa (Medusa must be running)
 ibx db seed:domain         # seed domain tables (DeliveryZone, Table, TimeSlot)
 ibx db seed:homepage       # seed customers + reviews for homepage sections (Medusa must be running)
 ibx db seed:delivery       # seed delivery zones, customer addresses, and dietary preferences
 ibx db seed:orders         # seed order history + reservations (Medusa must be running)
 ibx db seed:order-projections  # backfill OrderProjection from Medusa orders (idempotent)
-ibx db clean               # ⚠️  delete all domain data (keeps schema + Medusa products)
-ibx db clean --all         # also delete Medusa products + Typesense index
+ibx db clean               # ⚠️  delete domain business data (orders, payments, conversations… — keeps schema)
+ibx db clean --dry-run     # show per-table row counts that WOULD be deleted; delete nothing
+ibx db clean --kernel      # also TRUNCATE the adjudicate kernel audit tables (intent_audit + companions)
+ibx db clean --memory      # also TRUNCATE the claustrum memory + grounding tables
+ibx db clean --reference   # also wipe operational config (staff, schedules)
+ibx db clean --all         # everything: domain + reference + kernel + claustrum + Medusa + Typesense + Redis
 ibx db clean --force       # skip confirmation prompt
-ibx db reset               # ⚠️  drop + migrate + reseed (destructive)
+ibx db reset               # ⚠️  drop DB + migrate (all 4 layers) + reseed (destructive)
 ibx db reset --force       # skip confirmation prompt (for CI)
 ibx db reindex             # reindex Typesense from Medusa catalog
 ibx db reindex --fresh     # drop + recreate Typesense collection, then reindex
-ibx db status              # show migration status for both Medusa and domain schemas
+ibx db status              # migration + row-count status across all 4 table layers
 ```
+
+The database holds **four table layers** in one `DATABASE_URL` (see [docs/ops/db-lifecycle.md](../ops/db-lifecycle.md)): `domain` (Prisma), `kernel` (adjudicate audit), `memory` (claustrum), plus Medusa/Typesense/Redis. `db clean` defaults to **domain business data only** — the audit trail and memory are preserved unless you opt in:
+
+| command | domain data | reference config | kernel audit | claustrum memory | Medusa/TS/Redis |
+|---|:--:|:--:|:--:|:--:|:--:|
+| `db clean` | ✓ | | | | Redis only |
+| `db clean --kernel` | ✓ | | ✓ | | Redis only |
+| `db clean --memory` | ✓ | | | ✓ | Redis only |
+| `db clean --all` | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+`db provision` and `db reset` provision all four layers. The kernel/memory raw-SQL schemas can also be applied directly with `ibx kernel migrate` and `ibx claustrum migrate` (both idempotent; used by `bootstrap`).
 
 ### Dead Letter Queue — `ibx dlq`
 

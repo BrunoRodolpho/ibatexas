@@ -1,0 +1,16 @@
+# Grafana datasource — VictoriaLogs (LogsQL). Provisioned read-only into the
+# container at /etc/grafana/provisioning/datasources. The url uses the compose
+# service DNS name (`victorialogs`), not localhost, because Grafana proxies from
+# inside the docker network. The dashboard references this datasource by uid.
+apiVersion: 1
+
+datasources:
+  - name: VictoriaLogs
+    type: victoriametrics-logs-datasource
+    uid: victorialogs
+    access: proxy
+    url: http://victorialogs:9428
+    isDefault: true
+    editable: true
+    jsonData:
+      maxLines: 1000

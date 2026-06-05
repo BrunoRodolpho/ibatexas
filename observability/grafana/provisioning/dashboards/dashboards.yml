@@ -1,0 +1,14 @@
+# Grafana dashboard provider — loads every dashboard JSON under the mounted
+# /var/lib/grafana/dashboards directory (observability/grafana/dashboards on the host).
+apiVersion: 1
+
+providers:
+  - name: ibatexas
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

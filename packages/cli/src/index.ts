@@ -25,11 +25,13 @@ import { registerAuthCommands } from "./commands/auth.js"
 import { registerRateCommands } from "./commands/rate.js"
 import { registerBootstrapCommands } from "./commands/bootstrap.js"
 import { registerKernelCommands } from "./commands/kernel.js"
+import { registerClaustrumCommands } from "./commands/claustrum.js"
 import { registerDepsCommands } from "./commands/deps.js"
 import { registerInfraCommands } from "./commands/infra.js"
 import { registerStripeCommands } from "./commands/stripe.js"
 import { registerChatCommands } from "./commands/chat.js"
 import { registerDlqCommands } from "./commands/dlq.js"
+import { registerJobsCommands } from "./commands/jobs.js"
 import { registerOrdersCommands } from "./commands/orders.js"
 import { registerLogsCommands } from "./commands/logs.js"
 import { registerObsCommands } from "./commands/obs.js"
@@ -102,9 +104,10 @@ function buildHelpText(): string {
         { usage: "db seed:delivery", desc: "Seed delivery zones, addresses + preferences" },
         { usage: "db seed:orders",   desc: "Seed order history + reservations (Medusa required)" },
         { usage: "db reindex",        desc: "Fetch products from Medusa → index into Typesense (--fresh to recreate)" },
-        { usage: "db clean",          desc: "⚠  Delete all domain data (--all for Medusa + Typesense too)" },
-        { usage: "db reset",          desc: "⚠  Drop, migrate, and reseed" },
-        { usage: "db status",         desc: "Migration status for Medusa + Prisma schemas" },
+        { usage: "db provision",      desc: "Ensure all schema layers exist (Medusa + domain + kernel + claustrum)" },
+        { usage: "db clean",          desc: "⚠  Delete domain data (--kernel/--memory/--reference, --all, --dry-run)" },
+        { usage: "db reset",          desc: "⚠  Drop, migrate (all 4 layers), and reseed" },
+        { usage: "db status",         desc: "Migration + table status across all 4 layers" },
       ],
     },
     {
@@ -207,6 +210,8 @@ function buildHelpText(): string {
         { usage: "logs [component]",       desc: "Query/tail structured logs (--level, --turn, --decisions, -f)" },
         { usage: "obs decisions",          desc: "Watch kernel decisions + refusals (-f to follow)" },
         { usage: "obs turn <turnId>",      desc: "Show one turn's full trace by correlationId" },
+        { usage: "obs payments",           desc: "Recent payment webhook events (--pi to trace one, -f)" },
+        { usage: "obs funnel",             desc: "Checkout funnel — stage counts + drop-off" },
       ],
     },
     {
@@ -251,6 +256,9 @@ function buildHelpText(): string {
         { usage: "stripe trigger [event]", desc: "Fire a test webhook event (default: payment_intent.succeeded)" },
         { usage: "stripe complete",        desc: "Force-complete orphaned PIX/card carts (--cart <id> | --all) — dev rescue" },
         { usage: "stripe flush [id]",      desc: "Clear webhook idempotency keys (--dry-run)" },
+        { usage: "jobs list [queue]",      desc: "List failed background jobs (default: stripe-webhook)" },
+        { usage: "jobs inspect <q> <id>",  desc: "Show a failed job's event payload + failure reason" },
+        { usage: "jobs replay <q> [id]",   desc: "Retry a failed job, or --all of them (--dry-run)" },
       ],
     },
     {
@@ -335,11 +343,13 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "infra",    register: registerInfraCommands, description: "Infrastructure — deployment and AWS" },
   { name: "stripe",  register: registerStripeCommands, description: "Stripe — payments and webhook testing" },
   { name: "dlq",     register: registerDlqCommands,     description: "Dead Letter Queue — inspect, replay, and purge failed events" },
+  { name: "jobs",    register: registerJobsCommands,    description: "Background jobs — inspect and replay failed BullMQ jobs" },
   { name: "orders",  register: registerOrdersCommands,  description: "Orders — projection management and debugging" },
   { name: "kernel",  register: registerKernelCommands,  description: "Kernel — audit schema provisioning (intent_audit)" },
+  { name: "claustrum", register: registerClaustrumCommands, description: "Claustrum — memory + grounding schema provisioning (pgvector)" },
   { name: "status",  register: registerStatusCommands,  description: "Status — fast stack health (infra + api/conductor + logs UI)" },
   { name: "logs",    register: registerLogsCommands,    description: "Logs — query/tail the structured app logs (VictoriaLogs)" },
-  { name: "obs",     register: registerObsCommands,     description: "Observability — watch kernel decisions and per-turn traces" },
+  { name: "obs",     register: registerObsCommands,     description: "Observability — decisions, per-turn traces, payment funnel" },
 ]
 
 for (const { name, register, description } of groupedCommands) {

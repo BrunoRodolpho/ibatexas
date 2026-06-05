@@ -6,6 +6,7 @@ import { execa } from "execa"
 import { ROOT } from "../utils/root.js"
 import { diagnoseDockerFailure } from "../lib/docker.js"
 import { migrateAuditDatabase } from "./kernel.js"
+import { migrateClaustrumDatabase } from "./claustrum.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -21,7 +22,7 @@ interface BootstrapOpts {
 }
 
 async function runBootstrap(opts: BootstrapOpts) {
-  const TOTAL = opts.skipSeed ? 5 : 7
+  const TOTAL = opts.skipSeed ? 6 : 8
   console.log(chalk.bold.blue("\n  🚀  IbateXas Bootstrap\n"))
 
   let stepNum = 0
@@ -100,7 +101,31 @@ async function runBootstrap(opts: BootstrapOpts) {
     process.exit(1)
   }
 
-  // ── [5] Medusa admin user ─────────────────────────────────────────────────
+  // ── [5] Claustrum memory + grounding schema ───────────────────────────────
+  // The claustrum providers read claustrum_memory_* and claustrum_grounding_docs.
+  // Those raw-SQL migrations are applied by nothing else in the pipeline. Provision
+  // them here (idempotent). The pgvector extension is created by the grounding
+  // migration — needs a superuser role (the dev Docker Postgres role is one).
+  step(++stepNum, TOTAL, "Provisioning claustrum schema…")
+  const claustrumSpinner = ora({ text: "memory + grounding (pgvector)", indent: 4 }).start()
+  try {
+    const result = await migrateClaustrumDatabase()
+    const applied =
+      result.applied.length > 0
+        ? `${result.applied.length} migration(s)`
+        : "already up to date"
+    claustrumSpinner.succeed(
+      chalk.green(
+        `Claustrum schema ready (${applied}, ${result.partitionsEnsured.length} partitions)`,
+      ),
+    )
+  } catch (err) {
+    claustrumSpinner.fail(chalk.red("Claustrum schema migration failed"))
+    console.error(chalk.gray(`    ${String(err)}`))
+    process.exit(1)
+  }
+
+  // ── [6] Medusa admin user ─────────────────────────────────────────────────
   step(++stepNum, TOTAL, "Creating Medusa admin user…")
   const adminEmail = process.env.MEDUSA_ADMIN_EMAIL
   const adminPassword = process.env.MEDUSA_ADMIN_PASSWORD
@@ -121,7 +146,7 @@ async function runBootstrap(opts: BootstrapOpts) {
     }
   }
 
-  // ── [6] Seed data ─────────────────────────────────────────────────────────
+  // ── [7] Seed data ─────────────────────────────────────────────────────────
   if (!opts.skipSeed) {
     step(++stepNum, TOTAL, "Seeding data…")
 
@@ -142,7 +167,7 @@ async function runBootstrap(opts: BootstrapOpts) {
       }
     }
 
-    // ── [7] Verify ────────────────────────────────────────────────────────
+    // ── [8] Verify ────────────────────────────────────────────────────────
     step(++stepNum, TOTAL, "Verifying infrastructure…")
     try {
       await execa("node", [

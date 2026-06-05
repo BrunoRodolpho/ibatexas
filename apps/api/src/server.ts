@@ -14,6 +14,7 @@ import { registerSensible } from "./plugins/sensible.js";
 import { registerSwagger } from "./plugins/swagger.js";
 import { registerRateLimit } from "./plugins/rate-limit.js";
 import { genRequestId, registerRequestId } from "./plugins/request-id.js";
+import { registerAccessLog } from "./plugins/access-log.js";
 import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
 import { requireSecret } from "./utils/require-secret.js";
@@ -30,6 +31,11 @@ export async function buildServer(): Promise<FastifyInstance> {
       // VICTORIALOGS_URL is set. Fastify keeps its req/res/err serializers.
       stream: multistream(buildLogStreams()),
     },
+    // Suppress the built-in "incoming request"/"request completed" pair on EVERY
+    // request (OPTIONS preflight + 20–30s health/admin polls drowned the signal).
+    // registerAccessLog below replaces it with a hook that only logs 4xx/5xx/slow.
+    // (Top-level Fastify option, NOT a logger sub-option.)
+    disableRequestLogging: true,
     trustProxy: process.env.TRUST_PROXY === "true",
     connectionTimeout: 30_000,
     requestTimeout: 60_000,
@@ -47,6 +53,10 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   // OBS-001: Request ID — Sentry tagging + response header (genReqId set above)
   registerRequestId(server);
+
+  // Access log — replaces Fastify's disabled default request logging; only emits
+  // for 4xx/5xx/slow responses (skips OPTIONS + benign polls). See plugins/access-log.ts.
+  registerAccessLog(server);
 
   await registerHelmet(server);
   await registerCors(server);

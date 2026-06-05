@@ -177,7 +177,7 @@ async function reconcilePaymentFromStripe(
   }).catch(() => {});
 
   log.info(
-    { event_id: event.id, paymentId: payment.id, from: payment.status, to: newStatus },
+    { event_id: event.id, event: "payment.reconciled", payment_intent_id: stripePaymentIntentId, paymentId: payment.id, from: payment.status, to: newStatus },
     "[stripe-webhook] Payment reconciled",
   );
 }
@@ -193,7 +193,7 @@ async function handlePaymentSucceeded(
   const processingMs = Date.now() - startMs;
 
   log.info(
-    { event_id: event.id, type: event.type, processing_ms: processingMs },
+    { event_id: event.id, event: "payment.received", payment_intent_id: paymentIntent.id, type: event.type, processing_ms: processingMs },
     "Stripe webhook received",
   );
 
@@ -250,7 +250,7 @@ async function handlePaymentSucceeded(
       await stripe.paymentIntents.update(paymentIntent.id, {
         metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
       });
-      log.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
+      log.info({ event_id: event.id, event: "order.completed", payment_intent_id: paymentIntent.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
     }
   }
 
@@ -275,7 +275,7 @@ async function handlePaymentSucceeded(
   );
 
   if (!result) {
-    log.info({ event_id: event.id, order_id: orderId }, "Order already processed — no-op");
+    log.info({ event_id: event.id, event: "payment.duplicate", payment_intent_id: paymentIntent.id, order_id: orderId }, "Order already processed — no-op");
     // Still reconcile payment status even if order was already processed
     await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, log);
     return;
@@ -321,7 +321,7 @@ async function handlePaymentSucceeded(
   });
 
   log.info(
-    { event_id: event.id, order_id: orderId, processing_ms: Date.now() - startMs },
+    { event_id: event.id, event: "payment.captured", payment_intent_id: paymentIntent.id, order_id: orderId, processing_ms: Date.now() - startMs },
     "payment_intent.succeeded processed",
   );
 }
@@ -512,7 +512,11 @@ function getQueue(): Queue {
 
 /** BullMQ processor — runs the heavy work the route used to await before 200. */
 async function processor(job: Job<StripeWebhookJobData>): Promise<void> {
-  await processStripeEvent(job.data, logger);
+  // Bind component so every payment line streams under {component="job:stripe-webhook"}
+  // in VictoriaLogs (was the unbound root logger → _stream:"{}", invisible to
+  // `ibx logs job`). The `event:` tags added on the milestone logs below then drive
+  // the checkout funnel in Grafana / `ibx obs funnel`.
+  await processStripeEvent(job.data, logger.child({ component: "job:stripe-webhook" }));
 }
 
 /**
@@ -569,6 +573,8 @@ export function startStripeWebhookProcessor(): void {
   worker.on("failed", (job, err) => {
     logger.error(
       {
+        component: "job:stripe-webhook",
+        event: "job.failed",
         err,
         job: QUEUE_NAME,
         event_id: job?.data?.event?.id,

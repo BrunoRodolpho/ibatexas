@@ -211,7 +211,11 @@ export function createOrderService(medusaAdminFn: MedusaFetch) {
       paymentMethod: string | null
       tipInCentavos: number
     } | null> {
-      const data = await fetchAdmin(`/admin/orders/${orderId}?expand=items,customer`) as { order: MedusaOrder }
+      // Medusa v2 dropped the v1 `expand` query param (it 400s "Unrecognized fields:
+      // 'expand'"). Use the `fields` idiom: `*relation` expands a relation, bare names
+      // select columns. Without this the order fetch threw before any capture ran, so a
+      // paid PIX order was stranded in `pending` (cart completed, capture never happened).
+      const data = await fetchAdmin(`/admin/orders/${orderId}?fields=id,status,display_id,email,total,subtotal,shipping_total,customer_id,metadata,*items,*customer`) as { order: MedusaOrder }
       const order = data.order
 
       if (order.status !== "pending") return null

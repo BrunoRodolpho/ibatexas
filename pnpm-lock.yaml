@@ -871,7 +871,7 @@ importers:
         version: link:../../../adjudicate/packages/core
       '@adjudicate/locales-pt-br':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        version: 0.1.1
       '@adjudicate/pack-payments-pix':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/pack-payments-pix
@@ -1169,6 +1169,9 @@ importers:
       '@inquirer/prompts':
         specifier: ^7.10.1
         version: 7.10.1(@types/node@22.19.15)
+      bullmq:
+        specifier: ^5.72.1
+        version: 5.72.1
       chalk:
         specifier: ^5.6.2
         version: 5.6.2
@@ -1294,14 +1297,14 @@ importers:
         version: link:../../../adjudicate/packages/core
       '@adjudicate/locales-pt-br':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        version: 0.1.1
       '@adjudicate/primitives':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/primitives
     devDependencies:
       '@adjudicate/conformance':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/conformance
+        version: 0.1.1(@adjudicate/core@adjudicate+packages+core)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1322,7 +1325,7 @@ importers:
         version: link:../../../adjudicate/packages/core
       '@adjudicate/locales-pt-br':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        version: 0.1.1
       '@adjudicate/pack-payments-pix':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/pack-payments-pix
@@ -1332,7 +1335,7 @@ importers:
     devDependencies:
       '@adjudicate/conformance':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/conformance
+        version: 0.1.1(@adjudicate/core@adjudicate+packages+core)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1353,7 +1356,7 @@ importers:
         version: link:../../../adjudicate/packages/core
       '@adjudicate/locales-pt-br':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        version: 0.1.1
       '@adjudicate/pack-payments-pix':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/pack-payments-pix
@@ -1363,7 +1366,7 @@ importers:
     devDependencies:
       '@adjudicate/conformance':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/conformance
+        version: 0.1.1(@adjudicate/core@adjudicate+packages+core)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1384,14 +1387,14 @@ importers:
         version: link:../../../adjudicate/packages/core
       '@adjudicate/locales-pt-br':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        version: 0.1.1
       '@adjudicate/primitives':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/primitives
     devDependencies:
       '@adjudicate/conformance':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/conformance
+        version: 0.1.1(@adjudicate/core@adjudicate+packages+core)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1412,14 +1415,14 @@ importers:
         version: link:../../../adjudicate/packages/core
       '@adjudicate/locales-pt-br':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/locales-pt-BR
+        version: 0.1.1
       '@adjudicate/primitives':
         specifier: workspace:*
         version: link:../../../adjudicate/packages/primitives
     devDependencies:
       '@adjudicate/conformance':
         specifier: ^0.1.1
-        version: link:../../../adjudicate/packages/conformance
+        version: 0.1.1(@adjudicate/core@adjudicate+packages+core)
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1512,6 +1515,14 @@ importers:
         version: 5.9.3
 
 packages:
+
+  '@adjudicate/conformance@0.1.1':
+    resolution: {integrity: sha512-tzYm68h9kN/ysYXNjXQpasCWIrRM7J4fNU1e7dAW3+omh3b/3N23ud/fQ3S7ikfsXdtwlYCBcNCtgFv+7GWCqg==}
+    peerDependencies:
+      '@adjudicate/core': workspace:*
+
+  '@adjudicate/locales-pt-br@0.1.1':
+    resolution: {integrity: sha512-MCxYs3G7ElUPdJK8mJn69+pHdIMK4O0ExdLfpQGxZ4JEj/5h47WX7iQwGLqZF3x89UeH03nRMqLpqaEzjA5PXQ==}
 
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
@@ -10745,6 +10756,7 @@ packages:
 
   uuid@9.0.1:
     resolution: {integrity: sha512-b+1eJOlsR9K8HJpow9Ok3fiWOWSIcIzXodvv0rQjVoOVNpWMpxf1wZNpt4y9h10odCNrqnYp1OBzRktckBe3sA==}
+    deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
     hasBin: true
 
   v8-compile-cache-lib@3.0.1:
@@ -11054,6 +11066,14 @@ packages:
         optional: true
 
 snapshots:
+
+  '@adjudicate/conformance@0.1.1(@adjudicate/core@adjudicate+packages+core)':
+    dependencies:
+      '@adjudicate/core': link:../adjudicate/packages/core
+
+  '@adjudicate/locales-pt-br@0.1.1':
+    dependencies:
+      '@adjudicate/core': link:../adjudicate/packages/core
 
   '@alloc/quick-lru@5.2.0': {}
 

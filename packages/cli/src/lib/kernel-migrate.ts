@@ -4,24 +4,29 @@
 // writes one `intent_audit` row BEFORE every money side-effect. That table — and
 // its companions (governance_events, audit_guard_stats, audit_outcomes) — live in
 // `@adjudicate/audit-postgres/migrations/00{1..8}-*.sql`, a migration set that
-// `ibx bootstrap`'s Medusa + domain-prisma steps do NOT apply. This runner closes
-// that gap: it applies those migrations against the runtime `DATABASE_URL` (the
-// same connection the sink uses) and pre-creates the monthly partitions that the
-// RANGE-partitioned `intent_audit` parent requires before any row can be written.
+// `ibx bootstrap`'s Medusa + domain-prisma steps do NOT apply. This module is a
+// thin config over the generic runner in `sql-migrate.ts`: it locates those
+// migrations, runs them apply-once against the runtime `DATABASE_URL`, and
+// pre-creates the monthly partitions the RANGE-partitioned `intent_audit` parent
+// requires before any row can be written.
 //
-// Two correctness properties the migration files force on us:
-//   1. APPLY-ONCE. Migrations 001/002/004/005 carry bare `ADD CONSTRAINT`
-//      statements (no `IF NOT EXISTS`) — re-running them throws "constraint
-//      already exists". So we track applied files in `adjudicate_audit_migrations`
-//      and run each exactly once. That makes the whole step idempotent.
-//   2. PARTITIONS. `intent_audit` is `PARTITION BY RANGE (recorded_at)` with NO
-//      partitions created by any migration. An INSERT whose `recorded_at` falls
-//      outside every partition is rejected. We create `CREATE TABLE IF NOT EXISTS
-//      … PARTITION OF …` for a window of months around "now" so live writes land.
-//      Ongoing month-rollover is operational (pg_partman or a monthly re-run).
+// Public exports here are kept stable on purpose — `commands/kernel.ts`,
+// `commands/bootstrap.ts`, and the existing test suite depend on them.
 
 import fs from "node:fs"
 import path from "node:path"
+import {
+  listMigrationFiles,
+  monthlyPartitionSpecsFor,
+  partitionStatementFor,
+  runSqlMigrations,
+  type PartitionSpec,
+  type PgClientLike,
+  type SqlMigrateResult,
+} from "./sql-migrate.js"
+
+// Re-exported so existing importers keep their single import site.
+export { listMigrationFiles, type PartitionSpec, type PgClientLike }
 
 /** The migrations the kernel audit sink depends on. */
 export const AUDIT_MIGRATION_FILE_RE = /^\d{3}-.*\.sql$/
@@ -29,24 +34,8 @@ export const AUDIT_MIGRATION_FILE_RE = /^\d{3}-.*\.sql$/
 /** Bookkeeping table — one row per applied migration file. */
 export const MIGRATION_TRACKING_TABLE = "adjudicate_audit_migrations"
 
-/**
- * Minimal node-postgres client surface this runner needs. `pg.Client` and
- * `pg.Pool` both satisfy it; tests inject a mock. Kept structural so the lib
- * never imports `pg` directly (the command/bootstrap own the connection).
- */
-export interface PgClientLike {
-  query(
-    text: string,
-    params?: ReadonlyArray<unknown>,
-  ): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>
-}
-
-/** One monthly partition of `intent_audit`. Bounds are half-open [from, to). */
-export interface PartitionSpec {
-  readonly name: string
-  readonly from: string // 'YYYY-MM-01 00:00:00+00'
-  readonly to: string // first day of the following month, +00
-}
+/** The RANGE-partitioned parent table the audit sink writes to. */
+const PARTITION_PARENT = "intent_audit"
 
 export interface MigrateOptions {
   readonly migrationsDir: string
@@ -59,11 +48,7 @@ export interface MigrateOptions {
   readonly log?: (msg: string) => void
 }
 
-export interface MigrateResult {
-  readonly applied: string[]
-  readonly skipped: string[]
-  readonly partitionsEnsured: string[]
-}
+export type MigrateResult = SqlMigrateResult
 
 /**
  * Locate the `@adjudicate/audit-postgres` migrations directory. The CLI does not
@@ -98,126 +83,41 @@ export function resolveAuditMigrationsDir(root: string, override?: string): stri
   )
 }
 
-/** Sorted list of migration filenames (001-… before 002-…). */
-export function listMigrationFiles(dir: string): string[] {
-  return fs
-    .readdirSync(dir)
-    .filter((f) => AUDIT_MIGRATION_FILE_RE.test(f))
-    .sort()
-}
-
-function pad2(n: number): string {
-  return n < 10 ? `0${n}` : String(n)
-}
-
 /**
- * Monthly partition specs covering [now - back, now + forward] months. Bounds are
- * pinned to UTC month boundaries (`+00`) so they match the kernel's ISO-8601
- * `recorded_at` instants regardless of the server timezone.
+ * Monthly partition specs for `intent_audit` covering [now-back, now+forward].
+ * Kept as a kernel-specific wrapper so callers/tests get `intent_audit_*` names.
  */
 export function monthlyPartitionSpecs(
   now: Date,
   back = 1,
   forward = 3,
 ): PartitionSpec[] {
-  const specs: PartitionSpec[] = []
-  const baseYear = now.getUTCFullYear()
-  const baseMonth = now.getUTCMonth() // 0-11
-
-  for (let offset = -back; offset <= forward; offset++) {
-    const start = new Date(Date.UTC(baseYear, baseMonth + offset, 1))
-    const next = new Date(Date.UTC(baseYear, baseMonth + offset + 1, 1))
-    const y = start.getUTCFullYear()
-    const m = pad2(start.getUTCMonth() + 1)
-    const ny = next.getUTCFullYear()
-    const nm = pad2(next.getUTCMonth() + 1)
-    specs.push({
-      name: `intent_audit_${y}_${m}`,
-      from: `${y}-${m}-01 00:00:00+00`,
-      to: `${ny}-${nm}-01 00:00:00+00`,
-    })
-  }
-  return specs
+  return monthlyPartitionSpecsFor(PARTITION_PARENT, now, back, forward)
 }
 
-/** CREATE TABLE IF NOT EXISTS … PARTITION OF … for one monthly partition. */
+/** CREATE TABLE IF NOT EXISTS … PARTITION OF intent_audit for one month. */
 export function partitionStatement(spec: PartitionSpec): string {
-  return (
-    `CREATE TABLE IF NOT EXISTS ${spec.name} PARTITION OF intent_audit ` +
-    `FOR VALUES FROM ('${spec.from}') TO ('${spec.to}')`
-  )
+  return partitionStatementFor(PARTITION_PARENT, spec)
 }
 
 /**
  * Apply the audit-postgres migrations apply-once, then ensure the monthly
- * partitions exist. Safe to re-run: already-applied files are skipped and every
- * partition uses IF NOT EXISTS.
- *
- * Each migration file runs inside its own transaction together with the tracking
- * insert, so a partial failure leaves neither a half-applied schema nor a
- * bookkeeping row claiming success.
+ * `intent_audit` partitions exist. Idempotent — see `sql-migrate.ts`.
  */
 export async function runAuditMigrations(
   client: PgClientLike,
   opts: MigrateOptions,
 ): Promise<MigrateResult> {
-  const log = opts.log ?? (() => {})
-  const files = listMigrationFiles(opts.migrationsDir)
-  if (files.length === 0) {
-    throw new Error(`No migration files found in ${opts.migrationsDir}`)
-  }
-
-  await client.query(
-    `CREATE TABLE IF NOT EXISTS ${MIGRATION_TRACKING_TABLE} (` +
-      `filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
-  )
-
-  const appliedRows = await client.query(
-    `SELECT filename FROM ${MIGRATION_TRACKING_TABLE}`,
-  )
-  const alreadyApplied = new Set(
-    appliedRows.rows.map((r) => String(r.filename)),
-  )
-
-  const applied: string[] = []
-  const skipped: string[] = []
-
-  for (const file of files) {
-    if (alreadyApplied.has(file)) {
-      skipped.push(file)
-      log(`  ↷ ${file} (already applied)`)
-      continue
-    }
-    const sql = fs.readFileSync(path.join(opts.migrationsDir, file), "utf8")
-    try {
-      await client.query("BEGIN")
-      await client.query(sql)
-      await client.query(
-        `INSERT INTO ${MIGRATION_TRACKING_TABLE} (filename) VALUES ($1)`,
-        [file],
-      )
-      await client.query("COMMIT")
-      applied.push(file)
-      log(`  ✓ ${file}`)
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => {})
-      throw new Error(`Migration ${file} failed: ${(err as Error).message}`)
-    }
-  }
-
-  // Partitions must exist before the parent can accept a row. Create them only
-  // after 001 has created the partitioned parent (i.e. on this or a prior run).
-  const partitionsEnsured: string[] = []
   const specs = monthlyPartitionSpecs(
     opts.now,
     opts.partitionsBack ?? 1,
     opts.partitionsForward ?? 3,
   )
-  for (const spec of specs) {
-    await client.query(partitionStatement(spec))
-    partitionsEnsured.push(spec.name)
-    log(`  ▸ partition ${spec.name} [${spec.from} … ${spec.to})`)
-  }
-
-  return { applied, skipped, partitionsEnsured }
+  return runSqlMigrations(client, {
+    migrationsDirs: [opts.migrationsDir],
+    trackingTable: MIGRATION_TRACKING_TABLE,
+    fileRe: AUDIT_MIGRATION_FILE_RE,
+    partitions: specs.map((s) => ({ name: s.name, sql: partitionStatement(s) })),
+    log: opts.log,
+  })
 }
