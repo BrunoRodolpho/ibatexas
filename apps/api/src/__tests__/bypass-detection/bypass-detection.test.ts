@@ -1295,40 +1295,9 @@ describe("Bypass detection — W7-P2: admin scheduler/tables/zones DEFERRED_ADMI
   })
 })
 
-// ── Runtime smoke: dispatcher refuses to dispatch unknown tool ────────────
-
-describe("Bypass detection — runtime smoke: dispatcher refuses unknown tool", () => {
-  it("returns kind:'failed' when no handler is registered for a tool name", async () => {
-    // The intent-dispatcher's contract: missing handler ⇒ structured failure
-    // (NOT silent success, NOT silent skip). A future PR that loosens this
-    // would let an unhandled tool name return "executed" with empty output,
-    // breaking the responder's "always tell the LLM what happened" guarantee.
-    const { createIntentDispatcher, createDefaultDispatchHandlers } =
-      await import("@ibatexas/llm-provider")
-    const dispatch = createIntentDispatcher({
-      handlers: createDefaultDispatchHandlers(),
-    })
-
-    const result = await dispatch(
-      {
-        toolName: "definitely_not_a_real_tool_12345",
-        input: {},
-        envelope: {
-          version: 2,
-          kind: "order.bogus",
-          payload: {},
-          createdAt: "2025-01-01T00:00:00.000Z",
-          nonce: "n-smoke",
-          actor: { principal: "llm", sessionId: "smoke" },
-          taint: "UNTRUSTED",
-          intentHash: "deadbeef",
-        },
-      } as unknown as Parameters<typeof dispatch>[0],
-      {
-        sessionId: "smoke",
-        channel: "whatsapp" as never,
-      } as unknown as Parameters<typeof dispatch>[1],
-    )
-    expect(result.kind).toBe("failed")
-  })
-})
+// NOTE (claustrum-on-dev WS8): the former "runtime smoke: dispatcher
+// refuses unknown tool" describe block was deleted with the legacy
+// `@ibatexas/llm-provider` package. Its subject — `createIntentDispatcher`
+// / `createDefaultDispatchHandlers` (the post-adjudication EXECUTE
+// dispatcher) — was BRAIN code removed when routes moved to the claustrum
+// Conductor (WS7). No replacement exists, so the block has no subject.

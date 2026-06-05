@@ -20,7 +20,7 @@
     "@adjudicate/core": "^1.2.0",
     "@adjudicate/runtime": "^0.2.0",
     "@ibatexas/domain": "workspace:*",
-    "@ibatexas/llm-provider": "workspace:*",
+    "@ibatexas/intent-kinds": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",

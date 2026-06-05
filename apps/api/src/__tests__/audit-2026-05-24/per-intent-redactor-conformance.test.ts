@@ -4,7 +4,7 @@
 //
 // SYNTHESIS.md §"Hardening tests" item #3: the audit-redactor's per-intent-
 // kind rules (`INTENT_KIND_FIELD_RULES` in
-// `packages/llm-provider/src/audit-redactor.ts`) carry the free-form-text
+// `packages/audit-sink/src/audit-redactor.ts`) carry the free-form-text
 // PII defense for kinds whose payload fields have names the global
 // REDACT_FIELDS / HASH_FIELDS sets do NOT match — `reason`, `body`,
 // `comment`, `specialRequests`, `templateVariables`, `lastMessage`. A kind
@@ -50,19 +50,19 @@
 // entries; the test runs sub-second (introspection only, no I/O).
 
 import { describe, it, expect } from "vitest"
+import { KNOWN_INTENT_KINDS } from "@ibatexas/intent-kinds"
 import {
-  KNOWN_INTENT_KINDS,
   INTENT_KIND_FIELD_RULES,
   PII_FREE_KIND_ALLOWLIST,
-} from "@ibatexas/llm-provider"
+} from "@ibatexas/audit-sink"
 
 // ── Source-file pointers (failure-message guidance) ──────────────────────
 
-const RULES_FILE = "packages/llm-provider/src/audit-redactor.ts"
+const RULES_FILE = "packages/audit-sink/src/audit-redactor.ts"
 const RULES_HEADER = "INTENT_KIND_FIELD_RULES (search for the constant name)"
 const ALLOWLIST_HEADER =
   "PII_FREE_KIND_ALLOWLIST (search for the constant name)"
-const INTENT_KINDS_FILE = "packages/llm-provider/src/intent-kinds.ts"
+const INTENT_KINDS_FILE = "packages/intent-kinds/src/index.ts"
 
 // ── Known redactor gaps (audit-redactor follow-up tickets) ────────────────
 //
@@ -271,7 +271,7 @@ describe("audit-2026-05-24 T3 — per-intent-kind redactor conformance", () => {
         `\n[audit-2026-05-24 T3] KNOWN_REDACTOR_GAPS — kinds awaiting a ` +
           `per-kind rule in INTENT_KIND_FIELD_RULES at ${RULES_FILE}:\n` +
           gaps.join("\n") +
-          `\n\nFollowup ticket: open against @ibatexas/llm-provider audit-redactor.\n`,
+          `\n\nFollowup ticket: open against @ibatexas/audit-sink audit-redactor.\n`,
       )
     }
     expect(KNOWN_REDACTOR_GAPS.size).toBeGreaterThanOrEqual(0)

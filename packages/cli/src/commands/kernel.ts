@@ -84,9 +84,10 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   // message on healthy deployments. Removed.
   const postgresEnabled = true
 
-  // Pull KNOWN_INTENT_KINDS lazily; the imports drag the policy bundles
-  // into the CLI process which is fine but slow on cold start.
-  const { KNOWN_INTENT_KINDS } = await import("@ibatexas/llm-provider")
+  // Pull KNOWN_INTENT_KINDS lazily. The dependency is the tiny leaf
+  // `@ibatexas/intent-kinds` package (type-only Pack imports + literal
+  // arrays), so this no longer drags policy bundles into the CLI process.
+  const { KNOWN_INTENT_KINDS } = await import("@ibatexas/intent-kinds")
 
   if (opts.json) {
     const out = {

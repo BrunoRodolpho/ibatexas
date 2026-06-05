@@ -1,0 +1,31 @@
+{
+  "name": "@ibatexas/intent-kinds",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --outDir dist",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@adjudicate/pack-payments-pix": "^0.2.0",
+    "@ibatexas/pack-customer-onboarding": "workspace:*",
+    "@ibatexas/pack-orders": "workspace:*",
+    "@ibatexas/pack-payments": "workspace:*",
+    "@ibatexas/pack-reservations": "workspace:*",
+    "@ibatexas/pack-whatsapp": "workspace:*"
+  },
+  "devDependencies": {
+    "@ibatexas/eslint-config": "workspace:*",
+    "typescript": "^5.9.0"
+  }
+}

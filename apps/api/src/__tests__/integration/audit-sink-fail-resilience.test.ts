@@ -118,9 +118,10 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
     const redis = makeRedisSpillStub();
     const failingWriter = makeFailingPostgresWriter();
 
-    // Import wiring through the package's barrel which already loads in
-    // tests. We use the test-isolation helpers re-exported there.
-    const wiring = await import("@ibatexas/llm-provider");
+    // Import wiring through the @ibatexas/audit-sink barrel. We use the
+    // test-isolation helpers (_resetAuditSink / _setAuditSinkDependencies)
+    // exported there.
+    const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
 
@@ -163,7 +164,7 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
   it("audit sink failure does NOT raise to the caller (fail-open boundary)", async () => {
     const redis = makeRedisSpillStub();
     const failingWriter = makeFailingPostgresWriter();
-    const wiring = await import("@ibatexas/llm-provider");
+    const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
 
@@ -184,7 +185,7 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
   it("route-handler-style flow: decision → audit emit fail → route still returns 200", async () => {
     const redis = makeRedisSpillStub();
     const failingWriter = makeFailingPostgresWriter();
-    const wiring = await import("@ibatexas/llm-provider");
+    const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
 

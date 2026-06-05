@@ -41,7 +41,7 @@ import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
-import { KNOWN_INTENT_KINDS } from "@ibatexas/llm-provider"
+import { KNOWN_INTENT_KINDS } from "@ibatexas/intent-kinds"
 // WS5: the NX-park quota-exceeded hook setter MUST come from the same park-nx
 // module instance the live park calls go through — now the apps/api copy
 // (re-exported by the park-deferred-intent-nx seam). Importing it from

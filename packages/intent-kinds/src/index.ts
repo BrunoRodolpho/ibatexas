@@ -1,14 +1,20 @@
-// Intent kind union — `KNOWN_INTENT_KINDS`.
+// @ibatexas/intent-kinds — Intent kind union (`KNOWN_INTENT_KINDS`).
 //
 // Source-of-truth for which intent kinds the kernel knows about. Used by
-// the boot-time Pack-coverage validator (kernel-bootstrap.ts): every
-// known kind MUST resolve to a Pack policy at boot or the api refuses to
-// start. This catches the "added an intent kind but forgot to add a Pack
-// policy" regression case.
+// the boot-time Pack-coverage validator (apps/api kernel-bootstrap.ts):
+// every known kind MUST resolve to a Pack policy at boot or the api
+// refuses to start. This catches the "added an intent kind but forgot to
+// add a Pack policy" regression case. Also surfaced by `ibx kernel status`.
 //
-// This module is the assembly point. It composes the intent surfaces of
-// every first-party Pack plus first-party adopter Packs (currently only
-// `@adjudicate/pack-payments-pix` from the platform repo) into one Set.
+// This tiny leaf package is the assembly point. It composes the intent
+// surfaces of every first-party Pack plus first-party adopter Packs
+// (currently only `@adjudicate/pack-payments-pix` from the platform repo)
+// into one Set. It lives in its own package — rather than inside any
+// consumer — so both apps/api and packages/cli can import it without a
+// dependency cycle, and so it outlived the deletion of the legacy
+// `@ibatexas/llm-provider` brain (claustrum-on-dev WS8). Its only deps are
+// the six Pack packages it type-mirrors below; nothing depends on it but
+// those two consumers, so it cannot introduce a cycle.
 //
 // # Scope (post W5)
 //
