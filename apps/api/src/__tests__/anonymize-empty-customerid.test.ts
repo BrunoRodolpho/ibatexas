@@ -13,9 +13,7 @@
 //      `sub` is empty (defense-in-depth at the route entry).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import Fastify from "fastify";
 import type { FastifyRequest, FastifyReply } from "fastify";
-import sensible from "@fastify/sensible";
 
 // Redis stub — counts calls so we can assert "no Redis key was created".
 const redisStorage = vi.hoisted(() => new Map<string, string>());

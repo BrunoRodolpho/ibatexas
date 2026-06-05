@@ -37,7 +37,6 @@ const mockAddStampFromEnvelope = vi.hoisted(() =>
 const mockGetWhatsAppSender = vi.hoisted(() => vi.fn().mockReturnValue(null));
 const mockPushToDlq = vi.hoisted(() => vi.fn());
 const mockIsNewEvent = vi.hoisted(() => vi.fn().mockResolvedValue(true));
-const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 const natsHandlers: Record<string, (payload: unknown) => Promise<void>> = {};
 

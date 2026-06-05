@@ -18,7 +18,6 @@ const mockCancelStalePaymentIntent = vi.hoisted(() => vi.fn().mockResolvedValue(
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockTransitionStatusFromEnvelope = vi.hoisted(() => vi.fn());
 const mockFindMany = vi.hoisted(() => vi.fn());
-const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("@ibatexas/tools", () => ({
   withLock: mockWithLock,

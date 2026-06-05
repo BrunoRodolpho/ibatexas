@@ -926,7 +926,7 @@ describe("Bypass detection — W6-8 extension: $executeRaw outside command servi
           .map((o) => `  • ${o.file}:${o.line}  →  ${o.text}`)
           .join("\n")
         throw new Error(
-          `Raw SQL (\$executeRaw / \$executeRawUnsafe) detected outside the audit/services allow-list — route through OrderCommandService.*FromEnvelope / PaymentCommandService.*FromEnvelope.\n\nOffenders (${offenders.length}):\n${lines}\n\nAdd to ALLOWED_EXECUTE_RAW only with a justification comment if this is intentional.`,
+          `Raw SQL ($executeRaw / $executeRawUnsafe) detected outside the audit/services allow-list — route through OrderCommandService.*FromEnvelope / PaymentCommandService.*FromEnvelope.\n\nOffenders (${offenders.length}):\n${lines}\n\nAdd to ALLOWED_EXECUTE_RAW only with a justification comment if this is intentional.`,
         )
       }
       expect(offenders).toEqual([])

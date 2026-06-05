@@ -726,7 +726,7 @@ describe("defer-resolver subscriber", () => {
     // Override the get method to throw — covers all retry attempts.
     let getCalls = 0
     const originalGet = redisStub.get.bind(redisStub)
-    redisStub.get = vi.fn(async (key: string) => {
+    redisStub.get = vi.fn(async (_key: string) => {
       getCalls++
       throw new Error("ECONNRESET — Redis connection lost")
     }) as typeof redisStub.get

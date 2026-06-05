@@ -25,14 +25,7 @@
 // (line 156-159) but does NOT decrement the counter. The slot is
 // "leaked" — quota appears full to legitimate callers.
 
-import { describe, it, expect, vi } from "vitest";
-
-// Stub framework park that increments counter then throws — modelling
-// a network blip between INCR and SET. The point is to show counter
-// state DOESN'T roll back in this path.
-async function stubFrameworkParkThatThrows(): Promise<never> {
-  throw new Error("simulated network blip after INCR");
-}
+import { describe, it, expect } from "vitest";
 
 describe("RED-TEAM Target 1 — NX wrapper placeholder + quota-leak window", () => {
   it("OBSERVATION: placeholder shape is recognizably non-envelope", () => {

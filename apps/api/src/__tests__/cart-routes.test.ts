@@ -3,7 +3,7 @@
 // PATCH /api/cart/:id/line-items/:itemId, DELETE /api/cart/:id/line-items/:itemId,
 // POST /api/cart/:id/promotions, POST /api/cart/:id/payment-sessions
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
 import {
   serializerCompiler,

@@ -12,7 +12,6 @@ const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const mockAtomicIncr = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
-const mockRunAgent = vi.hoisted(() => vi.fn());
 const mockNormalizePhone = vi.hoisted(() => vi.fn());
 const mockHashPhone = vi.hoisted(() => vi.fn());
 const mockResolveWhatsAppSession = vi.hoisted(() => vi.fn());

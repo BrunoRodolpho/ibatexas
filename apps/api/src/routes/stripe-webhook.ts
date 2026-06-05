@@ -36,14 +36,12 @@
 // only). The audit record is emitted by withAdjudicate inside the
 // PaymentCommandService chokepoint via the configured AuditSink.
 
-import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import Stripe from "stripe";
 import {
   getRedisClient,
   rk,
   medusaAdmin,
-  medusaStore,
   withLock,
   medusaAdjudicated,
   MedusaAdjudicateRefusedError,
