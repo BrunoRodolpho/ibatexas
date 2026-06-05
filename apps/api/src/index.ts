@@ -5,6 +5,7 @@ import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
 import { bootstrapKernel } from "./plugins/kernel-bootstrap.js";
 import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
+import { bootstrapClaustrum } from "./claustrum-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
@@ -63,6 +64,33 @@ const start = async (): Promise<void> => {
   // (which calls `installKernelMetricsSink` to populate the hook
   // state read by `buildAuditSinkDependencies`).
   await bootstrapAuditSinkDI(server.log);
+
+  // WS7 — bootstrap the claustrum Conductor ALONGSIDE the kernel bootstrap.
+  // `getConductor()` then returns the live process singleton so the chat +
+  // WhatsApp turn-entry routes run through the @claustrum/* cognitive loop
+  // (planner → adjudicate → dispatch → respond), with every mutation gated by
+  // the @adjudicate/* kernel (one intent_audit row before each side-effect).
+  //
+  // Boot-order reconciliation (do NOT reorder):
+  //   1. buildServer() → installKernelMetricsSink()  — the PRODUCTION kernel
+  //      MetricsSink (PostHog/Sentry/Prometheus) + the audit-lag/dedup/spill
+  //      recorder hooks that subscribers + jobs depend on.
+  //   2. bootstrapKernel(server)                     — installFirstPartyPacks +
+  //      pack-coverage + audit-postgres preflight (kept; NOT removed).
+  //   3. bootstrapAuditSinkDI(server.log)            — audit-sink leaf DI.
+  //   4. bootstrapClaustrum()                        — composes the conductor.
+  //
+  // Double-init is safe: bootstrapClaustrum internally re-runs
+  // bootstrapAuditSinkDI (idempotent — REPLACES the deps with the same values
+  // and resets the cached sink, per its docstring) and re-runs installPack
+  // (a stateless conformance check, not a registry mutation — install.js
+  // returns the wrapped pack and mutates no global). It will NOT overwrite the
+  // production MetricsSink from step 1: it guards on `hasMetricsSink()` and
+  // only installs its observability-only sink when none is present (i.e. when
+  // claustrum is bootstrapped standalone). The WS5 resume-intent dispatcher is
+  // already wired below via `startDeferResolverSubscriber({ dispatcher })`.
+  await bootstrapClaustrum();
+  server.log.info("[startup] claustrum Conductor bootstrapped and live");
 
   // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma
   const shutdown = async (): Promise<void> => {

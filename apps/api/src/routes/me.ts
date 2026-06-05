@@ -46,7 +46,7 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { getRedisClient, rk, withLock } from "@ibatexas/tools";
 // WS5: park guard now lives in apps/api (the `park-deferred-intent-nx` seam
 // re-exports `apps/api/src/adapters/park-nx.ts`). me.ts's DEFER call sites
 // (LGPD-grace / PIX-pending parks) and the quota-metric hook must share the
@@ -58,6 +58,7 @@ import {
 import {
   createCustomerService,
   exportCustomerData,
+  anonymizeCustomer,
   anonymizeCustomerFromEnvelope,
 } from "@ibatexas/domain";
 import {
@@ -668,305 +669,82 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
     },
   );
 
-  // ── DELETE /api/me/data?token={otpCode} ─────────────────────────────────────
+  // ── DELETE /api/me/data ─────────────────────────────────────────────────────
   //
-  // Legacy single-step path kept for back-compat with existing clients.
-  // The W4 preferred flow is /send-otp → /verify-otp → /initiate-deletion
-  // (split into three for stolen-JWT defense and brute-force counters).
+  // RC-A1 Phase B (LGPD Option B, D-25) — IMMEDIATE erasure for the
+  // authenticated HTTP DELETE. The whole locked anonymize (phone tombstone /
+  // cpf+email null / review redact / conversation delete / erasedAt) runs NOW,
+  // gated through the conductor's customer-intent gateway: a `customer.anonymize`
+  // envelope is adjudicated against the customer-onboarding pack with
+  // `state.ctx.immediateErasure: true`, which the pack (WS4) uses to skip BOTH
+  // the fresh-OTP guard (`requireFreshOtp`) and the 24h-grace DEFER
+  // (`deferAnonymizeForGrace`), falling through to `executeAnonymize` → EXECUTE.
+  // No OTP, no 24h grace — auth-gated by `requireAuth` (the session JWT proves
+  // identity), matching today's single-step erasure behavior.
   //
-  // This endpoint enforces the same W4 P0-11 defenses:
-  //   - cancel-cooldown check
-  //   - brute-force counter (5 failures / 30min → lockout)
-  // Once W5 enforce flips, this endpoint can be removed entirely.
+  // The multi-step OTP + 24h-grace flow stays intact for clients that want it:
+  // /send-otp → /verify-otp → /initiate-deletion (which DEFERs because it leaves
+  // `immediateErasure` absent) + /cancel-deletion.
+  //
+  // The destructive call runs through `runCustomerIntent` so the EXECUTE
+  // decision is audited uniformly via `getAuditSink()` (one intent_audit row),
+  // and under one per-customer lock (`lgpd:{customerId}`) shared with the export
+  // route so an erase and an export cannot interleave.
+
+  const DeleteDataResponse = z.object({
+    success: z.boolean(),
+    message: z.string(),
+  });
 
   app.delete(
     "/api/me/data",
     {
       schema: {
         tags: ["me"],
-        summary: "[DEPRECATED] Solicitar exclusão (use /send-otp → /verify-otp → /initiate-deletion)",
-        querystring: z.object({
-          token: z.string().regex(/^\d{6}$/, "Token inválido — deve ter 6 dígitos."),
-        }),
+        summary: "Anonimizar dados pessoais imediatamente (LGPD Art. 18 — eliminação)",
+        response: { 200: DeleteDataResponse },
       },
       preHandler: requireAuth,
     },
     async (request, reply) => {
       const customerId = request.customerId!;
-      const otpCode = request.query.token;
 
-      // P0-11: refuse during cancel-cooldown window.
-      if (await hasCancelCooldown(customerId)) {
-        return reply.code(429).send({
-          statusCode: 429,
-          error: "Too Many Requests",
-          message: "Você cancelou uma exclusão recentemente. Aguarde 30 minutos antes de tentar de novo.",
-        });
-      }
-
-      // P0-X-OTP — Atomic INCR + threshold check via acquireOtpAttempt.
-      // See verify-otp route above for the race we are closing.
-      const attempt = await acquireOtpAttempt(customerId);
-      if (attempt.kind === "locked_out") {
-        request.log.warn(
-          {
-            customerId,
-            attempts: attempt.count,
-            fromSentinel: attempt.fromSentinel,
-            action: "anonymize_otp_locked_out",
-          },
-          "Anonymize OTP locked out (legacy DELETE path)",
-        );
-        return reply.code(429).send({
-          statusCode: 429,
-          error: "Too Many Requests",
-          message: "Excesso de tentativas. Aguarde 30 min e tente novamente.",
-        });
-      }
-
-      // (a) Fast-fail on missing/expired freshness marker — saves a
-      // Twilio round-trip for replayed requests after the 5min window.
-      if (!(await hasFreshOtp(customerId))) {
-        return reply.code(401).send({
-          statusCode: 401,
-          error: "Unauthorized",
-          message: "Verificação OTP expirada ou ausente. Solicite um novo código em /send-otp.",
-        });
-      }
-
-      // (b) Look up phone for Twilio Verify check.
-      const customerSvc = createCustomerService();
-      let phone: string;
-      try {
-        const customer = await customerSvc.getById(customerId);
-        phone = customer.phone;
-      } catch {
-        return reply.code(404).send({
-          statusCode: 404,
-          error: "Not Found",
-          message: "Cadastro não encontrado.",
-        });
-      }
-
-      // (c) Verify OTP with Twilio. Counter already incremented by
-      // acquireOtpAttempt. On failure: log and refuse; on success:
-      // reset the counter so honest customers don't accumulate noise.
-      const otpOk = await verifyAnonymizeOtp(phone, otpCode);
-      if (!otpOk) {
-        request.log.warn(
-          {
-            customerId,
-            attempts: attempt.count,
-            action: "anonymize_otp_failed",
-          },
-          "Anonymize OTP verification failed (legacy DELETE path)",
-        );
-        return reply.code(401).send({
-          statusCode: 401,
-          error: "Unauthorized",
-          message: "Código de verificação inválido ou expirado.",
-        });
-      }
-      // Success — reset the brute-force counter.
-      await resetOtpFailureCount(customerId);
-
-      // (d) Already a pending deletion? Idempotent — return the existing
-      // grace window so the caller can show the cancel UI.
-      const existing = await readPendingDeletion(customerId);
-      if (existing) {
-        return reply.code(202).send({
-          status: "deferred",
-          message: "Já existe uma solicitação de exclusão em andamento.",
-          canCancelUntil: new Date(existing.parkedAt + ANONYMIZE_GRACE_TTL_SECONDS * 1000).toISOString(),
-        });
-      }
-
-      // (e) Build the `customer.anonymize` envelope. `actor.principal =
-      // "user"`, `taint = "UNTRUSTED"`, `sessionId = customerId` per the
-      // master plan. The `otpToken` is the verified code — the pack's
-      // policy only reads `state.otpFresh`, NOT the token itself.
-      //
-      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ───────
-      //
-      // Legacy single-step DELETE: same dedup posture as
-      // /initiate-deletion. The otpCode is intentionally excluded from
-      // the key — a retry with the same code within the hour must
-      // produce the same `intentHash` so dedup holds; the OTP is
-      // verified upstream and is not load-bearing for hash identity.
-      const legacyIdempotencyKey = resolveMeIdempotencyKey(
+      // Deterministic idempotency-key (P0-7): a retry within the same hour
+      // produces the same `intentHash` so the audit pipeline dedups. Non-PII
+      // (customerId UUID + epoch-hour) per CLAUDE.md rule #9.
+      const idempotencyKey = resolveMeIdempotencyKey(
         request.headers["idempotency-key"],
-        `${customerId}:anonymize:delete:${epochHour()}`,
+        `${customerId}:anonymize:delete:immediate:${epochHour()}`,
       );
       const payload: CustomerAnonymizePayload = {
         customerId,
-        otpToken: otpCode,
+        // No OTP on the immediate path — the pack policy reads only
+        // `state.otpFresh` / `state.immediateErasure`, never the payload token,
+        // so an empty string is non-load-bearing and keeps the type satisfied.
+        otpToken: "",
         scope: "lgpd_art_18",
       };
       const envelope = buildCustomerEnvelope<"customer.anonymize", CustomerAnonymizePayload>({
         kind: "customer.anonymize",
         payload,
-        nonce: deriveMeNonce(legacyIdempotencyKey),
+        nonce: deriveMeNonce(idempotencyKey),
         customerId,
       });
 
-      // (f) Project state for the pack policy. `otpFresh` is true here
-      // because we just verified above. `hasParkedAnonymize` is false
-      // (we returned early on existing receipt). `customerExists` /
-      // `isAuthenticated` are both true (requireAuth + getById).
+      // Immediate-erasure state: requireAuthenticated (isAuthenticated) +
+      // requireCustomerExists (customerExists) pass; immediateErasure skips
+      // requireFreshOtp + deferAnonymizeForGrace → executeAnonymize EXECUTE.
       const state: CustomerOnboardingState = {
         ctx: {
           actor: { principal: "user", id: customerId },
           customerId,
           customerExists: true,
           isAuthenticated: true,
-          otpFresh: true,
+          otpFresh: false,
           hasParkedAnonymize: false,
+          immediateErasure: true,
           now: new Date(),
         },
-      };
-
-      // (g) Park-on-DEFER closure used by the gateway. The pack's policy
-      // is expected to return DEFER with the grace signal; if the kernel
-      // returns EXECUTE directly (e.g., policy override), the gateway
-      // dispatches `anonymizeCustomerFromEnvelope` instead — but that
-      // bypasses the 24h grace which is policy-mandated, so we explicitly
-      // surface a 500 to call out the misconfiguration.
-      const parkedAt = Date.now();
-      const intentHash = envelope.intentHash;
-      const onDefer = async () => {
-        // Park via the NX-guarded wrapper — populates the T-005 verification
-        // fields so the resume side can detect tamper-at-rest, enforces the
-        // per-session park quota (P0-7), AND refuses on collision with an
-        // already-parked envelope (audit-2026-05-24 P0-1, prevents silent
-        // overwrite by a second DEFER for the same customerId).
-        let parkRefusal:
-          | { code: "quota_exceeded" | "collision"; message: string }
-          | null = null;
-        try {
-          const redis = await getRedisClient();
-          const ttlSeconds = ANONYMIZE_GRACE_TTL_SECONDS + 60; // sweeper grace
-          const parkResult = await parkDeferredIntentWithNxGuard({
-            envelope: {
-              intentHash: envelope.intentHash,
-              kind: envelope.kind,
-              actor: { sessionId: envelope.actor.sessionId },
-              payload: envelope.payload,
-              version: envelope.version,
-              nonce: envelope.nonce,
-              taint: envelope.taint,
-              actorPrincipal: envelope.actor.principal,
-            },
-            signal: "customer.anonymize.confirmed_after_grace",
-            ttlSeconds,
-            redis,
-            rk,
-          });
-          if (!parkResult.parked) {
-            if (parkResult.reason === "quota_exceeded") {
-              parkRefusal = {
-                code: "quota_exceeded",
-                message:
-                  "Muitas operações em espera. Aguarde uma concluir e tente novamente.",
-              };
-              request.log.warn(
-                {
-                  customerId,
-                  reason: parkResult.reason,
-                  observed: parkResult.observed,
-                  limit: parkResult.limit,
-                },
-                "[me/anonymize] DEFER park quota exceeded",
-              );
-            } else {
-              parkRefusal = {
-                code: "collision",
-                message: PARK_COLLISION_REFUSAL_PT_BR,
-              };
-              request.log.warn(
-                { customerId, reason: parkResult.reason },
-                "[me/anonymize] DEFER park collision — envelope already parked",
-              );
-            }
-          }
-        } catch (err) {
-          // audit-2026-05-25 (I4): pre-fix this catch only logged and
-          // fell through to persistPendingDeletion() + 202 'Pedido de
-          // exclusão recebido. Você tem 24 horas para cancelar.' But
-          // the throw means Redis did NOT accept the placeholder OR
-          // envelope; no defer:pending:{customerId} key exists; the
-          // anonymize-grace-resolver will never fire; the LGPD Art. 18
-          // + ANPD 15-day deletion deadline silently passes. Customer
-          // received a 202 confirming a deletion that will never run.
-          // Fix: surface a distinct 503 + refusal so the customer
-          // retries instead of waiting 24h+ for a deletion that won't
-          // happen.
-          request.log.error(
-            { customerId, err: (err as Error).message },
-            "[me/anonymize] DEFER park failed",
-          );
-          return {
-            statusCode: 503,
-            body: {
-              status: "error",
-              message:
-                "Não foi possível registrar seu pedido de exclusão agora. Tente novamente em alguns instantes.",
-              reason: "park_failed",
-            },
-            decision: {
-              kind: "REFUSE" as const,
-              refusal: {
-                kind: "BUSINESS_RULE" as const,
-                code: "park_failed",
-                userFacing:
-                  "Não foi possível registrar seu pedido de exclusão agora. Tente novamente em alguns instantes.",
-              },
-              basis: [],
-            },
-          };
-        }
-
-        if (parkRefusal) {
-          return {
-            statusCode: 429,
-            body: {
-              status: "refused",
-              message: parkRefusal.message,
-              reason: parkRefusal.code,
-            },
-            decision: {
-              kind: "REFUSE" as const,
-              refusal: {
-                kind: "BUSINESS_RULE" as const,
-                code: parkRefusal.code,
-                userFacing: parkRefusal.message,
-              },
-              basis: [],
-            },
-          };
-        }
-
-        // Persist the customer-facing receipt — single source of truth
-        // for cancel-deletion + grace resolver.
-        await persistPendingDeletion(customerId, {
-          parkedAt,
-          intentHash,
-          otpTokenHint: otpCode.slice(0, 2) + "****",
-        });
-
-        // Consume the OTP marker — single-use (a retry within 5min must
-        // re-issue a fresh OTP, NOT replay the existing one).
-        await consumeOtpMarker(customerId);
-
-        return {
-          statusCode: 202,
-          body: {
-            status: "deferred",
-            message: "Pedido de exclusão recebido. Você tem 24 horas para cancelar.",
-            canCancelUntil: new Date(parkedAt + ANONYMIZE_GRACE_TTL_SECONDS * 1000).toISOString(),
-            intentHash,
-          },
-          decision: { kind: "DEFER" as const, signal: "", timeoutMs: 0, basis: [] },
-        };
       };
 
       const out = await runCustomerIntent({
@@ -974,29 +752,37 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         state,
         policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
         executor: async () => {
-          // Should not reach here per pack policy — but if it does,
-          // run the destructive call through the envelope-typed entry
-          // point so audit is captured uniformly.
-          const result = await anonymizeCustomerFromEnvelope(envelope, state, {
-            auditSink: getAuditSink(),
-            log: request.log,
-          });
-          // result.decision should match EXECUTE here; surface the success
-          // payload directly.
-          await consumeOtpMarker(customerId);
-          return result.result ?? { success: true };
+          // EXECUTE: run the destructive anonymize NOW, under the per-customer
+          // lock shared with the export route. `anonymizeCustomer` is idempotent
+          // (stable tombstone) and throws if the customer row is missing — the
+          // throw propagates (requireAuth means a valid customer normally exists).
+          await withLock(`lgpd:${customerId}`, () => anonymizeCustomer(customerId));
+          return { success: true };
         },
         ctx: {
           customerId,
-          route: "me.anonymize.delete",
+          route: "me.anonymize.delete.immediate",
           log: request.log,
         },
         auditSink: getAuditSink(),
         refusalMessages: portugueseRefusalMessages,
-        onDefer,
       });
 
-      return reply.code(out.statusCode).send(out.body);
+      // EXECUTE → 200 { success, message }. A REFUSE (e.g. a future policy that
+      // blocks the immediate path) flows through as the gateway's localized
+      // pt-BR error body + status — never a silent erase. The typed reply is
+      // narrowed to the 200 schema, so the non-200 fallthrough uses the
+      // `status()` cast (the legacy error-reply pattern used across this file).
+      if (out.statusCode === 200) {
+        return reply.code(200).send({
+          success: true,
+          message: "Seus dados foram anonimizados conforme a LGPD.",
+        });
+      }
+      void (reply as unknown as { status(code: number): typeof reply })
+        .status(out.statusCode)
+        .send(out.body as never);
+      return reply;
     },
   );
 

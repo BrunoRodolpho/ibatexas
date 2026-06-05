@@ -119,7 +119,7 @@ import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
 // first-party packs. INERT until bootstrapClaustrum() is called.
 import type { CapabilityPlanner } from "@adjudicate/core/llm";
 import type { PolicyBundle } from "@adjudicate/core/kernel";
-import { setMetricsSink } from "@adjudicate/core/kernel";
+import { hasMetricsSink, setMetricsSink } from "@adjudicate/core/kernel";
 import { createIbatexasMetricsSink } from "./observability/metrics-sink.js";
 import { logger } from "./lib/logger.js";
 import { ordersPack, ordersCapabilityPlanner } from "@ibatexas/pack-orders";
@@ -766,7 +766,17 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // kernel decision / refusal / ledger op / audit-sink failure emits a
   // correlated log line (joined to the intent_audit row by intentHash). This is
   // an OBSERVER: the kernel's hashed/canonical path is untouched (core 456).
-  setMetricsSink(createIbatexasMetricsSink(logger));
+  //
+  // WS7 coexistence: in the ibatexas app, `installKernelMetricsSink()` (run
+  // inside `buildServer()` → kernel-bootstrap.ts) has ALREADY installed the
+  // production MetricsSink (PostHog via NATS + Sentry breadcrumbs + Prometheus
+  // counters + the audit-lag/dedup/spill recorder hooks subscribers depend on).
+  // Overwriting it here would silently drop those signals. Only install the
+  // observability-only sink when NO sink is present (i.e. when claustrum is
+  // bootstrapped standalone, e.g. its own tests). The production sink wins.
+  if (!hasMetricsSink()) {
+    setMetricsSink(createIbatexasMetricsSink(logger));
+  }
 
   // Audit infra — dev's audit pipeline (`@ibatexas/audit-sink`) is the durable
   // AuditRecord store (`intent_audit` via Postgres, plus NATS fan-out + Redis

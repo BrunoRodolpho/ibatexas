@@ -1,14 +1,16 @@
 // Unit tests for /api/me routes — LGPD data export, anonymize OTP gate, 3-endpoint flow.
 //
-// Task 14 (M3) coverage:
+// Coverage:
 //   - GET    /api/me/data                       — portability path (unchanged).
-//   - POST   /api/me/data/initiate-deletion     — issues fresh OTP, marks freshness.
-//   - DELETE /api/me/data?token=                — verifies OTP, builds envelope, parks DEFER.
+//   - POST   /api/me/data/send-otp              — issues fresh OTP, marks freshness.
+//   - POST   /api/me/data/verify-otp            — verifies code, 60s verified window.
+//   - POST   /api/me/data/initiate-deletion     — requires fresh verify, parks DEFER (24h grace).
+//   - DELETE /api/me/data                       — WS7: IMMEDIATE erasure (LGPD Option B, D-25):
+//       adjudicates customer.anonymize with immediateErasure → EXECUTE now, no OTP/grace.
 //   - POST   /api/me/data/cancel-deletion       — clears receipt within 24h grace.
 //
-// The legacy single-DELETE test was replaced because the route changed shape
-// (now requires `token=` query param + a fresh OTP marker). The new 3-endpoint
-// flow is the contract.
+// WS7 note: the DELETE contract changed from the legacy OTP→DEFER single-step to
+// immediate erasure; the multi-step OTP+grace flow remains for clients that want it.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
@@ -156,6 +158,9 @@ vi.mock("@ibatexas/tools", () => ({
     eval: mockRedisEval,
   })),
   rk: (k: string) => `ibatexas:${k}`,
+  // WS7: the immediate-erasure DELETE runs anonymizeCustomer under a
+  // per-customer lock. The hermetic stub just invokes the critical section.
+  withLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
 }));
 
 // audit-2026-05-24 P0-1 / WS5: re-export the real `parkDeferredIntentWithNxGuard`
@@ -668,169 +673,85 @@ describe("POST /api/me/data/initiate-deletion — requires fresh verify-otp (W4 
   });
 });
 
-// ── Tests: DELETE /api/me/data?token=… — verify + park DEFER ───────────────────
+// ── Tests: DELETE /api/me/data — IMMEDIATE erasure (LGPD Option B, D-25) ───────
+//
+// WS7 (claustrum-on-dev): the DELETE handler now performs IMMEDIATE erasure —
+// it adjudicates `customer.anonymize` with `state.ctx.immediateErasure: true`
+// through the customer-intent gateway (real `adjudicate` + the real
+// `customerOnboardingPolicyBundle`), which skips the fresh-OTP guard + the 24h
+// grace DEFER and EXECUTEs `anonymizeCustomer` NOW under a per-customer lock.
+// No OTP, no token query param, no DEFER. The multi-step OTP+grace flow
+// (send-otp / verify-otp / initiate-deletion / cancel-deletion) is unchanged
+// and covered by the describe blocks above/below.
 
-describe("DELETE /api/me/data?token= — OTP verify + DEFER park", () => {
+describe("DELETE /api/me/data — immediate erasure (LGPD Option B)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     redisStorage.clear();
     setupEnv();
     mockGetById.mockResolvedValue({ id: "cust_01", phone: "+5511999887766" });
-    mockVerifyOtp.mockResolvedValue({ status: "approved" as string });
+    mockAnonymizeCustomer.mockResolvedValue(undefined);
   });
 
-  it("returns 401 when no freshness marker exists (expired OTP)", async () => {
+  it("returns 401 when not authenticated", async () => {
     const app = await buildTestServer();
     try {
       const res = await app.inject({
         method: "DELETE",
-        url: "/api/me/data?token=123456",
-        headers: { "x-customer-id": "cust_01" },
+        url: "/api/me/data",
       });
       expect(res.statusCode).toBe(401);
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("returns 401 when OTP verification fails", async () => {
-    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
-    mockVerifyOtp.mockResolvedValueOnce({ status: "pending" as string });
-
-    const app = await buildTestServer();
-    try {
-      const res = await app.inject({
-        method: "DELETE",
-        url: "/api/me/data?token=000000",
-        headers: { "x-customer-id": "cust_01" },
-      });
-      expect(res.statusCode).toBe(401);
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("parks DEFER + persists receipt + returns 202 on valid OTP", async () => {
-    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
-
-    const app = await buildTestServer();
-    try {
-      const res = await app.inject({
-        method: "DELETE",
-        url: "/api/me/data?token=123456",
-        headers: { "x-customer-id": "cust_01" },
-      });
-
-      expect(res.statusCode).toBe(202);
-      const body = res.json();
-      expect(body.status).toBe("deferred");
-      expect(body.message).toContain("24 horas");
-      expect(body.canCancelUntil).toBeTruthy();
-      expect(body.intentHash).toMatch(/^[0-9a-f]{16,}$/);
-
-      // The parked-envelope blob exists at defer:pending:{customerId}.
-      const parked = redisStorage.get("ibatexas:defer:pending:cust_01");
-      expect(parked).toBeTruthy();
-      const parkedJson = JSON.parse(parked!) as { envelope: { kind: string; actor: { sessionId: string }; taint: string } };
-      expect(parkedJson.envelope.kind).toBe("customer.anonymize");
-      expect(parkedJson.envelope.actor.sessionId).toBe("cust_01");
-      expect(parkedJson.envelope.taint).toBe("UNTRUSTED");
-
-      // The customer-facing receipt exists at anonymize:pending:{customerId}.
-      const receipt = redisStorage.get("ibatexas:anonymize:pending:cust_01");
-      expect(receipt).toBeTruthy();
-
-      // The OTP freshness marker was consumed.
-      expect(redisStorage.get("ibatexas:anonymize:otp:cust_01")).toBeUndefined();
-
-      // The actual destructive call did NOT run — only the kernel-adjudicated
-      // envelope-typed entry point. The legacy module-level helper stays cold.
       expect(mockAnonymizeCustomer).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
   });
 
-  it("is idempotent on repeated DELETE — surfaces existing grace window", async () => {
-    // Pre-seed an existing pending receipt.
-    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
-    redisStorage.set(
-      "ibatexas:anonymize:pending:cust_01",
-      JSON.stringify({
-        parkedAt: Date.now() - 60 * 60 * 1000,
-        intentHash: "deadbeef",
-        otpTokenHint: "12****",
-      }),
-    );
-
+  it("EXECUTEs anonymize immediately (no OTP, no DEFER) and returns 200", async () => {
     const app = await buildTestServer();
     try {
       const res = await app.inject({
         method: "DELETE",
-        url: "/api/me/data?token=123456",
+        url: "/api/me/data",
         headers: { "x-customer-id": "cust_01" },
       });
 
-      expect(res.statusCode).toBe(202);
+      // EXECUTE → 200 with the LGPD success copy.
+      expect(res.statusCode).toBe(200);
       const body = res.json();
-      expect(body.status).toBe("deferred");
-      expect(body.message).toContain("Já existe");
-    } finally {
-      await app.close();
-    }
-  });
+      expect(body.success).toBe(true);
+      expect(body.message).toContain("anonimizados");
 
-  it("[P0-11] legacy DELETE applies brute-force counter on failed OTP", async () => {
-    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
-    mockVerifyOtp.mockResolvedValueOnce({ status: "pending" as string });
+      // The destructive call ran NOW for the authenticated customer.
+      expect(mockAnonymizeCustomer).toHaveBeenCalledTimes(1);
+      expect(mockAnonymizeCustomer).toHaveBeenCalledWith("cust_01");
 
-    const app = await buildTestServer();
-    try {
-      const res = await app.inject({
-        method: "DELETE",
-        url: "/api/me/data?token=000000",
-        headers: { "x-customer-id": "cust_01" },
-      });
-      expect(res.statusCode).toBe(401);
-      // Counter incremented.
-      expect(redisStorage.get("ibatexas:anonymize:fail:cust_01")).toBe("1");
-    } finally {
-      await app.close();
-    }
-  });
+      // It is IMMEDIATE — no DEFER park, no customer-facing grace receipt.
+      expect(redisStorage.get("ibatexas:defer:pending:cust_01")).toBeUndefined();
+      expect(redisStorage.get("ibatexas:anonymize:pending:cust_01")).toBeUndefined();
 
-  it("[P0-11] legacy DELETE refuses when locked out", async () => {
-    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
-    redisStorage.set("ibatexas:anonymize:fail:cust_01", "5");
-
-    const app = await buildTestServer();
-    try {
-      const res = await app.inject({
-        method: "DELETE",
-        url: "/api/me/data?token=123456",
-        headers: { "x-customer-id": "cust_01" },
-      });
-      expect(res.statusCode).toBe(429);
-      expect(res.json().message).toContain("Excesso de tentativas");
+      // No OTP was required (no token query param, no Twilio verify check).
       expect(mockVerifyOtp).not.toHaveBeenCalled();
+
+      // The legacy envelope-typed grace entry point stays cold — the immediate
+      // path runs the destructive call via anonymizeCustomer under the lock.
+      expect(mockAnonymizeCustomerFromEnvelope).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
   });
 
-  it("[P0-11] legacy DELETE refuses during cancel-cooldown", async () => {
-    redisStorage.set("ibatexas:anonymize:otp:cust_01", "1");
-    redisStorage.set("ibatexas:anonymize:cancel-cooldown:cust_01", "1");
-
+  it("does NOT require an OTP freshness marker or token", async () => {
+    // No anonymize:otp marker seeded, no ?token — pre-cutover this 401'd.
     const app = await buildTestServer();
     try {
       const res = await app.inject({
         method: "DELETE",
-        url: "/api/me/data?token=123456",
+        url: "/api/me/data",
         headers: { "x-customer-id": "cust_01" },
       });
-      expect(res.statusCode).toBe(429);
-      expect(res.json().message).toContain("cancelou");
+      expect(res.statusCode).toBe(200);
+      expect(mockAnonymizeCustomer).toHaveBeenCalledWith("cust_01");
     } finally {
       await app.close();
     }
