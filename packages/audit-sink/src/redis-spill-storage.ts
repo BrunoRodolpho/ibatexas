@@ -30,10 +30,31 @@
 //     the rest of the backlog from clearing.
 //
 // CLAUDE.md rule #7: all keys go through `rk()`.
+//
+// ── Leaf-purity note (claustrum-on-dev WS1) ────────────────────────────────
+//
+// `@ibatexas/audit-sink` is a LEAF package with ZERO runtime deps on
+// `@ibatexas/tools` / `@ibatexas/domain` / `@ibatexas/nats-client` (it was
+// extracted to break a `tools → llm-provider → tools` cycle). When this
+// adapter moved here from `@ibatexas/llm-provider`, importing `rk` from
+// `@ibatexas/tools` would have re-introduced that exact runtime dep. The
+// `rk()` helper is a one-liner (`${APP_ENV}:${key}`), so it is inlined
+// below to preserve the leaf invariant. It MUST stay byte-identical to
+// `packages/tools/src/redis/key.ts` so spill keys land in the same Redis
+// namespace the rest of the codebase uses.
 
 import type { AuditRecord } from "@adjudicate/core"
 import type { PersistentSpillStorage } from "@adjudicate/audit"
-import { rk } from "@ibatexas/tools"
+
+// Inlined from `@ibatexas/tools` (`redis/key.ts`) to keep the leaf pure —
+// see the leaf-purity note above. Prepends `${APP_ENV}:` to prevent
+// cross-environment key bleed when staging/production share a Redis
+// instance. APP_ENV falls back to "development" so local runs work
+// without extra config.
+const RK_ENV_PREFIX: string = process.env.APP_ENV ?? "development"
+function rk(key: string): string {
+  return `${RK_ENV_PREFIX}:${key}`
+}
 
 /**
  * Minimal Redis client interface — accepts node-redis v4 clients (the IbateXas

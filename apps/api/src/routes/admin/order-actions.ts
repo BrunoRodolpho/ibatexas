@@ -65,7 +65,7 @@ import type {
   OrderNoteAddPayload,
   OrderState,
 } from "@ibatexas/pack-orders";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,

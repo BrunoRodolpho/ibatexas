@@ -27,8 +27,10 @@
 // shim — see `apps/api/src/__tests__/integration/audit-sink-fail-resilience.test.ts`
 // for the pattern.
 
-import { __setAuditSinkDependencies } from "@ibatexas/audit-sink"
-import { buildAuditSinkDependencies } from "@ibatexas/llm-provider"
+import {
+  __setAuditSinkDependencies,
+  buildAuditSinkDependencies,
+} from "@ibatexas/audit-sink"
 import { getRedisClient } from "@ibatexas/tools"
 import { prisma } from "@ibatexas/domain"
 import { publishNatsEvent } from "@ibatexas/nats-client"

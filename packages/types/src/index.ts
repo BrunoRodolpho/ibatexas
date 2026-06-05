@@ -217,3 +217,9 @@ export {
   type ActionContext,
   type ActionResult,
 } from "./order-action-validator.js"
+
+// Boolean env-var parser (NEW-P1-ENV) — strict-yet-tolerant parser that
+// replaces the unsafe `process.env.X === "true"` pattern. Relocated here
+// from `@ibatexas/llm-provider` (claustrum-on-dev WS1) so it survives that
+// package's deletion. Zero imports — a pure string→boolean util.
+export { parseBoolEnv } from "./parse-bool-env.js"

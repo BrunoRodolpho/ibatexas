@@ -63,7 +63,7 @@ import {
   type CustomerAnonymizeCancelPayload,
   type CustomerOnboardingState,
 } from "@ibatexas/pack-customer-onboarding";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireAuth } from "../middleware/auth.js";
 import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 import {

@@ -34,7 +34,7 @@ import {
   validateBufferedTextTyped,
 } from "./validation-layer.js"
 import { getIntentLedger } from "./intent-ledger.js"
-import { getAuditSink } from "./intent-audit-wiring.js"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
 // W6-10 (P2-C): pino-shaped logger correlation. The responder accepts
 // an optional logger via GenerateResponseOptions; when apps/api passes

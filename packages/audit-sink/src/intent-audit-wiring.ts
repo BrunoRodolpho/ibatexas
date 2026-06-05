@@ -54,17 +54,37 @@
 // and bypass the redactor. The grep-test
 // (audit-redaction-contract.test.ts) asserts this invariant.
 
+// ── Intra-package imports (claustrum-on-dev WS1) ──────────────────────────
+//
+// This wiring module moved here from `@ibatexas/llm-provider`. The sink-
+// construction primitives + DI types it composes now live in the SAME
+// package (`./index.js` and the sibling adapter modules), so the former
+// cross-package `@ibatexas/audit-sink` imports become relative. Two
+// cross-package imports were intentionally dropped to preserve the leaf's
+// zero-`@ibatexas/*`-runtime-dep invariant:
+//   - `@ibatexas/nats-client.publishNatsEvent`: the legacy shim's default
+//     NATS publisher is now an injectable no-op (see `defaultNatsPublisher`
+//     below). Production wires the live publisher via
+//     `buildAuditSinkDependencies({ natsPublisher })` from
+//     `apps/api/src/audit-sink-bootstrap.ts`.
+//   - `./logger.js` (`@ibatexas/llm-provider`'s `IbxLogger`): the minimal
+//     warn/error/info/debug logger surface + `resolveLogger` are inlined
+//     below (`WiringLogger` / `resolveWiringLogger`) so the leaf has no
+//     runtime dep on the llm-provider package being deleted.
 import type {
   AuditSinkDependencies,
   AuditSinkLogger,
   AuditSinkNatsPublisher,
   AuditSinkFailureEvent,
-} from "@ibatexas/audit-sink"
+} from "./index.js"
+import {
+  __setAuditSinkDependencies as __leafSetDeps,
+  __resetAuditSink as __leafResetSink,
+} from "./index.js"
 import {
   createInMemorySpillStorage,
   type PersistentSpillStorage,
 } from "@adjudicate/audit"
-import { publishNatsEvent } from "@ibatexas/nats-client"
 import { createAuditRedactor, type AuditRedactor } from "./audit-redactor.js"
 import {
   createRedisSpillStorage,
@@ -74,25 +94,63 @@ import {
   createPostgresAuditWriter,
   type PrismaRawExecutor,
 } from "./postgres-audit-writer.js"
-import { resolveLogger, type IbxLogger } from "./logger.js"
 
-// Re-export the leaf's public surface so existing consumers (apps/api +
-// the `@ibatexas/llm-provider` re-exports in `index.ts`) keep working
-// across the cutover. The leaf is the single source of truth for the
-// construction; this file keeps its name as the wiring composition point.
-import {
-  __setAuditSinkDependencies as __leafSetDeps,
-  __resetAuditSink as __leafResetSink,
-} from "@ibatexas/audit-sink"
-export {
-  getAuditSink,
-  AuditSinkNotInitializedError,
-} from "@ibatexas/audit-sink"
-export type {
-  AuditSink,
-  AuditSinkDependencies,
-  AuditSinkFailureEvent,
-} from "@ibatexas/audit-sink"
+// ── Inlined logger surface (was `@ibatexas/llm-provider/logger.ts`) ────────
+//
+// Minimal pino-compatible surface used by the wiring layer. Mirrors the
+// former `IbxLogger` (warn/error required; info/debug optional) so an
+// apps/api `req.log` (fastify-bound pino) can still be passed directly.
+// Kept here — not imported from llm-provider — to keep this leaf package
+// self-contained.
+export interface WiringLogger {
+  warn(obj: Record<string, unknown> | string, msg?: string): void
+  error(obj: Record<string, unknown> | string, msg?: string): void
+  info?(obj: Record<string, unknown> | string, msg?: string): void
+  debug?(obj: Record<string, unknown> | string, msg?: string): void
+}
+
+/** Default passthrough logger — writes to console with a leaf prefix. */
+const defaultWiringLogger: WiringLogger = {
+  warn(obj, msg) {
+    if (typeof obj === "string") {
+      console.warn("[ibx-audit-sink]", obj)
+    } else if (msg !== undefined) {
+      console.warn("[ibx-audit-sink]", msg, obj)
+    } else {
+      console.warn("[ibx-audit-sink]", obj)
+    }
+  },
+  error(obj, msg) {
+    if (typeof obj === "string") {
+      console.error("[ibx-audit-sink]", obj)
+    } else if (msg !== undefined) {
+      console.error("[ibx-audit-sink]", msg, obj)
+    } else {
+      console.error("[ibx-audit-sink]", obj)
+    }
+  },
+}
+
+/**
+ * Resolve a logger. Uses `provided` if it has `warn` + `error` methods;
+ * otherwise falls back to the console passthrough. Mirrors the former
+ * `resolveLogger` from `@ibatexas/llm-provider/logger.ts`.
+ */
+function resolveWiringLogger(provided?: WiringLogger | null): WiringLogger {
+  if (
+    provided &&
+    typeof provided.warn === "function" &&
+    typeof provided.error === "function"
+  ) {
+    return provided
+  }
+  return defaultWiringLogger
+}
+
+// Local alias so the rest of this module reads as it did pre-move (it
+// referenced the llm-provider `IbxLogger` type by name in several places).
+type IbxLogger = WiringLogger
+const resolveLogger = resolveWiringLogger
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
@@ -409,14 +467,34 @@ export function _setAuditSinkDependencies(
 }
 
 /**
- * Default NATS publisher used by the legacy shim. Calls
- * `@ibatexas/nats-client.publishNatsEvent` (which prepends the
- * `ibatexas.` prefix). Tests mock the module to inject a spy.
+ * Default NATS publisher used by the legacy test-injection shim
+ * (`_setAuditSinkDependencies`).
+ *
+ * ── NATS wrinkle (claustrum-on-dev WS1) ───────────────────────────────────
+ *
+ * Pre-move this called `@ibatexas/nats-client.publishNatsEvent`. That import
+ * was the ONLY non-leaf-safe dep in this module — keeping it would have
+ * re-introduced a `@ibatexas/nats-client` runtime dep into the leaf
+ * `@ibatexas/audit-sink` package (whose load-bearing invariant is zero
+ * runtime deps on `@ibatexas/{tools,domain,nats-client}`).
+ *
+ * The publisher is now an injectable no-op default. Production NEVER uses
+ * this path: `apps/api/src/audit-sink-bootstrap.ts` calls
+ * `buildAuditSinkDependencies({ natsPublisher })` with a live publisher that
+ * wraps `publishNatsEvent`, then registers it via `__setAuditSinkDependencies`
+ * directly. This shim only serves legacy test rigs that pass the old
+ * `{redis, prismaWriter, logger?}` triple and don't exercise the NATS
+ * fan-out; a no-op keeps the audit emit fail-open (the multiSink swallows a
+ * no-op publish). Test rigs that DO assert NATS fan-out should construct
+ * deps via `buildAuditSinkDependencies` with an explicit `natsPublisher`.
  */
 function defaultNatsPublisher(): AuditSinkNatsPublisher {
   return {
-    async publish(subject, payload) {
-      await publishNatsEvent(subject, payload)
+    async publish(_subject, _payload) {
+      // No-op: see the NATS-wrinkle note above. Production injects a live
+      // publisher via `buildAuditSinkDependencies`.
+      void _subject
+      void _payload
     },
   }
 }

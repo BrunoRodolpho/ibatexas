@@ -57,7 +57,7 @@ import { pushToDlq } from "./dlq.js"
 import {
   createPostgresAuditWriter,
   type PrismaRawExecutor,
-} from "@ibatexas/llm-provider"
+} from "@ibatexas/audit-sink"
 
 // ── Public API ─────────────────────────────────────────────────────────────
 

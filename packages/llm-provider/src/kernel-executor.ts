@@ -27,7 +27,7 @@ import { extractIllusionContext } from "./machine/types.js"
 import { routeMessage } from "./router.js"
 import { persistMachineState } from "./machine/persistence.js"
 import { orderPolicyBundle, type OrderState } from "./order-policy-bundle.js"
-import { getAuditSink } from "./intent-audit-wiring.js"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import {
   buildAddItemEnvelope,
   buildCancelOrderEnvelope,

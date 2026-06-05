@@ -29,7 +29,7 @@ import {
   type OrderStatusReconcilePayload,
   type PaymentCreatePayload,
 } from "@ibatexas/domain";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { formatOrderId, type OrderPlacedEvent, type OrderStatusChangedEvent, type OrderFulfillmentStatus } from "@ibatexas/types";
 import type { FastifyBaseLogger } from "fastify";
 import { ITEMS_SCHEMA_VERSION } from "@ibatexas/domain";

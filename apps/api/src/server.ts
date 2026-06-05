@@ -13,7 +13,7 @@ import { registerSwagger } from "./plugins/swagger.js";
 import { registerRateLimit } from "./plugins/rate-limit.js";
 import { genRequestId, registerRequestId } from "./plugins/request-id.js";
 import { installKernelMetricsSink } from "./plugins/kernel-bootstrap.js";
-import { parseBoolEnv } from "@ibatexas/llm-provider";
+import { parseBoolEnv } from "@ibatexas/types";
 import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
 import { metricsRoutes } from "./routes/metrics.js";

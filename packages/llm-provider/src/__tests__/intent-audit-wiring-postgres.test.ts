@@ -121,14 +121,14 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   })
 
   afterEach(async () => {
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
   })
 
   it("Postgres sink fires unconditionally (always-on, no env gating)", async () => {
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter })
 
@@ -149,7 +149,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   it("redactor runs BEFORE Postgres sink — row payload contains [REDACTED], not raw CPF", async () => {
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter })
 
@@ -192,7 +192,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   it("preserves intentHash + auditHash through the redactor on the durable path", async () => {
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter })
 
@@ -219,7 +219,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
         throw new Error("postgres down")
       },
     }
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
 
@@ -247,7 +247,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   it("multi-sink fan-out is wired in order: console, NATS, Postgres", async () => {
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter })
 
@@ -268,7 +268,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter })
 
@@ -304,7 +304,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
         return 0
       },
     }
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter: dedupingWriter })
 
@@ -323,7 +323,7 @@ describe("intent-audit-wiring — Task 19 Postgres + persistent buffer", () => {
   it("[P1-4] does NOT fire setAuditDedupHook on a fresh insert (writer returns 1)", async () => {
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter() // returns 1
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter })
 
@@ -360,7 +360,7 @@ describe("intent-audit-wiring — Q4 recordSinkFailure on downstream errors", ()
   })
 
   afterEach(async () => {
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
   })
 
@@ -371,7 +371,7 @@ describe("intent-audit-wiring — Q4 recordSinkFailure on downstream errors", ()
         throw new TypeError("pg connection refused")
       },
     }
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
     const hook = vi.fn()
@@ -401,7 +401,7 @@ describe("intent-audit-wiring — Q4 recordSinkFailure on downstream errors", ()
         throw new Error("pg down")
       },
     }
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
     const hook = vi.fn()
@@ -443,7 +443,7 @@ describe("intent-audit-wiring — Q4 recordSinkFailure on downstream errors", ()
         throw new Error("pg down")
       },
     }
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
     const hook = vi.fn()
@@ -477,7 +477,7 @@ describe("intent-audit-wiring — Q4 recordSinkFailure on downstream errors", ()
   it("does not fire the failure hook on a clean emit", async () => {
     const redis = makeRedisStub()
     const prismaWriter = makePrismaWriter()
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter })
     const hook = vi.fn()
@@ -501,7 +501,7 @@ describe("intent-audit-wiring — Q4 recordSinkFailure on downstream errors", ()
         throw e
       },
     }
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
     const hook = vi.fn()
@@ -541,7 +541,7 @@ describe("intent-audit-wiring — Q4 recordSinkFailure on downstream errors", ()
         throw new Error("pg down")
       },
     }
-    const wiring = await import("../intent-audit-wiring.js")
+    const wiring = await import("@ibatexas/audit-sink")
     wiring._resetAuditSink()
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter })
     const hook = vi.fn()

@@ -100,8 +100,13 @@ export { LedgerUnavailableError } from "./intent-ledger.js"
 // subscribers that emit audit records outside the responder hot path
 // (e.g. defer-resolver on resume) and by the kernel-bootstrap step that
 // wires the boot-time DI of the leaf `@ibatexas/audit-sink` package.
+// claustrum-on-dev WS1: the audit/observability INFRASTRUCTURE relocated to
+// the leaf `@ibatexas/audit-sink` package (so it survives this package's
+// deletion). These are RE-EXPORTS from the new home — existing importers
+// that still `import { ... } from "@ibatexas/llm-provider"` keep working
+// mid-migration. New code should import directly from `@ibatexas/audit-sink`.
 export {
-  // Re-exported from `@ibatexas/audit-sink` via intent-audit-wiring.ts.
+  // Sink construction + boot-time DI (defined in the leaf's index.ts).
   getAuditSink,
   AuditSinkNotInitializedError,
   // The audit-sink-bootstrap step in apps/api uses this to construct the
@@ -130,48 +135,29 @@ export {
   _setAuditSinkDependencies,
   _getAuditRedactor,
   type LegacyAuditSinkDependencyOverride,
-} from "./intent-audit-wiring.js"
-
-// Audit Postgres writer adapter (task 19 / M4). Exposed so the NATS audit
-// archiver subscriber (`apps/api/src/subscribers/audit-consumer.ts`) can
-// build its own `PostgresWriter` against the same SQL contract the in-
-// process sink uses. Keeps the INSERT shape in one place.
-export {
+  // Audit Postgres writer adapter (task 19 / M4) — the NATS audit archiver
+  // subscriber builds its own `PostgresWriter` against the same SQL contract.
   createPostgresAuditWriter,
   type PrismaRawExecutor,
   type CreatePostgresAuditWriterOptions,
-} from "./postgres-audit-writer.js"
-
-// Redis spill storage (task 19 / M4). Exposed for ops tooling that wants
-// to surface `getRedisSpillSize` on a /health route.
-export {
+  // Redis spill storage (task 19 / M4) — `getRedisSpillSize` for /health.
   createRedisSpillStorage,
   getRedisSpillSize,
   type RedisListClient,
   type RedisSpillStorageOptions,
-} from "./redis-spill-storage.js"
-
-// Audit redactor (task 18 / M4). Exposed so future Packs or operator tools
-// can construct a custom redactor (e.g. for replay-with-extra-rules) without
-// reaching into the internal module path.
-//
-// audit-2026-05-24 T3: also export INTENT_KIND_FIELD_RULES and
-// PII_FREE_KIND_ALLOWLIST so the per-intent-kind redactor conformance suite
-// at `apps/api/src/__tests__/audit-2026-05-24/per-intent-redactor-conformance.test.ts`
-// can introspect both sets without reaching into the internal module path.
-export {
+  // Audit redactor (task 18 / M4) — the PII gate. INTENT_KIND_FIELD_RULES +
+  // PII_FREE_KIND_ALLOWLIST feed the per-intent-kind conformance suite.
   createAuditRedactor,
   INTENT_KIND_FIELD_RULES,
   PII_FREE_KIND_ALLOWLIST,
   type AuditRedactor,
   type AuditRedactorOptions,
-} from "./audit-redactor.js"
+} from "@ibatexas/audit-sink"
 
-// NEW-P1-ENV — strict-yet-tolerant boolean env-var parser. Replaces
-// the unsafe `process.env.X === "true"` pattern across the codebase.
-// Accepts true/1/yes/on (any case, trimmed); falls back to caller's
-// defaultValue for empty/undefined/typo inputs.
-export { parseBoolEnv } from "./parse-bool-env.js"
+// NEW-P1-ENV — strict-yet-tolerant boolean env-var parser. Relocated to
+// `@ibatexas/types` (claustrum-on-dev WS1); re-exported here for existing
+// importers. Replaces the unsafe `process.env.X === "true"` pattern.
+export { parseBoolEnv } from "@ibatexas/types"
 
 // Re-export agent types for consumers
 export type { AgentContext, AgentMessage, StreamChunk } from "@ibatexas/types"

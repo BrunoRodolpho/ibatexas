@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
-import { parseBoolEnv } from "@ibatexas/llm-provider"
+import { parseBoolEnv } from "@ibatexas/types"
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -43,14 +43,16 @@ import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import {
   KNOWN_INTENT_KINDS,
+  setDeferQuotaExceededHook,
+} from "@ibatexas/llm-provider"
+import {
   setAuditDedupHook,
   setAuditLagHook,
   setAuditRedactorFailureHook,
   setAuditSinkBufferSizeHook,
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
-  setDeferQuotaExceededHook,
-} from "@ibatexas/llm-provider"
+} from "@ibatexas/audit-sink"
 import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { prisma } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"

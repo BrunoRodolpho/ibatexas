@@ -42,7 +42,7 @@ import {
   type CustomerOnboardingState,
   type CustomerPixDetailsSavePayload,
 } from "@ibatexas/pack-customer-onboarding";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 

@@ -53,7 +53,7 @@ import {
 } from "@ibatexas/pack-customer-onboarding";
 import { anonymizeCustomer } from "@ibatexas/domain";
 import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import type { FastifyBaseLogger } from "fastify";
 import { clearPendingDeletion, readPendingDeletion } from "../routes/me/anonymize-otp-gate.js";
 import {

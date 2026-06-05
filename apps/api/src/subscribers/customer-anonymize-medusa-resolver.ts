@@ -49,7 +49,7 @@ import {
   recordMedusaAnonymizePending,
 } from "@ibatexas/tools";
 import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import type { FastifyBaseLogger } from "fastify";
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 import {

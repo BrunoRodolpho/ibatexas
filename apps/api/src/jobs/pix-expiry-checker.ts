@@ -23,7 +23,7 @@ import {
   prisma,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { PaymentStatus, type PaymentStatusChangedEvent } from "@ibatexas/types";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";

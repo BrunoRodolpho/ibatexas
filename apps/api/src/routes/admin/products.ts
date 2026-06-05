@@ -10,7 +10,7 @@ import {
   MedusaAdjudicateDeferredError,
   MedusaAdjudicateNeedsReviewError,
 } from "@ibatexas/tools";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { medusaAdmin } from "./_shared.js";
 

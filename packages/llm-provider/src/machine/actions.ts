@@ -24,7 +24,7 @@ import {
   type CustomerOnboardingState,
   type CustomerPixDetailsSavePayload,
 } from "@ibatexas/pack-customer-onboarding"
-import { getAuditSink } from "../intent-audit-wiring.js"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import type { OrderContext, CartItem, ItemCategory } from "./types.js"
 
 // ── Helper: build tool context from machine context ──────────────────────────

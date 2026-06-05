@@ -53,8 +53,8 @@ import {
   type IntentEnvelope,
 } from "@adjudicate/core"
 import { adjudicate } from "@adjudicate/core/kernel"
+import { getAuditSink } from "@ibatexas/audit-sink"
 import {
-  getAuditSink,
   orderPolicyBundle,
   type OrderContext,
   type OrderState,

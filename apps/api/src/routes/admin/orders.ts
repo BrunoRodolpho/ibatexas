@@ -15,7 +15,7 @@ import {
   InvalidTransitionError,
   type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 
 /** Returns true when the projection table has not been migrated yet (P2021). */
 function isTableMissing(err: unknown): boolean {

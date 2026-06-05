@@ -63,7 +63,7 @@ import {
 } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { buildEnvelope } from "@adjudicate/core";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   formatOrderId,
   PaymentStatus,

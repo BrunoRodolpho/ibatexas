@@ -33,7 +33,11 @@ import {
   type AuditRecord,
   type IntentEnvelope,
 } from "@adjudicate/core"
-import { createAuditRedactor } from "../audit-redactor.js"
+// claustrum-on-dev WS1: the audit redactor relocated to @ibatexas/audit-sink.
+// KNOWN_INTENT_KINDS stays in llm-provider (brain — composes Pack intent
+// surfaces), so this conformance test stays here and imports the redactor
+// from its new home.
+import { createAuditRedactor } from "@ibatexas/audit-sink"
 import { KNOWN_INTENT_KINDS } from "../intent-kinds.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
