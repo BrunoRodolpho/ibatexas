@@ -21,8 +21,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/core": "^1.1.0",
-    "@adjudicate/primitives": "^0.1.1",
+    "@adjudicate/core": "^1.2.0",
+    "@adjudicate/primitives": "^0.2.0",
     "@ibatexas/audit-sink": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",

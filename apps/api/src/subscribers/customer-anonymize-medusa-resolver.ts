@@ -153,7 +153,7 @@ export async function handleMedusaAnonymizePending(
   // firstEmittedAt to detect stuck-for-hours customers reported stale
   // "just started" values. Now we read the existing entry first and
   // propagate the original firstEmittedAt.
-  const existingEntry = await readMedusaAnonymizePending(customerId, log).catch(
+  const existingEntry = await readMedusaAnonymizePending(customerId).catch(
     () => null,
   );
   await recordMedusaAnonymizePending(

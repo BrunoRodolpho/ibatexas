@@ -94,6 +94,7 @@ function mkLedgerOp(overrides?: Partial<LedgerOpEvent>): LedgerOpEvent {
     outcome: "hit",
     intentKind: "order.confirm",
     latencyMs: 4,
+    intentHash: "abc1234567890abcdef1234567890abcd",
     ...overrides,
   }
 }
@@ -376,14 +377,14 @@ describe("createKernelMetricsSink — recordShadowDivergence (no-op)", () => {
   it("does not emit any PostHog event", () => {
     const { deps, track } = makeDeps()
     const sink = createKernelMetricsSink(deps)
-    sink.recordShadowDivergence(mkShadowDivergence("DECISION_KIND"))
+    sink.recordShadowDivergence?.(mkShadowDivergence("DECISION_KIND"))
     expect(track).not.toHaveBeenCalled()
   })
 
   it("does not fire a Sentry breadcrumb", () => {
     const { deps, breadcrumb } = makeDeps()
     const sink = createKernelMetricsSink(deps)
-    sink.recordShadowDivergence(mkShadowDivergence("DECISION_KIND"))
+    sink.recordShadowDivergence?.(mkShadowDivergence("DECISION_KIND"))
     expect(breadcrumb).not.toHaveBeenCalled()
   })
 
@@ -435,7 +436,7 @@ describe("createKernelMetricsSink — fail-open", () => {
       sink.recordDecision(mkDecision("EXECUTE"))
       sink.recordRefusal(mkRefusal())
       sink.recordSinkFailure(mkSinkFailure())
-      sink.recordShadowDivergence(mkShadowDivergence("BASIS_ONLY"))
+      sink.recordShadowDivergence?.(mkShadowDivergence("BASIS_ONLY"))
       sink.recordLedgerOp(mkLedgerOp())
       sink.recordResourceLimit?.({
         resource: "defer_quota",

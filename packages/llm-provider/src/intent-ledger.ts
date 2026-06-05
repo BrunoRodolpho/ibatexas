@@ -85,6 +85,7 @@ function wrapWithMetrics(inner: Ledger): Ledger {
           op: "check",
           outcome: hit ? "hit" : "miss",
           intentKind: "*",
+          intentHash,
           latencyMs: Date.now() - startedAt,
         })
         return hit
@@ -93,6 +94,7 @@ function wrapWithMetrics(inner: Ledger): Ledger {
           op: "check",
           outcome: "error",
           intentKind: "*",
+          intentHash,
           latencyMs: Date.now() - startedAt,
         })
         throw new LedgerUnavailableError(err as Error)
@@ -106,6 +108,7 @@ function wrapWithMetrics(inner: Ledger): Ledger {
           op: "record",
           outcome: "ok",
           intentKind: entry.kind,
+          intentHash: entry.intentHash,
           latencyMs: Date.now() - startedAt,
         })
         return outcome
@@ -114,6 +117,7 @@ function wrapWithMetrics(inner: Ledger): Ledger {
           op: "record",
           outcome: "error",
           intentKind: entry.kind,
+          intentHash: entry.intentHash,
           latencyMs: Date.now() - startedAt,
         })
         throw new LedgerUnavailableError(err as Error)

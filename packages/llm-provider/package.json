@@ -18,12 +18,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/audit": "^1.0.1",
-    "@adjudicate/audit-postgres": "^1.0.1",
-    "@adjudicate/core": "^1.1.0",
-    "@adjudicate/locales-pt-br": "^0.1.1",
-    "@adjudicate/pack-payments-pix": "^0.1.1",
-    "@adjudicate/runtime": "^0.1.1",
+    "@adjudicate/audit": "^2.0.0",
+    "@adjudicate/audit-postgres": "^2.0.0",
+    "@adjudicate/core": "^1.2.0",
+    "@adjudicate/locales-pt-br": "^0.2.0",
+    "@adjudicate/pack-payments-pix": "^0.2.0",
+    "@adjudicate/runtime": "^0.2.0",
     "@anthropic-ai/sdk": "^0.82.0",
     "@ibatexas/audit-sink": "workspace:*",
     "@ibatexas/domain": "workspace:*",
