@@ -71,21 +71,28 @@ const MockNeedsReviewError = vi.hoisted(() =>
   },
 );
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: mockGetRedisClient,
-  rk: mockRk,
-  estimateDelivery: vi.fn(async () => ({ success: true })),
-  createCheckout: vi.fn(async () => ({ success: true })),
-  reaisToCentavos: (amount: number) => Math.round(amount * 100),
-  MedusaRequestError: MockMedusaRequestError,
-  cancelStalePaymentIntent: vi.fn().mockResolvedValue(undefined),
-  loadSchedule: vi.fn().mockResolvedValue({ days: {} }),
-  getMealPeriodFromSchedule: vi.fn().mockReturnValue("lunch"),
-  medusaAdjudicated: mockMedusaAdjudicated,
-  MedusaAdjudicateRefusedError: MockRefusedError,
-  MedusaAdjudicateDeferredError: MockDeferredError,
-  MedusaAdjudicateNeedsReviewError: MockNeedsReviewError,
-}));
+vi.mock("@ibatexas/tools", async () => {
+  // Use the REAL Receita Federal CPF validators so the P1-DATA-CPF checkout
+  // boundary check is exercised faithfully (not a stubbed always-true).
+  const actual = await vi.importActual<typeof import("@ibatexas/tools")>("@ibatexas/tools");
+  return {
+    getRedisClient: mockGetRedisClient,
+    rk: mockRk,
+    estimateDelivery: vi.fn(async () => ({ success: true })),
+    createCheckout: vi.fn(async () => ({ success: true })),
+    reaisToCentavos: (amount: number) => Math.round(amount * 100),
+    MedusaRequestError: MockMedusaRequestError,
+    cancelStalePaymentIntent: vi.fn().mockResolvedValue(undefined),
+    loadSchedule: vi.fn().mockResolvedValue({ days: {} }),
+    getMealPeriodFromSchedule: vi.fn().mockReturnValue("lunch"),
+    medusaAdjudicated: mockMedusaAdjudicated,
+    MedusaAdjudicateRefusedError: MockRefusedError,
+    MedusaAdjudicateDeferredError: MockDeferredError,
+    MedusaAdjudicateNeedsReviewError: MockNeedsReviewError,
+    isValidCpf: actual.isValidCpf,
+    normalizeCpf: actual.normalizeCpf,
+  };
+});
 
 vi.mock("@ibatexas/domain", () => ({
   createCustomerService: () => ({
@@ -758,6 +765,36 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
     });
 
     expect(res.statusCode).toBe(200);
+  });
+
+  // ── P1-DATA-CPF — checksum validation at the PIX checkout boundary ─────────
+  it("PIX checkout with a valid CPF → 200 OK", async () => {
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "pix", pixCpf: "529.982.247-25" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("PIX checkout with an invalid CPF checksum → 422 INVALID_CPF (never reaches checkout)", async () => {
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "pix", pixCpf: "123.456.789-00" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().code).toBe("INVALID_CPF");
   });
 });
 

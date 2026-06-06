@@ -33,6 +33,8 @@ import {
   MedusaAdjudicateRefusedError,
   MedusaAdjudicateDeferredError,
   MedusaAdjudicateNeedsReviewError,
+  isValidCpf,
+  normalizeCpf,
 } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
@@ -817,6 +819,27 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         const pixEmail = request.body.pixEmail;
         const pixCpf = request.body.pixCpf;
 
+        // P1-DATA-CPF: validate the CPF checksum at the trust boundary before it
+        // flows to Stripe (billing_details.tax_id) and Prisma. The Zod schema only
+        // checks it's a string; reuse the Receita Federal checksum validator and
+        // store the normalized (masked-format) value. Invalid → fixable 422; the
+        // request is rejected before the adjudicate envelope is built, so no
+        // checkout nonce is committed and the customer can correct and resubmit.
+        // (Cached CPF was already validated on entry via set_pix_details.)
+        let normalizedFormCpf: string | undefined;
+        if (pixCpf !== undefined && pixCpf.trim() !== "") {
+          const normalized = normalizeCpf(pixCpf);
+          if (!normalized || !isValidCpf(pixCpf)) {
+            return reply.status(422).send({
+              statusCode: 422,
+              error: "Unprocessable Entity",
+              message: "CPF inválido. Verifique os dígitos e tente novamente. Formato: 000.000.000-00.",
+              code: "INVALID_CPF",
+            });
+          }
+          normalizedFormCpf = normalized;
+        }
+
         // Try loading cached PIX details for authenticated customers
         let cached: { name?: string; email?: string; cpf?: string } | null = null;
         if (request.customerId) {
@@ -826,7 +849,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         pixExtra = {
           customerName: pixName ?? cached?.name,
           customerEmail: pixEmail ?? cached?.email,
-          customerTaxId: pixCpf ?? cached?.cpf,
+          customerTaxId: normalizedFormCpf ?? cached?.cpf,
         };
       }
 
