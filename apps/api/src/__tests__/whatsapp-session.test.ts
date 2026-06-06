@@ -44,7 +44,10 @@ vi.mock("@ibatexas/tools", () => ({
 // envelope, source: "wa-auto") instead of the bare-arg upsertFromWhatsApp.
 // The shim derives its EXECUTE result from `mockUpsertFromWhatsApp` so
 // existing test setups continue to wire correctly.
-vi.mock("@ibatexas/domain", () => ({
+vi.mock("@ibatexas/domain", async (importOriginal) => ({
+  // Keep the real pure helpers (e.g. toE164BR, used by normalizePhone); only
+  // the Prisma-backed customer service is mocked.
+  ...(await importOriginal<typeof import("@ibatexas/domain")>()),
   createCustomerService: () => ({
     upsertFromWhatsApp: mockUpsertFromWhatsApp,
     createFromEnvelope: async (
@@ -334,6 +337,23 @@ describe("acquireAgentLock", () => {
 
     // Heartbeat uses Lua script via eval for ownership-checked TTL extension
     expect(mockRedis.eval).toHaveBeenCalled();
+  });
+
+  // P3-MEM-HEARTBEAT: re-acquiring for the same phone without an intervening
+  // release must clear the prior interval, not leak it. If the old interval
+  // survived, a single 10s tick would fire the heartbeat TWICE (old + new).
+  it("clears a prior heartbeat when re-acquiring the same phone (no leak)", async () => {
+    mockRedis.set.mockResolvedValue("OK");
+    mockRedis.eval.mockResolvedValue(undefined);
+
+    await acquireAgentLock("sess-leak"); // first cycle — heartbeat #1
+    await acquireAgentLock("sess-leak"); // re-acquire WITHOUT release — heartbeat #2
+
+    mockRedis.eval.mockClear();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    // Exactly one heartbeat fires per tick — the stale interval was cleared.
+    expect(mockRedis.eval).toHaveBeenCalledTimes(1);
   });
 });
 
