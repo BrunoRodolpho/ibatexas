@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { Command } from "commander"
-import { registerKernelCommands } from "../kernel.js"
+import { registerKernelCommands, __setDeferResumeDepsForTest } from "../kernel.js"
 
 // ── Stdout capture ────────────────────────────────────────────────────────
 
@@ -384,6 +384,17 @@ vi.mock("@ibatexas/tools", async () => {
 describe("ibx kernel defer resume (W7-O1)", () => {
   beforeEach(() => {
     deferFakeRedis.reset()
+    // Inject the fake deterministically rather than relying on vitest
+    // intercepting the lazy `import("@ibatexas/tools")` inside the command —
+    // that dynamic-import interception is racy in CI (see kernel.ts), which
+    // let the first defer-resume tests reach the real Redis client.
+    __setDeferResumeDepsForTest({
+      getRedis: async () => deferFakeRedis,
+      rk: (key: string) => `test-cli:${key}`,
+    })
+  })
+  afterEach(() => {
+    __setDeferResumeDepsForTest(null)
   })
 
   it("refuses with exit 1 when no parked envelope exists for the sessionId", async () => {

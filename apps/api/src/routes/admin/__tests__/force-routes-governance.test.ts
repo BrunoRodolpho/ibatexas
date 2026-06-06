@@ -197,6 +197,21 @@ vi.mock("@ibatexas/domain", () => ({
   },
 }));
 
+// payments.ts gets its audit sink from the @ibatexas/audit-sink leaf (the
+// llm-provider re-export was removed in the claustrum-on-dev cutover). Stub
+// getAuditSink to a no-op so the refund route doesn't build the real
+// NATS+Postgres fan-out sink under test. (Spread-actual keeps every other
+// leaf export real for any module in the graph that needs it.)
+vi.mock("@ibatexas/audit-sink", async () => {
+  const actual = await vi.importActual<typeof import("@ibatexas/audit-sink")>(
+    "@ibatexas/audit-sink",
+  );
+  return {
+    ...actual,
+    getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
+  };
+});
+
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
@@ -282,12 +297,25 @@ async function buildOrderActionsServer(staff: StaffContext): Promise<FastifyInst
   return app;
 }
 
+// Each built server gets a distinct default Idempotency-Key. The refund route
+// requires the header (admin tooling sends a stable UUID per refund-click —
+// payments.ts → IDEMPOTENCY_KEY_REQUIRED); the harness supplies one so the
+// governance assertions exercise the post-validation flow rather than 400ing
+// on the header gate. One value per server keeps a test's step-1 → step-2
+// refund flow consistent; the per-test FLUSHDB makes cross-test collisions
+// impossible regardless.
+let paymentsServerSeq = 0;
+
 async function buildPaymentsServer(staff: StaffContext): Promise<FastifyInstance> {
   const { adminPaymentRoutes } = await import("../payments.js");
+  const defaultIdempotencyKey = `test-ik-${(paymentsServerSeq += 1)}`;
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   app.addHook("preHandler", async (req) => {
+    if (!req.headers["idempotency-key"]) {
+      req.headers["idempotency-key"] = defaultIdempotencyKey;
+    }
     const overrideStaffId = req.headers["x-staff-id"] as string | undefined;
     const overrideRole = req.headers["x-staff-role"] as
       | StaffContext["staffRole"]

@@ -677,7 +677,25 @@ interface DeferResumeDeps {
   readonly rk: (key: string) => string
 }
 
+// Test-only injection seam. The defer-resume path lazily
+// `import("@ibatexas/tools")` (below) to keep the heavy tools package out of
+// the cold start of every other `ibx kernel` subcommand. vitest's
+// interception of that DYNAMIC import is racy under CI — the first dynamic
+// import of a run can resolve to the real module before the mock registers,
+// which let the hermetic defer-resume tests reach the real getRedisClient()
+// (→ "REDIS_URL env var required" / connect timeout). Tests inject a fake
+// here instead; it is null in production, so there is no behaviour change.
+let deferResumeDepsOverride: DeferResumeDeps | null = null
+
+/** @internal test-only — inject a fake Redis + key-prefixer for defer-resume. */
+export function __setDeferResumeDepsForTest(
+  deps: DeferResumeDeps | null,
+): void {
+  deferResumeDepsOverride = deps
+}
+
 async function loadDeferResumeDeps(): Promise<DeferResumeDeps> {
+  if (deferResumeDepsOverride) return deferResumeDepsOverride
   const tools = await import("@ibatexas/tools")
   return {
     getRedis: () => tools.getRedisClient(),
