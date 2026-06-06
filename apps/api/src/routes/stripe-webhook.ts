@@ -69,10 +69,16 @@ import {
 } from "@ibatexas/types";
 import { markPixPaid } from "../jobs/pix-expiry-monitor.js";
 
+// P2-MEM-STRIPENEW: memoize a module-level Stripe client so we don't construct a
+// fresh `new Stripe(key)` (with its own HTTP agent/connection pool) on every
+// webhook request. Lazy so the key is still read from env at first use.
+let stripeClient: Stripe | undefined;
+
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY not set");
-  return new Stripe(key);
+  if (!stripeClient) stripeClient = new Stripe(key);
+  return stripeClient;
 }
 
 type WebhookLogger = {
@@ -284,25 +290,45 @@ async function handlePaymentSucceeded(
   // sourceSubject = "webhook:stripe:<event.id>" surfaces in audit.
   const cartId = paymentIntent.metadata?.["cartId"];
   if (!orderId && cartId) {
+    // PIXDUP: serialize concurrent payment_intent.succeeded events for the SAME
+    // cart with a distributed try-lock (realistic after amend_order/regenerate_pix
+    // mints a 2nd PI → a 2nd distinct event.id; the SET-NX gate AND the
+    // medusaAdjudicated nonce both key on event.id, so neither dedupes across the
+    // two events — only this lock + Medusa's own internal serialization do).
+    // Loser gets null and is retried; Medusa's /complete is idempotent
+    // (creates an order only when !order_id, else returns the cart's linked
+    // order), so a retry re-runs /complete and gets the SAME order — never a
+    // strand or a duplicate. (No local `pix:completed` flag: a crash between the
+    // flag and completion would strand the order behind a suppressing flag.)
+    let contended = false;
     try {
-      const completedData = await medusaAdjudicated<
-        Record<string, unknown>,
-        { type?: string; order?: { id: string; display_id?: number } }
-      >({
-        scope: "store",
-        method: "POST",
-        path: `/store/carts/${cartId}/complete`,
-        payload: {},
-        intentKind: "medusa.cart.complete",
-        idempotencyKey: event.id,
-        sourceSubject: `webhook:stripe:${event.id}`,
-        auditSink: getAuditSink(),
-        log: logger,
-      });
+      const completion = await withLock(`cart-complete:${cartId}`, () =>
+        medusaAdjudicated<
+          Record<string, unknown>,
+          { type?: string; order?: { id: string; display_id?: number } }
+        >({
+          scope: "store",
+          method: "POST",
+          path: `/store/carts/${cartId}/complete`,
+          payload: {},
+          intentKind: "medusa.cart.complete",
+          idempotencyKey: event.id,
+          sourceSubject: `webhook:stripe:${event.id}`,
+          auditSink: getAuditSink(),
+          log: logger,
+        }),
+      );
 
-      orderId = completedData.order?.display_id
-        ? formatOrderId(completedData.order.display_id)
-        : completedData.order?.id;
+      if (completion === null) {
+        // Another worker holds the cart-complete lock — mark contention and
+        // throw AFTER the try so the governance catch below doesn't swallow it.
+        contended = true;
+      } else {
+        const completedData = completion;
+
+        orderId = completedData.order?.display_id
+          ? formatOrderId(completedData.order.display_id)
+          : completedData.order?.id;
 
       if (orderId) {
         // W8-V2 (NEW-W7-V2): persist orderId back to the PaymentIntent
@@ -326,6 +352,7 @@ async function handlePaymentSucceeded(
           },
         );
         logger.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
+      }
       }
     } catch (err) {
       // Governance-driven skips (REFUSE / DEFER / NEEDS_REVIEW) are
@@ -358,6 +385,14 @@ async function handlePaymentSucceeded(
       } else {
         logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
       }
+    }
+
+    if (contended) {
+      logger.info(
+        { event_id: event.id, cart_id: cartId },
+        "PIX: cart completion in progress on another worker — will retry",
+      );
+      throw new Error(`cart-complete in progress for cart ${cartId}`);
     }
   }
 

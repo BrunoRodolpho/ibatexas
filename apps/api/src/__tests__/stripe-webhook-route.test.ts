@@ -1795,3 +1795,91 @@ describe("POST /api/webhooks/stripe — livemode binding (P3-SEC-STRIPESRC)", ()
     expect(mockCapturePayment).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/webhooks/stripe — PIX cart-complete concurrency (PIXDUP)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    // restore the default pass-through lock so other suites are unaffected
+    lockState.impl = async (_key: string, fn: () => Promise<unknown>) => fn();
+  });
+
+  // PIX event: no medusaOrderId → triggers the cart-complete branch; cartId fixed.
+  const pixEvent = (id: string) => ({
+    id,
+    type: "payment_intent.succeeded",
+    created: 1_700_000_000,
+    livemode: false,
+    data: { object: { id: "pi_pixdup", metadata: { cartId: "cart_99" }, last_payment_error: null } },
+  });
+
+  const fire = (app: Awaited<ReturnType<typeof buildTestServer>>) =>
+    app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: { "content-type": "application/json", "stripe-signature": "t=1,v1=x" },
+      payload: Buffer.from("{}"),
+    });
+
+  it("retries (500) and never issues a 2nd /complete when the cart-complete lock is held", async () => {
+    lockState.impl = async (key: string, fn: () => Promise<unknown>) =>
+      key.startsWith("cart-complete:") ? null : fn();
+    mockConstructEvent.mockReturnValue(pixEvent("evt_pixdup_1"));
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const res = await fire(await buildTestServer());
+
+    expect(res.statusCode).toBe(500); // contention → outer catch → Stripe retry
+    expect(mockMedusaAdjudicated).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/store/carts/cart_99/complete" }),
+    );
+    expect(mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.placed")).toHaveLength(0);
+  });
+
+  it("serializes two concurrent succeeded events for one cart — exactly one /complete", async () => {
+    const keysSeen: string[] = [];
+    const held = new Set<string>();
+    let active = 0;
+    let maxConcurrent = 0;
+    lockState.impl = async (key: string, fn: () => Promise<unknown>) => {
+      keysSeen.push(key);
+      if (held.has(key)) return null;
+      held.add(key);
+      active++;
+      maxConcurrent = Math.max(maxConcurrent, active);
+      try {
+        return await fn();
+      } finally {
+        active--;
+        held.delete(key);
+      }
+    };
+    mockConstructEvent.mockReturnValueOnce(pixEvent("evt_pd_a")).mockReturnValueOnce(pixEvent("evt_pd_b"));
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+    let completeCalls = 0;
+    mockMedusaAdjudicated.mockImplementation(async (opts: { path?: string }) => {
+      if (opts.path === "/store/carts/cart_99/complete") {
+        await new Promise((r) => setTimeout(r, 25));
+        completeCalls++;
+        return { type: "order", order: { id: "order_x", display_id: 7 } };
+      }
+      return {};
+    });
+    mockCapturePayment.mockResolvedValue(null);
+
+    const app = await buildTestServer();
+    await Promise.all([fire(app), fire(app)]);
+
+    expect(keysSeen).toContain("cart-complete:cart_99");
+    expect(maxConcurrent).toBe(1); // the lock never let two completions run at once
+    expect(completeCalls).toBe(1); // loser never issued a 2nd /complete
+  });
+});
