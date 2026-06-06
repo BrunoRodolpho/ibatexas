@@ -13,8 +13,8 @@ import {
   resolveAuditMigrationsDir,
   runAuditMigrations,
 } from "../lib/kernel-migrate.js"
-import { migrateClaustrumDatabase } from "./claustrum.js"
 import type { SqlMigrateResult } from "../lib/sql-migrate.js"
+import { migrateClaustrumDatabase } from "./claustrum.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

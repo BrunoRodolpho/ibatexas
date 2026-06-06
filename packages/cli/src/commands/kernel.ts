@@ -158,14 +158,17 @@ async function runReplay(opts: {
     return
   }
   const limit = Number.parseInt(opts.limit ?? "1000", 10)
-  // NEW-P1-ENV: see runStatus() above for rationale.
-  // audit-2026-05-25 (I13): the IBX_AUDIT_POSTGRES_ENABLED env var was
-  // deleted in the H2 cutover (audit-postgres is unconditionally part
-  // of the sink fan-out per CLAUDE.md rule #9). The CLI's pre-cutover
-  // gating logic stayed in place and produced a no-op `ibx kernel
-  // replay` + a misleading "TODO: enable IBX_AUDIT_POSTGRES_ENABLED"
-  // message on healthy deployments. Removed.
-  const postgresEnabled = true
+  // `ibx kernel replay` re-feeds audit records FROM Postgres, so — unlike
+  // runStatus() above, which merely describes the always-on sink config —
+  // it requires a live audit-postgres connection. Gate on
+  // IBX_AUDIT_POSTGRES_ENABLED: when it is not explicitly enabled we print
+  // an honest operator TODO (the stub below) instead of attempting a
+  // connection that cannot succeed. Operators flip the flag per the stub's
+  // own instructions; healthy deployments that set it never see the stub.
+  const postgresEnabled = parseBoolEnv(
+    process.env.IBX_AUDIT_POSTGRES_ENABLED,
+    false,
+  )
 
   console.log()
   console.log(chalk.bold("ibx kernel replay"))
@@ -813,8 +816,9 @@ async function runDeferResume(
     version: 1,
     timestamp: new Date().toISOString(),
     // Marker for downstream logs so an audit reviewer can distinguish
-    // operator-kicked resumes from real Stripe webhooks.
-    cliInjectedBy: operatorIdentity(),
+    // operator-kicked resumes from real Stripe webhooks. The `cli:` prefix
+    // tags the injection channel (CLI) ahead of the operator identity.
+    cliInjectedBy: `cli:${operatorIdentity()}`,
   }
 
   if (opts.jsonOnly === true) {
