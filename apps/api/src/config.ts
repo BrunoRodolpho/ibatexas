@@ -22,6 +22,10 @@ const envSchema = z.object({
 
   // Auth — Twilio Verify + JWT
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 characters"),
+  // JWTSPLIT (audit): dedicated staff signing key — MUST be distinct from
+  // JWT_SECRET so a leak of one tier's secret cannot forge the other (the
+  // distinctness is enforced at server bootstrap; see server.ts).
+  STAFF_JWT_SECRET: z.string().min(16, "STAFF_JWT_SECRET must be at least 16 characters"),
   TWILIO_ACCOUNT_SID: z.string().min(1, "TWILIO_ACCOUNT_SID is required"),
   TWILIO_AUTH_TOKEN: z.string().min(1, "TWILIO_AUTH_TOKEN is required"),
   TWILIO_VERIFY_SID: z.string().min(1, "TWILIO_VERIFY_SID is required"),

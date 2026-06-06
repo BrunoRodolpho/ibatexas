@@ -73,11 +73,17 @@ async function buildTestServer() {
   app.decorateRequest("staffId", undefined);
   app.decorateRequest("staffRole", undefined);
 
-  // Simulate @fastify/jwt's synchronous `server.jwt.verify(token)` used by the
-  // staff_token path. extractAuth reads it via `request.server.jwt.verify`.
+  // JWTSPLIT: the staff_token path now verifies via the dedicated
+  // `server.jwt.staff.verify`. The default (customer) instance must never be
+  // used for staff tokens — throw if it is, to catch a routing regression.
   app.decorate("jwt", {
-    verify(token: string): StaffTokenPayload {
-      return JSON.parse(token) as StaffTokenPayload;
+    verify(): never {
+      throw new Error("customer instance must not verify staff tokens");
+    },
+    staff: {
+      verify(token: string): StaffTokenPayload {
+        return JSON.parse(token) as StaffTokenPayload;
+      },
     },
   } as never);
 

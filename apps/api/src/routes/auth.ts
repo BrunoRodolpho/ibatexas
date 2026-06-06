@@ -188,12 +188,14 @@ function issueStaffJwtToken(
   staffId: string,
   role: string,
 ): string {
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret) throw new Error("JWT_SECRET not set");
+  const staffJwtSecret = process.env.STAFF_JWT_SECRET;
+  if (!staffJwtSecret) throw new Error("STAFF_JWT_SECRET not set");
 
   // audit-2026-05-25 (I2): aud claim pins the token to the staff cookie.
-  // See issueJwtToken for the full rationale.
-  return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
+  // JWTSPLIT (audit): sign with the DEDICATED staff instance (server.jwt.staff) —
+  // separate secret. aud stays in the payload (dev's I2 style); the staff
+  // instance's allowedAud="staff_token" then accepts exactly this token.
+  return (server as unknown as { jwt: { staff: { sign: (payload: object, options?: { expiresIn: string }) => string } } }).jwt.staff.sign({
     sub: staffId,
     userType: "staff",
     role,

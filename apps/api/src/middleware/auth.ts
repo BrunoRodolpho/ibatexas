@@ -141,8 +141,13 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
   if (!staffTokenRaw) return;
 
   try {
-    const jwtInstance = (request as unknown as { server: { jwt: { verify: (token: string) => JwtPayload } } }).server.jwt;
-    const payload = jwtInstance.verify(staffTokenRaw);
+    // JWTSPLIT (audit): verify the staff token with the DEDICATED staff instance
+    // (separate secret + audience at server.jwt.staff). A customer token presented
+    // in the staff_token cookie now fails at the crypto/audience layer (separate
+    // secret) BEFORE the app-level userType/aud checks below — fail-closed earlier,
+    // same outcome.
+    const staffJwt = (request as unknown as { server: { jwt: { staff: { verify: (token: string) => JwtPayload } } } }).server.jwt.staff;
+    const payload = staffJwt.verify(staffTokenRaw);
 
     if (payload.userType !== "staff") return; // Unexpected — not a staff token
 

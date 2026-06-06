@@ -24,6 +24,8 @@ vi.mock("@ibatexas/tools", () => ({
 // on every request. Mock it so the staff active-check tests can drive it.
 const mockGetStaffById = vi.hoisted(() => vi.fn());
 const mockStaffJwtVerify = vi.hoisted(() => vi.fn());
+// JWTSPLIT: the customer (default) jwt instance — staff tokens must NOT verify here.
+const mockCustomerInstanceVerify = vi.hoisted(() => vi.fn());
 vi.mock("@ibatexas/domain", () => ({
   createStaffService: () => ({ getById: mockGetStaffById }),
 }));
@@ -76,7 +78,12 @@ async function buildTestServer() {
   // and verifies it via request.server.jwt.verify. Register a cookie parser + decorate
   // a jwt verifier so the staff active-check can be exercised end-to-end.
   await app.register((await import("@fastify/cookie")).default);
-  app.decorate("jwt", { verify: (token: string) => mockStaffJwtVerify(token) } as never);
+  // JWTSPLIT: staff verification routes through the dedicated server.jwt.staff
+  // instance; the default (customer) instance must never verify a staff token.
+  app.decorate("jwt", {
+    verify: (token: string) => mockCustomerInstanceVerify(token),
+    staff: { verify: (token: string) => mockStaffJwtVerify(token) },
+  } as never);
   app.get(
     "/staff-check",
     { preHandler: optionalAuth },
@@ -554,5 +561,16 @@ describe("extractAuth — staff active-check (STAFFREVOKE)", () => {
     const body = (await inject()).json();
     expect(body.staffId).toBeNull();
     expect(body.userType).toBeNull();
+  });
+
+  it("JWTSPLIT: verifies staff_token via the dedicated staff instance, not the customer one", async () => {
+    mockGetStaffById.mockResolvedValue({ id: "staff_1", active: true });
+    mockCustomerInstanceVerify.mockImplementation(() => {
+      throw new Error("customer instance must not verify staff tokens");
+    });
+    const body = (await inject()).json();
+    expect(body.staffId).toBe("staff_1");
+    expect(mockStaffJwtVerify).toHaveBeenCalledWith("tok");
+    expect(mockCustomerInstanceVerify).not.toHaveBeenCalled();
   });
 });
