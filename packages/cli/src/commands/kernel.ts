@@ -104,7 +104,7 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
     const out = {
       knownIntentKinds: {
         count: KNOWN_INTENT_KINDS.size,
-        kinds: [...KNOWN_INTENT_KINDS].sort(),
+        kinds: [...KNOWN_INTENT_KINDS].sort((a, b) => a.localeCompare(b)),
       },
       ledger: {
         enabled: ledgerEnabled,
@@ -128,7 +128,7 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   console.log(`  ${chalk.cyan(String(KNOWN_INTENT_KINDS.size))} kinds em ${chalk.cyan("5")} packs`)
   // Group by domain for readability.
   const groups: Record<string, string[]> = {}
-  for (const k of [...KNOWN_INTENT_KINDS].sort()) {
+  for (const k of [...KNOWN_INTENT_KINDS].sort((a, b) => a.localeCompare(b))) {
     const domain = k.split(".")[0] ?? "outros"
     if (!groups[domain]) groups[domain] = []
     groups[domain].push(k)
@@ -439,7 +439,7 @@ function flattenBasis(
 ): string[] {
   return basis
     .map((b) => `${b.category ?? "_"}:${b.code ?? "_"}`)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
 }
 
 interface InstalledPack {
@@ -565,7 +565,7 @@ export async function applyAuditPostgresMigrations(
   const migrationsDir = await resolveAuditPostgresMigrationsDir()
   const files = (await readdir(migrationsDir))
     .filter((f) => f.endsWith(".sql"))
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
   if (files.length === 0) {
     log.warn(`Nenhum .sql encontrado em ${migrationsDir}`)
     return

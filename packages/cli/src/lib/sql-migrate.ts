@@ -73,7 +73,7 @@ export function listMigrationFiles(
   return fs
     .readdirSync(dir)
     .filter((f) => fileRe.test(f))
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
 }
 
 function pad2(n: number): string {
