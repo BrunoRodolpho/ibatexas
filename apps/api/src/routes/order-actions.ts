@@ -76,6 +76,22 @@ function deriveNonce(idempotencyKey: string): string {
 }
 
 /**
+ * P2-LOGIC-CANCELPAY — thrown from the cancel executor when the order row was
+ * transitioned to CANCELED but its active payment is still LIVE (non-terminal)
+ * afterward. The route maps it to 409 PAYMENT_CANCEL_FAILED and the executor
+ * throws BEFORE publishNatsEvent("order.canceled"), so the event is withheld —
+ * a canceled order can never retain a billable payment that later reconciles to
+ * paid. runCustomerIntent does not catch executor errors, so this propagates to
+ * the route's try/catch.
+ */
+class PaymentCancelFailedError extends Error {
+  constructor(public readonly paymentId: string | undefined) {
+    super("order canceled but active payment is not terminal");
+    this.name = "PaymentCancelFailedError";
+  }
+}
+
+/**
  * Prefer the caller's explicit `Idempotency-Key` HTTP header when
  * supplied (industry standard for client-driven dedup, e.g. Stripe).
  * Otherwise fall back to the route's derived key. Returns the resolved
@@ -381,9 +397,15 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
             }
             const result = orderOutcome.result!;
 
-            // Cancel active payment if not already paid.
+            // Cancel the active payment so a canceled order never retains a LIVE
+            // payment that could later reconcile to `paid` (P2-LOGIC-CANCELPAY).
+            // We must NOT emit `order.canceled` unless the payment is actually
+            // terminal afterward — otherwise a swallowed cancel failure leaves a
+            // billable payment behind an order the customer believes is canceled.
             const activePayment = await paymentCmdSvc.findActiveByOrderId(id);
+            let paymentTerminal = true; // no active payment ⇒ nothing left to settle
             if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
+              paymentTerminal = false;
               try {
                 const paymentCancelEnvelope = buildEnvelope<
                   "payment.status.transition",
@@ -396,16 +418,47 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
                     actor: "customer",
                     actorId: customerId,
                     reason: "Pedido cancelado pelo cliente",
+                    // P2-CONC-CONFIRMVER: pin the version we validated against so
+                    // a concurrent transition (e.g. a webhook flipping the payment
+                    // to `paid`) can't be silently clobbered — it surfaces as a
+                    // concurrency error and we re-check terminality below.
+                    expectedVersion: activePayment.version,
                   },
                   nonce: randomUUID(),
                   actor: { principal: "user", sessionId: customerId },
                   taint: "TRUSTED",
                 });
-                // REFUSE is tolerated (payment may already be terminal).
-                await paymentCmdSvc.transitionStatusFromEnvelope(paymentCancelEnvelope);
+                const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(paymentCancelEnvelope);
+                // EXECUTE/REWRITE ⇒ canceled (terminal). A REFUSE means the kernel
+                // declined (e.g. already terminal) — re-read below rather than assume.
+                paymentTerminal =
+                  cancelOutcome.decision.kind === "EXECUTE" ||
+                  cancelOutcome.decision.kind === "REWRITE";
               } catch {
-                // Payment may already be terminal — non-critical.
+                // May have failed because the payment is already terminal (benign)
+                // OR because it concurrently moved to a live state like `paid`
+                // (NOT benign). Re-read authoritative state below.
+                paymentTerminal = false;
               }
+              if (!paymentTerminal) {
+                // Authoritative re-read: no active (non-terminal) payment now ⇒ it
+                // settled to a terminal state ⇒ safe. A still-active payment ⇒ unsafe.
+                const after = await paymentCmdSvc.findActiveByOrderId(id);
+                paymentTerminal = after === null;
+              }
+            }
+
+            if (!paymentTerminal) {
+              // Order row is CANCELED but the payment is still live. Do NOT emit
+              // `order.canceled` (downstream treats it as fully settled). Throw so
+              // the route surfaces an actionable 409 — the cancel is retried /
+              // escalated rather than leaving a canceled order with a billable
+              // payment (P2-LOGIC-CANCELPAY).
+              server.log.error(
+                { orderId: id, paymentId: activePayment?.id },
+                "order canceled but active payment is not terminal — withholding order.canceled (P2-LOGIC-CANCELPAY)",
+              );
+              throw new PaymentCancelFailedError(activePayment?.id);
             }
 
             await publishNatsEvent("order.canceled", {
@@ -435,6 +488,15 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
 
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
+        if (err instanceof PaymentCancelFailedError) {
+          // P2-LOGIC-CANCELPAY: order row was canceled but the payment is still
+          // live; order.canceled was withheld. Surface an actionable error so the
+          // cancel is retried / escalated.
+          return reply.code(409).send({
+            error: "Não foi possível cancelar o pagamento do pedido. Tente novamente em instantes.",
+            code: "PAYMENT_CANCEL_FAILED",
+          });
+        }
         if (err instanceof InvalidTransitionError) {
           return reply.code(422).send({ error: "Transição de status inválida.", from: err.from, to: err.to });
         }
