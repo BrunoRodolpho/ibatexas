@@ -36,6 +36,17 @@ import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
 import { parseBoolEnv } from "@ibatexas/types"
+// @ibatexas/tools is imported STATICALLY (not via a lazy `import()`) so that
+// vitest's `vi.mock("@ibatexas/tools")` reliably intercepts getRedisClient in
+// the defer-resume tests. A dynamic import is racy to mock on the CI runner
+// and let those hermetic tests reach a real Redis client (REDIS_URL is set on
+// the runner → `client.connect()` hangs → 5s test timeout). The cold-start
+// cost is one extra module load for `ibx kernel`, which is acceptable.
+import {
+  closeRedisClient,
+  getRedisClient,
+  rk as toolsRk,
+} from "@ibatexas/tools"
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -622,7 +633,6 @@ function operatorIdentity(): string {
 /** Close Redis cleanly so the CLI process exits without hanging connections. */
 async function closeRedisQuietly(): Promise<void> {
   try {
-    const { closeRedisClient } = await import("@ibatexas/tools")
     await closeRedisClient()
   } catch {
     // Connections might not exist (dry-run paths) — swallow.
@@ -696,10 +706,9 @@ export function __setDeferResumeDepsForTest(
 
 async function loadDeferResumeDeps(): Promise<DeferResumeDeps> {
   if (deferResumeDepsOverride) return deferResumeDepsOverride
-  const tools = await import("@ibatexas/tools")
   return {
-    getRedis: () => tools.getRedisClient(),
-    rk: tools.rk,
+    getRedis: () => getRedisClient(),
+    rk: toolsRk,
   }
 }
 
