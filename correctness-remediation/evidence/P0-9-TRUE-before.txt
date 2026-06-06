@@ -1,0 +1,51 @@
+P0-9-TRUE — IBX_KERNEL_ENFORCE empty-after-trim
+================================================
+
+Date: 2026-05-23
+Source: deep-audit/05-hidden-bugs.md #6
+File: apps/api/src/plugins/kernel-bootstrap.ts:188 + @adjudicate/core/kernel enforce-config
+
+Symptom
+-------
+The platform's parseList (enforce-config.ts:19-29) filters out empty strings
+after trim. So IBX_KERNEL_ENFORCE=" , , " parses to an EMPTY set silently —
+operator typo where all kinds are commas/whitespace disables enforcement.
+
+Today the IbateXas bootstrap (kernel-bootstrap.ts:188-219) ONLY rejects
+unknown-token typos. Empty-after-trim is treated identically to "env var
+unset" — silently enforces nothing.
+
+Repro (parser semantics)
+------------------------
+Input: " , , "
+Steps:
+  - split(",") -> [" ", " ", " "]
+  - .map(trim) -> ["", "", ""]
+  - .filter(len > 0) -> []
+Result: kinds = Set(0) {}
+
+Demonstrated:
+  Parsed enforce set size: 0
+  Raw is non-empty: true
+  Bug: empty-after-trim silently disables enforcement while operator
+       believes they configured something
+
+Also affected
+-------------
+  - IBX_KERNEL_ENFORCE=","      -> empty set (the operator put a separator)
+  - IBX_KERNEL_ENFORCE="  "     -> empty set (whitespace-only typo)
+  - IBX_KERNEL_ENFORCE="order.cancel,  "  -> { "order.cancel" } — but with
+                                              a trailing separator that
+                                              proves the operator INTENDED
+                                              more items.
+
+The bootstrap should distinguish "env var present but empty after trim"
+(operator typo — fail loud) from "env var unset" (legitimate
+empty-set configuration).
+
+Why this matters
+----------------
+A 4am operator typo like `IBX_KERNEL_ENFORCE=" , "` silently leaves every
+intent kind on the legacy path. Dashboards report "shadow ok, enforce
+present" while authority quietly stays with legacy. Worst-case: an enforce
+rollout is shipped as canceled when the env was malformed.

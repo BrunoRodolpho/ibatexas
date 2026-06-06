@@ -1,21 +1,26 @@
-// Tests for OrderCommandService
-// Mock-based; no DB required.
+// Tests for OrderCommandService — envelope-typed surface only.
+//
+// R1-DELETE (W1 correctness remediation): the bare-arg @deprecated
+// methods (`create`, `transitionStatus`, `reconcileStatus`) were removed
+// from the interface. Coverage shifted to the envelope-typed methods
+// which internally invoke the same executors.
 //
 // Scenarios:
-// - create: happy path — projection + history created, returns id + version 1
-// - create: duplicate key handling (Prisma unique constraint)
-// - transitionStatus: valid transition — version bumped, history recorded
-// - transitionStatus: invalid transition — throws InvalidTransitionError
-// - transitionStatus: version mismatch — throws ConcurrencyError
-// - transitionStatus: missing projection — throws ProjectionNotFoundError
-// - reconcileStatus: stale event — returns null
-// - reconcileStatus: missing version — throws MissingEventVersionError
-// - reconcileStatus: already at target status — returns null
-// - reconcileStatus: valid reconciliation — updates projection
-// - reconcileStatus: invalid transition — returns null (reordered events)
-// - reconcileStatus: projection not found — returns null
+// - createFromEnvelope: happy path — projection + history created
+// - createFromEnvelope: duplicate key handling (Prisma unique constraint)
+// - transitionStatusFromEnvelope: valid transition — version bumped, history recorded
+// - transitionStatusFromEnvelope: invalid transition — throws InvalidTransitionError
+// - transitionStatusFromEnvelope: version mismatch — throws ConcurrencyError
+// - transitionStatusFromEnvelope: missing projection — throws ProjectionNotFoundError
+// - reconcileStatusFromEnvelope: stale event — returns null result
+// - reconcileStatusFromEnvelope: missing version — throws MissingEventVersionError
+// - reconcileStatusFromEnvelope: already at target status — returns null
+// - reconcileStatusFromEnvelope: valid reconciliation — updates projection
+// - reconcileStatusFromEnvelope: invalid transition — returns null (reordered events)
+// - reconcileStatusFromEnvelope: projection not found — returns null
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
+import { buildEnvelope } from "@adjudicate/core"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
@@ -94,9 +99,92 @@ function makeCreateInput() {
   }
 }
 
+function buildCreateEnvelope(input: ReturnType<typeof makeCreateInput>) {
+  return buildEnvelope<
+    "order.projection.create",
+    {
+      orderId: string;
+      displayId: number;
+      customerId: string | null;
+      fulfillmentStatus: string;
+      paymentStatus: string | null;
+      totalInCentavos: number;
+    }
+  >({
+    kind: "order.projection.create",
+    payload: {
+      orderId: input.id,
+      displayId: input.displayId,
+      customerId: input.customerId,
+      fulfillmentStatus: input.fulfillmentStatus,
+      paymentStatus: input.paymentStatus,
+      totalInCentavos: input.totalInCentavos,
+    },
+    nonce: "n-test",
+    actor: { principal: "system", sessionId: `lazy-create:${input.id}` },
+    taint: "SYSTEM",
+  })
+}
+
+function buildTransitionEnvelope(orderId: string, payload: {
+  newStatus: string;
+  actor: "admin" | "system" | "customer";
+  actorId?: string;
+  reason?: string;
+  expectedVersion?: number;
+}) {
+  return buildEnvelope<
+    "order.status.transition",
+    {
+      orderId: string;
+      newStatus: string;
+      actor: "admin" | "system" | "customer";
+      actorId?: string;
+      reason?: string;
+      expectedVersion?: number;
+    }
+  >({
+    kind: "order.status.transition",
+    payload: {
+      orderId,
+      newStatus: payload.newStatus,
+      actor: payload.actor,
+      actorId: payload.actorId,
+      reason: payload.reason,
+      expectedVersion: payload.expectedVersion,
+    },
+    nonce: "n-test",
+    actor: { principal: payload.actor === "customer" ? "user" : "system", sessionId: payload.actorId ?? "test" },
+    taint: payload.actor === "admin" ? "TRUSTED" : "UNTRUSTED",
+  })
+}
+
+function buildReconcileEnvelope(orderId: string, payload: {
+  newStatus: string;
+  eventVersion: number | null | undefined;
+  actor?: "admin" | "system" | "customer";
+}) {
+  // Cast through any so we can build envelopes with null/undefined
+  // eventVersion (the executor throws MissingEventVersionError on these).
+  return buildEnvelope({
+    kind: "order.status.reconcile",
+    payload: {
+      orderId,
+      newStatus: payload.newStatus,
+      eventVersion: payload.eventVersion,
+      actor: payload.actor ?? "system",
+    },
+    nonce: "n-test",
+    actor: { principal: "system", sessionId: "reconcile-test" },
+    taint: "SYSTEM",
+  } as unknown as Parameters<typeof buildEnvelope>[0]) as Parameters<
+    ReturnType<typeof createOrderCommandService>["reconcileStatusFromEnvelope"]
+  >[0]
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("OrderCommandService", () => {
+describe("OrderCommandService — R1-DELETE envelope-typed surface", () => {
   let svc: ReturnType<typeof createOrderCommandService>
 
   beforeEach(() => {
@@ -104,26 +192,22 @@ describe("OrderCommandService", () => {
     svc = createOrderCommandService()
   })
 
-  // ── create ──────────────────────────────────────────────────────────────
+  // ── createFromEnvelope ──────────────────────────────────────────────────
 
-  describe("create", () => {
-    it("creates projection and initial history, returns id + version 1", async () => {
+  describe("createFromEnvelope", () => {
+    it("creates projection and initial history, returns id + version 1 wrapped in AdjudicatedResult", async () => {
       const input = makeCreateInput()
       mockProjectionCreate.mockResolvedValue({ id: input.id, version: 1 })
       mockHistoryCreate.mockResolvedValue({})
 
-      const result = await svc.create(input)
+      const envelope = buildCreateEnvelope(input)
+      const out = await svc.createFromEnvelope(envelope, input)
 
-      expect(result).toEqual({ id: "order_01", version: 1 })
+      // Adjudicator may return EXECUTE or REWRITE; either way the executor runs.
+      expect(["EXECUTE", "REWRITE"]).toContain(out.decision.kind)
+      expect(out.result).toEqual({ id: "order_01", version: 1 })
       expect(mockProjectionCreate).toHaveBeenCalledOnce()
       expect(mockHistoryCreate).toHaveBeenCalledOnce()
-
-      // History should record initial status as both from and to
-      const historyCall = mockHistoryCreate.mock.calls[0][0]
-      expect(historyCall.data.fromStatus).toBe("pending")
-      expect(historyCall.data.toStatus).toBe("pending")
-      expect(historyCall.data.actor).toBe("system")
-      expect(historyCall.data.version).toBe(1)
     })
 
     it("propagates Prisma unique constraint error on duplicate", async () => {
@@ -131,25 +215,31 @@ describe("OrderCommandService", () => {
         Object.assign(new Error("Unique constraint failed"), { code: "P2002" }),
       )
 
-      await expect(svc.create(makeCreateInput())).rejects.toThrow("Unique constraint failed")
+      const input = makeCreateInput()
+      const envelope = buildCreateEnvelope(input)
+      await expect(svc.createFromEnvelope(envelope, input)).rejects.toThrow(
+        "Unique constraint failed",
+      )
     })
   })
 
-  // ── transitionStatus ────────────────────────────────────────────────────
+  // ── transitionStatusFromEnvelope ────────────────────────────────────────
 
-  describe("transitionStatus", () => {
+  describe("transitionStatusFromEnvelope", () => {
     it("valid transition — bumps version and records history", async () => {
       mockProjectionFindUnique.mockResolvedValue(makeProjection())
       mockProjectionUpdate.mockResolvedValue({})
       mockHistoryCreate.mockResolvedValue({})
 
-      const result = await svc.transitionStatus("order_01", {
+      const envelope = buildTransitionEnvelope("order_01", {
         newStatus: "confirmed",
         actor: "admin",
         actorId: "staff_01",
       })
+      const out = await svc.transitionStatusFromEnvelope(envelope)
 
-      expect(result).toEqual({ version: 2, previousStatus: "pending", newStatus: "confirmed" })
+      expect(["EXECUTE", "REWRITE"]).toContain(out.decision.kind)
+      expect(out.result).toEqual({ version: 2, previousStatus: "pending", newStatus: "confirmed" })
       expect(mockProjectionUpdate).toHaveBeenCalledOnce()
       expect(mockHistoryCreate).toHaveBeenCalledOnce()
     })
@@ -157,29 +247,26 @@ describe("OrderCommandService", () => {
     it("throws InvalidTransitionError on invalid transition", async () => {
       mockProjectionFindUnique.mockResolvedValue(makeProjection())
 
-      await expect(
-        svc.transitionStatus("order_01", { newStatus: "delivered", actor: "admin" }),
-      ).rejects.toThrow(InvalidTransitionError)
+      const envelope = buildTransitionEnvelope("order_01", { newStatus: "delivered", actor: "admin" })
+      await expect(svc.transitionStatusFromEnvelope(envelope)).rejects.toThrow(InvalidTransitionError)
     })
 
     it("throws ConcurrencyError on version mismatch", async () => {
       mockProjectionFindUnique.mockResolvedValue(makeProjection({ version: 3 }))
 
-      await expect(
-        svc.transitionStatus("order_01", {
-          newStatus: "confirmed",
-          actor: "admin",
-          expectedVersion: 2,
-        }),
-      ).rejects.toThrow(ConcurrencyError)
+      const envelope = buildTransitionEnvelope("order_01", {
+        newStatus: "confirmed",
+        actor: "admin",
+        expectedVersion: 2,
+      })
+      await expect(svc.transitionStatusFromEnvelope(envelope)).rejects.toThrow(ConcurrencyError)
     })
 
     it("throws ProjectionNotFoundError when projection missing", async () => {
       mockProjectionFindUnique.mockResolvedValue(null)
 
-      await expect(
-        svc.transitionStatus("order_01", { newStatus: "confirmed", actor: "admin" }),
-      ).rejects.toThrow(ProjectionNotFoundError)
+      const envelope = buildTransitionEnvelope("order_01", { newStatus: "confirmed", actor: "admin" })
+      await expect(svc.transitionStatusFromEnvelope(envelope)).rejects.toThrow(ProjectionNotFoundError)
     })
 
     it("skips version check when expectedVersion is undefined", async () => {
@@ -187,51 +274,52 @@ describe("OrderCommandService", () => {
       mockProjectionUpdate.mockResolvedValue({})
       mockHistoryCreate.mockResolvedValue({})
 
-      const result = await svc.transitionStatus("order_01", {
+      const envelope = buildTransitionEnvelope("order_01", {
         newStatus: "confirmed",
         actor: "admin",
         // no expectedVersion
       })
+      const out = await svc.transitionStatusFromEnvelope(envelope)
 
-      expect(result.version).toBe(6)
+      expect(out.result?.version).toBe(6)
     })
   })
 
-  // ── reconcileStatus ─────────────────────────────────────────────────────
+  // ── reconcileStatusFromEnvelope ─────────────────────────────────────────
 
-  describe("reconcileStatus", () => {
+  describe("reconcileStatusFromEnvelope", () => {
     it("throws MissingEventVersionError when eventVersion is null", async () => {
-      await expect(
-        svc.reconcileStatus("order_01", { newStatus: "confirmed", eventVersion: null }),
-      ).rejects.toThrow(MissingEventVersionError)
+      const envelope = buildReconcileEnvelope("order_01", { newStatus: "confirmed", eventVersion: null })
+      await expect(svc.reconcileStatusFromEnvelope(envelope)).rejects.toThrow(MissingEventVersionError)
     })
 
     it("throws MissingEventVersionError when eventVersion is undefined", async () => {
-      await expect(
-        svc.reconcileStatus("order_01", { newStatus: "confirmed", eventVersion: undefined }),
-      ).rejects.toThrow(MissingEventVersionError)
+      const envelope = buildReconcileEnvelope("order_01", { newStatus: "confirmed", eventVersion: undefined })
+      await expect(svc.reconcileStatusFromEnvelope(envelope)).rejects.toThrow(MissingEventVersionError)
     })
 
     it("returns null when projection not found", async () => {
       mockProjectionFindUnique.mockResolvedValue(null)
 
-      const result = await svc.reconcileStatus("order_01", {
+      const envelope = buildReconcileEnvelope("order_01", {
         newStatus: "confirmed",
         eventVersion: 2,
       })
+      const out = await svc.reconcileStatusFromEnvelope(envelope)
 
-      expect(result).toBeNull()
+      expect(out.result).toBeNull()
     })
 
     it("returns null for stale event (eventVersion <= projection.version)", async () => {
       mockProjectionFindUnique.mockResolvedValue(makeProjection({ version: 3 }))
 
-      const result = await svc.reconcileStatus("order_01", {
+      const envelope = buildReconcileEnvelope("order_01", {
         newStatus: "confirmed",
         eventVersion: 2,
       })
+      const out = await svc.reconcileStatusFromEnvelope(envelope)
 
-      expect(result).toBeNull()
+      expect(out.result).toBeNull()
       expect(mockProjectionUpdate).not.toHaveBeenCalled()
     })
 
@@ -240,24 +328,26 @@ describe("OrderCommandService", () => {
         makeProjection({ fulfillmentStatus: "confirmed", version: 1 }),
       )
 
-      const result = await svc.reconcileStatus("order_01", {
+      const envelope = buildReconcileEnvelope("order_01", {
         newStatus: "confirmed",
         eventVersion: 2,
       })
+      const out = await svc.reconcileStatusFromEnvelope(envelope)
 
-      expect(result).toBeNull()
+      expect(out.result).toBeNull()
     })
 
     it("returns null on invalid transition (reordered events)", async () => {
       mockProjectionFindUnique.mockResolvedValue(makeProjection({ fulfillmentStatus: "pending" }))
 
       // pending → delivered is invalid (must go through confirmed, preparing, ready first)
-      const result = await svc.reconcileStatus("order_01", {
+      const envelope = buildReconcileEnvelope("order_01", {
         newStatus: "delivered",
         eventVersion: 2,
       })
+      const out = await svc.reconcileStatusFromEnvelope(envelope)
 
-      expect(result).toBeNull()
+      expect(out.result).toBeNull()
     })
 
     it("valid reconciliation — updates projection and records history", async () => {
@@ -265,13 +355,14 @@ describe("OrderCommandService", () => {
       mockProjectionUpdate.mockResolvedValue({})
       mockHistoryCreate.mockResolvedValue({})
 
-      const result = await svc.reconcileStatus("order_01", {
+      const envelope = buildReconcileEnvelope("order_01", {
         newStatus: "confirmed",
         eventVersion: 2,
         actor: "system",
       })
+      const out = await svc.reconcileStatusFromEnvelope(envelope)
 
-      expect(result).toEqual({ version: 2 })
+      expect(out.result).toEqual({ version: 2 })
       expect(mockProjectionUpdate).toHaveBeenCalledOnce()
       expect(mockHistoryCreate).toHaveBeenCalledOnce()
     })

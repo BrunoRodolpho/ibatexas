@@ -18,6 +18,8 @@ vi.mock("@ibatexas/domain", () => ({
     findConfirmedForDate: vi.fn(async () => []),
     checkAvailability: vi.fn(async () => []),
     transition: vi.fn(async () => {}),
+    transitionFromEnvelope: vi.fn(async () => ({ decision: { kind: "EXECUTE", basis: [] }, result: undefined })),
+    listAll: vi.fn(async () => ({ reservations: [], total: 0 })),
     getTodaySummary: vi.fn(async () => ({ total: 0, confirmed: 0, seated: 0, completed: 0, cancelled: 0, noShow: 0, covers: 0 })),
   }),
   createTableService: () => ({
@@ -34,18 +36,31 @@ vi.mock("@ibatexas/domain", () => ({
   createOrderCommandService: () => ({
     create: vi.fn(),
     reconcileStatus: vi.fn(async () => ({ success: true })),
+    transitionStatus: vi.fn(async () => ({ version: 1, previousStatus: "pending", newStatus: "pending" })),
+    transitionStatusFromEnvelope: vi.fn(async () => ({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 1, previousStatus: "pending", newStatus: "pending" },
+    })),
   }),
   createOrderQueryService: () => ({
     list: vi.fn(async () => ({ orders: [], count: 0 })),
+    listAll: vi.fn(async () => ({ orders: [], count: 0 })),
     getById: vi.fn(async () => null),
   }),
   createPaymentCommandService: () => ({
     create: vi.fn(),
     transitionStatus: vi.fn(async () => ({ id: "pay_01", version: 1 })),
+    transitionStatusFromEnvelope: vi.fn(async () => ({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 1, previousStatus: "paid", newStatus: "paid" },
+    })),
   }),
   createPaymentQueryService: () => ({
-    listByOrderId: vi.fn(async () => []),
+    listByOrderId: vi.fn(async () => ({ payments: [], count: 0 })),
     getActiveByOrderId: vi.fn(async () => null),
+  }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(async () => undefined),
   }),
   prisma: {
     reservation: { findMany: vi.fn(async () => []), count: vi.fn(async () => 0) },
@@ -53,6 +68,10 @@ vi.mock("@ibatexas/domain", () => ({
     customerOrderItem: { findMany: vi.fn(async () => []) },
     conversationMessage: { count: vi.fn(async () => 0) },
     orderProjection: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null), count: vi.fn(async () => 0) },
+    customer: { findMany: vi.fn(async () => []) },
+    reservationTable: { findMany: vi.fn(async () => []) },
+    payment: { update: vi.fn(async () => ({})) },
+    orderNote: { create: vi.fn(async () => ({ id: "n1", createdAt: new Date(), content: "" })), findMany: vi.fn(async () => []) },
   },
 }))
 
@@ -136,6 +155,54 @@ describe("admin auth guard — no key configured", () => {
 
     // Need dynamic import to pick up changed env
     vi.resetModules()
+
+    // vi.resetModules() gives a fresh @ibatexas/audit-sink module instance,
+    // dropping the no-op deps the global setup.ts wired into the original
+    // instance. orders.ts calls getAuditSink() in its onReady hook, which is
+    // fail-closed and throws AuditSinkNotInitializedError until deps are set.
+    // Re-wire a no-op sink on the fresh instance before registering routes
+    // (idiom: __resetAuditSink() + __setAuditSinkDependencies(...), see setup.ts).
+    const { __resetAuditSink, __setAuditSinkDependencies } = await import(
+      "@ibatexas/audit-sink"
+    )
+    __resetAuditSink()
+    __setAuditSinkDependencies({
+      spillStorage: {
+        async append() {
+          /* no-op */
+        },
+        async *readAll() {
+          /* yields nothing */
+        },
+        async ack() {
+          /* no-op */
+        },
+      },
+      postgresWriter: {
+        async insertAudit() {
+          /* no-op */
+        },
+      },
+      natsPublisher: {
+        async publish() {
+          /* no-op */
+        },
+      },
+      redactor: {
+        redact(record) {
+          return record
+        },
+      },
+      logger: {
+        warn() {
+          /* no-op */
+        },
+        error() {
+          /* no-op */
+        },
+      },
+    })
+
     const { adminRoutes } = await import("../routes/admin/index.js")
 
     server = Fastify({ logger: false })

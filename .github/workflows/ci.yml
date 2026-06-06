@@ -21,7 +21,20 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ibatexas/domain db:generate
       - run: pnpm lint
+      # Fail-fast diagnostic: T4 / R2-2 / T6 conformance suites use Postgres +
+      # Redis testcontainers. ubuntu-latest ships with Docker preinstalled, but
+      # we probe `docker info` first so an unavailable daemon surfaces as a
+      # clear error rather than a cryptic mid-suite testcontainer-boot failure.
+      - name: Verify Docker is available (testcontainer prerequisite)
+        run: docker info
       - run: pnpm test -- -- --coverage
+      # Bypass-detection CI gate (task 20). Fails the build if any direct
+      # prisma write, direct medusa write, executeToolDirect re-introduction,
+      # or setMetricsSink(undefined) reset enters the codebase. The vitest
+      # suite is already run by `pnpm test` above, but we invoke the
+      # consolidated entry point explicitly so the gate is visible in CI logs.
+      - name: Bypass-detection CI gate
+        run: ./scripts/check-bypass.sh
       - name: Security audit
         run: pnpm audit --audit-level=high
       - run: pnpm build

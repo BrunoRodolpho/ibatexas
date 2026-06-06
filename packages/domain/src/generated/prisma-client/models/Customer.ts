@@ -598,10 +598,12 @@ export type CustomerCreateNestedOneWithoutLoyaltyAccountInput = {
   connect?: Prisma.CustomerWhereUniqueInput
 }
 
-export type CustomerUpdateOneRequiredWithoutLoyaltyAccountNestedInput = {
+export type CustomerUpdateOneWithoutLoyaltyAccountNestedInput = {
   create?: Prisma.XOR<Prisma.CustomerCreateWithoutLoyaltyAccountInput, Prisma.CustomerUncheckedCreateWithoutLoyaltyAccountInput>
   connectOrCreate?: Prisma.CustomerCreateOrConnectWithoutLoyaltyAccountInput
   upsert?: Prisma.CustomerUpsertWithoutLoyaltyAccountInput
+  disconnect?: Prisma.CustomerWhereInput | boolean
+  delete?: Prisma.CustomerWhereInput | boolean
   connect?: Prisma.CustomerWhereUniqueInput
   update?: Prisma.XOR<Prisma.XOR<Prisma.CustomerUpdateToOneWithWhereWithoutLoyaltyAccountInput, Prisma.CustomerUpdateWithoutLoyaltyAccountInput>, Prisma.CustomerUncheckedUpdateWithoutLoyaltyAccountInput>
 }

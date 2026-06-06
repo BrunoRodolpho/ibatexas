@@ -204,7 +204,7 @@ export type LoyaltyAccountGroupByArgs<ExtArgs extends runtime.Types.Extensions.I
 
 export type LoyaltyAccountGroupByOutputType = {
   id: string
-  customerId: string
+  customerId: string | null
   stamps: number
   totalEarned: number
   redeemed: number
@@ -237,18 +237,18 @@ export type LoyaltyAccountWhereInput = {
   OR?: Prisma.LoyaltyAccountWhereInput[]
   NOT?: Prisma.LoyaltyAccountWhereInput | Prisma.LoyaltyAccountWhereInput[]
   id?: Prisma.StringFilter<"LoyaltyAccount"> | string
-  customerId?: Prisma.StringFilter<"LoyaltyAccount"> | string
+  customerId?: Prisma.StringNullableFilter<"LoyaltyAccount"> | string | null
   stamps?: Prisma.IntFilter<"LoyaltyAccount"> | number
   totalEarned?: Prisma.IntFilter<"LoyaltyAccount"> | number
   redeemed?: Prisma.IntFilter<"LoyaltyAccount"> | number
   createdAt?: Prisma.DateTimeFilter<"LoyaltyAccount"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"LoyaltyAccount"> | Date | string
-  customer?: Prisma.XOR<Prisma.CustomerScalarRelationFilter, Prisma.CustomerWhereInput>
+  customer?: Prisma.XOR<Prisma.CustomerNullableScalarRelationFilter, Prisma.CustomerWhereInput> | null
 }
 
 export type LoyaltyAccountOrderByWithRelationInput = {
   id?: Prisma.SortOrder
-  customerId?: Prisma.SortOrder
+  customerId?: Prisma.SortOrderInput | Prisma.SortOrder
   stamps?: Prisma.SortOrder
   totalEarned?: Prisma.SortOrder
   redeemed?: Prisma.SortOrder
@@ -268,12 +268,12 @@ export type LoyaltyAccountWhereUniqueInput = Prisma.AtLeast<{
   redeemed?: Prisma.IntFilter<"LoyaltyAccount"> | number
   createdAt?: Prisma.DateTimeFilter<"LoyaltyAccount"> | Date | string
   updatedAt?: Prisma.DateTimeFilter<"LoyaltyAccount"> | Date | string
-  customer?: Prisma.XOR<Prisma.CustomerScalarRelationFilter, Prisma.CustomerWhereInput>
+  customer?: Prisma.XOR<Prisma.CustomerNullableScalarRelationFilter, Prisma.CustomerWhereInput> | null
 }, "id" | "customerId">
 
 export type LoyaltyAccountOrderByWithAggregationInput = {
   id?: Prisma.SortOrder
-  customerId?: Prisma.SortOrder
+  customerId?: Prisma.SortOrderInput | Prisma.SortOrder
   stamps?: Prisma.SortOrder
   totalEarned?: Prisma.SortOrder
   redeemed?: Prisma.SortOrder
@@ -291,7 +291,7 @@ export type LoyaltyAccountScalarWhereWithAggregatesInput = {
   OR?: Prisma.LoyaltyAccountScalarWhereWithAggregatesInput[]
   NOT?: Prisma.LoyaltyAccountScalarWhereWithAggregatesInput | Prisma.LoyaltyAccountScalarWhereWithAggregatesInput[]
   id?: Prisma.StringWithAggregatesFilter<"LoyaltyAccount"> | string
-  customerId?: Prisma.StringWithAggregatesFilter<"LoyaltyAccount"> | string
+  customerId?: Prisma.StringNullableWithAggregatesFilter<"LoyaltyAccount"> | string | null
   stamps?: Prisma.IntWithAggregatesFilter<"LoyaltyAccount"> | number
   totalEarned?: Prisma.IntWithAggregatesFilter<"LoyaltyAccount"> | number
   redeemed?: Prisma.IntWithAggregatesFilter<"LoyaltyAccount"> | number
@@ -306,12 +306,12 @@ export type LoyaltyAccountCreateInput = {
   redeemed?: number
   createdAt?: Date | string
   updatedAt?: Date | string
-  customer: Prisma.CustomerCreateNestedOneWithoutLoyaltyAccountInput
+  customer?: Prisma.CustomerCreateNestedOneWithoutLoyaltyAccountInput
 }
 
 export type LoyaltyAccountUncheckedCreateInput = {
   id?: string
-  customerId: string
+  customerId?: string | null
   stamps?: number
   totalEarned?: number
   redeemed?: number
@@ -326,12 +326,12 @@ export type LoyaltyAccountUpdateInput = {
   redeemed?: Prisma.IntFieldUpdateOperationsInput | number
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
-  customer?: Prisma.CustomerUpdateOneRequiredWithoutLoyaltyAccountNestedInput
+  customer?: Prisma.CustomerUpdateOneWithoutLoyaltyAccountNestedInput
 }
 
 export type LoyaltyAccountUncheckedUpdateInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  customerId?: Prisma.StringFieldUpdateOperationsInput | string
+  customerId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   stamps?: Prisma.IntFieldUpdateOperationsInput | number
   totalEarned?: Prisma.IntFieldUpdateOperationsInput | number
   redeemed?: Prisma.IntFieldUpdateOperationsInput | number
@@ -341,7 +341,7 @@ export type LoyaltyAccountUncheckedUpdateInput = {
 
 export type LoyaltyAccountCreateManyInput = {
   id?: string
-  customerId: string
+  customerId?: string | null
   stamps?: number
   totalEarned?: number
   redeemed?: number
@@ -360,7 +360,7 @@ export type LoyaltyAccountUpdateManyMutationInput = {
 
 export type LoyaltyAccountUncheckedUpdateManyInput = {
   id?: Prisma.StringFieldUpdateOperationsInput | string
-  customerId?: Prisma.StringFieldUpdateOperationsInput | string
+  customerId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   stamps?: Prisma.IntFieldUpdateOperationsInput | number
   totalEarned?: Prisma.IntFieldUpdateOperationsInput | number
   redeemed?: Prisma.IntFieldUpdateOperationsInput | number
@@ -509,7 +509,7 @@ export type LoyaltyAccountSelect<ExtArgs extends runtime.Types.Extensions.Intern
   redeemed?: boolean
   createdAt?: boolean
   updatedAt?: boolean
-  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
+  customer?: boolean | Prisma.LoyaltyAccount$customerArgs<ExtArgs>
 }, ExtArgs["result"]["loyaltyAccount"]>
 
 export type LoyaltyAccountSelectCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -520,7 +520,7 @@ export type LoyaltyAccountSelectCreateManyAndReturn<ExtArgs extends runtime.Type
   redeemed?: boolean
   createdAt?: boolean
   updatedAt?: boolean
-  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
+  customer?: boolean | Prisma.LoyaltyAccount$customerArgs<ExtArgs>
 }, ExtArgs["result"]["loyaltyAccount"]>
 
 export type LoyaltyAccountSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetSelect<{
@@ -531,7 +531,7 @@ export type LoyaltyAccountSelectUpdateManyAndReturn<ExtArgs extends runtime.Type
   redeemed?: boolean
   createdAt?: boolean
   updatedAt?: boolean
-  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
+  customer?: boolean | Prisma.LoyaltyAccount$customerArgs<ExtArgs>
 }, ExtArgs["result"]["loyaltyAccount"]>
 
 export type LoyaltyAccountSelectScalar = {
@@ -546,23 +546,23 @@ export type LoyaltyAccountSelectScalar = {
 
 export type LoyaltyAccountOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "customerId" | "stamps" | "totalEarned" | "redeemed" | "createdAt" | "updatedAt", ExtArgs["result"]["loyaltyAccount"]>
 export type LoyaltyAccountInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
-  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
+  customer?: boolean | Prisma.LoyaltyAccount$customerArgs<ExtArgs>
 }
 export type LoyaltyAccountIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
-  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
+  customer?: boolean | Prisma.LoyaltyAccount$customerArgs<ExtArgs>
 }
 export type LoyaltyAccountIncludeUpdateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
-  customer?: boolean | Prisma.CustomerDefaultArgs<ExtArgs>
+  customer?: boolean | Prisma.LoyaltyAccount$customerArgs<ExtArgs>
 }
 
 export type $LoyaltyAccountPayload<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   name: "LoyaltyAccount"
   objects: {
-    customer: Prisma.$CustomerPayload<ExtArgs>
+    customer: Prisma.$CustomerPayload<ExtArgs> | null
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
-    customerId: string
+    customerId: string | null
     stamps: number
     totalEarned: number
     redeemed: number
@@ -962,7 +962,7 @@ readonly fields: LoyaltyAccountFieldRefs;
  */
 export interface Prisma__LoyaltyAccountClient<T, Null = never, ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs, GlobalOmitOptions = {}> extends Prisma.PrismaPromise<T> {
   readonly [Symbol.toStringTag]: "PrismaPromise"
-  customer<T extends Prisma.CustomerDefaultArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.CustomerDefaultArgs<ExtArgs>>): Prisma.Prisma__CustomerClient<runtime.Types.Result.GetResult<Prisma.$CustomerPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | Null, Null, ExtArgs, GlobalOmitOptions>
+  customer<T extends Prisma.LoyaltyAccount$customerArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.LoyaltyAccount$customerArgs<ExtArgs>>): Prisma.Prisma__CustomerClient<runtime.Types.Result.GetResult<Prisma.$CustomerPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -1397,6 +1397,25 @@ export type LoyaltyAccountDeleteManyArgs<ExtArgs extends runtime.Types.Extension
    * Limit how many LoyaltyAccounts to delete.
    */
   limit?: number
+}
+
+/**
+ * LoyaltyAccount.customer
+ */
+export type LoyaltyAccount$customerArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the Customer
+   */
+  select?: Prisma.CustomerSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the Customer
+   */
+  omit?: Prisma.CustomerOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.CustomerInclude<ExtArgs> | null
+  where?: Prisma.CustomerWhereInput
 }
 
 /**

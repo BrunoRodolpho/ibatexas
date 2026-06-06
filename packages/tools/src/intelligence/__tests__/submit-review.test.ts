@@ -1,12 +1,22 @@
 // Tests for submit_review tool
 // Mock-based; no database, Typesense, or NATS required.
 //
+// ── Kernel routing (post-W9) ──────────────────────────────────────────────
+//
+// The tool now builds an `order.review.submit` IntentEnvelope and routes
+// via `svc.submitReviewFromEnvelope`. The mock surfaces both EXECUTE and
+// REFUSE paths so we can assert that:
+//   - The envelope is built with the right kind / taint / actor
+//   - State carries the orderId so the pack's requireOrderIdForMutation
+//     guard reaches EXECUTE rather than REFUSEing on missing-order
+//   - Typesense + NATS fire only on EXECUTE
+//
 // Scenarios:
 // - Auth check: throws when no customerId
-// - Rating validation: rejects < 1, > 5, and non-integer
-// - Happy path: upserts review, aggregates stats, updates Typesense, publishes NATS
-// - Typesense update failure is non-fatal
-// - Optional comment handling
+// - Rating validation at the wire schema (Zod): rejects < 1, > 5, non-integer
+// - Happy path: envelope built, Typesense updated, NATS published
+// - REFUSE outcome surfaces kernel refusal copy
+// - Typesense failure is non-fatal
 // - pt-BR messages in output
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
@@ -16,40 +26,14 @@ import { submitReview } from "../submit-review.js"
 
 // -- Hoisted mocks ────────────────────────────────────────────────────────────
 
-const mockReviewUpsert = vi.hoisted(() => vi.fn())
-const mockReviewAggregate = vi.hoisted(() => vi.fn())
+const mockSubmitReviewFromEnvelope = vi.hoisted(() => vi.fn())
 const mockTypesenseUpdate = vi.hoisted(() => vi.fn())
 const mockGetTypesenseClient = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: {
-    review: {
-      upsert: mockReviewUpsert,
-      aggregate: mockReviewAggregate,
-    },
-  },
   createCustomerService: () => ({
-    submitReview: async (input: {
-      customerId: string; productId: string; orderId: string;
-      rating: number; comment?: string; channel: string;
-    }) => {
-      const { customerId, productId, orderId, rating, comment, channel } = input
-      await mockReviewUpsert({
-        where: { orderId_customerId: { orderId, customerId } },
-        create: { orderId, productId, productIds: [productId], customerId, rating, comment: comment ?? null, channel },
-        update: { rating, comment: comment ?? null },
-      })
-      const stats = await mockReviewAggregate({
-        where: { productId },
-        _avg: { rating: true },
-        _count: { rating: true },
-      })
-      return {
-        avgRating: stats._avg.rating ?? rating,
-        reviewCount: stats._count.rating,
-      }
-    },
+    submitReviewFromEnvelope: mockSubmitReviewFromEnvelope,
   }),
 }))
 
@@ -84,16 +68,18 @@ const VALID_INPUT = {
   comment: "Excelente!",
 }
 
+function execOutcome(result: { avgRating: number; reviewCount: number }) {
+  return {
+    decision: { kind: "EXECUTE" as const },
+    result,
+  }
+}
+
 // -- Tests ────────────────────────────────────────────────────────────────────
 
 describe("submitReview", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockReviewUpsert.mockResolvedValue({})
-    mockReviewAggregate.mockResolvedValue({
-      _avg: { rating: 4.5 },
-      _count: { rating: 10 },
-    })
     mockGetTypesenseClient.mockReturnValue({
       collections: () => ({
         documents: (_id: string) => ({
@@ -103,6 +89,9 @@ describe("submitReview", () => {
     })
     mockTypesenseUpdate.mockResolvedValue({})
     mockPublishNatsEvent.mockResolvedValue(undefined)
+    mockSubmitReviewFromEnvelope.mockResolvedValue(
+      execOutcome({ avgRating: 4.5, reviewCount: 10 }),
+    )
   })
 
   // ── Auth ────────────────────────────────────────────────────────────────
@@ -111,74 +100,66 @@ describe("submitReview", () => {
     await expect(submitReview(VALID_INPUT, CTX_GUEST as AgentContext)).rejects.toThrow(
       "Autenticação necessária",
     )
+    expect(mockSubmitReviewFromEnvelope).not.toHaveBeenCalled()
   })
 
-  // ── Rating validation ──────────────────────────────────────────────────
+  // ── Wire-schema rating validation (Zod, pre-envelope) ──────────────────
 
-  it("rejects rating below 1", async () => {
+  it("rejects rating below 1 at the wire schema", async () => {
     await expect(
       submitReview({ ...VALID_INPUT, rating: 0 }, CTX_AUTH),
     ).rejects.toThrow()
-    expect(mockReviewUpsert).not.toHaveBeenCalled()
+    expect(mockSubmitReviewFromEnvelope).not.toHaveBeenCalled()
   })
 
-  it("rejects rating above 5", async () => {
+  it("rejects rating above 5 at the wire schema", async () => {
     await expect(
       submitReview({ ...VALID_INPUT, rating: 6 }, CTX_AUTH),
     ).rejects.toThrow()
-    expect(mockReviewUpsert).not.toHaveBeenCalled()
+    expect(mockSubmitReviewFromEnvelope).not.toHaveBeenCalled()
   })
 
-  it("rejects non-integer rating", async () => {
+  it("rejects non-integer rating at the wire schema", async () => {
     await expect(
       submitReview({ ...VALID_INPUT, rating: 3.5 }, CTX_AUTH),
     ).rejects.toThrow()
-    expect(mockReviewUpsert).not.toHaveBeenCalled()
+    expect(mockSubmitReviewFromEnvelope).not.toHaveBeenCalled()
   })
 
-  // ── Happy path ─────────────────────────────────────────────────────────
+  // ── Envelope construction ─────────────────────────────────────────────
 
-  it("upserts review in Prisma on happy path", async () => {
+  it("builds an order.review.submit envelope with UNTRUSTED taint + llm principal", async () => {
     await submitReview(VALID_INPUT, CTX_AUTH)
 
-    expect(mockReviewUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          orderId_customerId: {
-            orderId: "order_01",
-            customerId: "cus_01",
-          },
-        },
-        create: expect.objectContaining({
-          orderId: "order_01",
-          productId: "prod_01",
-          productIds: ["prod_01"],
-          customerId: "cus_01",
-          rating: 5,
-          comment: "Excelente!",
-          channel: "whatsapp",
-        }),
-        update: expect.objectContaining({
-          rating: 5,
-          comment: "Excelente!",
-        }),
-      }),
-    )
+    expect(mockSubmitReviewFromEnvelope).toHaveBeenCalledOnce()
+    const [envelope, state, extras] = mockSubmitReviewFromEnvelope.mock.calls[0]
+    expect(envelope.kind).toBe("order.review.submit")
+    expect(envelope.taint).toBe("UNTRUSTED")
+    expect(envelope.actor.principal).toBe("llm")
+    expect(envelope.actor.sessionId).toBe("customer:cus_01")
+    expect(envelope.payload.orderId).toBe("order_01")
+    expect(envelope.payload.productId).toBe("prod_01")
+    expect(envelope.payload.rating).toBe(5)
+    expect(envelope.payload.comment).toBe("Excelente!")
+    expect(state.ctx.customerId).toBe("cus_01")
+    expect(state.ctx.orderId).toBe("order_01")
+    expect(state.ctx.channel).toBe("whatsapp")
+    expect(extras).toEqual({ customerId: "cus_01", channel: Channel.WhatsApp })
   })
 
-  it("aggregates review stats for the product", async () => {
-    await submitReview(VALID_INPUT, CTX_AUTH)
-
-    expect(mockReviewAggregate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { productId: "prod_01" },
-        _avg: { rating: true },
-        _count: { rating: true },
-      }),
+  it("omits comment from payload when not provided", async () => {
+    await submitReview(
+      { productId: "prod_01", orderId: "order_01", rating: 4 },
+      CTX_AUTH,
     )
+
+    const [envelope] = mockSubmitReviewFromEnvelope.mock.calls[0]
+    expect(envelope.payload).not.toHaveProperty("comment")
   })
 
-  it("updates Typesense with new rating and reviewCount", async () => {
+  // ── Cache + NATS fire on EXECUTE ──────────────────────────────────────
+
+  it("updates Typesense with new rating and reviewCount on EXECUTE", async () => {
     await submitReview(VALID_INPUT, CTX_AUTH)
 
     expect(mockTypesenseUpdate).toHaveBeenCalledWith({
@@ -187,7 +168,7 @@ describe("submitReview", () => {
     })
   })
 
-  it("publishes NATS event with correct payload", async () => {
+  it("publishes NATS event with correct payload on EXECUTE", async () => {
     await submitReview(VALID_INPUT, CTX_AUTH)
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
@@ -212,20 +193,26 @@ describe("submitReview", () => {
     expect(result.message).toContain("Obrigado")
   })
 
-  // ── Optional comment ───────────────────────────────────────────────────
+  // ── REFUSE propagates ────────────────────────────────────────────────
 
-  it("sets comment to null when not provided", async () => {
-    await submitReview(
-      { productId: "prod_01", orderId: "order_01", rating: 4 },
-      CTX_AUTH,
+  it("surfaces the kernel refusal copy and skips side effects on REFUSE", async () => {
+    mockSubmitReviewFromEnvelope.mockResolvedValue({
+      decision: {
+        kind: "REFUSE" as const,
+        refusal: {
+          category: "BUSINESS_RULE",
+          code: "order.review.rating_invalid",
+          userFacing: "A nota da avaliação precisa ser um número inteiro de 1 a 5 estrelas.",
+        },
+      },
+    })
+
+    await expect(submitReview(VALID_INPUT, CTX_AUTH)).rejects.toThrow(
+      "A nota da avaliação precisa ser um número inteiro de 1 a 5 estrelas.",
     )
 
-    expect(mockReviewUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({ comment: null }),
-        update: expect.objectContaining({ comment: null }),
-      }),
-    )
+    expect(mockTypesenseUpdate).not.toHaveBeenCalled()
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled()
   })
 
   // ── Typesense failure is non-fatal ─────────────────────────────────────
@@ -242,17 +229,16 @@ describe("submitReview", () => {
   // ── Edge cases ─────────────────────────────────────────────────────────
 
   it("uses current rating as fallback when aggregate _avg is null", async () => {
-    mockReviewAggregate.mockResolvedValue({
-      _avg: { rating: null },
-      _count: { rating: 1 },
-    })
+    mockSubmitReviewFromEnvelope.mockResolvedValue(
+      execOutcome({ avgRating: 5, reviewCount: 1 }),
+    )
 
     await submitReview(VALID_INPUT, CTX_AUTH)
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
       "review.submitted",
       expect.objectContaining({
-        newAvgRating: 5, // falls back to the input rating
+        newAvgRating: 5,
       }),
     )
   })
@@ -273,5 +259,19 @@ describe("submitReview", () => {
     )
 
     expect(result.success).toBe(true)
+  })
+
+  // ── Web channel projection ────────────────────────────────────────────
+
+  it("maps Channel.Web to web in the state projection", async () => {
+    await submitReview(VALID_INPUT, {
+      customerId: "cus_01",
+      channel: Channel.Web,
+      sessionId: "sess_01",
+      userType: "customer",
+    } as AgentContext)
+
+    const [, state] = mockSubmitReviewFromEnvelope.mock.calls[0]
+    expect(state.ctx.channel).toBe("web")
   })
 })

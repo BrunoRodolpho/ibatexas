@@ -11,8 +11,13 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import twilio from "twilio";
-import { createCustomerService, createStaffService } from "@ibatexas/domain";
+import { createCustomerService, createStaffService, prisma } from "@ibatexas/domain";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
+import { buildEnvelope } from "@adjudicate/core";
+import type {
+  CustomerCreatePayload,
+  CustomerOnboardingState,
+} from "@ibatexas/pack-customer-onboarding";
 import { requireAuth, optionalAuth } from "../middleware/auth.js";
 
 // ── Twilio client ─────────────────────────────────────────────────────────────
@@ -165,10 +170,15 @@ function issueJwtToken(
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
+  // audit-2026-05-25 (I2): aud claim pins the token to the customer
+  // cookie. Verification at middleware/auth.ts rejects tokens whose aud
+  // does not match the cookie they arrived in — prevents the
+  // staff-token-in-customer-cookie escalation path.
   return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
     sub: customerId,
     userType: "customer",
     jti: randomUUID(),
+    aud: "token",
   }, { expiresIn: '4h' });
 }
 
@@ -181,11 +191,14 @@ function issueStaffJwtToken(
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) throw new Error("JWT_SECRET not set");
 
+  // audit-2026-05-25 (I2): aud claim pins the token to the staff cookie.
+  // See issueJwtToken for the full rationale.
   return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
     sub: staffId,
     userType: "staff",
     role,
     jti: randomUUID(),
+    aud: "staff_token",
   }, { expiresIn: '8h' });
 }
 
@@ -385,9 +398,72 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         // Clear failure counter on success
         await clearVerifyFailures(hash);
 
-        // Upsert customer via domain service
+        // ── W7 P3 — kernel-routed customer.create ──────────────────────
+        // Previously this call invoked `customerSvc.upsertFromPhone(...)`
+        // directly, bypassing the adjudicate kernel. Per pack-customer-onboarding
+        // §"customer.create" + CLAUDE.md rule #9, the OTP-verify completion
+        // hook is the canonical SYSTEM-only seed path for new customer rows.
+        // We build a system-actor envelope (`taint: "SYSTEM"`, principal:
+        // "system") so the pack's `systemMinimum: "SYSTEM"` floor is cleared
+        // and route via `createFromEnvelope`, which:
+        //   - Adjudicates against `customerOnboardingPolicyBundle`
+        //   - Emits a governance audit record via the AuditSink
+        //   - Delegates to the existing Prisma upsert (OTP source path)
+        //
+        // `nonce` is keyed on the phone hash so re-delivery of the same
+        // verified phone within a session produces a deterministic
+        // intentHash (replay-safe per the audit ledger).
         const customerSvc = createCustomerService();
-        const customer = await customerSvc.upsertFromPhone(phone, name ?? undefined);
+        const envelope = buildEnvelope<"customer.create", CustomerCreatePayload>({
+          kind: "customer.create",
+          payload: { phoneHash: hash, source: "otp" },
+          nonce: `auth-verify-otp:${hash}`,
+          actor: {
+            principal: "system",
+            sessionId: `auth-verify-otp:${hash}`,
+          },
+          taint: "SYSTEM",
+        });
+        const state: CustomerOnboardingState = {
+          ctx: {
+            actor: { principal: "system" },
+            customerId: null,
+            customerExists: false,
+            isAuthenticated: false,
+            otpFresh: true,
+            hasParkedAnonymize: false,
+            now: new Date(),
+          },
+        };
+        const outcome = await customerSvc.createFromEnvelope(envelope, state, {
+          phone,
+          ...(name ? { name } : {}),
+        });
+        if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+          server.log.warn(
+            {
+              phone_hash: hash,
+              ip,
+              action: "verify_otp_kernel_refused",
+              decision: outcome.decision.kind,
+              refusal_code:
+                outcome.decision.kind === "REFUSE"
+                  ? outcome.decision.refusal.code
+                  : undefined,
+            },
+            "customer.create envelope did not EXECUTE — refusing OTP completion",
+          );
+          return reply.code(500).send({
+            statusCode: 500,
+            error: "Internal Server Error",
+            message: "Erro interno ao concluir autenticação. Tente novamente.",
+          });
+        }
+        // The envelope executor returns `{ id }` only — fetch the full row
+        // so the response shape stays identical to the pre-W7 contract.
+        const customer = await prisma.customer.findUniqueOrThrow({
+          where: { id: outcome.result!.id },
+        });
 
         server.log.info(
           { phone_hash: hash, ip, action: "verify_otp", success: true, customer_id: customer.id },

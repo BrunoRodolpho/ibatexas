@@ -1,0 +1,74 @@
+=== W7-P6 BEFORE state — 6 raw fetchAdmin POST/DELETE in order.service.ts ===
+Commit: 94964f0772385567857e6b9b13dfec3a104ea181
+Branch: feat/correctness-w7-close-w6-findings
+
+── packages/domain/src/services/order.service.ts ──────────────────────────────
+
+cancelOrder() — line 115:
+  await fetchAdmin(`/admin/orders/${orderId}/cancel`, { method: "POST" })
+
+cancelItem() (fallback when only-item) — line 161:
+  await fetchAdmin(`/admin/orders/${orderId}/cancel`, { method: "POST" })
+
+cancelItem() — order edit create — line 167:
+  const editData = await fetchAdmin(`/admin/orders/${orderId}/edits`, {
+    method: "POST",
+  }) as { order_edit: { id: string } }
+
+cancelItem() — remove single item — line 172:
+  await fetchAdmin(`/admin/orders/${orderId}/edits/${editId}/items/${item.id}`, {
+    method: "DELETE",
+  })
+
+cancelItem() — confirm order edit — line 176:
+  await fetchAdmin(`/admin/orders/${orderId}/edits/${editId}/confirm`, {
+    method: "POST",
+  })
+
+capturePayment() — capture-payment — line 227:
+  await fetchAdmin(`/admin/orders/${orderId}/capture-payment`, { method: "POST" })
+
+capturePayment() — metadata write — line 228:
+  await fetchAdmin(`/admin/orders/${orderId}`, {
+    method: "POST",
+    body: JSON.stringify({ metadata: { stripePaymentIntentId: paymentIntentId } }),
+  })
+
+── Wrapper coverage gap analysis ───────────────────────────────────────────────
+Existing path rules in packages/tools/src/medusa/adjudicated.ts cover:
+  - POST /admin/orders/:id/cancel             → medusa.admin.order.cancel ✓
+  - POST /admin/orders/:id/edits              → medusa.admin.order.edit.create ✓
+  - POST /admin/orders/:id                    → medusa.admin.order.update_metadata ✓
+
+Gaps requiring new intent kinds + path rules:
+  - POST /admin/orders/:id/edits/:editId/confirm     → medusa.admin.order.edit.confirm
+    (existing pattern was /edits/confirm — missing :editId segment)
+  - DELETE /admin/orders/:id/edits/:editId/items/:itemId → medusa.admin.order.edit.items.remove
+    (no DELETE rule for edit items today)
+  - POST /admin/orders/:id/capture-payment           → medusa.admin.order.capture_payment
+    (no rule for capture-payment today)
+
+The existing /edits/items pattern (^/admin/orders/[^/]+/edits/items/?$) does
+not match the real Medusa shape /edits/:editId/items/:itemId — that rule
+exists from earlier work but the real shape was never used. We add the
+explicit DELETE rule for the actual call site.
+
+── Callers of createOrderService (must keep working) ───────────────────────────
+- apps/api/src/routes/stripe-webhook.ts:344  → svc.capturePayment(...)
+- packages/tools/src/cart/cancel-order.ts:34  → svc.cancelOrder(...)
+- packages/tools/src/cart/check-order-status.ts:18 → svc.getOrder() only (GET)
+- packages/tools/src/cart/amend-order.ts:180  → svc.getOrder() etc. (mostly GET)
+
+── Wave 6 finding ──────────────────────────────────────────────────────────────
+The medusaAdjudicated wrapper exists at packages/tools/src/medusa/adjudicated.ts
+and is used by route handlers (cart.ts) — but the order.service.ts inside
+@ibatexas/domain bypasses it because @ibatexas/domain cannot depend on
+@ibatexas/tools (reverse dep direction). The 6 mutating sites send raw
+HTTP via the injected MedusaFetch with no envelope, no kernel decision,
+no audit record.
+
+Resolution: extend createOrderService DI to accept an optional
+`adminAdjudicated` parameter — a function with the medusaAdjudicated
+signature. Callers from @ibatexas/tools / apps/api wire it. When omitted,
+mutations fail loudly (or fall back to bare fetchAdmin guarded by an
+explicit dev-only escape) so tests can still exercise the legacy path.

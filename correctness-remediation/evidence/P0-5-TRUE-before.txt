@@ -1,0 +1,62 @@
+P0-5-TRUE — Two-person staffId null edge — BEFORE
+==================================================
+
+Date: 2026-05-23
+Source: deep-audit/02-remediation-verification.md, MASTER section 2.2
+File: apps/api/src/routes/admin/admin-confirmation-store.ts:178-195
+
+Symptom
+-------
+The consume helper compares `requestStaffId` vs `pending.staffId` only when
+BOTH are non-null:
+
+  if (
+    requestStaffId !== null &&
+    pending.staffId !== null &&
+    requestStaffId === pending.staffId
+  ) {
+    return { kind: "same_actor_violation", pending };
+  }
+  return { kind: "ok", pending };
+
+So if either side is null (API-key path bypasses JWT staffId capture), the
+comparison is SKIPPED → outcome is `ok`. A single attacker who holds the
+API key AND a staff JWT can:
+  - Step 1 (JWT): create the confirmation with pending.staffId = "staff:A"
+  - Step 2 (API key): consume with requestStaffId = null
+  - Helper returns `ok` because (requestStaffId !== null) is false →
+    short-circuits the comparison.
+
+Equivalent in reverse (Step 1 with API-key → pending.staffId=null, Step 2
+with JWT) also bypasses.
+
+Additional issue: even if both sides ARE non-null but represent DIFFERENT
+actor-types (one JWT-user staff, one API-key system), the equality check
+based purely on string never catches the policy violation that staff JWT
+identities should not satisfy step-2 of a request created by the API-key
+path (and vice versa).
+
+Repro
+-----
+Pending action created via JWT (staffId="staff:A").
+Attacker holds both JWT and API key. Switches to API-key for step 2:
+  requestStaffId = null
+  pending.staffId = "staff:A"
+  consumeWithSameActorCheck(store, id, null) returns { kind: "ok", pending }
+
+There is no separation of duty — same human acted on both steps.
+
+Why the doc-comment claim is wrong
+-----------------------------------
+The current comment says:
+  "If requestStaffId is null AND pending.staffId is null → ok.
+   (API-key flow is system-actor; the audit captures
+   sessionId: 'admin:api-key' and the two-step UX is moot.)"
+
+That carve-out fails-OPEN whenever the mismatch is asymmetric. A
+two-person rule that excludes the API-key path on both sides has
+implicitly conceded that any actor who has the API key has bypassed
+the rule entirely.
+
+Fail-closed posture: refuse if either side is null OR they have different
+actor types. Two-person separation REQUIRES two identifiable users.

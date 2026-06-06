@@ -1,0 +1,68 @@
+P0-9-TRUE — IBX_KERNEL_ENFORCE empty-after-trim — AFTER
+========================================================
+
+Date: 2026-05-23
+Fix file: apps/api/src/plugins/kernel-bootstrap.ts (new helper
+          assertEnforceConfigNotEmptyAfterTrim invoked from bootstrapKernel
+          before validateEnforceConfig)
+Test file: apps/api/src/plugins/__tests__/kernel-bootstrap.test.ts
+           (7 new tests in "P0-9-TRUE" describe block)
+
+Approach
+--------
+Added a bootstrap-layer guard that runs BEFORE the existing unknown-token
+validation. Distinguishes:
+
+  - Env var UNSET           -> accepted (legitimate empty-set configuration)
+  - Env var SET to ""       -> accepted (operator's deliberate empty signal)
+  - Env var SET with chars  -> raw stripped to empty kind list AND raw has
+                               length > 0 (so it must be commas/whitespace)
+                               -> THROWS
+
+This catches the operator-typo case where the env var visibly looks
+configured (" , , ", ",", "  ") but parses to nothing. The throw rejects
+the bootstrap promise so apps/api/src/index.ts start().catch() routes to
+process.exit(1).
+
+Why we don't modify the upstream parseList
+------------------------------------------
+The parser at @adjudicate/core/kernel/enforce-config.ts is platform code
+(shared by all adopters). Some adopters may legitimately want an empty
+parsed set with permissive parsing. The bootstrap is the adopter-side
+seam to enforce ibatexas-specific safety semantics without forking the
+platform.
+
+Tests added
+-----------
+1. accepts env unset (deliberate empty)
+2. accepts an explicitly empty-string env (legitimate empty config)
+3. accepts a non-empty enforce list with trailing comma
+4. THROWS when IBX_KERNEL_ENFORCE is all commas+whitespace
+5. THROWS when IBX_KERNEL_ENFORCE is a single comma
+6. THROWS when IBX_KERNEL_ENFORCE is whitespace only
+7. THROWS when IBX_KERNEL_SHADOW is all commas+whitespace
+8. rejects empty-after-trim BEFORE unknown-token validation in bootstrap
+
+Test output
+-----------
+$ npx vitest run src/plugins/__tests__/kernel-bootstrap.test.ts
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+ ✓ src/plugins/__tests__/kernel-bootstrap.test.ts (14 tests) 9ms
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+
+All 14 tests (7 pre-existing + 7 new P0-9-TRUE) pass. The P0-9-TRUE tests
+demonstrate that the new helper:
+  - Allows the documented "unset = empty" path
+  - Allows "empty string = empty"
+  - Rejects every typo shape mentioned in the audit spec
+
+Verification that the test would FAIL on the un-fixed code
+-----------------------------------------------------------
+Removing the `assertEnforceConfigNotEmptyAfterTrim(process.env)` line from
+bootstrapKernel makes the integration test ("rejects empty-after-trim
+BEFORE unknown-token validation in bootstrap") fail with:
+    AssertionError: promise resolved instead of rejecting
+
+Confirming the test exercises the new code path.

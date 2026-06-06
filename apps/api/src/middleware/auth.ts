@@ -30,7 +30,38 @@ class RedisUnavailableError extends Error {
   }
 }
 
-type JwtPayload = { sub: string; userType: string; jti?: string; role?: string };
+type JwtPayload = {
+  sub: string;
+  userType: string;
+  jti?: string;
+  role?: string;
+  /**
+   * Cookie-name binding (audit-2026-05-25): customer JWTs are issued with
+   * `aud: "token"`, staff JWTs with `aud: "staff_token"`. Verification
+   * rejects any token whose `aud` does not match the cookie it arrived in.
+   * Prevents the escalation path the multi-agent review flagged where a
+   * staff JWT placed in the customer `token` cookie would mint a staff
+   * principal through the customer path. Older tokens issued before this
+   * change carry `aud === undefined`; we treat undefined as "legacy,
+   * accept" so the deploy doesn't 401 every signed-in user — adopters
+   * will rotate to `aud`-bearing tokens within the standard TTL (4h
+   * customer / 8h staff).
+   */
+  aud?: string;
+};
+
+/**
+ * Expected `aud` claim per cookie source. Tokens issued before the
+ * aud-binding deploy carry `aud === undefined`; the validator treats
+ * undefined as "legacy, accept" during the rollover window so existing
+ * signed-in sessions don't all 401 at once. After the longest staff JWT
+ * TTL (8h) has elapsed post-deploy, the legacy-accept can be tightened
+ * to fail-closed (drop the `=== undefined` branch).
+ */
+const COOKIE_TO_EXPECTED_AUD: Readonly<Record<string, string>> = {
+  token: "token",
+  staff_token: "staff_token",
+} as const;
 
 async function checkRevocation(jti: string | undefined): Promise<void> {
   if (!jti) return;
@@ -52,18 +83,51 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
     await (request as unknown as { jwtVerify: () => Promise<void> }).jwtVerify();
     const payload = (request as unknown as { user: JwtPayload }).user;
 
+    // audit-2026-05-25 (post-review I2): reject staff tokens arriving on
+    // the customer cookie path. Pre-fix, a JWT with `userType: "staff"`
+    // placed in the `token` cookie would have been minted as a staff
+    // principal (lines below set request.staffId/staffRole from the
+    // payload). Combined with the admin preHandler at routes/admin/index.ts
+    // admitting on `staffId && staffRole`, that produced a full
+    // privilege-escalation path through cookie mixing. Defense-in-depth:
+    // the customer path ONLY handles guest/customer tokens; staff tokens
+    // must arrive through the `staff_token` cookie or be rejected outright.
+    if (payload.userType === "staff") {
+      return;
+    }
+
     // SEC-004: Check if the token has been revoked (e.g., after logout)
     await checkRevocation(payload.jti);
 
-    request.userType = payload.userType as "guest" | "customer" | "staff";
-
-    // DOM-001: Staff tokens carry staffId (sub) + role; customer tokens carry customerId (sub)
-    if (payload.userType === "staff") {
-      request.staffId = payload.sub;
-      request.staffRole = payload.role as "OWNER" | "MANAGER" | "ATTENDANT";
-    } else {
-      request.customerId = payload.sub;
+    // NEW-P0-X8 (W1 correctness remediation): reject empty-string `sub`.
+    // An empty `sub` would otherwise be assigned to `customerId`/`staffId`,
+    // collapsing every empty-`sub` JWT onto the same Redis key namespace
+    // (`anonymize:otp:`, `defer:pending:`, …). The downstream
+    // `requireAuth` gate currently catches `!customerId` (since `!""` is
+    // truthy), but defense-in-depth: never assign empty `sub`.
+    //
+    // audit-2026-05-24 P1-6: also reject whitespace-only `sub`. W7-G1
+    // patched the OTP gate via `normalizeSub`, but the middleware itself
+    // still accepted `"   "` — those tokens would have populated
+    // `customerId` with whitespace and then collided on shared Redis
+    // keys (defer:pending:, otp:fail:…) the same way the empty string
+    // does.
+    if (typeof payload.sub !== "string" || payload.sub.trim().length === 0) {
+      return;
     }
+
+    // audit-2026-05-25 (I2): aud claim binding. New customer JWTs carry
+    // `aud: "token"`; legacy tokens (issued before the rollover) carry
+    // `aud === undefined` and are accepted during the TTL window.
+    if (
+      payload.aud !== undefined &&
+      payload.aud !== COOKIE_TO_EXPECTED_AUD.token
+    ) {
+      return;
+    }
+
+    request.userType = payload.userType as "guest" | "customer" | "staff";
+    request.customerId = payload.sub;
     return;
   } catch (err) {
     // SEC: Redis failure must propagate — do not silently accept potentially revoked tokens
@@ -80,6 +144,21 @@ async function extractAuth(request: FastifyRequest): Promise<void> {
     const payload = jwtInstance.verify(staffTokenRaw);
 
     if (payload.userType !== "staff") return; // Unexpected — not a staff token
+
+    // NEW-P0-X8 + audit-2026-05-24 P1-6: same defense-in-depth for the
+    // staff path. Reject empty- or whitespace-only `sub`.
+    if (typeof payload.sub !== "string" || payload.sub.trim().length === 0) {
+      return;
+    }
+
+    // audit-2026-05-25 (I2): aud claim binding for staff_token. Legacy
+    // tokens with undefined aud are accepted during rollover.
+    if (
+      payload.aud !== undefined &&
+      payload.aud !== COOKIE_TO_EXPECTED_AUD.staff_token
+    ) {
+      return;
+    }
 
     // SEC-004: Check revocation for staff token too
     await checkRevocation(payload.jti);
@@ -106,10 +185,19 @@ export function requireAuth(
 ): void {
   // Return before done() on 401 to prevent route handler from executing
   extractAuth(request).then(() => {
-    if (!request.customerId) {
+    // NEW-P0-X8 + audit-2026-05-24 P1-6: explicit empty/whitespace check
+    // (defense in depth). `!""` is truthy so the original
+    // `!request.customerId` already catches the empty string, but a
+    // whitespace-only `sub` like `"   "` is truthy AND collides on
+    // shared Redis keys. Spell out both invariants so future refactors
+    // can't drop them.
+    if (
+      !request.customerId ||
+      request.customerId.trim().length === 0
+    ) {
       void reply
         .code(401)
-        .send({ statusCode: 401, error: "Unauthorized", message: "Autenticação necessária." });
+        .send({ statusCode: 401, error: "Unauthorized", message: "Sessão inválida." });
       return;
     }
     done();

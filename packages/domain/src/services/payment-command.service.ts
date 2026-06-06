@@ -5,6 +5,13 @@
 //
 // INVARIANT: One active (non-terminal) payment per order at any time.
 // Retry/regeneration creates a new Payment row; old one stays terminal.
+//
+// ── Task 15 (M3) — envelope-typed entry points ───────────────────────────
+//
+// New methods `*FromEnvelope` accept `IntentEnvelope<*>` inputs and run
+// through `withAdjudicate` against `paymentProjectionPolicyBundle`. The
+// legacy bare-arg methods remain (Decision D8 — backwards compatibility
+// during incremental caller migration).
 
 import { prisma } from "../client.js"
 import type { PrismaClient } from "../generated/prisma-client/client.js"
@@ -12,9 +19,23 @@ import type { PaymentStatus as PrismaPaymentStatus, OrderActor as PrismaActor } 
 import {
   canTransitionPayment,
   isTerminalPaymentStatus,
+  PaymentStatus,
   TERMINAL_PAYMENT_STATUSES,
-  type PaymentStatus,
 } from "@ibatexas/types"
+import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import {
+  withAdjudicate,
+  type AdjudicatedResult,
+} from "./__shared__/with-adjudicate.js"
+import {
+  paymentProjectionPolicyBundle,
+  type PaymentCreatePayload,
+  type PaymentRefundIssuePayload,
+  type PaymentRegenerationCountIncrementPayload,
+  type PaymentStatusTransitionPayload,
+  type PaymentStatusReconcilePayload,
+  type PaymentProjectionState,
+} from "./__shared__/payment-projection-policy.js"
 
 // Transaction client type
 type TxClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends">
@@ -84,35 +105,79 @@ interface ReconcileFromWebhookInput {
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export interface PaymentCommandService {
-  /**
-   * Create a new payment for an order.
-   * Enforces single active payment constraint.
-   *
-   * @throws ActivePaymentExistsError if order already has a non-terminal payment
-   */
-  create(data: CreatePaymentInput): Promise<{ id: string; version: number }>
+  // ── R1-DELETE (W1 correctness remediation) ──────────────────────────
+  //
+  // The bare-arg @deprecated entry points (`create`, `transitionStatus`,
+  // `reconcileFromWebhook`) have been DELETED from the interface. All
+  // production callers were migrated to the `*FromEnvelope` path
+  // (apps/api/src/routes/order-actions.ts, packages/tools/src/cart/).
+  // The type system now structurally prevents reintroducing the bypass.
 
   /**
-   * Transition payment status with validation and optimistic concurrency.
-   *
-   * @throws PaymentConcurrencyError if expectedVersion doesn't match
-   * @throws PaymentNotFoundError if payment not found
-   * @throws InvalidPaymentTransitionError if transition not allowed
+   * Envelope-typed entry point for `payment.create`. SYSTEM-only.
    */
-  transitionStatus(
-    paymentId: string,
-    input: TransitionPaymentStatusInput,
-  ): Promise<{ version: number; previousStatus: string; newStatus: string }>
+  createFromEnvelope(
+    envelope: IntentEnvelope<"payment.create", PaymentCreatePayload>,
+  ): Promise<AdjudicatedResult<{ id: string; version: number }>>
 
   /**
-   * Reconcile payment status from a Stripe webhook event.
-   * Guards: idempotency, terminal state, switching_method, out-of-order, ownership.
-   * Returns null if skipped.
+   * Envelope-typed entry point for `payment.status.transition`.
    */
-  reconcileFromWebhook(
-    paymentId: string,
-    input: ReconcileFromWebhookInput,
-  ): Promise<{ version: number } | null>
+  transitionStatusFromEnvelope(
+    envelope: IntentEnvelope<"payment.status.transition", PaymentStatusTransitionPayload>,
+  ): Promise<
+    AdjudicatedResult<{ version: number; previousStatus: string; newStatus: string }>
+  >
+
+  /**
+   * Envelope-typed entry point for `payment.status.reconcile`. SYSTEM-only.
+   * Webhook-driven reconciliation: idempotency, terminal-state guard,
+   * out-of-order, ownership preserved inside the executor.
+   */
+  reconcileFromWebhookFromEnvelope(
+    envelope: IntentEnvelope<"payment.status.reconcile", PaymentStatusReconcilePayload>,
+  ): Promise<AdjudicatedResult<{ version: number } | null>>
+
+  /**
+   * W3 P0-1 — envelope-typed entry point for `payment.refund.issue`.
+   *
+   * The refund MAGNITUDE is in the payload and is adjudicated by the
+   * payment-projection policy bundle's magnitude guard (REFUSE / EXECUTE
+   * / REQUEST_CONFIRMATION / ESCALATE). On EXECUTE / REWRITE the executor
+   * (a) updates `refundedAmountCentavos`, (b) transitions the payment
+   * status to `partially_refunded` / `refunded` (based on whether the
+   * cumulative refund covers the original amount), and (c) writes a
+   * status-history row — all inside a single Prisma `$transaction`.
+   *
+   * The route layer still owns the two-step receipt UX (the kernel
+   * decision is the structural gate; the receipt is the operator gate).
+   */
+  issueRefundFromEnvelope(
+    envelope: IntentEnvelope<"payment.refund.issue", PaymentRefundIssuePayload>,
+  ): Promise<
+    AdjudicatedResult<{
+      version: number
+      previousStatus: string
+      newStatus: string
+      totalRefundedCentavos: number
+      refundAmountCentavos: number
+    }>
+  >
+
+  /**
+   * W3 P0-2 — envelope-typed entry point for
+   * `payment.regeneration.count.increment`.
+   *
+   * Bumps `regenerationCount` on a Payment row via the kernel-adjudicated
+   * path. SYSTEM-only kind; called after the new payment row has been
+   * created during a regenerate-pix flow.
+   */
+  bumpRegenerationCountFromEnvelope(
+    envelope: IntentEnvelope<
+      "payment.regeneration.count.increment",
+      PaymentRegenerationCountIncrementPayload
+    >,
+  ): Promise<AdjudicatedResult<{ regenerationCount: number }>>
 
   /**
    * Find the active (non-terminal) payment for an order.
@@ -126,212 +191,372 @@ type Logger = {
   info?: (...args: unknown[]) => void
 }
 
-export function createPaymentCommandService(log?: Logger): PaymentCommandService {
+export interface PaymentCommandServiceOptions {
+  readonly auditSink?: AuditSink
+  readonly log?: Logger
+}
+
+export function createPaymentCommandService(
+  log?: Logger,
+  options?: PaymentCommandServiceOptions,
+): PaymentCommandService {
   // Terminal status values for Prisma queries
   const terminalValues = TERMINAL_PAYMENT_STATUSES as unknown as string[]
 
-  return {
-    async create(data) {
-      return prisma.$transaction(async (tx: TxClient) => {
-        // Enforce single active payment per order
-        const existing = await tx.payment.findFirst({
-          where: {
-            orderId: data.orderId,
-            status: { notIn: terminalValues as PrismaPaymentStatus[] },
-          },
-          select: { id: true },
-        })
+  const adjudicateOptions = {
+    ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+    log: log ?? options?.log,
+  } as const
 
-        if (existing) {
-          throw new ActivePaymentExistsError(data.orderId)
-        }
-
-        const initialStatus = data.method === "cash"
-          ? "cash_pending" as PrismaPaymentStatus
-          : "awaiting_payment" as PrismaPaymentStatus
-
-        const payment = await tx.payment.create({
-          data: {
-            orderId: data.orderId,
-            method: data.method,
-            status: initialStatus,
-            amountInCentavos: data.amountInCentavos,
-            stripePaymentIntentId: data.stripePaymentIntentId,
-            pixExpiresAt: data.pixExpiresAt,
-            idempotencyKey: data.idempotencyKey,
-            version: 1,
-          },
-        })
-
-        // Record initial status in history
-        await tx.paymentStatusHistory.create({
-          data: {
-            paymentId: payment.id,
-            fromStatus: initialStatus,
-            toStatus: initialStatus,
-            actor: "system" as PrismaActor,
-            version: 1,
-          },
-        })
-
-        // Update OrderProjection.currentPaymentId
-        await tx.orderProjection.update({
-          where: { id: data.orderId },
-          data: { currentPaymentId: payment.id },
-        })
-
-        return { id: payment.id, version: 1 }
+  // ── Legacy executor: create ────────────────────────────────────────
+  const executeCreate = async (
+    data: CreatePaymentInput,
+  ): Promise<{ id: string; version: number }> => {
+    return prisma.$transaction(async (tx: TxClient) => {
+      const existing = await tx.payment.findFirst({
+        where: {
+          orderId: data.orderId,
+          status: { notIn: terminalValues as PrismaPaymentStatus[] },
+        },
+        select: { id: true },
       })
-    },
 
-    async transitionStatus(paymentId, input) {
-      return prisma.$transaction(async (tx: TxClient) => {
-        const payment = await tx.payment.findUnique({
-          where: { id: paymentId },
-        })
+      if (existing) {
+        throw new ActivePaymentExistsError(data.orderId)
+      }
 
-        if (!payment) {
-          throw new PaymentNotFoundError(paymentId)
-        }
+      const initialStatus = data.method === "cash"
+        ? "cash_pending" as PrismaPaymentStatus
+        : "awaiting_payment" as PrismaPaymentStatus
 
-        // Optimistic concurrency check
-        if (input.expectedVersion !== undefined && payment.version !== input.expectedVersion) {
-          throw new PaymentConcurrencyError(paymentId, input.expectedVersion, payment.version)
-        }
-
-        // Validate transition
-        const from = payment.status as PaymentStatus
-        const to = input.newStatus
-        if (!canTransitionPayment(from, to)) {
-          throw new InvalidPaymentTransitionError(paymentId, from, to)
-        }
-
-        const newVersion = payment.version + 1
-
-        // Update payment
-        await tx.payment.update({
-          where: { id: paymentId },
-          data: {
-            status: to as PrismaPaymentStatus,
-            version: newVersion,
-          },
-        })
-
-        // Record in audit history
-        await tx.paymentStatusHistory.create({
-          data: {
-            paymentId,
-            fromStatus: from as PrismaPaymentStatus,
-            toStatus: to as PrismaPaymentStatus,
-            actor: input.actor as PrismaActor,
-            actorId: input.actorId,
-            reason: input.reason,
-            version: newVersion,
-          },
-        })
-
-        log?.info?.(
-          { paymentId, orderId: payment.orderId, from, to, version: newVersion, actor: input.actor },
-          "Payment status transitioned",
-        )
-
-        return {
-          version: newVersion,
-          previousStatus: from,
-          newStatus: to,
-        }
+      const payment = await tx.payment.create({
+        data: {
+          orderId: data.orderId,
+          method: data.method,
+          status: initialStatus,
+          amountInCentavos: data.amountInCentavos,
+          stripePaymentIntentId: data.stripePaymentIntentId,
+          pixExpiresAt: data.pixExpiresAt,
+          idempotencyKey: data.idempotencyKey,
+          version: 1,
+        },
       })
-    },
 
-    async reconcileFromWebhook(paymentId, input) {
-      const payment = await prisma.payment.findUnique({
+      await tx.paymentStatusHistory.create({
+        data: {
+          paymentId: payment.id,
+          fromStatus: initialStatus,
+          toStatus: initialStatus,
+          actor: "system" as PrismaActor,
+          version: 1,
+        },
+      })
+
+      await tx.orderProjection.update({
+        where: { id: data.orderId },
+        data: { currentPaymentId: payment.id },
+      })
+
+      return { id: payment.id, version: 1 }
+    })
+  }
+
+  // ── Legacy executor: transitionStatus ────────────────────────────
+  const executeTransition = async (
+    paymentId: string,
+    input: TransitionPaymentStatusInput,
+  ): Promise<{ version: number; previousStatus: string; newStatus: string }> => {
+    return prisma.$transaction(async (tx: TxClient) => {
+      const payment = await tx.payment.findUnique({
         where: { id: paymentId },
       })
 
-      if (!payment) return null
-
-      // Terminal state — no resurrection
-      if (isTerminalPaymentStatus(payment.status as PaymentStatus)) {
-        log?.warn?.(
-          { paymentId, currentStatus: payment.status, attemptedStatus: input.newStatus },
-          "[payment-command] reconcile: payment is terminal — skipping",
-        )
-        return null
+      if (!payment) {
+        throw new PaymentNotFoundError(paymentId)
       }
 
-      // Switching method — don't interfere
-      if (payment.status === "switching_method") {
-        log?.warn?.(
-          { paymentId, currentStatus: payment.status },
-          "[payment-command] reconcile: payment is switching method — skipping",
-        )
-        return null
+      if (input.expectedVersion !== undefined && payment.version !== input.expectedVersion) {
+        throw new PaymentConcurrencyError(paymentId, input.expectedVersion, payment.version)
       }
 
-      // Out-of-order event check
-      if (input.stripeEventTimestamp && payment.lastStripeEventTs) {
-        if (input.stripeEventTimestamp <= payment.lastStripeEventTs) {
-          log?.warn?.(
-            { paymentId, eventTs: input.stripeEventTimestamp, lastTs: payment.lastStripeEventTs },
-            "[payment-command] reconcile: out-of-order event — skipping",
-          )
-          return null
-        }
-      }
-
-      // Ownership validation
-      if (input.expectedOrderId && payment.orderId !== input.expectedOrderId) {
-        log?.warn?.(
-          { paymentId, expectedOrderId: input.expectedOrderId, actualOrderId: payment.orderId },
-          "[payment-command] reconcile: order ID mismatch — quarantining",
-        )
-        return null
-      }
-
-      // Already at target status
-      if (payment.status === input.newStatus) return null
-
-      // Validate transition
       const from = payment.status as PaymentStatus
-      if (!canTransitionPayment(from, input.newStatus)) {
-        log?.warn?.(
-          { paymentId, from, to: input.newStatus, stripeEventId: input.stripeEventId },
-          "[payment-command] reconcile: invalid transition — quarantining",
-        )
-        return null
+      const to = input.newStatus
+      if (!canTransitionPayment(from, to)) {
+        throw new InvalidPaymentTransitionError(paymentId, from, to)
       }
 
       const newVersion = payment.version + 1
 
-      await prisma.$transaction(async (tx: TxClient) => {
-        await tx.payment.update({
-          where: { id: paymentId },
-          data: {
-            status: input.newStatus as PrismaPaymentStatus,
-            version: newVersion,
-            lastStripeEventTs: input.stripeEventTimestamp ?? undefined,
-          },
-        })
+      await tx.payment.update({
+        where: { id: paymentId },
+        data: {
+          status: to as PrismaPaymentStatus,
+          version: newVersion,
+        },
+      })
 
-        await tx.paymentStatusHistory.create({
-          data: {
-            paymentId,
-            fromStatus: from as PrismaPaymentStatus,
-            toStatus: input.newStatus as PrismaPaymentStatus,
-            actor: "system" as PrismaActor,
-            reason: input.stripeEventId ? `stripe:${input.stripeEventId}` : undefined,
-            version: newVersion,
-          },
-        })
+      await tx.paymentStatusHistory.create({
+        data: {
+          paymentId,
+          fromStatus: from as PrismaPaymentStatus,
+          toStatus: to as PrismaPaymentStatus,
+          actor: input.actor as PrismaActor,
+          actorId: input.actorId,
+          reason: input.reason,
+          version: newVersion,
+        },
       })
 
       log?.info?.(
-        { paymentId, orderId: payment.orderId, from, to: input.newStatus, version: newVersion, stripeEventId: input.stripeEventId },
-        "Payment status reconciled from webhook",
+        { paymentId, orderId: payment.orderId, from, to, version: newVersion, actor: input.actor },
+        "Payment status transitioned",
       )
 
-      return { version: newVersion }
-    },
+      return { version: newVersion, previousStatus: from, newStatus: to }
+    })
+  }
+
+  // ── Legacy executor: reconcileFromWebhook ────────────────────────
+  const executeReconcile = async (
+    paymentId: string,
+    input: ReconcileFromWebhookInput,
+  ): Promise<{ version: number } | null> => {
+    const payment = await prisma.payment.findUnique({
+      where: { id: paymentId },
+    })
+
+    if (!payment) return null
+
+    if (isTerminalPaymentStatus(payment.status as PaymentStatus)) {
+      log?.warn?.(
+        { paymentId, currentStatus: payment.status, attemptedStatus: input.newStatus },
+        "[payment-command] reconcile: payment is terminal — skipping",
+      )
+      return null
+    }
+
+    if (payment.status === "switching_method") {
+      log?.warn?.(
+        { paymentId, currentStatus: payment.status },
+        "[payment-command] reconcile: payment is switching method — skipping",
+      )
+      return null
+    }
+
+    if (input.stripeEventTimestamp && payment.lastStripeEventTs) {
+      if (input.stripeEventTimestamp <= payment.lastStripeEventTs) {
+        log?.warn?.(
+          { paymentId, eventTs: input.stripeEventTimestamp, lastTs: payment.lastStripeEventTs },
+          "[payment-command] reconcile: out-of-order event — skipping",
+        )
+        return null
+      }
+    }
+
+    if (input.expectedOrderId && payment.orderId !== input.expectedOrderId) {
+      log?.warn?.(
+        { paymentId, expectedOrderId: input.expectedOrderId, actualOrderId: payment.orderId },
+        "[payment-command] reconcile: order ID mismatch — quarantining",
+      )
+      return null
+    }
+
+    if (payment.status === input.newStatus) return null
+
+    const from = payment.status as PaymentStatus
+    if (!canTransitionPayment(from, input.newStatus)) {
+      log?.warn?.(
+        { paymentId, from, to: input.newStatus, stripeEventId: input.stripeEventId },
+        "[payment-command] reconcile: invalid transition — quarantining",
+      )
+      return null
+    }
+
+    const newVersion = payment.version + 1
+
+    await prisma.$transaction(async (tx: TxClient) => {
+      await tx.payment.update({
+        where: { id: paymentId },
+        data: {
+          status: input.newStatus as PrismaPaymentStatus,
+          version: newVersion,
+          lastStripeEventTs: input.stripeEventTimestamp ?? undefined,
+        },
+      })
+
+      await tx.paymentStatusHistory.create({
+        data: {
+          paymentId,
+          fromStatus: from as PrismaPaymentStatus,
+          toStatus: input.newStatus as PrismaPaymentStatus,
+          actor: "system" as PrismaActor,
+          reason: input.stripeEventId ? `stripe:${input.stripeEventId}` : undefined,
+          version: newVersion,
+        },
+      })
+    })
+
+    log?.info?.(
+      { paymentId, orderId: payment.orderId, from, to: input.newStatus, version: newVersion, stripeEventId: input.stripeEventId },
+      "Payment status reconciled from webhook",
+    )
+
+    return { version: newVersion }
+  }
+
+  // ── Helper: snapshot payment state ───────────────────────────────
+  const snapshotPayment = async (
+    paymentId: string,
+  ): Promise<PaymentProjectionState> => {
+    const row = await prisma.payment.findUnique({ where: { id: paymentId } })
+    if (!row) return { ctx: { exists: false } }
+    return {
+      ctx: {
+        exists: true,
+        currentStatus: row.status,
+        currentMethod: row.method as "pix" | "card" | "cash",
+        version: row.version,
+        orderId: row.orderId,
+        isTerminal: isTerminalPaymentStatus(row.status as PaymentStatus),
+        refundedAmountCentavos: row.refundedAmountCentavos ?? 0,
+        amountInCentavos: row.amountInCentavos,
+        regenerationCount: row.regenerationCount ?? 0,
+      },
+    }
+  }
+
+  // ── W3 P0-1 executor: refund.issue ────────────────────────────────
+  //
+  // Atomic transaction: update refundedAmountCentavos + transition
+  // status (PAID → PARTIALLY_REFUNDED, or PAID → REFUNDED on full
+  // refund) + status-history row.
+  const executeRefundIssue = async (
+    payload: PaymentRefundIssuePayload,
+  ): Promise<{
+    version: number
+    previousStatus: string
+    newStatus: string
+    totalRefundedCentavos: number
+    refundAmountCentavos: number
+  }> => {
+    return prisma.$transaction(async (tx: TxClient) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: payload.paymentId },
+      })
+
+      if (!payment) {
+        throw new PaymentNotFoundError(payload.paymentId)
+      }
+
+      if (isTerminalPaymentStatus(payment.status as PaymentStatus)) {
+        throw new InvalidPaymentTransitionError(
+          payload.paymentId,
+          payment.status,
+          "refund.issue",
+        )
+      }
+
+      const currentRefunded = payment.refundedAmountCentavos ?? 0
+      const refundable = payment.amountInCentavos - currentRefunded
+      if (payload.refundAmountCentavos > refundable) {
+        // Defensive: the kernel guard already refuses this, but the
+        // executor is a final source of truth on the DB invariant.
+        throw new InvalidPaymentTransitionError(
+          payload.paymentId,
+          payment.status,
+          "refund.over_balance",
+        )
+      }
+
+      const newTotalRefunded = currentRefunded + payload.refundAmountCentavos
+      const isFullRefund = newTotalRefunded >= payment.amountInCentavos
+      const targetStatus = (
+        isFullRefund ? PaymentStatus.REFUNDED : PaymentStatus.PARTIALLY_REFUNDED
+      ) as PrismaPaymentStatus
+
+      const from = payment.status as PaymentStatus
+      if (!canTransitionPayment(from, targetStatus as PaymentStatus)) {
+        throw new InvalidPaymentTransitionError(
+          payload.paymentId,
+          from,
+          targetStatus,
+        )
+      }
+
+      const newVersion = payment.version + 1
+
+      await tx.payment.update({
+        where: { id: payload.paymentId },
+        data: {
+          status: targetStatus,
+          refundedAmountCentavos: newTotalRefunded,
+          version: newVersion,
+        },
+      })
+
+      await tx.paymentStatusHistory.create({
+        data: {
+          paymentId: payload.paymentId,
+          fromStatus: from as PrismaPaymentStatus,
+          toStatus: targetStatus,
+          actor: payload.actor as PrismaActor,
+          actorId: payload.actorId,
+          reason:
+            payload.reason ??
+            `refund_issued:${payload.refundAmountCentavos}cent`,
+          version: newVersion,
+        },
+      })
+
+      log?.info?.(
+        {
+          paymentId: payload.paymentId,
+          orderId: payment.orderId,
+          from,
+          to: targetStatus,
+          version: newVersion,
+          refundAmount: payload.refundAmountCentavos,
+          totalRefunded: newTotalRefunded,
+        },
+        "Refund issued (kernel-adjudicated)",
+      )
+
+      return {
+        version: newVersion,
+        previousStatus: from,
+        newStatus: targetStatus,
+        totalRefundedCentavos: newTotalRefunded,
+        refundAmountCentavos: payload.refundAmountCentavos,
+      }
+    })
+  }
+
+  // ── W3 P0-2 executor: regeneration count increment ────────────────
+  const executeRegenerationCountIncrement = async (
+    payload: PaymentRegenerationCountIncrementPayload,
+  ): Promise<{ regenerationCount: number }> => {
+    return prisma.$transaction(async (tx: TxClient) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: payload.paymentId },
+      })
+      if (!payment) {
+        throw new PaymentNotFoundError(payload.paymentId)
+      }
+      const current = payment.regenerationCount ?? 0
+      const next = current + 1
+      await tx.payment.update({
+        where: { id: payload.paymentId },
+        data: { regenerationCount: next },
+      })
+      return { regenerationCount: next }
+    })
+  }
+
+  return {
+    // ── R1-DELETE: bare-arg @deprecated methods removed ──────────────
+    // executor helpers (executeCreate, executeTransition,
+    // executeReconcile) remain — they're invoked from the envelope-
+    // typed entry points below.
 
     async findActiveByOrderId(orderId) {
       const payment = await prisma.payment.findFirst({
@@ -343,6 +568,101 @@ export function createPaymentCommandService(log?: Logger): PaymentCommandService
         orderBy: { createdAt: "desc" },
       })
       return payment
+    },
+
+    // ── Envelope-typed entry points ─────────────────────────────────
+
+    async createFromEnvelope(envelope) {
+      // No payment row yet for the create path.
+      const state: PaymentProjectionState = { ctx: { exists: false } }
+      return withAdjudicate(
+        envelope,
+        state,
+        paymentProjectionPolicyBundle,
+        async (payload) => {
+          const input: CreatePaymentInput = {
+            orderId: payload.orderId,
+            method: payload.method,
+            amountInCentavos: payload.amountInCentavos,
+            ...(payload.stripePaymentIntentId !== undefined
+              ? { stripePaymentIntentId: payload.stripePaymentIntentId }
+              : {}),
+            ...(payload.pixExpiresAt !== undefined
+              ? { pixExpiresAt: new Date(payload.pixExpiresAt) }
+              : {}),
+            ...(payload.idempotencyKey !== undefined
+              ? { idempotencyKey: payload.idempotencyKey }
+              : {}),
+          }
+          return executeCreate(input)
+        },
+        adjudicateOptions,
+      )
+    },
+
+    async transitionStatusFromEnvelope(envelope) {
+      const state = await snapshotPayment(envelope.payload.paymentId)
+      return withAdjudicate(
+        envelope,
+        state,
+        paymentProjectionPolicyBundle,
+        async (payload) => {
+          const input: TransitionPaymentStatusInput = {
+            newStatus: payload.newStatus as PaymentStatus,
+            actor: payload.actor,
+            actorId: payload.actorId,
+            reason: payload.reason,
+            expectedVersion: payload.expectedVersion,
+          }
+          return executeTransition(payload.paymentId, input)
+        },
+        adjudicateOptions,
+      )
+    },
+
+    async reconcileFromWebhookFromEnvelope(envelope) {
+      const state = await snapshotPayment(envelope.payload.paymentId)
+      return withAdjudicate(
+        envelope,
+        state,
+        paymentProjectionPolicyBundle,
+        async (payload) => {
+          const input: ReconcileFromWebhookInput = {
+            newStatus: payload.newStatus as PaymentStatus,
+            stripeEventId: payload.stripeEventId,
+            ...(payload.stripeEventTimestamp !== undefined
+              ? { stripeEventTimestamp: new Date(payload.stripeEventTimestamp) }
+              : {}),
+            ...(payload.expectedOrderId !== undefined
+              ? { expectedOrderId: payload.expectedOrderId }
+              : {}),
+          }
+          return executeReconcile(payload.paymentId, input)
+        },
+        adjudicateOptions,
+      )
+    },
+
+    async issueRefundFromEnvelope(envelope) {
+      const state = await snapshotPayment(envelope.payload.paymentId)
+      return withAdjudicate(
+        envelope,
+        state,
+        paymentProjectionPolicyBundle,
+        async (payload) => executeRefundIssue(payload),
+        adjudicateOptions,
+      )
+    },
+
+    async bumpRegenerationCountFromEnvelope(envelope) {
+      const state = await snapshotPayment(envelope.payload.paymentId)
+      return withAdjudicate(
+        envelope,
+        state,
+        paymentProjectionPolicyBundle,
+        async (payload) => executeRegenerationCountIncrement(payload),
+        adjudicateOptions,
+      )
     },
   }
 }

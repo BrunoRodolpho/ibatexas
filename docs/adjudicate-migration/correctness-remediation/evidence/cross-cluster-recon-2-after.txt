@@ -1,0 +1,11 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ✓ src/__tests__/jobs/stale-order-checker-governance.test.ts (6 tests) 175ms
+ ✓ src/__tests__/integration/lgpd-anonymize-lifecycle.test.ts (7 tests) 683ms
+
+ Test Files  2 passed (2)
+      Tests  13 passed (13)
+   Start at  15:32:40
+   Duration  1.31s (transform 183ms, setup 0ms, collect 332ms, tests 858ms, environment 0ms, prepare 89ms)
+

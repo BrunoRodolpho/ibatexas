@@ -1,0 +1,201 @@
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ❯ src/routes/admin/__tests__/force-routes-governance.test.ts (51 tests | 7 failed) 290ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 1 returns 202 with confirmationId + prompt + ttlSeconds 191ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 1 rejects ATTENDANT (role gate preserved) 4ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 1 returns 422 when order already in terminal state 2ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 2 with valid receipt dispatches transitionStatusFromEnvelope 3ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 2 by the SAME staff as step 1 is refused (P0-5 same-actor) 2ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 2 with unknown receipt returns 410 2ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 2 replay (same confirmationId twice) returns 410 on second attempt 3ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 2 surfaces kernel REFUSE as 403 with pt-BR text 3ms
+   ✓ POST /api/admin/orders/:id/force-cancel — two-step receipt protocol > step 2 with mismatching orderId rejects with 410 2ms
+   ✓ POST /api/admin/orders/:id/waive — two-step receipt protocol > step 1 rejects MANAGER (OWNER-only gate) 1ms
+   ✓ POST /api/admin/orders/:id/waive — two-step receipt protocol > step 1 returns 202 + confirmationId for OWNER 1ms
+   ✓ POST /api/admin/orders/:id/waive — two-step receipt protocol > step 2 dispatches transitionStatusFromEnvelope with TRUSTED+user 2ms
+   ✓ POST /api/admin/orders/:id/waive — two-step receipt protocol > step 2 with consumed receipt returns 410 on replay 2ms
+   ✓ POST /api/admin/orders/:id/waive — two-step receipt protocol > waive step 2 by SAME owner as step 1 is refused (P0-5) 2ms
+   × POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > direct execute below R$ 200 threshold returns 200 immediately 28ms
+     → expected 202 to be 200 // Object.is equality
+   ✓ POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > step 1 returns 202 for refund >= R$ 200 2ms
+   ✓ POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > step 2 dispatches issueRefundFromEnvelope (kernel-adjudicated magnitude) 3ms
+   ✓ POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > step 2 replay returns 410 on second attempt 6ms
+   ✓ POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > refund step 2 by SAME manager as step 1 is refused (P0-5) 2ms
+   × POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > refund REFUSE from kernel returns 403 2ms
+     → expected 202 to be 403 // Object.is equality
+   × POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > W3 P0-1: kernel REQUEST_CONFIRMATION surfaces as 202 (refund > R$500) 2ms
+     → expected 'REFUND_DRIP_CAP' to be 'REQUEST_CONFIRMATION' // Object.is equality
+   × POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > W3 P0-1: kernel ESCALATE surfaces as 503 (refund > R$1000) 1ms
+     → expected 202 to be 503 // Object.is equality
+   × POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > EXECUTE + increments daily bucket on sub-threshold refund 1ms
+     → expected 202 to be 200 // Object.is equality
+   × POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > falls back to two-step receipt when cumulative + this > daily cap (R$2000 default) 2ms
+     → expected null to be 195000 // Object.is equality
+   ✓ POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > respects REFUND_DAILY_NO_CONFIRM_CAP_CENTAVOS env override 2ms
+   × POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > does NOT trigger drip cap when below cap (sum stays under) 2ms
+     → expected 202 to be 200 // Object.is equality
+   ✓ POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > API-key actor uses shared 'api-key' bucket 1ms
+   ✓ POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > [P1-H] API-key WITHOUT registry role gets 403 (regression: pre-W4 passed) 1ms
+   ✓ PATCH /api/admin/orders/:id/payment/status — two-step force-status > step 1 rejects MANAGER (OWNER-only) 1ms
+   ✓ PATCH /api/admin/orders/:id/payment/status — two-step force-status > step 1 returns 202 for OWNER (always requires confirmation) 1ms
+   ✓ PATCH /api/admin/orders/:id/payment/status — two-step force-status > step 2 dispatches transitionStatusFromEnvelope and returns 200 2ms
+   ✓ PATCH /api/admin/orders/:id/payment/status — two-step force-status > step 2 with unknown receipt returns 410 1ms
+   ✓ PATCH /api/admin/orders/:id/payment/status — two-step force-status > step 2 REFUSE from kernel returns 403 1ms
+   ✓ PATCH /api/admin/orders/:id/payment/status — two-step force-status > force-status step 2 by SAME owner as step 1 is refused (P0-5) 2ms
+   ✓ POST /api/admin/orders/:id/payment/confirm-cash — envelope migration > dispatches transitionStatusFromEnvelope and returns 200 (no confirmation step) 1ms
+   ✓ AdminConfirmationStore — Redis-backed atomic single-use store > create stores a pending action and returns confirmationId + ttl 1ms
+   ✓ AdminConfirmationStore — Redis-backed atomic single-use store > consume returns the pending action and removes it atomically (single-use) 0ms
+   ✓ AdminConfirmationStore — Redis-backed atomic single-use store > consume returns null for unknown id 0ms
+   ✓ AdminConfirmationStore — concurrent consume Lua atomicity (W6-5) > exactly one of two concurrent consumes succeeds (Promise.all) 1ms
+   ✓ AdminConfirmationStore — concurrent consume Lua atomicity (W6-5) > ten concurrent consumes: exactly one wins, nine return null 0ms
+   ✓ AdminConfirmationStore — concurrent consume Lua atomicity (W6-5) > consumeWithSameActorCheck races behave consistently: only one outcome wins 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > refuses when step-1 staffId is non-null and step-2 staffId is null (API-key path) 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > refuses when step-1 staffId is null (API-key path) and step-2 has a JWT 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > refuses when BOTH sides are null (two API-key calls) 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > refuses when step-2 staffId is empty string (forged JWT defense) 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > refuses when step-2 staffId is whitespace only 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > refuses actor-type mismatch when both sides have non-null staffId but different actor types 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > accepts the legitimate two-person flow (both JWT, different staffIds) 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > still flags same-actor violation (both JWT, same staffId) 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > treats trimmed-equal staffIds as same actor (defense against whitespace bypass) 0ms
+   ✓ consumeWithSameActorCheck — P0-5-TRUE null-edge fail-closed > exports pt-BR refusal text constants for both new outcomes 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/routes/admin/__tests__/force-routes-governance.test.ts > POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > direct execute below R$ 200 threshold returns 200 immediately
+AssertionError: expected 202 to be 200 // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 200[39m
+[31m+ 202[39m
+
+ ❯ src/routes/admin/__tests__/force-routes-governance.test.ts:766:30
+    764|         payload: { amountInCentavos: 19_999, reason: "small refund" },
+    765|       });
+    766|       expect(res.statusCode).toBe(200);
+       |                              ^
+    767|       const body = res.json() as { refundedAmount: number; success: bo…
+    768|       expect(body.success).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯
+
+ FAIL  src/routes/admin/__tests__/force-routes-governance.test.ts > POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > refund REFUSE from kernel returns 403
+AssertionError: expected 202 to be 403 // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 403[39m
+[31m+ 202[39m
+
+ ❯ src/routes/admin/__tests__/force-routes-governance.test.ts:930:30
+    928|         payload: { amountInCentavos: 5_000, reason: "test" },
+    929|       });
+    930|       expect(res.statusCode).toBe(403);
+       |                              ^
+    931|       const body = res.json() as { error: string };
+    932|       expect(body.error).toMatch(/Pagamento já está em estado terminal…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯
+
+ FAIL  src/routes/admin/__tests__/force-routes-governance.test.ts > POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > W3 P0-1: kernel REQUEST_CONFIRMATION surfaces as 202 (refund > R$500)
+AssertionError: expected 'REFUND_DRIP_CAP' to be 'REQUEST_CONFIRMATION' // Object.is equality
+
+Expected: [32m"RE[7mQUEST_CONFIRMATION[27m"[39m
+Received: [31m"RE[7mFUND_DRIP_CAP[27m"[39m
+
+ ❯ src/routes/admin/__tests__/force-routes-governance.test.ts:959:25
+    957|       expect(res.statusCode).toBe(202);
+    958|       const body = res.json() as { code: string; prompt: string };
+    959|       expect(body.code).toBe("REQUEST_CONFIRMATION");
+       |                         ^
+    960|       expect(body.prompt).toMatch(/Confirmar reembolso/);
+    961|       expect(mockPaymentUpdate).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯
+
+ FAIL  src/routes/admin/__tests__/force-routes-governance.test.ts > POST /api/admin/orders/:id/payment/refund — threshold-driven flow + W3 P0-1 kernel magnitude > W3 P0-1: kernel ESCALATE surfaces as 503 (refund > R$1000)
+AssertionError: expected 202 to be 503 // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 503[39m
+[31m+ 202[39m
+
+ ❯ src/routes/admin/__tests__/force-routes-governance.test.ts:978:30
+    976|         payload: { amountInCentavos: 1_500, reason: "x" },
+    977|       });
+    978|       expect(res.statusCode).toBe(503);
+       |                              ^
+    979|       const body = res.json() as { reason: string; error: string };
+    980|       expect(body.reason).toBe("refund_above_escalate_threshold");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯
+
+ FAIL  src/routes/admin/__tests__/force-routes-governance.test.ts > POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > EXECUTE + increments daily bucket on sub-threshold refund
+AssertionError: expected 202 to be 200 // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 200[39m
+[31m+ 202[39m
+
+ ❯ src/routes/admin/__tests__/force-routes-governance.test.ts:1019:30
+    1017|         payload: { amountInCentavos: 10_000, reason: "small" },
+    1018|       });
+    1019|       expect(res.statusCode).toBe(200);
+       |                              ^
+    1020|       // The bucket holds R$100 (10000 centavos).
+    1021|       const bucketKey =
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯
+
+ FAIL  src/routes/admin/__tests__/force-routes-governance.test.ts > POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > falls back to two-step receipt when cumulative + this > daily cap (R$2000 default)
+AssertionError: expected null to be 195000 // Object.is equality
+
+[32m- Expected:[39m 
+195000
+
+[31m+ Received:[39m 
+null
+
+ ❯ src/routes/admin/__tests__/force-routes-governance.test.ts:1059:44
+    1057|       };
+    1058|       expect(body.code).toBe("REFUND_DRIP_CAP");
+    1059|       expect(body.cumulativeTodayCentavos).toBe(195_000);
+       |                                            ^
+    1060|       expect(body.dailyCapCentavos).toBe(200_000);
+    1061|       expect(body.refundAmountCentavos).toBe(10_000);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/7]⎯
+
+ FAIL  src/routes/admin/__tests__/force-routes-governance.test.ts > POST /api/admin/orders/:id/payment/refund — W3 P1-I daily drip cap > does NOT trigger drip cap when below cap (sum stays under)
+AssertionError: expected 202 to be 200 // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 200[39m
+[31m+ 202[39m
+
+ ❯ src/routes/admin/__tests__/force-routes-governance.test.ts:1121:30
+    1119|         payload: { amountInCentavos: 10_000, reason: "small" },
+    1120|       });
+    1121|       expect(res.statusCode).toBe(200);
+       |                              ^
+    1122|       // Bucket bumped to 110_000.
+    1123|       expect(dripBuckets.get(bucketKey)).toBe(110_000);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  7 failed | 44 passed (51)
+   Start at  15:21:00
+   Duration  670ms (transform 166ms, setup 0ms, collect 108ms, tests 290ms, environment 0ms, prepare 58ms)
+

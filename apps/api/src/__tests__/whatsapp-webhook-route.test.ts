@@ -12,7 +12,6 @@ const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const mockAtomicIncr = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
-const mockRunAgent = vi.hoisted(() => vi.fn());
 const mockNormalizePhone = vi.hoisted(() => vi.fn());
 const mockHashPhone = vi.hoisted(() => vi.fn());
 const mockResolveWhatsAppSession = vi.hoisted(() => vi.fn());
@@ -42,10 +41,6 @@ vi.mock("@ibatexas/tools", () => ({
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
-}));
-
-vi.mock("@ibatexas/llm-provider", () => ({
-  runOrchestrator: mockRunAgent,
 }));
 
 vi.mock("../session/store.js", () => ({
@@ -85,7 +80,6 @@ vi.mock("../whatsapp/shortcuts.js", () => ({
   buildHelpText: mockBuildHelpText,
   buildWelcomeText: vi.fn().mockReturnValue("Bem-vindo!"),
 }));
-
 
 vi.mock("../jobs/hesitation-nudge.js", () => ({
   scheduleHesitationNudge: vi.fn().mockResolvedValue(undefined),

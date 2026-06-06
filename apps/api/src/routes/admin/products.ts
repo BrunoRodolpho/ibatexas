@@ -1,7 +1,16 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import {
+  getRedisClient,
+  rk,
+  medusaAdjudicated,
+  MedusaAdjudicateRefusedError,
+  MedusaAdjudicateDeferredError,
+  MedusaAdjudicateNeedsReviewError,
+} from "@ibatexas/tools";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 import { medusaAdmin } from "./_shared.js";
 
@@ -124,12 +133,40 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
       }
 
       try {
-        const data = await medusaAdmin(`/admin/products/${id}`, {
+        // Kernel-gated egress (P0-X9): admin product PATCH is a mutating
+        // Medusa write — must route through medusaAdjudicated for audit +
+        // governance. The wrapper enforces SYSTEM taint internally; the
+        // outer route handler already enforces requireManagerRole.
+        const staffId = request.staffId ?? "unknown";
+        const idempotencyKey = requestId ?? randomUUID();
+        const data = await medusaAdjudicated<typeof body, Record<string, unknown>>({
+          scope: "admin",
           method: "POST",
-          body: JSON.stringify(body),
-        }) as Record<string, unknown>;
+          path: `/admin/products/${id}`,
+          payload: body,
+          intentKind: "medusa.admin.product.update",
+          idempotencyKey,
+          sourceSubject: `route:PATCH /api/admin/products/:id:admin:${staffId}`,
+          auditSink: getAuditSink(),
+          log: server.log,
+        });
         return reply.send({ product: data.product });
       } catch (err) {
+        if (err instanceof MedusaAdjudicateRefusedError) {
+          return reply.code(403).send({ error: err.userFacing, code: err.code });
+        }
+        if (err instanceof MedusaAdjudicateDeferredError) {
+          return reply.code(202).send({
+            status: "deferred",
+            signal: err.signal,
+            message: "Operação aguardando confirmação.",
+          });
+        }
+        if (err instanceof MedusaAdjudicateNeedsReviewError) {
+          return reply.code(503).send({
+            error: "Operação requer atendimento humano.",
+          });
+        }
         server.log.error(err, "Failed to update product");
         reply.code(502).send({ error: "Failed to update product" });
       }

@@ -1,0 +1,65 @@
+=== W8-V2 BEFORE state — bare stripe.paymentIntents.update survives in stripe-webhook ===
+Branch: feat/correctness-w7-close-w6-findings
+Captured: 2026-05-23 (W8 closure agent)
+
+── The bypass (verifier reproduction) ────────────────────────────────────────
+
+$ grep -n "stripe\.paymentIntents\.\(update\|create\|confirm\|cancel\)" apps/api/src/routes/
+apps/api/src/routes/stripe-webhook.ts:308:        await stripe.paymentIntents.update(paymentIntent.id, {
+
+One survivor at apps/api/src/routes/stripe-webhook.ts:307-310:
+
+  const stripe = getStripe();
+  await stripe.paymentIntents.update(paymentIntent.id, {
+    metadata: { ...paymentIntent.metadata, medusaOrderId: orderId },
+  });
+
+This is a metadata-write inside the PIX cart-complete flow — runs after
+medusaAdjudicated() created the order, to persist the new orderId back
+to the PaymentIntent's metadata for future reference. It is post-auth and
+idempotency-guarded by the outer Redis key, but the Stripe SDK call
+itself bypasses the W7-P5 stripeAdjudicated wrapper.
+
+Operational impact:
+  - No `stripe.payment_intent.update` audit envelope.
+  - No kernel adjudication of the metadata mutation.
+  - Future regressions on this surface (e.g. an attacker-controlled
+    medusaOrderId injection from a compromised webhook) would not
+    surface in the kernel's policy-bundle or audit stream.
+
+Verifier severity: P1 (metadata-only mutation, post-auth, idempotent
+guard — but a real PSP-state egress).
+
+── Why W7 didn't close it ────────────────────────────────────────────────────
+
+W7-P5's explicit scope was packages/tools/src/cart/. The webhook route
+lives in apps/api/src/routes/ and was outside that scope. No agent
+picked up this seam.
+
+── Existing test surface ────────────────────────────────────────────────────
+
+$ pnpm vitest run apps/api/src/__tests__/stripe-webhook-route.test.ts
+
+The pre-W8 stripe-webhook tests mock the Stripe SDK via a hoisted mock:
+  vi.mock("stripe", () => ({ default: class MockStripe { ... } }))
+
+The `paymentIntents.update` is mocked as `vi.fn(async () => ({}))` — so
+the bare call passes tests trivially. There is NO existing assertion
+that the call routes through `stripeAdjudicated.paymentIntents.update`,
+which is why the bypass was invisible to the test surface.
+
+── stripeAdjudicated.paymentIntents.update API surface (W7-P5) ──────────────
+
+From packages/tools/src/stripe/adjudicated.ts:505-527:
+
+  async update(
+    id: string,
+    params: Stripe.PaymentIntentUpdateParams,
+    meta: Omit<StripeAdjudicatedArgs<unknown>, "intentKind" | "payload">,
+  ): Promise<Stripe.PaymentIntent>
+
+The wrapper builds a `stripe.payment_intent.update` envelope, runs the
+inline stripeWrapperPolicyBundle, emits an audit record (when
+auditSink supplied), and on EXECUTE/REWRITE dispatches to the SDK with
+the kernel-approved payload. REFUSE/DEFER/needs-review throws typed
+errors.

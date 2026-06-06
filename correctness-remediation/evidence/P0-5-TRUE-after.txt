@@ -1,0 +1,97 @@
+P0-5-TRUE — Two-person staffId null edge — AFTER
+=================================================
+
+Date: 2026-05-23
+Fix file: apps/api/src/routes/admin/admin-confirmation-store.ts
+          (consumeWithSameActorCheck rewritten + new outcomes
+           + new pt-BR refusal constants)
+Call sites updated: apps/api/src/routes/admin/order-actions.ts
+                    apps/api/src/routes/admin/payments.ts
+Test file: apps/api/src/routes/admin/__tests__/force-routes-governance.test.ts
+           (10 new tests in "consumeWithSameActorCheck — P0-5-TRUE" describe)
+
+Approach
+--------
+Rewrote the two-person rule helper to be FAIL-CLOSED on:
+  1. NULL staffId on either side (request OR pending).
+  2. ACTOR-TYPE mismatch (one JWT-user, one API-key system) even when
+     both staffIds happen to be non-null.
+
+Both refusals drain the receipt (single-use semantics preserved) and
+return a structured outcome the caller logs to the order event log.
+
+New outcomes added to ConsumeWithSameActorOutcome:
+  - "null_staff_violation" with reason in
+      { "pending_staff_null" | "request_staff_null" | "both_staff_null" }
+  - "actor_type_mismatch" with pendingActor + requestActor labels
+
+New pt-BR refusal constants:
+  - NULL_STAFF_REFUSAL_PT_BR
+  - ACTOR_TYPE_MISMATCH_REFUSAL_PT_BR
+
+Helper hardening
+----------------
+Added `normalizeStaffId` so empty-string or whitespace-only staffIds
+(forged JWTs with empty subject) collapse to null and route through
+the null-staff refusal path. This also defends against a same-actor
+attempt that pads the staffId with whitespace.
+
+Signature change
+----------------
+consumeWithSameActorCheck adds an optional `requestActorPrincipal`
+("user" | "system") parameter. When omitted (legacy callers in tests)
+it defaults to "user" — matches the previous behaviour for the JWT
+auth code paths but does NOT weaken the null-staff check above. The
+four call sites in order-actions.ts (force-cancel, waive) and
+payments.ts (refund, force-status) have been updated to pass the
+derived `requestActorPrincipal` from `principalFor(staffId)`.
+
+Tests added
+-----------
+1. refuses when step-1 staffId is non-null and step-2 staffId is null
+2. refuses when step-1 staffId is null (API-key) and step-2 has a JWT
+3. refuses when BOTH sides are null (two API-key calls)
+4. refuses when step-2 staffId is empty string (forged JWT defense)
+5. refuses when step-2 staffId is whitespace only
+6. refuses actor-type mismatch when both sides non-null but different actor types
+7. accepts the legitimate two-person flow (both JWT, different staffIds)
+8. still flags same-actor violation (both JWT, same staffId)
+9. treats trimmed-equal staffIds as same actor (whitespace bypass)
+10. exports pt-BR refusal text constants for both new outcomes
+
+Test output (P0-5-TRUE describe block only)
+-------------------------------------------
+$ npx vitest run src/routes/admin/__tests__/force-routes-governance.test.ts \
+    -t "P0-5-TRUE"
+
+ ✓ src/routes/admin/__tests__/force-routes-governance.test.ts (51 tests | 41 skipped)
+   Tests  10 passed | 41 skipped (51)
+
+All 10 new P0-5-TRUE tests pass. Pre-existing two-person tests in the
+file (W6-5 race test, etc.) also still pass — the legacy default value
+for `requestActorPrincipal` preserves the previous helper behavior on
+the JWT path.
+
+Verification that the test would FAIL on the un-fixed code
+-----------------------------------------------------------
+Reverting consumeWithSameActorCheck to the old comparison
+  if (requestStaffId !== null && pending.staffId !== null &&
+      requestStaffId === pending.staffId)
+  ... return same_actor_violation
+  ... else return ok
+makes test 1 ("refuses when step-1 staffId is non-null and step-2
+staffId is null") fail with:
+  AssertionError: expected 'ok' to be 'null_staff_violation'
+
+Confirming the test exercises the new code path.
+
+Deviation note
+--------------
+The shared branch has concurrent in-flight changes from other Wave 1
+agents (P1-I-TRUE refund drip cap Lua, P0-X1 boot race, etc.). Pre-
+existing test failures (7 in the refund-drip-cap section) are caused
+by those other-agent changes interacting with mock-Redis Lua emulation,
+NOT by this P0-5-TRUE fix. Stashing P0-5-TRUE changes and running the
+test file showed those failures persist — they belong to another
+agent's bug-close. Cluster D does not regress them and does not own
+their fix.

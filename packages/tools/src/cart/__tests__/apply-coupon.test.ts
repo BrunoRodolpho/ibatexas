@@ -4,19 +4,39 @@
 // Scenarios:
 // - Happy path → returns Medusa response with discount applied
 // - Invalid coupon / Medusa error → {success: false, message: pt-BR}
-// - Correct payload format (promo_codes array)
+// - Correct payload format (camelCase, single-element promo array)
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { applyCoupon } from "../apply-coupon.js"
+import { MedusaStoreAdjudicateRefusedError } from "../../medusa/store-adjudicated.js"
 import { makeCtx, cartResponse } from "./fixtures/medusa.js"
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const mockMedusaStoreFetch = vi.hoisted(() => vi.fn())
+const mockPromotionsAdd = vi.hoisted(() => vi.fn())
 
-vi.mock("../_shared.js", () => ({
-  medusaStoreFetch: mockMedusaStoreFetch,
-}))
+// W9: apply-coupon now routes the Medusa promotions POST through
+// medusaStoreAdjudicated. Mock the wrapper at the module boundary so the
+// kernel + audit path is bypassed in this tool-level test — the wrapper
+// itself is covered by packages/tools/src/medusa/__tests__/store-adjudicated.test.ts.
+// Preserve the real MedusaStoreAdjudicateRefusedError so `instanceof`
+// narrowing inside apply-coupon works correctly in tests.
+vi.mock("../../medusa/store-adjudicated.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../medusa/store-adjudicated.js")>(
+      "../../medusa/store-adjudicated.js",
+    )
+  return {
+    ...actual,
+    medusaStoreAdjudicated: {
+      carts: {
+        promotions: {
+          add: mockPromotionsAdd,
+        },
+      },
+    },
+  }
+})
 
 vi.mock("../assert-cart-ownership.js", () => ({
   assertCartOwnership: vi.fn().mockResolvedValue({ id: "cart_01", customer_id: "cus_01" }),
@@ -36,24 +56,26 @@ const CTX = makeCtx()
 describe("applyCoupon", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockMedusaStoreFetch.mockResolvedValue(cartResponse({ discount_total: 1000 }))
+    mockPromotionsAdd.mockResolvedValue(cartResponse({ discount_total: 1000 }))
   })
 
-  it("calls medusaStoreFetch with correct promotions path and promo_codes array", async () => {
+  it("calls medusaStoreAdjudicated.carts.promotions.add with cartId + promoCodes payload and llm actor meta", async () => {
     await applyCoupon(INPUT, CTX)
 
-    expect(mockMedusaStoreFetch).toHaveBeenCalledWith(
-      `/store/carts/${INPUT.cartId}/promotions`,
-      {
-        method: "POST",
-        body: JSON.stringify({ promo_codes: [INPUT.code] }),
-      },
+    expect(mockPromotionsAdd).toHaveBeenCalledWith(
+      { cartId: INPUT.cartId, promoCodes: [INPUT.code] },
+      expect.objectContaining({
+        sourceSubject: "cart:apply-coupon",
+        actorPrincipal: "llm",
+        customerId: CTX.customerId,
+        sessionId: CTX.sessionId,
+      }),
     )
   })
 
   it("returns Medusa response on happy path", async () => {
     const medusaData = cartResponse({ discount_total: 1000 })
-    mockMedusaStoreFetch.mockResolvedValue(medusaData)
+    mockPromotionsAdd.mockResolvedValue(medusaData)
 
     const result = await applyCoupon(INPUT, CTX)
 
@@ -61,47 +83,45 @@ describe("applyCoupon", () => {
   })
 
   it("returns pt-BR error when Medusa throws (invalid coupon)", async () => {
-    mockMedusaStoreFetch.mockRejectedValue(new Error("Medusa 400: Invalid promo code"))
+    mockPromotionsAdd.mockRejectedValue(new Error("Medusa 400: Invalid promo code"))
 
     const result = await applyCoupon(INPUT, CTX)
 
     expect(result).toEqual({
       success: false,
-      message: expect.stringContaining("Cupom inv\u00e1lido"),
+      message: expect.stringContaining("Cupom inválido"),
     })
   })
 
   it("error message includes instruction to verify code", async () => {
-    mockMedusaStoreFetch.mockRejectedValue(new Error("Medusa 400"))
+    mockPromotionsAdd.mockRejectedValue(new Error("Medusa 400"))
 
     const result = await applyCoupon(INPUT, CTX) as { success: boolean; message: string }
 
-    expect(result.message).toContain("Verifique o c\u00f3digo")
+    expect(result.message).toContain("Verifique o código")
   })
 
-  it("sends coupon code as single-element array", async () => {
+  it("sends coupon code as single-element promoCodes array", async () => {
     await applyCoupon(INPUT, CTX)
 
-    const [, opts] = mockMedusaStoreFetch.mock.calls[0]
-    const parsed = JSON.parse(opts.body)
-    expect(Array.isArray(parsed.promo_codes)).toBe(true)
-    expect(parsed.promo_codes).toHaveLength(1)
-    expect(parsed.promo_codes[0]).toBe("CHURRASCO10")
+    const [payload] = mockPromotionsAdd.mock.calls[0]
+    expect(Array.isArray(payload.promoCodes)).toBe(true)
+    expect(payload.promoCodes).toHaveLength(1)
+    expect(payload.promoCodes[0]).toBe("CHURRASCO10")
   })
 
   it("handles different coupon codes", async () => {
     const input = { cartId: "cart_01", code: "BRISKET20" }
-    mockMedusaStoreFetch.mockResolvedValue(cartResponse())
+    mockPromotionsAdd.mockResolvedValue(cartResponse())
 
     await applyCoupon(input, CTX)
 
-    const [, opts] = mockMedusaStoreFetch.mock.calls[0]
-    const parsed = JSON.parse(opts.body)
-    expect(parsed.promo_codes[0]).toBe("BRISKET20")
+    const [payload] = mockPromotionsAdd.mock.calls[0]
+    expect(payload.promoCodes[0]).toBe("BRISKET20")
   })
 
   it("returns error on 500 server error", async () => {
-    mockMedusaStoreFetch.mockRejectedValue(new Error("Medusa 500: Server Error"))
+    mockPromotionsAdd.mockRejectedValue(new Error("Medusa 500: Server Error"))
 
     const result = await applyCoupon(INPUT, CTX)
 
@@ -109,5 +129,26 @@ describe("applyCoupon", () => {
       success: false,
       message: expect.stringContaining("erro ao aplicar desconto"),
     })
+  })
+
+  // audit-2026-05-24 P2-2: kernel REFUSE userFacing copy is surfaced
+  // instead of the generic "Cupom inválido..." fallback.
+  it("surfaces wrapper userFacing copy on MedusaStoreAdjudicateRefusedError", async () => {
+    const userFacing =
+      "Não foi possível aplicar o cupom porque o código está vazio."
+    const refusedErr = new MedusaStoreAdjudicateRefusedError({
+      kind: "REFUSE",
+      refusal: {
+        kind: "BUSINESS_RULE",
+        code: "medusa.store.payload.empty_promo_codes",
+        userFacing,
+      },
+      basis: [],
+    })
+    mockPromotionsAdd.mockRejectedValue(refusedErr)
+
+    const result = await applyCoupon(INPUT, CTX)
+
+    expect(result).toEqual({ success: false, message: userFacing })
   })
 })

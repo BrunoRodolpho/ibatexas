@@ -1,0 +1,82 @@
+NEW-P1-ENV — Boolean env parsing strictness — AFTER
+=====================================================
+
+Date: 2026-05-23
+New helper: packages/llm-provider/src/parse-bool-env.ts
+Helper test: packages/llm-provider/src/__tests__/parse-bool-env.test.ts
+Helper exported from: packages/llm-provider/src/index.ts
+
+Helper signature
+----------------
+  export function parseBoolEnv(
+    value: string | undefined,
+    defaultValue: boolean,
+  ): boolean
+
+Truth table (case-insensitive, trimmed):
+  "true", "1", "yes", "on"           -> true
+  "false", "0", "no", "off"          -> false
+  "" / undefined / typo              -> defaultValue
+
+Sites migrated (7 listed in audit + 1 follow-on)
+-------------------------------------------------
+1. packages/nats-client/src/index.ts:83
+     (NATS_TLS_REQUIRED — inline parseBoolEnv copy because nats-client
+      cannot depend on llm-provider)
+2. packages/llm-provider/src/intent-audit-wiring.ts:107
+     (IBX_AUDIT_POSTGRES_ENABLED)
+3. packages/cli/src/commands/kernel.ts:87 IBX_LEDGER_ENABLED
+4. packages/cli/src/commands/kernel.ts:88 IBX_LEDGER_ENFORCE
+5. packages/cli/src/commands/kernel.ts:89 IBX_LEDGER_FAIL_OPEN
+6. packages/cli/src/commands/kernel.ts:90 IBX_AUDIT_POSTGRES_ENABLED
+7. packages/cli/src/commands/kernel.ts:201 IBX_AUDIT_POSTGRES_ENABLED
+8. packages/cli/src/commands/kernel.ts:368 IBX_AUDIT_POSTGRES_ENABLED
+9. apps/api/src/server.ts:31 TRUST_PROXY
+10. apps/api/src/jobs/stale-order-checker.ts:66 STALE_ORDER_DRY_RUN
+
+(The intent-ledger.ts site at packages/llm-provider/src/intent-ledger.ts:43
+already used the canonical truthy lexicon (`v === "1" || v === "true" ||
+v === "yes" || v === "on"`) — left as-is.)
+
+Why nats-client inlines the helper
+----------------------------------
+@ibatexas/llm-provider depends on @ibatexas/nats-client (publishNatsEvent
+is consumed by intent-audit-wiring). nats-client cannot import from
+llm-provider without creating a circular workspace dependency. The
+inline 12-line copy preserves the canonical truth table without forcing
+a refactor of the package graph.
+
+Tests
+-----
+21 new unit tests for parseBoolEnv covering:
+  - truthy variants: true / True / TRUE / 1 / yes / YES / on / "  true  "
+  - falsy variants: false / False / FALSE / 0 / no / off
+  - default fallbacks: undefined / "" / whitespace-only / typos
+  - canonical audit-spec table replayed
+
+Test output
+-----------
+$ npx vitest run src/__tests__/parse-bool-env.test.ts
+ ✓ src/__tests__/parse-bool-env.test.ts (21 tests) 4ms
+ Test Files  1 passed (1)
+      Tests  21 passed (21)
+
+$ npx vitest run src/__tests__/intent-audit-wiring-postgres.test.ts
+ ✓ src/__tests__/intent-audit-wiring-postgres.test.ts (7 tests) 83ms
+
+All 21 new tests + 7 pre-existing audit-wiring tests pass. The
+migration is a behaviour-preserving generalisation: every input that
+parsed as true under the old `=== "true"` check still parses as true
+under parseBoolEnv. The new behaviour ONLY changes for inputs that
+previously fell through silently (TRUE, 1, yes, etc).
+
+Verification that the test would FAIL on the un-fixed code
+-----------------------------------------------------------
+The repro:
+  > process.env.IBX_AUDIT_POSTGRES_ENABLED = "TRUE"
+  Pre-fix:  process.env.IBX_AUDIT_POSTGRES_ENABLED === "true" -> false
+  Post-fix: parseBoolEnv(process.env.IBX_AUDIT_POSTGRES_ENABLED, false) -> true
+
+Same test fixture surfaces the fix is load-bearing. The unit test
+"accepts 'TRUE' (uppercase)" fails on a reverted helper:
+  AssertionError: expected false to be true.

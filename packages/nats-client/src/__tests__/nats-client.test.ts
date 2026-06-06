@@ -7,6 +7,10 @@ import {
 } from "../index.js"
 
 // Mock the nats module with a proper implementation
+const mockConnect = vi.hoisted(() => vi.fn())
+const mockCredsAuthenticator = vi.hoisted(() => vi.fn(() => "credsAuth"))
+const mockNkeyAuthenticator = vi.hoisted(() => vi.fn(() => "nkeyAuth"))
+
 vi.mock("nats", () => {
   const mockSubscription = {
     unsubscribe: vi.fn(),
@@ -24,10 +28,27 @@ vi.mock("nats", () => {
     drain: vi.fn(),
   }
 
+  mockConnect.mockImplementation(async () => mockConnection)
+
   return {
-    connect: vi.fn(async () => mockConnection),
+    connect: mockConnect,
+    credsAuthenticator: mockCredsAuthenticator,
+    nkeyAuthenticator: mockNkeyAuthenticator,
   }
 })
+
+// Mock node:fs/promises so we don't read real files in tests.
+vi.mock("node:fs/promises", () => ({
+  readFile: vi.fn(async (path: string, encoding?: string) => {
+    if (path.endsWith(".creds")) {
+      return Buffer.from("-- creds file contents --")
+    }
+    if (path.endsWith(".pem") || path.includes("ca")) {
+      return encoding === "utf8" ? "-- pem ca --" : Buffer.from("-- pem ca --")
+    }
+    throw new Error(`unexpected readFile: ${path}`)
+  }),
+}))
 
 describe("NATS Client", () => {
   beforeEach(() => {
@@ -87,6 +108,36 @@ describe("NATS Client", () => {
     }).not.toThrow()
   })
 
+  // ── audit-2026-05-24 P2-4 — queue groups ───────────────────────────────
+  // Multi-replica deploys need queue groups so each message is handled by
+  // exactly one replica per group (instead of N-fold handler inflation).
+
+  it("[P2-4] subscribeNatsEvent passes queueGroup through as { queue } to NATS", async () => {
+    const conn = await getNatsConnection()
+    const subscribeSpy = conn.subscribe as ReturnType<typeof vi.fn>
+    subscribeSpy.mockClear()
+
+    await subscribeNatsEvent("payment.status_changed", vi.fn(), {
+      queueGroup: "defer-resolver",
+    })
+
+    expect(subscribeSpy).toHaveBeenCalledWith("ibatexas.payment.status_changed", {
+      queue: "defer-resolver",
+    })
+  })
+
+  it("[P2-4] subscribeNatsEvent omits queue opts when no queueGroup is given", async () => {
+    const conn = await getNatsConnection()
+    const subscribeSpy = conn.subscribe as ReturnType<typeof vi.fn>
+    subscribeSpy.mockClear()
+
+    await subscribeNatsEvent("cart.abandoned", vi.fn())
+
+    // Back-compat: no queueGroup → no second arg. Distinguishes "subscribed
+    // without a queue group" from "subscribed to a group named undefined".
+    expect(subscribeSpy).toHaveBeenCalledWith("ibatexas.cart.abandoned")
+  })
+
   it("getNatsConnection can be called without error", async () => {
     const conn = await getNatsConnection()
     expect(conn).toBeDefined()
@@ -101,6 +152,103 @@ describe("NATS Client", () => {
 
     // Close should not reject
     await expect(closeNatsConnection()).resolves.not.toThrow()
+  })
+})
+
+// ── W4 P0-12: NATS authentication wiring ─────────────────────────────────
+
+describe("NATS Client — P0-12 authentication wiring", () => {
+  beforeEach(async () => {
+    await closeNatsConnection()
+    vi.clearAllMocks()
+    delete process.env.NATS_CREDS_PATH
+    delete process.env.NATS_NKEY_SEED
+    delete process.env.NATS_TLS_CA
+    delete process.env.NATS_TLS_REQUIRED
+    delete process.env.NODE_ENV
+  })
+
+  it("[P0-12] connects without auth when no env vars set (dev default)", async () => {
+    await getNatsConnection()
+    const opts = mockConnect.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(opts).toBeDefined()
+    expect(opts.authenticator).toBeUndefined()
+    expect(opts.tls).toBeUndefined()
+  })
+
+  it("[P0-12] uses credsAuthenticator when NATS_CREDS_PATH is set", async () => {
+    process.env.NATS_CREDS_PATH = "/etc/nats/svc-api.creds"
+    await getNatsConnection()
+    expect(mockCredsAuthenticator).toHaveBeenCalledTimes(1)
+    const opts = mockConnect.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(opts.authenticator).toBe("credsAuth")
+  })
+
+  it("[P0-12] uses nkeyAuthenticator when only NATS_NKEY_SEED is set", async () => {
+    process.env.NATS_NKEY_SEED = "SUABCDEF1234567890"
+    await getNatsConnection()
+    expect(mockNkeyAuthenticator).toHaveBeenCalledTimes(1)
+    const opts = mockConnect.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(opts.authenticator).toBe("nkeyAuth")
+  })
+
+  it("[P0-12] CREDS_PATH takes precedence over NKEY_SEED", async () => {
+    process.env.NATS_CREDS_PATH = "/etc/nats/api.creds"
+    process.env.NATS_NKEY_SEED = "SUEXTRA"
+    await getNatsConnection()
+    expect(mockCredsAuthenticator).toHaveBeenCalledTimes(1)
+    expect(mockNkeyAuthenticator).not.toHaveBeenCalled()
+  })
+
+  it("[P0-12] wires CA when NATS_TLS_CA is set", async () => {
+    process.env.NATS_TLS_CA = "/etc/nats/ca.pem"
+    await getNatsConnection()
+    const opts = mockConnect.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(opts.tls).toEqual({ ca: "-- pem ca --" })
+  })
+
+  it("[P0-12] wires empty TLS opts when NATS_TLS_REQUIRED=true (require TLS)", async () => {
+    process.env.NATS_TLS_REQUIRED = "true"
+    await getNatsConnection()
+    const opts = mockConnect.mock.calls[0]?.[0] as Record<string, unknown>
+    expect(opts.tls).toEqual({})
+  })
+
+  it("[P0-12 / NEW-P0-X3] THROWS in production when no auth + no TLS (fail-closed)", async () => {
+    // Pre-NEW-P0-X3 the function emitted a console.error and proceeded —
+    // leaving audit PII broadcastable to anyone reaching the NATS port.
+    // Post-fix the function throws and the process exits non-zero at boot
+    // so ops must provision creds before deploying.
+    process.env.NODE_ENV = "production"
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    try {
+      await expect(getNatsConnection()).rejects.toThrow(
+        /production requires NATS auth/i,
+      )
+      const messages = spy.mock.calls
+        .map((c) => (c[0] as string) ?? "")
+        .join("\n")
+      // The breadcrumb is still written to stderr immediately before throw.
+      expect(messages).toContain("NATS-AUTH-REQUIREMENTS")
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it("[P0-12] does NOT emit production warning when auth is configured", async () => {
+    process.env.NODE_ENV = "production"
+    process.env.NATS_CREDS_PATH = "/etc/nats/api.creds"
+    process.env.NATS_TLS_CA = "/etc/nats/ca.pem"
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    try {
+      await getNatsConnection()
+      const messages = spy.mock.calls
+        .map((c) => (c[0] as string) ?? "")
+        .join("\n")
+      expect(messages).not.toContain("NATS connection has no authentication")
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
 

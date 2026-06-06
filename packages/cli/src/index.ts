@@ -30,9 +30,17 @@ import { registerStripeCommands } from "./commands/stripe.js"
 import { registerChatCommands } from "./commands/chat.js"
 import { registerDlqCommands } from "./commands/dlq.js"
 import { registerOrdersCommands } from "./commands/orders.js"
+import { registerKernelCommands } from "./commands/kernel.js"
+import { registerClaustrumCommands } from "./commands/claustrum.js"
+import { registerObsCommands } from "./commands/obs.js"
+import { registerJobsCommands } from "./commands/jobs.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
-// Load CLI-specific config first, then root config (root config takes priority)
+// Env precedence: shell > root .env > cli .env. dotenv semantics: each
+// loadEnv() only fills in variables that aren't already set, so the shell
+// always wins — critical for prod overrides like
+// `DATABASE_URL=... ibx auth create-staff` pointing at Supabase instead of
+// the local docker-compose URL in .env.
 // index.ts lives at packages/cli/src/ → parent is packages/cli/
 // dist/index.js lives at packages/cli/dist/ → parent is packages/cli/
 // Use realpathSync to resolve npm link symlinks — otherwise ROOT points to
@@ -40,8 +48,8 @@ import { registerOrdersCommands } from "./commands/orders.js"
 const __filename = fs.realpathSync(fileURLToPath(import.meta.url))
 const CLI_DIR = path.resolve(path.dirname(__filename), "..")
 const ROOT = path.resolve(CLI_DIR, "../../")
+loadEnv({ path: path.join(ROOT, ".env"), override: false })
 loadEnv({ path: path.join(CLI_DIR, ".env"), override: false })
-loadEnv({ path: path.join(ROOT, ".env"), override: true })
 
 // ── Custom help formatter ─────────────────────────────────────────────────────
 
@@ -95,8 +103,9 @@ function buildHelpText(): string {
         { usage: "db seed:delivery", desc: "Seed delivery zones, addresses + preferences" },
         { usage: "db seed:orders",   desc: "Seed order history + reservations (Medusa required)" },
         { usage: "db reindex",        desc: "Fetch products from Medusa → index into Typesense (--fresh to recreate)" },
+        { usage: "db provision",      desc: "Ensure all schema layers exist (kernel audit-postgres + claustrum memory/grounding)" },
         { usage: "db clean",          desc: "⚠  Delete all domain data (--all for Medusa + Typesense too)" },
-        { usage: "db reset",          desc: "⚠  Drop, migrate, and reseed" },
+        { usage: "db reset",          desc: "⚠  Drop, migrate (all layers), and reseed" },
         { usage: "db status",         desc: "Migration status for Medusa + Prisma schemas" },
       ],
     },
@@ -239,6 +248,37 @@ function buildHelpText(): string {
       ],
     },
     {
+      title: "Kernel",
+      commands: [
+        { usage: "kernel status",        desc: "Estado do kernel: intent kinds, ledger, audit sinks" },
+        { usage: "kernel replay [--since=24h]", desc: "Re-feed audit records via adjudicate() e relata drift" },
+        { usage: "kernel migrate",       desc: "Apply @adjudicate/audit-postgres SQL migrations to $DATABASE_URL" },
+      ],
+    },
+    {
+      title: "Claustrum",
+      commands: [
+        { usage: "claustrum migrate",    desc: "Provision the @claustrum memory + grounding (pgvector) schema in $DATABASE_URL" },
+      ],
+    },
+    {
+      title: "Observability",
+      commands: [
+        { usage: "obs decisions",          desc: "Watch kernel decisions + refusals (-f to follow)" },
+        { usage: "obs turn <turnId>",      desc: "Show one turn's full trace by correlationId" },
+        { usage: "obs payments",           desc: "Recent payment webhook events (--pi to trace one, -f)" },
+        { usage: "obs funnel",             desc: "Checkout funnel — stage counts + drop-off" },
+      ],
+    },
+    {
+      title: "Jobs",
+      commands: [
+        { usage: "jobs list [queue]",      desc: "List failed background jobs (default: stripe-webhook)" },
+        { usage: "jobs inspect <q> <id>",  desc: "Show a failed job's event payload + failure reason" },
+        { usage: "jobs replay <q> [id]",   desc: "Retry a failed job (or --all failed jobs in the queue)" },
+      ],
+    },
+    {
       title: "Config",
       commands: [
         { usage: "env check [--step n]", desc: "Validate required environment variables" },
@@ -321,6 +361,10 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "stripe",  register: registerStripeCommands, description: "Stripe — payments and webhook testing" },
   { name: "dlq",     register: registerDlqCommands,     description: "Dead Letter Queue — inspect, replay, and purge failed events" },
   { name: "orders",  register: registerOrdersCommands,  description: "Orders — projection management and debugging" },
+  { name: "kernel",  register: registerKernelCommands,  description: "Kernel — adjudicate kernel status, replay, and divergence" },
+  { name: "claustrum", register: registerClaustrumCommands, description: "Claustrum — provision the memory + grounding (pgvector) schema" },
+  { name: "obs",     register: registerObsCommands,      description: "Observability — watch kernel decisions and per-turn traces" },
+  { name: "jobs",    register: registerJobsCommands,     description: "Background jobs — inspect and replay failed BullMQ jobs" },
 ]
 
 for (const { name, register, description } of groupedCommands) {

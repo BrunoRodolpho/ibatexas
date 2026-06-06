@@ -36,6 +36,18 @@ vi.mock("@ibatexas/domain", () => ({
   },
   createPaymentCommandService: vi.fn(() => ({
     transitionStatus: mockTransitionStatus,
+    // Task 16: envelope-typed entry — wraps the legacy mock so existing
+    // assertions on `mockTransitionStatus` still fire and existing tests
+    // don't need to change their assertions.
+    transitionStatusFromEnvelope: vi.fn(async (envelope: { payload: { paymentId: string; newStatus: string; expectedVersion?: number; actor: string; reason?: string } }) => {
+      const result = await mockTransitionStatus(envelope.payload.paymentId, {
+        newStatus: envelope.payload.newStatus,
+        actor: envelope.payload.actor,
+        ...(envelope.payload.reason !== undefined ? { reason: envelope.payload.reason } : {}),
+        ...(envelope.payload.expectedVersion !== undefined ? { expectedVersion: envelope.payload.expectedVersion } : {}),
+      });
+      return { decision: { kind: "EXECUTE", basis: [] }, result };
+    }),
   })),
 }));
 

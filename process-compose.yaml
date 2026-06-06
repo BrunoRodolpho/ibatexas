@@ -27,13 +27,11 @@ processes:
   build-packages:
     command: |
       echo "Cleaning dist caches…" &&
-      rm -rf packages/types/dist packages/tools/dist packages/llm-provider/dist &&
+      rm -rf packages/types/dist packages/tools/dist &&
       echo "Building @ibatexas/types…" &&
       cd packages/types && npx tsc --outDir dist && cd ../.. &&
       echo "Building @ibatexas/tools…" &&
       cd packages/tools && npx tsc --outDir dist && cd ../.. &&
-      echo "Building @ibatexas/llm-provider…" &&
-      cd packages/llm-provider && npx tsc --outDir dist && cd ../.. &&
       echo "Package build complete ✓"
     availability:
       restart: "no"

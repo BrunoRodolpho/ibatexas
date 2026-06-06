@@ -25,6 +25,8 @@ vi.mock("@ibatexas/domain", () => ({
     findConfirmedForDate: vi.fn(async () => []),
     checkAvailability: vi.fn(async () => []),
     transition: vi.fn(async () => {}),
+    transitionFromEnvelope: vi.fn(async () => ({ decision: { kind: "EXECUTE", basis: [] }, result: undefined })),
+    listAll: vi.fn(async () => ({ reservations: [], total: 0 })),
     getTodaySummary: vi.fn(async () => ({
       total: 0, confirmed: 0, seated: 0, completed: 0, cancelled: 0, noShow: 0, covers: 0,
     })),
@@ -43,26 +45,42 @@ vi.mock("@ibatexas/domain", () => ({
   createOrderCommandService: () => ({
     create: vi.fn(),
     reconcileStatus: vi.fn(async () => ({ success: true })),
+    transitionStatus: vi.fn(async () => ({ version: 1, previousStatus: "pending", newStatus: "pending" })),
+    transitionStatusFromEnvelope: vi.fn(async () => ({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 1, previousStatus: "pending", newStatus: "pending" },
+    })),
   }),
   createOrderQueryService: () => ({
     list: vi.fn(async () => ({ orders: [], count: 0 })),
+    listAll: vi.fn(async () => ({ orders: [], count: 0 })),
     getById: vi.fn(async () => null),
   }),
   createPaymentCommandService: () => ({
     create: vi.fn(),
     transitionStatus: vi.fn(async () => ({ id: "pay_01", version: 1 })),
+    transitionStatusFromEnvelope: vi.fn(async () => ({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 1, previousStatus: "paid", newStatus: "paid" },
+    })),
   }),
   createPaymentQueryService: () => ({
-    listByOrderId: vi.fn(async () => []),
+    listByOrderId: vi.fn(async () => ({ payments: [], count: 0 })),
     getActiveByOrderId: vi.fn(async () => null),
+  }),
+  createOrderEventLogService: () => ({
+    append: vi.fn(async () => undefined),
   }),
   prisma: {
     review: { findMany: vi.fn(), count: vi.fn() },
-    customer: { count: vi.fn(async () => 0) },
+    customer: { count: vi.fn(async () => 0), findMany: vi.fn(async () => []) },
     reservation: { findMany: vi.fn(async () => []), count: vi.fn(async () => 0) },
+    reservationTable: { findMany: vi.fn(async () => []) },
     customerOrderItem: { findMany: vi.fn(async () => []) },
     conversationMessage: { count: vi.fn(async () => 0) },
     orderProjection: { findMany: vi.fn(async () => []), findFirst: vi.fn(async () => null), count: vi.fn(async () => 0) },
+    payment: { update: vi.fn(async () => ({})) },
+    orderNote: { create: vi.fn(async () => ({ id: "n1", createdAt: new Date(), content: "" })), findMany: vi.fn(async () => []) },
   },
 }))
 

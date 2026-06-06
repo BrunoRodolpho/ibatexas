@@ -138,6 +138,100 @@ export { indexProduct, deleteProductFromIndex, indexProductsBatch } from "./type
 
 // ── Medusa HTTP client ────────────────────────────────────────────────────────
 export { medusaAdmin, medusaStore, MedusaRequestError, reaisToCentavos } from "./medusa/client.js"
+export {
+  medusaAdjudicated,
+  detectMedusaIntentKind,
+  medusaWrapperPolicyBundle,
+  MedusaAdjudicateRefusedError,
+  MedusaAdjudicateDeferredError,
+  MedusaAdjudicateNeedsReviewError,
+  MEDUSA_INTENT_KINDS,
+  type MedusaAdjudicatedArgs,
+  type MedusaIntentKind,
+  type MedusaWrapperState,
+} from "./medusa/adjudicated.js"
+
+// ── Medusa anonymize compensation tracking (audit-2026-05-24 H3 Wave-B) ──
+// Redis-backed registry of in-flight `customer.anonymize.medusa.pending`
+// events. Domain emits → subscriber confirms → retry job sweeps stragglers.
+export {
+  medusaAnonymizePendingKey,
+  medusaAnonymizePendingIndexKey,
+  recordMedusaAnonymizePending,
+  readMedusaAnonymizePending,
+  clearMedusaAnonymizePending,
+  listMedusaAnonymizePendingCustomerIds,
+  bumpMedusaAnonymizePendingAttempt,
+  MEDUSA_ANONYMIZE_PENDING_TTL_SECONDS,
+  type MedusaAnonymizePendingEntry,
+} from "./medusa/anonymize-pending.js"
+
+// ── Medusa STORE-scope HTTP wrapper (W9 cart-egress epic) ─────────────────────
+// Kernel-gated wrapper around customer-cart STORE-scope mutations. Sibling
+// of `medusaAdjudicated` (which handles ADMIN-scope egress). Closes the
+// 10 LLM-callable cart-tool bypasses inventoried in
+// `docs/adjudicate-migration/correctness-remediation/WAVE9-CART-EGRESS-BACKLOG.md`.
+// Apps and cart tools should import `medusaStoreAdjudicated` from
+// `@ibatexas/tools` for all `/store/*` mutations.
+export {
+  medusaStoreAdjudicated,
+  medusaStoreWrapperPolicyBundle,
+  MEDUSA_STORE_INTENT_KINDS,
+  MedusaStoreAdjudicateRefusedError,
+  MedusaStoreAdjudicateDeferredError,
+  MedusaStoreAdjudicateNeedsReviewError,
+  type MedusaStoreIntentKind,
+  type MedusaStoreWrapperState,
+  type MedusaStoreAdjudicatedMeta,
+  type MedusaStoreFetchLike,
+  type MedusaStoreCartCreatePayload,
+  type MedusaStoreCartLineItemAddPayload,
+  type MedusaStoreCartLineItemUpdatePayload,
+  type MedusaStoreCartLineItemRemovePayload,
+  type MedusaStoreCartEmailUpdatePayload,
+  type MedusaStoreCartPromotionAddPayload,
+  type MedusaStoreCartCompletePayload,
+  type MedusaStorePaymentCollectionCreatePayload,
+  type MedusaStorePaymentSessionCreatePayload,
+} from "./medusa/store-adjudicated.js"
+
+// ── Stripe HTTP wrapper (W7-P5) ───────────────────────────────────────────────
+// Promoted to the top-level barrel so apps/api routes (e.g. the Stripe
+// webhook handler) can route bare `stripe.*` mutations through the
+// kernel-gated wrapper. Previously only re-exported from
+// `packages/tools/src/stripe/index.ts`; the webhook route was importing
+// the bare `Stripe` SDK and bypassed the wrapper (NEW-W7-V2, closed in
+// W8). Apps should import `stripeAdjudicated` from `@ibatexas/tools`.
+export {
+  stripeAdjudicated,
+  stripeWrapperPolicyBundle,
+  STRIPE_INTENT_KINDS,
+  StripeAdjudicateRefusedError,
+  StripeAdjudicateDeferredError,
+  StripeAdjudicateNeedsReviewError,
+  type StripeIntentKind,
+  type StripeWrapperState,
+  type StripeAdjudicatedArgs,
+} from "./stripe/adjudicated.js"
+
+// ── Twilio SDK wrapper (audit-2026-05-23) ─────────────────────────────────────
+// Kernel-gated wrapper around `twilio.messages.create`. Closes the
+// gate-blind 2× direct send in `apps/api/src/whatsapp/client.ts:132,204`
+// surfaced by the 2026-05-23 coverage audit. Apps should import
+// `twilioAdjudicated` from `@ibatexas/tools`.
+export {
+  twilioAdjudicated,
+  twilioWrapperPolicyBundle,
+  TWILIO_INTENT_KINDS,
+  TwilioAdjudicateRefusedError,
+  TwilioAdjudicateDeferredError,
+  TwilioAdjudicateNeedsReviewError,
+  type TwilioIntentKind,
+  type TwilioWrapperState,
+  type TwilioMessageSendPayload,
+  type TwilioAdjudicatedMeta,
+  type TwilioClientLike,
+} from "./twilio/adjudicated.js"
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"

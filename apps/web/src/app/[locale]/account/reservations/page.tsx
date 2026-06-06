@@ -137,7 +137,9 @@ export default function ReservationsPage() {
     setMyReservations([], true)
 
     try {
-      const res = await fetch(`${getApiBase()}/api/reservations?customerId=${customerId}&limit=20`)
+      const res = await fetch(`${getApiBase()}/api/reservations?limit=20`, {
+        credentials: "include",
+      })
       if (!res.ok) throw new Error("Erro ao carregar reservas.")
       const data = await res.json()
       setMyReservations(data.reservations ?? [], false)
@@ -162,8 +164,8 @@ export default function ReservationsPage() {
       const res = await fetch(`${getApiBase()}/api/reservations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
-          customerId,
           timeSlotId: selectedSlot.timeSlotId,
           partySize,
           specialRequests,
@@ -196,7 +198,8 @@ export default function ReservationsPage() {
       const res = await fetch(`${getApiBase()}/api/reservations/${reservationId}`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId }),
+        credentials: "include",
+        body: JSON.stringify({}),
       })
 
       if (!res.ok) {

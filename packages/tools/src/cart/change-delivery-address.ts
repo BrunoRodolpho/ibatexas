@@ -5,9 +5,26 @@
 // - Allowed on pending/confirmed within PONR
 // - Preparing → escalate
 // - ready/in_delivery/delivered/canceled → denied
+//
+// ── Task 15 (M3) — consolidation under OrderCommandService ───────────────
+//
+// Previously this tool wrote `prisma.orderProjection.update` directly,
+// bypassing the version counter (investigation 03 P0 #2). The tool now
+// routes through `OrderCommandService.changeAddressFromEnvelope`, which:
+//
+//   - Adjudicates via `orderProjectionPolicyBundle` (`order.address.change`)
+//   - Bumps `OrderProjection.version` consistently with other writers
+//   - Appends an OrderStatusHistory row keyed to the new version
+//   - Emits a governance audit record via the configured AuditSink
 
+import { randomUUID } from "node:crypto";
 import { NonRetryableError, canPerformAction, type AgentContext, type OrderFulfillmentStatus } from "@ibatexas/types";
-import { createOrderQueryService, prisma } from "@ibatexas/domain";
+import {
+  createOrderQueryService,
+  createOrderCommandService,
+  type OrderAddressChangePayload,
+} from "@ibatexas/domain";
+import { buildEnvelope } from "@adjudicate/core";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 
 interface ChangeAddressInput {
@@ -58,12 +75,33 @@ export async function changeDeliveryAddress(
     };
   }
 
-  await prisma.orderProjection.update({
-    where: { id: input.orderId },
-    data: {
-      shippingAddressJson: input.address as never,
+  // ── Build the IntentEnvelope ────────────────────────────────────────
+  const payload: OrderAddressChangePayload = {
+    orderId: input.orderId,
+    customerId: ctx.customerId,
+    address: input.address,
+  };
+  const envelope = buildEnvelope({
+    kind: "order.address.change" as const,
+    payload,
+    nonce: randomUUID(),
+    actor: {
+      principal: "llm",
+      sessionId: ctx.sessionId ?? `customer:${ctx.customerId}`,
     },
+    taint: "UNTRUSTED",
   });
+
+  const orderCmdSvc = createOrderCommandService();
+  const result = await orderCmdSvc.changeAddressFromEnvelope(envelope);
+
+  if (result.decision.kind !== "EXECUTE" && result.decision.kind !== "REWRITE") {
+    const message =
+      result.decision.kind === "REFUSE"
+        ? result.decision.refusal.userFacing
+        : "Não foi possível alterar o endereço no momento.";
+    return { success: false, message };
+  }
 
   await publishNatsEvent("order.address_changed", {
     eventType: "order.address_changed",

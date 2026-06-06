@@ -103,3 +103,9 @@ export type AnalyticsEvent =
   | 'order_note_added'
   | 'order_amended'
   | 'order_canceled_by_customer'
+  // ── IBX-IGE Audit (kernel observability) ────────────────
+  | 'audit_decision_executed'
+  | 'audit_decision_refused'
+  | 'audit_ledger_hit'
+  | 'audit_nats_sink_failed'
+  | 'audit_replay_divergence'

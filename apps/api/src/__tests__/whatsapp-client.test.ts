@@ -1,9 +1,11 @@
 // Unit tests for whatsapp/client.ts — mock twilio.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { TwilioAdjudicateRefusedError } from "@ibatexas/tools";
 import {
   splitForWhatsApp,
   sendText,
+  sendMedia,
   sendInteractiveList,
   sendInteractiveButtons,
   phoneHash,
@@ -166,6 +168,78 @@ describe("sendText", () => {
     expect(result).toBeInstanceOf(Error);
     expect((result as Error).message).toBe("Twilio down");
     expect(mockMessagesCreate).toHaveBeenCalledTimes(3);
+  });
+
+  // audit-2026-05-24 P2-1: kernel REFUSE is permanent — retrying would emit
+  // 3× audit records for the same payload that will never be approved.
+  // The retry classifier in client.ts must short-circuit on
+  // TwilioAdjudicateRefusedError and re-throw immediately.
+  it("does NOT retry when kernel REFUSEs (TwilioAdjudicateRefusedError)", async () => {
+    // Build a refusal decision shape that satisfies the constructor.
+    const refusedErr = new TwilioAdjudicateRefusedError({
+      kind: "REFUSE",
+      refusal: {
+        kind: "BUSINESS_RULE",
+        code: "twilio.message.empty",
+        userFacing:
+          "Não foi possível enviar a mensagem porque o conteúdo está vazio.",
+      },
+      basis: [],
+    });
+    mockMessagesCreate.mockRejectedValueOnce(refusedErr);
+
+    const promise = sendText("whatsapp:+5511999887766", "x").catch((e) => e);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    const result = await promise;
+    expect(result).toBeInstanceOf(TwilioAdjudicateRefusedError);
+    // Critical assertion: refusal is permanent, so the wrapper is called
+    // exactly once — no audit-emission pollution.
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("DOES retry on transient (non-refusal) errors per backoff policy", async () => {
+    const transient = Object.assign(new Error("ECONNREFUSED"), { code: "ECONNREFUSED" });
+    mockMessagesCreate
+      .mockRejectedValueOnce(transient)
+      .mockRejectedValueOnce(transient)
+      .mockRejectedValueOnce(transient);
+
+    const promise = sendText("whatsapp:+5511999887766", "x").catch((e) => e);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    await promise;
+    // Transient errors are retried up to the configured maxRetries (3).
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ── sendMedia ─────────────────────────────────────────────────────────────────
+
+describe("sendMedia", () => {
+  // P2-1 mirror: same classification applies to media sends.
+  it("does NOT retry when kernel REFUSEs (TwilioAdjudicateRefusedError)", async () => {
+    const refusedErr = new TwilioAdjudicateRefusedError({
+      kind: "REFUSE",
+      refusal: {
+        kind: "BUSINESS_RULE",
+        code: "twilio.message.empty",
+        userFacing:
+          "Não foi possível enviar a mensagem porque o conteúdo está vazio.",
+      },
+      basis: [],
+    });
+    mockMessagesCreate.mockRejectedValueOnce(refusedErr);
+
+    const promise = sendMedia(
+      "whatsapp:+5511999887766",
+      "https://example.com/x.jpg",
+    ).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    const result = await promise;
+    expect(result).toBeInstanceOf(TwilioAdjudicateRefusedError);
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -8,6 +8,27 @@
 //
 // INVARIANT: Payment is the source of truth for billing.
 // This subscriber bridges the Billing → Commerce boundary via NATS events.
+//
+// ── Task 16 (M3) — kernel-gated auto-confirm / auto-cancel ────────────────
+//
+// Per investigation 04 P0 #1: payment-lifecycle auto-confirms / auto-cancels
+// orders by webhook with ZERO kernel review. A forged NATS event today can
+// confirm or cancel any order — no per-message auth. This subscriber now
+// builds a SYSTEM-actor IntentEnvelope and routes the order transition
+// through `orderCmdSvc.transitionStatusFromEnvelope(envelope)` (Task 15).
+//
+//   - kind:               order.status.transition
+//   - actor.principal:    "system"
+//   - actor.sessionId:    `payment.status_changed:${paymentId}:${newStatus}`
+//   - taint:              "SYSTEM"
+//   - nonce:              `${paymentId}:${newStatus}` (deterministic per event)
+//
+// On REFUSE the original NATS payload is pushed to the DLQ for ops
+// inspection. EXECUTE / REWRITE proceed; DEFER / REQUEST_CONFIRMATION /
+// ESCALATE log the outcome and skip the mutation (the kernel decision
+// metric surfaces the refusal upstream).
+//
+// Existing dedup (`isNewEvent`) and event-log archival are preserved.
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -15,7 +36,9 @@ import {
   createOrderCommandService,
   createOrderQueryService,
   createOrderEventLogService,
+  type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,
@@ -23,11 +46,15 @@ import {
 } from "@ibatexas/types";
 import type { FastifyBaseLogger } from "fastify";
 import { isNewEvent } from "./dedup.js";
+import { pushToDlq } from "./dlq.js";
+import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 
 export async function startPaymentLifecycleSubscriber(
   log?: FastifyBaseLogger,
 ): Promise<void> {
-  const orderCmdSvc = createOrderCommandService();
+  const orderCmdSvc = createOrderCommandService(log ?? undefined, {
+    auditSink: getAuditSink(),
+  });
   const orderQuerySvc = createOrderQueryService();
   const eventLogSvc = createOrderEventLogService(log);
 
@@ -77,12 +104,47 @@ export async function startPaymentLifecycleSubscriber(
             break;
           }
 
+          // ── Task 16: kernel-gated transition ──────────────────────────
+          const transitionPayload: OrderStatusTransitionPayload = {
+            orderId,
+            newStatus: OrderFulfillmentStatus.CONFIRMED,
+            actor: "system",
+            reason: "Pagamento confirmado",
+          };
+          const envelope = buildSystemEnvelope({
+            kind: "order.status.transition" as const,
+            payload: transitionPayload,
+            sourceSubject: "payment.status_changed",
+            eventId: `auto_confirm:${paymentId}:${newStatus}`,
+          });
+
           try {
-            await orderCmdSvc.transitionStatus(orderId, {
-              newStatus: OrderFulfillmentStatus.CONFIRMED,
-              actor: "system",
-              reason: "Pagamento confirmado",
-            });
+            const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
+
+            if (
+              outcome.decision.kind !== "EXECUTE" &&
+              outcome.decision.kind !== "REWRITE"
+            ) {
+              // REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE — mutation skipped.
+              const decisionKind = outcome.decision.kind;
+              const refusalCode =
+                outcome.decision.kind === "REFUSE"
+                  ? outcome.decision.refusal.code
+                  : undefined;
+              log?.warn(
+                { orderId, paymentId, decision: decisionKind, refusalCode },
+                "[payment-lifecycle] kernel did not authorize auto-confirm — mutation skipped",
+              );
+              if (outcome.decision.kind === "REFUSE") {
+                await pushToDlq(
+                  "payment.status_changed",
+                  payload as Record<string, unknown>,
+                  `kernel REFUSE: ${outcome.decision.refusal.code}`,
+                  log,
+                );
+              }
+              break;
+            }
 
             await publishNatsEvent("order.status_changed", {
               eventType: "order.status_changed",
@@ -98,10 +160,22 @@ export async function startPaymentLifecycleSubscriber(
 
             log?.info({ orderId }, "[payment-lifecycle] Order auto-confirmed after payment");
           } catch (err) {
-            // ConcurrencyError or InvalidTransitionError — another process may have done it
-            log?.warn(
-              { orderId, error: String(err) },
-              "[payment-lifecycle] Failed to auto-confirm order — may already be advanced",
+            // P1-C: transitionStatusFromEnvelope threw (ConcurrencyError,
+            // InvalidTransitionError, kernel circuit-open, etc.). Previously
+            // we logged a warn and swallowed — the original NATS payload
+            // evaporated with no operator surface. Push to DLQ so ops can
+            // replay or triage; the dedup ledger keyed on
+            // (paymentId, newStatus) protects against re-firing the
+            // mutation if the replay turns into an EXECUTE.
+            log?.error(
+              { orderId, paymentId, error: String(err) },
+              "[payment-lifecycle] Failed to auto-confirm order — pushing to DLQ",
+            );
+            await pushToDlq(
+              "payment.status_changed",
+              payload as Record<string, unknown>,
+              err,
+              log,
             );
           }
           break;
@@ -125,12 +199,46 @@ export async function startPaymentLifecycleSubscriber(
             break;
           }
 
+          // ── Task 16: kernel-gated cancel ──────────────────────────────
+          const cancelPayload: OrderStatusTransitionPayload = {
+            orderId,
+            newStatus: OrderFulfillmentStatus.CANCELED,
+            actor: "system",
+            reason: "Pagamento reembolsado",
+          };
+          const envelope = buildSystemEnvelope({
+            kind: "order.status.transition" as const,
+            payload: cancelPayload,
+            sourceSubject: "payment.status_changed",
+            eventId: `auto_cancel:${paymentId}:${newStatus}`,
+          });
+
           try {
-            await orderCmdSvc.transitionStatus(orderId, {
-              newStatus: OrderFulfillmentStatus.CANCELED,
-              actor: "system",
-              reason: "Pagamento reembolsado",
-            });
+            const outcome = await orderCmdSvc.transitionStatusFromEnvelope(envelope);
+
+            if (
+              outcome.decision.kind !== "EXECUTE" &&
+              outcome.decision.kind !== "REWRITE"
+            ) {
+              const decisionKind = outcome.decision.kind;
+              const refusalCode =
+                outcome.decision.kind === "REFUSE"
+                  ? outcome.decision.refusal.code
+                  : undefined;
+              log?.warn(
+                { orderId, paymentId, decision: decisionKind, refusalCode },
+                "[payment-lifecycle] kernel did not authorize auto-cancel — mutation skipped",
+              );
+              if (outcome.decision.kind === "REFUSE") {
+                await pushToDlq(
+                  "payment.status_changed",
+                  payload as Record<string, unknown>,
+                  `kernel REFUSE: ${outcome.decision.refusal.code}`,
+                  log,
+                );
+              }
+              break;
+            }
 
             await publishNatsEvent("order.canceled", {
               eventType: "order.canceled",
@@ -144,9 +252,18 @@ export async function startPaymentLifecycleSubscriber(
 
             log?.info({ orderId }, "[payment-lifecycle] Order canceled after full refund");
           } catch (err) {
-            log?.warn(
-              { orderId, error: String(err) },
-              "[payment-lifecycle] Failed to cancel order after refund",
+            // P1-C: same fail-safety as the auto-confirm path above. The
+            // original NATS payload survives in the DLQ for ops replay
+            // rather than evaporating into the warn log.
+            log?.error(
+              { orderId, paymentId, error: String(err) },
+              "[payment-lifecycle] Failed to cancel order after refund — pushing to DLQ",
+            );
+            await pushToDlq(
+              "payment.status_changed",
+              payload as Record<string, unknown>,
+              err,
+              log,
             );
           }
           break;
@@ -204,7 +321,7 @@ export async function startPaymentLifecycleSubscriber(
         "[payment-lifecycle] Error handling payment status change",
       );
     }
-  });
+  }, { queueGroup: "payment-lifecycle" });
 
   log?.info("[payment-lifecycle] Subscriber started");
 }

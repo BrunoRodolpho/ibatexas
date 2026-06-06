@@ -320,6 +320,86 @@ flowchart TD
 
 **Note:** Conversation archival events flow through NATS to the `conversation-archiver` subscriber (Postgres persistence), NOT through PostHog. These are infrastructure events for durable storage, not analytics events.
 
+### IBX-IGE Audit Events (kernel observability)
+
+These events emit when the Intent-Gated Execution kernel runs against live traffic. They are critical for post-cutover health monitoring.
+
+> Updated 2026-05-24 post-cutover: the IBX-IGE v3.0 cutover (`f3bea43`) made the kernel always authoritative; the legacy shadow path was removed. The three `audit_kernel_shadow_diverged_{basis,kind,rewrite}` rows below are marked HISTORICAL — the corresponding `PH_EVENT_SHADOW_DIVERGED_*` constants and `kernel_shadow_divergence_total` Prometheus counter were deleted by `1024028`, and `recordShadowDivergence()` is now a no-op in `apps/api/src/plugins/kernel-metrics-sink.ts`. No producer emits these events in the always-on kernel; the string literals remain in the `AnalyticsEvent` union but are unreferenced.
+
+| Event | Trigger | Key Properties | Operational policy |
+|-------|---------|----------------|--------------------|
+| ~~`audit_kernel_shadow_diverged_basis`~~ (HISTORICAL) | n/a — shadow path removed by `f3bea43` | n/a | No longer emitted post-cutover. |
+| ~~`audit_kernel_shadow_diverged_kind`~~ (HISTORICAL) | n/a — shadow path removed by `f3bea43` | n/a | No longer emitted post-cutover. |
+| ~~`audit_kernel_shadow_diverged_rewrite`~~ (HISTORICAL) | n/a — shadow path removed by `f3bea43` | n/a | No longer emitted post-cutover. |
+| `audit_decision_executed` | adjudicate() returned EXECUTE for a mutating intent | `intentKind`, `taint`, `basisCodes[]`, `durationMs` | Metric — track distribution per intent class |
+| `audit_decision_refused` | adjudicate() returned REFUSE | `intentKind`, `refusalKind`, `refusalCode`, `taint` | Track refusal-rate per intent kind; alert on sudden spike (>2× 7-day baseline) |
+| `audit_ledger_hit` | Execution Ledger replay-suppressed a duplicate intent | `intentKind`, `intentHash`, `firstAt`, `subkind` (e.g., `defer_resume`) | Metric — high rate may indicate webhook redelivery storm |
+| `audit_nats_sink_failed` | NatsSink emit() rejected | `subject`, `errorClass`, `consecutiveFailures` | Alert at >10 consecutive failures (NatsSink throws `NatsSinkError` at this point) |
+| `audit_replay_divergence` | Replay harness produced different Decision than recorded | `intentHash`, `expected`, `actual` | Critical — policy or kernel changed in a way that breaks reproducibility. Block any release that introduces divergence |
+
+**~~Rollout dashboards~~ (HISTORICAL — Progressive Authority Rollout, IBX-IGE v2.0):**
+
+> Updated 2026-05-24 post-cutover: the staged shadow→enforce promotion plan (Stage 1 read-like mutating → Stage 4 financial reversals) was superseded by the IBX-IGE v3.0 cutover (`f3bea43`), which made the kernel authoritative for all intent classes in one step. The four shadow-divergence dashboards below no longer have a data source — `audit_kernel_shadow_diverged_*` events are not emitted post-cutover. Post-cutover health monitoring uses `audit_decision_executed` / `audit_decision_refused` rates and the Prometheus counters in §Kernel metrics below.
+
+**Sample PostHog queries:**
+
+> Updated 2026-05-24 post-cutover: the "Shadow divergence rate per intent class" query that previously lived here selected from `event = 'audit_kernel_shadow_diverged_kind'`, which is no longer emitted (HISTORICAL — see the rollout-dashboards note above). The decision-distribution query below works as-is and is the post-cutover refusal-rate baseline.
+
+```
+# Decision distribution (executed vs refused)
+SELECT
+  event,
+  count() AS volume
+FROM events
+WHERE event IN ('audit_decision_executed', 'audit_decision_refused')
+  AND timestamp > now() - INTERVAL 1 HOUR
+GROUP BY event
+```
+
+**NATS subjects:** all 5 actively-emitted `audit_*` events also publish to `ibatexas.analytics.event` per the standard pipeline. The audit-only durable trail emits separately to `ibatexas.audit.intent.decision.v1` via `@adjudicate/audit/sink-nats`. (Updated 2026-05-24 post-cutover: was "all 8" before the 3 shadow-divergence events were retired with the shadow path — see HISTORICAL rows above.)
+
+### Kernel metrics (Prometheus)
+
+The same `MetricsSink` adapter that emits the 5 active PostHog `audit_*` events above also populates a `prom-client` registry exposed at `GET /metrics` on the API. The endpoint is token-gated by `PROMETHEUS_TOKEN` — unset = 503 (closed by default). All metric names are stable contracts shared with `docs/adjudicate-migration/migration/06-observability-requirements.md`.
+
+**Producer:** `apps/api/src/plugins/kernel-metrics-sink.ts` (`createKernelMetricsSink`).
+**Scrape route:** `apps/api/src/routes/metrics.ts`.
+
+| Metric | Type | Labels | Purpose |
+|--------|------|--------|---------|
+| `kernel_decision_total` | Counter | `kind` (Decision kind: EXECUTE / REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE / REWRITE), `intent_kind` | Every adjudicate() call. Refusal-rate denominator. |
+| `kernel_refusal_total` | Counter | `kind` (refusal kind: SECURITY / BUSINESS_RULE / AUTH / STATE), `intent_kind`, `basis_category`, `basis_code` | Per-intent refusal distribution. Alert on >2× 7-day baseline. |
+| `kernel_decision_duration_seconds` | Histogram | `intent_kind` | adjudicate() latency in seconds. Alert on p99 > 100ms. Buckets: 1ms — 10s. |
+| ~~`kernel_shadow_divergence_total`~~ (HISTORICAL) | n/a | n/a | Updated 2026-05-24 post-cutover: this counter was the enforce-flip gate metric (per the now-`superseded/04-shadow-enforce-sequencing.md`). The IBX-IGE v3.0 cutover (`f3bea43`) removed the shadow path; the counter registration was dropped from `apps/api/src/plugins/kernel-metrics-sink.ts` by `1024028`. Not present in the live Prometheus registry. |
+| `kernel_ledger_op_total` | Counter | `outcome` (hit / miss / ok / duplicate / error), `op` (check / record) | Execution Ledger fail-open detection. |
+| `kernel_audit_sink_failure_total` | Counter | `sink` (nats / postgres / console), `reason` (errorClass) | NATS / Postgres audit pipeline health. Drives circuit-breaker engagement. |
+| `kernel_defer_resume_duration_seconds` | Histogram | `kind` | Park-to-resume latency for DEFER intents. Populated by the resolver (Task 03). Buckets: 100ms — 4h. |
+
+**Scrape config (Prometheus):**
+
+```yaml
+scrape_configs:
+  - job_name: ibatexas-kernel
+    metrics_path: /metrics
+    scheme: https
+    static_configs:
+      - targets: ["api.ibatexas.com.br:443"]
+    bearer_token: # NOT used — use the custom header instead
+    relabel_configs: []
+    # Inject PROMETHEUS_TOKEN via a custom header on the scrape config:
+    authorization: { type: "", credentials: "" }
+```
+
+In practice the Prometheus job sets `http_config.proxy_url` or injects the header via a reverse-proxy. For a Grafana Agent / k8s deployment, use:
+
+```yaml
+- job_name: ibatexas-kernel
+  metrics_path: /metrics
+  http_config:
+    request_headers:
+      x-prometheus-token: ${PROMETHEUS_TOKEN}
+```
+
 ### NATS Analytics Events
 
 Web analytics events are published to NATS subject `analytics.event` (full: `ibatexas.analytics.event`) for downstream consumers (e.g., PostHog ingestion pipeline).

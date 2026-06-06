@@ -7,16 +7,29 @@
 //
 // INVARIANT: This job NEVER cancels orders. It only transitions payment status.
 // Order cleanup is handled by the separate stale-order-checker job.
+//
+// ── Task 16 (M3) — kernel-gated PIX expiry ────────────────────────────────
+//
+// Per investigation 04 P0 #2 (paired with stale-order-checker): autonomous
+// payment-state mutation by wall clock. Now flows through an envelope of
+// kind `payment.status.transition` (SYSTEM-only at the policy bundle's
+// taint floor). nonce = `pix:expiry:${paymentId}` for deterministic replay.
 
 import { cancelStalePaymentIntent } from "@ibatexas/tools";
 import { withLock } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
-import { createPaymentCommandService, prisma } from "@ibatexas/domain";
+import {
+  createPaymentCommandService,
+  prisma,
+  type PaymentStatusTransitionPayload,
+} from "@ibatexas/domain";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { PaymentStatus, type PaymentStatusChangedEvent } from "@ibatexas/types";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import { createQueue, createWorker, type Job } from "./queue.js";
+import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 
 const REPEAT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -27,7 +40,9 @@ let logger: FastifyBaseLogger | null = null;
 /** Core job logic — exported for direct testing. */
 export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<void> {
   const effectiveLogger = log ?? logger;
-  const paymentSvc = createPaymentCommandService(effectiveLogger ?? undefined);
+  const paymentSvc = createPaymentCommandService(effectiveLogger ?? undefined, {
+    auditSink: getAuditSink(),
+  });
   let expiredCount = 0;
 
   try {
@@ -51,13 +66,37 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
       try {
         // Acquire distributed lock on this payment
         const result = await withLock(`payment:${payment.id}`, async () => {
-          // Transition payment → payment_expired
-          const transition = await paymentSvc.transitionStatus(payment.id, {
+          // ── Task 16: kernel-gated payment transition ────────────────
+          const transitionPayload: PaymentStatusTransitionPayload = {
+            paymentId: payment.id,
             newStatus: PaymentStatus.PAYMENT_EXPIRED,
             actor: "system",
             reason: "PIX expirado",
             expectedVersion: payment.version,
+          };
+          const envelope = buildSystemEnvelope({
+            kind: "payment.status.transition" as const,
+            payload: transitionPayload,
+            sourceSubject: "pix-expiry-checker",
+            eventId: `pix:expiry:${payment.id}`,
           });
+
+          const outcome = await paymentSvc.transitionStatusFromEnvelope(envelope);
+          if (
+            outcome.decision.kind !== "EXECUTE" &&
+            outcome.decision.kind !== "REWRITE"
+          ) {
+            const refusalCode =
+              outcome.decision.kind === "REFUSE"
+                ? outcome.decision.refusal.code
+                : undefined;
+            effectiveLogger?.warn(
+              { paymentId: payment.id, decision: outcome.decision.kind, refusalCode },
+              "[pix-expiry] kernel did not authorize transition — skipping",
+            );
+            return false;
+          }
+          const transition = outcome.result!;
 
           // Cancel the Stripe PaymentIntent to prevent late PIX scans
           if (payment.stripePaymentIntentId) {
@@ -93,6 +132,11 @@ export async function checkPixExpiry(log?: FastifyBaseLogger | null): Promise<vo
             { paymentId: payment.id },
             "[pix-expiry] Lock not acquired — skipping (will retry next run)",
           );
+          continue;
+        }
+
+        if (result === false) {
+          // Kernel refused / payment already transitioned
           continue;
         }
 

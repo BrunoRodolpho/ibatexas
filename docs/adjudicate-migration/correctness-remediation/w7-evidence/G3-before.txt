@@ -1,0 +1,60 @@
+# G3 — verifyParkedEnvelopeHash hoist (BEFORE fix)
+#
+# Command (run from /Users/thaisrodolpho/projects/ibatexas/apps/api):
+#   pnpm vitest run src/adapters/__tests__/park-deferred-intent-nx-hash.test.ts
+#
+# Environment: Docker available; the existing redis-testcontainer.ts
+# harness spins up redis:7-alpine for the suite (~7s start, ephemeral
+# host port).
+#
+# Expected: the "hoist auto-corrects" assertion FAILS — the pre-W7-G3
+# wrapper does NOT defensively hoist envelope.actor.principal to top-level
+# actorPrincipal. A caller passing a full IntentEnvelope (where
+# actor.principal is nested) lands `parked.envelope.actorPrincipal:
+# undefined` in Redis, which causes the framework's
+# verifyParkedEnvelopeHash to return {verified: null, reason:
+# "missing_fields"} — tamper detection structurally inert.
+#
+# The first test (happy path with explicit top-level actorPrincipal)
+# passes because production callers in kernel-executor.ts /
+# llm-responder.ts ALREADY hoist by hand; the W7-G3 hardening is for
+# defense against future caller forgetfulness.
+#
+# Raw vitest output:
+
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+ ❯ src/adapters/__tests__/park-deferred-intent-nx-hash.test.ts (3 tests | 1 failed) 758ms
+   ✓ W7-G3 — verifyParkedEnvelopeHash on adopter-parked blob > park-via-wrapper → read raw blob → verifyParkedEnvelopeHash returns {verified: true} 7ms
+   × W7-G3 — verifyParkedEnvelopeHash on adopter-parked blob > hoist auto-corrects: caller passes envelope WITHOUT explicit top-level actorPrincipal — wrapper hoists from actor.principal 7ms
+     → expected undefined to be 'llm' // Object.is equality
+   ✓ W7-G3 — verifyParkedEnvelopeHash on adopter-parked blob > tamper detection still works: mutating the payload after park yields verified=false 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/adapters/__tests__/park-deferred-intent-nx-hash.test.ts > W7-G3 — verifyParkedEnvelopeHash on adopter-parked blob > hoist auto-corrects: caller passes envelope WITHOUT explicit top-level actorPrincipal — wrapper hoists from actor.principal
+AssertionError: expected undefined to be 'llm' // Object.is equality
+
+[32m- Expected:[39m 
+"llm"
+
+[31m+ Received:[39m 
+undefined
+
+ ❯ src/adapters/__tests__/park-deferred-intent-nx-hash.test.ts:184:46
+    182|       // The hoist auto-populated actorPrincipal even though the caller
+    183|       // omitted it explicitly.
+    184|       expect(parked.envelope.actorPrincipal).toBe("llm")
+       |                                              ^
+    185| 
+    186|       const verification = verifyParkedEnvelopeHash(parked)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 passed (3)
+   Start at  17:57:23
+   Duration  1.54s (transform 90ms, setup 0ms, collect 521ms, tests 758ms, environment 0ms, prepare 58ms)
+

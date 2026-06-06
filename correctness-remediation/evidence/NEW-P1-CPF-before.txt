@@ -1,0 +1,46 @@
+NEW-P1-CPF — CPF regex misses CPF-followed-by-`-` — BEFORE
+============================================================
+
+Date: 2026-05-23
+Source: deep-audit/05-hidden-bugs.md #7
+File: packages/llm-provider/src/audit-redactor.ts:233
+
+Current regex
+-------------
+  const CPF_RE = /(?<![\d.-])(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?![\d.-])/g
+
+Symptom
+-------
+The negative LOOKAHEAD `(?![\d.-])` disallows:
+  - another digit (correct — would mean we're inside a longer numeric sequence)
+  - a `.` (overly cautious — would only matter if the CPF already used dots and
+    then a trailing dot followed)
+  - a `-` (BUG — a hyphen after a bare-digit CPF means we're at a word boundary
+    that the redactor should treat as PII)
+
+Concretely:
+  "12345678900-foo"  → the lookahead sees `-` after `12345678900`, fails,
+                       no match → CPF NOT redacted.
+  "cpf:12345678900-bar"  → same failure pattern.
+  "12345678900_was_processed"  → matches (underscore is not in lookahead set).
+  "12345678900 is my doc"  → matches (space is not in lookahead set).
+
+Real-world impact
+-----------------
+LLM-emitted strings that include a CPF followed by a hyphen-prefixed
+literal (`-foo`, `-id`, `-tag`) bypass redaction. These shapes are
+common in customer free-form text and audit payload composition where a
+CPF is concatenated with a transaction tag.
+
+The negative LOOKBEHIND `(?<![\d.-])` is fine — preventing a match
+inside a longer numeric run (e.g. `123-12345678900-456` is two
+fragments of a longer number, not a CPF).
+
+Fix
+---
+Change the lookahead to `(?![\d])` — only protect against another
+digit immediately after. A hyphen or dot following is now treated as a
+non-CPF boundary character and the match is allowed.
+
+The 50-fixture redactor contract test (audit-redaction-contract.test.ts)
+must still pass — no false-positive shift.

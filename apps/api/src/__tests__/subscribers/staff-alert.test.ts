@@ -45,6 +45,10 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createLoyaltyService: () => ({
     addStamp: vi.fn().mockResolvedValue({ stamps: 1, rewarded: false }),
+    addStampFromEnvelope: vi.fn().mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { stamps: 1, rewarded: false },
+    }),
   }),
   createOrderEventLogService: () => ({
     append: vi.fn(),
@@ -52,11 +56,24 @@ vi.mock("@ibatexas/domain", () => ({
   createOrderCommandService: () => ({
     create: vi.fn(),
     reconcileStatus: vi.fn().mockResolvedValue({ success: true }),
+    createFromEnvelope: vi.fn().mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { id: "order_01", version: 1 },
+    }),
+    reconcileStatusFromEnvelope: vi.fn().mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { version: 2 },
+    }),
   }),
   createPaymentCommandService: () => ({
     create: vi.fn(),
+    createFromEnvelope: vi.fn().mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      result: { id: "pay_01", version: 1 },
+    }),
   }),
   ConcurrencyError: class ConcurrencyError extends Error {},
+  ITEMS_SCHEMA_VERSION: 1,
 }));
 
 vi.mock("@sentry/node", () => ({

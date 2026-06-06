@@ -1,0 +1,36 @@
+# G2 — Template-literal bypass detection (AFTER fix)
+#
+# Command (run from /Users/thaisrodolpho/projects/ibatexas/apps/api):
+#   pnpm vitest run src/__tests__/bypass-detection/bypass-detection.test.ts
+#
+# Expected: all 31 tests pass — the FORBIDDEN_MEDUSA_MULTILINE quote
+# class has been widened from `['"]` to `['"`]` (backtick added) in all
+# four patterns. The new template-literal-method.txt fixture is now
+# fully detected (all 4 of medusaStore/medusaAdmin/medusaStoreFetch/
+# medusaAdminFetch backtick variants surface as matches) AND the pre-fix
+# reproduction assertion is preserved (the regex shape WITHOUT backtick
+# still catches zero — proving the widening was load-bearing).
+#
+# Raw vitest output (tail):
+
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas/apps/api
+
+
+[W6-8 WARN] Suspicious console.log of PII-bearing field (4 matches):
+  • packages/domain/src/seed-delivery.ts:167  →  console.log(`  ⚠️  Customer ${phone} not found, skipping address`)
+  • packages/domain/src/seed-delivery.ts:190  →  console.log(`  ⚠️  Customer ${phone} not found, skipping preferences`)
+  • packages/domain/src/seed-orders.ts:367  →  console.log(`  ⚠️  Customer ${order.phone} not found, skipping order ${order.orderId}`)
+  • packages/domain/src/seed-orders.ts:441  →  console.log(`  ⚠️  Customer ${template.phone} not found, skipping reservation`)
+
+stderr | src/__tests__/bypass-detection/bypass-detection.test.ts > Bypass detection — runtime smoke: dispatcher refuses unknown tool > returns kind:'failed' when no handler is registered for a tool name
+[intent-dispatcher] No handler for definitely_not_a_real_tool_12345 — returning failed
+
+ ✓ src/__tests__/bypass-detection/bypass-detection.test.ts (31 tests) 1382ms
+   ✓ Bypass detection — runtime smoke: dispatcher refuses unknown tool > returns kind:'failed' when no handler is registered for a tool name  1219ms
+
+ Test Files  1 passed (1)
+      Tests  31 passed (31)
+   Start at  17:52:06
+   Duration  1.67s (transform 580ms, setup 0ms, collect 36ms, tests 1.38s, environment 0ms, prepare 52ms)
+

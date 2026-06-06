@@ -1,0 +1,55 @@
+NEW-P0-X7 — Anonymize $transaction no timeout — BEFORE
+=======================================================
+
+Date: 2026-05-23
+Source: deep-audit/05-hidden-bugs.md #5
+File: packages/domain/src/services/customer.service.ts:483
+
+Symptom
+-------
+`anonymizeCustomer(customerId)` wraps 5 Prisma operations in a single
+`prisma.$transaction(async (tx) => { ... })` without a `timeout` option.
+The Prisma client default timeout is 5000 ms. The operations include:
+
+  (1) tx.customer.update — single row
+  (2) tx.address.deleteMany
+  (3) tx.customerPreferences.deleteMany
+  (4) tx.review.updateMany  ← scales with the number of reviews
+  (5) tx.customerOrderItem.updateMany
+
+For a heavy power-user (10k+ reviews), step (4) alone can exceed 5s.
+When the transaction times out:
+  - Prisma ROLLBACKS the whole transaction.
+  - The customer row stays un-anonymized.
+  - The orchestrator (route layer) has ALREADY recorded the receipt of
+    the request in Redis at intake time — receipt persists.
+  - From the operator console the request looks queued; from the
+    database it looks like nothing happened.
+  - LGPD Art. 18 obligation is breached: the data controller has
+    received a valid deletion request and a 15-day deadline starts; a
+    silent 5s timeout breaches the deadline with no operator signal.
+
+Why batching is needed in addition to the timeout
+-------------------------------------------------
+Even a 60s timeout can be insufficient for customers with 50k+ reviews
+and a slow replica. Plus a long-running write transaction holds locks
+that degrade unrelated traffic.
+
+Repro
+-----
+Mock `prisma.$transaction` to delay 10s on a known-large-customer
+fixture. Default 5s timeout → Prisma throws P2028 / "Transaction
+exceeded timeout" → outer await rejects → anonymize is rolled back.
+
+The current test suite (anonymize-customer.test.ts) mocks $transaction
+as `vi.fn((fn) => fn(txClient))` — synchronous wrapper, never hits the
+timeout path. The bug is invisible to the existing test fixture.
+
+Fix outline
+-----------
+1. Add `timeout: 60_000, maxWait: 5_000` to the $transaction options.
+2. Batch the `review.updateMany` scrub when count > 1000 (process in
+   chunks of 500 with separate transactions). Receipt cleanup only
+   after ALL batches succeed.
+3. Keep step (1) atomic with one transaction so the customer row
+   guarantee is preserved end-to-end.

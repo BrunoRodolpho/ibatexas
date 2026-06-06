@@ -19,6 +19,7 @@ const AUTO_POPULATED_SECRETS = ["REDIS_URL", "NATS_URL"]
 
 const ALL_SECRETS = [
   "JWT_SECRET",
+  "COOKIE_SECRET",
   "DATABASE_URL",
   "SENTRY_DSN",
   "ANTHROPIC_API_KEY",
@@ -43,6 +44,21 @@ const GITHUB_SECRETS = [
   "STAGING_DIRECT_DATABASE_URL",
   "SONAR_TOKEN",
 ]
+
+// NEXT_PUBLIC_* values are inlined into the web client bundle at docker build
+// time (see apps/web/Dockerfile ARGs + .github/workflows/deploy-staging.yml
+// build-args). They must exist as GitHub secrets for the build to pick them up.
+// Missing values produce a working build but disable the corresponding feature
+// on the client (analytics, error reporting, payments UI).
+const BUILD_ARG_SECRETS = [
+  "NEXT_PUBLIC_POSTHOG_KEY",
+  "NEXT_PUBLIC_SENTRY_DSN",
+  "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY",
+] as const
+
+const BUILD_ARG_VARIABLES: Record<string, string> = {
+  NEXT_PUBLIC_POSTHOG_HOST: "https://us.posthog.com",
+}
 
 /** Secrets that should use password-style prompt (masked input) */
 const SENSITIVE_SECRETS = new Set([
@@ -145,6 +161,200 @@ function secretPath(env: string, name: string): string {
   return `${SECRET_PATH_PREFIX}/${env}/${name}`
 }
 
+function ssmParamPath(env: string, name: string): string {
+  return `/${SECRET_PATH_PREFIX}/${env}/${name}`
+}
+
+// ── Secrets backend ───────────────────────────────────────────────────────────
+// Dev runs on a single EC2 + Docker Compose, reading secrets from SSM Parameter
+// Store (free). Production uses the heavier Fargate stack with Secrets Manager
+// (ECS has first-class Secrets Manager integration). CLI commands respect per-
+// env defaults here; user can override via SECRETS_BACKEND env var.
+
+type SecretsBackend = "ssm" | "secretsmanager"
+
+const DEFAULT_SECRETS_BACKEND: Record<string, SecretsBackend> = {
+  dev: "ssm",
+  staging: "secretsmanager",
+  production: "secretsmanager",
+}
+
+function secretsBackend(env: string): SecretsBackend {
+  const override = process.env.SECRETS_BACKEND as SecretsBackend | undefined
+  if (override === "ssm" || override === "secretsmanager") return override
+  return DEFAULT_SECRETS_BACKEND[env] ?? "secretsmanager"
+}
+
+/** Read a secret's current value, trying both stores (SSM first for dev). */
+async function readSecret(env: string, name: string): Promise<string | null> {
+  const backend = secretsBackend(env)
+  const order: SecretsBackend[] = backend === "ssm"
+    ? ["ssm", "secretsmanager"]
+    : ["secretsmanager", "ssm"]
+
+  for (const b of order) {
+    if (b === "ssm") {
+      const res = await awsCommand([
+        "ssm", "get-parameter",
+        "--name", ssmParamPath(env, name),
+        "--with-decryption",
+        "--region", DEFAULT_REGION,
+        "--output", "json",
+      ])
+      if (res.exitCode === 0) {
+        try {
+          const data = JSON.parse(res.stdout)
+          const value = data.Parameter?.Value as string | undefined
+          if (value && value !== "__placeholder__") return value
+        } catch { /* fall through */ }
+      }
+    } else {
+      const res = await awsCommand([
+        "secretsmanager", "get-secret-value",
+        "--secret-id", secretPath(env, name),
+        "--region", DEFAULT_REGION,
+        "--output", "json",
+      ])
+      if (res.exitCode === 0) {
+        try {
+          const data = JSON.parse(res.stdout)
+          if (data.SecretString?.trim()) return data.SecretString as string
+        } catch { /* fall through */ }
+      }
+    }
+  }
+  return null
+}
+
+/** Write a secret to the env's configured backend. */
+async function writeSecret(env: string, name: string, value: string): Promise<boolean> {
+  const backend = secretsBackend(env)
+
+  if (backend === "ssm") {
+    const res = await awsCommand([
+      "ssm", "put-parameter",
+      "--name", ssmParamPath(env, name),
+      "--value", value,
+      "--type", "SecureString",
+      "--overwrite",
+      "--region", DEFAULT_REGION,
+    ])
+    return res.exitCode === 0
+  }
+
+  const res = await awsCommand([
+    "secretsmanager", "put-secret-value",
+    "--secret-id", secretPath(env, name),
+    "--secret-string", value,
+    "--region", DEFAULT_REGION,
+  ])
+  return res.exitCode === 0
+}
+
+// ── EC2 host helpers ──────────────────────────────────────────────────────────
+// The new dev env is a single EC2 instance tagged Role=ibatexas-<env>-host.
+// SSM Run Command is the deploy channel; SSM Session Manager is the shell.
+
+async function findHostInstance(env: string): Promise<{ id: string; state: string } | null> {
+  const res = await awsCommand([
+    "ec2", "describe-instances",
+    "--filters",
+    `Name=tag:Role,Values=ibatexas-${env}-host`,
+    "Name=instance-state-name,Values=pending,running,stopping,stopped",
+    "--region", DEFAULT_REGION,
+    "--query", "Reservations[0].Instances[0].[InstanceId,State.Name]",
+    "--output", "text",
+  ])
+  if (res.exitCode !== 0 || !res.stdout.trim() || res.stdout.trim() === "None") return null
+  const [id, state] = res.stdout.trim().split(/\s+/)
+  if (!id || id === "None") return null
+  return { id, state }
+}
+
+async function setInstancePower(env: string, action: "start" | "stop"): Promise<{ ok: boolean; detail: string }> {
+  const instance = await findHostInstance(env)
+  if (!instance) return { ok: false, detail: "no instance found (terraform apply first)" }
+
+  const cmd = action === "start" ? "start-instances" : "stop-instances"
+  const res = await awsCommand([
+    "ec2", cmd,
+    "--instance-ids", instance.id,
+    "--region", DEFAULT_REGION,
+    "--output", "json",
+  ])
+  if (res.exitCode !== 0) return { ok: false, detail: `${cmd} failed` }
+  return { ok: true, detail: `${instance.id} ${action === "start" ? "starting" : "stopping"}` }
+}
+
+/** Upload a file to the dev instance via SSM (base64-encoded). Path must be absolute. */
+async function uploadToInstance(env: string, absPath: string, content: string, mode?: string): Promise<{ ok: boolean; output: string }> {
+  const b64 = Buffer.from(content, "utf8").toString("base64")
+  // Keep the payload chunked-safe by piping base64 through `base64 -d`.
+  const parts = [`mkdir -p "$(dirname ${absPath})"`, `echo '${b64}' | base64 -d > ${absPath}`]
+  if (mode) parts.push(`chmod ${mode} ${absPath}`)
+  return runOnInstance(env, parts.join(" && "))
+}
+
+/** Run a shell command on the dev instance via SSM Run Command. Returns stdout. */
+async function runOnInstance(env: string, commandText: string, timeoutSec = 600): Promise<{ ok: boolean; output: string }> {
+  const instance = await findHostInstance(env)
+  if (!instance) return { ok: false, output: "no instance found" }
+  if (instance.state !== "running") return { ok: false, output: `instance state: ${instance.state}` }
+
+  const send = await awsCommand([
+    "ssm", "send-command",
+    "--instance-ids", instance.id,
+    "--document-name", "AWS-RunShellScript",
+    "--parameters", JSON.stringify({ commands: [commandText] }),
+    "--timeout-seconds", String(timeoutSec),
+    "--region", DEFAULT_REGION,
+    "--query", "Command.CommandId",
+    "--output", "text",
+  ])
+  if (send.exitCode !== 0) return { ok: false, output: "send-command failed" }
+  const commandId = send.stdout.trim()
+
+  // Poll for completion.
+  const deadline = Date.now() + timeoutSec * 1000
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 3000))
+    const invoke = await awsCommand([
+      "ssm", "get-command-invocation",
+      "--command-id", commandId,
+      "--instance-id", instance.id,
+      "--region", DEFAULT_REGION,
+      "--output", "json",
+    ])
+    if (invoke.exitCode !== 0) continue
+    try {
+      const data = JSON.parse(invoke.stdout)
+      const status = data.Status as string
+      if (status === "Success") {
+        return { ok: true, output: (data.StandardOutputContent as string) ?? "" }
+      }
+      if (["Failed", "Cancelled", "TimedOut"].includes(status)) {
+        const stdout = (data.StandardOutputContent as string) ?? ""
+        const stderr = (data.StandardErrorContent as string) ?? ""
+        return { ok: false, output: `[${status}]\n${stdout}\n${stderr}` }
+      }
+    } catch { /* keep polling */ }
+  }
+  return { ok: false, output: "ssm command timed out waiting for result" }
+}
+
+async function httpProbe(url: string): Promise<{ ok: boolean; status: number | null; detail: string }> {
+  const { execa } = await import("execa")
+  try {
+    const res = await execa("curl", ["-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10", url])
+    const code = Number.parseInt(res.stdout.trim(), 10)
+    if (!Number.isFinite(code)) return { ok: false, status: null, detail: "curl returned non-numeric status" }
+    const ok = code >= 200 && code < 400
+    return { ok, status: code, detail: `HTTP ${code}` }
+  } catch (err) {
+    return { ok: false, status: null, detail: `curl failed: ${String(err).slice(0, 80)}` }
+  }
+}
+
 // ── Check System ──────────────────────────────────────────────────────────────
 
 type CheckSeverity = "blocking" | "degraded" | "informational"
@@ -157,7 +367,7 @@ interface CheckResult {
 
 interface InfraCheckDef {
   id: string
-  group: "aws" | "terraform" | "ecs" | "secrets" | "github"
+  group: "aws" | "terraform" | "host" | "secrets" | "github"
   label: string
   severity: CheckSeverity
   run: (env: string) => Promise<CheckResult>
@@ -235,47 +445,71 @@ const CHECKS: InfraCheckDef[] = [
         : { status: "error", detail: "run terraform init first" }
     },
   },
+  // ── Host (EC2) ────────────────────────────────────────────────
   {
-    id: "terraform.acm",
-    group: "terraform",
-    label: "ACM Certificate",
-    severity: "degraded",
-    run: async () => {
-      const res = await awsCommand(["acm", "list-certificates", "--region", DEFAULT_REGION, "--output", "json"])
-      if (res.exitCode !== 0) return { status: "skip", detail: "could not query ACM" }
-      try {
-        const data = JSON.parse(res.stdout)
-        const cert = data.CertificateSummaryList?.find((c: { DomainName: string }) => c.DomainName === "ibatexas.com.br" || c.DomainName === "*.ibatexas.com.br")
-        if (!cert) return { status: "error", detail: "no certificate found for ibatexas.com.br" }
-        return cert.Status === "ISSUED"
-          ? { status: "ok", detail: `ISSUED (${cert.DomainName})` }
-          : { status: "warn", detail: `${cert.Status} (${cert.DomainName})` }
-      } catch {
-        return { status: "skip", detail: "could not parse ACM response" }
-      }
+    id: "host.instance",
+    group: "host",
+    label: "EC2 Host Instance",
+    severity: "blocking",
+    run: async (env) => {
+      const instance = await findHostInstance(env)
+      if (!instance) return { status: "error", detail: "no instance with tag Role=ibatexas-<env>-host found" }
+      if (instance.state === "running") return { status: "ok", detail: `${instance.id} running` }
+      if (instance.state === "stopped") return { status: "warn", detail: `${instance.id} stopped — run 'ibx infra resume'` }
+      return { status: "warn", detail: `${instance.id} ${instance.state}` }
     },
   },
-  // ── ECS ───────────────────────────────────────────────────────
   {
-    id: "ecs.api",
-    group: "ecs",
-    label: "ECS — api",
-    severity: "blocking",
-    run: async (env) => checkEcsService(env, "api"),
-  },
-  {
-    id: "ecs.web",
-    group: "ecs",
-    label: "ECS — web",
-    severity: "blocking",
-    run: async (env) => checkEcsService(env, "web"),
-  },
-  {
-    id: "ecs.admin",
-    group: "ecs",
-    label: "ECS — admin",
+    id: "host.ssm",
+    group: "host",
+    label: "SSM Agent Reachable",
     severity: "degraded",
-    run: async (env) => checkEcsService(env, "admin"),
+    run: async (env) => {
+      const instance = await findHostInstance(env)
+      if (!instance || instance.state !== "running") return { status: "skip", detail: "instance not running" }
+      const res = await awsCommand([
+        "ssm", "describe-instance-information",
+        "--filters", `Key=InstanceIds,Values=${instance.id}`,
+        "--region", DEFAULT_REGION,
+        "--query", "InstanceInformationList[0].PingStatus",
+        "--output", "text",
+      ])
+      if (res.exitCode !== 0) return { status: "error", detail: "ssm describe-instance-information failed" }
+      const status = res.stdout.trim()
+      return status === "Online"
+        ? { status: "ok", detail: "agent Online" }
+        : { status: "error", detail: `agent ${status || "unknown"}` }
+    },
+  },
+  {
+    id: "host.https.web",
+    group: "host",
+    label: "HTTPS — web (ibatexas.com.br)",
+    severity: "blocking",
+    run: async (_env) => {
+      const probe = await httpProbe("https://ibatexas.com.br/")
+      return probe.ok ? { status: "ok", detail: probe.detail } : { status: "error", detail: probe.detail }
+    },
+  },
+  {
+    id: "host.https.api",
+    group: "host",
+    label: "HTTPS — api (api.ibatexas.com.br/health)",
+    severity: "blocking",
+    run: async (_env) => {
+      const probe = await httpProbe("https://api.ibatexas.com.br/health")
+      return probe.ok ? { status: "ok", detail: probe.detail } : { status: "error", detail: probe.detail }
+    },
+  },
+  {
+    id: "host.https.admin",
+    group: "host",
+    label: "HTTPS — admin (admin.ibatexas.com.br)",
+    severity: "degraded",
+    run: async (_env) => {
+      const probe = await httpProbe("https://admin.ibatexas.com.br/")
+      return probe.ok ? { status: "ok", detail: probe.detail } : { status: "error", detail: probe.detail }
+    },
   },
   // ── Secrets ───────────────────────────────────────────────────
   {
@@ -284,23 +518,18 @@ const CHECKS: InfraCheckDef[] = [
     label: "Secrets Populated",
     severity: "blocking",
     run: async (env) => {
+      const backend = secretsBackend(env)
       const results = await Promise.all(
         ALL_SECRETS.map(async (name) => {
-          const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
-          if (res.exitCode === 0) {
-            try {
-              const data = JSON.parse(res.stdout)
-              if (data.SecretString?.trim()) return { name, ok: true }
-            } catch { /* fall through */ }
-          }
-          return { name, ok: false }
+          const value = await readSecret(env, name)
+          return { name, ok: value !== null }
         }),
       )
       const populated = results.filter(r => r.ok).length
       const missing = results.filter(r => !r.ok).map(r => r.name)
-      if (missing.length === 0) return { status: "ok", detail: `${populated}/${ALL_SECRETS.length} populated` }
-      if (populated === 0) return { status: "error", detail: `0/${ALL_SECRETS.length} — none set` }
-      return { status: "warn", detail: `${populated}/${ALL_SECRETS.length} — missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` +${missing.length - 3} more` : ""}` }
+      if (missing.length === 0) return { status: "ok", detail: `${populated}/${ALL_SECRETS.length} populated (${backend})` }
+      if (populated === 0) return { status: "error", detail: `0/${ALL_SECRETS.length} — none set (${backend})` }
+      return { status: "warn", detail: `${populated}/${ALL_SECRETS.length} — missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` +${missing.length - 3} more` : ""} (${backend})` }
     },
   },
   // ── GitHub ────────────────────────────────────────────────────
@@ -326,22 +555,199 @@ const CHECKS: InfraCheckDef[] = [
   },
 ]
 
-async function checkEcsService(env: string, service: string): Promise<CheckResult> {
-  const cluster = `ibatexas-${env}`
-  const svcName = `ibatexas-${env}-${service}`
-  const res = await awsCommand(["ecs", "describe-services", "--cluster", cluster, "--services", svcName, "--region", DEFAULT_REGION, "--output", "json"])
-  if (res.exitCode !== 0) return { status: "error", detail: "cluster or service not found" }
-  try {
-    const data = JSON.parse(res.stdout)
-    const svc = data.services?.[0]
-    if (!svc) return { status: "error", detail: "service not found" }
-    const desired = svc.desiredCount ?? 0
-    const running = svc.runningCount ?? 0
-    if (running >= desired && desired > 0) return { status: "ok", detail: `${running}/${desired} running` }
-    return { status: "error", detail: `${running}/${desired} running` }
-  } catch {
-    return { status: "error", detail: "could not parse response" }
+async function runIdle(opts: { env?: string; only?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  💤  Idling dev host (EC2 stop) — ${env}\n`))
+
+  if (opts.only) {
+    console.log(chalk.yellow(`  ⚠  --only is a no-op on the single-VM setup — stopping all services together.\n`))
   }
+
+  const spinner = ora("Stopping EC2 instance...").start()
+  const result = await setInstancePower(env, "stop")
+  if (result.ok) {
+    spinner.succeed(chalk.green(result.detail))
+    console.log("")
+    console.log(chalk.green(`  ✅  Instance stopping.`))
+    console.log(chalk.gray(`      EC2 compute billing pauses within ~1 min.`))
+    console.log(chalk.gray(`      EBS volume + EIP continue billing (~$6/mo floor).`))
+    console.log(chalk.gray(`      Resume with: ibx infra resume`))
+  } else {
+    spinner.fail(chalk.red(result.detail))
+    process.exit(1)
+  }
+  console.log("")
+}
+
+// ── Live-host sync + remote Medusa ops ────────────────────────────────────────
+// These commands patch the running EC2 host directly via SSM, without requiring
+// a full terraform apply (which destroys the instance). They stay in sync with
+// the templates under infra/terraform/environments/<env>/ — run `host:sync`
+// whenever compose.yml.tpl / user_data.sh.tpl change.
+
+function renderTemplate(tplPath: string, vars: Record<string, string>): string {
+  const raw = fs.readFileSync(tplPath, "utf8")
+  // Mirror terraform's templatefile(): substitute ${var}, then collapse $${x}
+  // → ${x} (terraform's literal-dollar escape). The two-step order matters —
+  // we want the substitution to ignore the escaped form.
+  return raw
+    .replace(/(^|[^$])\$\{([a-z_]+)\}/g, (match, lead, key) => {
+      return Object.prototype.hasOwnProperty.call(vars, key) ? `${lead}${vars[key]}` : match
+    })
+    .replace(/\$\$\{/g, "${")
+}
+
+async function resolveTerraformVars(env: string): Promise<{ region: string; account_id: string; domain: string; ecr_registry: string; environment: string }> {
+  const identity = await awsCommand(["sts", "get-caller-identity", "--query", "Account", "--output", "text"])
+  const accountId = identity.stdout.trim()
+  const domain = env === "production" ? "ibatexas.com.br" : "ibatexas.com.br"
+  return {
+    region: DEFAULT_REGION,
+    account_id: accountId,
+    domain,
+    ecr_registry: `${accountId}.dkr.ecr.${DEFAULT_REGION}.amazonaws.com`,
+    environment: env,
+  }
+}
+
+async function runHostSync(opts: { env?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  🔄  Syncing compose.yml + deploy script to live ${env} host\n`))
+
+  const vars = await resolveTerraformVars(env)
+  const tplDir = infraDir(env)
+
+  // Render compose.yml.tpl — straight templatefile substitution.
+  const composeTpl = path.join(tplDir, "compose.yml.tpl")
+  const composeRendered = renderTemplate(composeTpl, vars)
+
+  // Render the ibatexas-deploy + ibatexas-refresh-secrets scripts by extracting
+  // them from user_data.sh.tpl. user_data embeds each one inside its own heredoc;
+  // here we pull just the body and apply the same ${...} substitutions we do for
+  // compose.yml. Terraform uses $${...} to emit a literal ${...} in bash, so we
+  // collapse that back to ${...} before shipping to the host.
+  const userDataTpl = path.join(tplDir, "user_data.sh.tpl")
+  const userDataRaw = fs.readFileSync(userDataTpl, "utf8")
+
+  function extractHeredoc(marker: string): string {
+    const re = new RegExp(`cat > (?:/[^\\s]+) <<'${marker}'\\n([\\s\\S]+?)\\n${marker}`)
+    const m = userDataRaw.match(re)
+    if (!m) {
+      console.error(chalk.red(`  Could not extract ${marker} body from user_data.sh.tpl`))
+      process.exit(1)
+    }
+    return m[1]
+      .replace(/\$\$\{/g, "${")
+      .replace(/\$\{([a-z_]+)\}/g, (raw, k) => (vars as Record<string, string>)[k] ?? raw)
+  }
+
+  const deployRendered = extractHeredoc("DEPLOY_EOF")
+  const refreshRendered = extractHeredoc("REFRESH_EOF")
+
+  const spin = ora("pushing docker-compose.yml").start()
+  let r = await uploadToInstance(env, "/opt/ibatexas/docker-compose.yml", composeRendered)
+  if (!r.ok) { spin.fail(chalk.red(r.output)); process.exit(1) }
+  spin.succeed("docker-compose.yml updated")
+
+  const spin2 = ora("pushing ibatexas-deploy").start()
+  r = await uploadToInstance(env, "/usr/local/bin/ibatexas-deploy", deployRendered, "0755")
+  if (!r.ok) { spin2.fail(chalk.red(r.output)); process.exit(1) }
+  spin2.succeed("ibatexas-deploy updated")
+
+  const spin3 = ora("pushing ibatexas-refresh-secrets").start()
+  r = await uploadToInstance(env, "/usr/local/bin/ibatexas-refresh-secrets", refreshRendered, "0755")
+  if (!r.ok) { spin3.fail(chalk.red(r.output)); process.exit(1) }
+  spin3.succeed("ibatexas-refresh-secrets updated")
+
+  console.log(chalk.gray(`\n  Next step: ibx infra host:redeploy --env ${env}\n`))
+}
+
+async function runHostRedeploy(opts: { env?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  🚢  Running ibatexas-deploy on ${env} host via SSM\n`))
+  const spin = ora("deploying (pulls ECR images + docker compose up)").start()
+  const r = await runOnInstance(env, "/usr/local/bin/ibatexas-deploy 2>&1", 900)
+  if (!r.ok) {
+    spin.fail(chalk.red("deploy failed"))
+    console.error(chalk.red(r.output.slice(-4000)))
+    process.exit(1)
+  }
+  spin.succeed(chalk.green("deploy complete"))
+  console.log(chalk.gray(r.output.slice(-1500)))
+}
+
+async function runMedusaMigrate(opts: { env?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  🗃   Running Medusa migrations on ${env} host\n`))
+  const spin = ora("medusa db:migrate").start()
+  // Execute inside the running commerce container; uses the container's .env
+  // (which already has DATABASE_URL pointed at Supabase). Idempotent.
+  const cmd = `docker exec ibatexas-commerce sh -c "cd /app/apps/commerce && pnpm exec medusa db:migrate" 2>&1`
+  const r = await runOnInstance(env, cmd, 600)
+  if (!r.ok) { spin.fail(chalk.red("migration failed")); console.error(r.output.slice(-3000)); process.exit(1) }
+  spin.succeed(chalk.green("migrations applied"))
+  console.log(chalk.gray(r.output.slice(-1500)))
+}
+
+async function runMedusaSeed(opts: { env?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  🌱  Seeding Medusa on ${env} host (categories + products)\n`))
+  const spin = ora("medusa exec src/seed.ts").start()
+  const cmd = `docker exec ibatexas-commerce sh -c "cd /app/apps/commerce && pnpm exec medusa exec src/seed.ts" 2>&1`
+  const r = await runOnInstance(env, cmd, 600)
+  if (!r.ok) { spin.fail(chalk.red("seed failed")); console.error(r.output.slice(-3000)); process.exit(1) }
+  spin.succeed(chalk.green("seed complete"))
+  console.log(chalk.gray(r.output.slice(-1500)))
+}
+
+async function runMedusaCreateAdmin(opts: { env?: string; email?: string; password?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+  console.log(chalk.bold.blue(`\n  👤  Creating Medusa admin user on ${env} host\n`))
+  // Creds default to the already-seeded SSM parameters.
+  // Reads them inside the container from /opt/ibatexas/.env so they never hit
+  // the SSM command log or this process's stdout.
+  const emailVar = opts.email ? `EMAIL=${JSON.stringify(opts.email)}` : `EMAIL=$(grep -E ^MEDUSA_ADMIN_EMAIL= /opt/ibatexas/.env | cut -d= -f2-)`
+  const pwVar = opts.password ? `PW=${JSON.stringify(opts.password)}` : `PW=$(grep -E ^MEDUSA_ADMIN_PASSWORD= /opt/ibatexas/.env | cut -d= -f2-)`
+  const cmd = [
+    emailVar, pwVar,
+    `[ -n "$EMAIL" ] && [ -n "$PW" ] || { echo "missing creds"; exit 1; }`,
+    `echo "email: $EMAIL"`,
+    `OUT=$(docker exec -e E="$EMAIL" -e P="$PW" ibatexas-commerce sh -c 'cd /app/apps/commerce && pnpm exec medusa user -e "$E" -p "$P"' 2>&1 || true)`,
+    `echo "$OUT" | tail -3`,
+    // Treat "already exists" as success — the command should be idempotent.
+    `echo "$OUT" | grep -qE 'already exists|created successfully' && exit 0 || { echo "$OUT"; exit 1; }`,
+  ].join("; ")
+  const spin = ora("medusa user").start()
+  const r = await runOnInstance(env, cmd, 180)
+  if (!r.ok) { spin.fail(chalk.red("create-admin failed")); console.error(r.output.slice(-2000)); process.exit(1) }
+  spin.succeed(chalk.green("admin user present"))
+  console.log(chalk.gray(r.output.slice(-800)))
+}
+
+async function runResume(opts: { env?: string; count?: string; only?: string }): Promise<void> {
+  const env = opts.env ?? "dev"
+
+  if (opts.count) {
+    console.log(chalk.yellow(`  ⚠  --count is a no-op on the single-VM setup.\n`))
+  }
+  if (opts.only) {
+    console.log(chalk.yellow(`  ⚠  --only is a no-op on the single-VM setup.\n`))
+  }
+
+  console.log(chalk.bold.blue(`\n  ▶️   Resuming dev host (EC2 start) — ${env}\n`))
+
+  const spinner = ora("Starting EC2 instance...").start()
+  const result = await setInstancePower(env, "start")
+  if (!result.ok) {
+    spinner.fail(chalk.red(result.detail))
+    process.exit(1)
+  }
+  spinner.succeed(chalk.green(result.detail))
+
+  console.log("")
+  console.log(chalk.gray("  Cold boot takes ~3-5 min (instance start + Docker pull + container warm-up)."))
+  console.log(chalk.gray("  Watch readiness with: ibx infra status"))
+  console.log("")
 }
 
 async function runAllChecks(env: string): Promise<InfraCheckResult[]> {
@@ -629,21 +1035,17 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
   let invalid = 0
   const populatedValues: Record<string, string> = {}
 
-  // Pre-fetch all secrets in parallel to avoid sequential AWS calls
+  const backend = secretsBackend(env)
+  console.log(chalk.gray(`  Backend: ${backend} (override with SECRETS_BACKEND env var)\n`))
+
+  // Pre-fetch all secrets in parallel (tries both stores, SSM first for dev).
   const existingSecrets = new Map<string, string>()
   if (!opts.force) {
     const spinner = ora("  Checking existing secrets…").start()
     const checks = await Promise.all(
       targetSecrets.map(async (name) => {
-        const id = secretPath(env, name)
-        const check = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", id, "--region", DEFAULT_REGION, "--output", "json"])
-        if (check.exitCode === 0) {
-          try {
-            const data = JSON.parse(check.stdout)
-            if (data.SecretString?.trim()) return { name, value: data.SecretString as string }
-          } catch { /* not set */ }
-        }
-        return { name, value: null }
+        const value = await readSecret(env, name)
+        return { name, value }
       }),
     )
     for (const { name, value } of checks) {
@@ -653,8 +1055,6 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
   }
 
   for (const name of targetSecrets) {
-    const id = secretPath(env, name)
-
     // Check if already set (from parallel pre-fetch)
     if (!opts.force && existingSecrets.has(name)) {
       console.log(chalk.green(`  ✓ ${name.padEnd(28)} (already set)`))
@@ -677,8 +1077,8 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
         invalid++
         continue
       }
-      const res = await awsCommand(["secretsmanager", "put-secret-value", "--secret-id", id, "--secret-string", envValue, "--region", DEFAULT_REGION])
-      if (res.exitCode === 0) {
+      const ok = await writeSecret(env, name, envValue)
+      if (ok) {
         console.log(chalk.green(`  ✓ ${name.padEnd(28)} (populated from env)`))
         populated++
         populatedValues[name] = envValue
@@ -710,8 +1110,8 @@ async function runSecrets(opts: { env?: string; force?: boolean; fromEnv?: boole
         continue
       }
 
-      const res = await awsCommand(["secretsmanager", "put-secret-value", "--secret-id", id, "--secret-string", value, "--region", DEFAULT_REGION])
-      if (res.exitCode === 0) {
+      const ok = await writeSecret(env, name, value)
+      if (ok) {
         console.log(chalk.green(`  ✓ ${name.padEnd(28)} (populated)`))
         populated++
         populatedValues[name] = value
@@ -844,14 +1244,14 @@ async function runSecretsPush(opts: { file?: string; env?: string; force?: boole
 
 // ── Subcommand: github ────────────────────────────────────────────────────────
 
-async function runGithub() {
+async function runGithub(opts: { force?: boolean } = {}) {
   const { execa } = await import("execa")
   const { confirm, password } = await import("@inquirer/prompts")
   const env = getEnvironment()
   console.log(chalk.bold.blue("\n  🐙  GitHub Secrets\n"))
   envBanner(env)
 
-  const TOTAL = 3
+  const TOTAL = 4
   let stepNum = 0
 
   // [1] Verify gh CLI
@@ -869,14 +1269,46 @@ async function runGithub() {
   const proceed = await confirm({ message: `Setting secrets for: ${chalk.bold(repo)} — Continue?`, default: true })
   if (!proceed) { console.log(chalk.gray("    Cancelled")); return }
 
+  // Fetch existing secrets/variables so re-runs don't re-prompt for values
+  // already present on the repo. Pass --force to re-sync every key.
+  const existingSecrets = new Set<string>()
+  const existingVariables = new Set<string>()
+  try {
+    const { stdout } = await execa("gh", ["secret", "list", "--json", "name"])
+    for (const s of JSON.parse(stdout) as Array<{ name: string }>) existingSecrets.add(s.name)
+  } catch { /* fall through — treat all as missing */ }
+  try {
+    const { stdout } = await execa("gh", ["variable", "list", "--json", "name"])
+    for (const v of JSON.parse(stdout) as Array<{ name: string }>) existingVariables.add(v.name)
+  } catch { /* fall through */ }
+
+  // Local lookup order: .env (dev source of truth) → infra/secrets.env (SSM
+  // snapshot, populated by `ibx infra secrets:export`). Both are optional.
+  const envPath = path.resolve(ROOT, ".env")
+  const secretsEnvPath = path.resolve(ROOT, "infra/secrets.env")
+  const dotenv = await import("dotenv")
+  const fromDotEnv: Record<string, string> = fs.existsSync(envPath)
+    ? dotenv.parse(fs.readFileSync(envPath, "utf-8"))
+    : {}
+  const fromSecretsEnv: Record<string, string> = fs.existsSync(secretsEnvPath)
+    ? dotenv.parse(fs.readFileSync(secretsEnvPath, "utf-8"))
+    : {}
+  const resolveLocal = (name: string): string | undefined => {
+    const v = fromDotEnv[name]?.trim() || fromSecretsEnv[name]?.trim()
+    return v || undefined
+  }
+
   // [2] Get deploy role ARN from terraform output
   step(++stepNum, TOTAL, "Reading Terraform outputs…")
   const outputs = await terraformOutput(env)
   const roleArn = outputs?.github_deploy_role_arn?.value as string | undefined
 
-  // [3] Set secrets
+  // [3] Set core secrets (deploy role + database URLs + optional sonar)
   step(++stepNum, TOTAL, "Setting GitHub secrets…")
 
+  // AWS_DEPLOY_ROLE_ARN always refreshes from terraform (it's the source of
+  // truth and can rotate on infra changes). Still honor --force-skip via
+  // existingSecrets check only when terraform output is missing.
   if (roleArn) {
     const spinner = ora({ text: "AWS_DEPLOY_ROLE_ARN", indent: 4 }).start()
     try {
@@ -885,23 +1317,36 @@ async function runGithub() {
     } catch {
       spinner.fail(chalk.red("AWS_DEPLOY_ROLE_ARN — failed to set"))
     }
-  } else {
+  } else if (!existingSecrets.has("AWS_DEPLOY_ROLE_ARN")) {
     console.log(chalk.yellow("    ⚠ AWS_DEPLOY_ROLE_ARN unavailable — terraform outputs not found"))
     console.log(chalk.gray("      Set manually: gh secret set AWS_DEPLOY_ROLE_ARN"))
+  } else {
+    console.log(chalk.gray("    ✓ AWS_DEPLOY_ROLE_ARN (already set, terraform output missing)"))
   }
 
   for (const name of ["DIRECT_DATABASE_URL", "STAGING_DIRECT_DATABASE_URL", "SONAR_TOKEN"]) {
     const isOptional = name === "SONAR_TOKEN"
-    let value: string
-    try {
-      value = await password({
-        message: `${name}${isOptional ? " (optional, press Enter to skip)" : ""}:`,
-      })
-    } catch {
-      break
+
+    if (existingSecrets.has(name) && !opts.force) {
+      console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
+      continue
     }
 
-    if (!value.trim()) {
+    // Try local files first; only prompt if truly unknown
+    let value = resolveLocal(name)
+    let source: "local" | "prompt" = "local"
+    if (!value) {
+      source = "prompt"
+      try {
+        value = (await password({
+          message: `${name}${isOptional ? " (optional, press Enter to skip)" : ""}:`,
+        })).trim() || undefined
+      } catch {
+        break
+      }
+    }
+
+    if (!value) {
       if (isOptional) {
         console.log(chalk.gray(`    ○ ${name} (skipped)`))
       } else {
@@ -913,13 +1358,230 @@ async function runGithub() {
     const spinner = ora({ text: name, indent: 4 }).start()
     try {
       await execa("gh", ["secret", "set", name, "--body", value])
-      spinner.succeed(chalk.green(name))
+      spinner.succeed(chalk.green(source === "local" ? `${name} (from local)` : name))
+    } catch {
+      spinner.fail(chalk.red(`${name} — failed to set`))
+    }
+  }
+
+  // [4] Set NEXT_PUBLIC_* build-arg secrets + variables, preferring local files
+  step(++stepNum, TOTAL, "Setting build-arg secrets and variables…")
+
+  for (const name of BUILD_ARG_SECRETS) {
+    if (existingSecrets.has(name) && !opts.force) {
+      console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
+      continue
+    }
+
+    let value = resolveLocal(name)
+    let source: "local" | "prompt" = "local"
+    if (!value) {
+      source = "prompt"
+      try {
+        value = (await password({
+          message: `${name} (not found locally, press Enter to skip — feature disabled in build):`,
+        })).trim() || undefined
+      } catch {
+        break
+      }
+    }
+    if (!value) {
+      console.log(chalk.gray(`    ○ ${name} (skipped)`))
+      continue
+    }
+    const spinner = ora({ text: name, indent: 4 }).start()
+    try {
+      await execa("gh", ["secret", "set", name, "--body", value])
+      spinner.succeed(chalk.green(source === "local" ? `${name} (from local)` : name))
+    } catch {
+      spinner.fail(chalk.red(`${name} — failed to set`))
+    }
+  }
+
+  for (const [name, defaultValue] of Object.entries(BUILD_ARG_VARIABLES)) {
+    if (existingVariables.has(name) && !opts.force) {
+      console.log(chalk.gray(`    ✓ ${name} (already set — pass --force to re-sync)`))
+      continue
+    }
+    const fromLocal = resolveLocal(name)
+    const value = fromLocal || defaultValue
+    const spinner = ora({ text: name, indent: 4 }).start()
+    try {
+      await execa("gh", ["variable", "set", name, "--body", value])
+      spinner.succeed(chalk.green(`${name} (${fromLocal ? "from local" : "default"})`))
     } catch {
       spinner.fail(chalk.red(`${name} — failed to set`))
     }
   }
 
   console.log(chalk.green.bold("\n  ✅  GitHub secrets configured!\n"))
+}
+
+// ── Subcommand: secrets:audit ─────────────────────────────────────────────────
+// Cross-check every store (AWS SSM / GitHub Secrets / GitHub Variables) against
+// the expected key sets, reading local .env + infra/secrets.env to flag which
+// gaps can be auto-fixed. `--fix` pushes locally-available values; anything
+// missing everywhere is reported for manual input.
+
+interface AuditRow {
+  readonly key: string
+  readonly store: "SSM" | "GH Secret" | "GH Variable"
+  readonly present: boolean
+  readonly optional: boolean
+  readonly localAvailable: boolean
+}
+
+async function runSecretsAudit(opts: { env?: string; fix?: boolean; json?: boolean }) {
+  const { execa } = await import("execa")
+  const env = opts.env ?? getEnvironment()
+
+  if (!opts.json) {
+    console.log(chalk.bold.blue("\n  🔍  Secrets Audit\n"))
+    envBanner(env)
+  }
+
+  // Query all three stores in parallel. Failures degrade to "empty set" so a
+  // missing `gh` auth or offline SSM still produces a readable report.
+  const [ssmRes, ghSecretsRes, ghVarsRes] = await Promise.all([
+    awsCommand([
+      "ssm", "get-parameters-by-path",
+      "--path", `/${SECRET_PATH_PREFIX}/${env}/`,
+      "--region", DEFAULT_REGION,
+      "--query", "Parameters[].Name",
+      "--output", "json",
+    ]),
+    execa("gh", ["secret", "list", "--json", "name"]).catch(() => ({ stdout: "[]" })),
+    execa("gh", ["variable", "list", "--json", "name"]).catch(() => ({ stdout: "[]" })),
+  ])
+
+  const ssmKeys = new Set<string>()
+  if (ssmRes.exitCode === 0) {
+    try {
+      const names = JSON.parse(ssmRes.stdout) as string[]
+      const prefix = `/${SECRET_PATH_PREFIX}/${env}/`
+      for (const full of names) ssmKeys.add(full.startsWith(prefix) ? full.slice(prefix.length) : full)
+    } catch { /* swallow — treat as empty */ }
+  }
+
+  const ghSecrets = new Set<string>()
+  try {
+    for (const s of JSON.parse(ghSecretsRes.stdout) as Array<{ name: string }>) ghSecrets.add(s.name)
+  } catch { /* swallow */ }
+
+  const ghVars = new Set<string>()
+  try {
+    for (const v of JSON.parse(ghVarsRes.stdout) as Array<{ name: string }>) ghVars.add(v.name)
+  } catch { /* swallow */ }
+
+  // Local lookup: .env (dev source of truth) → infra/secrets.env (SSM snapshot)
+  const envPath = path.resolve(ROOT, ".env")
+  const secretsEnvPath = path.resolve(ROOT, "infra/secrets.env")
+  const dotenv = await import("dotenv")
+  const fromDotEnv: Record<string, string> = fs.existsSync(envPath)
+    ? dotenv.parse(fs.readFileSync(envPath, "utf-8"))
+    : {}
+  const fromSecretsEnv: Record<string, string> = fs.existsSync(secretsEnvPath)
+    ? dotenv.parse(fs.readFileSync(secretsEnvPath, "utf-8"))
+    : {}
+  const resolveLocal = (k: string): string | undefined =>
+    (fromDotEnv[k]?.trim() || fromSecretsEnv[k]?.trim()) || undefined
+
+  // Expected sets — ground truth lives at the top of this file.
+  const ghSecretExpected: Array<[string, boolean]> = [
+    ["AWS_DEPLOY_ROLE_ARN", false],
+    ["DIRECT_DATABASE_URL", false],
+    ["STAGING_DIRECT_DATABASE_URL", false],
+    ["SONAR_TOKEN", true],
+    ...BUILD_ARG_SECRETS.map((k) => [k, true] as [string, boolean]),
+  ]
+
+  const rows: AuditRow[] = []
+  for (const k of MANUAL_SECRETS) {
+    rows.push({ key: k, store: "SSM", present: ssmKeys.has(k), optional: false, localAvailable: !!resolveLocal(k) })
+  }
+  for (const [k, optional] of ghSecretExpected) {
+    rows.push({ key: k, store: "GH Secret", present: ghSecrets.has(k), optional, localAvailable: !!resolveLocal(k) })
+  }
+  for (const k of Object.keys(BUILD_ARG_VARIABLES)) {
+    rows.push({ key: k, store: "GH Variable", present: ghVars.has(k), optional: false, localAvailable: !!resolveLocal(k) })
+  }
+
+  if (opts.json) {
+    console.log(JSON.stringify({ env, rows }, null, 2))
+    return
+  }
+
+  // Group by store for output
+  for (const store of ["SSM", "GH Secret", "GH Variable"] as const) {
+    const storeRows = rows.filter((r) => r.store === store)
+    console.log(chalk.bold(`\n  ${store}`))
+    for (const r of storeRows) {
+      const icon = r.present
+        ? chalk.green("✓")
+        : r.optional
+          ? chalk.gray("○")
+          : chalk.red("✗")
+      const hint = !r.present && r.localAvailable ? chalk.cyan(" (local available)") : ""
+      const opt = r.optional && !r.present ? chalk.gray(" optional") : ""
+      console.log(`    ${icon}  ${r.key}${hint}${opt}`)
+    }
+  }
+
+  const required = rows.filter((r) => !r.optional)
+  const missing = required.filter((r) => !r.present)
+  const fixable = missing.filter((r) => r.localAvailable)
+  const manual = missing.filter((r) => !r.localAvailable)
+
+  console.log("")
+  if (missing.length === 0) {
+    console.log(chalk.green.bold("  ✅  All required keys are present across every store.\n"))
+    return
+  }
+
+  console.log(
+    chalk.bold(
+      `  Summary: ${chalk.red(`${missing.length} missing`)} · ${chalk.cyan(`${fixable.length} fixable from local`)} · ${chalk.yellow(`${manual.length} need manual input`)}\n`,
+    ),
+  )
+
+  if (opts.fix && fixable.length > 0) {
+    console.log(chalk.bold.blue("  🔧  Applying fixes…\n"))
+    for (const r of fixable) {
+      const value = resolveLocal(r.key)!
+      const spinner = ora({ text: `${r.store}: ${r.key}`, indent: 4 }).start()
+      try {
+        if (r.store === "SSM") {
+          const res = await awsCommand([
+            "ssm", "put-parameter",
+            "--name", ssmParamPath(env, r.key),
+            "--value", value,
+            "--type", "SecureString",
+            "--overwrite",
+            "--region", DEFAULT_REGION,
+          ])
+          if (res.exitCode !== 0) throw new Error(`aws put-parameter exited ${res.exitCode}`)
+        } else if (r.store === "GH Secret") {
+          await execa("gh", ["secret", "set", r.key, "--body", value])
+        } else {
+          await execa("gh", ["variable", "set", r.key, "--body", value])
+        }
+        spinner.succeed(chalk.green(`${r.store}: ${r.key} (from local)`))
+      } catch (err) {
+        spinner.fail(chalk.red(`${r.store}: ${r.key} — ${(err as Error).message}`))
+      }
+    }
+    console.log("")
+  } else if (fixable.length > 0) {
+    console.log(chalk.gray(`  Re-run with --fix to auto-push ${fixable.length} key(s) available locally.\n`))
+  }
+
+  if (manual.length > 0) {
+    console.log(chalk.yellow.bold("  ⚠  Missing everywhere (no local value to auto-populate):\n"))
+    for (const r of manual) {
+      console.log(chalk.yellow(`    • ${r.store}: ${r.key}`))
+    }
+    console.log("")
+  }
 }
 
 // ── Subcommand: status ────────────────────────────────────────────────────────
@@ -993,7 +1655,6 @@ async function runDestroy(opts: { env?: string }) {
 // ── Subcommand: logs ──────────────────────────────────────────────────────────
 
 async function runLogs(service: string | undefined, opts: { lines?: string; env?: string }) {
-  const { execa } = await import("execa")
   const env = opts.env ?? getEnvironment()
   const svc = service ?? "api"
 
@@ -1006,19 +1667,26 @@ async function runLogs(service: string | undefined, opts: { lines?: string; env?
   console.log(chalk.bold.blue(`\n  📜  Logs — ${svc}\n`))
   envBanner(env)
 
-  const logGroup = `/ecs/ibatexas/${env}/${svc}`
-  const _lines = opts.lines ?? "50"
+  const lines = opts.lines ?? "200"
+  const spinner = ora(`Fetching last ${lines} lines from ibatexas-${svc} via SSM...`).start()
 
-  try {
-    await execa("aws", ["logs", "tail", logGroup, "--follow", "--since", "1h", "--format", "short", "--region", DEFAULT_REGION], { stdio: "inherit" })
-  } catch (err) {
-    const error = err as { exitCode?: number }
-    if (error.exitCode === 255) {
-      console.error(chalk.red(`  Log group not found: ${logGroup}`))
-      console.error(chalk.gray("  Has the service been deployed at least once?"))
-    }
-    process.exit(error.exitCode ?? 1)
+  const cmd = `docker logs --tail ${Number.parseInt(lines, 10) || 200} ibatexas-${svc} 2>&1 || echo '[container ibatexas-${svc} not found — is it running?]'`
+  const result = await runOnInstance(env, cmd, 60)
+
+  if (!result.ok) {
+    spinner.fail(chalk.red("SSM command failed"))
+    console.error(chalk.gray(result.output))
+    console.error("")
+    console.error(chalk.yellow("  Troubleshooting:"))
+    console.error(chalk.gray("   • `ibx infra status` — is the instance running?"))
+    console.error(chalk.gray("   • `aws ssm start-session --target <id>` — shell in and check `docker compose ps`"))
+    process.exit(1)
   }
+
+  spinner.stop()
+  console.log(result.output)
+  console.log("")
+  console.log(chalk.gray(`  Tip: for live tail, SSH via SSM: aws ssm start-session --target <instance-id> --region ${DEFAULT_REGION}`))
 }
 
 // ── Subcommand: deploy ────────────────────────────────────────────────────────
@@ -1052,27 +1720,30 @@ async function runDeploy(opts: { target?: string; watch?: boolean; timeout?: str
     return
   }
 
-  // [2] Wait for ECS stability
-  step(++stepNum, TOTAL, "Waiting for ECS services to stabilize…")
+  // [2] Poll HTTPS health endpoints until all three are 2xx/3xx
+  step(++stepNum, TOTAL, "Waiting for HTTPS health endpoints…")
   const start = Date.now()
   let stable = false
+  const healthUrls = [
+    "https://ibatexas.com.br/",
+    "https://api.ibatexas.com.br/health",
+    "https://admin.ibatexas.com.br/",
+  ]
   while (Date.now() - start < timeout) {
     await new Promise(r => setTimeout(r, 30_000))
     const elapsed = Math.round((Date.now() - start) / 1000)
     const spinner = ora({ text: `checking (${elapsed}s elapsed)…`, indent: 4 }).start()
 
-    let allStable = true
-    for (const svc of ["api", "web", "admin"]) {
-      const result = await checkEcsService(env, svc)
-      if (result.status !== "ok") { allStable = false; break }
-    }
+    const probes = await Promise.all(healthUrls.map(u => httpProbe(u)))
+    const allOk = probes.every(p => p.ok)
 
-    if (allStable) {
-      spinner.succeed(chalk.green("ECS services stable"))
+    if (allOk) {
+      spinner.succeed(chalk.green("all HTTPS endpoints returning 2xx/3xx"))
       stable = true
       break
     }
-    spinner.info(chalk.gray(`not yet stable (${elapsed}s)`))
+    const fail = probes.map((p, i) => `${healthUrls[i]}: ${p.detail}`).filter((_, i) => !probes[i].ok).join(", ")
+    spinner.info(chalk.gray(`not yet ready (${elapsed}s) — ${fail}`))
   }
 
   if (!stable) {
@@ -1233,23 +1904,36 @@ async function runExplain() {
     findings.push({ step: stepNum, label: "ECR Images", ok: false, detail: "missing images", cause: "Build step may have failed — check GitHub Actions" })
   }
 
-  // 3. Check ECS services
+  // 3. Check EC2 host instance
   stepNum++
-  let ecsOk = true
-  for (const svc of ["api", "web", "admin"]) {
-    const result = await checkEcsService(env, svc)
-    if (result.status !== "ok") { ecsOk = false; break }
-  }
-  if (ecsOk) {
-    findings.push({ step: stepNum, label: "ECS Services", ok: true, detail: "all services running" })
+  const instance = await findHostInstance(env)
+  if (instance && instance.state === "running") {
+    findings.push({ step: stepNum, label: "EC2 Host", ok: true, detail: `${instance.id} running` })
+  } else if (instance) {
+    findings.push({ step: stepNum, label: "EC2 Host", ok: false, detail: `${instance.id} ${instance.state}`, cause: instance.state === "stopped" ? "run 'ibx infra resume'" : "instance not ready" })
   } else {
-    findings.push({ step: stepNum, label: "ECS Services", ok: false, detail: "service(s) not running" })
+    findings.push({ step: stepNum, label: "EC2 Host", ok: false, detail: "no instance with Role tag found", cause: "run 'terraform apply' first" })
   }
 
-  // 4. Check ECS events for crash reasons
+  // 4. HTTPS health probes
   stepNum++
-  const cluster = `ibatexas-${env}`
-  const eventsRes = await awsCommand(["ecs", "describe-services", "--cluster", cluster, "--services", `ibatexas-${env}-api`, "--region", DEFAULT_REGION, "--output", "json"])
+  const healthProbes = await Promise.all([
+    httpProbe("https://ibatexas.com.br/"),
+    httpProbe("https://api.ibatexas.com.br/health"),
+    httpProbe("https://admin.ibatexas.com.br/"),
+  ])
+  const labels = ["web", "api", "admin"]
+  const allHealthy = healthProbes.every(p => p.ok)
+  if (allHealthy) {
+    findings.push({ step: stepNum, label: "HTTPS Endpoints", ok: true, detail: "all 3 hosts reachable" })
+  } else {
+    const failing = healthProbes.map((p, i) => p.ok ? null : `${labels[i]}: ${p.detail}`).filter(Boolean).join(", ")
+    findings.push({ step: stepNum, label: "HTTPS Endpoints", ok: false, detail: failing || "unreachable", cause: "check docker compose logs via `ibx infra logs <svc>`" })
+  }
+
+  // 5. Legacy placeholder to keep variable scoping — removed event check path
+  stepNum++
+  const eventsRes = { exitCode: 1, stdout: "" }
   if (eventsRes.exitCode === 0) {
     try {
       const data = JSON.parse(eventsRes.stdout)
@@ -1265,17 +1949,12 @@ async function runExplain() {
     }
   }
 
-  // 5. Check secrets
+  // 6. Check secrets (tries both backends per env)
   stepNum++
   const secretResults = await Promise.all(
     MANUAL_SECRETS.map(async (name) => {
-      const res = await awsCommand(["secretsmanager", "get-secret-value", "--secret-id", secretPath(env, name), "--region", DEFAULT_REGION, "--output", "json"])
-      if (res.exitCode !== 0) return name
-      try {
-        const data = JSON.parse(res.stdout)
-        if (!data.SecretString?.trim()) return name
-      } catch { return name }
-      return null
+      const value = await readSecret(env, name)
+      return value === null ? name : null
     }),
   )
   const missingSecrets = secretResults.filter((n): n is string => n !== null)
@@ -1360,8 +2039,17 @@ export function registerInfraCommands(infra: Command) {
 
   infra
     .command("github")
-    .description("Set GitHub repo secrets for CI/CD (detects repo)")
+    .description("Set GitHub repo secrets for CI/CD (detects repo; skips keys already set)")
+    .option("--force", "Re-sync every key, even if already present on GitHub")
     .action(runGithub)
+
+  infra
+    .command("secrets:audit")
+    .description("Cross-check AWS SSM / GitHub / local .env; report gaps")
+    .option("--env <name>", "Environment name")
+    .option("--fix", "Auto-push missing keys that are available locally")
+    .option("--json", "Output machine-readable JSON")
+    .action(runSecretsAudit)
 
   infra
     .command("status")
@@ -1383,7 +2071,7 @@ export function registerInfraCommands(infra: Command) {
 
   infra
     .command("logs [service]")
-    .description("Tail ECS CloudWatch logs")
+    .description("Tail docker logs on the dev host via SSM Run Command")
     .option("--lines <n>", "Number of lines", "50")
     .option("--env <name>", "Environment name")
     .action(runLogs)
@@ -1405,4 +2093,51 @@ export function registerInfraCommands(infra: Command) {
     .command("explain")
     .description("Diagnose why a deploy is failing (follows dependency chain)")
     .action(runExplain)
+
+  infra
+    .command("idle")
+    .description("Stop the dev EC2 host (pauses compute billing; EBS + EIP still charged)")
+    .option("--env <name>", "Environment name", "dev")
+    .option("--only <services>", "Comma-separated services (default: all)")
+    .action(runIdle)
+
+  infra
+    .command("resume")
+    .description("Start the dev EC2 host (~3-5 min to become healthy)")
+    .option("--env <name>", "Environment name", "dev")
+    .option("--count <n>", "Desired count per service", "1")
+    .option("--only <services>", "Comma-separated services (default: all)")
+    .action(runResume)
+
+  infra
+    .command("host:sync")
+    .description("Re-render compose.yml + ibatexas-deploy from templates and push to the live host (no EC2 replace)")
+    .option("--env <name>", "Environment name", "dev")
+    .action(runHostSync)
+
+  infra
+    .command("host:redeploy")
+    .description("Run /usr/local/bin/ibatexas-deploy on the live host via SSM (ECR pull + compose up)")
+    .option("--env <name>", "Environment name", "dev")
+    .action(runHostRedeploy)
+
+  infra
+    .command("medusa:migrate")
+    .description("Run `medusa db:migrate` inside the commerce container on the dev host")
+    .option("--env <name>", "Environment name", "dev")
+    .action(runMedusaMigrate)
+
+  infra
+    .command("medusa:seed")
+    .description("Run the Medusa seed script (categories + products) inside the commerce container")
+    .option("--env <name>", "Environment name", "dev")
+    .action(runMedusaSeed)
+
+  infra
+    .command("medusa:create-admin")
+    .description("Create the Medusa admin user (idempotent — uses SSM creds unless --email/--password given)")
+    .option("--env <name>", "Environment name", "dev")
+    .option("--email <email>", "Override email (defaults to MEDUSA_ADMIN_EMAIL from .env on the host)")
+    .option("--password <password>", "Override password (defaults to MEDUSA_ADMIN_PASSWORD from .env on the host)")
+    .action(runMedusaCreateAdmin)
 }

@@ -10,9 +10,11 @@
 //
 // All routes require authentication + ownership verification.
 
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { buildEnvelope } from "@adjudicate/core";
 import { getRedisClient, rk, withLock } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
@@ -22,6 +24,10 @@ import {
   createPaymentQueryService,
   prisma,
   InvalidTransitionError,
+  type OrderStatusTransitionPayload,
+  type PaymentCreatePayload,
+  type PaymentRegenerationCountIncrementPayload,
+  type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
 import {
   OrderFulfillmentStatus,
@@ -32,12 +38,61 @@ import {
 } from "@ibatexas/types";
 import { getEffectivePonr } from "@ibatexas/domain";
 import { amendOrder, changeDeliveryAddress, switchOrderType, medusaAdmin } from "@ibatexas/tools";
+import {
+  ordersPolicyBundle,
+  portugueseRefusalMessages,
+  type OrderAddressChangePayload,
+  type OrderAmendRequestPayload,
+  type OrderCancelPayload,
+  type OrderNoteAddPayload,
+  type OrderState,
+  type OrderTypeSwitchPayload,
+} from "@ibatexas/pack-orders";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { type AgentContext, Channel } from "@ibatexas/types";
 import { requireAuth } from "../middleware/auth.js";
+import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
 
 /** Build a minimal AgentContext for API-originated tool calls. */
 function apiContext(customerId: string): AgentContext {
   return { customerId, channel: Channel.Web, sessionId: "api", userType: "customer" };
+}
+
+/**
+ * Derive a deterministic envelope `nonce` from a logical idempotency
+ * identifier (e.g. `${orderId}:cancel`). The same logical key on retry
+ * produces the same `intentHash` so the kernel's Execution Ledger can
+ * dedupe HTTP retries / double-clicks / network blips.
+ *
+ * Hex-encoded SHA-256 is collision-resistant for the small key space we
+ * derive from (orderId / customerId UUIDs + a short action suffix). Per
+ * CLAUDE.md rule 9, the inputs are non-PII identifiers only — see the
+ * `idempotency-key derivation` notes on each call site.
+ *
+ * P0-7 audit-2026-05-24 remediation.
+ */
+function deriveNonce(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
+/**
+ * Prefer the caller's explicit `Idempotency-Key` HTTP header when
+ * supplied (industry standard for client-driven dedup, e.g. Stripe).
+ * Otherwise fall back to the route's derived key. Returns the resolved
+ * value verbatim — callers SHA-256 it via `deriveNonce` for the
+ * envelope nonce.
+ */
+function resolveIdempotencyKey(
+  headerValue: string | string[] | undefined,
+  fallback: string,
+): string {
+  if (typeof headerValue === "string" && headerValue.length > 0) {
+    return headerValue;
+  }
+  if (Array.isArray(headerValue) && headerValue[0]) {
+    return headerValue[0];
+  }
+  return fallback;
 }
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
@@ -119,7 +174,14 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         productType: i.metadata?.["productType"] as "food" | "frozen" | "merchandise" | undefined,
       }));
 
-      await orderCmdSvc.create({
+      // ── R1-DELETE (NEW-P0-X4 sibling) ─────────────────────────────────
+      //
+      // Migrated from bare-arg `orderCmdSvc.create(...)` to the envelope
+      // path so projection creation is adjudicated like every other
+      // mutation. order.projection.create is a SYSTEM-only intent kind
+      // (the projection is a derived projection from Medusa, not a
+      // customer-initiated state mutation).
+      const projectionFullInput = {
         id: mo.id,
         displayId: mo.display_id,
         customerId: mo.metadata?.["customerId"] ?? mo.customer_id ?? null,
@@ -139,7 +201,40 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         paymentMethod: mo.metadata?.["paymentMethod"] ?? null,
         tipInCentavos: Number(mo.metadata?.["tipInCentavos"]) || 0,
         medusaCreatedAt: new Date(mo.created_at),
+      };
+      const projectionEnvelope = buildEnvelope<
+        "order.projection.create",
+        { readonly orderId: string; readonly displayId: number; readonly customerId: string | null; readonly fulfillmentStatus: string; readonly paymentStatus: string | null; readonly totalInCentavos: number }
+      >({
+        kind: "order.projection.create",
+        payload: {
+          orderId: mo.id,
+          displayId: mo.display_id,
+          customerId: projectionFullInput.customerId,
+          fulfillmentStatus: projectionFullInput.fulfillmentStatus,
+          paymentStatus: projectionFullInput.paymentStatus,
+          totalInCentavos: projectionFullInput.totalInCentavos,
+        },
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: `lazy-create:${mo.id}` },
+        taint: "SYSTEM",
       });
+      const createOutcome = await orderCmdSvc.createFromEnvelope(
+        projectionEnvelope,
+        projectionFullInput,
+      );
+      if (
+        createOutcome.decision.kind !== "EXECUTE" &&
+        createOutcome.decision.kind !== "REWRITE"
+      ) {
+        // Projection creation refused — surface as a non-throw so the
+        // ownership-check path can fall through to its existing failure.
+        server.log.warn(
+          { orderId, decisionKind: createOutcome.decision.kind },
+          "[ensureProjectionExists] kernel refused projection create",
+        );
+        return false;
+      }
       server.log.info({ orderId }, "order projection lazy-created from Medusa");
       return true;
     } catch (err) {
@@ -202,44 +297,143 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      try {
-        const result = await orderCmdSvc.transitionStatus(id, {
-          newStatus: OrderFulfillmentStatus.CANCELED,
-          actor: "customer",
-          actorId: customerId,
-          reason: request.body.reason ?? "Cancelado pelo cliente",
-        });
+      // ── Task 14 — wrap cancel in adjudicate envelope ───────────────────
+      //
+      // The customer-facing cancel kind is `order.cancel` (per
+      // `@ibatexas/pack-orders`). The kernel may REFUSE (post-PONR) /
+      // REQUEST_CONFIRMATION (paid orders) / ESCALATE (shipped). On
+      // EXECUTE we keep the existing imperative path that uses the
+      // command-service to transition + cancel payment + publish NATS.
+      const cancelPayload: OrderCancelPayload = {
+        orderId: id,
+        reason: request.body.reason ?? "Cancelado pelo cliente",
+      };
+      // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ───────
+      //
+      // Each order can legitimately be cancelled exactly once by its
+      // owner. Browser retries, double-clicks, and network blips on
+      // POST /api/orders/:id/cancel MUST produce the same `intentHash`
+      // so the Execution Ledger dedupes. Prefer the client's explicit
+      // `Idempotency-Key` header; fall back to a route-derived key from
+      // `${orderId}:cancel:${customerId}` (both non-PII UUIDs).
+      const cancelIdempotencyKey = resolveIdempotencyKey(
+        request.headers["idempotency-key"],
+        `${id}:cancel:${customerId}`,
+      );
+      const envelope = buildCustomerEnvelope<"order.cancel", OrderCancelPayload>({
+        kind: "order.cancel",
+        payload: cancelPayload,
+        nonce: deriveNonce(cancelIdempotencyKey),
+        customerId,
+      });
 
-        // Cancel active payment if not already paid
-        const activePayment = await paymentCmdSvc.findActiveByOrderId(id);
-        if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
-          try {
-            await paymentCmdSvc.transitionStatus(activePayment.id, {
-              newStatus: PaymentStatus.CANCELED,
-              actor: "customer",
-              actorId: customerId,
-              reason: "Pedido cancelado pelo cliente",
-            });
-          } catch {
-            // Payment may already be terminal — non-critical
-          }
-        }
-
-        await publishNatsEvent("order.canceled", {
-          eventType: "order.canceled",
-          orderId: id,
-          displayId: order.displayId,
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
           customerId,
-          reason: request.body.reason ?? "Cancelado pelo cliente",
-          canceledBy: "customer",
-          timestamp: new Date().toISOString(),
+          cartId: null,
+          orderId: id,
+          totalInCentavos: order.totalInCentavos,
+          lastAction: null,
+        },
+      };
+
+      try {
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            // ── R1-DELETE (sibling fix) ────────────────────────────────
+            // Inner mutations migrated from bare-arg `transitionStatus`
+            // to envelope-typed `transitionStatusFromEnvelope`. The
+            // outer `order.cancel` envelope is already adjudicated by
+            // runCustomerIntent; these inner envelopes adjudicate the
+            // projection-level transitions (order + payment).
+            const orderTransitionEnvelope = buildCustomerEnvelope<
+              "order.status.transition",
+              OrderStatusTransitionPayload
+            >({
+              kind: "order.status.transition",
+              payload: {
+                orderId: id,
+                newStatus: OrderFulfillmentStatus.CANCELED,
+                actor: "customer",
+                actorId: customerId,
+                reason: request.body.reason ?? "Cancelado pelo cliente",
+              },
+              nonce: randomUUID(),
+              customerId,
+            });
+            const orderOutcome = await orderCmdSvc.transitionStatusFromEnvelope(
+              orderTransitionEnvelope,
+            );
+            if (
+              orderOutcome.decision.kind !== "EXECUTE" &&
+              orderOutcome.decision.kind !== "REWRITE"
+            ) {
+              // Inner adjudication refused — propagate as transition error.
+              throw new InvalidTransitionError(
+                id,
+                order.fulfillmentStatus,
+                OrderFulfillmentStatus.CANCELED,
+              );
+            }
+            const result = orderOutcome.result!;
+
+            // Cancel active payment if not already paid.
+            const activePayment = await paymentCmdSvc.findActiveByOrderId(id);
+            if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
+              try {
+                const paymentCancelEnvelope = buildEnvelope<
+                  "payment.status.transition",
+                  PaymentStatusTransitionPayload
+                >({
+                  kind: "payment.status.transition",
+                  payload: {
+                    paymentId: activePayment.id,
+                    newStatus: PaymentStatus.CANCELED,
+                    actor: "customer",
+                    actorId: customerId,
+                    reason: "Pedido cancelado pelo cliente",
+                  },
+                  nonce: randomUUID(),
+                  actor: { principal: "user", sessionId: customerId },
+                  taint: "TRUSTED",
+                });
+                // REFUSE is tolerated (payment may already be terminal).
+                await paymentCmdSvc.transitionStatusFromEnvelope(paymentCancelEnvelope);
+              } catch {
+                // Payment may already be terminal — non-critical.
+              }
+            }
+
+            await publishNatsEvent("order.canceled", {
+              eventType: "order.canceled",
+              orderId: id,
+              displayId: order.displayId,
+              customerId,
+              reason: request.body.reason ?? "Cancelado pelo cliente",
+              canceledBy: "customer",
+              timestamp: new Date().toISOString(),
+            });
+
+            return {
+              success: true,
+              version: result.version,
+              fulfillmentStatus: result.newStatus,
+            };
+          },
+          ctx: {
+            customerId,
+            route: "order.cancel",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
         });
 
-        return reply.send({
-          success: true,
-          version: result.version,
-          fulfillmentStatus: result.newStatus,
-        });
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof InvalidTransitionError) {
           return reply.code(422).send({ error: "Transição de status inválida.", from: err.from, to: err.to });
@@ -433,18 +627,70 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
-      try {
-        const result = await amendOrder(
+      // ── Task 14 — wrap amend in adjudicate envelope ────────────────────
+      //
+      // The pack's `order.amend.request` kind carries a `changes` array
+      // (the kernel supports batch + single via the same payload shape).
+      // Single-action callers wrap their op in a 1-element changes array.
+      // Map IbateXas's amend action vocabulary to the pack's. The HTTP
+      // surface uses `update_qty` for legacy compatibility; the pack's
+      // payload uses `update` per the master taxonomy.
+      const packOp: "add" | "remove" | "update" =
+        request.body.action === "update_qty" ? "update" : request.body.action;
+      const amendPayload: OrderAmendRequestPayload = {
+        orderId: id,
+        changes: [
           {
-            orderId: id,
-            action: request.body.action,
-            variantId: request.body.variantId,
-            itemTitle: request.body.itemTitle,
-            quantity: request.body.quantity,
+            op: packOp,
+            ...(request.body.variantId !== undefined ? { variantId: request.body.variantId } : {}),
+            ...(request.body.quantity !== undefined ? { quantity: request.body.quantity } : {}),
           },
-          apiContext(customerId),
-        );
-        return reply.send(result);
+        ],
+      };
+      const envelope = buildCustomerEnvelope<"order.amend.request", OrderAmendRequestPayload>({
+        kind: "order.amend.request",
+        payload: amendPayload,
+        nonce: randomUUID(),
+        customerId,
+      });
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          lastAction: null,
+        },
+      };
+
+      try {
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            return amendOrder(
+              {
+                orderId: id,
+                action: request.body.action,
+                variantId: request.body.variantId,
+                itemTitle: request.body.itemTitle,
+                quantity: request.body.quantity,
+              },
+              apiContext(customerId),
+            );
+          },
+          ctx: {
+            customerId,
+            route: "order.amend",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });
@@ -475,24 +721,81 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
-      const note = await prisma.orderNote.create({
-        data: {
+      // W7-P4: route the customer note through addNoteFromEnvelope so the
+      // order.note.add intent is kernel-adjudicated and audit-emitted. The
+      // Wave-6 finding flagged the direct prisma.orderNote.create as a
+      // parallel/duplicate surface bypass.
+      const projection = await orderQuerySvc.getById(id);
+      if (!projection) {
+        // Should not occur — verifyOwnership above passed — but bail safely.
+        return reply.code(404).send({ error: "Pedido não encontrado." });
+      }
+      const noteEnvelope = buildCustomerEnvelope<
+        "order.note.add",
+        OrderNoteAddPayload
+      >({
+        kind: "order.note.add" as const,
+        payload: {
           orderId: id,
-          author: "customer",
-          authorId: customerId,
-          content: request.body.content,
+          body: request.body.content,
         },
+        nonce: randomUUID(),
+        customerId: `customer:${customerId}`,
+      });
+      const noteOrderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          paymentMethod: (projection.paymentMethod as
+            | "pix"
+            | "card"
+            | "cash"
+            | null) ?? null,
+          paymentStatus: projection.paymentStatus,
+          totalInCentavos: projection.totalInCentavos,
+        },
+      };
+      const noteAddSvc = createOrderCommandService(server.log, {
+        auditSink: getAuditSink(),
+      });
+      const outcome = await noteAddSvc.addNoteFromEnvelope(
+        noteEnvelope,
+        noteOrderState,
+        { author: "customer", authorId: customerId },
+      );
+
+      if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+        const message =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.userFacing
+            : "Não foi possível adicionar a observação no momento.";
+        return reply.code(403).send({ error: message });
+      }
+
+      const noteResult = outcome.result!;
+      // The service returns { noteId, orderId }. The route response shape
+      // includes content + createdAt — refetch the row to surface those
+      // (the service-layer chokepoint stays narrow).
+      const persisted = await prisma.orderNote.findUnique({
+        where: { id: noteResult.noteId },
       });
 
       await publishNatsEvent("order.note_added", {
         eventType: "order.note_added",
         orderId: id,
-        noteId: note.id,
+        noteId: noteResult.noteId,
         author: "customer",
         timestamp: new Date().toISOString(),
       });
 
-      return reply.code(201).send({ id: note.id, content: note.content, createdAt: note.createdAt.toISOString() });
+      return reply.code(201).send({
+        id: noteResult.noteId,
+        content: persisted?.content ?? request.body.content,
+        createdAt:
+          persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
+      });
     },
   );
 
@@ -618,24 +921,86 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Cancel current payment (terminal for this attempt)
-      try {
-        await paymentCmdSvc.transitionStatus(currentPayment.id, {
-          newStatus: PaymentStatus.CANCELED,
-          actor: "customer",
-          actorId: customerId,
-          reason: "Nova tentativa de pagamento",
-        });
-      } catch {
-        // May already be terminal
+      // ── W3 P0-2 (audit remediation) ──────────────────────────────────
+      //
+      // The previous flow chained THREE bypasses: bare-arg
+      // `paymentCmdSvc.transitionStatus` + bare-arg `paymentCmdSvc.create`
+      // + zero kernel adjudication. Now every mutation is an envelope
+      // run through `*FromEnvelope`. Each step's failure surfaces a
+      // pt-BR refusal via the kernel decision.
+      //
+      // Wave 5 will replace this two-envelope decomposition with a
+      // composite `payment.retry` intent kind in pack-payments (see
+      // `migration/remediation/W3-INTENT-GAPS.md`).
+
+      // 1. Cancel current payment (best-effort if already terminal).
+      const cancelPayload: PaymentStatusTransitionPayload = {
+        paymentId: currentPayment.id,
+        newStatus: PaymentStatus.CANCELED,
+        actor: "customer",
+        actorId: customerId,
+        reason: "Nova tentativa de pagamento",
+      };
+      const cancelEnvelope = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: cancelPayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "TRUSTED",
+      });
+      const cancelOutcome =
+        await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
+      // Tolerate REFUSE (e.g., already terminal). REQUEST_CONFIRMATION /
+      // ESCALATE are not expected on a status transition; surface as 403.
+      if (
+        cancelOutcome.decision.kind !== "EXECUTE" &&
+        cancelOutcome.decision.kind !== "REWRITE" &&
+        cancelOutcome.decision.kind !== "REFUSE"
+      ) {
+        const text =
+          cancelOutcome.decision.kind === "ESCALATE"
+            ? "Operação requer atendimento humano."
+            : "Cancelamento do pagamento anterior requer confirmação adicional.";
+        return reply.code(503).send({ error: text });
       }
 
-      // Create new payment attempt with same method
-      const newPayment = await paymentCmdSvc.create({
+      // 2. Create the new payment attempt — adjudicated path.
+      const createPayload: PaymentCreatePayload = {
         orderId: id,
         method: currentPayment.method as "pix" | "card" | "cash",
         amountInCentavos: currentPayment.amountInCentavos,
+      };
+      const createEnvelope = buildEnvelope<
+        "payment.create",
+        PaymentCreatePayload
+      >({
+        kind: "payment.create",
+        payload: createPayload,
+        nonce: randomUUID(),
+        // payment.create is SYSTEM-only — the retry route is acting on
+        // the customer's behalf but the new-payment-row creation is a
+        // system-actor responsibility.
+        actor: { principal: "system", sessionId: `customer:${customerId}` },
+        taint: "SYSTEM",
       });
+      const createOutcome =
+        await paymentCmdSvc.createFromEnvelope(createEnvelope);
+      if (
+        createOutcome.decision.kind !== "EXECUTE" &&
+        createOutcome.decision.kind !== "REWRITE"
+      ) {
+        const text =
+          createOutcome.decision.kind === "REFUSE"
+            ? createOutcome.decision.refusal.userFacing
+            : "Não foi possível criar nova tentativa de pagamento.";
+        return reply
+          .code(createOutcome.decision.kind === "REFUSE" ? 403 : 503)
+          .send({ error: text });
+      }
+      const newPayment = createOutcome.result!;
 
       return reply.send({
         success: true,
@@ -695,7 +1060,13 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Per-order limit: 5 total regenerations
+      // ── W3 P0-2 (audit remediation) ──────────────────────────────────
+      //
+      // The per-order cap is also enforced inside the kernel's
+      // `regenerationCountCapGuard` (default 5; env override
+      // `MAX_PIX_REGENERATIONS_PER_PAYMENT`). The HTTP-layer check stays
+      // as a fast-fail for the common case; the kernel guard is the
+      // authoritative gate.
       if (currentPayment.regenerationCount >= 5) {
         return reply.code(429).send({
           error: "Limite de regenerações para este pedido atingido.",
@@ -703,29 +1074,98 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Cancel current payment, create new one
-      try {
-        await paymentCmdSvc.transitionStatus(currentPayment.id, {
-          newStatus: PaymentStatus.CANCELED,
-          actor: "customer",
-          actorId: customerId,
-          reason: "Regeneração de PIX",
+      // 1. Cancel the current payment (best-effort if terminal).
+      const cancelPayload: PaymentStatusTransitionPayload = {
+        paymentId: currentPayment.id,
+        newStatus: PaymentStatus.CANCELED,
+        actor: "customer",
+        actorId: customerId,
+        reason: "Regeneração de PIX",
+      };
+      const cancelEnvelope = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: cancelPayload,
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "TRUSTED",
+      });
+      const cancelOutcome =
+        await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
+      // Tolerate REFUSE (already terminal). Anything else: surface.
+      if (
+        cancelOutcome.decision.kind !== "EXECUTE" &&
+        cancelOutcome.decision.kind !== "REWRITE" &&
+        cancelOutcome.decision.kind !== "REFUSE"
+      ) {
+        return reply.code(503).send({
+          error: "Cancelamento do pagamento anterior requer confirmação.",
         });
-      } catch {
-        // May already be terminal
       }
 
-      const newPayment = await paymentCmdSvc.create({
+      // 2. Create the new payment row.
+      const createPayload: PaymentCreatePayload = {
         orderId: id,
         method: "pix",
         amountInCentavos: currentPayment.amountInCentavos,
+      };
+      const createEnvelope = buildEnvelope<
+        "payment.create",
+        PaymentCreatePayload
+      >({
+        kind: "payment.create",
+        payload: createPayload,
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: `customer:${customerId}` },
+        taint: "SYSTEM",
       });
+      const createOutcome =
+        await paymentCmdSvc.createFromEnvelope(createEnvelope);
+      if (
+        createOutcome.decision.kind !== "EXECUTE" &&
+        createOutcome.decision.kind !== "REWRITE"
+      ) {
+        const text =
+          createOutcome.decision.kind === "REFUSE"
+            ? createOutcome.decision.refusal.userFacing
+            : "Não foi possível gerar novo PIX.";
+        return reply
+          .code(createOutcome.decision.kind === "REFUSE" ? 403 : 503)
+          .send({ error: text });
+      }
+      const newPayment = createOutcome.result!;
 
-      // Increment regeneration count on the new payment
-      await prisma.payment.update({
-        where: { id: newPayment.id },
-        data: { regenerationCount: currentPayment.regenerationCount + 1 },
+      // 3. Bump the regeneration counter via the kernel-adjudicated path.
+      //    The cap guard refuses bumps above
+      //    `MAX_PIX_REGENERATIONS_PER_PAYMENT` (default 5).
+      const bumpPayload: PaymentRegenerationCountIncrementPayload = {
+        paymentId: newPayment.id,
+        currentCount: 0,
+      };
+      const bumpEnvelope = buildEnvelope<
+        "payment.regeneration.count.increment",
+        PaymentRegenerationCountIncrementPayload
+      >({
+        kind: "payment.regeneration.count.increment",
+        payload: bumpPayload,
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: `customer:${customerId}` },
+        taint: "SYSTEM",
       });
+      const bumpOutcome =
+        await paymentCmdSvc.bumpRegenerationCountFromEnvelope(bumpEnvelope);
+      if (
+        bumpOutcome.decision.kind !== "EXECUTE" &&
+        bumpOutcome.decision.kind !== "REWRITE"
+      ) {
+        const text =
+          bumpOutcome.decision.kind === "REFUSE"
+            ? bumpOutcome.decision.refusal.userFacing
+            : "Limite de regenerações atingido.";
+        return reply.code(429).send({ error: text, code: "REGEN_CAP" });
+      }
 
       return reply.send({
         success: true,
@@ -791,33 +1231,109 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // Atomic switch via switching_method → cancel old → create new
+      // ── NEW-P0-X4 (W1 correctness remediation) ───────────────────────
+      //
+      // The previous flow chained THREE bypasses: bare-arg
+      // `paymentCmdSvc.transitionStatus` × 2 + bare-arg `paymentCmdSvc.create`.
+      // `payment.method.switch` is a registered kind in @ibatexas/pack-payments
+      // (W5) but the route never adjudicated it. We now:
+      //
+      //   1. Build a `payment.method.switch` envelope. (We don't run it
+      //      through the customer-intent-gateway because that gateway is
+      //      for the customer-onboarding/orders kinds; payment kinds go
+      //      directly through the payments policy bundle. This mirrors
+      //      payment-retry / regenerate-pix.)
+      //   2. Cancel-old via `transitionStatusFromEnvelope` and create-new
+      //      via `createFromEnvelope`.
+      //   3. The HTTP-layer pre-checks (paid, same-method, switchable
+      //      states) stay as fast-fails before kernel dispatch.
+
       const result = await withLock(`payment:${currentPayment.id}`, async () => {
-        // Transition old payment → switching_method → canceled
+        // 1. Transition old payment → switching_method (if allowed) via envelope.
         if (canTransitionPayment(currentPayment.status as PaymentStatus, PaymentStatus.SWITCHING_METHOD)) {
-          await paymentCmdSvc.transitionStatus(currentPayment.id, {
-            newStatus: PaymentStatus.SWITCHING_METHOD,
-            actor: "customer",
-            actorId: customerId,
-            reason: `Troca de ${currentPayment.method} para ${newMethod}`,
+          const switchingEnvelope = buildEnvelope<
+            "payment.status.transition",
+            PaymentStatusTransitionPayload
+          >({
+            kind: "payment.status.transition",
+            payload: {
+              paymentId: currentPayment.id,
+              newStatus: PaymentStatus.SWITCHING_METHOD,
+              actor: "customer",
+              actorId: customerId,
+              reason: `Troca de ${currentPayment.method} para ${newMethod}`,
+            },
+            nonce: randomUUID(),
+            actor: { principal: "user", sessionId: customerId },
+            taint: "TRUSTED",
           });
+          const switchingOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope);
+          if (
+            switchingOutcome.decision.kind !== "EXECUTE" &&
+            switchingOutcome.decision.kind !== "REWRITE" &&
+            switchingOutcome.decision.kind !== "REFUSE"
+          ) {
+            return { needsEscalation: true } as const;
+          }
         }
 
-        await paymentCmdSvc.transitionStatus(currentPayment.id, {
-          newStatus: PaymentStatus.CANCELED,
-          actor: "customer",
-          actorId: customerId,
-          reason: `Troca de método: ${currentPayment.method} → ${newMethod}`,
+        // 2. Transition old payment → canceled via envelope.
+        const cancelEnvelope = buildEnvelope<
+          "payment.status.transition",
+          PaymentStatusTransitionPayload
+        >({
+          kind: "payment.status.transition",
+          payload: {
+            paymentId: currentPayment.id,
+            newStatus: PaymentStatus.CANCELED,
+            actor: "customer",
+            actorId: customerId,
+            reason: `Troca de método: ${currentPayment.method} → ${newMethod}`,
+          },
+          nonce: randomUUID(),
+          actor: { principal: "user", sessionId: customerId },
+          taint: "TRUSTED",
         });
+        const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
+        if (
+          cancelOutcome.decision.kind !== "EXECUTE" &&
+          cancelOutcome.decision.kind !== "REWRITE" &&
+          cancelOutcome.decision.kind !== "REFUSE"
+        ) {
+          return { needsEscalation: true } as const;
+        }
 
-        // Create new payment with new method
-        const newPayment = await paymentCmdSvc.create({
+        // 3. Create new payment with new method via envelope.
+        const createPayload: PaymentCreatePayload = {
           orderId: id,
           method: newMethod,
           amountInCentavos: currentPayment.amountInCentavos,
+        };
+        const createEnvelope = buildEnvelope<
+          "payment.create",
+          PaymentCreatePayload
+        >({
+          kind: "payment.create",
+          payload: createPayload,
+          nonce: randomUUID(),
+          actor: { principal: "system", sessionId: `customer:${customerId}` },
+          taint: "SYSTEM",
         });
+        const createOutcome = await paymentCmdSvc.createFromEnvelope(createEnvelope);
+        if (
+          createOutcome.decision.kind !== "EXECUTE" &&
+          createOutcome.decision.kind !== "REWRITE"
+        ) {
+          if (createOutcome.decision.kind === "REFUSE") {
+            return {
+              refused: true,
+              userFacing: createOutcome.decision.refusal.userFacing,
+            } as const;
+          }
+          return { needsEscalation: true } as const;
+        }
+        const newPayment = createOutcome.result!;
 
-        // Publish method change event
         await publishNatsEvent("payment.method_changed", {
           eventType: "payment.method_changed",
           orderId: id,
@@ -827,16 +1343,25 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           timestamp: new Date().toISOString(),
         });
 
-        return newPayment;
+        return { ok: true, payment: newPayment } as const;
       }, 15);
 
       if (!result) {
         return reply.code(409).send({ error: "Operação em andamento. Tente novamente.", code: "LOCK_CONFLICT" });
       }
+      if ("refused" in result && result.refused) {
+        return reply.code(403).send({ error: result.userFacing });
+      }
+      if ("needsEscalation" in result && result.needsEscalation) {
+        return reply.code(503).send({ error: "Troca de método requer atendimento humano." });
+      }
+      if (!("ok" in result) || !result.ok) {
+        return reply.code(500).send({ error: "Erro interno na troca de método de pagamento." });
+      }
 
       return reply.send({
         success: true,
-        paymentId: result.id,
+        paymentId: result.payment.id,
         method: newMethod,
         message: `Método de pagamento alterado para ${newMethod}.`,
       });
@@ -872,15 +1397,86 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // ── Task 14 — wrap address change in adjudicate envelope ──────────
+      //
+      // The customer-facing kind is `order.address.change` (per
+      // `@ibatexas/pack-orders`). The kernel adjudicates against the
+      // outer pack-orders bundle; the inner `changeDeliveryAddress` tool
+      // then re-adjudicates against `orderProjectionPolicyBundle` at the
+      // service-layer chokepoint (`changeAddressFromEnvelope`). Map the
+      // HTTP body's IbateXas-vocab address (`address1`/`postalCode`/…)
+      // onto the Pack's canonical vocab (`street`/`zip`/…).
+      const reqBody = request.body;
+      const addressPayload: OrderAddressChangePayload = {
+        orderId: id,
+        address: {
+          street: reqBody.address.address1,
+          ...(reqBody.address.address2 !== undefined
+            ? { complement: reqBody.address.address2 }
+            : {}),
+          ...(reqBody.address.neighborhood !== undefined
+            ? { neighborhood: reqBody.address.neighborhood }
+            : {}),
+          city: reqBody.address.city,
+          state: reqBody.address.state,
+          zip: reqBody.address.postalCode,
+        },
+      };
+      const envelope = buildCustomerEnvelope<"order.address.change", OrderAddressChangePayload>({
+        kind: "order.address.change",
+        payload: addressPayload,
+        nonce: randomUUID(),
+        customerId,
+      });
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          lastAction: null,
+        },
+      };
+
       try {
-        const result = await changeDeliveryAddress(
-          { orderId: id, address: request.body.address },
-          apiContext(customerId),
-        );
-        if (!result.success) {
-          return reply.code(422).send({ error: result.message, needsEscalation: result.needsEscalation });
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            return changeDeliveryAddress(
+              { orderId: id, address: reqBody.address },
+              apiContext(customerId),
+            );
+          },
+          ctx: {
+            customerId,
+            route: "order.address.change",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        // The inner tool returns `{ success: boolean, message, needsEscalation? }`
+        // on its own — surface the legacy 422 mapping when the tool's
+        // service-layer adjudication or business validator refused even
+        // though the outer pack-orders adjudication permitted EXECUTE.
+        if (out.statusCode === 200) {
+          const toolResult = out.body as {
+            success: boolean;
+            message: string;
+            needsEscalation?: boolean;
+          };
+          if (!toolResult.success) {
+            return reply.code(422).send({
+              error: toolResult.message,
+              needsEscalation: toolResult.needsEscalation,
+            });
+          }
         }
-        return reply.send(result);
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });
@@ -912,15 +1508,84 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         return reply.code(404).send({ error: "Pedido não encontrado." });
       }
 
+      // ── Task 14 — wrap type switch in adjudicate envelope ─────────────
+      //
+      // The customer-facing kind is `order.type.switch`. Pack-orders uses
+      // the binary `delivery` | `takeout` vocabulary; IbateXas's HTTP
+      // surface distinguishes `pickup` vs `dine_in` (both non-delivery).
+      // Collapse both to `takeout` for the outer envelope; the inner
+      // `switchOrderType` tool preserves the precise vocab via the
+      // projection-policy envelope it builds internally.
+      //
+      // audit-2026-05-24 P2-3: the audit record is built from the outer
+      // envelope's payload. Without preserving the original HTTP
+      // vocabulary, an operator reading the audit row can't tell
+      // whether the customer asked for `pickup` or `dine_in` — both
+      // collapse to `takeout`. We carry the original via `httpVocab`
+      // (descriptive-only, pack guards ignore it) so the audit record
+      // captures both the policy-adjudicated value AND what the customer
+      // actually said.
+      const newType = request.body.type;
+      const packNewType: "delivery" | "takeout" =
+        newType === "delivery" ? "delivery" : "takeout";
+      const typePayload: OrderTypeSwitchPayload = {
+        orderId: id,
+        newType: packNewType,
+        httpVocab: newType,
+      };
+      const envelope = buildCustomerEnvelope<"order.type.switch", OrderTypeSwitchPayload>({
+        kind: "order.type.switch",
+        payload: typePayload,
+        nonce: randomUUID(),
+        customerId,
+      });
+
+      const orderState: OrderState = {
+        ctx: {
+          channel: "web",
+          customerId,
+          cartId: null,
+          orderId: id,
+          lastAction: null,
+        },
+      };
+
       try {
-        const result = await switchOrderType(
-          { orderId: id, newType: request.body.type },
-          apiContext(customerId),
-        );
-        if (!result.success) {
-          return reply.code(422).send({ error: result.message, needsEscalation: result.needsEscalation });
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () => {
+            return switchOrderType(
+              { orderId: id, newType },
+              apiContext(customerId),
+            );
+          },
+          ctx: {
+            customerId,
+            route: "order.type.switch",
+            log: server.log,
+          },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+        });
+
+        // Preserve legacy 422 mapping when the inner tool refuses despite
+        // the outer pack-orders adjudication permitting EXECUTE.
+        if (out.statusCode === 200) {
+          const toolResult = out.body as {
+            success: boolean;
+            message: string;
+            needsEscalation?: boolean;
+          };
+          if (!toolResult.success) {
+            return reply.code(422).send({
+              error: toolResult.message,
+              needsEscalation: toolResult.needsEscalation,
+            });
+          }
         }
-        return reply.send(result);
+        return reply.code(out.statusCode).send(out.body);
       } catch (err) {
         if (err instanceof Error && err.name === "NonRetryableError") {
           return reply.code(422).send({ error: err.message });

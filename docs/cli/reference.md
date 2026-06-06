@@ -502,6 +502,16 @@ ibx infra deploy --target main         # push to main (production)
 ibx infra deploy --watch               # push + poll status + health check
 ibx infra deploy --watch --timeout 20m # custom timeout for first deploy
 ibx infra destroy                      # ⚠  destroy all infrastructure (requires typing env name)
+
+# Live-host operations (patch EC2 without terraform replace)
+ibx infra host:sync                    # re-render compose + deploy script from templates, upload via SSM
+ibx infra host:redeploy                # run /usr/local/bin/ibatexas-deploy on the host (ECR pull + compose up)
+
+# Remote Medusa ops (run inside the commerce container on the dev host)
+ibx infra medusa:migrate               # medusa db:migrate (workaround for CI-hang)
+ibx infra medusa:seed                  # seed categories + products
+ibx infra medusa:create-admin          # idempotent — uses MEDUSA_ADMIN_* from /opt/ibatexas/.env
+ibx infra medusa:create-admin --email user@example.com --password <pw>  # override creds
 ```
 
 `ibx infra init` creates the S3 bucket for Terraform state and DynamoDB table for state locking.
@@ -581,6 +591,31 @@ Phone must be in E.164 format (`+55...` for BR, `+1...` for US). Roles: `OWNER`,
 ibx git status             # branch + staged/unstaged/untracked summary
 ibx git log                # recent commits + open PR link
 ```
+
+### Kernel — `ibx kernel`
+
+Operator-facing surface for the adjudicate kernel. Saída em pt-BR.
+
+```bash
+ibx kernel status                          # estado: shadow/enforce/intent kinds/ledger/audit
+ibx kernel status --json                   # mesma informação em JSON
+
+ibx kernel replay --since=24h              # re-feed audit window via adjudicate(), reporta drift
+ibx kernel replay --since=7d --intent-kind=order.checkout.create --limit=500
+ibx kernel replay --dry-run                # lista registros sem re-adjudicar
+
+ibx kernel divergence --since=24h          # resumo das classes BASIS_ONLY/DECISION_KIND/PAYLOAD_REWRITE
+```
+
+**Pre-requisitos:**
+- `kernel status` — sempre executável; lê apenas variáveis de ambiente locais.
+- `kernel replay` — requer `IBX_AUDIT_POSTGRES_ENABLED=true` + `DATABASE_URL`. Sem o flag, emite TODO estruturado para o operador.
+- `kernel divergence` — requer `IBX_AUDIT_POSTGRES_ENABLED=true` OU `POSTHOG_API_KEY`. Sem nenhum dos dois, emite TODO estruturado.
+
+Referências:
+- `docs/adjudicate-migration/governance/01-intent-taxonomy.md` — vocabulário canônico dos 32 intent kinds.
+- `docs/adjudicate-migration/governance/05-audit-replay-requirements.md` — semântica das 3 classes de divergência.
+- `docs/ops/runbooks/01-stage-read-mutations.md` (e seguintes) — playbook 4-stage shadow → enforce.
 
 ---
 

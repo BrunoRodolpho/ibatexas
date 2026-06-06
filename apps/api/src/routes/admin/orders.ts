@@ -1,9 +1,11 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { OrderFulfillmentStatus } from "@ibatexas/types";
 import { reaisToCentavos, getRedisClient, rk } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { buildEnvelope } from "@adjudicate/core";
 import {
   createOrderCommandService,
   createOrderQueryService,
@@ -11,7 +13,9 @@ import {
   ConcurrencyError,
   ProjectionNotFoundError,
   InvalidTransitionError,
+  type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
+import { getAuditSink } from "@ibatexas/audit-sink";
 
 /** Returns true when the projection table has not been migrated yet (P2021). */
 function isTableMissing(err: unknown): boolean {
@@ -41,7 +45,15 @@ const OrderPatchBody = z.object({
 
 export async function orderRoutes(server: FastifyInstance): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
-  const commandSvc = createOrderCommandService();
+  // Defer audit-sink resolution to onReady (see adminPaymentRoutes for
+  // the full rationale — boot-order race between plugin-body execution
+  // during buildServer() and bootstrapAuditSinkDI() in index.ts).
+  let commandSvc!: ReturnType<typeof createOrderCommandService>;
+  server.addHook("onReady", async () => {
+    commandSvc = createOrderCommandService(server.log, {
+      auditSink: getAuditSink(),
+    });
+  });
   const querySvc = createOrderQueryService();
   const paymentQuerySvc = createPaymentQueryService();
 
@@ -302,12 +314,43 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
 
         if (fulfillment_status) {
           try {
-            // Primary: transition via projection (validates, updates, audits in one transaction)
-            transitionResult = await commandSvc.transitionStatus(id, {
-              newStatus: fulfillment_status as OrderFulfillmentStatus,
+            // ── Task 13/15 — kernel-gated transition via envelope ───────
+            // Staff-authenticated path: principal=user, taint=TRUSTED.
+            // API-key path: principal=system, taint=SYSTEM.
+            const staffId = request.staffId ?? null;
+            const principal: "user" | "system" = staffId ? "user" : "system";
+            const taint: "TRUSTED" | "SYSTEM" = staffId ? "TRUSTED" : "SYSTEM";
+            const sessionId = staffId
+              ? `admin:${staffId}`
+              : "admin:api-key";
+
+            const payload: OrderStatusTransitionPayload = {
+              orderId: id,
+              newStatus: fulfillment_status,
               actor: "admin",
+              ...(staffId ? { actorId: staffId } : {}),
               expectedVersion: clientVersion,
+            };
+            const envelope = buildEnvelope({
+              kind: "order.status.transition" as const,
+              payload,
+              nonce: requestId ?? randomUUID(),
+              actor: { principal, sessionId },
+              taint,
             });
+
+            const outcome = await commandSvc.transitionStatusFromEnvelope(envelope);
+            if (
+              outcome.decision.kind !== "EXECUTE" &&
+              outcome.decision.kind !== "REWRITE"
+            ) {
+              const refusalText =
+                outcome.decision.kind === "REFUSE"
+                  ? outcome.decision.refusal.userFacing
+                  : "Operação não permitida pela política do kernel.";
+              return reply.code(403).send({ error: refusalText });
+            }
+            transitionResult = outcome.result!;
 
             // Fetch displayId + customerId from projection for the event
             const projection = await querySvc.getById(id);

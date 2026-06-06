@@ -1,9 +1,8 @@
 // check_order_status tool — fetch Medusa order with status + fulfillment
 
 import { CheckOrderStatusInputSchema, NonRetryableError, type CheckOrderStatusInput, type AgentContext } from "@ibatexas/types";
-import { createOrderService } from "@ibatexas/domain";
-import { medusaAdmin } from "../medusa/client.js";
 import { withOrderOwnership } from "../guards/with-ownership.js";
+import { createTooledOrderService } from "./_shared.js";
 
 async function checkOrderStatusImpl(
   input: CheckOrderStatusInput,
@@ -15,7 +14,10 @@ async function checkOrderStatusImpl(
     throw new NonRetryableError("Autenticação necessária para verificar status de pedido.");
   }
 
-  const svc = createOrderService(medusaAdmin);
+  // W8-V1: wired through the shared factory even though only svc.getOrder
+  // (a GET) is exercised today. The factory satisfies the hard-throw gate
+  // in order.service.ts and removes the bare-medusaAdmin posture.
+  const svc = createTooledOrderService("tool:check_order_status");
   const { order } = await svc.getOrder(parsed.orderId, ctx.customerId);
 
   return { order };

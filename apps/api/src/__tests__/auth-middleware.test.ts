@@ -275,3 +275,213 @@ describe("JWT revocation (SEC-004)", () => {
     expect(mockGetRedisClient).not.toHaveBeenCalled();
   });
 });
+
+// ── audit-2026-05-24 P1-6: whitespace-only `sub` is rejected ──────────────
+//
+// W7-G1 patched the OTP gate via `normalizeSub`, but the middleware itself
+// still only rejected the empty string. A JWT with `sub: "   "` would have
+// populated `request.customerId` with whitespace and then collided on
+// shared Redis keys (defer:pending:, otp:fail:…) the same way the empty
+// string does. The three middleware sites (customer path, staff path,
+// requireAuth gate) now all `.trim().length === 0` check.
+describe("requireAuth rejects whitespace-only `sub` (audit-2026-05-24 P1-6)", () => {
+  let server: FastifyInstance;
+  let sideEffects: string[];
+
+  beforeAll(async () => {
+    const built = await buildTestServer();
+    server = built.app;
+    sideEffects = built.sideEffects;
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `test:${key}`);
+  });
+
+  it("returns 401 when JWT `sub` is whitespace-only (customer path)", async () => {
+    sideEffects.length = 0;
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      // Whitespace-only sub — must not populate customerId
+      this.user = { sub: "   ", userType: "customer" };
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    expect(response.statusCode).toBe(401);
+    // The route handler must NOT have executed
+    expect(sideEffects).not.toContain("protected-handler-executed");
+  });
+
+  it("returns 401 when JWT `sub` is tab/newline (customer path)", async () => {
+    sideEffects.length = 0;
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      this.user = { sub: "\t\n ", userType: "customer" };
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(sideEffects).not.toContain("protected-handler-executed");
+  });
+
+  it("does NOT pass through to handler when whitespace `sub` (defense-in-depth)", async () => {
+    sideEffects.length = 0;
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      this.user = { sub: " ", userType: "customer" };
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    // The middleware must NOT populate request.customerId with " ".
+    // The status should be 401, NOT 200 with customerId=" ".
+    expect(response.statusCode).toBe(401);
+    expect(sideEffects).toHaveLength(0);
+  });
+});
+
+// ── audit-2026-05-25 (I2): staff-via-customer-cookie escalation defense ──
+//
+// The multi-agent PR #62 review found that the customer-cookie path
+// previously accepted JWTs with `userType: "staff"` and minted staff
+// principals (set request.staffId / request.staffRole from the payload).
+// Combined with the admin preHandler at routes/admin/index.ts admitting
+// on `staffId && staffRole`, this produced a full escalation path: a
+// staff JWT placed in (or leaked into) the customer `token` cookie would
+// pass requireStaff and mutate as staff. The fix rejects userType:"staff"
+// on the customer path AND binds JWTs to their cookie via an `aud` claim.
+describe("auth-2026-05-25 (I2): staff-via-customer-cookie escalation defense", () => {
+  let server: FastifyInstance;
+  let sideEffects: string[];
+
+  beforeAll(async () => {
+    const built = await buildTestServer();
+    server = built.app;
+    sideEffects = built.sideEffects;
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `test:${key}`);
+  });
+
+  it("rejects a userType:'staff' JWT on the customer cookie path", async () => {
+    sideEffects.length = 0;
+    // Attacker places a legitimate staff JWT in the customer `token` cookie.
+    // Pre-fix this would have minted request.staffId / request.staffRole
+    // from the customer-cookie path, allowing staff escalation. Post-fix,
+    // the customer path early-returns on userType === "staff".
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      this.user = {
+        sub: "staff_acme",
+        userType: "staff",
+        role: "OWNER",
+        jti: "staff-jti",
+        aud: "staff_token",
+      };
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    // The protected route checks request.customerId. The staff-typed
+    // token must not populate customerId, so requireAuth gates 401.
+    expect(response.statusCode).toBe(401);
+    expect(sideEffects).not.toContain("protected-handler-executed");
+  });
+
+  it("accepts a customer-typed JWT carrying aud:'token' (happy path)", async () => {
+    sideEffects.length = 0;
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      this.user = {
+        sub: "cust_aud_ok",
+        userType: "customer",
+        jti: "aud-ok-jti",
+        aud: "token",
+      };
+    });
+    // No revocation in this test
+    const mockRedis = { get: vi.fn().mockResolvedValue(null) };
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.customerId).toBe("cust_aud_ok");
+    expect(sideEffects).toContain("protected-handler-executed");
+  });
+
+  it("rejects a customer-typed JWT carrying aud:'staff_token' (token-mixing)", async () => {
+    sideEffects.length = 0;
+    // Attacker minted a fresh JWT with userType:"customer" but aud:"staff_token"
+    // — token-mixing across cookie types. The aud-binding check fails,
+    // customerId never gets populated, requireAuth returns 401.
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      this.user = {
+        sub: "cust_aud_wrong",
+        userType: "customer",
+        jti: "aud-wrong-jti",
+        aud: "staff_token", // wrong audience for the token cookie
+      };
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(sideEffects).not.toContain("protected-handler-executed");
+  });
+
+  it("accepts a legacy customer JWT with aud === undefined (rollover compat)", async () => {
+    // Tokens issued before the aud-binding deploy carry aud === undefined.
+    // The validator treats undefined as legacy-accept during the rollover
+    // window so existing signed-in sessions don't all 401 at once. After
+    // the longest staff JWT TTL (8h) has elapsed post-deploy, this branch
+    // can be tightened to fail-closed.
+    sideEffects.length = 0;
+    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
+      this.user = {
+        sub: "cust_legacy_aud",
+        userType: "customer",
+        jti: "legacy-aud-jti",
+        // aud: undefined  — explicitly omitted
+      };
+    });
+    const mockRedis = { get: vi.fn().mockResolvedValue(null) };
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/protected",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.customerId).toBe("cust_legacy_aud");
+  });
+});

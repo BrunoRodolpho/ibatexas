@@ -74,6 +74,13 @@ export async function acquireWebAgentLock(sessionId: string): Promise<boolean> {
     }
   }, HEARTBEAT_MS)
 
+  // P3-MEM-HEARTBEAT: if a previous lock state for this session is still tracked
+  // (e.g. a prior cycle whose release path didn't run), clear its heartbeat
+  // before overwriting the Map entry so the old interval can't leak and keep
+  // firing. NX-lock semantics are unchanged — we only reacquired above on a
+  // fresh SET NX.
+  const existing = activeLocks.get(sessionId)
+  if (existing) clearInterval(existing.heartbeat)
   activeLocks.set(sessionId, { lockValue, heartbeat })
   return true
 }

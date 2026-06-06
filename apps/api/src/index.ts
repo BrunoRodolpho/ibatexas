@@ -3,10 +3,19 @@ import { closeNatsConnection, setOutboxWriter } from "@ibatexas/nats-client";
 import { closeRedisClient, getRedisClient } from "@ibatexas/tools";
 import { prisma, createScheduleService } from "@ibatexas/domain";
 import { buildServer } from "./server.js";
+import { bootstrapKernel } from "./plugins/kernel-bootstrap.js";
+import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
+import { bootstrapClaustrum } from "./claustrum-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
+import { startDeferResolverSubscriber } from "./subscribers/defer-resolver.js";
+import { startAnonymizeGraceResolverSubscriber } from "./subscribers/anonymize-grace-resolver.js";
+import { startCustomerAnonymizeMedusaResolverSubscriber } from "./subscribers/customer-anonymize-medusa-resolver.js";
+import { startPixDeferTimeoutResolverSubscriber } from "./subscribers/pix-defer-timeout-resolver.js";
+import { startAuditConsumer } from "./subscribers/audit-consumer.js";
+import { createResumeDispatcherAdapter } from "./adapters/resume-dispatcher.js";
 import { initWhatsAppSender } from "./whatsapp/init.js";
 import { registerWorkers, shutdownWorkers } from "./jobs/register-workers.js";
 import logger from "./lib/logger.js";
@@ -37,6 +46,51 @@ const PORT = Number(process.env.PORT ?? 3001);
 
 const start = async (): Promise<void> => {
   const server = await buildServer();
+
+  // Bootstrap the @adjudicate/core kernel: install MetricsSink slot,
+  // validate IBX_KERNEL_SHADOW/IBX_KERNEL_ENFORCE for typos, and (post
+  // task 08) register the orders Pack via installPack. Runs after
+  // Sentry init (so any future PackConformanceError surfaces in
+  // Sentry) but before server.listen so a failed conformance check
+  // prevents serving traffic. See
+  // docs/adjudicate-migration/tasks/01-kernel-bootstrap-plugin.md.
+  await bootstrapKernel(server);
+
+  // audit-2026-05-24 H2 (A1): register the audit-sink leaf's boot-time
+  // DI BEFORE subscribers / routes / workers fire. Post-H2, `getAuditSink()`
+  // lives in `@ibatexas/audit-sink` (zero-dep leaf) and is fail-closed —
+  // any wrapper-call site that runs before this bootstrap throws
+  // `AuditSinkNotInitializedError`. Must run AFTER `bootstrapKernel`
+  // (which calls `installKernelMetricsSink` to populate the hook
+  // state read by `buildAuditSinkDependencies`).
+  await bootstrapAuditSinkDI(server.log);
+
+  // WS7 — bootstrap the claustrum Conductor ALONGSIDE the kernel bootstrap.
+  // `getConductor()` then returns the live process singleton so the chat +
+  // WhatsApp turn-entry routes run through the @claustrum/* cognitive loop
+  // (planner → adjudicate → dispatch → respond), with every mutation gated by
+  // the @adjudicate/* kernel (one intent_audit row before each side-effect).
+  //
+  // Boot-order reconciliation (do NOT reorder):
+  //   1. buildServer() → installKernelMetricsSink()  — the PRODUCTION kernel
+  //      MetricsSink (PostHog/Sentry/Prometheus) + the audit-lag/dedup/spill
+  //      recorder hooks that subscribers + jobs depend on.
+  //   2. bootstrapKernel(server)                     — installFirstPartyPacks +
+  //      pack-coverage + audit-postgres preflight (kept; NOT removed).
+  //   3. bootstrapAuditSinkDI(server.log)            — audit-sink leaf DI.
+  //   4. bootstrapClaustrum()                        — composes the conductor.
+  //
+  // Double-init is safe: bootstrapClaustrum internally re-runs
+  // bootstrapAuditSinkDI (idempotent — REPLACES the deps with the same values
+  // and resets the cached sink, per its docstring) and re-runs installPack
+  // (a stateless conformance check, not a registry mutation — install.js
+  // returns the wrapped pack and mutates no global). It will NOT overwrite the
+  // production MetricsSink from step 1: it guards on `hasMetricsSink()` and
+  // only installs its observability-only sink when none is present (i.e. when
+  // claustrum is bootstrapped standalone). The WS5 resume-intent dispatcher is
+  // already wired below via `startDeferResolverSubscriber({ dispatcher })`.
+  await bootstrapClaustrum();
+  server.log.info("[startup] claustrum Conductor bootstrapped and live");
 
   // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma
   const shutdown = async (): Promise<void> => {
@@ -78,6 +132,46 @@ const start = async (): Promise<void> => {
       await startHandoffSubscriber(server.log);
       await startConversationArchiver(server.log);
       await startPaymentLifecycleSubscriber(server.log);
+      // [task 03] defer-resolver wired after payment-lifecycle so the lifecycle
+      // subscriber has already settled the payment row before defer-resolver
+      // re-executes the parked envelope. See docs/adjudicate-migration/tasks/03-*.
+      //
+      // NEW-P0-X1 fix: pass the resume-intent dispatcher as an explicit
+      // parameter so it is wired BEFORE the NATS subscription becomes
+      // live. Pre-fix the dispatcher was wired ~19 lines later via
+      // `setResumeIntentDispatcher(...)`, leaving a boot-window where a
+      // PIX webhook would silently mark a parked envelope as resumed
+      // without dispatching the intent — silent data loss on every cold
+      // boot for in-flight PIX confirmations.
+      await startDeferResolverSubscriber(server.log, {
+        dispatcher: createResumeDispatcherAdapter({ log: server.log }),
+      });
+      // [task 14] LGPD anonymize 24h grace resolver — consumes
+      // `intent.defer.timeout` for the customer.anonymize signal and runs
+      // `anonymizeCustomer` if no cancel-deletion arrived within the
+      // window. Wired alongside the defer-resolver so both subscribe to
+      // the timeout fan-out from `defer-timeout-sweeper`.
+      await startAnonymizeGraceResolverSubscriber(server.log);
+      // [audit-2026-05-24 H3 Wave-B] Cross-DB Medusa anonymize compensation.
+      // Consumes `customer.anonymize.medusa.pending` (emitted by
+      // anonymizeCustomer after the Prisma TX commits) and PATCHes the
+      // Medusa-side customer row. The compensation chain closes with a
+      // `.confirmed` audit record; failures emit `.failed` and remain
+      // available for the anonymize-medusa-retry BullMQ job to re-publish.
+      await startCustomerAnonymizeMedusaResolverSubscriber(server.log);
+      // [audit-2026-05-24 P1-7] PIX defer-timeout audit bridge. Consumes
+      // `intent.defer.timeout` filtered for the PIX confirmation signal
+      // and emits a `payment.pix.timeout.audit` audit record so the
+      // decision log chains `DEFER (park) → defer_timeout` for parked
+      // PIX checkouts whose customer never paid. Actual DB-side payment
+      // status transition is owned by the pix-expiry-checker cron.
+      await startPixDeferTimeoutResolverSubscriber(server.log);
+      // [task 19] M4 audit-postgres redundancy consumer. Subscribes to
+      // `audit.intent.decision.v1` and writes records durably to Postgres
+      // — decoupled-archiver pattern. Always-on per IBX-IGE v3.0 cutover
+      // (CLAUDE.md rule #9); pairs with the in-process Postgres sink
+      // composed by `intent-audit-wiring.ts`.
+      await startAuditConsumer(server.log);
 
       // Start all BullMQ background workers
       registerWorkers(server.log);
@@ -88,4 +182,15 @@ const start = async (): Promise<void> => {
   }
 };
 
-start();
+// P0-6: installPack fail-fast wiring. `start()` invokes `bootstrapKernel`
+// which can throw `PackConformanceError` synchronously. Without an explicit
+// `.catch()`, the rejection only reached `unhandledRejection` (Sentry capture
+// + log) but the process never exited — subscribers never started, no traffic
+// served, yet the pod looked "alive" to a bare `node` orchestrator. Wrap with
+// an explicit catch so bootstrap failures exit non-zero. Sentry still captures
+// via the catch flow (Sentry.captureException is invoked before exit).
+start().catch((err) => {
+  if (process.env.SENTRY_DSN) Sentry.captureException(err);
+  logger.fatal({ err }, "[fatal] startup error");
+  process.exit(1);
+});

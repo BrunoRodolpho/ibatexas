@@ -13,6 +13,8 @@ import { startFollowUpPoller } from "./follow-up-poller.js";
 import { startHesitationNudgeWorker } from "./hesitation-nudge.js";
 import { startPixExpiryMonitor } from "./pix-expiry-monitor.js";
 import { startStaleOrderChecker } from "./stale-order-checker.js";
+import { startDeferTimeoutSweeper } from "./defer-timeout-sweeper.js";
+import { startAnonymizeMedusaRetry } from "./anonymize-medusa-retry.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -29,6 +31,13 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   startHesitationNudgeWorker();
   startPixExpiryMonitor();
   startStaleOrderChecker(log);
+  // [task 03] Sweeps expired defer:pending:* keys every 60s and publishes
+  // intent.defer.timeout for downstream notification fan-out.
+  startDeferTimeoutSweeper(log);
+  // [audit-2026-05-24 H3 Wave-B] Sweeps anonymize:medusa:pending:* every
+  // 5 min and re-publishes pending events whose subscriber pass failed.
+  // Emits .exhausted after MEDUSA_ANONYMIZE_MAX_ATTEMPTS (~1h budget).
+  startAnonymizeMedusaRetry(log);
 }
 
 /**
@@ -46,6 +55,8 @@ export async function shutdownWorkers(): Promise<void> {
   const { stopHesitationNudgeWorker } = await import("./hesitation-nudge.js");
   const { stopPixExpiryMonitor } = await import("./pix-expiry-monitor.js");
   const { stopStaleOrderChecker } = await import("./stale-order-checker.js");
+  const { stopDeferTimeoutSweeper } = await import("./defer-timeout-sweeper.js");
+  const { stopAnonymizeMedusaRetry } = await import("./anonymize-medusa-retry.js");
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -59,5 +70,7 @@ export async function shutdownWorkers(): Promise<void> {
     stopHesitationNudgeWorker(),
     stopPixExpiryMonitor(),
     stopStaleOrderChecker(),
+    stopDeferTimeoutSweeper(),
+    stopAnonymizeMedusaRetry(),
   ]);
 }

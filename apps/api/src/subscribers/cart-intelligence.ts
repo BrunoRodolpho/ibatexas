@@ -17,7 +17,19 @@
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender, reaisToCentavos, atomicIncr } from "@ibatexas/tools";
 import * as Sentry from "@sentry/node";
-import { createCustomerService, createLoyaltyService, createOrderCommandService, createOrderEventLogService, createPaymentCommandService, ConcurrencyError } from "@ibatexas/domain";
+import {
+  createCustomerService,
+  createLoyaltyService,
+  createOrderCommandService,
+  createOrderEventLogService,
+  createPaymentCommandService,
+  ConcurrencyError,
+  type LoyaltyStampAddPayload,
+  type OrderProjectionCreatePayload,
+  type OrderStatusReconcilePayload,
+  type PaymentCreatePayload,
+} from "@ibatexas/domain";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import { formatOrderId, type OrderPlacedEvent, type OrderStatusChangedEvent, type OrderFulfillmentStatus } from "@ibatexas/types";
 import type { FastifyBaseLogger } from "fastify";
 import { ITEMS_SCHEMA_VERSION } from "@ibatexas/domain";
@@ -27,6 +39,7 @@ import { buildCartRecoveryMessage } from "../jobs/cart-recovery-messages.js";
 import { loadSession } from "../session/store.js";
 import { isNewEvent } from "./dedup.js";
 import { pushToDlq } from "./dlq.js";
+import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 
 const RECENTLY_VIEWED_MAX = 20;
 
@@ -238,7 +251,7 @@ export async function startCartIntelligenceSubscribers(
         Sentry.captureException(err);
       });
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.placed ──────────────────────────────────────────────────────────
   await subscribeNatsEvent("order.placed", async (payload) => {
@@ -335,9 +348,41 @@ export async function startCartIntelligenceSubscribers(
       }
 
       // 7. Award loyalty stamp — failure must NOT block order processing
+      //
+      // Audit 2026-05-23 NEW-W9-V4: kernel-gated via loyalty.stamp.add
+      // envelope (SYSTEM-only). The stamp persists to Prisma
+      // `loyaltyAccount`; previously misclassified as Redis-only in
+      // open-blockers.md. The kernel REFUSE path bails before the
+      // Prisma write — falling through to the legacy notification flow
+      // only when EXECUTE/REWRITE is returned.
       try {
-        const loyaltySvc = createLoyaltyService();
-        const { stamps, rewarded } = await loyaltySvc.addStamp(customerId);
+        const loyaltySvc = createLoyaltyService({ auditSink: getAuditSink() });
+        const loyaltyPayload: LoyaltyStampAddPayload = { customerId };
+        const loyaltyEnvelope = buildSystemEnvelope({
+          kind: "loyalty.stamp.add" as const,
+          payload: loyaltyPayload,
+          sourceSubject: "order.placed",
+          eventId: `loyalty:${orderId}`,
+        });
+        const loyaltyOutcome = await loyaltySvc.addStampFromEnvelope(
+          loyaltyEnvelope,
+          { ctx: { customerId } },
+        );
+        if (
+          loyaltyOutcome.decision.kind !== "EXECUTE" &&
+          loyaltyOutcome.decision.kind !== "REWRITE"
+        ) {
+          const refusalCode =
+            loyaltyOutcome.decision.kind === "REFUSE"
+              ? loyaltyOutcome.decision.refusal.code
+              : undefined;
+          log?.warn(
+            { customer_id: customerId, decision: loyaltyOutcome.decision.kind, refusalCode },
+            "[cart-intelligence] loyalty stamp — kernel did not authorize",
+          );
+          throw new Error(`kernel ${loyaltyOutcome.decision.kind}: ${refusalCode ?? "n/a"}`);
+        }
+        const { stamps, rewarded } = loyaltyOutcome.result!;
         log?.info({ customer_id: customerId, stamps, rewarded }, "[cart-intelligence] loyalty stamp awarded");
 
         if (rewarded) {
@@ -394,10 +439,32 @@ export async function startCartIntelligenceSubscribers(
       }
 
       // 10. Create order projection — failure must NOT block order processing
+      //
+      // Task 16: kernel-gated via order.projection.create envelope (SYSTEM-only).
+      // The full CreateOrderProjectionInput is passed as a second argument because
+      // the mapper output carries Prisma-typed JSON fields that do not round-trip
+      // cleanly through the envelope (per Task 15 docs).
       try {
         const orderPayload = payload as Partial<OrderPlacedEvent>;
-        const commandSvc = createOrderCommandService();
-        await commandSvc.create({
+        const commandSvc = createOrderCommandService(log ?? undefined, {
+          auditSink: getAuditSink(),
+        });
+        const totalInCentavos = orderPayload.totalInCentavos ?? items.reduce((s, i) => s + (i.priceInCentavos ?? 0) * (i.quantity ?? 1), 0);
+        const projectionCreatePayload: OrderProjectionCreatePayload = {
+          orderId,
+          displayId: orderPayload.displayId ?? 0,
+          customerId: customerId,
+          fulfillmentStatus: "pending",
+          paymentStatus: orderPayload.paymentStatus ?? "pending",
+          totalInCentavos,
+        };
+        const envelope = buildSystemEnvelope({
+          kind: "order.projection.create" as const,
+          payload: projectionCreatePayload,
+          sourceSubject: "order.placed",
+          eventId: `projection:${orderId}`,
+        });
+        const outcome = await commandSvc.createFromEnvelope(envelope, {
           id: orderId,
           displayId: orderPayload.displayId ?? 0,
           customerId: customerId,
@@ -406,7 +473,7 @@ export async function startCartIntelligenceSubscribers(
           customerPhone: orderPayload.customerPhone ?? null,
           fulfillmentStatus: "pending",
           paymentStatus: orderPayload.paymentStatus ?? "pending",
-          totalInCentavos: orderPayload.totalInCentavos ?? items.reduce((s, i) => s + (i.priceInCentavos ?? 0) * (i.quantity ?? 1), 0),
+          totalInCentavos,
           subtotalInCentavos: orderPayload.subtotalInCentavos ?? 0,
           shippingInCentavos: orderPayload.shippingInCentavos ?? 0,
           itemCount: items.length,
@@ -424,7 +491,29 @@ export async function startCartIntelligenceSubscribers(
           tipInCentavos: orderPayload.tipInCentavos ?? 0,
           medusaCreatedAt: new Date(),
         });
-        log?.info({ order_id: orderId }, "[cart-intelligence] order projection created");
+        if (
+          outcome.decision.kind !== "EXECUTE" &&
+          outcome.decision.kind !== "REWRITE"
+        ) {
+          const refusalCode =
+            outcome.decision.kind === "REFUSE"
+              ? outcome.decision.refusal.code
+              : undefined;
+          log?.warn(
+            { order_id: orderId, decision: outcome.decision.kind, refusalCode },
+            "[cart-intelligence] order projection create — kernel did not authorize",
+          );
+          if (outcome.decision.kind === "REFUSE") {
+            await pushToDlq(
+              "order.placed",
+              payload as Record<string, unknown>,
+              `kernel REFUSE (projection): ${outcome.decision.refusal.code}`,
+              log,
+            );
+          }
+        } else {
+          log?.info({ order_id: orderId }, "[cart-intelligence] order projection created");
+        }
       } catch (projErr) {
         // Duplicate key = projection already exists (e.g. reprocessed event) — safe to ignore
         // P2002 is Prisma's code for unique constraint violation
@@ -437,19 +526,56 @@ export async function startCartIntelligenceSubscribers(
       }
 
       // 11. Create Payment row — failure must NOT block order processing
+      //
+      // Task 16: kernel-gated via payment.create envelope (SYSTEM-only).
+      // Investigation 04 P0 #3 — this is one of the highest-priority wraps:
+      // a forged order.placed event could create arbitrary Payment rows.
       try {
         const orderPayload = payload as Partial<OrderPlacedEvent>;
         const method = (orderPayload.paymentMethod ?? "pix") as "pix" | "card" | "cash";
         const totalInCentavos = orderPayload.totalInCentavos ?? items.reduce((s, i) => s + (i.priceInCentavos ?? 0) * (i.quantity ?? 1), 0);
 
-        const paymentCmdSvc = createPaymentCommandService(log ?? undefined);
-        await paymentCmdSvc.create({
+        const paymentCmdSvc = createPaymentCommandService(log ?? undefined, {
+          auditSink: getAuditSink(),
+        });
+        const paymentCreatePayload: PaymentCreatePayload = {
           orderId,
           method,
           amountInCentavos: totalInCentavos,
-          stripePaymentIntentId: orderPayload.stripePaymentIntentId ?? undefined,
+          ...(orderPayload.stripePaymentIntentId !== undefined
+            ? { stripePaymentIntentId: orderPayload.stripePaymentIntentId }
+            : {}),
+        };
+        const envelope = buildSystemEnvelope({
+          kind: "payment.create" as const,
+          payload: paymentCreatePayload,
+          sourceSubject: "order.placed",
+          eventId: `payment:${orderId}`,
         });
-        log?.info({ order_id: orderId, method }, "[cart-intelligence] payment row created");
+        const outcome = await paymentCmdSvc.createFromEnvelope(envelope);
+        if (
+          outcome.decision.kind !== "EXECUTE" &&
+          outcome.decision.kind !== "REWRITE"
+        ) {
+          const refusalCode =
+            outcome.decision.kind === "REFUSE"
+              ? outcome.decision.refusal.code
+              : undefined;
+          log?.warn(
+            { order_id: orderId, decision: outcome.decision.kind, refusalCode },
+            "[cart-intelligence] payment.create — kernel did not authorize",
+          );
+          if (outcome.decision.kind === "REFUSE") {
+            await pushToDlq(
+              "order.placed",
+              payload as Record<string, unknown>,
+              `kernel REFUSE (payment): ${outcome.decision.refusal.code}`,
+              log,
+            );
+          }
+        } else {
+          log?.info({ order_id: orderId, method }, "[cart-intelligence] payment row created");
+        }
       } catch (payErr) {
         // ActivePaymentExistsError or unique constraint = already created — safe to ignore
         const isExpected =
@@ -466,7 +592,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] order.placed handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.payment_failed ─────────────────────────────────────────────────
   await subscribeNatsEvent("order.payment_failed", async (payload) => {
@@ -488,7 +614,7 @@ export async function startCartIntelligenceSubscribers(
       payload: payload as Record<string, unknown>,
       timestamp: new Date().toISOString(),
     });
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── product.viewed ─────────────────────────────────────────────────────────
   await subscribeNatsEvent("product.viewed", async (payload) => {
@@ -519,7 +645,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ product_id: productId, customer_id: customerId, error: String(err) }, "[cart-intelligence] product.viewed handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── search.results_viewed (batch) ──────────────────────────────────────────
   // Batch event from search_products (single event instead of O(n) product.viewed)
@@ -547,7 +673,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, count: productIds.length, error: String(err) }, "[cart-intelligence] search.results_viewed handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── review.prompt.schedule ────────────────────────────────────────────────
   await subscribeNatsEvent("review.prompt.schedule", async (payload) => {
@@ -567,7 +693,7 @@ export async function startCartIntelligenceSubscribers(
         "[cart-intelligence] review.prompt.schedule handler error",
       );
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.status_changed ─────────────────────────────────────────────────
   await subscribeNatsEvent("order.status_changed", async (payload) => {
@@ -590,15 +716,47 @@ export async function startCartIntelligenceSubscribers(
     });
 
     // 1. Reconcile projection (safety net — PATCH handler updates projection first)
+    //
+    // Task 16: kernel-gated via order.status.reconcile envelope (SYSTEM-only).
     try {
-      const commandSvc = createOrderCommandService(hLog ?? undefined);
-      const result = await commandSvc.reconcileStatus(orderId, {
-        newStatus: newStatus as OrderFulfillmentStatus,
-        eventVersion,
-        actor: "system",
+      const commandSvc = createOrderCommandService(hLog ?? undefined, {
+        auditSink: getAuditSink(),
       });
-      if (result) {
-        hLog?.info({ order_id: orderId, version: result.version }, "[cart-intelligence] projection reconciled from event");
+      const reconcilePayload: OrderStatusReconcilePayload = {
+        orderId,
+        newStatus: newStatus as string,
+        eventVersion: eventVersion ?? 0,
+        actor: "system",
+      };
+      const envelope = buildSystemEnvelope({
+        kind: "order.status.reconcile" as const,
+        payload: reconcilePayload,
+        sourceSubject: "order.status_changed",
+        eventId: `reconcile:${orderId}:${eventVersion ?? "0"}`,
+      });
+      const outcome = await commandSvc.reconcileStatusFromEnvelope(envelope);
+      if (
+        outcome.decision.kind !== "EXECUTE" &&
+        outcome.decision.kind !== "REWRITE"
+      ) {
+        const refusalCode =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.code
+            : undefined;
+        hLog?.warn(
+          { order_id: orderId, decision: outcome.decision.kind, refusalCode },
+          "[cart-intelligence] projection reconcile — kernel did not authorize",
+        );
+        if (outcome.decision.kind === "REFUSE") {
+          await pushToDlq(
+            "order.status_changed",
+            payload as Record<string, unknown>,
+            `kernel REFUSE: ${outcome.decision.refusal.code}`,
+            hLog,
+          );
+        }
+      } else if (outcome.result) {
+        hLog?.info({ order_id: orderId, version: outcome.result.version }, "[cart-intelligence] projection reconciled from event");
       } else {
         hLog?.info({ order_id: orderId }, "[cart-intelligence] projection already up-to-date — reconcile skipped");
       }
@@ -659,7 +817,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (staffErr) {
       hLog?.warn({ order_id: orderId, error: String(staffErr) }, "[cart-intelligence] staff transition alert failed");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── notification.send ────────────────────────────────────────────────────
   await subscribeNatsEvent("notification.send", async (payload) => {
@@ -713,7 +871,7 @@ export async function startCartIntelligenceSubscribers(
       log?.error({ customerId, type, error: String(err) }, "[cart-intelligence] notification.send delivery error");
       await pushToDlq("notification.send", payload as Record<string, unknown>, err, log);
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.created ─────────────────────────────────────────────────
   await subscribeNatsEvent("reservation.created", async (payload) => {
@@ -730,7 +888,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.created handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.modified ─────────────────────────────────────────────
   await subscribeNatsEvent("reservation.modified", async (payload) => {
@@ -745,7 +903,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.modified handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.cancelled ───────────────────────────────────────────────
   await subscribeNatsEvent("reservation.cancelled", async (payload) => {
@@ -760,7 +918,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.cancelled handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── reservation.no_show ─────────────────────────────────────────────────
   await subscribeNatsEvent("reservation.no_show", async (payload) => {
@@ -775,7 +933,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, error: String(err) }, "[cart-intelligence] reservation.no_show handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── review.prompt (delivery — sends WhatsApp review request) ────────────
   await subscribeNatsEvent("review.prompt", async (payload) => {
@@ -818,7 +976,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ customer_id: customerId, order_id: orderId, error: String(err) }, "[cart-intelligence] review.prompt delivery error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.refunded (EVT-002) ──────────────────────────────────────────────
   await subscribeNatsEvent("order.refunded", async (payload) => {
@@ -868,7 +1026,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.refunded handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.disputed (EVT-003) ──────────────────────────────────────────────
   await subscribeNatsEvent("order.disputed", async (payload) => {
@@ -930,7 +1088,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ dispute_id: disputeId, error: String(err) }, "[cart-intelligence] order.disputed handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── order.canceled (EVT-004) ──────────────────────────────────────────────
   await subscribeNatsEvent("order.canceled", async (payload) => {
@@ -978,7 +1136,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ order_id: orderId, error: String(err) }, "[cart-intelligence] order.canceled handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── review.submitted (EVT-005) ────────────────────────────────────────────
   await subscribeNatsEvent("review.submitted", async (payload) => {
@@ -1019,7 +1177,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ product_id: productId, error: String(err) }, "[cart-intelligence] review.submitted handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── product.intelligence.purge ──────────────────────────────────────────
   await subscribeNatsEvent("product.intelligence.purge", async (payload) => {
@@ -1061,7 +1219,7 @@ export async function startCartIntelligenceSubscribers(
       log?.error({ product_id: productId, error: String(err) }, "[cart-intelligence] product.intelligence.purge handler error");
       Sentry.captureException(err);
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── outreach.sent ────────────────────────────────────────────────────────
   await subscribeNatsEvent("outreach.sent", async (payload) => {
@@ -1087,7 +1245,7 @@ export async function startCartIntelligenceSubscribers(
         "[cart-intelligence] outreach.sent handler error",
       );
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── cart.item_added (EVT-006) ─────────────────────────────────────────────
   await subscribeNatsEvent("cart.item_added", async (payload) => {
@@ -1131,7 +1289,7 @@ export async function startCartIntelligenceSubscribers(
     } catch (err) {
       log?.error({ cart_id: cartId, error: String(err) }, "[cart-intelligence] cart.item_added handler error");
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 
   // ── follow-up.due ─────────────────────────────────────────────────────────
   await subscribeNatsEvent("follow-up.due", async (payload) => {
@@ -1175,5 +1333,5 @@ export async function startCartIntelligenceSubscribers(
         Sentry.captureException(err);
       });
     }
-  });
+  }, { queueGroup: "cart-intelligence" });
 }

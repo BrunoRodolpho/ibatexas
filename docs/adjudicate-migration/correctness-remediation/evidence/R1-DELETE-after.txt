@@ -1,0 +1,102 @@
+R1-DELETE — Migrate 9 bare-arg call sites + delete @deprecated methods (AFTER)
+================================================================================
+
+Fix summary
+-----------
+
+1. All 9 production call sites migrated to envelope-typed dispatch:
+
+   apps/api/src/routes/order-actions.ts:
+     - line 137 area → createFromEnvelope (lazy projection from Medusa,
+       wraps order.projection.create envelope, SYSTEM-tainted).
+     - line 256 area → transitionStatusFromEnvelope (inner order.cancel
+       transition).
+     - line 267 area → transitionStatusFromEnvelope (inner payment cancel).
+     - line 1049 + 1057 → transitionStatusFromEnvelope × 2 (method-switch).
+     - line 1065 → createFromEnvelope (new payment row for method switch).
+     See NEW-P0-X4 evidence for the method-switch route specifically.
+
+   packages/tools/src/cart/cancel-order.ts:
+     - line 41 → transitionStatusFromEnvelope (payment cancel after
+       order cancel).
+
+   packages/tools/src/cart/regenerate-pix.ts:
+     - line 89 → transitionStatusFromEnvelope (cancel old PIX payment).
+     - line 119 → createFromEnvelope (new PIX payment row).
+
+2. Deleted @deprecated method DECLARATIONS from the interfaces:
+
+   packages/domain/src/services/order-command.service.ts:
+     - create(data)                       REMOVED
+     - transitionStatus(orderId, input)   REMOVED
+     - reconcileStatus(orderId, input)    REMOVED
+
+   packages/domain/src/services/payment-command.service.ts:
+     - create(data)                       REMOVED
+     - transitionStatus(paymentId, input) REMOVED
+     - reconcileFromWebhook(...)          REMOVED
+
+   The executor helpers (executeCreate, executeTransition, executeReconcile)
+   remain — they're invoked from the envelope-typed entry points.
+
+3. Deleted the factory implementations that returned these methods
+   from `createOrderCommandService` / `createPaymentCommandService`.
+
+Workspace-wide grep — verifies no remaining bare-arg call sites:
+----------------------------------------------------------------
+
+  $ grep -rn 'orderCmdSvc\.\(create\|transitionStatus\|reconcileStatus\)(' \
+         packages/tools packages/domain apps/api/src \
+         --include='*.ts' | grep -v FromEnvelope | grep -v __tests__ | \
+         grep -v /dist/
+
+   packages/tools/src/cart/cancel-order.ts:8:    (in COMMENT)
+   packages/tools/src/cart/regenerate-pix.ts:12: (in COMMENT)
+   apps/api/src/routes/order-actions.ts:139:    (in COMMENT)
+
+Only comments remain (intentional — historical references in the
+migration notes).
+
+  $ grep -rn 'paymentCmdSvc\.\(create\|transitionStatus\|reconcileFromWebhook\)(' \
+         packages/tools packages/domain apps/api/src \
+         --include='*.ts' | grep -v FromEnvelope | grep -v __tests__ | \
+         grep -v /dist/
+
+   (no matches — all migrated)
+
+Test output
+-----------
+$ pnpm --filter @ibatexas/api test -- --run "(order-cancel-governance|payment-retry-regen-governance|payment-method-switch-governance)"
+
+ ✓ src/__tests__/order-cancel-governance.test.ts (4 tests) 338ms
+ ✓ src/__tests__/payment-retry-regen-governance.test.ts (6 tests) 222ms
+ ✓ src/__tests__/payment-method-switch-governance.test.ts (4 tests) 107ms
+
+$ pnpm --filter @ibatexas/tools test
+
+  Test Files  ✓ src/cart/__tests__/cancel-order.test.ts (21 tests)
+              ✓ src/cart/__tests__/regenerate-pix.test.ts (17 tests)
+
+$ pnpm --filter @ibatexas/domain build
+
+  (no errors — interface deletion structurally prevents reintroduction)
+
+Bypass-detection effect
+-----------------------
+The TypeScript type system now structurally prevents callers from
+reaching the bare-arg surface. A new PR that tries to write
+`orderCmdSvc.transitionStatus(...)` fails at compile time:
+
+  Property 'transitionStatus' does not exist on type 'OrderCommandService'.
+
+This is the "structural chokepoint" the audit recommended — bypass-
+detection is no longer required to police these specific methods (NEW-
+P0-X9 still closes the multi-line scan gap for medusaStore / similar).
+
+Caveat
+------
+The legacy bare-arg test files (packages/domain/src/__tests__/
+order-command.service.test.ts and payment-command.service.test.ts)
+were rewritten to use the envelope-typed surface. They formerly
+exercised the deprecated bare-arg methods directly; coverage of the
+underlying executor logic is preserved through the envelope path.

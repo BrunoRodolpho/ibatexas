@@ -31,8 +31,10 @@ const nextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              // unsafe-eval only needed in dev for Next.js hot-reload
-              `script-src 'self' 'unsafe-inline' ${isDev ? "'unsafe-eval'" : ""}`,
+              // Next.js 16's Turbopack runtime uses eval() for module loading
+              // in production builds too (see apps/web/next.config.mjs for the
+              // full rationale). Opting out needs `next build --webpack`.
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: https://*.medusajs.com https://*.amazonaws.com",
               `connect-src 'self' ${apiUrl}${isDev ? ' http://*:3001' : ''}`,

@@ -1,0 +1,64 @@
+W7-O4 — Kill-switch admin route role: MANAGER → OWNER reconciliation
+======================================================================
+
+Finding (W6 operational drill, Drill 1):
+
+  Role check mismatch. `kill-switch-strategy.md` line 528 (now line 530)
+  says scope=Global requires `OWNER`. The route uses `requireManagerRole`
+  (`apps/api/src/routes/admin/kernel.ts:172`). MANAGER can engage the kill
+  switch via HTTP today.
+
+Decision:
+
+  Path: align route to doc. Change `requireManagerRole` → `requireOwnerRole`
+  in apps/api/src/routes/admin/kernel.ts. Strategy doc already says OWNER;
+  the W3 D2 commit (93c7a42) self-acknowledged the deviation in a comment.
+
+  Rationale: see docs/adjudicate-migration/correctness-remediation/W7-DECISIONS-ops.md §O4.
+
+Code change:
+
+  apps/api/src/routes/admin/kernel.ts
+    - import { requireManagerRole } from "../../middleware/staff-auth.js"
+    + import { requireOwnerRole } from "../../middleware/staff-auth.js"
+    ...
+    -       preHandler: [requireManagerRole],   (POST handler)
+    +       preHandler: [requireOwnerRole],
+    ...
+    -       preHandler: [requireManagerRole],   (GET handler)
+    +       preHandler: [requireOwnerRole],
+
+Test change:
+
+  apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts
+    - existing passing-case fixtures (MANAGER_1, MANAGER_2_HEADERS) → OWNER_1, OWNER_2_HEADERS
+    - MANAGER_1 fixture retained for a new 403 assertion (W7-O4 regression guard)
+    - new test:
+        "returns 403 when role is MANAGER (W7-O4: OWNER-only per strategy)"
+
+Test run after fix:
+
+$ pnpm vitest run apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts --reporter=verbose
+
+ RUN  v3.2.4 /Users/thaisrodolpho/projects/ibatexas
+
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > POST /api/admin/kernel/kill-switch — role gate > returns 401 (or 403) when no JWT + no API key 724ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > POST /api/admin/kernel/kill-switch — role gate > returns 403 when role is ATTENDANT 4ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > POST /api/admin/kernel/kill-switch — role gate > returns 403 when role is MANAGER (W7-O4: OWNER-only per strategy) 3ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > POST /api/admin/kernel/kill-switch — two-step (enable) > step 1 returns 202 + receipt + carries the reason 4ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > POST /api/admin/kernel/kill-switch — two-step (enable) > step 2 same actor → 403 (two-person rule) 6ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > POST /api/admin/kernel/kill-switch — two-step (enable) > step 2 with a different operator → 200, flag set in Redis 6ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > POST /api/admin/kernel/kill-switch — two-step (enable) > receipt is single-use — replay returns 410 6ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > POST /api/admin/kernel/kill-switch — two-step (disable) > disable step 1 → 202, step 2 → 200 + flag removed 7ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > GET /api/admin/kernel/kill-switch — status > returns active=false when no flag set 2ms
+ ✓ apps/api/src/routes/admin/__tests__/kernel-kill-switch.test.ts > GET /api/admin/kernel/kill-switch — status > returns active=true + metadata when flag is set 3ms
+
+ Test Files  1 passed (1)
+      Tests  10 passed (10)
+   Duration  2.02s
+
+Summary:
+  - 10/10 pass
+  - new W7-O4 MANAGER-403 assertion present
+  - both POST + GET handlers now gated on requireOwnerRole
+  - strategy doc and route now agree.

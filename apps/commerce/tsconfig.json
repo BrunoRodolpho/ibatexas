@@ -2,6 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
+    // Medusa v2's admin loader looks for the compiled backend + admin SPA at
+    // apps/commerce/.medusa/server/ (specifically .../public/admin/index.html).
+    // The base tsconfig's `outDir: "dist"` was writing to the monorepo root
+    // /dist/, so medusa start couldn't find the admin assets and crashed.
+    "outDir": ".medusa/server",
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true
   },

@@ -2,6 +2,21 @@
 //
 // Tools, API routes, and background jobs all call these methods.
 // Side effects (NATS events, WhatsApp) stay in the calling layer.
+//
+// ── Task 15 (M3) — envelope-typed entry points ───────────────────────────
+//
+// Methods `*FromEnvelope` route through the adjudicate kernel via
+// `withAdjudicate` against `reservationsPolicyBundle` from
+// `@ibatexas/pack-reservations`. Decision D8: backwards-compatible
+// parallel surface — legacy bare-arg methods remain (`@deprecated`).
+// Tasks 13, 14, 16 migrate callers incrementally.
+//
+// Methods refactored:
+//   - createFromEnvelope          (reservation.create)
+//   - modifyFromEnvelope          (reservation.modify)
+//   - cancelFromEnvelope          (reservation.cancel)
+//   - transitionFromEnvelope      (reservation.checkin/complete/no_show.mark)
+//   - joinWaitlistFromEnvelope    (reservation.waitlist.join)
 
 import { prisma } from "../client.js"
 import { assertOwnership, assertMutable } from "./shared.js"
@@ -14,6 +29,22 @@ import type {
   ReservationStatus,
   TableLocation,
 } from "@ibatexas/types"
+import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
+import {
+  reservationsPolicyBundle,
+  type ReservationCancelPayload,
+  type ReservationCheckinPayload,
+  type ReservationCompletePayload,
+  type ReservationCreatePayload,
+  type ReservationModifyPayload,
+  type ReservationNoShowMarkPayload,
+  type ReservationState,
+  type ReservationWaitlistJoinPayload,
+} from "@ibatexas/pack-reservations"
+import {
+  withAdjudicate,
+  type AdjudicatedResult,
+} from "./__shared__/with-adjudicate.js"
 
 // Transaction client type for interactive transactions
 // Prisma 7 removed $use — omit only the remaining client-level methods
@@ -107,7 +138,22 @@ async function assignTables(timeSlotId: string, partySize: number, db: TxClient 
 
 // ── Service factory ───────────────────────────────────────────────────────────
 
-export function createReservationService() {
+/**
+ * Options bundle for adjudicate wiring. Callers may pass an audit sink;
+ * when omitted, audit emission is silently dropped (the legacy bare-arg
+ * surface remains unaffected by this option).
+ */
+export interface ReservationServiceOptions {
+  readonly auditSink?: AuditSink
+  readonly log?: { readonly warn?: (...args: unknown[]) => void; readonly error?: (...args: unknown[]) => void }
+}
+
+export function createReservationService(options?: ReservationServiceOptions) {
+  const adjudicateOptions = {
+    ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
+    ...(options?.log ? { log: options.log } : {}),
+  } as const
+
   return {
     // ── Queries ─────────────────────────────────────────────────────────
 
@@ -500,6 +546,171 @@ export function createReservationService() {
         where: { status: "confirmed", timeSlot: { date } },
         include: { timeSlot: true },
       })
+    },
+
+    // ── Task 15: envelope-typed entry points ────────────────────────────
+
+    /**
+     * Envelope-typed entry point for `reservation.create`. UNTRUSTED-tolerant
+     * (customer-initiated). Adjudicates via `reservationsPolicyBundle`.
+     * The full slot-locking + capacity-check semantics remain inside the
+     * executor — the kernel adds an envelope/audit gate around them.
+     */
+    async createFromEnvelope(
+      envelope: IntentEnvelope<"reservation.create", ReservationCreatePayload>,
+      state: ReservationState,
+      extras: { readonly customerId: string },
+    ): Promise<
+      AdjudicatedResult<{
+        reservation: ReservationDTO
+        tableLocation: TableLocation | null
+      }>
+    > {
+      return withAdjudicate(
+        envelope,
+        state,
+        reservationsPolicyBundle,
+        async (payload) => {
+          return this.create({
+            customerId: extras.customerId,
+            timeSlotId: payload.timeSlotId,
+            partySize: payload.partySize,
+            // Pack's specialRequests is readonly string[]; the existing
+            // service uses the richer SpecialRequest[] shape. Adopters
+            // that need typed special-request entries should pass them
+            // via the legacy create() method until the Pack's payload
+            // gains structured shape (out of scope for task 15).
+            specialRequests: payload.specialRequests as unknown as
+              | SpecialRequest[]
+              | undefined,
+          })
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `reservation.modify`. UNTRUSTED.
+     */
+    async modifyFromEnvelope(
+      envelope: IntentEnvelope<"reservation.modify", ReservationModifyPayload>,
+      state: ReservationState,
+      extras: { readonly customerId: string },
+    ): Promise<AdjudicatedResult<ReservationDTO>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        reservationsPolicyBundle,
+        async (payload) => {
+          const changes: {
+            newTimeSlotId?: string
+            newPartySize?: number
+            specialRequests?: SpecialRequest[]
+          } = {}
+          if (payload.newTimeSlotId !== undefined) {
+            changes.newTimeSlotId = payload.newTimeSlotId
+          }
+          if (payload.newPartySize !== undefined) {
+            changes.newPartySize = payload.newPartySize
+          }
+          if (payload.specialRequests !== undefined) {
+            changes.specialRequests = payload.specialRequests as unknown as SpecialRequest[]
+          }
+          return this.modify(payload.reservationId, extras.customerId, changes)
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `reservation.cancel`. UNTRUSTED.
+     * The pack may REQUEST_CONFIRMATION on last-minute cancels (within
+     * `RESERVATION_CANCEL_CONFIRM_HOURS`) — the caller routes that
+     * decision back to the customer via the chat surface.
+     */
+    async cancelFromEnvelope(
+      envelope: IntentEnvelope<"reservation.cancel", ReservationCancelPayload>,
+      state: ReservationState,
+      extras: { readonly customerId: string },
+    ): Promise<
+      AdjudicatedResult<{ timeSlotId: string; partySize: number }>
+    > {
+      return withAdjudicate(
+        envelope,
+        state,
+        reservationsPolicyBundle,
+        async (payload) => {
+          return this.cancel(payload.reservationId, extras.customerId)
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for staff/system transitions
+     * (`reservation.checkin`, `reservation.complete`,
+     * `reservation.no_show.mark`). The pack's taint policy:
+     * `no_show.mark` is SYSTEM-only; `checkin`/`complete` are staff-only
+     * (auth guard rejects when `state.ctx.staffId === null`).
+     */
+    async transitionFromEnvelope(
+      envelope: IntentEnvelope<
+        | "reservation.checkin"
+        | "reservation.complete"
+        | "reservation.no_show.mark",
+        | ReservationCheckinPayload
+        | ReservationCompletePayload
+        | ReservationNoShowMarkPayload
+      >,
+      state: ReservationState,
+    ): Promise<AdjudicatedResult<void>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        reservationsPolicyBundle,
+        async (payload) => {
+          const newStatus =
+            envelope.kind === "reservation.checkin"
+              ? ("seated" as const)
+              : envelope.kind === "reservation.complete"
+                ? ("completed" as const)
+                : ("no_show" as const)
+          return this.transition(payload.reservationId, newStatus)
+        },
+        adjudicateOptions,
+      )
+    },
+
+    /**
+     * Envelope-typed entry point for `reservation.waitlist.join`. UNTRUSTED
+     * (customer-initiated when the requested slot is full). Adjudicates via
+     * `reservationsPolicyBundle` — the pack's `validatePartySize` business
+     * guard catches non-positive party sizes; `executeWaitlist` is the
+     * terminal EXECUTE. The slot-presence + idempotency logic remains in
+     * the underlying `joinWaitlist` executor (which the kernel calls only
+     * on EXECUTE/REWRITE).
+     */
+    async joinWaitlistFromEnvelope(
+      envelope: IntentEnvelope<
+        "reservation.waitlist.join",
+        ReservationWaitlistJoinPayload
+      >,
+      state: ReservationState,
+      extras: { readonly customerId: string },
+    ): Promise<AdjudicatedResult<{ waitlistId: string; position: number }>> {
+      return withAdjudicate(
+        envelope,
+        state,
+        reservationsPolicyBundle,
+        async (payload) => {
+          return this.joinWaitlist({
+            customerId: extras.customerId,
+            timeSlotId: payload.timeSlotId,
+            partySize: payload.partySize,
+          })
+        },
+        adjudicateOptions,
+      )
     },
   }
 }

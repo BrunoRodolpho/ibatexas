@@ -13,19 +13,27 @@ import { chatRoutes } from "../routes/chat.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockRunAgent = vi.hoisted(() => vi.fn());
+// WS7: the route delegates to the claustrum Conductor (getConductor +
+// handleTurn) instead of runOrchestrator. Mock both so the POST tests exercise
+// the conductor path hermetically.
 const mockLoadSession = vi.hoisted(() => vi.fn());
 const mockAppendMessages = vi.hoisted(() => vi.fn());
 const mockIsStreamActive = vi.hoisted(() => vi.fn());
 const mockCreateStream = vi.hoisted(() => vi.fn());
 const mockPushChunk = vi.hoisted(() => vi.fn());
 const mockGetStream = vi.hoisted(() => vi.fn());
+const mockSubscribeToStream = vi.hoisted(() => vi.fn());
 const mockCleanupStream = vi.hoisted(() => vi.fn());
 const mockAcquireWebAgentLock = vi.hoisted(() => vi.fn());
 const mockReleaseWebAgentLock = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
+const mockGetConductor = vi.hoisted(() => vi.fn());
+const mockHandleTurn = vi.hoisted(() => vi.fn());
+const mockOpenCapsule = vi.hoisted(() => vi.fn());
+const mockCloseCapsule = vi.hoisted(() => vi.fn());
 
-vi.mock("@ibatexas/llm-provider", () => ({ runOrchestrator: mockRunAgent }));
+vi.mock("../claustrum-bootstrap.js", () => ({ getConductor: mockGetConductor }));
+vi.mock("@claustrum/core", () => ({ handleTurn: mockHandleTurn }));
 vi.mock("../session/store.js", () => ({
   loadSession: mockLoadSession,
   appendMessages: mockAppendMessages,
@@ -35,6 +43,7 @@ vi.mock("../streaming/emitter.js", () => ({
   createStream: mockCreateStream,
   pushChunk: mockPushChunk,
   getStream: mockGetStream,
+  subscribeToStream: mockSubscribeToStream,
   cleanupStream: mockCleanupStream,
 }));
 vi.mock("../streaming/execution-queue.js", () => ({
@@ -78,15 +87,18 @@ describe("POST /api/chat/messages", () => {
       get: vi.fn().mockResolvedValue(null),
       set: vi.fn().mockResolvedValue("OK"),
     });
+    // Conductor: openCapsule → handleTurn → closeCapsule. Default = a single
+    // assembled text response (Streaming Option A).
+    mockOpenCapsule.mockResolvedValue({ id: "capsule-1" });
+    mockCloseCapsule.mockResolvedValue(undefined);
+    mockGetConductor.mockReturnValue({
+      openCapsule: mockOpenCapsule,
+      closeCapsule: mockCloseCapsule,
+    });
+    mockHandleTurn.mockResolvedValue({ response: { text: "Olá!" } });
   });
 
   it("returns { messageId } and starts agent", async () => {
-    // Agent produces one text chunk and done
-    mockRunAgent.mockImplementation(async function* () {
-      yield { type: "text_delta", delta: "Olá!" };
-      yield { type: "done" };
-    });
-
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -136,11 +148,7 @@ describe("POST /api/chat/messages", () => {
   });
 
   it("pushes error chunk when agent throws", async () => {
-    mockRunAgent.mockImplementation(async function* () {
-      throw new Error("Agent crashed");
-       
-      yield { type: "done" };
-    });
+    mockHandleTurn.mockRejectedValue(new Error("Agent crashed"));
 
     const app = await buildTestServer();
     await app.inject({
@@ -166,6 +174,15 @@ describe("POST /api/chat/messages", () => {
 describe("GET /api/chat/stream/:sessionId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Ownership check: no owner, no guest secret → falls through to the
+    // getStream/replay path (preserving dev's GET contract).
+    mockGetRedisClient.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(null),
+      set: vi.fn().mockResolvedValue("OK"),
+    });
+    // Cross-replica path returns no subscription → the poll exhausts and the
+    // handler writes "Sessão não encontrada" (the not-found error event).
+    mockSubscribeToStream.mockResolvedValue(undefined);
   });
 
   it("replays buffered chunks and ends the stream", async () => {

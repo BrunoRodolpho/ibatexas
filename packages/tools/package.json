@@ -21,11 +21,18 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@adjudicate/core": "^1.2.0",
+    "@adjudicate/primitives": "^0.2.0",
+    "@ibatexas/audit-sink": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
+    "@ibatexas/pack-customer-onboarding": "workspace:*",
+    "@ibatexas/pack-orders": "workspace:*",
+    "@ibatexas/pack-reservations": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "redis": "^4.7.1",
     "stripe": "^20.4.1",
+    "twilio": "^5.13.0",
     "typesense": "^1.8.2",
     "zod": "^4.3.6"
   },

@@ -1,3 +1,5 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "examples/*"
+  # @adjudicate/* packages are consumed from the npm registry — see ADR #13.
