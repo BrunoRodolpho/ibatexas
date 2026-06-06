@@ -211,8 +211,13 @@ export async function getNatsConnection(): Promise<NatsConnection> {
   // pendingConnection is harmless (natsConn check succeeds first).
 }
 
-// Critical events that require outbox durability
-const OUTBOX_EVENTS = new Set([
+// Critical events that require outbox durability.
+// MUST stay in sync with CRITICAL_EVENTS in apps/api/src/jobs/outbox-retry.ts —
+// which now DERIVES from this set (single source of truth). An event in the retry
+// set but absent here is never persisted, so the retry job finds an empty list and
+// silently loses it (the P0-PAY-4 regression: payment.status_changed was retried
+// but not persisted; see the drift-guard test).
+export const OUTBOX_EVENTS = new Set([
   "order.placed",
   "reservation.created",
   "order.status_changed",
@@ -220,6 +225,9 @@ const OUTBOX_EVENTS = new Set([
   "order.disputed",
   "order.canceled",
   "order.payment_failed",
+  // P0-PAY-4: payment status changes drive order auto-confirm; a lost publish
+  // strands a paid order in pending with no recovery.
+  "payment.status_changed",
   // audit-2026-05-25 (I9): cross-DB LGPD scrub kickoff. The in-process
   // Prisma anonymize TX commits BEFORE this publish; if NATS is down,
   // the Medusa-side customer row keeps PII indefinitely (no
