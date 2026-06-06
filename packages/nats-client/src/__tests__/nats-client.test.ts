@@ -138,6 +138,56 @@ describe("NATS Client", () => {
     expect(subscribeSpy).toHaveBeenCalledWith("ibatexas.cart.abandoned")
   })
 
+  // ── P2-MEM-NATSPENDING — bounded in-flight backlog ─────────────────────
+  const encode = (o: unknown) => new TextEncoder().encode(JSON.stringify(o))
+  function oneShotSub(bytes: Uint8Array, pending: number) {
+    let sent = false
+    return {
+      unsubscribe: vi.fn(),
+      getPending: () => pending,
+      [Symbol.asyncIterator]: () => ({
+        async next() {
+          if (sent) return { done: true, value: undefined }
+          sent = true
+          return { done: false, value: { data: bytes } }
+        },
+      }),
+    }
+  }
+  const flushAsync = async () => {
+    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
+  }
+
+  it("[P2-MEM-NATSPENDING] drops + warn-logs a message when pending exceeds the cap", async () => {
+    const conn = await getNatsConnection()
+    const subscribeSpy = conn.subscribe as ReturnType<typeof vi.fn>
+    subscribeSpy.mockReturnValueOnce(oneShotSub(encode({ orderId: "ord_over" }), 10_001))
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const handler = vi.fn()
+
+    await subscribeNatsEvent("order.placed", handler)
+    await flushAsync()
+
+    expect(handler).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain("Pending backlog over 10000")
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain("order.placed")
+    warnSpy.mockRestore()
+  })
+
+  it("[P2-MEM-NATSPENDING] processes normally when pending is within the cap", async () => {
+    const conn = await getNatsConnection()
+    const subscribeSpy = conn.subscribe as ReturnType<typeof vi.fn>
+    subscribeSpy.mockReturnValueOnce(oneShotSub(encode({ orderId: "ord_ok" }), 5))
+    const handler = vi.fn()
+
+    await subscribeNatsEvent("order.placed", handler)
+    await flushAsync()
+
+    expect(handler).toHaveBeenCalledWith({ orderId: "ord_ok" })
+  })
+
   it("getNatsConnection can be called without error", async () => {
     const conn = await getNatsConnection()
     expect(conn).toBeDefined()

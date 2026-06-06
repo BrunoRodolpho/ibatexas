@@ -307,6 +307,17 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
   }
 }
 
+// P2-MEM-NATSPENDING: bound the in-flight (pending) backlog per subscription so
+// a burst of events while a handler is slow can't grow the iterator's internal
+// queue without limit (unbounded memory). nats.js v2 exposes no public pending-
+// limit *setter* (the `max` SubscriptionOption auto-unsubscribes after N msgs,
+// which would tear down a fire-and-forget subscriber), so we enforce the bound
+// at the application layer: when sub.getPending() exceeds the cap we drop the
+// current message (Core NATS is already at-most-once / lossy — JetStream
+// durability is deferred) and surface it via a warn log instead of buffering.
+// Configurable (rule 3); <= 0 disables the bound (unbounded, prior behavior).
+const NATS_MAX_PENDING_MSGS = Number.parseInt(process.env.NATS_MAX_PENDING_MSGS || "10000", 10)
+
 /**
  * Subscribe to domain events.
  * Callback is invoked for each message.
@@ -339,6 +350,22 @@ export async function subscribeNatsEvent(
   // Handle messages asynchronously
   ;(async () => {
     for await (const msg of sub) {
+      // P2-MEM-NATSPENDING: shed load when the in-flight backlog exceeds the cap
+      // so a burst against a slow handler can't grow the iterator queue without
+      // bound. getPending() may be absent on test doubles — guard the call (and
+      // keep this operand order: cap>0, then typeof, then call). Core NATS is
+      // already at-most-once, so dropping is acceptable; surfaced via warn log.
+      if (
+        NATS_MAX_PENDING_MSGS > 0 &&
+        typeof (sub as { getPending?: () => number }).getPending === "function" &&
+        (sub as { getPending: () => number }).getPending() > NATS_MAX_PENDING_MSGS
+      ) {
+        console.warn(
+          `[nats] Pending backlog over ${NATS_MAX_PENDING_MSGS} for ${event} — dropping message (backpressure)`,
+        )
+        continue
+      }
+
       try {
         const payload = JSON.parse(new TextDecoder().decode(msg.data))
         await handler(payload)
