@@ -21,6 +21,14 @@ vi.mock("@ibatexas/tools", () => ({
   rk: mockRk,
 }));
 
+// STAFFREVOKE: extractAuth's staff path now re-checks createStaffService().getById(sub).active.
+// A fresh getById is created per call (post-clearAllMocks-safe) returning an active staff so
+// the valid-staff cases here authenticate; the deactivated/deleted paths are covered in
+// auth-middleware.test.ts.
+vi.mock("@ibatexas/domain", () => ({
+  createStaffService: () => ({ getById: () => Promise.resolve({ active: true }) }),
+}));
+
 // ── Staff-token helper ─────────────────────────────────────────────────────────
 //
 // audit-2026-05-25 (commit d0b41d7) made extractAuth reject staff JWTs on the
