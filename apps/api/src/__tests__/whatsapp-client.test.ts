@@ -26,6 +26,8 @@ vi.mock("twilio", () => ({
 vi.stubEnv("TWILIO_ACCOUNT_SID", "AC_test_sid");
 vi.stubEnv("TWILIO_AUTH_TOKEN", "test_auth_token");
 vi.stubEnv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+15551234567");
+// Fixed pepper so the keyed-HMAC phone hash is deterministic across calls.
+vi.stubEnv("PHONE_HASH_PEPPER", "test-pepper-cccccccccccccccccccccccccccc");
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -40,9 +42,9 @@ afterEach(() => {
 // ── phoneHash ─────────────────────────────────────────────────────────────────
 
 describe("phoneHash", () => {
-  it("returns a 12-char hex string", () => {
+  it("returns a full-length (64-char) hex string", () => {
     const h = phoneHash("+5511999887766");
-    expect(h).toMatch(/^[0-9a-f]{12}$/);
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("produces consistent output", () => {

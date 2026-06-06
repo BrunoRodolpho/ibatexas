@@ -2,7 +2,7 @@
 // POST /api/auth/send-otp, POST /api/auth/verify-otp, POST /api/auth/refresh,
 // POST /api/auth/logout, GET /api/auth/me
 
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
 import {
@@ -166,10 +166,12 @@ function setupEnv() {
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 describe("phoneHash utility", () => {
-  it("produces a 12-char hex string", () => {
-    const hash = createHash("sha256").update("+5511999999999").digest("hex").slice(0, 12);
-    expect(hash).toHaveLength(12);
-    expect(hash).toMatch(/^[0-9a-f]{12}$/);
+  // The log pseudonym is now a keyed, full-length HMAC (P1-CRYPTO-PHONEHASH):
+  // salted by PHONE_HASH_PEPPER and not truncated.
+  it("produces a full-length (64-char) hex HMAC", () => {
+    const hash = createHmac("sha256", "test-pepper").update("+5511999999999").digest("hex");
+    expect(hash).toHaveLength(64);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

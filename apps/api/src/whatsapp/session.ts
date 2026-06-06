@@ -7,6 +7,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
+import { hashPhone } from "../lib/phone-hash.js";
 import { createCustomerService } from "@ibatexas/domain";
 import { Channel, type AgentContext } from "@ibatexas/types";
 import { buildEnvelope } from "@adjudicate/core";
@@ -42,9 +43,10 @@ export function normalizePhone(from: string): string {
  * hash), but NOT session data (uses actual phone for Prisma lookup).
  * If scaling to millions of phones, increase to 16+ hex chars.
  */
-export function hashPhone(phone: string): string {
-  return createHash("sha256").update(phone).digest("hex").slice(0, 12);
-}
+// P1-CRYPTO-PHONEHASH: the phone pseudonym is a keyed, full-length HMAC,
+// centralized in lib/phone-hash.ts. Re-exported here so existing importers
+// (whatsapp-webhook, client, cart-intelligence) keep their import path.
+export { hashPhone };
 
 // ── Session resolution ─────────────────────────────────────────────────────────
 
@@ -390,10 +392,11 @@ export async function isMessageDuplicate(
   phoneHash: string,
   messageBody: string,
 ): Promise<boolean> {
+  // Full-length (untruncated) digest — a 64-bit slice collided across distinct
+  // messages, dropping a non-duplicate as a "duplicate" (P1-CRYPTO-PHONEHASH).
   const hash = createHash("sha256")
     .update(`${phoneHash}:${messageBody}`)
-    .digest("hex")
-    .slice(0, 16);
+    .digest("hex");
   const redis = await getRedisClient();
   const key = rk(`wa:dedup:${hash}`);
   const result = await redis.set(key, "1", { EX: DEDUP_TTL_SECONDS, NX: true });

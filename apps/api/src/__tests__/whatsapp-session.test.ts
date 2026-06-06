@@ -115,10 +115,13 @@ describe("normalizePhone", () => {
 
 // ── hashPhone ─────────────────────────────────────────────────────────────────
 
+// Fixed pepper so the keyed-HMAC phone hash is deterministic across calls.
+vi.stubEnv("PHONE_HASH_PEPPER", "test-pepper-dddddddddddddddddddddddddddd");
+
 describe("hashPhone", () => {
-  it("returns a 12-char hex string", () => {
+  it("returns a full-length (64-char) hex string", () => {
     const h = hashPhone("+5511999887766");
-    expect(h).toMatch(/^[0-9a-f]{12}$/);
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("same input produces same hash", () => {
