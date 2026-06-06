@@ -386,9 +386,18 @@ async function handlePaymentSucceeded(
       }),
     log: logger,
   });
-  const result = await svc.capturePayment(orderId, paymentIntent.id, {
-    amountInCentavos: paymentIntent.amount,
-  });
+  // Serialize capture per order (P0-PAY-2). Two distinct payment_intent.succeeded
+  // events for one order (realistic after amend_order/regenerate_pix mints a 2nd PI)
+  // would otherwise both pass capturePayment's metadata guard and both capture +
+  // publish order.placed. The lock makes the read-modify-write atomic; capturePayment's
+  // own re-read of metadata.stripePaymentIntentId (now inside the lock) closes the
+  // window for the loser. withLock returns null on contention — folded into the same
+  // "already processed" no-op as capturePayment's null.
+  const result = await withLock(`order-capture:${orderId}`, () =>
+    svc.capturePayment(orderId, paymentIntent.id, {
+      amountInCentavos: paymentIntent.amount,
+    }),
+  );
 
   if (!result) {
     logger.info({ event_id: event.id, order_id: orderId }, "Order already processed — no-op");

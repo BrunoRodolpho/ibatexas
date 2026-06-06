@@ -11,7 +11,7 @@
 //   - The legacy bare-arg `reconcileFromWebhook` is NOT called (bypass-
 //     detection: every webhook reconcile goes through the envelope path).
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Fastify from "fastify";
 import { stripeWebhookRoutes } from "../routes/stripe-webhook.js";
 
@@ -21,6 +21,11 @@ const mockConstructEvent = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
+// P0-PAY-2: swappable withLock so the double-capture concurrency test can install
+// a real try-lock; defaults to pass-through so existing suites are unaffected.
+const lockState = vi.hoisted(() => ({
+  impl: async (_key: string, fn: () => Promise<unknown>): Promise<unknown> => fn(),
+}));
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockMedusaStore = vi.hoisted(() => vi.fn());
 const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
@@ -87,7 +92,7 @@ vi.mock("@ibatexas/tools", () => ({
   rk: mockRk,
   medusaAdmin: mockMedusaAdmin,
   medusaStore: mockMedusaStore,
-  withLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+  withLock: vi.fn((key: string, fn: () => Promise<unknown>) => lockState.impl(key, fn)),
   medusaAdjudicated: mockMedusaAdjudicated,
   MedusaAdjudicateRefusedError: MockRefusedError,
   MedusaAdjudicateDeferredError: MockDeferredError,
@@ -1630,5 +1635,87 @@ describe("POST /api/webhooks/stripe — PIX cart-complete metadata-update via st
     // Wrapper was attempted; bare SDK never touched.
     expect(mockStripeAdjudicatedUpdate).toHaveBeenCalledTimes(1);
     expect(mockBareStripePaymentIntentsUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/webhooks/stripe — double-capture race (P0-PAY-2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  afterEach(() => {
+    // restore the default pass-through lock so other suites are unaffected
+    lockState.impl = async (_key: string, fn: () => Promise<unknown>) => fn();
+  });
+
+  it("serializes two concurrent succeeded events for one order — single capture + single order.placed", async () => {
+    // Two distinct succeeded events (distinct PaymentIntents) for the SAME order —
+    // the realistic case after amend_order/regenerate_pix mints a 2nd PI.
+    const evtA = createStripeEvent("payment_intent.succeeded", { id: "pi_a" }, "evt_a");
+    const evtB = createStripeEvent("payment_intent.succeeded", { id: "pi_b" }, "evt_b");
+    mockConstructEvent.mockReturnValueOnce(evtA).mockReturnValueOnce(evtB);
+
+    // Distinct event ids → both pass the SET-NX idempotency gate.
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    // Real try-lock matching production withLock: the loser gets null (no queue).
+    const keysSeen: string[] = [];
+    const held = new Set<string>();
+    let active = 0;
+    let maxConcurrent = 0;
+    lockState.impl = async (key: string, fn: () => Promise<unknown>) => {
+      keysSeen.push(key);
+      if (held.has(key)) return null; // contention → loser short-circuits
+      held.add(key);
+      active++;
+      maxConcurrent = Math.max(maxConcurrent, active);
+      try {
+        return await fn();
+      } finally {
+        active--;
+        held.delete(key);
+      }
+    };
+
+    // capturePayment yields (so the second event hits the held lock); the lock
+    // winner returns a result, a subsequent call returns null (metadata guard).
+    let captureCalls = 0;
+    mockCapturePayment.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+      if (captureCalls++ === 0) {
+        return {
+          customerId: "cus_01", displayId: 1, customerEmail: "a@b.com",
+          customerName: "T", customerPhone: "+5511", totalInCentavos: 8900,
+          subtotalInCentavos: 8900, shippingInCentavos: 0, items: [],
+          paymentMethod: "pix", deliveryType: "pickup", tipInCentavos: 0,
+        };
+      }
+      return null;
+    });
+
+    const app = await buildTestServer();
+    const fire = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/webhooks/stripe",
+        headers: { "content-type": "application/json", "stripe-signature": "t=1,v1=x" },
+        payload: Buffer.from("{}"),
+      });
+
+    const [r1, r2] = await Promise.all([fire(), fire()]);
+
+    expect(r1.statusCode).toBe(200);
+    expect(r2.statusCode).toBe(200);
+    // Capture was wrapped in a per-order lock.
+    expect(keysSeen).toContain("order-capture:order_01");
+    // The lock never let capture run concurrently.
+    expect(maxConcurrent).toBe(1);
+    // Exactly one order.placed despite two succeeded events → no double capture.
+    const placed = mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.placed");
+    expect(placed).toHaveLength(1);
   });
 });
