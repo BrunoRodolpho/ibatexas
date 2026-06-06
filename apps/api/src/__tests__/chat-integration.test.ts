@@ -15,19 +15,18 @@ import { chatRoutes } from "../routes/chat.js"
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 
-const mockRunAgent = vi.hoisted(() =>
-  vi.fn(async function* () {
-    yield { type: "text_delta" as const, delta: "Olá!" }
-    yield { type: "done" as const }
-  }),
-)
+// WS7: the route delegates to the claustrum Conductor (getConductor +
+// handleTurn) instead of runOrchestrator.
+const mockGetConductor = vi.hoisted(() => vi.fn())
+const mockHandleTurn = vi.hoisted(() => vi.fn())
+const mockOpenCapsule = vi.hoisted(() => vi.fn())
+const mockCloseCapsule = vi.hoisted(() => vi.fn())
 
 const mockLoadSession = vi.hoisted(() => vi.fn().mockResolvedValue([]))
 const mockAppendMessages = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  runOrchestrator: mockRunAgent,
-}))
+vi.mock("../claustrum-bootstrap.js", () => ({ getConductor: mockGetConductor }))
+vi.mock("@claustrum/core", () => ({ handleTurn: mockHandleTurn }))
 
 vi.mock("../session/store.js", () => ({
   loadSession: mockLoadSession,
@@ -45,12 +44,29 @@ vi.mock("../streaming/execution-queue.js", () => ({
 
 vi.mock("@ibatexas/tools", async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>
+  // Minimal Redis stub. WS7: the SSE GET cross-replica path calls the real
+  // streaming emitter's `subscribeToStream`, which `duplicate()`s the client
+  // and reads a replay list — so the stub must expose that pub/sub surface or
+  // the handler throws on a missing `duplicate()`. `get` returns null (no
+  // owner, no guest secret) so the GET-not-found test falls through the
+  // ownership/secret checks to the empty-replay path ⇒ "Sessão não encontrada".
+  const makeRedisStub = (): Record<string, unknown> => ({
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue("OK"),
+    duplicate: () => makeRedisStub(),
+    connect: vi.fn().mockResolvedValue(undefined),
+    subscribe: vi.fn().mockResolvedValue(undefined),
+    unsubscribe: vi.fn().mockResolvedValue(undefined),
+    publish: vi.fn().mockResolvedValue(0),
+    rPush: vi.fn().mockResolvedValue(1),
+    lRange: vi.fn().mockResolvedValue([]),
+    lTrim: vi.fn().mockResolvedValue("OK"),
+    expire: vi.fn().mockResolvedValue(1),
+    quit: vi.fn().mockResolvedValue("OK"),
+  })
   return {
     ...orig,
-    getRedisClient: vi.fn().mockResolvedValue({
-      get: vi.fn().mockResolvedValue(null),
-      set: vi.fn().mockResolvedValue("OK"),
-    }),
+    getRedisClient: vi.fn().mockResolvedValue(makeRedisStub()),
   }
 })
 
@@ -77,10 +93,17 @@ describe("Chat routes integration", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    mockRunAgent.mockImplementation(async function* () {
-      yield { type: "text_delta" as const, delta: "Olá!" }
-      yield { type: "done" as const }
+    mockLoadSession.mockResolvedValue([])
+    mockAppendMessages.mockResolvedValue(undefined)
+    // Conductor: openCapsule → handleTurn → closeCapsule, returning a single
+    // assembled text response (Streaming Option A).
+    mockOpenCapsule.mockResolvedValue({ id: "capsule-1" })
+    mockCloseCapsule.mockResolvedValue(undefined)
+    mockGetConductor.mockReturnValue({
+      openCapsule: mockOpenCapsule,
+      closeCapsule: mockCloseCapsule,
     })
+    mockHandleTurn.mockResolvedValue({ response: { text: "Olá!" } })
   })
 
   it("POST returns 200 with messageId for valid request", async () => {

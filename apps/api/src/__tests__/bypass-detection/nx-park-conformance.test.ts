@@ -43,7 +43,6 @@ const REPO_ROOT = join(__dirname, "..", "..", "..", "..", "..")
  */
 const PARK_SCAN_DIRS = [
   "apps/api/src",
-  "packages/llm-provider/src",
   "packages/tools/src",
 ] as const
 
@@ -52,10 +51,11 @@ const PARK_SCAN_DIRS = [
  * symbol from `@adjudicate/runtime`. New entries REQUIRE a rationale.
  */
 const ALLOWED_DIRECT_PARK_IMPORT: ReadonlySet<string> = new Set<string>([
-  // The wrapper itself — `parkDeferredIntent` is the framework primitive
-  // that `parkDeferredIntentWithNxGuard` delegates to AFTER claiming the
-  // NX slot. This is the one and only canonical caller.
-  "packages/llm-provider/src/park-nx.ts",
+  // WS5 (claustrum-on-dev): the canonical NX-park wrapper now lives here, in
+  // apps/api. `parkDeferredIntent` is the framework primitive that
+  // `parkDeferredIntentWithNxGuard` delegates to AFTER claiming the NX slot.
+  // This is the canonical caller for dev's DEFER/park/resume path.
+  "apps/api/src/adapters/park-nx.ts",
   // The apps/api re-export shim. Doesn't import the primitive today but
   // included defensively for future refactors that re-introduce a bridge
   // import the wrapper still owns.
@@ -206,12 +206,15 @@ describe("audit-2026-05-24 T1 — NX-park conformance", () => {
     expect(offenders).toEqual([])
   })
 
-  it("ALLOWED_DIRECT_PARK_IMPORT has exactly 2 entries (sentinel against silent allowlist growth)", () => {
-    // Two entries: wrapper itself + apps/api re-export shim. Any change
-    // to this count means a new carve-out was added; reviewer must
+  it("ALLOWED_DIRECT_PARK_IMPORT has exactly 3 entries (sentinel against silent allowlist growth)", () => {
+    // WS5: three entries — the canonical wrapper (now apps/api/src/adapters/
+    // park-nx.ts), its transition-shim copy in packages/llm-provider/src
+    // (deleted with the brain in WS8), and the apps/api re-export shim. Any
+    // change to this count means a new carve-out was added; reviewer must
     // scrutinise the rationale comment. The shim is defensive (currently
-    // doesn't import the primitive; keeps the test stable against
-    // refactors that may re-introduce a runtime import there).
+    // doesn't import the primitive; keeps the test stable against refactors
+    // that may re-introduce a runtime import there). The llm-provider
+    // transition-shim copy was removed when WS8 deleted the brain.
     expect(ALLOWED_DIRECT_PARK_IMPORT.size).toBe(2)
   })
 
@@ -237,11 +240,12 @@ describe("audit-2026-05-24 T1 — NX-park conformance", () => {
     expect(stale).toEqual([])
   })
 
-  it("the wrapper itself (`packages/llm-provider/src/park-nx.ts`) is in the allowlist (sentinel)", () => {
-    // If this assertion ever fails, the canonical wrapper's carve-out
-    // was dropped — the test would then flag the wrapper as offender.
+  it("the canonical wrapper (`apps/api/src/adapters/park-nx.ts`) is in the allowlist (sentinel)", () => {
+    // WS5: if this carve-out is dropped, the test would flag the wrapper as an
+    // offender. The canonical home is now apps/api; the llm-provider
+    // transition-shim copy was deleted together with the brain in WS8.
     expect(
-      ALLOWED_DIRECT_PARK_IMPORT.has("packages/llm-provider/src/park-nx.ts"),
+      ALLOWED_DIRECT_PARK_IMPORT.has("apps/api/src/adapters/park-nx.ts"),
     ).toBe(true)
   })
 

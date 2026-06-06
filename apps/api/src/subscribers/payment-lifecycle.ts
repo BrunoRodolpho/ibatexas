@@ -38,7 +38,7 @@ import {
   createOrderEventLogService,
   type OrderStatusTransitionPayload,
 } from "@ibatexas/domain";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,

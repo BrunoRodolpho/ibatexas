@@ -7,9 +7,18 @@
  * returns `false`, every gate in the existing ladder evaluates to
  * "amount is OK" and the kernel falls through to EXECUTE.
  *
- * After fix: the guard must short-circuit at the top with a REFUSE carrying
- * a typed `refund.amount_invalid` code (the existing `refuseRefundAmountInvalid`
- * builder).
+ * Defense (two layers, after the audit-2026-05-27 kernel hardening):
+ *   1. Non-finite amounts (NaN / ±Infinity) are now rejected at the
+ *      content-addressing boundary: canonical-JSON (RFC 8785 §3.2.2.3) has
+ *      no representation for a non-finite number, so `buildEnvelope()` THROWS
+ *      before the payload can ever be adjudicated. NEW-P0-X6 ("NaN refund must
+ *      never reach EXECUTE") is therefore upheld *a fortiori* — the malformed
+ *      intent cannot even be constructed, kernel-wide, for every payload.
+ *      (This subsumes — does not weaken — the per-pack guard; the guard could
+ *      never see a NaN because the envelope it lives behind can't be built.)
+ *   2. Finite-but-invalid amounts (negative, over-balance) still flow through
+ *      `refundMagnitudeGuard`, which REFUSEs with the typed
+ *      `refund.amount_invalid` code (the `-1` case below).
  *
  * Mirrors the audit's NEW-P0-X6 (deep-audit/05-hidden-bugs.md #2) and the
  * sibling Infinity / -Infinity edges that the comparison semantics share.
@@ -55,8 +64,12 @@ function refundState(
 }
 
 describe("NEW-P0-X6 — refundMagnitudeGuard rejects NaN/Infinity", () => {
-  it("REFUSE: refundAmountCentavos = NaN", () => {
-    const decision = adjudicate(
+  // Layer 1 — non-finite amounts cannot even be built into an envelope:
+  // canonical-JSON (RFC 8785) throws, so the malformed intent never reaches
+  // adjudicate() / EXECUTE. We assert at `refundEnv` (= buildEnvelope) since
+  // that is where the content-addressing hash is computed and the throw fires.
+  it("THROW at envelope boundary: refundAmountCentavos = NaN", () => {
+    expect(() =>
       refundEnv({
         paymentId: "p-nan",
         refundAmountCentavos: NaN,
@@ -65,17 +78,11 @@ describe("NEW-P0-X6 — refundMagnitudeGuard rejects NaN/Infinity", () => {
         currentRefundedCentavos: 0,
         actor: "admin",
       }),
-      refundState(0, 10_000),
-      paymentsPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind === "REFUSE") {
-      expect(decision.refusal.code).toBe("refund.amount_invalid")
-    }
+    ).toThrow(/non-finite/i)
   })
 
-  it("REFUSE: refundAmountCentavos = Infinity", () => {
-    const decision = adjudicate(
+  it("THROW at envelope boundary: refundAmountCentavos = Infinity", () => {
+    expect(() =>
       refundEnv({
         paymentId: "p-inf",
         refundAmountCentavos: Infinity,
@@ -84,17 +91,11 @@ describe("NEW-P0-X6 — refundMagnitudeGuard rejects NaN/Infinity", () => {
         currentRefundedCentavos: 0,
         actor: "admin",
       }),
-      refundState(0, 10_000),
-      paymentsPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind === "REFUSE") {
-      expect(decision.refusal.code).toBe("refund.amount_invalid")
-    }
+    ).toThrow(/non-finite/i)
   })
 
-  it("REFUSE: refundAmountCentavos = -Infinity", () => {
-    const decision = adjudicate(
+  it("THROW at envelope boundary: refundAmountCentavos = -Infinity", () => {
+    expect(() =>
       refundEnv({
         paymentId: "p-ninf",
         refundAmountCentavos: -Infinity,
@@ -103,13 +104,7 @@ describe("NEW-P0-X6 — refundMagnitudeGuard rejects NaN/Infinity", () => {
         currentRefundedCentavos: 0,
         actor: "admin",
       }),
-      refundState(0, 10_000),
-      paymentsPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind === "REFUSE") {
-      expect(decision.refusal.code).toBe("refund.amount_invalid")
-    }
+    ).toThrow(/non-finite/i)
   })
 
   it("REFUSE: refundAmountCentavos = -1 (negative)", () => {

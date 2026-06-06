@@ -164,6 +164,9 @@ export interface ReservationContext {
  */
 export interface ReservationState {
   readonly ctx: ReservationContext & {
+    /** Tenant this request operates on (AuthReviewer-009 / RC-A1 D-12). Single-tenant
+     *  today; the `requireTenantBinding` authGuard REFUSEs a mismatch, no-op when absent. */
+    readonly tenantId?: string
     /** Wall-clock snapshot. Injected by the adopter; required for time-comparison guards. */
     readonly now?: Date | null
     readonly slot?: {

@@ -44,35 +44,12 @@ groups:
             data quality.
           runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/runbooks/SHADOW-ENFORCE-ROLLOUT.md#common-failure-modes"
 
-      # ── 2 ──────────────────────────────────────────────────────────────────
-      - alert: KernelDivergenceDecisionKind
-        expr: sum(increase(kernel_shadow_divergence_total{class="DECISION_KIND"}[1m])) > 0
-        for: 1m
-        labels:
-          severity: S2
-          team: kernel
-          page: pagerduty
-        annotations:
-          summary: "Shadow DECISION_KIND divergence detected"
-          description: |
-            kernel and legacy code disagree on the decision kind (EXECUTE vs
-            REFUSE / DEFER / ESCALATE). Block enforce flip for affected intent.
-          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/runbooks/SHADOW-ENFORCE-ROLLOUT.md#step-2--monitor-the-soak-window"
-
-      # ── 3 ──────────────────────────────────────────────────────────────────
-      - alert: KernelDivergencePayloadRewrite
-        expr: sum(increase(kernel_shadow_divergence_total{class="PAYLOAD_REWRITE"}[1m])) > 0
-        for: 1m
-        labels:
-          severity: S2
-          team: kernel
-          page: pagerduty
-        annotations:
-          summary: "Shadow PAYLOAD_REWRITE divergence detected"
-          description: |
-            Kernel returned REWRITE; legacy did not. Requires manual review of
-            the audit record before enforce flip.
-          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/ops/runbooks/01-stage-read-mutations.md"
+      # NOTE: the KernelDivergenceDecisionKind + KernelDivergencePayloadRewrite
+      # alerts (the shadow→enforce divergence pair) were retired together with
+      # the `kernel_shadow_divergence_total` Prometheus counter when shadow
+      # mode was removed (kernel is always authoritative — CLAUDE.md rule #9;
+      # see kernel-metrics-sink.ts + commit 1024028). The always-on successor
+      # signal is the KernelReplayDriftRegressing alert below.
 
       # ── 4 ──────────────────────────────────────────────────────────────────
       - alert: KernelDecisionLatencyHigh

@@ -1,4 +1,4 @@
-// WhatsApp webhook handler — Twilio incoming message webhook.
+// WhatsApp webhook handler — Twilio incoming message webhook (WS7 cutover).
 //
 // IMPORTANT: This plugin registers a custom content type parser for
 // application/x-www-form-urlencoded on the webhook path, similar to how
@@ -14,18 +14,32 @@
 //   - 20 msgs/min per phone via rk('wa:rate:{phoneHash}') INCR + EXPIRE 60
 // Debounce:
 //   - 2s window via rk('wa:debounce:{phoneHash}') NX to batch rapid-fire messages
+//
+// WS7 — the conversational orchestration was `runOrchestrator(...)` (a
+// StreamChunk generator collected by `collectAgentResponse`). It is now the
+// claustrum Conductor:
+//
+//   conductor.openCapsule({ channel: "whatsapp", customerId, sessionKey, inbound })
+//   handleTurn(capsule, inbound) → TurnResult { response, decision, acted, ... }
+//
+// `runConductorTurn` below adapts the TurnResult back into the dev
+// `{ text, pixData }` shape so EVERY downstream WhatsApp feature (PIX
+// copia-e-cola + QR + expiry monitor, append-to-session, post-lock retry,
+// status logging) is preserved byte-for-byte. We do NOT delegate to
+// `WhatsAppChannel.render` — that adapter only sends chunked text and would
+// drop dev's PIX media, status suppression, and per-message logging.
 
 import { parse as parseQuerystring } from "node:querystring";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import twilio from "twilio";
+import { handleTurn, type ChannelMessage } from "@claustrum/core";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
-import { runOrchestrator } from "@ibatexas/llm-provider";
+import { getConductor } from "../claustrum-bootstrap.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
   normalizePhone,
   hashPhone,
   resolveWhatsAppSession,
-  buildWhatsAppContext,
   touchSession,
   acquireAgentLock,
   releaseAgentLock,
@@ -36,7 +50,6 @@ import {
   storeLastLocation,
   getLastLocation,
 } from "../whatsapp/session.js";
-import { collectAgentResponse } from "../whatsapp/formatter.js";
 import { sendText, sendMedia } from "../whatsapp/client.js";
 import { matchShortcut, buildHelpText, buildWelcomeText } from "../whatsapp/shortcuts.js";
 import { LGPD_OPTIN_MESSAGE } from "../whatsapp/constants.js";
@@ -51,12 +64,114 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type LogFn = { info: (...args: unknown[]) => void; error: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
 
+// ── WhatsApp turn result (dev-shaped) ────────────────────────────────────────
+//
+// The fields the WhatsApp feature code reads from a turn. `runConductorTurn`
+// maps the claustrum `TurnResult` onto this so the PIX + append + retry paths
+// stay identical to the pre-cutover `collectAgentResponse` consumer.
+interface WhatsAppTurn {
+  readonly text: string;
+  readonly pixData?: {
+    pixCopyPaste?: string;
+    pixQrCode?: string;
+    pixExpiresAt?: string;
+    orderId?: string;
+  };
+}
+
+// ── Guest-marker convention (mirrors register-ibatexas-tool-packs) ────────────
+const GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
+function isGuestCustomerId(id: string | null | undefined): boolean {
+  if (!id) return true;
+  const trimmed = id.trim();
+  if (trimmed === "") return true;
+  return GUEST_ID_PREFIXES.some((p) => trimmed.startsWith(p));
+}
+
+/**
+ * Extract PIX artifacts from a completed turn.
+ *
+ * The ibatexas responder (`naiveResponder`) does NOT copy tool output onto
+ * `RenderedResponse.artifacts`, so PIX copia-e-cola / QR are NOT in
+ * `turn.response.artifacts`. They DO live in `turn.acted` — the dispatch
+ * result of the executed checkout / regenerate-PIX tool (`createCheckout` /
+ * `regeneratePix` return `{ pixCopyPaste, pixQrCode, pixExpiresAt, orderId }`).
+ * We read them from there, scanning both the single-execution and
+ * multi-envelope-plan shapes. Best-effort: a turn that ran no PIX tool yields
+ * undefined and the PIX follow-up block is skipped.
+ */
+function extractPixData(acted: unknown): WhatsAppTurn["pixData"] | undefined {
+  const fromResult = (result: unknown): WhatsAppTurn["pixData"] | undefined => {
+    if (result === null || typeof result !== "object") return undefined;
+    const r = result as Record<string, unknown>;
+    const pixCopyPaste = typeof r.pixCopyPaste === "string" ? r.pixCopyPaste : undefined;
+    const pixQrCode = typeof r.pixQrCode === "string" ? r.pixQrCode : undefined;
+    const pixExpiresAt = typeof r.pixExpiresAt === "string" ? r.pixExpiresAt : undefined;
+    const orderId = typeof r.orderId === "string" ? r.orderId : undefined;
+    if (!pixCopyPaste && !pixQrCode) return undefined;
+    return { pixCopyPaste, pixQrCode, pixExpiresAt, orderId };
+  };
+
+  if (acted === null || typeof acted !== "object") return undefined;
+  const a = acted as { kind?: string; result?: unknown; executions?: ReadonlyArray<{ result?: unknown }> };
+  if (a.kind === "executed" || a.kind === "rewritten_and_executed") {
+    return fromResult(a.result);
+  }
+  if (a.kind === "executed_plan" && Array.isArray(a.executions)) {
+    for (const exec of a.executions) {
+      const pix = fromResult(exec.result);
+      if (pix) return pix;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Run ONE conductor turn for a WhatsApp message and adapt it into the dev
+ * `{ text, pixData }` shape. Replaces `collectAgentResponse(runOrchestrator(...))`.
+ *
+ * `customerId` is the conductor identity (a guest marker if the session has no
+ * real customer id); `sessionKey` is dev's session id. The conductor loads
+ * memory + resolves tenant/policy itself; we hand it the normalized inbound
+ * message. The lock is already held by the caller, and the synchronous 200 was
+ * already sent — so this can take as long as the model needs.
+ */
+async function runConductorTurn(args: {
+  input: string;
+  customerId: string;
+  sessionKey: string;
+  log: LogFn;
+}): Promise<WhatsAppTurn> {
+  const conductor = getConductor();
+  const inbound: ChannelMessage = {
+    channel: "whatsapp",
+    customerId: args.customerId,
+    conversationId: args.sessionKey,
+    text: args.input,
+    receivedAt: new Date().toISOString(),
+    locale: "pt-BR",
+  };
+  const capsule = await conductor.openCapsule({
+    channel: "whatsapp",
+    customerId: args.customerId,
+    sessionKey: args.sessionKey,
+    inbound,
+  });
+  try {
+    const turn = await handleTurn(capsule, inbound);
+    const pixData = extractPixData(turn.acted);
+    return { text: turn.response.text ?? "", ...(pixData ? { pixData } : {}) };
+  } finally {
+    await conductor.closeCapsule(capsule);
+  }
+}
+
 /**
  * Post-lock re-check: if new user messages arrived while the agent was running,
  * re-acquire lock and re-run agent once (max retry = 1 to prevent loops).
  */
 async function retryForMissedMessages(
-  session: Parameters<typeof buildWhatsAppContext>[0],
+  session: { sessionId: string; customerId: string },
   hash: string,
   phone: string,
   log: LogFn,
@@ -73,13 +188,17 @@ async function retryForMissedMessages(
     const retryTrimmed = retryHistory.slice(-MAX_HISTORY_MESSAGES);
     const retryLastUser = [...retryTrimmed].reverse().find((m) => m.role === "user");
     const retryInput = retryLastUser?.content || "";
-    const retryLocation = await getLastLocation(hash);
-    const retryContext = buildWhatsAppContext(session, retryLocation);
 
     log.info({ phone_hash: hash }, "[whatsapp.agent.retry] Re-running agent for missed messages");
-    const retryResponse = await collectAgentResponse(
-      runOrchestrator(retryInput, retryTrimmed, retryContext),
-    );
+    const retryConductorCustomerId = isGuestCustomerId(session.customerId)
+      ? `guest:${session.sessionId}`
+      : session.customerId;
+    const retryResponse = await runConductorTurn({
+      input: retryInput,
+      customerId: retryConductorCustomerId,
+      sessionKey: session.sessionId,
+      log,
+    });
 
     if (retryResponse.text) {
       await sendText(`whatsapp:${phone}`, retryResponse.text);
@@ -336,7 +455,7 @@ async function tryShortcutOrStateMachine(
     }
   }
 
-  // Legacy state machine removed — all flows handled by XState kernel
+  // Legacy state machine removed — all flows handled by the conductor.
   return false;
 }
 
@@ -474,40 +593,56 @@ async function handleMessageAsync(
 
     // Get the last user message from history (may differ from userMessage if multiple arrived)
     const lastUserMsg = [...trimmedHistory].reverse().find((m) => m.role === "user");
-    const agentInput = lastUserMsg?.content || userMessage;
+    const baseInput = lastUserMsg?.content || userMessage;
 
+    // Pre-cutover, `runOrchestrator` received the stored GPS pin + the
+    // "lgpd just sent" hint via `AgentContext` (buildWhatsAppContext). The
+    // Capsule/ChannelMessage carries neither a `lastLocation` nor a free-form
+    // hints field, so we fold those signals into the turn's inbound text (the
+    // same channel by which the empty-body location message already reaches the
+    // agent). This preserves the GPS-aware + LGPD-aware behavior.
     const lastLocation = await getLastLocation(hash);
-    const hints = lgpdJustSent ? ["lgpd_just_sent"] : undefined;
-    const context = buildWhatsAppContext(session, lastLocation, hints);
+    const inputSuffixes: string[] = [];
+    if (lastLocation) {
+      inputSuffixes.push(
+        `[localização do cliente: lat=${lastLocation.lat}, lng=${lastLocation.lng}]`,
+      );
+    }
+    if (lgpdJustSent) {
+      inputSuffixes.push("[hint: lgpd_just_sent]");
+    }
+    const agentInput =
+      inputSuffixes.length > 0 ? `${baseInput}\n${inputSuffixes.join("\n")}` : baseInput;
 
     log.info(
       { phone_hash: hash, session_id: session.sessionId, history_length: trimmedHistory.length },
       "[whatsapp.agent.start]",
     );
 
-    // ── Run agent ───────────────────────────────────────────────────────────
-    const agentResponse = await collectAgentResponse(
-      runOrchestrator(agentInput, trimmedHistory, context),
-    );
+    // ── Run the conductor turn ────────────────────────────────────────────
+    // The conductor loads memory + resolves tenant/policy from the Capsule; it
+    // does not consume dev's `trimmedHistory` (that history persistence stays on
+    // dev's Redis session store, which the claustrum SessionPort stub does not
+    // replace). A guest session (no real customer id) gets a guest marker.
+    const conductorCustomerId = isGuestCustomerId(session.customerId)
+      ? `guest:${session.sessionId}`
+      : session.customerId;
+    const agentResponse = await runConductorTurn({
+      input: agentInput,
+      customerId: conductorCustomerId,
+      sessionKey: session.sessionId,
+      log,
+    });
 
     const durationMs = Date.now() - startMs;
     log.info(
       {
         phone_hash: hash,
         duration_ms: durationMs,
-        tools_used: agentResponse.toolsUsed,
-        input_tokens: agentResponse.inputTokens,
-        output_tokens: agentResponse.outputTokens,
+        has_pix: Boolean(agentResponse.pixData),
       },
       "[whatsapp.agent.finish]",
     );
-
-    // Status messages (e.g., "Só um instante…") are NOT sent as separate WhatsApp
-    // messages — they create noise with two rapid messages. They're used only in
-    // the web SSE stream for typing indicators. Logged for observability.
-    if (agentResponse.statusMessages?.length) {
-      log.info({ phone_hash: hash, status_count: agentResponse.statusMessages.length }, "[whatsapp.status_suppressed]");
-    }
 
     // ── Send response ─────────────────────────────────────────────────────
     if (agentResponse.text) {

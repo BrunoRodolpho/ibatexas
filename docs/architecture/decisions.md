@@ -45,7 +45,12 @@ DB constraints: `CHECK (reserved_covers >= 0)` and `CHECK (reserved_covers <= ma
 NATS subscribers MUST register before background jobs start. Sequence:
 `startCartIntelligenceSubscribers()` → then all BullMQ workers.
 
-### 7. Hybrid State-Flow Architecture (XState)
+### 7. Hybrid State-Flow Architecture (XState) — SUPERSEDED
+
+> **Superseded by the claustrum-on-dev cutover.** The XState machine and the
+> `@ibatexas/llm-provider` package described here were **deleted**; the
+> conversational turn now runs through the `@claustrum` Conductor (see ADR #9
+> "Files (current)" and CLAUDE.md rule #9). Retained for historical context.
 
 WhatsApp bot moved from a monolithic LLM prompt (3,400 tokens, all rules every turn)
 to a Hybrid State-Flow architecture using XState v5.
@@ -133,7 +138,7 @@ prompt injection could trigger fraudulent orders.
 - Kernel executor handles post-order mutations deterministically
 - Prompts rewritten: no "CHAME" (call) directives for mutating tools; LLM uses "consulte" (consult) for read-only
 - Event injection whitelist: only `PIX_DETAILS_COLLECTED` and `SET_NAME` allowed post-LLM
-- `apps/api` consumes `@ibatexas/llm-provider` for `runOrchestrator` + commerce-specific glue and `@adjudicate/runtime` for the generic defer-resume utilities; the framework packages have no IbateXas-specific dependencies.
+- `apps/api` runs the conversational turn through the `@claustrum` Conductor (composition root `apps/api/src/claustrum-bootstrap.ts`) and uses `@adjudicate/runtime` for the generic defer-resume utilities; the framework packages have no IbateXas-specific dependencies. (The legacy `@ibatexas/llm-provider` brain that previously hosted `runOrchestrator` was deleted in the claustrum-on-dev cutover.)
 - `@adjudicate/*` packages are domain-independent substrate; second-domain scaffold (clinic) builds in under a day without forking (see [`packages/runtime/examples/clinic/`](../../packages/runtime/examples/clinic/))
 
 **Packages:**
@@ -142,12 +147,13 @@ prompt injection could trigger fraudulent orders.
 - [`@adjudicate/audit-postgres`](../../packages/audit-postgres/README.md) — reference Postgres sink
 - [`@adjudicate/runtime`](../../packages/runtime/README.md) — `resumeDeferredIntent` + `deadlinePromise` for orchestrators
 
-**Files (legacy, still host the concrete implementation in v1.0 per the plan's open decision on v2.0 split timing):**
-- Classification: `packages/llm-provider/src/machine/types.ts` (`TOOL_CLASSIFICATION`, `ALLOWED_POST_LLM_EVENTS`)
-- Intent bridge: `packages/llm-provider/src/tool-registry.ts` (envelope wrapping in `executeTool`)
-- State gate: `packages/llm-provider/src/llm-responder.ts` (`processToolCalls` + ledger + audit wiring)
-- Machine: `packages/llm-provider/src/machine/order-machine.ts` (post_order sub-states)
-- Kernel: `packages/llm-provider/src/kernel-executor.ts` (cancel/amend/pix handlers)
+**Files (current — claustrum-on-dev; the legacy `packages/llm-provider/*` implementation was deleted in the cutover):**
+- Conductor composition root: `apps/api/src/claustrum-bootstrap.ts` (`getConductor()`, per-turn `Capsule`, fail-closed `toolRosterDrift()` boot gate)
+- Production planner: `apps/api/src/claustrum/ibatexas-planner.ts` (`createIbatexasPlanner` — LLM sees only `express_intent`)
+- Capability policy: `apps/api/src/claustrum/capability-policy.ts`
+- Tool registry (17 LLM-callable tools, keyed `capability := intentKind`): `apps/api/src/tools/register-ibatexas-tool-packs.ts`
+- Classification + per-state visibility: each Pack's exported `*CapabilityPlanner` (`@ibatexas/pack-*`), built on the `CapabilityPlanner` / `ToolClassification` contracts in `@adjudicate/core/llm`
+- Intent kind union (boot-time Pack-coverage validator): `@ibatexas/intent-kinds` (`KNOWN_INTENT_KINDS`)
 
 **Feature flags:**
 - `IBX_LEDGER_ENABLED=true` — shadow writes to the execution ledger

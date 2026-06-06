@@ -67,10 +67,6 @@ vi.mock("@ibatexas/tools", () => ({
   MedusaAdjudicateNeedsReviewError: MockNeedsReviewError,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}));
-
 vi.mock("../../../middleware/staff-auth.js", () => ({
   requireManagerRole: (
     request: FastifyRequest,

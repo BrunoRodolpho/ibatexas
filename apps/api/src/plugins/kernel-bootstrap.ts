@@ -41,16 +41,22 @@ import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
+import { KNOWN_INTENT_KINDS } from "@ibatexas/intent-kinds"
+// WS5: the NX-park quota-exceeded hook setter MUST come from the same park-nx
+// module instance the live park calls go through — now the apps/api copy
+// (re-exported by the park-deferred-intent-nx seam). Importing it from
+// `@ibatexas/llm-provider` instead would set the hook on that package's
+// transition-shim copy of park-nx, leaving the apps/api copy's hook null and
+// silently dropping `kernel_defer_quota_exceeded_total{kind}`.
+import { setDeferQuotaExceededHook } from "../adapters/park-deferred-intent-nx.js"
 import {
-  KNOWN_INTENT_KINDS,
   setAuditDedupHook,
   setAuditLagHook,
   setAuditRedactorFailureHook,
   setAuditSinkBufferSizeHook,
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
-  setDeferQuotaExceededHook,
-} from "@ibatexas/llm-provider"
+} from "@ibatexas/audit-sink"
 import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { prisma } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
@@ -141,9 +147,10 @@ export function installKernelMetricsSink(
     recordSinkFailure(event)
   })
   // audit-2026-05-24 P0-1 — wire the NX-park quota-exceeded metric.
-  // The wrapper lives in `@ibatexas/llm-provider` and is intentionally
-  // decoupled from apps/api; we inject the recorder here so each
-  // `quota_exceeded` rejection bumps `kernel_defer_quota_exceeded_total{kind}`.
+  // WS5: the wrapper now lives in apps/api (`adapters/park-nx.ts`, re-exported
+  // by the `park-deferred-intent-nx` seam this import resolves through); we
+  // inject the recorder here so each `quota_exceeded` rejection bumps
+  // `kernel_defer_quota_exceeded_total{kind}`.
   setDeferQuotaExceededHook((kind) => {
     recorder.recordDeferQuotaExceeded(kind)
   })

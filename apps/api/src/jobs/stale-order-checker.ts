@@ -39,7 +39,8 @@ import {
   type OrderStatusTransitionPayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
-import { getAuditSink, parseBoolEnv } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
+import { parseBoolEnv } from "@ibatexas/types";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,

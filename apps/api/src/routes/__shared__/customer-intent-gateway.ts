@@ -202,7 +202,7 @@ export interface RunCustomerIntentOptions<R> {
   readonly executor: (payload: unknown) => Promise<R>;
   /** Per-call context (customerId, route slug, optional log). */
   readonly ctx: CustomerIntentContext;
-  /** Audit sink — typically `getAuditSink()` from `@ibatexas/llm-provider`. */
+  /** Audit sink — typically `getAuditSink()` from `@ibatexas/audit-sink`. */
   readonly auditSink?: AuditSink;
   /** Pt-BR refusal dictionary for REFUSE localization. */
   readonly refusalMessages?: RefusalMessagesDict;

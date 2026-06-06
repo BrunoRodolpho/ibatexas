@@ -160,13 +160,17 @@ describe("Grafana dashboards", () => {
     .filter((f) => f.endsWith(".json"))
     .map((f) => join(DASHBOARDS_DIR, f))
 
-  it("contains exactly the four W3-mandated dashboards", () => {
+  it("contains exactly the three live kernel dashboards (enforcement-readiness retired with shadow mode)", () => {
+    // kernel-enforcement-readiness.json was retired together with the
+    // `kernel_shadow_divergence_total` metric when shadow mode was removed
+    // (kernel is always authoritative — CLAUDE.md rule #9; see
+    // kernel-metrics-sink.ts + commit 1024028). It only ever charted the
+    // shadow→enforce divergence the always-on kernel no longer produces.
     const names = files.map((f) => f.split("/").pop()).sort()
     expect(names).toEqual([
       "kernel-audit-pipeline-health.json",
       "kernel-decision-overview.json",
       "kernel-defer-backlog.json",
-      "kernel-enforcement-readiness.json",
     ])
   })
 
@@ -283,12 +287,15 @@ describe("Prometheus alert rules", () => {
     expect(parsed.groups!.length).toBeGreaterThan(0)
   })
 
-  it("declares exactly 13 rules (per migration/06 alerting table, post kill-switch cutover)", () => {
+  it("declares exactly 11 rules (13 minus the 2 shadow-divergence alerts retired with shadow mode)", () => {
+    // The KernelDivergenceDecisionKind + KernelDivergencePayloadRewrite
+    // alerts were retired with the `kernel_shadow_divergence_total` metric
+    // (shadow mode removed — CLAUDE.md rule #9; commit 1024028).
     const totalRules = (parsed.groups ?? []).reduce(
       (acc, g) => acc + (g.rules?.length ?? 0),
       0,
     )
-    expect(totalRules).toBe(13)
+    expect(totalRules).toBe(11)
   })
 
   it("every rule has alert / expr / for / labels / annotations", () => {

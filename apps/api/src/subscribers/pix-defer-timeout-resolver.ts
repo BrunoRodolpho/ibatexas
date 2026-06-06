@@ -61,7 +61,7 @@
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import { PIX_CONFIRMATION_SIGNAL } from "@adjudicate/pack-payments-pix";
 import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import type { FastifyBaseLogger } from "fastify";
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 

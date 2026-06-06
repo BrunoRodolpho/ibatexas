@@ -125,29 +125,28 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (key: string) => `test:${key}`,
 }))
 
-// IMPORTANT: we mock `@ibatexas/llm-provider` to expose only the seams
-// the resolver subscriber needs (`getAuditSink`, `orderPolicyBundle`) PLUS
-// the real `parkDeferredIntentWithNxGuard` pulled from the leaf module via
-// `vi.importActual`. Pulling the wrapper from the leaf path (rather than
-// the package's `index.ts`) sidesteps the transitive `tool-registry` /
-// `llm-responder` import chain that would otherwise require mocking
-// `@ibatexas/tools` exhaustively. Mirrors the pattern in
-// `apps/api/src/__tests__/integration/lgpd-anonymize-lifecycle.test.ts`.
-vi.mock("@ibatexas/llm-provider", async () => {
-  const real = (await vi.importActual(
-    "../../../../../packages/llm-provider/src/park-nx.js",
-  )) as Record<string, unknown>
-  return {
-    getAuditSink: () => ({
-      emit: mockGetAuditSinkEmit,
-    }),
-    orderPolicyBundle: {},
-    parkDeferredIntentWithNxGuard: real.parkDeferredIntentWithNxGuard,
-    PARK_COLLISION_REFUSAL_PT_BR: real.PARK_COLLISION_REFUSAL_PT_BR,
-    setDeferQuotaExceededHook: real.setDeferQuotaExceededHook,
-    ParkVerificationFieldsMissingError: real.ParkVerificationFieldsMissingError,
-  }
-})
+// WS5 (claustrum-on-dev): the NX park guard moved to
+// `apps/api/src/adapters/park-nx.ts`. This test parks via the real wrapper
+// pulled in by `await import("../adapters/park-deferred-intent-nx.js")` (the
+// apps/api seam → that new home; NOT the old
+// `packages/llm-provider/src/park-nx.js` path), and resolves via the SUT.
+//
+// The SUT reads `getAuditSink` from `@ibatexas/audit-sink` and
+// `orderPolicyBundle` from `@ibatexas/pack-orders` — NOT from
+// `@ibatexas/llm-provider`. So the audit spy is installed on
+// `@ibatexas/audit-sink` (the real `getAuditSink()` is fail-closed before boot
+// wiring). The `orderPolicyBundle` is inert here because `adjudicate` is mocked.
+// The `@ibatexas/llm-provider` mock is kept import-safe in case a transitive
+// dep loads it.
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: () => ({
+    emit: mockGetAuditSinkEmit,
+  }),
+}))
+
+vi.mock("@ibatexas/pack-orders", () => ({
+  ordersPolicyBundle: {},
+}))
 
 vi.mock("@adjudicate/core/kernel", async () => {
   const real = await vi.importActual<typeof import("@adjudicate/core/kernel")>(
@@ -243,8 +242,9 @@ describe("audit-2026-05-24 T5 — DEFER+resume audit-chain integrity", () => {
     expect(originalIntentHash).toBeTruthy()
 
     // ─── Step 2: Park via the production NX-guarded wrapper (P0-1) ───
+    // WS5: park via the new apps/api home (real wrapper, unmocked).
     const { parkDeferredIntentWithNxGuard } = await import(
-      "@ibatexas/llm-provider"
+      "../../adapters/park-deferred-intent-nx.js"
     )
     const parkResult = await parkDeferredIntentWithNxGuard({
       envelope,
@@ -347,8 +347,9 @@ describe("audit-2026-05-24 T5 — DEFER+resume audit-chain integrity", () => {
     // on the kernel's intentHash derivation, not the audit chain).
     expect(hashA).not.toBe(hashB)
 
+    // WS5: park via the new apps/api home (real wrapper, unmocked).
     const { parkDeferredIntentWithNxGuard } = await import(
-      "@ibatexas/llm-provider"
+      "../../adapters/park-deferred-intent-nx.js"
     )
     const redis = redisStub as unknown as Parameters<
       typeof parkDeferredIntentWithNxGuard
@@ -445,8 +446,9 @@ describe("audit-2026-05-24 T5 — DEFER+resume audit-chain integrity", () => {
       sessionId,
       nonce: "t5-nonce-tampered",
     })
+    // WS5: park via the new apps/api home (real wrapper, unmocked).
     const { parkDeferredIntentWithNxGuard } = await import(
-      "@ibatexas/llm-provider"
+      "../../adapters/park-deferred-intent-nx.js"
     )
     await parkDeferredIntentWithNxGuard({
       envelope,

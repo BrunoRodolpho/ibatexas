@@ -18,7 +18,6 @@ const mockCancelStalePaymentIntent = vi.hoisted(() => vi.fn().mockResolvedValue(
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockTransitionStatusFromEnvelope = vi.hoisted(() => vi.fn());
 const mockFindMany = vi.hoisted(() => vi.fn());
-const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("@ibatexas/tools", () => ({
   withLock: mockWithLock,
@@ -36,10 +35,6 @@ vi.mock("@ibatexas/domain", () => ({
   createPaymentCommandService: () => ({
     transitionStatusFromEnvelope: mockTransitionStatusFromEnvelope,
   }),
-}));
-
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
 }));
 
 vi.mock("@sentry/node", () => ({

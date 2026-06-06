@@ -65,7 +65,7 @@ function state(overrides: Partial<OrderState["ctx"]> = {}): OrderState {
 // ── Auth phase ──────────────────────────────────────────────────────────
 
 describe("ordersPolicyBundle — auth guards", () => {
-  it("REFUSE when customer is not authenticated for a mutating intent", () => {
+  it("Allow guest cart-building (order.item.add) — identity is gated at checkout, not here (RC-A1 Chunk 0 / D-20.4)", () => {
     const decision = adjudicate(
       env("order.item.add", {
         cartId: "cart-1",
@@ -76,9 +76,10 @@ describe("ordersPolicyBundle — auth guards", () => {
       state({ customerId: null, channel: "web" }),
       ordersPolicyBundle,
     )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("auth.required")
+    // A guest may build a cart (mirrors the HTTP optionalAuth cart routes);
+    // requireAuthenticated exempts GUEST_CART_KINDS. The guest-identity REFUSE
+    // assertion for a mutating intent lives on order.review.submit below.
+    expect(decision.kind).toBe("EXECUTE")
   })
 
   it("Allow anonymous order.cart.ensure (bootstrap intent)", () => {
@@ -107,6 +108,57 @@ describe("ordersPolicyBundle — auth guards", () => {
         paymentMethod: "card",
         paymentStatus: null,
       }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+})
+
+// ── Tenant binding (AuthReviewer-009 / RC-A1 D-12) ──────────────────────
+
+describe("ordersPolicyBundle — tenant binding (AuthReviewer-009)", () => {
+  it("REFUSEs a write whose state tenant is not the configured tenant (cross-tenant)", () => {
+    const decision = adjudicate(
+      env("order.item.add", {
+        cartId: "cart-1",
+        variantId: "v-1",
+        quantity: 1,
+        allergens: [],
+      }),
+      state({ tenantId: "another-tenant" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.kind).toBe("SECURITY")
+    expect(decision.refusal.code).toBe("tenant_binding_violation")
+  })
+
+  it("EXECUTEs the single-tenant happy path (state tenant === configured)", () => {
+    const decision = adjudicate(
+      env("order.item.add", {
+        cartId: "cart-1",
+        variantId: "v-1",
+        quantity: 1,
+        allergens: [],
+      }),
+      state({ tenantId: "ibatexas" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("is a no-op when the tenant is not supplied in state (gateway/legacy path)", () => {
+    // The default state carries no tenantId — the guard must NOT refuse (so the
+    // gateway path, which does not yet supply a tenant, is unaffected).
+    const decision = adjudicate(
+      env("order.item.add", {
+        cartId: "cart-1",
+        variantId: "v-1",
+        quantity: 1,
+        allergens: [],
+      }),
+      state({}),
       ordersPolicyBundle,
     )
     expect(decision.kind).toBe("EXECUTE")
@@ -512,6 +564,37 @@ describe("ordersPolicyBundle — DEFER for pending PIX checkout", () => {
       ordersPolicyBundle,
     )
     expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("EXECUTE fresh PIX checkout (null status) — QR-first, not DEFER (D-24 Ruling 1)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "pix" }),
+      state({ paymentMethod: "pix", paymentStatus: null, totalInCentavos: 5_000 }),
+      ordersPolicyBundle,
+    )
+    // A fresh PIX checkout EXECUTEs immediately — createCheckout generates the QR;
+    // the routed payment.status.reconcile webhook governs confirmation.
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("EXECUTE guest CARD checkout — SEC-001 allows guest card (D-24 Ruling 2)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "card" }),
+      state({ customerId: null, channel: "web", paymentMethod: "card" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE guest PIX checkout — the guest exemption is CARD-only (cash/PIX still need auth)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", { cartId: "cart-1", paymentMethod: "pix" }),
+      state({ customerId: null, channel: "web", paymentMethod: "pix", paymentStatus: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("auth.required")
   })
 })
 

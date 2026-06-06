@@ -84,6 +84,44 @@ function customerState(
   }
 }
 
+// ── Immediate erasure (HTTP DELETE /api/me/data, D-25 Option B) ─────────
+
+describe("LGPD — immediate erasure (authenticated HTTP path)", () => {
+  it("EXECUTEs immediately when immediateErasure is set — skips fresh-OTP + 24h grace", () => {
+    const envelope = env(
+      "customer.anonymize",
+      { customerId: "c-1", scope: "lgpd_art_18" },
+      T0,
+      "n-imm",
+    )
+    const decision = adjudicate(
+      envelope,
+      // Authenticated session, NO fresh OTP, immediate mode → byte-equivalent to the
+      // session-only immediate anonymize the HTTP route does today (Option B).
+      customerState(T0, { immediateErasure: true, otpFresh: false }),
+      customerOnboardingPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("an UNAUTHENTICATED immediate request is still REFUSED (the LLM path can never erase)", () => {
+    const envelope = env(
+      "customer.anonymize",
+      { customerId: "c-1", scope: "lgpd_art_18" },
+      T0,
+      "n-imm-unauth",
+    )
+    const decision = adjudicate(
+      envelope,
+      // Even with immediateErasure, requireAuthenticated gates on isAuthenticated —
+      // the cognitive-loop state is unauthenticated, so it cannot reach erasure.
+      customerState(T0, { immediateErasure: true, isAuthenticated: false }),
+      customerOnboardingPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+})
+
 // ── Step 1: T0 — anonymize DEFERs ───────────────────────────────────────
 
 describe("LGPD lifecycle — T0: customer.anonymize parks via DEFER", () => {

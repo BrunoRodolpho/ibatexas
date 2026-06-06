@@ -45,7 +45,7 @@ import {
   type Guard,
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
-import { createThresholdGuard } from "@adjudicate/primitives"
+import { createThresholdGuard, requireTenantBinding } from "@adjudicate/primitives"
 import {
   refuseDefault,
   refuseHandoffRateLimited,
@@ -69,6 +69,20 @@ import {
 } from "./types.js"
 
 type WhatsAppGuard = Guard<WhatsAppIntentKind, WhatsAppPayload, WhatsAppState>
+
+/**
+ * Tenant binding (AuthReviewer-009 / RC-A1 D-12). REFUSEs a request whose
+ * `state.ctx.tenantId` is not the configured tenant; lenient (no-op) when absent.
+ * Reads (actor, state) → Decision — no principal/hashed-byte change. Env-driven (Rule #3).
+ */
+const requireTenantBindingGuard: WhatsAppGuard = requireTenantBinding<
+  WhatsAppIntentKind,
+  WhatsAppPayload,
+  WhatsAppState
+>((_actor, state) => {
+  const tenant = state.ctx.tenantId
+  return tenant === undefined || tenant === (process.env.KERNEL_TENANT_ID ?? "ibatexas")
+})
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -445,7 +459,7 @@ export const whatsappPolicyBundle: PolicyBundle<
   // recipientType for a customer-sourced message. Without this guard
   // the REWRITE silently skips and unsanitized customer content can
   // reach a staff phone.
-  authGuards: [refuseUnprojectedStaffRouting],
+  authGuards: [requireTenantBindingGuard, refuseUnprojectedStaffRouting],
   taint: whatsappTaintPolicy,
   business: [
     validateTemplate,

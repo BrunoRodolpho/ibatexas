@@ -72,6 +72,19 @@ function orderEnv(nonce: string) {
   });
 }
 
+// Spill-queue key prefix — mirrors the inlined `rk()` in
+// `@ibatexas/audit-sink/redis-spill-storage.ts`, which (like the canonical
+// `rk()` in `@ibatexas/tools`) captures `APP_ENV` ONCE at module-load time
+// into a const, NOT per-call. `@ibatexas/audit-sink` is imported by the
+// global `src/__tests__/setup.ts` before any `beforeEach` runs, so the
+// leaf's prefix is frozen to whatever `APP_ENV` is at that first import
+// (`"development"` here, since nothing sets `APP_ENV` before setup). The
+// per-test `vi.stubEnv("APP_ENV", "test")` therefore CANNOT change the spill
+// key — it is far too late. We resolve the spill key the same way the SUT
+// does so the assertion reads the queue the SUT actually writes to. (Pre-fix
+// this hardcoded `test:audit:spill:queue` and silently read an empty list.)
+const SPILL_QUEUE_KEY = `${process.env.APP_ENV ?? "development"}:audit:spill:queue`;
+
 function orderState(): OrderState {
   return {
     ctx: {
@@ -118,9 +131,10 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
     const redis = makeRedisSpillStub();
     const failingWriter = makeFailingPostgresWriter();
 
-    // Import wiring through the package's barrel which already loads in
-    // tests. We use the test-isolation helpers re-exported there.
-    const wiring = await import("@ibatexas/llm-provider");
+    // Import wiring through the @ibatexas/audit-sink barrel. We use the
+    // test-isolation helpers (_resetAuditSink / _setAuditSinkDependencies)
+    // exported there.
+    const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
 
@@ -149,7 +163,7 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
     await wiring.getAuditSink().emit(record2);
 
     // First record evicted to Redis spill.
-    const spilled = redis._store.get("test:audit:spill:queue") ?? [];
+    const spilled = redis._store.get(SPILL_QUEUE_KEY) ?? [];
     expect(spilled.length).toBeGreaterThanOrEqual(1);
 
     // The spilled record contains a recognizable JSON envelope with a
@@ -163,7 +177,7 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
   it("audit sink failure does NOT raise to the caller (fail-open boundary)", async () => {
     const redis = makeRedisSpillStub();
     const failingWriter = makeFailingPostgresWriter();
-    const wiring = await import("@ibatexas/llm-provider");
+    const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
 
@@ -184,7 +198,7 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
   it("route-handler-style flow: decision → audit emit fail → route still returns 200", async () => {
     const redis = makeRedisSpillStub();
     const failingWriter = makeFailingPostgresWriter();
-    const wiring = await import("@ibatexas/llm-provider");
+    const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
     wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
 

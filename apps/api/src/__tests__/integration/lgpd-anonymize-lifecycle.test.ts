@@ -199,22 +199,6 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (k: string) => `ibatexas:${k}`,
 }));
 
-// audit-2026-05-24 P0-1: import the real NX-guarded park wrapper from the
-// leaf module so me.ts's initiate-deletion / DELETE flows route through it.
-// Without this, the wrapper resolves to undefined and the park call throws.
-vi.mock("@ibatexas/llm-provider", async () => {
-  const real = (await vi.importActual(
-    "../../../../../packages/llm-provider/src/park-nx.js",
-  )) as Record<string, unknown>;
-  return {
-    getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-    parkDeferredIntentWithNxGuard: real.parkDeferredIntentWithNxGuard,
-    PARK_COLLISION_REFUSAL_PT_BR: real.PARK_COLLISION_REFUSAL_PT_BR,
-    setDeferQuotaExceededHook: real.setDeferQuotaExceededHook,
-    ParkVerificationFieldsMissingError: real.ParkVerificationFieldsMissingError,
-  };
-});
-
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
   subscribeNatsEvent: vi.fn(),

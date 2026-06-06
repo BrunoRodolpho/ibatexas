@@ -49,7 +49,7 @@ import {
   recordMedusaAnonymizePending,
 } from "@ibatexas/tools";
 import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import type { FastifyBaseLogger } from "fastify";
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";
 import {
@@ -153,7 +153,7 @@ export async function handleMedusaAnonymizePending(
   // firstEmittedAt to detect stuck-for-hours customers reported stale
   // "just started" values. Now we read the existing entry first and
   // propagate the original firstEmittedAt.
-  const existingEntry = await readMedusaAnonymizePending(customerId, log).catch(
+  const existingEntry = await readMedusaAnonymizePending(customerId).catch(
     () => null,
   );
   await recordMedusaAnonymizePending(

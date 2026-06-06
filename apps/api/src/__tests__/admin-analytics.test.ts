@@ -83,10 +83,6 @@ vi.mock("@ibatexas/domain", () => ({
   },
 }))
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}))
-
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: vi.fn(async () => ({
     get: vi.fn(async () => null),

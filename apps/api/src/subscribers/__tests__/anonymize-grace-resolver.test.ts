@@ -82,11 +82,10 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (k: string) => `ibatexas:${k}`,
 }));
 
-// P0-8: the resolver now emits an audit record after a successful TX.
-// Mock the audit-sink seam at the module boundary — llm-provider pulls in
-// the full LLM tool registry at import time, which would otherwise drag
-// in @ibatexas/domain tool exports the resolver doesn't need.
-vi.mock("@ibatexas/llm-provider", () => ({
+// The resolver emits its EXECUTE / REFUSE audit records via
+// `getAuditSink().emit(...)`. The real `getAuditSink()` is fail-closed
+// before boot wiring, so spy on it here.
+vi.mock("@ibatexas/audit-sink", () => ({
   getAuditSink: () => ({ emit: mockAuditSinkEmit }),
 }));
 

@@ -75,10 +75,6 @@ vi.mock("@ibatexas/domain", () => ({
   },
 }))
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}))
-
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: vi.fn(),
 }))
@@ -159,6 +155,54 @@ describe("admin auth guard — no key configured", () => {
 
     // Need dynamic import to pick up changed env
     vi.resetModules()
+
+    // vi.resetModules() gives a fresh @ibatexas/audit-sink module instance,
+    // dropping the no-op deps the global setup.ts wired into the original
+    // instance. orders.ts calls getAuditSink() in its onReady hook, which is
+    // fail-closed and throws AuditSinkNotInitializedError until deps are set.
+    // Re-wire a no-op sink on the fresh instance before registering routes
+    // (idiom: __resetAuditSink() + __setAuditSinkDependencies(...), see setup.ts).
+    const { __resetAuditSink, __setAuditSinkDependencies } = await import(
+      "@ibatexas/audit-sink"
+    )
+    __resetAuditSink()
+    __setAuditSinkDependencies({
+      spillStorage: {
+        async append() {
+          /* no-op */
+        },
+        async *readAll() {
+          /* yields nothing */
+        },
+        async ack() {
+          /* no-op */
+        },
+      },
+      postgresWriter: {
+        async insertAudit() {
+          /* no-op */
+        },
+      },
+      natsPublisher: {
+        async publish() {
+          /* no-op */
+        },
+      },
+      redactor: {
+        redact(record) {
+          return record
+        },
+      },
+      logger: {
+        warn() {
+          /* no-op */
+        },
+        error() {
+          /* no-op */
+        },
+      },
+    })
+
     const { adminRoutes } = await import("../routes/admin/index.js")
 
     server = Fastify({ logger: false })

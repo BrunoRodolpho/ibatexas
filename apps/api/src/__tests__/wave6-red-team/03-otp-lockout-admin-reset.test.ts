@@ -83,7 +83,7 @@ describe("RED-TEAM Target 12 — OTP lockout: clearOtpLockout does NOT reset cou
   });
 
   it("EXPLOIT/BUG: after admin clears lockout, the very next attempt re-locks", async () => {
-    const { acquireOtpAttempt, clearOtpLockout, resetOtpFailureCount } =
+    const { acquireOtpAttempt, clearOtpLockout } =
       await import("../../routes/me/anonymize-otp-gate.js");
 
     const customerId = "cus_abc";

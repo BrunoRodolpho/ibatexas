@@ -33,7 +33,7 @@ import type {
   ReservationCompletePayload,
   ReservationState,
 } from "@ibatexas/pack-reservations";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import type { ReservationDTO } from "@ibatexas/types";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 

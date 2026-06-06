@@ -14,7 +14,6 @@ const mockSubscribeNatsEvent = vi.hoisted(() => vi.fn());
 const mockFindOrCreateBySessionId = vi.hoisted(() => vi.fn());
 const mockAppendMessageFromEnvelope = vi.hoisted(() => vi.fn());
 const mockPushToDlq = vi.hoisted(() => vi.fn());
-const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("@ibatexas/nats-client", () => ({
   subscribeNatsEvent: mockSubscribeNatsEvent,
@@ -25,10 +24,6 @@ vi.mock("@ibatexas/domain", () => ({
     findOrCreateBySessionId: mockFindOrCreateBySessionId,
     appendMessageFromEnvelope: mockAppendMessageFromEnvelope,
   }),
-}));
-
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
 }));
 
 vi.mock("../../subscribers/dlq.js", () => ({

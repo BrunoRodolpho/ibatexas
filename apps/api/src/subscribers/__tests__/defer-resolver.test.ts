@@ -99,6 +99,28 @@ function makeRedisStub() {
       store.set(key, { value: next, ttl: e?.ttl ?? -1 })
       return 1
     },
+    // WS5: implement the Lua compare-and-delete used by
+    // `releaseDeferResumingLock` (audit-2026-05-25 I7) and the NX
+    // placeholder release in `park-nx.ts` (I8). The only scripts passed are
+    // GET-equals-then-DEL; we emulate that semantics generically (release the
+    // key iff its stored value equals arguments[0]). Pre-WS5 this stub lacked
+    // `eval`, so the Lua release threw (swallowed) and the
+    // `defer:resuming:*` marker was never cleared — the marker-cleanup
+    // assertions only surfaced once the audit-sink mock was repointed so the
+    // tests could run past the earlier audit assertion.
+    async eval(
+      _script: string,
+      opts: { keys: string[]; arguments: string[] },
+    ): Promise<number> {
+      const key = opts.keys[0]!
+      const expected = opts.arguments[0]
+      const e = store.get(key)
+      if (e && e.value === expected) {
+        store.delete(key)
+        return 1
+      }
+      return 0
+    },
   }
 }
 
@@ -114,11 +136,21 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (key: string) => `test:${key}`,
 }))
 
-vi.mock("@ibatexas/llm-provider", () => ({
+// WS5 (claustrum-on-dev): the SUT (`defer-resolver.ts`) reads `getAuditSink`
+// from `@ibatexas/audit-sink` and `orderPolicyBundle` from `@ibatexas/pack-orders`
+// — NOT from `@ibatexas/llm-provider` (it no longer imports llm-provider at all).
+// The audit spy must therefore be installed on `@ibatexas/audit-sink`; the real
+// `getAuditSink()` is fail-closed (throws before boot wiring), so without this
+// mock the resolver's audit-emit path would never reach the spy. The
+// `orderPolicyBundle` is inert here because `adjudicate` is mocked below.
+vi.mock("@ibatexas/audit-sink", () => ({
   getAuditSink: () => ({
     emit: mockGetAuditSinkEmit,
   }),
-  orderPolicyBundle: {},
+}))
+
+vi.mock("@ibatexas/pack-orders", () => ({
+  ordersPolicyBundle: {},
 }))
 
 vi.mock("@adjudicate/core/kernel", async () => {
@@ -694,7 +726,7 @@ describe("defer-resolver subscriber", () => {
     // Override the get method to throw — covers all retry attempts.
     let getCalls = 0
     const originalGet = redisStub.get.bind(redisStub)
-    redisStub.get = vi.fn(async (key: string) => {
+    redisStub.get = vi.fn(async (_key: string) => {
       getCalls++
       throw new Error("ECONNRESET — Redis connection lost")
     }) as typeof redisStub.get

@@ -1,23 +1,36 @@
-// Unit tests for createResumeDispatcherAdapter (F1 follow-up).
+// Unit tests for createResumeDispatcherAdapter (F1 follow-up; re-expressed WS5).
 //
 // Coverage targets:
-//   (a) happy-path translation invokes the underlying dispatcher
-//   (b) `kind: "failed"` doesn't throw
-//   (c) unhandled exception inside adapter is caught
-//   (d) audit-2026-05-24 P1-3: `kind: "skipped"` invokes the resume-side
-//       kernel dispatcher (closes the "task 22" silent-drop gap).
-//   (e) audit-2026-05-24 P1-3: kernel-direct envelopes (non-`order.tool.propose`
-//       kinds) route to the resume-side kernel dispatcher directly.
+//   (a) happy-path non-kernel tool (handoff_to_human) invokes the handler with
+//       the synthesized AgentContext
+//   (b) a non-kernel handler throw is LOGGED + swallowed (audit-only outcome) —
+//       does NOT throw into the subscriber loop
+//   (c) an unhandled exception on the non-kernel / route-resolution path is
+//       caught (subscriber-loop protection)
+//   (d) WS5 (was audit-2026-05-24 P1-3): a deterministic-kernel-covered tool
+//       (`add_to_cart`) routes to the kernel tier and invokes the underlying
+//       @ibatexas/tools handler directly
+//   (e) WS5: a kernel-direct parked envelope (non-`order.tool.propose` taxonomy
+//       kind) routes to the kernel tier directly
+//   (f) WS5 GOVERNANCE: a kernel-covered tool throw RE-THROWS (propagates) so
+//       the defer-resolver DLQs + does NOT commit defer:resumed. See the
+//       "governance note" below — this is the behavior the pre-WS5 outer
+//       catch-all silently defeated.
 //
-// The adapter is fail-closed: it MUST never throw into the
-// `defer-resolver.ts` subscriber loop, since one bad envelope would
-// otherwise prevent every subsequent parked session in the same SCAN
-// sweep from resuming.
+// The adapter is fail-closed on the NON-kernel path: it MUST never throw into
+// the `defer-resolver.ts` subscriber loop for a notification-tool failure, since
+// one bad envelope would otherwise prevent every subsequent parked session in
+// the same SCAN sweep from resuming. The KERNEL path is deliberately NOT
+// fail-closed against throws — a money-settlement mutation failure must surface
+// to the DLQ (audit-2026-05-25 I6); the defer-resolver's dispatch try/catch is
+// what catches it and prevents the durable resume commit.
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
-import type { IntentDispatcher } from "@ibatexas/llm-provider"
-import { createResumeDispatcherAdapter } from "../adapters/resume-dispatcher.js"
+import {
+  createResumeDispatcherAdapter,
+  __testOnly__resolveResumeRoute,
+} from "../adapters/resume-dispatcher.js"
 import type { ResumedIntent } from "../subscribers/defer-resolver.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -74,22 +87,21 @@ function buildResumedIntent(envelope: IntentEnvelope): ResumedIntent {
   }
 }
 
-// ── (a) happy-path translation invokes the underlying dispatcher ─────────────
+// ── (a) happy-path non-kernel tool ───────────────────────────────────────────
 
-describe("createResumeDispatcherAdapter — happy path", () => {
+describe("createResumeDispatcherAdapter — non-kernel happy path", () => {
   let log: FakeLogger
 
   beforeEach(() => {
     log = makeFakeLogger()
   })
 
-  it("translates a parked ToolProposeEnvelope into ToolIntent and invokes the dispatcher", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>(async () => ({
-      kind: "executed" as const,
-      result: { success: true },
-    }))
+  it("routes a parked handoff_to_human propose envelope to the handler with the synthesized ctx", async () => {
+    const handoffToHuman = vi.fn(async () => ({ ok: true }))
 
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
+    const adapter = createResumeDispatcherAdapter({
+      tools: { handoffToHuman: handoffToHuman as never },
+    })
     const envelope = buildToolProposeEnvelope(
       "handoff_to_human",
       { sessionId: "sess_x", reason: "complex" },
@@ -100,48 +112,43 @@ describe("createResumeDispatcherAdapter — happy path", () => {
 
     await adapter(resumed, log as never)
 
-    expect(dispatcher).toHaveBeenCalledOnce()
-    const [toolIntent, ctx] = (dispatcher as ReturnType<typeof vi.fn>).mock
-      .calls[0]!
-    expect(toolIntent).toMatchObject({
-      toolName: "handoff_to_human",
-      input: { sessionId: "sess_x", reason: "complex" },
-      toolUseId: "tu_h1",
-    })
-    expect(ctx).toEqual({
-      sessionId: "sess_x",
-      channel: "whatsapp",
-      userType: "customer",
-    })
+    expect(handoffToHuman).toHaveBeenCalledOnce()
+    // handoff_to_human reads only the input payload (ctx unused upstream).
+    const [input] = (handoffToHuman as ReturnType<typeof vi.fn>).mock.calls[0]!
+    expect(input).toEqual({ sessionId: "sess_x", reason: "complex" })
     expect(log.info).toHaveBeenCalled()
     expect(log.error).not.toHaveBeenCalled()
   })
 
-  it("passes the envelope through onto ToolIntent.envelope", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>(async () => ({
-      kind: "executed" as const,
-      result: null,
-    }))
-
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
-    const envelope = buildToolProposeEnvelope("schedule_follow_up")
+  it("synthesizes {sessionId, channel: whatsapp, userType: customer} for a ctx-consuming non-kernel tool", async () => {
+    const scheduleFollowUp = vi.fn(async () => ({ success: true, message: "ok" }))
+    const adapter = createResumeDispatcherAdapter({
+      tools: { scheduleFollowUp: scheduleFollowUp as never },
+    })
+    const envelope = buildToolProposeEnvelope(
+      "schedule_follow_up",
+      { delayHours: 2 },
+      "tu_s1",
+      "sess_sched",
+    )
     const resumed = buildResumedIntent(envelope)
 
     await adapter(resumed, log as never)
 
-    const [toolIntent] = (dispatcher as ReturnType<typeof vi.fn>).mock.calls[0]!
-    expect(
-      (toolIntent as { envelope?: { intentHash: string } }).envelope
-        ?.intentHash,
-    ).toBe(envelope.intentHash)
+    expect(scheduleFollowUp).toHaveBeenCalledOnce()
+    const [, ctx] = (scheduleFollowUp as ReturnType<typeof vi.fn>).mock.calls[0]!
+    expect(ctx).toEqual({
+      sessionId: "sess_sched",
+      channel: "whatsapp",
+      userType: "customer",
+    })
   })
 
-  it("logs at info on executed and does not throw", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>(async () => ({
-      kind: "executed" as const,
-      result: { ok: 1 },
-    }))
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
+  it("logs at info on success and does not throw", async () => {
+    const handoffToHuman = vi.fn(async () => ({ ok: 1 }))
+    const adapter = createResumeDispatcherAdapter({
+      tools: { handoffToHuman: handoffToHuman as never },
+    })
 
     await expect(
       adapter(
@@ -154,49 +161,45 @@ describe("createResumeDispatcherAdapter — happy path", () => {
   })
 })
 
-// ── (b) `kind: "failed"` doesn't throw ───────────────────────────────────────
+// ── (b) non-kernel handler throw is logged + swallowed ────────────────────────
 
-describe("createResumeDispatcherAdapter — fail-closed", () => {
+describe("createResumeDispatcherAdapter — non-kernel fail-closed", () => {
   let log: FakeLogger
 
   beforeEach(() => {
     log = makeFakeLogger()
   })
 
-  it("logs and returns void when the underlying dispatcher returns {kind: 'failed'}", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>(async () => ({
-      kind: "failed" as const,
-      error: new Error("handler exploded"),
-    }))
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
+  it("logs and returns void when a non-kernel handler throws (audit-only outcome)", async () => {
+    const handoffToHuman = vi.fn(async () => {
+      throw new Error("handler exploded")
+    })
+    const adapter = createResumeDispatcherAdapter({
+      tools: { handoffToHuman: handoffToHuman as never },
+    })
     const resumed = buildResumedIntent(
       buildToolProposeEnvelope("handoff_to_human"),
     )
 
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
 
+    expect(handoffToHuman).toHaveBeenCalledOnce()
     expect(log.error).toHaveBeenCalledOnce()
     const [, msg] = (log.error as ReturnType<typeof vi.fn>).mock.calls[0]!
-    expect(String(msg)).toContain("dispatcher returned failed")
+    expect(String(msg)).toContain("audit-only outcome")
   })
 
-  it("[P1-3] invokes the resume-side kernel dispatcher when dispatcher returns {kind: 'skipped'}", async () => {
-    // Pre-P1-3 the adapter logged "dispatch skipped — deterministic kernel
-    // covers it" and returned void; the underlying mutation was silently
-    // dropped on the resume path (the "task 22" gap). Post-P1-3 the
-    // skipped branch routes to the kernel dispatcher which invokes the
-    // tool directly.
-    const dispatcher = vi.fn<IntentDispatcher>(async () => ({
-      kind: "skipped" as const,
-      reason: "deterministic_kernel_covers" as const,
-    }))
+  it("[WS5] routes a deterministic-kernel-covered tool (add_to_cart) to the kernel tier", async () => {
+    // Pre-WS5 the intent-dispatcher reported `skipped` for
+    // DETERMINISTIC_KERNEL_COVERAGE tools and the adapter handed off to the
+    // resume-side kernel dispatcher. WS5 collapses that into a single resume
+    // table: add_to_cart resolves to the kernel tier and invokes the tool.
     const addToCart = vi.fn(async () => ({
       success: true,
       cart: { items: [], total: 0 },
     }))
     const adapter = createResumeDispatcherAdapter({
-      dispatcher,
-      kernelDispatcherDeps: { addToCart: addToCart as never },
+      tools: { addToCart: addToCart as never },
     })
     const resumed = buildResumedIntent(
       buildToolProposeEnvelope("add_to_cart", {
@@ -207,16 +210,12 @@ describe("createResumeDispatcherAdapter — fail-closed", () => {
     )
 
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
-    // The dispatcher classifies as skipped, then the kernel dispatcher fires.
-    expect(dispatcher).toHaveBeenCalledOnce()
     expect(addToCart).toHaveBeenCalledOnce()
     expect(log.error).not.toHaveBeenCalled()
-    // Success log was emitted.
     expect(log.info).toHaveBeenCalled()
   })
 
-  it("[P1-3] routes a kernel-direct parked envelope (non-`order.tool.propose`) to the kernel dispatcher", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>()
+  it("[WS5] routes a kernel-direct parked envelope (non-`order.tool.propose`) to the kernel tier", async () => {
     const createCheckout = vi.fn(async () => ({
       success: true,
       paymentMethod: "pix",
@@ -224,14 +223,11 @@ describe("createResumeDispatcherAdapter — fail-closed", () => {
       message: "ok",
     }))
     const adapter = createResumeDispatcherAdapter({
-      dispatcher,
-      kernelDispatcherDeps: { createCheckout: createCheckout as never },
+      tools: { createCheckout: createCheckout as never },
     })
 
-    // A kernel-executor-style parked envelope: kind is the taxonomy kind,
-    // payload is the input directly — no toolName field. Pre-P1-3 this
-    // produced a "payload is not a ToolProposePayload" warn-and-return;
-    // post-P1-3 it routes through the kernel dispatcher.
+    // A kernel-executor-style parked envelope: kind IS the taxonomy kind, the
+    // payload is the input directly — no toolName field.
     const envelope = buildEnvelope({
       kind: "order.checkout.create",
       payload: { cartId: "cart_x", paymentMethod: "pix" },
@@ -243,20 +239,14 @@ describe("createResumeDispatcherAdapter — fail-closed", () => {
 
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
 
-    // The IntentDispatcher is NOT invoked (translation returned null).
-    expect(dispatcher).not.toHaveBeenCalled()
-    // The kernel dispatcher IS invoked.
     expect(createCheckout).toHaveBeenCalledOnce()
     const [input] = (createCheckout as ReturnType<typeof vi.fn>).mock.calls[0]!
     expect(input).toEqual({ cartId: "cart_x", paymentMethod: "pix" })
   })
 
-  it("[P1-3] warns when a parked envelope has no kernel-covered resume route", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>()
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
+  it("[WS5] warns when a parked envelope has no resume dispatch route", async () => {
+    const adapter = createResumeDispatcherAdapter()
 
-    // An envelope kind we have no resume route for. The kernel dispatcher
-    // returns `unsupported`; the adapter logs a warning and returns void.
     const envelope = buildEnvelope({
       kind: "future.kind.we.dont.know",
       payload: { x: 1 },
@@ -268,22 +258,37 @@ describe("createResumeDispatcherAdapter — fail-closed", () => {
 
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
 
-    expect(dispatcher).not.toHaveBeenCalled()
     expect(log.warn).toHaveBeenCalled()
     expect(log.error).not.toHaveBeenCalled()
   })
+})
 
-  it("[P1-3] logs error and returns void when the resume kernel tool throws", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>(async () => ({
-      kind: "skipped" as const,
-      reason: "deterministic_kernel_covers" as const,
-    }))
+// ── (f) WS5 GOVERNANCE: kernel-covered throw RE-THROWS to the DLQ path ────────
+
+describe("createResumeDispatcherAdapter — kernel-tier re-throw (I6 / WS5)", () => {
+  let log: FakeLogger
+
+  beforeEach(() => {
+    log = makeFakeLogger()
+  })
+
+  // GOVERNANCE: this is the behavior the pre-WS5 adapter SILENTLY DEFEATED.
+  // The resume-side kernel dispatcher always re-threw on a kernel-covered tool
+  // failure (audit-2026-05-25 I6) so the defer-resolver's dispatch try/catch
+  // would DLQ the resume and NOT commit `defer:resumed` — making the
+  // destructive PIX-settlement mutation retryable. But the pre-WS5 adapter
+  // wrapped that re-throw inside its catastrophic outer catch-all, which
+  // swallowed it and returned void — so defer-resolver saw success and
+  // committed the resume after a FAILED money mutation (PIX captured, action
+  // lost). The pre-WS5 unit test even asserted `resolves.toBeUndefined()` on a
+  // kernel throw, encoding the bug. WS5 restores the documented contract:
+  // kernel-covered failures PROPAGATE out of the adapter.
+  it("re-throws when a kernel-covered tool throws (so defer-resolver DLQs + does not commit)", async () => {
     const createCheckout = vi.fn(async () => {
       throw new Error("medusa unavailable")
     })
     const adapter = createResumeDispatcherAdapter({
-      dispatcher,
-      kernelDispatcherDeps: { createCheckout: createCheckout as never },
+      tools: { createCheckout: createCheckout as never },
     })
 
     const resumed = buildResumedIntent(
@@ -293,64 +298,91 @@ describe("createResumeDispatcherAdapter — fail-closed", () => {
       }),
     )
 
-    await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
+    await expect(adapter(resumed, log as never)).rejects.toThrow(
+      "medusa unavailable",
+    )
 
     expect(createCheckout).toHaveBeenCalledOnce()
     expect(log.error).toHaveBeenCalled()
     const [, msg] = (log.error as ReturnType<typeof vi.fn>).mock.calls[0]!
     expect(String(msg)).toContain("kernel-covered resume tool threw")
   })
+
+  it("threads customerId from a user-principal actor into the kernel-tier ctx (I6)", async () => {
+    const cancelOrder = vi.fn(async () => ({ success: true }))
+    const adapter = createResumeDispatcherAdapter({
+      tools: { cancelOrder: cancelOrder as never },
+    })
+
+    // Customer-initiated park: actor.principal = "user", sessionId = customerId.
+    const envelope = buildEnvelope({
+      kind: "order.cancel",
+      payload: { orderId: "ord_9" },
+      actor: { principal: "user", sessionId: "cust_777" },
+      taint: "UNTRUSTED",
+      nonce: "n_cancel",
+    }) as IntentEnvelope
+    const resumed = buildResumedIntent(envelope)
+
+    await adapter(resumed, log as never)
+
+    expect(cancelOrder).toHaveBeenCalledOnce()
+    const [, ctx] = (cancelOrder as ReturnType<typeof vi.fn>).mock.calls[0]!
+    expect(ctx).toMatchObject({
+      sessionId: "cust_777",
+      channel: "whatsapp",
+      userType: "customer",
+      customerId: "cust_777",
+    })
+  })
 })
 
-// ── (c) unhandled exception inside adapter is caught ─────────────────────────
+// ── (c) unhandled exception on the non-kernel path is caught ──────────────────
 
-describe("createResumeDispatcherAdapter — exception swallowing", () => {
+describe("createResumeDispatcherAdapter — non-kernel exception swallowing", () => {
   let log: FakeLogger
 
   beforeEach(() => {
     log = makeFakeLogger()
   })
 
-  it("catches and logs an unexpected throw from the underlying dispatcher", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>(async () => {
-      throw new Error("dispatcher impl threw — should never escape adapter")
+  it("does not throw when a non-kernel tool fn is malformed and throws synchronously", async () => {
+    // A non-kernel "handler" that throws synchronously (not a rejected
+    // promise) — the catch-all must absorb it so the subscriber loop survives.
+    const scheduleFollowUp = vi.fn(() => {
+      throw new Error("sync boom")
     })
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
+    const adapter = createResumeDispatcherAdapter({
+      tools: { scheduleFollowUp: scheduleFollowUp as never },
+    })
     const resumed = buildResumedIntent(
-      buildToolProposeEnvelope("handoff_to_human"),
+      buildToolProposeEnvelope("schedule_follow_up"),
     )
 
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
-
     expect(log.error).toHaveBeenCalled()
-    const [errMeta] = (log.error as ReturnType<typeof vi.fn>).mock.calls.find(
-      (call) =>
-        String(call[1] ?? "").includes("unexpected exception inside adapter"),
-    ) ?? [null]
-    expect(errMeta).not.toBeNull()
   })
 
-  it("works even when no logger is provided (silent fail-closed)", async () => {
-    const dispatcher = vi.fn<IntentDispatcher>(async () => {
+  it("works even when no logger is provided (silent fail-closed on non-kernel)", async () => {
+    const handoffToHuman = vi.fn(async () => {
       throw new Error("silent boom")
     })
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
+    const adapter = createResumeDispatcherAdapter({
+      tools: { handoffToHuman: handoffToHuman as never },
+    })
 
     await expect(
       adapter(buildResumedIntent(buildToolProposeEnvelope("handoff_to_human"))),
     ).resolves.toBeUndefined()
   })
 
-  it("does not throw when translation explodes on a hostile envelope", async () => {
-    // A parked envelope whose payload claims to have a toolName field that
-    // is actually a non-string. The translation rejects it and the adapter
-    // logs + returns void.
-    const dispatcher = vi.fn<IntentDispatcher>()
-    const adapter = createResumeDispatcherAdapter({ dispatcher })
+  it("does not throw when a propose envelope carries a non-string toolName (no route)", async () => {
+    // A parked envelope whose payload claims a toolName that is actually a
+    // non-string. resolveResumeRoute returns null; the adapter warns + voids.
+    const adapter = createResumeDispatcherAdapter()
 
     const envelope = buildEnvelope({
       kind: "order.tool.propose",
-      // toolName: 42 — not a string. The translation MUST reject it.
       payload: { toolName: 42, input: {}, toolUseId: "x" },
       actor: { principal: "llm", sessionId: "sess_h" },
       taint: "UNTRUSTED",
@@ -359,26 +391,83 @@ describe("createResumeDispatcherAdapter — exception swallowing", () => {
     const resumed = buildResumedIntent(envelope)
 
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
-    expect(dispatcher).not.toHaveBeenCalled()
     expect(log.warn).toHaveBeenCalled()
+  })
+})
+
+// ── Route resolution (pure) ──────────────────────────────────────────────────
+
+describe("resolveResumeRoute — tier classification", () => {
+  it("classifies the four kernel-covered kinds + their tool-name aliases as kernel tier", () => {
+    const kernelKinds = [
+      "order.item.add",
+      "order.checkout.create",
+      "order.cancel",
+      "payment.pix.regenerate",
+    ]
+    for (const kind of kernelKinds) {
+      const env = buildEnvelope({
+        kind,
+        payload: {},
+        actor: { principal: "system", sessionId: "s" },
+        taint: "SYSTEM",
+        nonce: `n_${kind}`,
+      }) as IntentEnvelope
+      expect(__testOnly__resolveResumeRoute(env)?.tier).toBe("kernel")
+    }
+    const aliases = [
+      "add_to_cart",
+      "create_checkout",
+      "cancel_order",
+      "regenerate_pix",
+    ]
+    for (const toolName of aliases) {
+      const env = buildToolProposeEnvelope(toolName)
+      expect(__testOnly__resolveResumeRoute(env)?.tier).toBe("kernel")
+    }
+  })
+
+  it("classifies handoff / schedule / set_pix as non-kernel tier", () => {
+    for (const toolName of [
+      "handoff_to_human",
+      "schedule_follow_up",
+      "set_pix_details",
+    ]) {
+      const env = buildToolProposeEnvelope(toolName)
+      expect(__testOnly__resolveResumeRoute(env)?.tier).toBe("non_kernel")
+    }
+  })
+
+  it("returns null for an unknown kind", () => {
+    const env = buildEnvelope({
+      kind: "totally.unknown.kind",
+      payload: {},
+      actor: { principal: "system", sessionId: "s" },
+      taint: "SYSTEM",
+      nonce: "n_u",
+    }) as IntentEnvelope
+    expect(__testOnly__resolveResumeRoute(env)).toBeNull()
   })
 })
 
 // ── Adapter construction defaults ────────────────────────────────────────────
 
 describe("createResumeDispatcherAdapter — defaults", () => {
-  it("uses the default intent-dispatcher when none is injected", async () => {
-    // Smoke test only — we don't want to actually fire handoff_to_human
-    // (it would hit NATS). The default handler set covers
-    // handoff_to_human / schedule_follow_up / set_pix_details; passing a
-    // non-existent tool name forces the dispatcher into its no-handler
-    // path which returns {kind: "failed"} synchronously without I/O.
+  it("uses the live @ibatexas/tools handlers when none are injected (no-route smoke)", async () => {
+    // Smoke test only — we don't want to fire a live handler. An envelope with
+    // no resume route exercises the default path without any tool I/O.
     const log = makeFakeLogger()
     const adapter = createResumeDispatcherAdapter()
-    const envelope = buildToolProposeEnvelope("definitely_not_a_handler")
+    const envelope = buildEnvelope({
+      kind: "no.such.kind",
+      payload: {},
+      actor: { principal: "system", sessionId: "s" },
+      taint: "SYSTEM",
+      nonce: "n_def",
+    }) as IntentEnvelope
     const resumed = buildResumedIntent(envelope)
 
     await expect(adapter(resumed, log as never)).resolves.toBeUndefined()
-    expect(log.error).toHaveBeenCalled()
+    expect(log.warn).toHaveBeenCalled()
   })
 })

@@ -471,3 +471,67 @@ export function getAuditSink(): AuditSink {
 export function __auditSinkInitialized(): boolean {
   return _deps !== null
 }
+
+// ── Relocated audit-infrastructure surface (claustrum-on-dev WS1) ──────────
+//
+// The following adapters + the central wiring composition point moved into
+// this package from `@ibatexas/llm-provider` (which is being deleted) so the
+// audit/observability infrastructure survives. They were already injected
+// into this leaf via `__setAuditSinkDependencies`; co-locating them keeps
+// the leaf self-contained while preserving its zero-`@ibatexas/*`-runtime-dep
+// invariant (the adapters take injected client interfaces, the NATS default
+// is a no-op, and `rk` is inlined in redis-spill-storage).
+//
+// `@ibatexas/llm-provider/index.ts` re-exports every symbol below so existing
+// importers keep working mid-migration.
+
+// Central wiring composition point — `buildAuditSinkDependencies` (the
+// apps/api bootstrap entry), the W3/P1-4 observability hook injectors, and
+// the legacy test-injection shim.
+export {
+  buildAuditSinkDependencies,
+  setAuditLagHook,
+  setAuditRedactorFailureHook,
+  setAuditSinkBufferSizeHook,
+  setAuditSinkSpillSizeHook,
+  setAuditSinkFailureHook,
+  setAuditDedupHook,
+  // Internal-only — exported for cross-package integration tests that need
+  // to inject failing Postgres writers / Redis stubs.
+  _setAuditSinkDependencies,
+  _resetAuditSink,
+  _getAuditRedactor,
+  type AuditSinkLiveDependencies,
+  type AuditSinkFailureEventLike,
+  type LegacyAuditSinkDependencyOverride,
+  type WiringLogger,
+} from "./intent-audit-wiring.js"
+
+// Postgres audit writer adapter (task 19 / M4) — wraps
+// `prisma.$executeRawUnsafe` into the `PostgresWriter` contract. Exposed so
+// the NATS audit-consumer can build its own writer against the same SQL.
+export {
+  createPostgresAuditWriter,
+  type PrismaRawExecutor,
+  type CreatePostgresAuditWriterOptions,
+} from "./postgres-audit-writer.js"
+
+// Redis spill storage (task 19 / M4) — durable backing store for the
+// persistent buffered sink. `getRedisSpillSize` is exposed for ops tooling.
+export {
+  createRedisSpillStorage,
+  getRedisSpillSize,
+  type RedisListClient,
+  type RedisSpillStorageOptions,
+} from "./redis-spill-storage.js"
+
+// Audit redactor (task 18 / M4) — the PII gate that wraps the buffered sink.
+// `INTENT_KIND_FIELD_RULES` + `PII_FREE_KIND_ALLOWLIST` are exposed for the
+// per-intent-kind redactor conformance suite.
+export {
+  createAuditRedactor,
+  INTENT_KIND_FIELD_RULES,
+  PII_FREE_KIND_ALLOWLIST,
+  type AuditRedactor,
+  type AuditRedactorOptions,
+} from "./audit-redactor.js"

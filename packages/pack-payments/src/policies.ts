@@ -35,6 +35,7 @@ import {
   type Guard,
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
+import { requireTenantBinding } from "@adjudicate/primitives"
 import {
   refundStateDivergent,
   refuseAmountNonPositive,
@@ -67,6 +68,21 @@ import {
 } from "./types.js"
 
 type PaymentGuard = Guard<PaymentIntentKind, PaymentPayload, PaymentState>
+
+/**
+ * Tenant binding (AuthReviewer-009 / RC-A1 D-12). REFUSEs a request whose
+ * `state.ctx.tenantId` is not the configured tenant; lenient (no-op) when absent
+ * (the gateway/legacy path that does not yet supply it). Reads (actor, state) →
+ * Decision — no principal/hashed-byte change. Env-driven tenant (Hard Rule #3).
+ */
+const requireTenantBindingGuard: PaymentGuard = requireTenantBinding<
+  PaymentIntentKind,
+  PaymentPayload,
+  PaymentState
+>((_actor, state) => {
+  const tenant = state.ctx.tenantId
+  return tenant === undefined || tenant === (process.env.KERNEL_TENANT_ID ?? "ibatexas")
+})
 
 // ── State guards ────────────────────────────────────────────────────────
 
@@ -494,7 +510,7 @@ export const paymentsPolicyBundle: PolicyBundle<
   PaymentState
 > = {
   stateGuards: [requirePaymentExists, refuseTerminalTransition],
-  authGuards: [],
+  authGuards: [requireTenantBindingGuard],
   taint: paymentsTaintPolicy,
   business: [
     validateCreateMethod,

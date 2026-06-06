@@ -76,10 +76,6 @@ vi.mock("@ibatexas/domain", () => ({
   ITEMS_SCHEMA_VERSION: 1,
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn().mockResolvedValue(undefined) }),
-}));
-
 vi.mock("@sentry/node", () => ({
   captureException: mockSentryCaptureException,
   withScope: vi.fn((fn: (scope: unknown) => void) => fn({ setTag: vi.fn(), setContext: vi.fn() })),

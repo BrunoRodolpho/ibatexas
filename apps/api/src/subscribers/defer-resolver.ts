@@ -53,13 +53,31 @@ import {
   type IntentEnvelope,
 } from "@adjudicate/core"
 import { adjudicate } from "@adjudicate/core/kernel"
+import type { PolicyBundle } from "@adjudicate/core/kernel"
+import { getAuditSink } from "@ibatexas/audit-sink"
+// WS5 (claustrum-on-dev): repoint the order PolicyBundle + its state types OFF
+// the WS8-doomed `@ibatexas/llm-provider` shim onto the first-party Pack. The
+// shim's `orderPolicyBundle`/`OrderContext`/`OrderState` were already deprecated
+// re-exports of these very bindings (order-policy-bundle.ts), so this is a
+// zero-behavior-change repoint of the PIX-settlement re-adjudication path.
 import {
-  getAuditSink,
-  orderPolicyBundle,
-  type OrderContext,
+  ordersPolicyBundle as _ordersPolicyBundle,
   type OrderState,
-} from "@ibatexas/llm-provider"
+} from "@ibatexas/pack-orders"
 import type { FastifyBaseLogger } from "fastify"
+
+// The Pack types `ordersPolicyBundle` narrowly as
+// `PolicyBundle<OrderIntentKind, OrderPayload, OrderState>`. The resume path
+// re-adjudicates an arbitrary PARKED envelope whose `kind` is `string` (it may
+// be any deferred kind — `order.confirm`, `order.checkout.create`, …), so we
+// re-expose the bundle under the SAME wide `PolicyBundle<string, unknown,
+// OrderState>` signature the deprecated `@ibatexas/llm-provider` shim
+// (order-policy-bundle.ts) exported — a byte-identical compile-time contract.
+// adjudicate() routes by `kind` at runtime regardless of the compile-time type
+// param, so this widening is zero behavior change. Variable name `orderPolicyBundle`
+// is preserved so the adjudicate() call site below is unchanged.
+const orderPolicyBundle: PolicyBundle<string, unknown, OrderState> =
+  _ordersPolicyBundle as unknown as PolicyBundle<string, unknown, OrderState>
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js"
 import { pushToDlq } from "./dlq.js"
 import {
@@ -145,13 +163,26 @@ export async function resumeDeferredIntent(
 // ── State derivation for re-adjudicate ─────────────────────────────────────
 
 /**
- * Re-build the minimum `OrderState` needed for the order-policy-bundle to
+ * Re-build the minimum `OrderState` needed for the orders PolicyBundle to
  * adjudicate a resumed envelope. We re-derive `paymentStatus` from the
  * just-arrived wire event so the kernel sees a "no longer pending" world
  * and `deferOnPendingPix` returns `null` rather than re-deferring.
  *
- * Only fields used by the existing guards are populated; everything else
- * uses the cleanest defaults the guards can tolerate.
+ * WS5 (claustrum-on-dev) shape note: the state type is now
+ * `@ibatexas/pack-orders`'s `OrderState`, whose `ctx` is the narrow
+ * `OrderContext` (`channel` / `customerId` / `cartId` / `orderId`) plus the
+ * policy-read optionals (`items` / `fulfillment` / `paymentMethod` /
+ * `paymentStatus` / `totalInCentavos` / `lastAction` / `tenantId`). The
+ * legacy `@ibatexas/llm-provider` `OrderState` wrapped the full ~40-field
+ * machine `OrderContext`, but the order PolicyBundle only ever read the
+ * fields the Pack now declares (verified against pack-orders/policies.ts:
+ * the guards touch exactly `customerId`, `fulfillment`, `items`,
+ * `lastAction`, `orderId`, `paymentMethod`, `paymentStatus`, `tenantId`,
+ * `totalInCentavos`). So narrowing to the Pack shape drops only fields the
+ * bundle never inspected — ZERO change to the resume re-adjudication
+ * verdict. The two governance-load-bearing fields are `paymentMethod` and
+ * `paymentStatus`; everything else uses the cleanest guard-tolerable
+ * default.
  */
 export function buildResumeOrderState(
   parked: ParkedEnvelope,
@@ -160,54 +191,26 @@ export function buildResumeOrderState(
   // The parked envelope carries the original actor.sessionId; the wire
   // event carries the new payment status. Together they form the fresh
   // state the kernel needs.
-  const ctx: Partial<OrderContext> = {
+  const ctx: OrderState["ctx"] = {
+    // ── Narrow OrderContext base ──────────────────────────────────────
     channel: "whatsapp",
     customerId: null,
-    customerName: null,
-    isAuthenticated: true, // re-execution is system-actor; auth gate was passed at park
-    isNewCustomer: false,
     cartId: null,
-    items: [],
-    totalInCentavos: 0,
-    couponApplied: null,
-    fulfillment: "pickup",
-    deliveryCep: null,
-    deliveryFeeInCentavos: null,
-    deliveryEtaMinutes: null,
-    // Wire-level status from the event; the kernel guard treats anything
-    // in `confirmedStatuses` ({paid, captured, confirmed}) as "no longer
-    // pending → no DEFER".
-    paymentMethod: (event.method as OrderContext["paymentMethod"]) ?? "pix",
-    paymentStatus: event.newStatus,
-    tipInCentavos: 0,
-    customerEmail: null,
-    customerTaxId: null,
-    upsellRound: 0,
-    hasMainDish: false,
-    hasSide: false,
-    hasDrink: false,
-    isCombo: false,
-    mealPeriod: "lunch",
-    lastError: null,
-    pendingProduct: null,
-    alternatives: [],
-    lastSearchResult: null,
-    checkoutResult: null,
     orderId: event.orderId,
-    orderCreatedAt: null,
+    // ── Policy-read optionals ─────────────────────────────────────────
+    items: [],
+    fulfillment: "pickup",
+    totalInCentavos: 0,
     lastAction: null,
-    loyaltyStamps: null,
-    secondaryIntent: null,
-    momentum: "high",
-    lastObjectionSubtype: null,
-    fallbackCount: 0,
-    activeOrderId: event.orderId,
-    activeOrderDisplayId: null,
-    activeOrderStatus: null,
-    paymentId: event.paymentId,
-    pixExpiresAt: null,
+    // Wire-level status from the event; the kernel guard treats anything
+    // in `confirmedStatuses` (ORDER_PIX_CONFIRMED_STATUSES = {paid,
+    // captured, confirmed}) as "no longer pending → no DEFER". This is the
+    // governance pivot that flips the resume verdict DEFER → EXECUTE.
+    paymentMethod:
+      (event.method as OrderState["ctx"]["paymentMethod"]) ?? "pix",
+    paymentStatus: event.newStatus,
   }
-  return { ctx: ctx as OrderContext }
+  return { ctx }
 }
 
 // ── Per-session resume + re-execute orchestration ──────────────────────────

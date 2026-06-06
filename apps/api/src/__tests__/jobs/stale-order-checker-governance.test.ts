@@ -20,7 +20,6 @@ const mockPublishNatsEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefine
 const mockTransitionStatusFromEnvelope = vi.hoisted(() => vi.fn());
 const mockPaymentTransitionStatusFromEnvelope = vi.hoisted(() => vi.fn());
 const mockFindMany = vi.hoisted(() => vi.fn());
-const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("@ibatexas/tools", () => ({
   withLock: mockWithLock,
@@ -42,41 +41,10 @@ vi.mock("@ibatexas/domain", () => ({
   }),
 }));
 
-// NEW-P1-ENV cross-cluster recon: stale-order-checker now imports
-// `parseBoolEnv` from `@ibatexas/llm-provider` (Cluster D commit 3cda67c).
-// The pre-existing mock stripped every export except `getAuditSink`, so the
-// production call to `parseBoolEnv` blew up with "No export defined" the
-// moment the W1 commits landed.
-//
-// Anti-theater rule (RULE 3): do NOT re-implement `parseBoolEnv` in the mock
-// surface — that would silently diverge from production behaviour the next
-// time the parser is hardened. We pull in the REAL `parseBoolEnv` via a
-// targeted `vi.importActual` inside the mock factory. Going through the
-// package barrel (`importOriginal`) drags in `tool-registry.ts` which
-// expects `SearchProductsTool` from the (mocked) `@ibatexas/tools` module
-// and crashes; instead we re-import the package and re-export the actual
-// helper alongside the audit-sink stub.
-vi.mock("@ibatexas/llm-provider", async () => {
-  // parse-bool-env is a leaf module (pure utility, no side-effect imports).
-  // We deliberately do NOT use `importOriginal()` on the barrel because
-  // that would resolve transitive `@ibatexas/tools` symbols this test
-  // intentionally stubs out (withLock-only mock above) — going through
-  // the barrel pulls in `tool-registry.ts` and fails on
-  // `SearchProductsTool` missing from the stub.
-  //
-  // Path is relative from vitest's project root (`apps/api/`) — vi.mock
-  // factories resolve relative imports against the mocked module's URL,
-  // so we use the workspace-relative source path. Resolves via vitest's
-  // TS pipeline (no build artifact needed).
-  const parseBoolEnvModule = (await vi.importActual(
-    "../../packages/llm-provider/src/parse-bool-env.ts",
-  )) as { parseBoolEnv: (value: string | undefined, defaultValue: boolean) => boolean };
-  return {
-    getAuditSink: () => ({ emit: mockGetAuditSinkEmit }),
-    parseBoolEnv: parseBoolEnvModule.parseBoolEnv,
-  };
-});
-
+// claustrum-on-dev WS8/WS9: `@ibatexas/llm-provider` was deleted. The SUT now
+// imports `getAuditSink` from `@ibatexas/audit-sink` (wired to a no-op in the
+// global test setup) and `parseBoolEnv` from `@ibatexas/types` (real, leaf),
+// so no per-test mock of either is needed.
 vi.mock("@sentry/node", () => ({
   withScope: (cb: (s: unknown) => void) =>
     cb({ setTag: vi.fn(), setContext: vi.fn(), setLevel: vi.fn() }),

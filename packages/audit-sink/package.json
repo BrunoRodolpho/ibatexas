@@ -18,9 +18,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/audit": "^1.0.1",
-    "@adjudicate/audit-postgres": "^1.0.1",
-    "@adjudicate/core": "^1.1.0"
+    "@adjudicate/admin-sdk": "^2.0.0",
+    "@adjudicate/audit": "^2.0.0",
+    "@adjudicate/audit-postgres": "^2.0.0",
+    "@adjudicate/core": "^1.2.0"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^3.2.0",

@@ -41,6 +41,7 @@ import {
   createConfirmGuard,
   createEscalateGuard,
   createRewriteGuard,
+  requireTenantBinding,
 } from "@adjudicate/primitives"
 import { createPixPendingDeferGuard } from "@adjudicate/pack-payments-pix"
 import {
@@ -82,6 +83,26 @@ function canCheckout(state: OrderState): boolean {
   return state.ctx.channel === "whatsapp" || state.ctx.customerId !== null
 }
 
+/**
+ * Guest CARD checkout is a supported flow. SEC-001 (apps/api/src/routes/cart.ts)
+ * allows an unauthenticated checkout ONLY for `paymentMethod === "card"` (Stripe
+ * validates the card identity); cash/PIX still require auth (and SEC-001 401s a
+ * guest cash/PIX checkout before the kernel is reached). RC-A1 cutover D-24 Ruling 2:
+ * exempt guest CARD checkout from the identity gates, scoped to card PRECISELY — NOT
+ * a blanket guest-checkout exemption (over-widening would open guest cash/PIX, which
+ * the live system does not support). Pack-guard layer only — reads
+ * `envelope.payload.paymentMethod`; no principal/hash change.
+ */
+function isCardCheckout(envelope: {
+  readonly kind: string
+  readonly payload: unknown
+}): boolean {
+  return (
+    envelope.kind === "order.checkout.create" &&
+    (envelope.payload as { paymentMethod?: unknown }).paymentMethod === "card"
+  )
+}
+
 function hasCartItems(state: OrderState): boolean {
   return (state.ctx.items?.length ?? 0) > 0
 }
@@ -112,6 +133,24 @@ const VALID_PAYMENT_METHODS = new Set(["pix", "card", "cash"])
 // ── Auth guards ─────────────────────────────────────────────────────────
 
 /**
+ * Tenant binding (AuthReviewer-009 / RC-A1 D-12). The app supplies the request's
+ * tenant in `state.ctx.tenantId` (the conductor resolver sets the single tenant);
+ * this REFUSEs a request whose state tenant is not the configured tenant. Lenient
+ * when absent (the gateway/legacy path does not yet supply it) so it is a correct
+ * no-op today AND a real seam once the multi-tenant actor model lands. Reads
+ * (actor, state) → Decision — touches no principal shape / hashed byte (D-12).
+ * Tenant id is env-driven (Hard Rule #3), defaulting to the single tenant.
+ */
+const requireTenantBindingGuard: OrderGuard = requireTenantBinding<
+  OrderIntentKind,
+  OrderPayload,
+  OrderState
+>((_actor, state) => {
+  const tenant = state.ctx.tenantId
+  return tenant === undefined || tenant === (process.env.KERNEL_TENANT_ID ?? "ibatexas")
+})
+
+/**
  * Most user-touching intents require a known customer principal. The
  * exceptions are `order.cart.ensure` (anonymous get-or-create) and the
  * system-only kinds (`order.cancel.system`, `order.projection.create`,
@@ -127,8 +166,42 @@ const SYSTEM_OR_ANON_KINDS: ReadonlySet<string> = new Set([
   "order.status.reconcile",
 ])
 
+/**
+ * Cart-building intents a GUEST (unauthenticated web visitor) may perform
+ * BEFORE authenticating at checkout. These mirror the HTTP cart routes
+ * (`apps/api/src/routes/cart.ts`), which gate on `optionalAuth` + a
+ * cart-scoped `verifyCartOwnership` (Redis cart:owner claim) — NOT on a
+ * customer principal. The identity gate for this flow lives at CHECKOUT
+ * (`requireCheckoutEligibility` / `canCheckout`), not at cart-building, so
+ * routing these through the kernel must not regress guest shopping. `cartId`
+ * presence is still enforced by `requireCartIdForCartOps`, explicit allergens
+ * by `requireExplicitAllergens`, and cart ownership at the route layer.
+ *
+ * RC-A1 cutover Chunk 0 (cycle 20, DECISIONS-cycle20 D-20.4): a pack-guard
+ * change only — it does NOT alter the envelope/principal shape or any hashed
+ * byte (guest cart needs a pack-guard change, not a principal). adj core is
+ * untouched (stays at its tripwire count).
+ */
+const GUEST_CART_KINDS: ReadonlySet<string> = new Set([
+  "order.item.add",
+  "order.item.update",
+  "order.item.remove",
+  "order.cart.sync",
+  "order.coupon.apply",
+])
+
 const requireAuthenticated: OrderGuard = (envelope, state) => {
   if (SYSTEM_OR_ANON_KINDS.has(envelope.kind)) {
+    return null
+  }
+  // Guests may build a cart; the identity gate is at checkout, not here.
+  if (GUEST_CART_KINDS.has(envelope.kind)) {
+    return null
+  }
+  // Guest CARD checkout is allowed (SEC-001 / D-24 Ruling 2) — card only; cash/PIX
+  // checkout still require auth (a guest cash/PIX checkout is 401'd by SEC-001 before
+  // it reaches the kernel, so this never under-protects them).
+  if (isCardCheckout(envelope)) {
     return null
   }
   if (isAuthenticated(state)) return null
@@ -146,6 +219,8 @@ const requireAuthenticated: OrderGuard = (envelope, state) => {
 const requireCheckoutEligibility: OrderGuard = (envelope, state) => {
   if (envelope.kind !== "order.checkout.create") return null
   if (canCheckout(state)) return null
+  // Guest CARD checkout is allowed (SEC-001 / D-24 Ruling 2) — card only.
+  if (isCardCheckout(envelope)) return null
   return decisionRefuse(refuseGuestCheckoutBlocked(), [
     basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT),
   ])
@@ -278,14 +353,29 @@ const requireAmendable: OrderGuard = (envelope, state) => {
  * `payment.confirmed` NATS event back to the kernel via
  * `resumeDeferredIntent` from `@adjudicate/runtime`.
  */
+const pixPendingDeferBase = createPixPendingDeferGuard<OrderState>({
+  readPaymentMethod: (state) => state.ctx.paymentMethod ?? null,
+  readPaymentStatus: (state) => state.ctx.paymentStatus ?? null,
+  matchesIntent: (kind) => kind === "order.checkout.create",
+  confirmedStatuses: ORDER_PIX_CONFIRMED_STATUSES,
+})
+
+/**
+ * RC-A1 cutover D-24 Ruling 1: a FRESH PIX checkout (paymentStatus null/undefined)
+ * EXECUTEs immediately — `createCheckout` generates the PIX QR and the already-routed
+ * `payment.status.reconcile` webhook path governs confirmation (the architecture is
+ * QR-first-then-confirm, NOT defer-until-paid; you cannot confirm a payment that was
+ * never generated). Only an explicitly in-flight, non-null UNCONFIRMED PIX status
+ * still DEFERs (the cognitive-loop re-entry scenario). This scopes the lighthouse
+ * PIX-defer guard at the orders-pack composition layer without touching the
+ * `@adjudicate/pack-payments-pix` factory (zero hashed byte).
+ */
 const deferOnPendingPix = nameGuard(
   "deferOnPendingPix",
-  createPixPendingDeferGuard<OrderState>({
-    readPaymentMethod: (state) => state.ctx.paymentMethod ?? null,
-    readPaymentStatus: (state) => state.ctx.paymentStatus ?? null,
-    matchesIntent: (kind) => kind === "order.checkout.create",
-    confirmedStatuses: ORDER_PIX_CONFIRMED_STATUSES,
-  }),
+  (envelope, state) => {
+    if ((state as OrderState).ctx.paymentStatus == null) return null
+    return pixPendingDeferBase(envelope, state as OrderState)
+  },
 ) as OrderGuard
 
 // ── Business guards ─────────────────────────────────────────────────────
@@ -642,7 +732,7 @@ export const ordersPolicyBundle: PolicyBundle<
     requireSlotsFilledForCheckout,
     deferOnPendingPix,
   ],
-  authGuards: [requireAuthenticated, requireCheckoutEligibility],
+  authGuards: [requireTenantBindingGuard, requireAuthenticated, requireCheckoutEligibility],
   taint: orderTaintPolicy,
   business: [
     requireExplicitAllergens,

@@ -3,7 +3,7 @@
 // PATCH /api/cart/:id/line-items/:itemId, DELETE /api/cart/:id/line-items/:itemId,
 // POST /api/cart/:id/promotions, POST /api/cart/:id/payment-sessions
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import Fastify from "fastify";
 import {
   serializerCompiler,
@@ -103,10 +103,6 @@ vi.mock("@ibatexas/domain", () => ({
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: vi.fn(),
-}));
-
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
 }));
 
 vi.mock("../routes/admin/_shared.js", () => ({

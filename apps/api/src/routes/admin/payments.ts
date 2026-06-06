@@ -54,7 +54,7 @@ import type {
   OrderNoteAddPayload,
   OrderState,
 } from "@ibatexas/pack-orders";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import {
   PaymentStatus,
   type PaymentStatusChangedEvent,
@@ -125,19 +125,6 @@ function deriveAdminNonce(idempotencyKey: string): string {
   return createHash("sha256").update(idempotencyKey).digest("hex");
 }
 
-function resolveAdminIdempotencyKey(
-  headerValue: string | string[] | undefined,
-  fallback: string,
-): string {
-  if (typeof headerValue === "string" && headerValue.length > 0) {
-    return headerValue;
-  }
-  if (Array.isArray(headerValue) && headerValue[0]) {
-    return headerValue[0];
-  }
-  return fallback;
-}
-
 function refundDailyBucketKey(staffId: string | null, now: Date = new Date()): string {
   const yyyy = now.getUTCFullYear();
   const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -145,23 +132,6 @@ function refundDailyBucketKey(staffId: string | null, now: Date = new Date()): s
   const day = `${yyyy}-${mm}-${dd}`;
   const actor = staffId ?? "api-key";
   return rk(`refund:daily-total:${actor}:${day}`);
-}
-
-/**
- * Return the cumulative refund total for the staff/day bucket. Returns
- * 0 if the bucket is empty (no refunds yet today).
- *
- * P1-I-TRUE: this is now used ONLY for the read-side display in the
- * 202 response (operator UX). The cap check itself uses
- * tryReserveDailyRefund, which is atomic Lua. A stale value here can
- * never bypass the cap.
- */
-async function readDailyRefundTotal(staffId: string | null): Promise<number> {
-  const redis = await getRedisClient();
-  const raw = await redis.get(refundDailyBucketKey(staffId));
-  if (!raw) return 0;
-  const n = Number.parseInt(raw, 10);
-  return Number.isNaN(n) ? 0 : n;
 }
 
 /**

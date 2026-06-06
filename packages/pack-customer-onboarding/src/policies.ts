@@ -36,7 +36,7 @@ import {
   type Guard,
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
-import { createStateDeferGuard } from "@adjudicate/primitives"
+import { createStateDeferGuard, requireTenantBinding } from "@adjudicate/primitives"
 import { CUSTOMER_ANONYMIZE_GRACE_SIGNAL } from "./signals.js"
 import {
   refuseAllergenInferred,
@@ -64,6 +64,20 @@ type CustomerGuard = Guard<
   CustomerOnboardingPayload,
   CustomerOnboardingState
 >
+
+/**
+ * Tenant binding (AuthReviewer-009 / RC-A1 D-12). REFUSEs a request whose
+ * `state.ctx.tenantId` is not the configured tenant; lenient (no-op) when absent.
+ * Reads (actor, state) → Decision — no principal/hashed-byte change. Env-driven (Rule #3).
+ */
+const requireTenantBindingGuard: CustomerGuard = requireTenantBinding<
+  CustomerOnboardingIntentKind,
+  CustomerOnboardingPayload,
+  CustomerOnboardingState
+>((_actor, state) => {
+  const tenant = state.ctx.tenantId
+  return tenant === undefined || tenant === (process.env.KERNEL_TENANT_ID ?? "ibatexas")
+})
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -203,6 +217,11 @@ const requireCustomerExists: CustomerGuard = (envelope, state) => {
  */
 const requireFreshOtp: CustomerGuard = (envelope, state) => {
   if (!KINDS_REQUIRING_FRESH_OTP.has(envelope.kind)) return null
+  // Immediate erasure (authenticated HTTP DELETE /api/me/data, D-25 Option B) skips
+  // fresh-OTP — preserves today's session-only immediate-anonymize behavior. The
+  // cognitive-loop grace flow still requires fresh OTP (immediateErasure absent).
+  // Safe: requireAuthenticated already gates this on isAuthenticated.
+  if (state.ctx.immediateErasure === true) return null
   if (state.ctx.otpFresh) return null
   return decisionRefuse(refuseOtpStale(), [
     basis("auth", BASIS_CODES.auth.IDENTITY_EXPIRED, {
@@ -368,24 +387,35 @@ const handleAnonymizeCancelNoParked: CustomerGuard = (envelope, state) => {
  *   - `state.hasParkedAnonymize === false`
  *     (refuseAnonymizeIfAlreadyPending)
  */
+const anonymizeGraceDeferBase = createStateDeferGuard<
+  CustomerOnboardingIntentKind,
+  CustomerOnboardingPayload,
+  CustomerOnboardingState
+>({
+  matches: (envelope) => envelope.kind === "customer.anonymize",
+  signal: CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
+  timeoutMs: CUSTOMER_ANONYMIZE_GRACE_HOURS * 60 * 60 * 1000,
+  basis: (envelope) => [
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      rule: "lgpd_art_18_grace",
+      kind: envelope.kind,
+      graceHours: CUSTOMER_ANONYMIZE_GRACE_HOURS,
+    }),
+  ],
+})
+
+/**
+ * RC-A1 cutover D-25 (LGPD Option B): the authenticated immediate-erasure HTTP path
+ * (DELETE /api/me/data) sets `state.ctx.immediateErasure` to skip the 24h grace DEFER
+ * and anonymize NOW (byte-equivalent to today). The cognitive-loop flow leaves it
+ * absent ⇒ the LGPD 24h-grace lighthouse is preserved unchanged.
+ */
 const deferAnonymizeForGrace = nameGuard(
   "deferAnonymizeForGrace",
-  createStateDeferGuard<
-    CustomerOnboardingIntentKind,
-    CustomerOnboardingPayload,
-    CustomerOnboardingState
-  >({
-    matches: (envelope) => envelope.kind === "customer.anonymize",
-    signal: CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
-    timeoutMs: CUSTOMER_ANONYMIZE_GRACE_HOURS * 60 * 60 * 1000,
-    basis: (envelope) => [
-      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
-        rule: "lgpd_art_18_grace",
-        kind: envelope.kind,
-        graceHours: CUSTOMER_ANONYMIZE_GRACE_HOURS,
-      }),
-    ],
-  }),
+  (envelope, state) => {
+    if ((state as CustomerOnboardingState).ctx.immediateErasure === true) return null
+    return anonymizeGraceDeferBase(envelope, state as CustomerOnboardingState)
+  },
 ) as CustomerGuard
 
 // ── EXECUTE producers (default is REFUSE; positive matches required) ────
@@ -402,6 +432,22 @@ const deferAnonymizeForGrace = nameGuard(
  */
 const executeCreate: CustomerGuard = (envelope) => {
   if (envelope.kind !== "customer.create") return null
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
+/**
+ * RC-A1 cutover D-25: EXECUTE producer for `customer.anonymize`. It runs AFTER
+ * `deferAnonymizeForGrace` in the business array, so the cognitive-loop grace flow
+ * DEFERs and never reaches here; only the authenticated immediate-erasure HTTP path
+ * (which set `state.ctx.immediateErasure` so the defer is skipped) falls through to
+ * this EXECUTE — anonymize NOW, byte-equivalent to today's DELETE /api/me/data.
+ */
+const executeAnonymize: CustomerGuard = (envelope) => {
+  if (envelope.kind !== "customer.anonymize") return null
   return decisionExecute([
     basis("business", BASIS_CODES.business.RULE_SATISFIED, {
       kind: envelope.kind,
@@ -497,7 +543,7 @@ export const customerOnboardingPolicyBundle: PolicyBundle<
     requireFreshOtp,
     refuseAnonymizeIfAlreadyPending,
   ],
-  authGuards: [requireAuthenticated],
+  authGuards: [requireTenantBindingGuard, requireAuthenticated],
   taint: customerOnboardingTaintPolicy,
   business: [
     validateAllergenExplicitArray,
@@ -506,6 +552,7 @@ export const customerOnboardingPolicyBundle: PolicyBundle<
     handleAnonymizeCancelSupersedesParked,
     handleAnonymizeCancelNoParked,
     deferAnonymizeForGrace,
+    executeAnonymize,
     executeCreate,
     executeProfileUpdate,
     executePreferencesUpdate,

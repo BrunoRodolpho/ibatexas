@@ -19,7 +19,7 @@
 //                                     order-related; the orders policy bundle
 //                                     gates rating + orderId)
 
-import { createHash, randomUUID } from "node:crypto"
+import { createHash } from "node:crypto"
 import { Prisma } from "../generated/prisma-client/client.js"
 import { prisma } from "../client.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
@@ -999,22 +999,37 @@ export async function anonymizeCustomer(
       // (stamp velocity, redemption-rate cohorts) survive after PII is
       // purged. Counters (stamps/totalEarned/redeemed) are zeroed to
       // remove aggregate-stat reconstructability.
-      // audit-2026-05-25 (I9): use a SCRUBBED:UUID sentinel instead of
-      // null. Postgres treats NULL as non-distinct in UNIQUE indexes
-      // (`customerId String? @unique`) so a post-anonymize upsert at
-      // loyalty.service.ts:46 `loyaltyAccount.upsert({where:{customerId}})`
-      // would MISS the scrubbed row (NULL != 'X') and CREATE a new
-      // LoyaltyAccount pinned to the anonymized id — silently undoing
-      // the G2-c "scrub linkage + reset balance" guarantee on the next
-      // late-settling order.placed. The sentinel keeps the row visible
-      // (operators can find scrubbed accounts), preserves UNIQUE
-      // semantics (each scrub gets a fresh UUID), and the upsert finds
-      // no matching row → safe create branch on legitimate post-scrub
-      // calls.
+      //
+      // audit-2026-05-27 (claustrum-on-dev test-fix): REVERTED the
+      // audit-2026-05-25 (I9) `SCRUBBED:${randomUUID()}` sentinel back to
+      // NULL. I9 set `customerId` to a synthetic `SCRUBBED:<uuid>` value to
+      // dodge Postgres' NULL-non-distinct UNIQUE semantics, but that value
+      // VIOLATES the still-present FK `loyalty_accounts_customer_id_fkey`
+      // (migration 20260524000000 only made the column nullable; it KEPT the
+      // FK with ON DELETE SET NULL ON UPDATE CASCADE). Because anonymize
+      // scrubs the Customer row IN PLACE (step 1 above keeps `customers.id =
+      // customerId`), no `customers` row ever has id `SCRUBBED:<uuid>`, so
+      // the updateMany threw P2003 and aborted the ENTIRE LGPD erasure
+      // transaction for any customer that had a loyalty account — a
+      // production-breaking governance regression (the legally-mandated
+      // scrub never completed). NULL is FK-safe (the FK permits NULL),
+      // breaks linkage, and matches the schema's documented intent + the T4
+      // conformance assertion (h3-t4-lgpd-scrub-conformance.test.ts).
+      //
+      // NOTE on I9's stated upsert concern: the `SCRUBBED:<uuid>` sentinel
+      // did NOT actually fix it — loyalty.service.ts `getOrCreateAccount`
+      // does `upsert({where:{customerId: originalId}})`, which misses a
+      // `SCRUBBED:<uuid>` row exactly as it misses a NULL row, so a late
+      // `order.placed` re-creates a fresh zero-balance account either way.
+      // That re-create is a separate pre-existing concern (the fresh account
+      // holds no PII and starts at 0); if it needs hardening, the correct
+      // fix is at the loyalty.service write path or via dropping the FK +
+      // keeping the sentinel in a dedicated migration — NOT a sentinel that
+      // breaks the FK. Tracked for product decision; out of scope here.
       await tx.loyaltyAccount.updateMany({
         where: { customerId },
         data: {
-          customerId: `SCRUBBED:${randomUUID()}`,
+          customerId: null,
           stamps: 0,
           totalEarned: 0,
           redeemed: 0,

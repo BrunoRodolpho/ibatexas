@@ -243,6 +243,9 @@ export interface CustomerOnboardingContext {
  */
 export interface CustomerOnboardingState {
   readonly ctx: CustomerOnboardingContext & {
+    /** Tenant this request operates on (AuthReviewer-009 / RC-A1 D-12). Single-tenant
+     *  today; the `requireTenantBinding` authGuard REFUSEs a mismatch, no-op when absent. */
+    readonly tenantId?: string
     /** Wall-clock snapshot. Required for time-comparison guards. */
     readonly now?: Date | null
     readonly customerId?: string | null
@@ -252,6 +255,17 @@ export interface CustomerOnboardingState {
     readonly hasParkedAnonymize: boolean
     readonly parkedAnonymizeAt?: number | null
     readonly lastProfileUpdateAt?: number | null
+    /**
+     * Immediate-erasure mode (RC-A1 cutover D-25, LGPD Option B). When the
+     * AUTHENTICATED HTTP route `DELETE /api/me/data` requests erasure, it sets this
+     * so `customer.anonymize` EXECUTEs immediately — skipping the fresh-OTP check and
+     * the 24h-grace DEFER — to stay byte-equivalent to today's session-only immediate
+     * anonymize. SAFE: `requireAuthenticated` still gates anonymize on
+     * `isAuthenticated`, and the cognitive-loop state is unauthenticated, so the LLM
+     * path can never reach immediate erasure even if this leaked. Absent/false ⇒ the
+     * cognitive-loop OTP + 24h-grace flow is preserved unchanged.
+     */
+    readonly immediateErasure?: boolean
   }
 }
 

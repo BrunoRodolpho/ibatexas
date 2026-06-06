@@ -55,7 +55,7 @@ import {
 } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";

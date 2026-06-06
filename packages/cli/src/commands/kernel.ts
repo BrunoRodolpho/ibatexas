@@ -35,7 +35,18 @@ import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
 import chalk from "chalk"
 import ora from "ora"
-import { parseBoolEnv } from "@ibatexas/llm-provider"
+import { parseBoolEnv } from "@ibatexas/types"
+// @ibatexas/tools is imported STATICALLY (not via a lazy `import()`) so that
+// vitest's `vi.mock("@ibatexas/tools")` reliably intercepts getRedisClient in
+// the defer-resume tests. A dynamic import is racy to mock on the CI runner
+// and let those hermetic tests reach a real Redis client (REDIS_URL is set on
+// the runner → `client.connect()` hangs → 5s test timeout). The cold-start
+// cost is one extra module load for `ibx kernel`, which is acceptable.
+import {
+  closeRedisClient,
+  getRedisClient,
+  rk as toolsRk,
+} from "@ibatexas/tools"
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -84,15 +95,16 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   // message on healthy deployments. Removed.
   const postgresEnabled = true
 
-  // Pull KNOWN_INTENT_KINDS lazily; the imports drag the policy bundles
-  // into the CLI process which is fine but slow on cold start.
-  const { KNOWN_INTENT_KINDS } = await import("@ibatexas/llm-provider")
+  // Pull KNOWN_INTENT_KINDS lazily. The dependency is the tiny leaf
+  // `@ibatexas/intent-kinds` package (type-only Pack imports + literal
+  // arrays), so this no longer drags policy bundles into the CLI process.
+  const { KNOWN_INTENT_KINDS } = await import("@ibatexas/intent-kinds")
 
   if (opts.json) {
     const out = {
       knownIntentKinds: {
         count: KNOWN_INTENT_KINDS.size,
-        kinds: [...KNOWN_INTENT_KINDS].sort(),
+        kinds: [...KNOWN_INTENT_KINDS].sort((a, b) => a.localeCompare(b)),
       },
       ledger: {
         enabled: ledgerEnabled,
@@ -116,7 +128,7 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   console.log(`  ${chalk.cyan(String(KNOWN_INTENT_KINDS.size))} kinds em ${chalk.cyan("5")} packs`)
   // Group by domain for readability.
   const groups: Record<string, string[]> = {}
-  for (const k of [...KNOWN_INTENT_KINDS].sort()) {
+  for (const k of [...KNOWN_INTENT_KINDS].sort((a, b) => a.localeCompare(b))) {
     const domain = k.split(".")[0] ?? "outros"
     if (!groups[domain]) groups[domain] = []
     groups[domain].push(k)
@@ -157,14 +169,17 @@ async function runReplay(opts: {
     return
   }
   const limit = Number.parseInt(opts.limit ?? "1000", 10)
-  // NEW-P1-ENV: see runStatus() above for rationale.
-  // audit-2026-05-25 (I13): the IBX_AUDIT_POSTGRES_ENABLED env var was
-  // deleted in the H2 cutover (audit-postgres is unconditionally part
-  // of the sink fan-out per CLAUDE.md rule #9). The CLI's pre-cutover
-  // gating logic stayed in place and produced a no-op `ibx kernel
-  // replay` + a misleading "TODO: enable IBX_AUDIT_POSTGRES_ENABLED"
-  // message on healthy deployments. Removed.
-  const postgresEnabled = true
+  // `ibx kernel replay` re-feeds audit records FROM Postgres, so — unlike
+  // runStatus() above, which merely describes the always-on sink config —
+  // it requires a live audit-postgres connection. Gate on
+  // IBX_AUDIT_POSTGRES_ENABLED: when it is not explicitly enabled we print
+  // an honest operator TODO (the stub below) instead of attempting a
+  // connection that cannot succeed. Operators flip the flag per the stub's
+  // own instructions; healthy deployments that set it never see the stub.
+  const postgresEnabled = parseBoolEnv(
+    process.env.IBX_AUDIT_POSTGRES_ENABLED,
+    false,
+  )
 
   console.log()
   console.log(chalk.bold("ibx kernel replay"))
@@ -424,7 +439,7 @@ function flattenBasis(
 ): string[] {
   return basis
     .map((b) => `${b.category ?? "_"}:${b.code ?? "_"}`)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
 }
 
 interface InstalledPack {
@@ -550,7 +565,7 @@ export async function applyAuditPostgresMigrations(
   const migrationsDir = await resolveAuditPostgresMigrationsDir()
   const files = (await readdir(migrationsDir))
     .filter((f) => f.endsWith(".sql"))
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
   if (files.length === 0) {
     log.warn(`Nenhum .sql encontrado em ${migrationsDir}`)
     return
@@ -618,7 +633,6 @@ function operatorIdentity(): string {
 /** Close Redis cleanly so the CLI process exits without hanging connections. */
 async function closeRedisQuietly(): Promise<void> {
   try {
-    const { closeRedisClient } = await import("@ibatexas/tools")
     await closeRedisClient()
   } catch {
     // Connections might not exist (dry-run paths) — swallow.
@@ -673,11 +687,28 @@ interface DeferResumeDeps {
   readonly rk: (key: string) => string
 }
 
+// Test-only injection seam. The defer-resume path lazily
+// `import("@ibatexas/tools")` (below) to keep the heavy tools package out of
+// the cold start of every other `ibx kernel` subcommand. vitest's
+// interception of that DYNAMIC import is racy under CI — the first dynamic
+// import of a run can resolve to the real module before the mock registers,
+// which let the hermetic defer-resume tests reach the real getRedisClient()
+// (→ "REDIS_URL env var required" / connect timeout). Tests inject a fake
+// here instead; it is null in production, so there is no behaviour change.
+let deferResumeDepsOverride: DeferResumeDeps | null = null
+
+/** @internal test-only — inject a fake Redis + key-prefixer for defer-resume. */
+export function __setDeferResumeDepsForTest(
+  deps: DeferResumeDeps | null,
+): void {
+  deferResumeDepsOverride = deps
+}
+
 async function loadDeferResumeDeps(): Promise<DeferResumeDeps> {
-  const tools = await import("@ibatexas/tools")
+  if (deferResumeDepsOverride) return deferResumeDepsOverride
   return {
-    getRedis: () => tools.getRedisClient(),
-    rk: tools.rk,
+    getRedis: () => getRedisClient(),
+    rk: toolsRk,
   }
 }
 
@@ -812,8 +843,9 @@ async function runDeferResume(
     version: 1,
     timestamp: new Date().toISOString(),
     // Marker for downstream logs so an audit reviewer can distinguish
-    // operator-kicked resumes from real Stripe webhooks.
-    cliInjectedBy: operatorIdentity(),
+    // operator-kicked resumes from real Stripe webhooks. The `cli:` prefix
+    // tags the injection channel (CLI) ahead of the operator identity.
+    cliInjectedBy: `cli:${operatorIdentity()}`,
   }
 
   if (opts.jsonOnly === true) {

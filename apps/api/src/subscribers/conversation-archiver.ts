@@ -28,7 +28,7 @@ import {
   createConversationService,
   type ConversationMessageAppendPayload,
 } from "@ibatexas/domain";
-import { getAuditSink } from "@ibatexas/llm-provider";
+import { getAuditSink } from "@ibatexas/audit-sink";
 import type { FastifyBaseLogger } from "fastify";
 import { pushToDlq } from "./dlq.js";
 import { buildSystemEnvelope } from "./__shared__/system-actor-envelope.js";

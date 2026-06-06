@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { Command } from "commander"
-import { registerKernelCommands } from "../kernel.js"
+import { registerKernelCommands, __setDeferResumeDepsForTest } from "../kernel.js"
 
 // ── Stdout capture ────────────────────────────────────────────────────────
 
@@ -78,7 +78,12 @@ describe("ibx kernel status", () => {
     expect(parsed).toHaveProperty("knownIntentKinds")
     expect(parsed).toHaveProperty("ledger")
     expect(parsed).toHaveProperty("audit")
-    expect(parsed.knownIntentKinds.count).toBe(32)
+    // claustrum-on-dev WS9: KNOWN_INTENT_KINDS is now sourced from the
+    // `@ibatexas/intent-kinds` leaf package (post W5 Pack expansion), which
+    // composes 63 kinds across six first-party Packs + the PIX adopter Pack
+    // (orders 22, reservations 8, whatsapp 4, pix 3, payments 17,
+    // customer-onboarding 8, loyalty 1). The pre-cutover `32` was stale.
+    expect(parsed.knownIntentKinds.count).toBe(63)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -92,7 +97,7 @@ describe("ibx kernel status", () => {
     expect(out).toContain("Audit sink")
   })
 
-  it("includes all 32 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 63 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
@@ -106,7 +111,8 @@ describe("ibx kernel status", () => {
   it("groups intent kinds by domain prefix in text mode", async () => {
     await cmd.parseAsync(["status"], { from: "user" })
     const out = stdout.getOutput()
-    expect(out).toMatch(/order \(10\)/)
+    // Per-domain counts derived from @ibatexas/intent-kinds (post W5 expansion).
+    expect(out).toMatch(/order \(22\)/)
     expect(out).toMatch(/reservation \(8\)/)
     expect(out).toMatch(/whatsapp \(3\)/)
     expect(out).toMatch(/customer \(8\)/)
@@ -378,6 +384,17 @@ vi.mock("@ibatexas/tools", async () => {
 describe("ibx kernel defer resume (W7-O1)", () => {
   beforeEach(() => {
     deferFakeRedis.reset()
+    // Inject the fake deterministically rather than relying on vitest
+    // intercepting the lazy `import("@ibatexas/tools")` inside the command —
+    // that dynamic-import interception is racy in CI (see kernel.ts), which
+    // let the first defer-resume tests reach the real Redis client.
+    __setDeferResumeDepsForTest({
+      getRedis: async () => deferFakeRedis,
+      rk: (key: string) => `test-cli:${key}`,
+    })
+  })
+  afterEach(() => {
+    __setDeferResumeDepsForTest(null)
   })
 
   it("refuses with exit 1 when no parked envelope exists for the sessionId", async () => {

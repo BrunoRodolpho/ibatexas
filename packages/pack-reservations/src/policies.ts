@@ -37,6 +37,7 @@ import {
 import {
   createConfirmGuard,
   createEscalateGuard,
+  requireTenantBinding,
 } from "@adjudicate/primitives"
 import {
   refuseCustomerBlocked,
@@ -65,6 +66,20 @@ type ReservationGuard = Guard<
   ReservationPayload,
   ReservationState
 >
+
+/**
+ * Tenant binding (AuthReviewer-009 / RC-A1 D-12). REFUSEs a request whose
+ * `state.ctx.tenantId` is not the configured tenant; lenient (no-op) when absent.
+ * Reads (actor, state) → Decision — no principal/hashed-byte change. Env-driven (Rule #3).
+ */
+const requireTenantBindingGuard: ReservationGuard = requireTenantBinding<
+  ReservationIntentKind,
+  ReservationPayload,
+  ReservationState
+>((_actor, state) => {
+  const tenant = state.ctx.tenantId
+  return tenant === undefined || tenant === (process.env.KERNEL_TENANT_ID ?? "ibatexas")
+})
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -486,7 +501,7 @@ export const reservationsPolicyBundle: PolicyBundle<
     requireSlotWithCapacity,
     refuseModifyOnFullNewSlot,
   ],
-  authGuards: [requireAuthenticated, requireStaff],
+  authGuards: [requireTenantBindingGuard, requireAuthenticated, requireStaff],
   taint: reservationTaintPolicy,
   business: [
     validatePartySize,

@@ -41,10 +41,6 @@ vi.mock("@ibatexas/domain", () => ({
   prisma: {},
 }));
 
-vi.mock("@ibatexas/llm-provider", () => ({
-  getAuditSink: () => ({ emit: vi.fn(async () => undefined) }),
-}));
-
 import { cachePixDetailsForCustomer } from "../cart.js";
 
 function createMockRedis() {
