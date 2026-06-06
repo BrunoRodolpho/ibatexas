@@ -64,6 +64,28 @@ function makeRedisStub() {
         }
       })()
     },
+    // WS5 (claustrum-on-dev): implement the Lua compare-and-delete used by
+    // `releaseDeferResumingLock` (audit-2026-05-25 I7). The sweeper switched
+    // its `defer:resuming:{hash}` mutex release from a plain `redis.del` to a
+    // UUID-bearing Lua CAD (CLAUDE.md rule #10). The only script passed is
+    // GET-equals-then-DEL; emulate that generically (release the key iff its
+    // stored value equals arguments[0]). Without this, the Lua release threw
+    // (swallowed by `releaseDeferResumingLock`'s catch) and the sweeper-owned
+    // mutex was never cleared — exactly the failure the [P0-2] legitimate-case
+    // test surfaces. Mirrors the stub in defer-resolver.test.ts.
+    async eval(
+      _script: string,
+      opts: { keys: string[]; arguments: string[] },
+    ): Promise<number> {
+      const key = opts.keys[0]!
+      const expected = opts.arguments[0]
+      const e = store.get(key)
+      if (e && e.value === expected) {
+        store.delete(key)
+        return 1
+      }
+      return 0
+    },
   }
 }
 

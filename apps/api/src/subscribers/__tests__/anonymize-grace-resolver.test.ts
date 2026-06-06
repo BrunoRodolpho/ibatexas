@@ -82,6 +82,13 @@ vi.mock("@ibatexas/tools", () => ({
   rk: (k: string) => `ibatexas:${k}`,
 }));
 
+// The resolver emits its EXECUTE / REFUSE audit records via
+// `getAuditSink().emit(...)`. The real `getAuditSink()` is fail-closed
+// before boot wiring, so spy on it here.
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: () => ({ emit: mockAuditSinkEmit }),
+}));
+
 vi.mock("twilio", () => ({
   default: () => ({}),
 }));

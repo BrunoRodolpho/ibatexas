@@ -109,6 +109,7 @@ vi.mock("../../client.js", () => ({
 // ── Import after mocks ────────────────────────────────────────────────────
 
 import { anonymizeCustomer } from "../customer.service.js"
+import { Prisma } from "../../generated/prisma-client/client.js"
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
@@ -513,9 +514,12 @@ describe("anonymizeCustomer — H3 wave-a1 scope expansion (7 surfaces)", () => 
       await anonymizeCustomer("cust_01")
 
       // In-tx cleanup call filters by the customer's conversation ids.
+      // audit-2026-05-25 (I9): the scrub also clears message `metadata`
+      // (Json?) → Prisma.JsonNull, symmetric with the heavy path — assert it
+      // so the LGPD metadata-scrub stays covered.
       expect(mockConversationMessageUpdateMany).toHaveBeenCalledWith({
         where: { conversationId: { in: ["conv_a", "conv_b"] } },
-        data: { content: "[anonymized]" },
+        data: { content: "[anonymized]", metadata: Prisma.JsonNull },
       })
     })
 

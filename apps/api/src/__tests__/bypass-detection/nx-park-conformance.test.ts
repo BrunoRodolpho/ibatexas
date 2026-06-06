@@ -43,7 +43,6 @@ const REPO_ROOT = join(__dirname, "..", "..", "..", "..", "..")
  */
 const PARK_SCAN_DIRS = [
   "apps/api/src",
-  "packages/llm-provider/src",
   "packages/tools/src",
 ] as const
 
@@ -57,10 +56,6 @@ const ALLOWED_DIRECT_PARK_IMPORT: ReadonlySet<string> = new Set<string>([
   // `parkDeferredIntentWithNxGuard` delegates to AFTER claiming the NX slot.
   // This is the canonical caller for dev's DEFER/park/resume path.
   "apps/api/src/adapters/park-nx.ts",
-  // The pre-WS5 home, kept as a transition-shim copy for the
-  // `@ibatexas/llm-provider` brain modules (llm-responder / kernel-executor)
-  // still resident there. Deleted together with the brain in WS8.
-  "packages/llm-provider/src/park-nx.ts",
   // The apps/api re-export shim. Doesn't import the primitive today but
   // included defensively for future refactors that re-introduce a bridge
   // import the wrapper still owns.
@@ -218,8 +213,9 @@ describe("audit-2026-05-24 T1 — NX-park conformance", () => {
     // change to this count means a new carve-out was added; reviewer must
     // scrutinise the rationale comment. The shim is defensive (currently
     // doesn't import the primitive; keeps the test stable against refactors
-    // that may re-introduce a runtime import there).
-    expect(ALLOWED_DIRECT_PARK_IMPORT.size).toBe(3)
+    // that may re-introduce a runtime import there). The llm-provider
+    // transition-shim copy was removed when WS8 deleted the brain.
+    expect(ALLOWED_DIRECT_PARK_IMPORT.size).toBe(2)
   })
 
   it("ALLOWED_DIRECT_PARK_IMPORT entries reference files that actually exist", () => {
@@ -244,15 +240,12 @@ describe("audit-2026-05-24 T1 — NX-park conformance", () => {
     expect(stale).toEqual([])
   })
 
-  it("the canonical wrapper (`apps/api/src/adapters/park-nx.ts`) + its transition-shim copy are in the allowlist (sentinel)", () => {
-    // WS5: if either carve-out is dropped, the test would flag that copy of
-    // the wrapper as an offender. The canonical home is now apps/api; the
-    // llm-provider copy persists only until WS8 deletes the brain.
+  it("the canonical wrapper (`apps/api/src/adapters/park-nx.ts`) is in the allowlist (sentinel)", () => {
+    // WS5: if this carve-out is dropped, the test would flag the wrapper as an
+    // offender. The canonical home is now apps/api; the llm-provider
+    // transition-shim copy was deleted together with the brain in WS8.
     expect(
       ALLOWED_DIRECT_PARK_IMPORT.has("apps/api/src/adapters/park-nx.ts"),
-    ).toBe(true)
-    expect(
-      ALLOWED_DIRECT_PARK_IMPORT.has("packages/llm-provider/src/park-nx.ts"),
     ).toBe(true)
   })
 

@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import Fastify from "fastify";
+import fastifyCookie from "@fastify/cookie";
 import type { FastifyInstance } from "fastify";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
@@ -20,12 +21,41 @@ vi.mock("@ibatexas/tools", () => ({
   rk: mockRk,
 }));
 
+// ── Staff-token helper ─────────────────────────────────────────────────────────
+//
+// audit-2026-05-25 (commit d0b41d7) made extractAuth reject staff JWTs on the
+// CUSTOMER cookie path: when `request.jwtVerify()` yields a `userType: "staff"`
+// payload, extractAuth returns early WITHOUT setting staffId/staffRole. Staff
+// principals are now minted ONLY from the separate `staff_token` cookie, which
+// extractAuth verifies via `request.server.jwt.verify(rawToken)` (see
+// auth.ts ── "Staff path"). The harness must therefore drive that path: send a
+// `staff_token` cookie and provide a `server.jwt.verify` that decodes it.
+//
+// We encode the test payload as JSON (the harness owns both sign + verify);
+// the payload shape mirrors signStaffToken() in routes/auth.ts.
+type StaffTokenPayload = {
+  sub: string;
+  userType: "staff";
+  role: "OWNER" | "MANAGER" | "ATTENDANT";
+  jti?: string;
+  aud?: string;
+};
+
+function staffCookie(payload: StaffTokenPayload): string {
+  return JSON.stringify(payload);
+}
+
 // ── Server factory ─────────────────────────────────────────────────────────────
 
 async function buildTestServer() {
   const app = Fastify({ logger: false });
 
-  // Decorate request with jwtVerify and user — simulates @fastify/jwt
+  // @fastify/cookie populates request.cookies — extractAuth reads
+  // request.cookies?.["staff_token"] on the staff path.
+  await app.register(fastifyCookie);
+
+  // Decorate request with jwtVerify and user — simulates @fastify/jwt's
+  // customer-cookie path (`request.jwtVerify()` reads the `token` cookie).
   app.decorateRequest("jwtVerify", async function (this: unknown) {
     return mockJwtVerify.call(this);
   });
@@ -34,6 +64,14 @@ async function buildTestServer() {
   app.decorateRequest("userType", undefined);
   app.decorateRequest("staffId", undefined);
   app.decorateRequest("staffRole", undefined);
+
+  // Simulate @fastify/jwt's synchronous `server.jwt.verify(token)` used by the
+  // staff_token path. extractAuth reads it via `request.server.jwt.verify`.
+  app.decorate("jwt", {
+    verify(token: string): StaffTokenPayload {
+      return JSON.parse(token) as StaffTokenPayload;
+    },
+  } as never);
 
   // Import real middleware
   const { requireAuth, optionalAuth } = await import("../middleware/auth.js");
@@ -94,15 +132,32 @@ describe("requireStaff middleware", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRk.mockImplementation((key: string) => `test:${key}`);
+    // Staff tokens carry a jti, so extractAuth runs the revocation check
+    // (getRedisClient().get(...)). Return a redis whose get() yields null so
+    // the token reads as NOT revoked. checkRevocation fails CLOSED on redis
+    // errors, so an unwired mock would surface as 503, not the auth result.
+    mockGetRedisClient.mockResolvedValue({ get: vi.fn(async () => null) });
     sideEffects.length = 0;
   });
 
   it("allows request with valid staff JWT (MANAGER)", async () => {
-    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
-      this.user = { sub: "staff_01", userType: "staff", role: "MANAGER" };
-    });
+    // No customer `token` cookie → customer path rejects → extractAuth falls
+    // through to the `staff_token` cookie path.
+    mockJwtVerify.mockRejectedValue(new Error("no token"));
 
-    const res = await server.inject({ method: "GET", url: "/staff-only" });
+    const res = await server.inject({
+      method: "GET",
+      url: "/staff-only",
+      cookies: {
+        staff_token: staffCookie({
+          sub: "staff_01",
+          userType: "staff",
+          role: "MANAGER",
+          jti: "jti_01",
+          aud: "staff_token",
+        }),
+      },
+    });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -112,22 +167,42 @@ describe("requireStaff middleware", () => {
   });
 
   it("allows request with valid staff JWT (OWNER)", async () => {
-    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
-      this.user = { sub: "staff_02", userType: "staff", role: "OWNER" };
-    });
+    mockJwtVerify.mockRejectedValue(new Error("no token"));
 
-    const res = await server.inject({ method: "GET", url: "/staff-only" });
+    const res = await server.inject({
+      method: "GET",
+      url: "/staff-only",
+      cookies: {
+        staff_token: staffCookie({
+          sub: "staff_02",
+          userType: "staff",
+          role: "OWNER",
+          jti: "jti_02",
+          aud: "staff_token",
+        }),
+      },
+    });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().staffRole).toBe("OWNER");
   });
 
   it("allows request with valid staff JWT (ATTENDANT)", async () => {
-    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
-      this.user = { sub: "staff_03", userType: "staff", role: "ATTENDANT" };
-    });
+    mockJwtVerify.mockRejectedValue(new Error("no token"));
 
-    const res = await server.inject({ method: "GET", url: "/staff-only" });
+    const res = await server.inject({
+      method: "GET",
+      url: "/staff-only",
+      cookies: {
+        staff_token: staffCookie({
+          sub: "staff_03",
+          userType: "staff",
+          role: "ATTENDANT",
+          jti: "jti_03",
+          aud: "staff_token",
+        }),
+      },
+    });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().staffRole).toBe("ATTENDANT");
@@ -175,15 +250,30 @@ describe("requireManager middleware", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRk.mockImplementation((key: string) => `test:${key}`);
+    // Staff tokens carry a jti, so extractAuth runs the revocation check
+    // (getRedisClient().get(...)). Return a redis whose get() yields null so
+    // the token reads as NOT revoked. checkRevocation fails CLOSED on redis
+    // errors, so an unwired mock would surface as 503, not the auth result.
+    mockGetRedisClient.mockResolvedValue({ get: vi.fn(async () => null) });
     sideEffects.length = 0;
   });
 
   it("allows OWNER role", async () => {
-    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
-      this.user = { sub: "staff_owner", userType: "staff", role: "OWNER" };
-    });
+    mockJwtVerify.mockRejectedValue(new Error("no token"));
 
-    const res = await server.inject({ method: "GET", url: "/manager-only" });
+    const res = await server.inject({
+      method: "GET",
+      url: "/manager-only",
+      cookies: {
+        staff_token: staffCookie({
+          sub: "staff_owner",
+          userType: "staff",
+          role: "OWNER",
+          jti: "jti_owner",
+          aud: "staff_token",
+        }),
+      },
+    });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().staffRole).toBe("OWNER");
@@ -191,11 +281,21 @@ describe("requireManager middleware", () => {
   });
 
   it("allows MANAGER role", async () => {
-    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
-      this.user = { sub: "staff_mgr", userType: "staff", role: "MANAGER" };
-    });
+    mockJwtVerify.mockRejectedValue(new Error("no token"));
 
-    const res = await server.inject({ method: "GET", url: "/manager-only" });
+    const res = await server.inject({
+      method: "GET",
+      url: "/manager-only",
+      cookies: {
+        staff_token: staffCookie({
+          sub: "staff_mgr",
+          userType: "staff",
+          role: "MANAGER",
+          jti: "jti_mgr",
+          aud: "staff_token",
+        }),
+      },
+    });
 
     expect(res.statusCode).toBe(200);
     expect(res.json().staffRole).toBe("MANAGER");
@@ -203,11 +303,21 @@ describe("requireManager middleware", () => {
   });
 
   it("returns 403 for ATTENDANT role", async () => {
-    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
-      this.user = { sub: "staff_att", userType: "staff", role: "ATTENDANT" };
-    });
+    mockJwtVerify.mockRejectedValue(new Error("no token"));
 
-    const res = await server.inject({ method: "GET", url: "/manager-only" });
+    const res = await server.inject({
+      method: "GET",
+      url: "/manager-only",
+      cookies: {
+        staff_token: staffCookie({
+          sub: "staff_att",
+          userType: "staff",
+          role: "ATTENDANT",
+          jti: "jti_att",
+          aud: "staff_token",
+        }),
+      },
+    });
 
     expect(res.statusCode).toBe(403);
     const body = res.json();
@@ -255,15 +365,30 @@ describe("extractAuth handles staff tokens correctly", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRk.mockImplementation((key: string) => `test:${key}`);
+    // Staff tokens carry a jti, so extractAuth runs the revocation check
+    // (getRedisClient().get(...)). Return a redis whose get() yields null so
+    // the token reads as NOT revoked. checkRevocation fails CLOSED on redis
+    // errors, so an unwired mock would surface as 503, not the auth result.
+    mockGetRedisClient.mockResolvedValue({ get: vi.fn(async () => null) });
     sideEffects.length = 0;
   });
 
   it("sets staffId and staffRole for staff JWT, not customerId", async () => {
-    mockJwtVerify.mockImplementation(async function (this: { user: unknown }) {
-      this.user = { sub: "staff_01", userType: "staff", role: "MANAGER" };
-    });
+    mockJwtVerify.mockRejectedValue(new Error("no token"));
 
-    const res = await server.inject({ method: "GET", url: "/staff-only" });
+    const res = await server.inject({
+      method: "GET",
+      url: "/staff-only",
+      cookies: {
+        staff_token: staffCookie({
+          sub: "staff_01",
+          userType: "staff",
+          role: "MANAGER",
+          jti: "jti_x1",
+          aud: "staff_token",
+        }),
+      },
+    });
 
     expect(res.statusCode).toBe(200);
     const body = res.json();

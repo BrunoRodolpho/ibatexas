@@ -81,38 +81,34 @@ describe("RED-TEAM Target 1 — NX wrapper placeholder + quota-leak window", () 
     expect(true).toBe(true); // documentation pin
   });
 
-  it("HAZARD: when framework park throws AFTER counter INCR, wrapper cleans up the placeholder but NOT the counter", async () => {
-    // Build a stub that mimics the wrapper's catch path. The wrapper:
+  it("REMEDIATED: when framework park throws AFTER counter INCR, the wrapper cleans up BOTH the placeholder AND the counter (no quota-slot leak)", async () => {
+    // This test originally DOCUMENTED a hazard: the wrapper's catch path
+    // released the placeholder (`args.redis.del(parkKey)`) but did NOT
+    // decrement counterKey, so a park that threw AFTER the framework's INCR
+    // leaked a quota slot. Recommendation (b) below proposed the fix.
     //
-    //   try { result = await parkDeferredIntent(args) ... }
-    //   catch (err) {
-    //     await args.redis.del(parkKey).catch(() => {});
+    // audit-2026-05-24 P1-8 + I8 IMPLEMENTED that remediation in the
+    // canonical wrapper:
+    //
+    //   } catch (err) {
+    //     await releaseNxPlaceholder(redis, parkKey, placeholderValue); // Lua CAD
+    //     await redis.decr?.(counterKey)?.catch(() => {});              // quota slot
     //     throw err;
     //   }
     //
-    // It does NOT decrement counterKey. The framework's own roll-back
-    // path (defer-park.ts:198-199) is only reached on the "newCount >
-    // quota" branch, not on a thrown exception.
+    // So the hazard no longer exists — we now PIN the remediation: the catch
+    // must clean up BOTH the placeholder and the counter.
     //
-    // We assert this by reading the wrapper module and verifying the
-    // catch block has no `decr` on the counter key.
-    //
-    // audit-2026-05-24 P0-1: the wrapper implementation moved to
-    // `packages/llm-provider/src/park-nx.ts` so non-apps/api callers
-    // (kernel-executor, llm-responder) can share it. The apps/api
-    // adapter is now a thin re-export. We read the leaf module here.
+    // WS5/WS8 (claustrum-on-dev): the canonical wrapper lives in apps/api at
+    // `adapters/park-nx.ts` (the llm-provider transition-shim copy was deleted
+    // together with the brain in WS8). Read the canonical module.
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const wrapperPath = join(
       __dirname,
       "..",
       "..",
-      "..",
-      "..",
-      "..",
-      "packages",
-      "llm-provider",
-      "src",
+      "adapters",
       "park-nx.ts",
     );
     const source = readFileSync(wrapperPath, "utf8");
@@ -121,9 +117,13 @@ describe("RED-TEAM Target 1 — NX wrapper placeholder + quota-leak window", () 
     // line-number drift across edits.
     const catchIdx = source.indexOf("} catch (err) {");
     expect(catchIdx).toBeGreaterThan(-1);
-    const catchBlock = source.slice(catchIdx, catchIdx + 400);
-    expect(catchBlock).toContain("del?.(parkKey)");
-    expect(catchBlock).not.toMatch(/decr\?.\(counterKey/);
+    const catchBlock = source.slice(catchIdx, catchIdx + 600);
+    // Placeholder cleanup (Lua compare-and-delete via releaseNxPlaceholder).
+    expect(catchBlock).toContain("releaseNxPlaceholder");
+    expect(catchBlock).toContain("parkKey");
+    // Quota-slot cleanup — the P1-8 remediation (no longer the documented hazard).
+    expect(catchBlock).toMatch(/decr\?\.\(counterKey/);
+    expect(catchBlock).toContain("throw err");
   });
 });
 

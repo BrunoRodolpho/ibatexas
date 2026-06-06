@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
 const mockRecordPending = vi.hoisted(() => vi.fn());
+const mockReadPending = vi.hoisted(() => vi.fn());
 const mockClearPending = vi.hoisted(() => vi.fn());
 const mockAuditSinkEmit = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -29,7 +30,18 @@ vi.mock("@ibatexas/nats-client", () => ({
 vi.mock("@ibatexas/tools", () => ({
   medusaAdjudicated: mockMedusaAdjudicated,
   recordMedusaAnonymizePending: mockRecordPending,
+  // audit-2026-05-25 (I11): the resolver reads the existing pending entry
+  // before recording to preserve `firstEmittedAt`. Default to "no existing
+  // entry" so the standard receive path runs.
+  readMedusaAnonymizePending: mockReadPending,
   clearMedusaAnonymizePending: mockClearPending,
+}));
+
+// The resolver emits its confirmed/failed audit record via
+// `getAuditSink().emit(...)`. The real `getAuditSink()` is fail-closed
+// before boot wiring, so spy on it here.
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: () => ({ emit: mockAuditSinkEmit }),
 }));
 
 // ── SUT ───────────────────────────────────────────────────────────────────
@@ -56,6 +68,7 @@ describe("handleMedusaAnonymizePending", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRecordPending.mockResolvedValue(undefined);
+    mockReadPending.mockResolvedValue(null);
     mockClearPending.mockResolvedValue(undefined);
   });
 

@@ -76,6 +76,13 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }));
 
+// The exhausted-path emits its audit record via `getAuditSink().emit(...)`.
+// The real `getAuditSink()` is fail-closed before boot wiring, so spy on it
+// here.
+vi.mock("@ibatexas/audit-sink", () => ({
+  getAuditSink: () => ({ emit: mockAuditSinkEmit }),
+}));
+
 vi.mock("@sentry/node", () => ({
   withScope: vi.fn((cb: (s: { setTag: () => void; setLevel: () => void; setContext: () => void }) => void) =>
     cb({ setTag: vi.fn(), setLevel: vi.fn(), setContext: vi.fn() }),

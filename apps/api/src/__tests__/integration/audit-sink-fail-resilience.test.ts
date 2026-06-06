@@ -72,6 +72,19 @@ function orderEnv(nonce: string) {
   });
 }
 
+// Spill-queue key prefix — mirrors the inlined `rk()` in
+// `@ibatexas/audit-sink/redis-spill-storage.ts`, which (like the canonical
+// `rk()` in `@ibatexas/tools`) captures `APP_ENV` ONCE at module-load time
+// into a const, NOT per-call. `@ibatexas/audit-sink` is imported by the
+// global `src/__tests__/setup.ts` before any `beforeEach` runs, so the
+// leaf's prefix is frozen to whatever `APP_ENV` is at that first import
+// (`"development"` here, since nothing sets `APP_ENV` before setup). The
+// per-test `vi.stubEnv("APP_ENV", "test")` therefore CANNOT change the spill
+// key — it is far too late. We resolve the spill key the same way the SUT
+// does so the assertion reads the queue the SUT actually writes to. (Pre-fix
+// this hardcoded `test:audit:spill:queue` and silently read an empty list.)
+const SPILL_QUEUE_KEY = `${process.env.APP_ENV ?? "development"}:audit:spill:queue`;
+
 function orderState(): OrderState {
   return {
     ctx: {
@@ -150,7 +163,7 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
     await wiring.getAuditSink().emit(record2);
 
     // First record evicted to Redis spill.
-    const spilled = redis._store.get("test:audit:spill:queue") ?? [];
+    const spilled = redis._store.get(SPILL_QUEUE_KEY) ?? [];
     expect(spilled.length).toBeGreaterThanOrEqual(1);
 
     // The spilled record contains a recognizable JSON envelope with a
