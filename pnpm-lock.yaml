@@ -116,7 +116,7 @@ importers:
     dependencies:
       '@adjudicate/audit-postgres':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))
       '@adjudicate/core':
         specifier: ^1.2.0
         version: 1.2.0
@@ -417,12 +417,15 @@ importers:
 
   packages/audit-sink:
     dependencies:
+      '@adjudicate/admin-sdk':
+        specifier: ^2.0.0
+        version: 2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3)
       '@adjudicate/audit':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))
       '@adjudicate/core':
         specifier: ^1.2.0
         version: 1.2.0
@@ -441,10 +444,10 @@ importers:
     dependencies:
       '@adjudicate/audit':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))
       '@adjudicate/core':
         specifier: ^1.2.0
         version: 1.2.0
@@ -535,7 +538,7 @@ importers:
     dependencies:
       '@adjudicate/audit':
         specifier: ^2.0.0
-        version: 2.0.0
+        version: 2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))
       '@adjudicate/core':
         specifier: ^1.2.0
         version: 1.2.0
@@ -894,6 +897,11 @@ importers:
         version: 5.9.3
 
 packages:
+
+  '@adjudicate/admin-sdk@2.0.0':
+    resolution: {integrity: sha512-BxzfJ6dnEh9bHGpkYAMyQ1ETuLG7eAeLsQVa24DaTGIRq6xU3WYK6Ji3dmW4Np3Al3MuTXxUZffG3o3onWxGTg==}
+    peerDependencies:
+      '@adjudicate/core': 1.2.0
 
   '@adjudicate/audit-postgres@2.0.0':
     resolution: {integrity: sha512-p+7OrbgDQYnt4n9saNLWTqj0/a61dba7sOxPyjg0l/jLC4UK1YDXp+ez+OS+5AKcacxhRazxy3qcBgI3fAMo3g==}
@@ -5623,6 +5631,12 @@ packages:
 
   '@tanstack/virtual-core@3.13.23':
     resolution: {integrity: sha512-zSz2Z2HNyLjCplANTDyl3BcdQJc2k1+yyFoKhNRmCr7V7dY8o8q5m8uFTI1/Pg1kL+Hgrz6u3Xo6eFUB7l66cg==}
+
+  '@trpc/server@11.17.0':
+    resolution: {integrity: sha512-jbAOUe0PpUTCYqziyu+8vYXZdDXPudZgnEhWCQ2NjKnVEjfE93RqHTt1oycZJv/HNf51YlRXfEEwSIAbb161rw==}
+    hasBin: true
+    peerDependencies:
+      typescript: '>=5.7.2'
 
   '@tsconfig/node10@1.0.12':
     resolution: {integrity: sha512-UCYBaeFvM11aU2y3YPZ//O5Rhj+xKyzy7mvcIoAjASbigy8mHMryP5cK7dgjlz2hWxh1g5pLw084E0a/wlUSFQ==}
@@ -10771,14 +10785,26 @@ packages:
 
 snapshots:
 
-  '@adjudicate/audit-postgres@2.0.0':
+  '@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3)':
     dependencies:
-      '@adjudicate/audit': 2.0.0
       '@adjudicate/core': 1.2.0
+      '@trpc/server': 11.17.0(typescript@5.9.3)
+      zod: 4.3.6
+    transitivePeerDependencies:
+      - typescript
 
-  '@adjudicate/audit@2.0.0':
+  '@adjudicate/audit-postgres@2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))':
+    dependencies:
+      '@adjudicate/audit': 2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))
+      '@adjudicate/core': 1.2.0
+    optionalDependencies:
+      '@adjudicate/admin-sdk': 2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3)
+
+  '@adjudicate/audit@2.0.0(@adjudicate/admin-sdk@2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3))':
     dependencies:
       '@adjudicate/core': 1.2.0
+    optionalDependencies:
+      '@adjudicate/admin-sdk': 2.0.0(@adjudicate/core@1.2.0)(typescript@5.9.3)
 
   '@adjudicate/canonical@1.1.0':
     dependencies:
@@ -16983,6 +17009,10 @@ snapshots:
   '@tanstack/table-core@8.21.3': {}
 
   '@tanstack/virtual-core@3.13.23': {}
+
+  '@trpc/server@11.17.0(typescript@5.9.3)':
+    dependencies:
+      typescript: 5.9.3
 
   '@tsconfig/node10@1.0.12': {}
 

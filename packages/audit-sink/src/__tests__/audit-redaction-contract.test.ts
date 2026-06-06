@@ -22,9 +22,43 @@
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { describe, it, expect, vi } from "vitest"
-import { buildAuditRecord, buildEnvelope, verifyAuditRecord } from "@adjudicate/core"
+import {
+  buildAuditRecord,
+  buildEnvelope,
+  sha256Canonical,
+  verifyAuditRecord,
+} from "@adjudicate/core"
 import type { AuditRecord, IntentEnvelope } from "@adjudicate/core"
 import { createAuditRedactor } from "../audit-redactor.js"
+
+// ── Tamper-evidence helper (auditHash round-trip) ─────────────────────────────
+//
+// `@adjudicate/core@1.2.0` extended `verifyAuditRecord` with an ENVELOPE
+// self-consistency check: it re-derives `envelope.intentHash` from the
+// envelope's content and rejects the record (`reason:
+// "envelope_intent_mismatch"`) when they differ. That check is INTENTIONALLY
+// tripped by redaction: the redactor scrubs PII out of `envelope.payload` while
+// PRESERVING `envelope.intentHash` verbatim — that is the documented replay
+// invariant (#3 in audit-redactor.ts: "intentHash is NEVER recomputed — replay
+// uses it to look up the original envelope and that lookup must remain
+// stable"). Re-deriving the envelope hash to satisfy the new check would
+// corrupt replay and diverge the top-level `record.intentHash` from
+// `envelope.intentHash`, weakening a security invariant — so we do NOT do that.
+//
+// The property the redactor IS responsible for — and the one these P0-15 / P0-10
+// tests verify — is OUTER-record tamper-evidence: after redaction, the record's
+// `auditHash` must be RECOMPUTED over the redacted content and must re-derive
+// cleanly (`sha256Canonical(record \ {auditHash, signature}) === auditHash`).
+// Pre-W2 the redactor preserved the unredacted auditHash verbatim, so this
+// round-trip FAILED for every redacted record (the only kind any sink sees);
+// now it passes. This helper isolates exactly that check — the old-core
+// `verifyAuditRecord` recipe — without the orthogonal 1.2.0 envelope-drift gate.
+function auditHashRoundTrips(record: AuditRecord): boolean {
+  if (record.auditHash === undefined) return false
+  const { auditHash: stored, signature: _sig, ...rest } = record
+  void _sig
+  return sha256Canonical(rest) === stored
+}
 
 // ── Detection patterns ───────────────────────────────────────────────────────
 //
@@ -747,17 +781,28 @@ describe("audit-redaction CONTRACT (CI gate)", () => {
     }
   })
 
-  it("[P0-15] every fixture recomputes auditHash so verifyAuditRecord works on redacted records", () => {
+  it("[P0-15] every fixture recomputes auditHash so the redacted record is tamper-evident", () => {
     for (let i = 0; i < CORPUS.length; i++) {
       const fx = CORPUS[i]!
       const record = makeRecord(fx, i)
       const redacted = redactor.redact(record)
-      // Pre-W2 the redactor preserved auditHash verbatim, so
-      // verifyAuditRecord reported `tampered` for every redacted record
-      // (the only kind any sink ever sees). Now auditHash is recomputed
-      // over the redacted record — verifyAuditRecord returns `verified: true`.
+      // Pre-W2 the redactor preserved auditHash verbatim, so the redacted
+      // record (the only kind any sink ever sees) never re-derived to its
+      // stored hash. Now auditHash is recomputed over the redacted record, so
+      // the OUTER-record tamper-evidence round-trip holds:
+      //   sha256Canonical(redacted \ {auditHash, signature}) === auditHash.
+      expect(auditHashRoundTrips(redacted)).toBe(true)
+
+      // Under @adjudicate/core@1.2.0, full `verifyAuditRecord` ALSO re-derives
+      // envelope.intentHash and (correctly, by its own definition) flags a
+      // redacted envelope as drifted. Pin that EXPECTED behavior: the only
+      // failure mode permitted on a redacted record is `envelope_intent_mismatch`
+      // — never `tampered` (which would mean the outer auditHash is stale, the
+      // actual security regression this P0-15 test guards against).
       const verification = verifyAuditRecord(redacted)
-      expect(verification.verified).toBe(true)
+      if (verification.verified !== true) {
+        expect(verification.reason).toBe("envelope_intent_mismatch")
+      }
     }
   })
 
@@ -913,29 +958,49 @@ describe("audit-redaction CONTRACT (CI gate)", () => {
     const redacted = redactor.redact(record)
     // The hashes must differ because we changed the sessionId.
     expect(redacted.auditHash).not.toBe(record.auditHash)
-    // The new auditHash must still verify cleanly.
+    // The new auditHash must still re-derive cleanly over the redacted record
+    // (outer-record tamper-evidence — the property this test guards).
+    expect(auditHashRoundTrips(redacted)).toBe(true)
+    // Same as [P0-15]: under @adjudicate/core@1.2.0 the full verifier also
+    // checks envelope.intentHash self-consistency, which redaction legitimately
+    // trips. The only permitted non-verified reason is `envelope_intent_mismatch`
+    // — never `tampered` (a stale outer auditHash).
     const verification = verifyAuditRecord(redacted)
-    expect(verification.verified).toBe(true)
+    if (verification.verified !== true) {
+      expect(verification.reason).toBe("envelope_intent_mismatch")
+    }
   })
 })
 
 // ── Bypass-detection: every audit-emit goes through getAuditSink() ───────────
 //
-// Anti-regression for invariant: no IbateXas call site in `packages/llm-provider/src`
-// builds a sink primitive directly and emits past the redactor. The
+// Anti-regression for invariant: no IbateXas call site in this package's
+// `src/` builds a sink primitive directly and emits past the redactor. The
 // canonical bypass shape is `multiSink(...)` or `createNatsSink({...}).emit`
-// or `createConsoleSink({...}).emit` outside `intent-audit-wiring.ts`.
+// or `createConsoleSink({...}).emit` outside the authorised composers.
 //
-// We grep the source tree at test time. Any new file that pulls in
-// `multiSink`/`createNatsSink`/`createConsoleSink` and calls `.emit(...)`
-// directly will trip this check.
+// Authorised composers (the ONLY files allowed to import the raw sink
+// primitives) — both thread every emit through the redactor first:
+//   - index.ts            — defines getAuditSink(); builds the
+//                           redactor → persistentBufferedSink → multiSink(
+//                           console, nats, postgres) pipeline that ALL emits
+//                           go through. (Post claustrum-on-dev WS1, the audit
+//                           infra was relocated out of @ibatexas/llm-provider
+//                           into this leaf, so the composition that used to
+//                           live in intent-audit-wiring.ts now lives here.)
+//   - intent-audit-wiring.ts — the legacy composer kept for the transition.
+//
+// We grep the source tree at test time. Any OTHER file that pulls in
+// `multiSink`/`createNatsSink`/`createConsoleSink` trips this check.
 
 describe("audit-redaction CONTRACT — bypass detection", () => {
   it("no source file in src/ bypasses getAuditSink() to emit directly", () => {
     const srcDir = join(__dirname, "..")
     const offenders: string[] = []
     walkSrc(srcDir, (file, contents) => {
-      // Skip the wiring file (it IS the authorised composer) and tests.
+      // Skip the authorised composers (they ARE the redactor-routed sink
+      // builders) and tests. index.ts defines getAuditSink() itself.
+      if (file.endsWith("index.ts")) return
       if (file.endsWith("intent-audit-wiring.ts")) return
       if (file.endsWith("audit-redactor.ts")) return
       if (file.includes("/__tests__/")) return
@@ -946,15 +1011,15 @@ describe("audit-redaction CONTRACT — bypass detection", () => {
         /from\s+["']@adjudicate\/audit["']/.test(contents) &&
         /(multiSink|createNatsSink|createConsoleSink)/.test(contents)
       if (importsRawSink) {
-        // Allow imports if the file ALSO routes through getAuditSink — but
-        // be strict: the only acceptable consumer is intent-audit-wiring.
+        // Allow imports only in the authorised composers above; every other
+        // file must route through getAuditSink().
         offenders.push(file)
       }
     })
     if (offenders.length > 0) {
       throw new Error(
         `Audit-redactor bypass risk in:\n${offenders.map((f) => `  - ${f}`).join("\n")}\n` +
-          `Only intent-audit-wiring.ts may import multiSink / createNatsSink / createConsoleSink directly.`,
+          `Only index.ts / intent-audit-wiring.ts may import multiSink / createNatsSink / createConsoleSink directly.`,
       )
     }
     expect(offenders).toEqual([])

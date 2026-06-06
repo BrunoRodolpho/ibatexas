@@ -149,18 +149,29 @@ function pick<T>(rng: Rand, arr: ReadonlyArray<T>): T {
   return arr[randInt(rng, arr.length)]!
 }
 
+// Finite numeric edges only. `@adjudicate/core@1.2.0` canonical-JSON
+// (RFC 8785 §3.2.2.3) has NO representation for a non-finite number, so
+// `buildEnvelope()` / `buildAuditRecord()` THROW on NaN / ±Infinity at the
+// content-addressing boundary — BEFORE the redactor is ever reached. The
+// kernel rejects non-finite intents upstream, so the redactor never sees one
+// in production; feeding them to the full-record fuzz below would only exercise
+// the kernel's throw, not the redactor. Non-finite handling at the raw-walker
+// level (which treats every number via identity) is covered separately by the
+// `redactPayload` non-finite probe in the 1000-input fuzz test, where no
+// envelope is built. PII/hash-stability coverage for FINITE numbers is intact.
 const NUMERIC_EDGES = [
   0,
   -0,
   1,
   -1,
-  NaN,
-  Infinity,
-  -Infinity,
   Number.MIN_SAFE_INTEGER,
   Number.MAX_SAFE_INTEGER,
   Number.EPSILON,
 ]
+
+// Non-finite numbers, kept ONLY for the raw-walker (`redactPayload`) fuzz path
+// that does not build an envelope. See NUMERIC_EDGES note above.
+const NON_FINITE_EDGES = [NaN, Infinity, -Infinity]
 
 const STRING_PII_VARIANTS = [
   "12345678900",
@@ -335,6 +346,19 @@ describe("P0-15-VERIFY — adversarial fuzz across 1000 random inputs", () => {
     for (const k of Object.keys(freshProbe)) {
       // freshProbe should have NO own keys
       expect(k).toBe("<unreachable>")
+    }
+
+    // Non-finite walker coverage (moved out of NUMERIC_EDGES so the full-record
+    // fuzz below doesn't trip buildEnvelope's RFC-8785 throw): the raw walker
+    // must pass NaN / ±Infinity through by identity without throwing. This is
+    // the production-irrelevant-but-defensive path — the kernel rejects
+    // non-finite at the envelope boundary, so the redactor never sees one live.
+    for (const nf of NON_FINITE_EDGES) {
+      expect(() => r.redactPayload(nf)).not.toThrow()
+      expect(() => r.redactPayload({ amount: nf, note: "ok" })).not.toThrow()
+      expect(() => r.redactPayload([nf, 1, "x"])).not.toThrow()
+      // Identity: a bare non-finite primitive walks through unchanged.
+      expect(r.redactPayload(nf)).toBe(nf)
     }
   })
 

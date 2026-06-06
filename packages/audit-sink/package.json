@@ -18,6 +18,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@adjudicate/admin-sdk": "^2.0.0",
     "@adjudicate/audit": "^2.0.0",
     "@adjudicate/audit-postgres": "^2.0.0",
     "@adjudicate/core": "^1.2.0"

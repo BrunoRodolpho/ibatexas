@@ -10,11 +10,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import { buildAuditRecord, buildEnvelope } from "@adjudicate/core"
 import type { AuditRecord } from "@adjudicate/core"
 
-// Mock @ibatexas/tools so rk() returns a deterministic test-prefix without
-// depending on process.env capture at module-import time.
-vi.mock("@ibatexas/tools", () => ({
-  rk: (key: string) => `test:${key}`,
-}))
+// `redis-spill-storage.ts` inlines `rk` (leaf-purity invariant — it does NOT
+// import `@ibatexas/tools`), so a `vi.mock("@ibatexas/tools")` here would be
+// inert. The `test:` key prefix the assertions below expect comes from the
+// real inlined `rk` reading `APP_ENV=test`, which is pinned in
+// `vitest.config.ts`.
 
 import {
   createRedisSpillStorage,
