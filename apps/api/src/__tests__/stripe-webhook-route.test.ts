@@ -172,6 +172,7 @@ function createStripeEvent(
   return {
     id,
     type,
+    livemode: false,
     // Stripe events always carry a unix-seconds `created` timestamp.
     // Pinned so the envelope's deterministic-hash test sees a stable value.
     created: 1_700_000_000,
@@ -567,6 +568,7 @@ describe("POST /api/webhooks/stripe — unknown event type", () => {
   it("returns 200 and ignores unknown event types", async () => {
     const event = {
       id: "evt_unknown",
+      livemode: false,
       type: "invoice.payment_succeeded",
       data: { object: {} },
     };
@@ -608,6 +610,7 @@ describe("POST /api/webhooks/stripe — charge.refunded", () => {
   it("publishes order.refunded event with correct payload", async () => {
     const event = {
       id: "evt_refund_01",
+      livemode: false,
       type: "charge.refunded",
       data: {
         object: {
@@ -649,6 +652,7 @@ describe("POST /api/webhooks/stripe — charge.refunded", () => {
   it("handles missing medusaOrderId gracefully (warn, no crash)", async () => {
     const event = {
       id: "evt_refund_02",
+      livemode: false,
       type: "charge.refunded",
       data: {
         object: {
@@ -694,6 +698,7 @@ describe("POST /api/webhooks/stripe — charge.dispute.created", () => {
   it("publishes order.disputed event with correct payload", async () => {
     const event = {
       id: "evt_dispute_01",
+      livemode: false,
       type: "charge.dispute.created",
       data: {
         object: {
@@ -737,6 +742,7 @@ describe("POST /api/webhooks/stripe — charge.dispute.created", () => {
   it("handles missing medusaOrderId in dispute metadata (publishes with null orderId)", async () => {
     const event = {
       id: "evt_dispute_02",
+      livemode: false,
       type: "charge.dispute.created",
       data: {
         object: {
@@ -794,6 +800,7 @@ describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
   it("publishes order.canceled event with correct payload", async () => {
     const event = {
       id: "evt_cancel_01",
+      livemode: false,
       type: "payment_intent.canceled",
       data: {
         object: {
@@ -835,6 +842,7 @@ describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
   it("handles missing medusaOrderId gracefully (warn, no crash)", async () => {
     const event = {
       id: "evt_cancel_02",
+      livemode: false,
       type: "payment_intent.canceled",
       data: {
         object: {
@@ -1266,6 +1274,7 @@ describe("POST /api/webhooks/stripe — kernel-gated reconciliation (Task 12)", 
 
     const event = {
       id: "evt_refund_envelope_01",
+      livemode: false,
       type: "charge.refunded",
       created: 1_700_000_000,
       data: {
@@ -1334,6 +1343,7 @@ describe("POST /api/webhooks/stripe — PIX cart-complete via medusaAdjudicated 
   function createPixEvent(eventId = "evt_pix_complete_01", cartId = "cart_pix_01") {
     return {
       id: eventId,
+      livemode: false,
       type: "payment_intent.succeeded",
       created: 1_700_000_000,
       data: {
@@ -1511,6 +1521,7 @@ describe("POST /api/webhooks/stripe — PIX cart-complete metadata-update via st
   ) {
     return {
       id: eventId,
+      livemode: false,
       type: "payment_intent.succeeded",
       created: 1_700_000_000,
       data: {
@@ -1717,5 +1728,70 @@ describe("POST /api/webhooks/stripe — double-capture race (P0-PAY-2)", () => {
     // Exactly one order.placed despite two succeeded events → no double capture.
     const placed = mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.placed");
     expect(placed).toHaveLength(1);
+  });
+});
+
+describe("POST /api/webhooks/stripe — livemode binding (P3-SEC-STRIPESRC)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv(); // STRIPE_SECRET_KEY = sk_test_123 → expectedLivemode = false
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+  });
+
+  const liveEvent = (livemode: boolean, id: string) => ({
+    id,
+    type: "payment_intent.succeeded",
+    created: 1_700_000_000,
+    livemode,
+    data: { object: { id: "pi_test_123", metadata: { medusaOrderId: "order_01" }, last_payment_error: null } },
+  });
+
+  const fire = async () => {
+    const app = await buildTestServer();
+    return app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: { "content-type": "application/json", "stripe-signature": "t=123,v1=valid" },
+      payload: Buffer.from("{}"),
+    });
+  };
+
+  it("rejects a live-mode event under a test key — 400, no idempotency claim, no downstream", async () => {
+    mockConstructEvent.mockReturnValue(liveEvent(true, "evt_live_1"));
+    const setMock = vi.fn().mockResolvedValue("OK");
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: setMock }));
+
+    const res = await fire();
+
+    expect(res.statusCode).toBe(400);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(mockCapturePayment).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+
+  it("accepts a test-mode event under a test key (modes match) — reaches processing", async () => {
+    mockConstructEvent.mockReturnValue(liveEvent(false, "evt_test_match"));
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+    mockCapturePayment.mockResolvedValue(null); // no-op cleanly past the gate
+
+    const res = await fire();
+
+    expect(res.statusCode).toBe(200);
+    expect(mockCapturePayment).toHaveBeenCalled(); // proves it passed the livemode gate
+  });
+
+  it("rejects a test-mode event under a LIVE key (mismatch the other way) — 400, no claim", async () => {
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_realkey"); // expectedLivemode = true
+    mockConstructEvent.mockReturnValue(liveEvent(false, "evt_test_2"));
+    const setMock = vi.fn().mockResolvedValue("OK");
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: setMock }));
+
+    const res = await fire();
+
+    expect(res.statusCode).toBe(400);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(mockCapturePayment).not.toHaveBeenCalled();
   });
 });

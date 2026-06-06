@@ -640,6 +640,26 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
         return reply.code(400).send({ error: "Webhook signature verification failed" });
       }
 
+      // P3-SEC-STRIPESRC: bind the event's mode to the API key's mode. The signature
+      // check proves the event came from whoever holds the webhook secret, but not that
+      // its mode matches this deployment — a test-mode event reaching a live deployment
+      // (or vice versa), e.g. via a leaked/shared secret or a misconfigured Connect
+      // setup, must be refused BEFORE its metadata drives order completion. `sk_live_`
+      // ⇒ expect livemode true; anything else (sk_test_, unset) ⇒ expect false.
+      const expectedLivemode = (process.env.STRIPE_SECRET_KEY ?? "").startsWith("sk_live_");
+      if (event.livemode !== expectedLivemode) {
+        server.log.warn(
+          {
+            event_id: event.id,
+            event_livemode: event.livemode,
+            expected_livemode: expectedLivemode,
+            action: "stripe_livemode_mismatch",
+          },
+          "Stripe webhook livemode mismatch — refusing",
+        );
+        return reply.code(400).send({ error: "Webhook livemode mismatch" });
+      }
+
       // Idempotency — 7 days covers Stripe's 3-day retry window with margin
       const redis = await getRedisClient();
       const idempotencyKey = rk(`webhook:processed:${event.id}`);
