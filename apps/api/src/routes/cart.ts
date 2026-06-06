@@ -692,6 +692,27 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
+      // P0-PAY-3 (audit-2026-05-27) — checkout-endpoint dedup. Defense-in-depth
+      // on top of Stripe idempotencyKeys + Medusa per-hop keys + the kernel
+      // deterministic-nonce ledger: a SET-NX gate rejects a double-submit /
+      // network retry with 409 BEFORE any payment or Medusa cart side-effect.
+      // Prefer the client Idempotency-Key; fall back to cartId so a rapid
+      // double-submit from a client that sends none is still deduped.
+      const idemHeader = request.headers["idempotency-key"];
+      const idemToken =
+        typeof idemHeader === "string" && idemHeader.trim()
+          ? idemHeader.trim()
+          : request.body.cartId;
+      const checkoutGateKey = rk(`checkout:idem:${idemToken}`);
+      if (!(await redis.set(checkoutGateKey, "1", { NX: true, EX: 120 }))) {
+        return reply.status(409).send({
+          statusCode: 409,
+          error: "Conflict",
+          message: "Este checkout já está sendo processado. Aguarde alguns instantes.",
+          code: "CHECKOUT_IN_PROGRESS",
+        });
+      }
+
       // Sync local cart items to Medusa if provided (web app keeps items in local state)
       let cartId = request.body.cartId;
 
@@ -952,6 +973,10 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       const result = out.body as Awaited<ReturnType<typeof createCheckout>>;
 
       if (!result.success) {
+        // P0-PAY-3 — fixable failure: release the idempotency gate so the
+        // customer can correct + retry immediately rather than waiting out
+        // the 120s TTL.
+        await redis.del(checkoutGateKey);
         return reply.status(400).send(result);
       }
 
