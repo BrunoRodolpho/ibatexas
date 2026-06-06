@@ -20,6 +20,14 @@ vi.mock("@ibatexas/tools", () => ({
   rk: mockRk,
 }));
 
+// STAFFREVOKE: the staff path re-checks createStaffService().getById(sub).active
+// on every request. Mock it so the staff active-check tests can drive it.
+const mockGetStaffById = vi.hoisted(() => vi.fn());
+const mockStaffJwtVerify = vi.hoisted(() => vi.fn());
+vi.mock("@ibatexas/domain", () => ({
+  createStaffService: () => ({ getById: mockGetStaffById }),
+}));
+
 // ── Server factory ─────────────────────────────────────────────────────────────
 
 /**
@@ -62,6 +70,18 @@ async function buildTestServer() {
       sideEffects.push("optional-handler-executed");
       return reply.send({ customerId: request.customerId ?? null });
     },
+  );
+
+  // Staff path support (STAFFREVOKE): the middleware reads request.cookies?.["staff_token"]
+  // and verifies it via request.server.jwt.verify. Register a cookie parser + decorate
+  // a jwt verifier so the staff active-check can be exercised end-to-end.
+  await app.register((await import("@fastify/cookie")).default);
+  app.decorate("jwt", { verify: (token: string) => mockStaffJwtVerify(token) } as never);
+  app.get(
+    "/staff-check",
+    { preHandler: optionalAuth },
+    async (request, reply) =>
+      reply.send({ staffId: request.staffId ?? null, userType: request.userType ?? null }),
   );
 
   await app.ready();
@@ -483,5 +503,56 @@ describe("auth-2026-05-25 (I2): staff-via-customer-cookie escalation defense", (
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.customerId).toBe("cust_legacy_aud");
+  });
+});
+
+describe("extractAuth — staff active-check (STAFFREVOKE)", () => {
+  let server: FastifyInstance;
+
+  beforeAll(async () => {
+    server = (await buildTestServer()).app;
+  });
+  afterAll(async () => {
+    await server.close();
+  });
+
+  beforeEach(() => {
+    // No customer token → fall through to the staff_token path.
+    mockJwtVerify.mockRejectedValue(new Error("no customer token"));
+    mockRk.mockImplementation((k: string) => `ibatexas:${k}`);
+    // No revocation.
+    mockGetRedisClient.mockResolvedValue({ get: vi.fn().mockResolvedValue(null) });
+    mockStaffJwtVerify.mockReturnValue({
+      sub: "staff_1",
+      userType: "staff",
+      role: "OWNER",
+      jti: "j1",
+      aud: "staff_token",
+    });
+  });
+
+  const inject = () =>
+    server.inject({ method: "GET", url: "/staff-check", headers: { cookie: "staff_token=tok" } });
+
+  it("attaches staff identity when the staff member is still active", async () => {
+    mockGetStaffById.mockResolvedValue({ id: "staff_1", active: true });
+    const body = (await inject()).json();
+    expect(mockGetStaffById).toHaveBeenCalledWith("staff_1");
+    expect(body.staffId).toBe("staff_1");
+    expect(body.userType).toBe("staff");
+  });
+
+  it("does NOT attach staff identity when the staff member is deactivated (active=false)", async () => {
+    mockGetStaffById.mockResolvedValue({ id: "staff_1", active: false });
+    const body = (await inject()).json();
+    expect(body.staffId).toBeNull();
+    expect(body.userType).toBeNull();
+  });
+
+  it("does NOT attach staff identity when the staff row was deleted (getById throws)", async () => {
+    mockGetStaffById.mockRejectedValue(new Error("not found"));
+    const body = (await inject()).json();
+    expect(body.staffId).toBeNull();
+    expect(body.userType).toBeNull();
   });
 });
