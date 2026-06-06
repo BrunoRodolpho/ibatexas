@@ -198,7 +198,15 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       schema: {
         tags: ["me"],
         summary: "Exportar dados pessoais (LGPD Art. 18 — portabilidade)",
-        response: { 200: CustomerDataResponse },
+        response: {
+          200: CustomerDataResponse,
+          // 409 when a privacy operation (erase) holds the per-customer lock.
+          409: z.object({
+            statusCode: z.number(),
+            error: z.string(),
+            message: z.string(),
+          }),
+        },
       },
       preHandler: requireAuth,
     },
