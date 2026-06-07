@@ -71,21 +71,28 @@ const MockNeedsReviewError = vi.hoisted(() =>
   },
 );
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: mockGetRedisClient,
-  rk: mockRk,
-  estimateDelivery: vi.fn(async () => ({ success: true })),
-  createCheckout: vi.fn(async () => ({ success: true })),
-  reaisToCentavos: (amount: number) => Math.round(amount * 100),
-  MedusaRequestError: MockMedusaRequestError,
-  cancelStalePaymentIntent: vi.fn().mockResolvedValue(undefined),
-  loadSchedule: vi.fn().mockResolvedValue({ days: {} }),
-  getMealPeriodFromSchedule: vi.fn().mockReturnValue("lunch"),
-  medusaAdjudicated: mockMedusaAdjudicated,
-  MedusaAdjudicateRefusedError: MockRefusedError,
-  MedusaAdjudicateDeferredError: MockDeferredError,
-  MedusaAdjudicateNeedsReviewError: MockNeedsReviewError,
-}));
+vi.mock("@ibatexas/tools", async () => {
+  // Use the REAL Receita Federal CPF validators so the P1-DATA-CPF checkout
+  // boundary check is exercised faithfully (not a stubbed always-true).
+  const actual = await vi.importActual<typeof import("@ibatexas/tools")>("@ibatexas/tools");
+  return {
+    getRedisClient: mockGetRedisClient,
+    rk: mockRk,
+    estimateDelivery: vi.fn(async () => ({ success: true })),
+    createCheckout: vi.fn(async () => ({ success: true })),
+    reaisToCentavos: (amount: number) => Math.round(amount * 100),
+    MedusaRequestError: MockMedusaRequestError,
+    cancelStalePaymentIntent: vi.fn().mockResolvedValue(undefined),
+    loadSchedule: vi.fn().mockResolvedValue({ days: {} }),
+    getMealPeriodFromSchedule: vi.fn().mockReturnValue("lunch"),
+    medusaAdjudicated: mockMedusaAdjudicated,
+    MedusaAdjudicateRefusedError: MockRefusedError,
+    MedusaAdjudicateDeferredError: MockDeferredError,
+    MedusaAdjudicateNeedsReviewError: MockNeedsReviewError,
+    isValidCpf: actual.isValidCpf,
+    normalizeCpf: actual.normalizeCpf,
+  };
+});
 
 vi.mock("@ibatexas/domain", () => ({
   createCustomerService: () => ({
@@ -643,6 +650,36 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
 
     expect(res.statusCode).toBe(404);
   });
+
+  it("returns 404 for an anonymous caller reading an owned order (P1-SEC-IDOR)", async () => {
+    // The order exists and belongs to a customer, but the caller is anonymous
+    // (no x-customer-id). Display IDs are enumerable, so a missing caller
+    // identity must be treated as an ownership mismatch — not a free pass.
+    mockMedusaAdmin.mockResolvedValue({
+      order: {
+        id: "order_03",
+        status: "completed",
+        display_id: 44,
+        total: 178,
+        subtotal: 158,
+        shipping_total: 20,
+        customer_id: "cust_OWNER",
+        items: [],
+        created_at: "2026-03-18T00:00:00.000Z",
+      },
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/cart/orders/order_03",
+      // No x-customer-id header — anonymous
+    });
+
+    expect(res.statusCode).toBe(404);
+    const body = res.json();
+    expect(body.message).toBe("Pedido não encontrado.");
+  });
 });
 
 // ── SEC-001: Cash/PIX checkout auth gate ────────────────────────────────────
@@ -669,6 +706,22 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
     });
 
     expect(res.statusCode).toBe(200);
+  });
+
+  it("duplicate checkout (idempotency gate already held) → 409 (P0-PAY-3)", async () => {
+    // SET NX returns null → a checkout for this cart is already in flight; the
+    // second submit must be rejected before any payment/cart side-effect.
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue(null) }));
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "card" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("CHECKOUT_IN_PROGRESS");
   });
 
   it("guest checkout with cash → 401", async () => {
@@ -728,6 +781,36 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
     });
 
     expect(res.statusCode).toBe(200);
+  });
+
+  // ── P1-DATA-CPF — checksum validation at the PIX checkout boundary ─────────
+  it("PIX checkout with a valid CPF → 200 OK", async () => {
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "pix", pixCpf: "529.982.247-25" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("PIX checkout with an invalid CPF checksum → 422 INVALID_CPF (never reaches checkout)", async () => {
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "pix", pixCpf: "123.456.789-00" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json().code).toBe("INVALID_CPF");
   });
 });
 

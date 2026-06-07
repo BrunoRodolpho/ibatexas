@@ -33,6 +33,8 @@ import {
   MedusaAdjudicateRefusedError,
   MedusaAdjudicateDeferredError,
   MedusaAdjudicateNeedsReviewError,
+  isValidCpf,
+  normalizeCpf,
 } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
@@ -690,6 +692,27 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         });
       }
 
+      // P0-PAY-3 (audit-2026-05-27) — checkout-endpoint dedup. Defense-in-depth
+      // on top of Stripe idempotencyKeys + Medusa per-hop keys + the kernel
+      // deterministic-nonce ledger: a SET-NX gate rejects a double-submit /
+      // network retry with 409 BEFORE any payment or Medusa cart side-effect.
+      // Prefer the client Idempotency-Key; fall back to cartId so a rapid
+      // double-submit from a client that sends none is still deduped.
+      const idemHeader = request.headers["idempotency-key"];
+      const idemToken =
+        typeof idemHeader === "string" && idemHeader.trim()
+          ? idemHeader.trim()
+          : request.body.cartId;
+      const checkoutGateKey = rk(`checkout:idem:${idemToken}`);
+      if (!(await redis.set(checkoutGateKey, "1", { NX: true, EX: 120 }))) {
+        return reply.status(409).send({
+          statusCode: 409,
+          error: "Conflict",
+          message: "Este checkout já está sendo processado. Aguarde alguns instantes.",
+          code: "CHECKOUT_IN_PROGRESS",
+        });
+      }
+
       // Sync local cart items to Medusa if provided (web app keeps items in local state)
       let cartId = request.body.cartId;
 
@@ -817,6 +840,27 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         const pixEmail = request.body.pixEmail;
         const pixCpf = request.body.pixCpf;
 
+        // P1-DATA-CPF: validate the CPF checksum at the trust boundary before it
+        // flows to Stripe (billing_details.tax_id) and Prisma. The Zod schema only
+        // checks it's a string; reuse the Receita Federal checksum validator and
+        // store the normalized (masked-format) value. Invalid → fixable 422; the
+        // request is rejected before the adjudicate envelope is built, so no
+        // checkout nonce is committed and the customer can correct and resubmit.
+        // (Cached CPF was already validated on entry via set_pix_details.)
+        let normalizedFormCpf: string | undefined;
+        if (pixCpf !== undefined && pixCpf.trim() !== "") {
+          const normalized = normalizeCpf(pixCpf);
+          if (!normalized || !isValidCpf(pixCpf)) {
+            return reply.status(422).send({
+              statusCode: 422,
+              error: "Unprocessable Entity",
+              message: "CPF inválido. Verifique os dígitos e tente novamente. Formato: 000.000.000-00.",
+              code: "INVALID_CPF",
+            });
+          }
+          normalizedFormCpf = normalized;
+        }
+
         // Try loading cached PIX details for authenticated customers
         let cached: { name?: string; email?: string; cpf?: string } | null = null;
         if (request.customerId) {
@@ -826,7 +870,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         pixExtra = {
           customerName: pixName ?? cached?.name,
           customerEmail: pixEmail ?? cached?.email,
-          customerTaxId: pixCpf ?? cached?.cpf,
+          customerTaxId: normalizedFormCpf ?? cached?.cpf,
         };
       }
 
@@ -929,6 +973,10 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       const result = out.body as Awaited<ReturnType<typeof createCheckout>>;
 
       if (!result.success) {
+        // P0-PAY-3 — fixable failure: release the idempotency gate so the
+        // customer can correct + retry immediately rather than waiting out
+        // the 120s TTL.
+        await redis.del(checkoutGateKey);
         return reply.status(400).send(result);
       }
 
@@ -1153,9 +1201,12 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
       }
 
-      // Verify ownership — prevent IDOR
+      // Verify ownership — prevent IDOR. A missing caller identity (anonymous
+      // request under optionalAuth) is treated as a mismatch: an owned order is
+      // never readable without proving you are the owner. Order display IDs
+      // (IBX-<n>) are sequential and enumerable, so anonymous reads must fail.
       const orderCustomerId = order.customer_id ?? order.metadata?.["customerId"];
-      if (orderCustomerId && request.customerId && orderCustomerId !== request.customerId) {
+      if (orderCustomerId && orderCustomerId !== request.customerId) {
         return reply.status(404).send({ statusCode: 404, error: "Not Found", message: "Pedido não encontrado." });
       }
 
@@ -1236,8 +1287,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         const projection = await querySvc.getById(orderId);
 
         if (projection) {
-          // Verify ownership
-          if (projection.customerId && request.customerId && projection.customerId !== request.customerId) {
+          // Verify ownership — a missing caller identity counts as a mismatch
+          // (prevents anonymous enumeration of sequential IBX-<n> order IDs).
+          if (projection.customerId && projection.customerId !== request.customerId) {
             return reply.status(404).send({ error: "Pedido nao encontrado." });
           }
           const pqs = createPaymentQueryService();
@@ -1271,9 +1323,10 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           return reply.status(202).send({ status: "pending", updatedAt: null });
         }
 
-        // Verify ownership
+        // Verify ownership — a missing caller identity counts as a mismatch
+        // (prevents anonymous enumeration of sequential IBX-<n> order IDs).
         const orderCustomerId = order.customer_id ?? order.metadata?.["customerId"];
-        if (orderCustomerId && request.customerId && orderCustomerId !== request.customerId) {
+        if (orderCustomerId && orderCustomerId !== request.customerId) {
           return reply.status(404).send({ error: "Pedido nao encontrado." });
         }
 

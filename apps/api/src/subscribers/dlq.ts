@@ -12,6 +12,11 @@ import * as Sentry from "@sentry/node";
 
 const DLQ_TTL = 604_800; // 7 days
 
+// Cap each DLQ list so it cannot grow unbounded within its 7-day TTL.
+// lPush puts newest entries at the head, so lTrim(0, MAX_DLQ-1) keeps the most
+// recent MAX_DLQ entries and discards the oldest from the tail.
+const MAX_DLQ = process.env.MAX_DLQ ? Number(process.env.MAX_DLQ) : 1000;
+
 export async function pushToDlq(
   eventName: string,
   payload: Record<string, unknown>,
@@ -20,15 +25,26 @@ export async function pushToDlq(
 ): Promise<void> {
   try {
     const redis = await getRedisClient();
-    await redis.lPush(
-      rk(`dlq:${eventName}`),
+    const key = rk(`dlq:${eventName}`);
+    const newLen = await redis.lPush(
+      key,
       JSON.stringify({
         ...payload,
         _failedAt: new Date().toISOString(),
         _error: String(error),
       }),
     );
-    await redis.expire(rk(`dlq:${eventName}`), DLQ_TTL);
+    // Cap the list to MAX_DLQ; drop oldest entries past the cap so it cannot grow
+    // unbounded within the 7-day TTL.
+    if (newLen > MAX_DLQ) {
+      await redis.lTrim(key, 0, MAX_DLQ - 1);
+      const dropped = newLen - MAX_DLQ;
+      log?.error?.(
+        { event: eventName, dropped, cap: MAX_DLQ },
+        "[dlq] DLQ list exceeded cap — dropped oldest entries",
+      );
+    }
+    await redis.expire(key, DLQ_TTL);
   } catch (dlqErr) {
     log?.error?.(
       { event: eventName, error: String(dlqErr) },

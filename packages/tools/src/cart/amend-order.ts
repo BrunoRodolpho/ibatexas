@@ -31,7 +31,7 @@
 
 import { randomUUID } from "node:crypto";
 import type Stripe from "stripe";
-import { AmendOrderInputSchema, NonRetryableError, canPerformAction, type AmendOrderInput, type AmendOrderResult, type AgentContext, type CustomerAction, type OrderFulfillmentStatus } from "@ibatexas/types";
+import { AmendOrderInputSchema, NonRetryableError, canPerformAction, isTerminalPaymentStatus, type AmendOrderInput, type AmendOrderResult, type AgentContext, type CustomerAction, type OrderFulfillmentStatus, type PaymentStatus } from "@ibatexas/types";
 import { buildEnvelope } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { createOrderQueryService, createPaymentQueryService, createPaymentCommandService, type OrderService, type PaymentCreatePayload, type PaymentStatusTransitionPayload } from "@ibatexas/domain";
@@ -101,78 +101,120 @@ async function regeneratePixIfNeeded(
 }
 
 /**
- * After an amendment changes the order total, sync the Payment table:
- * 1. Cancel the old Payment row via `transitionStatusFromEnvelope`
- * 2. Create a new Payment row via `createFromEnvelope`
+ * Post-amendment payment sync, guarded by a distributed lock (P1-CONC-AMEND).
  *
- * Both calls are kernel-adjudicated. REFUSE on either side stops the
- * sync (the executor's defensive throw becomes a kernel REFUSE).
+ * `regeneratePixIfNeeded` (cancels + creates a Stripe PI) and the Payment-row
+ * swap below MUST run atomically. Without a lock, two concurrent amendments
+ * interleave — orphaning each other's active Payment row / Stripe PI and pointing
+ * order metadata at a canceled intent. Invariant: exactly one active
+ * (non-terminal) payment per order.
+ *
+ * Mirrors the `change_payment` path below: lock on `payment:<id>`, then RE-READ
+ * the payment state INSIDE the lock before mutating, so a concurrent amendment
+ * that already swapped this payment is observed and we skip (avoiding cancellation
+ * of the other amendment's fresh payment). The PI regeneration + Payment-row swap
+ * happen together inside the critical section.
+ *
+ * Returns the new PIX data for the customer, or null when there is nothing to do /
+ * a concurrent amendment already swapped / the lock could not be acquired.
+ * Both payment mutations are kernel-adjudicated; a create REFUSE throws (preserving
+ * the legacy crash-on-failure semantics).
  */
-async function syncPaymentAfterAmendment(
+async function syncPaymentAndPixAfterAmendment(
   orderId: string,
-  newStripePaymentIntentId: string | undefined,
-  updatedTotal: number,
+  oldPiId: string | undefined,
+  svc: OrderService,
   customerId: string,
-): Promise<void> {
-  if (!newStripePaymentIntentId) return;
-
+): Promise<{ newPixQrCodeText?: string; newPixQrCodeUrl?: string; newStripePaymentIntentId?: string } | null> {
   const paymentQuerySvc = createPaymentQueryService();
   const paymentCmdSvc = createPaymentCommandService();
 
+  // Identify the payment to protect. The lock key is derived from its id — the
+  // SAME `payment:<id>` convention used by change_payment.
   const activePayment = await paymentQuerySvc.getActiveByOrderId(orderId).catch(() => null);
-  if (!activePayment) return;
 
-  // 1. Cancel old Payment row — kernel-adjudicated.
-  const cancelPayload: PaymentStatusTransitionPayload = {
-    paymentId: activePayment.id,
-    newStatus: "canceled",
-    actor: "system",
-    actorId: "amendment",
-    reason: "order_amended_total_changed",
-    expectedVersion: activePayment.version,
-  };
-  const cancelEnv = buildEnvelope<
-    "payment.status.transition",
-    PaymentStatusTransitionPayload
-  >({
-    kind: "payment.status.transition",
-    payload: cancelPayload,
-    nonce: randomUUID(),
-    actor: { principal: "system", sessionId: `tool:amend-order:${customerId}` },
-    taint: "SYSTEM",
-  });
-  // Tolerate REFUSE (already terminal) — same semantics as the legacy
-  // try/catch that swallowed concurrent-modification errors.
-  await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnv).catch(() => undefined);
-
-  // 2. Create new Payment row — kernel-adjudicated.
-  const createPayload: PaymentCreatePayload = {
-    orderId,
-    method: activePayment.method as "pix" | "card" | "cash",
-    amountInCentavos: updatedTotal,
-    stripePaymentIntentId: newStripePaymentIntentId,
-  };
-  const createEnv = buildEnvelope<"payment.create", PaymentCreatePayload>({
-    kind: "payment.create",
-    payload: createPayload,
-    nonce: randomUUID(),
-    actor: { principal: "system", sessionId: `tool:amend-order:${customerId}` },
-    taint: "SYSTEM",
-  });
-  const outcome = await paymentCmdSvc.createFromEnvelope(createEnv);
-  if (
-    outcome.decision.kind !== "EXECUTE" &&
-    outcome.decision.kind !== "REWRITE"
-  ) {
-    // Surface to the caller as a thrown error — preserves the legacy
-    // crash-on-failure semantics that the swap was wrapped in
-    // try/catch upstream.
-    const msg =
-      outcome.decision.kind === "REFUSE"
-        ? outcome.decision.refusal.userFacing
-        : "Não foi possível criar pagamento atualizado.";
-    throw new NonRetryableError(msg);
+  // No Payment row to protect (legacy orders pre-decoupled-billing): regenerate
+  // the PI from Medusa metadata without a lock — there is no Payment-row invariant
+  // at stake. Matches change_payment's no-active-payment fallback.
+  if (!activePayment) {
+    return regeneratePixIfNeeded(orderId, oldPiId, svc, customerId);
   }
+
+  // withLock returns null if the lock could not be acquired — a concurrent
+  // amendment holds it; skip the swap (the holder is performing it).
+  return withLock<{ newPixQrCodeText?: string; newPixQrCodeUrl?: string; newStripePaymentIntentId?: string } | null>(
+    `payment:${activePayment.id}`,
+    async () => {
+      // RE-READ inside the lock: a concurrent amendment may have already canceled
+      // this payment (and minted a new active one) while we acquired the lock.
+      const fresh = await paymentQuerySvc.getById(activePayment.id);
+      if (!fresh || isTerminalPaymentStatus(fresh.status as PaymentStatus)) {
+        // Already swapped by a concurrent amendment — do NOT cancel/recreate on
+        // top of it (that would orphan the other amendment's fresh active payment).
+        return null;
+      }
+
+      // 1. Cancel old Stripe PI + create the new one with the updated total,
+      //    repoint order metadata (inside the lock — atomic with the row swap).
+      const pixResult = await regeneratePixIfNeeded(orderId, oldPiId, svc, customerId);
+      if (!pixResult?.newStripePaymentIntentId) return pixResult;
+
+      // 2. Swap the Payment row to the new amount + PI, using the FRESH version
+      //    read inside the lock (so a concurrent version bump is observed).
+      const { order: updated } = await svc.getOrder(orderId);
+      const updatedTotal = updated.total ?? 0;
+
+      // Cancel old Payment row — kernel-adjudicated. Tolerate REFUSE (already
+      // terminal) — same semantics as the legacy concurrent-modification swallow.
+      const cancelPayload: PaymentStatusTransitionPayload = {
+        paymentId: fresh.id,
+        newStatus: "canceled",
+        actor: "system",
+        actorId: "amendment",
+        reason: "order_amended_total_changed",
+        expectedVersion: fresh.version,
+      };
+      const cancelEnv = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: cancelPayload,
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: `tool:amend-order:${customerId}` },
+        taint: "SYSTEM",
+      });
+      await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnv).catch(() => undefined);
+
+      // Create new Payment row — kernel-adjudicated.
+      const createPayload: PaymentCreatePayload = {
+        orderId,
+        method: fresh.method as "pix" | "card" | "cash",
+        amountInCentavos: updatedTotal,
+        stripePaymentIntentId: pixResult.newStripePaymentIntentId,
+      };
+      const createEnv = buildEnvelope<"payment.create", PaymentCreatePayload>({
+        kind: "payment.create",
+        payload: createPayload,
+        nonce: randomUUID(),
+        actor: { principal: "system", sessionId: `tool:amend-order:${customerId}` },
+        taint: "SYSTEM",
+      });
+      const outcome = await paymentCmdSvc.createFromEnvelope(createEnv);
+      if (
+        outcome.decision.kind !== "EXECUTE" &&
+        outcome.decision.kind !== "REWRITE"
+      ) {
+        const msg =
+          outcome.decision.kind === "REFUSE"
+            ? outcome.decision.refusal.userFacing
+            : "Não foi possível criar pagamento atualizado.";
+        throw new NonRetryableError(msg);
+      }
+
+      return pixResult;
+    },
+  );
 }
 
 export async function amendOrder(
@@ -255,21 +297,12 @@ export async function amendOrder(
         auditSink: getAuditSink(),
       });
 
-      const pixResult = await regeneratePixIfNeeded(
+      const pixResult = await syncPaymentAndPixAfterAmendment(
         parsed.orderId,
         order.metadata?.["stripePaymentIntentId"],
         svc,
         ctx.customerId,
       );
-      if (pixResult?.newStripePaymentIntentId) {
-        const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(
-          parsed.orderId,
-          pixResult.newStripePaymentIntentId,
-          updated.total ?? 0,
-          ctx.customerId,
-        );
-      }
       return {
         success: true,
         message: pixResult?.newPixQrCodeText
@@ -304,21 +337,12 @@ export async function amendOrder(
 
     // Regenerate PIX if item was removed successfully (total changed)
     if (result.success) {
-      const pixResult = await regeneratePixIfNeeded(
+      const pixResult = await syncPaymentAndPixAfterAmendment(
         parsed.orderId,
         order.metadata?.["stripePaymentIntentId"],
         svc,
         ctx.customerId,
       );
-      if (pixResult?.newStripePaymentIntentId) {
-        const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(
-          parsed.orderId,
-          pixResult.newStripePaymentIntentId,
-          updated.total ?? 0,
-          ctx.customerId,
-        );
-      }
       if (pixResult?.newPixQrCodeText) {
         return {
           ...result,
@@ -396,21 +420,12 @@ export async function amendOrder(
         auditSink: getAuditSink(),
       });
 
-      const pixResult = await regeneratePixIfNeeded(
+      const pixResult = await syncPaymentAndPixAfterAmendment(
         parsed.orderId,
         order.metadata?.["stripePaymentIntentId"],
         svc,
         ctx.customerId,
       );
-      if (pixResult?.newStripePaymentIntentId) {
-        const { order: updated } = await svc.getOrder(parsed.orderId);
-        await syncPaymentAfterAmendment(
-          parsed.orderId,
-          pixResult.newStripePaymentIntentId,
-          updated.total ?? 0,
-          ctx.customerId,
-        );
-      }
       return {
         success: true,
         message: pixResult?.newPixQrCodeText

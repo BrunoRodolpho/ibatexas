@@ -71,6 +71,14 @@ import {
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 
+// P2-AUTH-REFUNDATTR — synthetic actor stamped on a money action (refund /
+// confirm-cash) reached via the bare ADMIN_API_KEY path rather than a staff JWT
+// (requireManagerRole / requireStaff pass the API-key path through, so
+// request.staffId is undefined there). Stamping an explicit sentinel guarantees
+// the money-action row (paymentStatusHistory.actorId) + event log are never
+// blank-attributed. Fixed identity marker, not config — so a constant here.
+const API_KEY_ACTOR_ID = "api-key:admin";
+
 const ConfirmationBody = z.object({
   confirmationId: z.string().min(1).max(64),
 });
@@ -323,7 +331,13 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
         paymentId: payment.id,
         newStatus: PaymentStatus.PAID,
         actor: "admin",
-        ...(staffId ? { actorId: staffId } : {}),
+        // P2-AUTH-REFUNDATTR: stamp the synthetic sentinel on the API-key path
+        // (staffId undefined) so the money-action row is never blank-attributed.
+        actorId: staffId ?? API_KEY_ACTOR_ID,
+        // P2-CONC-CONFIRMVER: pin the version read above so a concurrent
+        // transition (method switch, second attendant, webhook flip) is rejected
+        // as a concurrency error instead of racing the X→X state-machine guard.
+        expectedVersion: payment.version,
         reason: "Dinheiro confirmado pelo atendente",
       };
       const envelope = buildEnvelope<
@@ -419,7 +433,12 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       amountInCentavos: args.amountInCentavos,
       currentRefundedCentavos: args.refundedAmountCentavos,
       actor: args.actorPrincipal === "system" ? "system" : "admin",
-      ...(args.staffId ? { actorId: args.staffId } : {}),
+      // P2-AUTH-REFUNDATTR: refund is reachable via the bare ADMIN_API_KEY path
+      // (requireManagerRole passes it through when there is no staff JWT), where
+      // args.staffId is null. Fall back to the synthetic sentinel so this money
+      // action's paymentStatusHistory.actorId + event log are never blank. A
+      // real staff JWT still attributes to that staff.
+      actorId: args.staffId ?? API_KEY_ACTOR_ID,
       reason: args.reason,
     };
     const envelope = buildEnvelope<
@@ -1472,6 +1491,7 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       const notes = await prisma.orderNote.findMany({
         where: { orderId: request.params.id },
         orderBy: { createdAt: "asc" },
+        take: 200,
       });
 
       return reply.send({

@@ -176,6 +176,29 @@ describe("cart.abandoned — staff high-value cart alert", () => {
     );
   });
 
+  // P1-SCALE-WAALERTS: one high-value alert per cart under at-least-once redelivery.
+  it("does NOT re-send the high-value alert when the per-cart claim is already taken", async () => {
+    process.env.STAFF_ALERT_PHONE = "+5519900000099";
+
+    // isNewEvent('alert:highvalue-cart:cart_01') → SET NX returns null (already
+    // claimed by a prior delivery). Other SET NX claims still succeed.
+    const mockRedis = createMockRedis({
+      set: vi.fn(async (key: string) =>
+        key.includes("highvalue-cart") ? null : "OK",
+      ),
+    });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+    mockAtomicIncr.mockResolvedValue(1);
+    mockMedusaStore.mockResolvedValue({ cart: { total: 250 } }); // R$250 — over threshold
+
+    await natsHandlers["cart.abandoned"](ABANDONED_CART_PAYLOAD);
+
+    // Duplicate delivery suppressed: no alert sent, and the hourly rate budget
+    // was not consumed (the guard runs before atomicIncr).
+    expect(mockSendText).not.toHaveBeenCalled();
+    expect(mockAtomicIncr).not.toHaveBeenCalled();
+  });
+
   it("does NOT send alert when cart total is exactly R$200 (threshold is >20000)", async () => {
     process.env.STAFF_ALERT_PHONE = "+5519900000099";
 

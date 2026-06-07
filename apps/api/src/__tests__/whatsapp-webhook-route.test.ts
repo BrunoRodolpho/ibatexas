@@ -322,12 +322,34 @@ describe("checkIdempotency (via POST /api/webhooks/whatsapp)", () => {
     });
 
     expect(res.statusCode).toBe(200);
-    // Idempotency key was set
+    // Idempotency CLAIM was set with the short in-flight TTL (P2-SEC-WAIDEMPOTENCY
+    // two-phase: 300s claim BEFORE the turn; promoted to 24h on success).
     expect(mockRedis.set).toHaveBeenCalledWith(
       expect.stringContaining("SM_NEW"),
       "1",
-      expect.objectContaining({ EX: 86400, NX: true }),
+      expect.objectContaining({ EX: 300, NX: true }),
     );
+  });
+
+  it("fails CLOSED (503) when the idempotency claim can't reach Redis (P2-SEC-WAIDEMPOTENCY)", async () => {
+    mockGetRedisClient.mockResolvedValue(
+      createMockRedis({ set: vi.fn().mockRejectedValue(new Error("redis down")) }),
+    );
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/whatsapp",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-twilio-signature": "valid-sig",
+      },
+      payload: "MessageSid=SM_FAILCLOSED&From=whatsapp%3A%2B5511999999999&Body=oi",
+    });
+
+    // A Redis error must NOT be treated as "new" (would drop the message) nor as
+    // "duplicate" — fail closed so Twilio retries.
+    expect(res.statusCode).toBe(503);
   });
 
   it("returns 200 XML immediately for duplicate message", async () => {

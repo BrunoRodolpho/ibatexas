@@ -11,7 +11,7 @@
 //   - The legacy bare-arg `reconcileFromWebhook` is NOT called (bypass-
 //     detection: every webhook reconcile goes through the envelope path).
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Fastify from "fastify";
 import { stripeWebhookRoutes } from "../routes/stripe-webhook.js";
 
@@ -21,6 +21,11 @@ const mockConstructEvent = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
+// P0-PAY-2: swappable withLock so the double-capture concurrency test can install
+// a real try-lock; defaults to pass-through so existing suites are unaffected.
+const lockState = vi.hoisted(() => ({
+  impl: async (_key: string, fn: () => Promise<unknown>): Promise<unknown> => fn(),
+}));
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockMedusaStore = vi.hoisted(() => vi.fn());
 const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
@@ -87,7 +92,7 @@ vi.mock("@ibatexas/tools", () => ({
   rk: mockRk,
   medusaAdmin: mockMedusaAdmin,
   medusaStore: mockMedusaStore,
-  withLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+  withLock: vi.fn((key: string, fn: () => Promise<unknown>) => lockState.impl(key, fn)),
   medusaAdjudicated: mockMedusaAdjudicated,
   MedusaAdjudicateRefusedError: MockRefusedError,
   MedusaAdjudicateDeferredError: MockDeferredError,
@@ -132,6 +137,29 @@ vi.mock("../jobs/pix-expiry-monitor.js", () => ({
   markPixPaid: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Ack-then-async (P1-NET-STRIPESYNC): the route now enqueues a durable job
+// instead of running handlers inline. By DEFAULT the enqueue mock synchronously
+// dispatches the event through the real handler switch, so every existing
+// handler-effect suite (capture / NATS / reconcile / PIX / double-capture /
+// PIXDUP) keeps exercising the (now-async) handlers via the injected request.
+// The dedicated ack-then-async suite overrides this per-test.
+const mockEnqueueStripeWebhookEvent = vi.hoisted(() =>
+  vi.fn(async (event: unknown, receivedAtMs: number) => {
+    const { dispatchStripeWebhookEvent } = await import("../routes/stripe-webhook.js");
+    await dispatchStripeWebhookEvent(event as never, receivedAtMs, {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    });
+  }),
+);
+const mockStartStripeWebhookProcessor = vi.hoisted(() => vi.fn());
+
+vi.mock("../jobs/stripe-webhook-processor.js", () => ({
+  enqueueStripeWebhookEvent: mockEnqueueStripeWebhookEvent,
+  startStripeWebhookProcessor: mockStartStripeWebhookProcessor,
+}));
+
 async function buildTestServer() {
   const app = Fastify({ logger: false });
   await app.register(stripeWebhookRoutes);
@@ -167,6 +195,7 @@ function createStripeEvent(
   return {
     id,
     type,
+    livemode: false,
     // Stripe events always carry a unix-seconds `created` timestamp.
     // Pinned so the envelope's deterministic-hash test sees a stable value.
     created: 1_700_000_000,
@@ -562,6 +591,7 @@ describe("POST /api/webhooks/stripe — unknown event type", () => {
   it("returns 200 and ignores unknown event types", async () => {
     const event = {
       id: "evt_unknown",
+      livemode: false,
       type: "invoice.payment_succeeded",
       data: { object: {} },
     };
@@ -603,6 +633,7 @@ describe("POST /api/webhooks/stripe — charge.refunded", () => {
   it("publishes order.refunded event with correct payload", async () => {
     const event = {
       id: "evt_refund_01",
+      livemode: false,
       type: "charge.refunded",
       data: {
         object: {
@@ -644,6 +675,7 @@ describe("POST /api/webhooks/stripe — charge.refunded", () => {
   it("handles missing medusaOrderId gracefully (warn, no crash)", async () => {
     const event = {
       id: "evt_refund_02",
+      livemode: false,
       type: "charge.refunded",
       data: {
         object: {
@@ -689,6 +721,7 @@ describe("POST /api/webhooks/stripe — charge.dispute.created", () => {
   it("publishes order.disputed event with correct payload", async () => {
     const event = {
       id: "evt_dispute_01",
+      livemode: false,
       type: "charge.dispute.created",
       data: {
         object: {
@@ -732,6 +765,7 @@ describe("POST /api/webhooks/stripe — charge.dispute.created", () => {
   it("handles missing medusaOrderId in dispute metadata (publishes with null orderId)", async () => {
     const event = {
       id: "evt_dispute_02",
+      livemode: false,
       type: "charge.dispute.created",
       data: {
         object: {
@@ -789,6 +823,7 @@ describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
   it("publishes order.canceled event with correct payload", async () => {
     const event = {
       id: "evt_cancel_01",
+      livemode: false,
       type: "payment_intent.canceled",
       data: {
         object: {
@@ -830,6 +865,7 @@ describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
   it("handles missing medusaOrderId gracefully (warn, no crash)", async () => {
     const event = {
       id: "evt_cancel_02",
+      livemode: false,
       type: "payment_intent.canceled",
       data: {
         object: {
@@ -860,47 +896,66 @@ describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
   });
 });
 
-describe("POST /api/webhooks/stripe — processing error", () => {
+describe("POST /api/webhooks/stripe — ack-then-async enqueue contract (P1-NET-STRIPESYNC)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    // Default: no Payment row found — reconciliation path exits early.
-    // Tests that exercise the envelope path override this explicitly.
     mockGetByStripePaymentIntentId.mockResolvedValue(null);
     mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
-  it("returns 500 and removes idempotency key on processing error", async () => {
+  it("enqueues a durable job and returns 200 WITHOUT running handlers inline", async () => {
     const event = createStripeEvent("payment_intent.succeeded");
     mockConstructEvent.mockReturnValue(event);
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
 
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    // capturePayment service throws
-    mockCapturePayment.mockRejectedValue(new Error("Medusa down"));
+    // Override the default sync-dispatch with a non-dispatching stub so we can
+    // prove the ROUTE does NOT run the heavy work inline — it only enqueues.
+    mockEnqueueStripeWebhookEvent.mockImplementationOnce(async () => undefined);
 
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
       url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
+      headers: { "content-type": "application/json", "stripe-signature": "t=123,v1=valid" },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    // Enqueued with the verified event; the heavy handler work did NOT run inline.
+    expect(mockEnqueueStripeWebhookEvent).toHaveBeenCalledTimes(1);
+    expect(mockEnqueueStripeWebhookEvent.mock.calls[0][0]).toMatchObject({ id: "evt_test_123" });
+    expect(mockCapturePayment).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+
+  it("on ENQUEUE failure, downgrades the idempotency key to 300s and returns 500 (Stripe retries)", async () => {
+    const event = createStripeEvent("payment_intent.succeeded");
+    mockConstructEvent.mockReturnValue(event);
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    // The enqueue itself fails (Redis/BullMQ down) — the claimed key must NOT
+    // suppress Stripe's retry, so it is downgraded to a short TTL + we 500.
+    mockEnqueueStripeWebhookEvent.mockRejectedValueOnce(new Error("queue unavailable"));
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: { "content-type": "application/json", "stripe-signature": "t=123,v1=valid" },
       payload: Buffer.from("{}"),
     });
 
     expect(res.statusCode).toBe(500);
-    const body = res.json();
-    expect(body.error).toContain("Internal processing error");
-
-    // Idempotency key TTL should be shortened so retry can succeed after 5min
+    expect(res.json().error).toContain("enqueue");
+    // Key TTL shortened to 300s so Stripe's retry re-opens the window.
     expect(mockRedis.expire).toHaveBeenCalledWith(
       expect.stringContaining("evt_test_123"),
-      expect.any(Number),
+      300,
     );
   });
 });
@@ -1261,6 +1316,7 @@ describe("POST /api/webhooks/stripe — kernel-gated reconciliation (Task 12)", 
 
     const event = {
       id: "evt_refund_envelope_01",
+      livemode: false,
       type: "charge.refunded",
       created: 1_700_000_000,
       data: {
@@ -1329,6 +1385,7 @@ describe("POST /api/webhooks/stripe — PIX cart-complete via medusaAdjudicated 
   function createPixEvent(eventId = "evt_pix_complete_01", cartId = "cart_pix_01") {
     return {
       id: eventId,
+      livemode: false,
       type: "payment_intent.succeeded",
       created: 1_700_000_000,
       data: {
@@ -1506,6 +1563,7 @@ describe("POST /api/webhooks/stripe — PIX cart-complete metadata-update via st
   ) {
     return {
       id: eventId,
+      livemode: false,
       type: "payment_intent.succeeded",
       created: 1_700_000_000,
       data: {
@@ -1630,5 +1688,240 @@ describe("POST /api/webhooks/stripe — PIX cart-complete metadata-update via st
     // Wrapper was attempted; bare SDK never touched.
     expect(mockStripeAdjudicatedUpdate).toHaveBeenCalledTimes(1);
     expect(mockBareStripePaymentIntentsUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/webhooks/stripe — double-capture race (P0-PAY-2)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+  });
+
+  afterEach(() => {
+    // restore the default pass-through lock so other suites are unaffected
+    lockState.impl = async (_key: string, fn: () => Promise<unknown>) => fn();
+  });
+
+  it("serializes two concurrent succeeded events for one order — single capture + single order.placed", async () => {
+    // Two distinct succeeded events (distinct PaymentIntents) for the SAME order —
+    // the realistic case after amend_order/regenerate_pix mints a 2nd PI.
+    const evtA = createStripeEvent("payment_intent.succeeded", { id: "pi_a" }, "evt_a");
+    const evtB = createStripeEvent("payment_intent.succeeded", { id: "pi_b" }, "evt_b");
+    mockConstructEvent.mockReturnValueOnce(evtA).mockReturnValueOnce(evtB);
+
+    // Distinct event ids → both pass the SET-NX idempotency gate.
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    // Real try-lock matching production withLock: the loser gets null (no queue).
+    const keysSeen: string[] = [];
+    const held = new Set<string>();
+    let active = 0;
+    let maxConcurrent = 0;
+    lockState.impl = async (key: string, fn: () => Promise<unknown>) => {
+      keysSeen.push(key);
+      if (held.has(key)) return null; // contention → loser short-circuits
+      held.add(key);
+      active++;
+      maxConcurrent = Math.max(maxConcurrent, active);
+      try {
+        return await fn();
+      } finally {
+        active--;
+        held.delete(key);
+      }
+    };
+
+    // capturePayment yields (so the second event hits the held lock); the lock
+    // winner returns a result, a subsequent call returns null (metadata guard).
+    let captureCalls = 0;
+    mockCapturePayment.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+      if (captureCalls++ === 0) {
+        return {
+          customerId: "cus_01", displayId: 1, customerEmail: "a@b.com",
+          customerName: "T", customerPhone: "+5511", totalInCentavos: 8900,
+          subtotalInCentavos: 8900, shippingInCentavos: 0, items: [],
+          paymentMethod: "pix", deliveryType: "pickup", tipInCentavos: 0,
+        };
+      }
+      return null;
+    });
+
+    const app = await buildTestServer();
+    const fire = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/webhooks/stripe",
+        headers: { "content-type": "application/json", "stripe-signature": "t=1,v1=x" },
+        payload: Buffer.from("{}"),
+      });
+
+    const [r1, r2] = await Promise.all([fire(), fire()]);
+
+    expect(r1.statusCode).toBe(200);
+    expect(r2.statusCode).toBe(200);
+    // Capture was wrapped in a per-order lock.
+    expect(keysSeen).toContain("order-capture:order_01");
+    // The lock never let capture run concurrently.
+    expect(maxConcurrent).toBe(1);
+    // Exactly one order.placed despite two succeeded events → no double capture.
+    const placed = mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.placed");
+    expect(placed).toHaveLength(1);
+  });
+});
+
+describe("POST /api/webhooks/stripe — livemode binding (P3-SEC-STRIPESRC)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv(); // STRIPE_SECRET_KEY = sk_test_123 → expectedLivemode = false
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+  });
+
+  const liveEvent = (livemode: boolean, id: string) => ({
+    id,
+    type: "payment_intent.succeeded",
+    created: 1_700_000_000,
+    livemode,
+    data: { object: { id: "pi_test_123", metadata: { medusaOrderId: "order_01" }, last_payment_error: null } },
+  });
+
+  const fire = async () => {
+    const app = await buildTestServer();
+    return app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: { "content-type": "application/json", "stripe-signature": "t=123,v1=valid" },
+      payload: Buffer.from("{}"),
+    });
+  };
+
+  it("rejects a live-mode event under a test key — 400, no idempotency claim, no downstream", async () => {
+    mockConstructEvent.mockReturnValue(liveEvent(true, "evt_live_1"));
+    const setMock = vi.fn().mockResolvedValue("OK");
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: setMock }));
+
+    const res = await fire();
+
+    expect(res.statusCode).toBe(400);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(mockCapturePayment).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+
+  it("accepts a test-mode event under a test key (modes match) — reaches processing", async () => {
+    mockConstructEvent.mockReturnValue(liveEvent(false, "evt_test_match"));
+    mockGetRedisClient.mockResolvedValue(createMockRedis());
+    mockCapturePayment.mockResolvedValue(null); // no-op cleanly past the gate
+
+    const res = await fire();
+
+    expect(res.statusCode).toBe(200);
+    expect(mockCapturePayment).toHaveBeenCalled(); // proves it passed the livemode gate
+  });
+
+  it("rejects a test-mode event under a LIVE key (mismatch the other way) — 400, no claim", async () => {
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_live_realkey"); // expectedLivemode = true
+    mockConstructEvent.mockReturnValue(liveEvent(false, "evt_test_2"));
+    const setMock = vi.fn().mockResolvedValue("OK");
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: setMock }));
+
+    const res = await fire();
+
+    expect(res.statusCode).toBe(400);
+    expect(setMock).not.toHaveBeenCalled();
+    expect(mockCapturePayment).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/webhooks/stripe — PIX cart-complete concurrency (PIXDUP)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    // restore the default pass-through lock so other suites are unaffected
+    lockState.impl = async (_key: string, fn: () => Promise<unknown>) => fn();
+  });
+
+  // PIX event: no medusaOrderId → triggers the cart-complete branch; cartId fixed.
+  const pixEvent = (id: string) => ({
+    id,
+    type: "payment_intent.succeeded",
+    created: 1_700_000_000,
+    livemode: false,
+    data: { object: { id: "pi_pixdup", metadata: { cartId: "cart_99" }, last_payment_error: null } },
+  });
+
+  const fire = (app: Awaited<ReturnType<typeof buildTestServer>>) =>
+    app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: { "content-type": "application/json", "stripe-signature": "t=1,v1=x" },
+      payload: Buffer.from("{}"),
+    });
+
+  it("retries (500) and never issues a 2nd /complete when the cart-complete lock is held", async () => {
+    lockState.impl = async (key: string, fn: () => Promise<unknown>) =>
+      key.startsWith("cart-complete:") ? null : fn();
+    mockConstructEvent.mockReturnValue(pixEvent("evt_pixdup_1"));
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+
+    const res = await fire(await buildTestServer());
+
+    expect(res.statusCode).toBe(500); // contention → outer catch → Stripe retry
+    expect(mockMedusaAdjudicated).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/store/carts/cart_99/complete" }),
+    );
+    expect(mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.placed")).toHaveLength(0);
+  });
+
+  it("serializes two concurrent succeeded events for one cart — exactly one /complete", async () => {
+    const keysSeen: string[] = [];
+    const held = new Set<string>();
+    let active = 0;
+    let maxConcurrent = 0;
+    lockState.impl = async (key: string, fn: () => Promise<unknown>) => {
+      keysSeen.push(key);
+      if (held.has(key)) return null;
+      held.add(key);
+      active++;
+      maxConcurrent = Math.max(maxConcurrent, active);
+      try {
+        return await fn();
+      } finally {
+        active--;
+        held.delete(key);
+      }
+    };
+    mockConstructEvent.mockReturnValueOnce(pixEvent("evt_pd_a")).mockReturnValueOnce(pixEvent("evt_pd_b"));
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+    let completeCalls = 0;
+    mockMedusaAdjudicated.mockImplementation(async (opts: { path?: string }) => {
+      if (opts.path === "/store/carts/cart_99/complete") {
+        await new Promise((r) => setTimeout(r, 25));
+        completeCalls++;
+        return { type: "order", order: { id: "order_x", display_id: 7 } };
+      }
+      return {};
+    });
+    mockCapturePayment.mockResolvedValue(null);
+
+    const app = await buildTestServer();
+    await Promise.all([fire(app), fire(app)]);
+
+    expect(keysSeen).toContain("cart-complete:cart_99");
+    expect(maxConcurrent).toBe(1); // the lock never let two completions run at once
+    expect(completeCalls).toBe(1); // loser never issued a 2nd /complete
   });
 });

@@ -8,8 +8,13 @@ const require = createRequire(import.meta.url);
 const { version } = require("../../package.json") as { version: string };
 
 export async function registerSwagger(server: FastifyInstance): Promise<void> {
-  // Skip swagger if explicitly disabled (default: enabled in all environments)
-  if (process.env.ENABLE_SWAGGER === "false") return;
+  // Opt-in in production: /docs enumerates the entire API surface, so it must be
+  // explicitly enabled there. Outside production it stays on for local DX.
+  // Enabled when ENABLE_SWAGGER === "true" OR NODE_ENV !== "production".
+  const enabled =
+    process.env.ENABLE_SWAGGER === "true" ||
+    process.env.NODE_ENV !== "production";
+  if (!enabled) return;
 
   await server.register(swagger, {
     openapi: {

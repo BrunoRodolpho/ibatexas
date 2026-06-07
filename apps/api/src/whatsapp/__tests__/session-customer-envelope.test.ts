@@ -18,9 +18,14 @@
 //   - The new-session response shape `{ phone, sessionId, customerId,
 //     isNew: true }` is preserved.
 
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { resolveWhatsAppSession } from "../session.js";
+
+// P1-CRYPTO-PHONEHASH: the phone pseudonym is a keyed full-length HMAC under
+// PHONE_HASH_PEPPER. Pin a fixed pepper so the derived sessionId/phoneHash are
+// deterministic and recomputable below.
+const PHONE_PEPPER = "test-pepper-eeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────
 
@@ -61,6 +66,7 @@ vi.mock("@ibatexas/types", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("PHONE_HASH_PEPPER", PHONE_PEPPER);
   mockRedis.hGetAll.mockResolvedValue({}); // cache miss
   mockRedis.hSet.mockResolvedValue(1);
   mockRedis.expire.mockResolvedValue(true);
@@ -77,7 +83,7 @@ afterEach(() => {
 describe("session.ts P3 — customer.create envelope routing (WhatsApp)", () => {
   it("routes through createFromEnvelope with system-actor envelope on cache miss", async () => {
     const phone = "+5511999999999";
-    const expectedHash = createHash("sha256").update(phone).digest("hex").slice(0, 12);
+    const expectedHash = createHmac("sha256", PHONE_PEPPER).update(phone).digest("hex");
 
     mockCreateFromEnvelope.mockResolvedValue({
       decision: { kind: "EXECUTE" },

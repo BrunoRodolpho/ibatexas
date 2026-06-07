@@ -31,6 +31,15 @@ export interface PaymentQueryService {
   /** Get the active (non-terminal) payment for an order, with history. */
   getActiveByOrderId(orderId: string, opts?: { historyLimit?: number }): Promise<PaymentWithHistory | null>
 
+  /**
+   * Batched active-payment lookup (N1PAY): the most-recent non-terminal payment
+   * for each order id, resolved in ONE query instead of N. Mirrors
+   * getActiveByOrderId's per-order semantics (createdAt-desc + terminal-status
+   * exclusion); omits the statusHistory include since list callers don't read it.
+   * Orders with no active payment are absent from the returned map.
+   */
+  getActiveByOrderIds(orderIds: ReadonlyArray<string>): Promise<Map<string, Payment>>
+
   /** List all payment attempts for an order (most recent first). */
   listByOrderId(orderId: string, opts?: { limit?: number; offset?: number }): Promise<ListByOrderResult>
 
@@ -71,6 +80,25 @@ export function createPaymentQueryService(): PaymentQueryService {
           },
         },
       })
+    },
+
+    async getActiveByOrderIds(orderIds) {
+      if (orderIds.length === 0) return new Map<string, Payment>()
+      const rows = await prisma.payment.findMany({
+        where: {
+          orderId: { in: orderIds as string[] },
+          status: { notIn: terminalValues as PrismaPaymentStatus[] },
+        },
+        orderBy: { createdAt: "desc" },
+      })
+      // Rows are createdAt-desc; the FIRST row seen per orderId is the
+      // most-recent non-terminal payment — identical to getActiveByOrderId's
+      // findFirst({ orderBy: createdAt desc }) applied per order.
+      const byOrder = new Map<string, Payment>()
+      for (const row of rows) {
+        if (!byOrder.has(row.orderId)) byOrder.set(row.orderId, row)
+      }
+      return byOrder
     },
 
     async listByOrderId(orderId, opts) {

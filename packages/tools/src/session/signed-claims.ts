@@ -2,10 +2,46 @@
 // Uses HMAC-SHA256 to sign {sessionId, customerId, issuedAt} tuples.
 // Consumers verify the signature before trusting session ownership.
 
-import { createHmac, timingSafeEqual } from "node:crypto"
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 
-const SECRET = process.env.SESSION_HMAC_SECRET ?? "dev-session-secret-change-me"
 const MAX_AGE_MS = 24 * 60 * 60 * 1000 // 24h
+
+// Known .env.example placeholders that must never be accepted as a real secret —
+// signing with a publicly-known key lets anyone forge session claims.
+const REJECTED_SECRETS = new Set(["change-me-in-production", "dev-session-secret-change-me"])
+
+/**
+ * Load SESSION_HMAC_SECRET, failing closed.
+ *
+ * - prod/dev: throws if missing, too short, or a known placeholder.
+ * - test: returns a stable per-process random secret when unset, so tests can
+ *   sign+verify round-trips without a configured value. An explicitly-set value
+ *   (including a placeholder) is still validated, so the fail-closed behavior is
+ *   itself testable.
+ *
+ * Resolved lazily (per call, not at import) so the module can be imported in
+ * environments that configure the secret after load.
+ */
+let _testFallbackSecret: string | undefined
+function sessionSecret(): string {
+  const value = process.env.SESSION_HMAC_SECRET
+
+  if (process.env.NODE_ENV === "test" && (value === undefined || value === "")) {
+    _testFallbackSecret ??= randomBytes(32).toString("base64")
+    return _testFallbackSecret
+  }
+
+  if (!value) {
+    throw new Error("SESSION_HMAC_SECRET env var is required")
+  }
+  if (REJECTED_SECRETS.has(value)) {
+    throw new Error("SESSION_HMAC_SECRET is set to a known placeholder — generate a real secret (openssl rand -base64 32)")
+  }
+  if (value.length < 32) {
+    throw new Error("SESSION_HMAC_SECRET must be at least 32 characters")
+  }
+  return value
+}
 
 export interface SessionClaim {
   sessionId: string
@@ -18,7 +54,7 @@ export interface SessionClaim {
  */
 export function signSessionClaim(claim: SessionClaim): string {
   const payload = `${claim.sessionId}:${claim.customerId}:${claim.issuedAt}`
-  return createHmac("sha256", SECRET).update(payload).digest("base64url")
+  return createHmac("sha256", sessionSecret()).update(payload).digest("base64url")
 }
 
 /**

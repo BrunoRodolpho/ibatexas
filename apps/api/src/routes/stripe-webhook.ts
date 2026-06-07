@@ -68,11 +68,21 @@ import {
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import { markPixPaid } from "../jobs/pix-expiry-monitor.js";
+import {
+  enqueueStripeWebhookEvent,
+  startStripeWebhookProcessor,
+} from "../jobs/stripe-webhook-processor.js";
+
+// P2-MEM-STRIPENEW: memoize a module-level Stripe client so we don't construct a
+// fresh `new Stripe(key)` (with its own HTTP agent/connection pool) on every
+// webhook request. Lazy so the key is still read from env at first use.
+let stripeClient: Stripe | undefined;
 
 function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY not set");
-  return new Stripe(key);
+  if (!stripeClient) stripeClient = new Stripe(key);
+  return stripeClient;
 }
 
 type WebhookLogger = {
@@ -284,25 +294,45 @@ async function handlePaymentSucceeded(
   // sourceSubject = "webhook:stripe:<event.id>" surfaces in audit.
   const cartId = paymentIntent.metadata?.["cartId"];
   if (!orderId && cartId) {
+    // PIXDUP: serialize concurrent payment_intent.succeeded events for the SAME
+    // cart with a distributed try-lock (realistic after amend_order/regenerate_pix
+    // mints a 2nd PI → a 2nd distinct event.id; the SET-NX gate AND the
+    // medusaAdjudicated nonce both key on event.id, so neither dedupes across the
+    // two events — only this lock + Medusa's own internal serialization do).
+    // Loser gets null and is retried; Medusa's /complete is idempotent
+    // (creates an order only when !order_id, else returns the cart's linked
+    // order), so a retry re-runs /complete and gets the SAME order — never a
+    // strand or a duplicate. (No local `pix:completed` flag: a crash between the
+    // flag and completion would strand the order behind a suppressing flag.)
+    let contended = false;
     try {
-      const completedData = await medusaAdjudicated<
-        Record<string, unknown>,
-        { type?: string; order?: { id: string; display_id?: number } }
-      >({
-        scope: "store",
-        method: "POST",
-        path: `/store/carts/${cartId}/complete`,
-        payload: {},
-        intentKind: "medusa.cart.complete",
-        idempotencyKey: event.id,
-        sourceSubject: `webhook:stripe:${event.id}`,
-        auditSink: getAuditSink(),
-        log: logger,
-      });
+      const completion = await withLock(`cart-complete:${cartId}`, () =>
+        medusaAdjudicated<
+          Record<string, unknown>,
+          { type?: string; order?: { id: string; display_id?: number } }
+        >({
+          scope: "store",
+          method: "POST",
+          path: `/store/carts/${cartId}/complete`,
+          payload: {},
+          intentKind: "medusa.cart.complete",
+          idempotencyKey: event.id,
+          sourceSubject: `webhook:stripe:${event.id}`,
+          auditSink: getAuditSink(),
+          log: logger,
+        }),
+      );
 
-      orderId = completedData.order?.display_id
-        ? formatOrderId(completedData.order.display_id)
-        : completedData.order?.id;
+      if (completion === null) {
+        // Another worker holds the cart-complete lock — mark contention and
+        // throw AFTER the try so the governance catch below doesn't swallow it.
+        contended = true;
+      } else {
+        const completedData = completion;
+
+        orderId = completedData.order?.display_id
+          ? formatOrderId(completedData.order.display_id)
+          : completedData.order?.id;
 
       if (orderId) {
         // W8-V2 (NEW-W7-V2): persist orderId back to the PaymentIntent
@@ -326,6 +356,7 @@ async function handlePaymentSucceeded(
           },
         );
         logger.info({ event_id: event.id, cart_id: cartId, order_id: orderId }, "PIX: cart completed, order created");
+      }
       }
     } catch (err) {
       // Governance-driven skips (REFUSE / DEFER / NEEDS_REVIEW) are
@@ -359,6 +390,14 @@ async function handlePaymentSucceeded(
         logger.error({ event_id: event.id, cart_id: cartId, error: String(err) }, "PIX: failed to complete cart");
       }
     }
+
+    if (contended) {
+      logger.info(
+        { event_id: event.id, cart_id: cartId },
+        "PIX: cart completion in progress on another worker — will retry",
+      );
+      throw new Error(`cart-complete in progress for cart ${cartId}`);
+    }
   }
 
   if (!orderId) {
@@ -386,9 +425,18 @@ async function handlePaymentSucceeded(
       }),
     log: logger,
   });
-  const result = await svc.capturePayment(orderId, paymentIntent.id, {
-    amountInCentavos: paymentIntent.amount,
-  });
+  // Serialize capture per order (P0-PAY-2). Two distinct payment_intent.succeeded
+  // events for one order (realistic after amend_order/regenerate_pix mints a 2nd PI)
+  // would otherwise both pass capturePayment's metadata guard and both capture +
+  // publish order.placed. The lock makes the read-modify-write atomic; capturePayment's
+  // own re-read of metadata.stripePaymentIntentId (now inside the lock) closes the
+  // window for the loser. withLock returns null on contention — folded into the same
+  // "already processed" no-op as capturePayment's null.
+  const result = await withLock(`order-capture:${orderId}`, () =>
+    svc.capturePayment(orderId, paymentIntent.id, {
+      amountInCentavos: paymentIntent.amount,
+    }),
+  );
 
   if (!result) {
     logger.info({ event_id: event.id, order_id: orderId }, "Order already processed — no-op");
@@ -583,9 +631,51 @@ async function handlePaymentIntentCanceled(
   );
 }
 
+// ── Dispatch (runs inside the BullMQ processor, NOT the HTTP handler) ─────────
+
+/**
+ * Route a verified Stripe event to its handler. Invoked by the
+ * stripe-webhook-processor worker (ack-then-async, P1-NET-STRIPESYNC) — the HTTP
+ * route only verifies + enqueues. `receivedAtMs` is the webhook receipt time so
+ * each handler's processing_ms reflects end-to-end latency. The handlers retain
+ * their kernel-adjudicated egress + the P0-PAY-1/P0-PAY-2/PIXDUP/STRIPESRC fixes.
+ */
+export async function dispatchStripeWebhookEvent(
+  event: Stripe.Event,
+  receivedAtMs: number,
+  logger: WebhookLogger,
+): Promise<void> {
+  switch (event.type) {
+    case "payment_intent.succeeded":
+      await handlePaymentSucceeded(event, receivedAtMs, logger);
+      break;
+    case "payment_intent.payment_failed":
+      await handlePaymentFailed(event, receivedAtMs, logger);
+      break;
+    case "charge.refunded":
+      await handleChargeRefunded(event, receivedAtMs, logger);
+      break;
+    case "charge.dispute.created":
+      await handleChargeDisputeCreated(event, receivedAtMs, logger);
+      break;
+    case "payment_intent.canceled":
+      await handlePaymentIntentCanceled(event, receivedAtMs, logger);
+      break;
+    default:
+      logger.info({ event_id: event.id, type: event.type }, "Unhandled Stripe event type — ignoring");
+  }
+}
+
 // ── Route registration ──────────────────────────────────────────────────────
 
 export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
+  // Self-register the durable processor so queued jobs drain on (re)start.
+  // Guarded out of the test env (no BullMQ/Redis worker in unit tests); the
+  // handlers themselves are exercised via dispatchStripeWebhookEvent.
+  if (process.env.NODE_ENV !== "test") {
+    startStripeWebhookProcessor(dispatchStripeWebhookEvent);
+  }
+
   // Scope raw body parser to this route only (Fastify encapsulated plugin)
   await server.register(async function stripeWebhookPlugin(scoped) {
     scoped.addContentTypeParser(
@@ -631,6 +721,26 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
         return reply.code(400).send({ error: "Webhook signature verification failed" });
       }
 
+      // P3-SEC-STRIPESRC: bind the event's mode to the API key's mode. The signature
+      // check proves the event came from whoever holds the webhook secret, but not that
+      // its mode matches this deployment — a test-mode event reaching a live deployment
+      // (or vice versa), e.g. via a leaked/shared secret or a misconfigured Connect
+      // setup, must be refused BEFORE its metadata drives order completion. `sk_live_`
+      // ⇒ expect livemode true; anything else (sk_test_, unset) ⇒ expect false.
+      const expectedLivemode = (process.env.STRIPE_SECRET_KEY ?? "").startsWith("sk_live_");
+      if (event.livemode !== expectedLivemode) {
+        server.log.warn(
+          {
+            event_id: event.id,
+            event_livemode: event.livemode,
+            expected_livemode: expectedLivemode,
+            action: "stripe_livemode_mismatch",
+          },
+          "Stripe webhook livemode mismatch — refusing",
+        );
+        return reply.code(400).send({ error: "Webhook livemode mismatch" });
+      }
+
       // Idempotency — 7 days covers Stripe's 3-day retry window with margin
       const redis = await getRedisClient();
       const idempotencyKey = rk(`webhook:processed:${event.id}`);
@@ -640,45 +750,28 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
         return reply.code(200).send({ ok: true, duplicate: true });
       }
 
+      // Ack-then-async (P1-NET-STRIPESYNC): enqueue a durable BullMQ job and
+      // return 200 immediately, instead of running the heavy Medusa-complete +
+      // capture + NATS + reconcile work inline (which held the HTTP connection
+      // open and risked a Stripe client timeout → retry storm + double-process).
+      // The 7-day idempotency key is already claimed above, so Stripe will NOT
+      // retry — durability now rests on BullMQ (jobId=event.id dedup + attempts +
+      // failed-set retention), not on Stripe.
+      //
+      // Bad-money-port trap: if the ENQUEUE ITSELF fails (Redis/BullMQ down), the
+      // claimed key would otherwise suppress Stripe's retry forever and the event
+      // would be lost. So downgrade the key to a 300s TTL and return 500 → Stripe
+      // re-delivers and we re-enqueue once the queue recovers. (Processing-time
+      // failures are handled by BullMQ retry, not here.)
       try {
-        switch (event.type) {
-          case "payment_intent.succeeded": {
-            await handlePaymentSucceeded(event, startMs, server.log);
-            break;
-          }
-
-          case "payment_intent.payment_failed": {
-            await handlePaymentFailed(event, startMs, server.log);
-            break;
-          }
-
-          case "charge.refunded": {
-            await handleChargeRefunded(event, startMs, server.log);
-            break;
-          }
-
-          case "charge.dispute.created": {
-            await handleChargeDisputeCreated(event, startMs, server.log);
-            break;
-          }
-
-          case "payment_intent.canceled": {
-            await handlePaymentIntentCanceled(event, startMs, server.log);
-            break;
-          }
-
-          default:
-            server.log.info({ event_id: event.id, type: event.type }, "Unhandled Stripe event type — ignoring");
-        }
+        await enqueueStripeWebhookEvent(event, startMs);
       } catch (err) {
-        server.log.error({ event_id: event.id, error: String(err) }, "Stripe webhook processing error");
-        // Keep the key alive for 5 minutes instead of deleting it. Deleting immediately
-        // would allow Stripe's retry to reprocess before a partial success (e.g. NATS
-        // published but Medusa call failed) has had time to roll back, causing duplicate
-        // order.placed events. The 5-min TTL closes that window while still letting
-        // Stripe retry succeed once the transient failure has recovered.
+        server.log.error(
+          { event_id: event.id, error: String(err) },
+          "[stripe-webhook] enqueue failed — downgrading idempotency key for Stripe retry",
+        );
         await redis.expire(idempotencyKey, 300);
-        return reply.code(500).send({ error: "Internal processing error" });
+        return reply.code(500).send({ error: "Failed to enqueue webhook event" });
       }
 
       return reply.code(200).send({ ok: true });

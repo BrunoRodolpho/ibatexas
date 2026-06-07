@@ -258,9 +258,12 @@ describe("POST /api/orders/:id/payment/retry — W3 P0-2 envelope path", () => {
     }
   });
 
-  it("surfaces REFUSE from create as 403 with pt-BR text", async () => {
-    mockCreateFromEnvelope.mockResolvedValueOnce(
-      refuseDecision("Pedido já tem pagamento ativo.", "payment.active_exists"),
+  // P1-ERR-PAYSWITCH: retry uses the SAME method, so a genuine create failure
+  // means BOTH the create and the compensating re-create (same method) fail →
+  // orphaned → an actionable 503 (PAYMENT_RETRY_FAILED), never an opaque 500.
+  it("create failure → orphaned 503 (PAYMENT_RETRY_FAILED), not a 500", async () => {
+    mockCreateFromEnvelope.mockResolvedValue(
+      refuseDecision("Pagamento indisponível no momento.", "payment.unavailable"),
     );
     const app = await buildTestServer();
     try {
@@ -269,9 +272,10 @@ describe("POST /api/orders/:id/payment/retry — W3 P0-2 envelope path", () => {
         url: "/api/orders/order_01/payment/retry",
         headers: { "x-customer-id": "cust_01" },
       });
-      expect(res.statusCode).toBe(403);
-      const body = res.json() as { error: string };
-      expect(body.error).toMatch(/Pedido já tem pagamento ativo/);
+      expect(res.statusCode).toBe(503);
+      const body = res.json() as { error: string; code: string };
+      expect(body.code).toBe("PAYMENT_RETRY_FAILED");
+      expect(body.error).toMatch(/Tente novamente/);
       expect(mockPaymentUpdate).not.toHaveBeenCalled();
     } finally {
       await app.close();

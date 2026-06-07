@@ -155,6 +155,54 @@ describe("PaymentQueryService", () => {
     })
   })
 
+  // ── getActiveByOrderIds (N1PAY — batched active-payment lookup) ────────
+
+  describe("getActiveByOrderIds", () => {
+    it("returns the most-recent non-terminal payment per order in ONE query", async () => {
+      // findMany returns all non-terminal payments, createdAt DESC (as the impl orders).
+      const rows = [
+        makePayment({ id: "pay_o1_new", orderId: "order_1", createdAt: new Date("2026-04-12T12:00:00Z") }),
+        makePayment({ id: "pay_o1_old", orderId: "order_1", createdAt: new Date("2026-04-12T10:00:00Z") }),
+        makePayment({ id: "pay_o2", orderId: "order_2", createdAt: new Date("2026-04-12T11:00:00Z") }),
+      ]
+      mockPaymentFindMany.mockResolvedValue(rows)
+
+      const result = await svc.getActiveByOrderIds(["order_1", "order_2", "order_3"])
+
+      // ONE batched query, not N (the N1PAY fix)
+      expect(mockPaymentFindMany).toHaveBeenCalledTimes(1)
+      const call = mockPaymentFindMany.mock.calls[0][0]
+      expect(call.where.orderId).toEqual({ in: ["order_1", "order_2", "order_3"] })
+      expect(call.orderBy).toEqual({ createdAt: "desc" })
+      // Terminal statuses excluded — parity with getActiveByOrderId
+      expect(call.where.status.notIn).toContain("canceled")
+      expect(call.where.status.notIn).toContain("refunded")
+      expect(call.where.status.notIn).toContain("waived")
+      expect(call.where.status.notIn).toContain("payment_failed")
+      expect(call.where.status.notIn).toContain("payment_expired")
+
+      // Most-recent per order; an order with no active payment is absent
+      expect(result.get("order_1")?.id).toBe("pay_o1_new")
+      expect(result.get("order_2")?.id).toBe("pay_o2")
+      expect(result.has("order_3")).toBe(false)
+    })
+
+    it("issues NO query and returns an empty map for an empty id list", async () => {
+      const result = await svc.getActiveByOrderIds([])
+
+      expect(result.size).toBe(0)
+      expect(mockPaymentFindMany).not.toHaveBeenCalled()
+    })
+
+    it("matches getActiveByOrderId per order (most-recent non-terminal)", async () => {
+      const newest = makePayment({ id: "pay_new", orderId: "order_x", createdAt: new Date("2026-04-12T15:00:00Z") })
+      mockPaymentFindMany.mockResolvedValue([newest])
+
+      const batched = await svc.getActiveByOrderIds(["order_x"])
+      expect(batched.get("order_x")?.id).toBe("pay_new")
+    })
+  })
+
   // ── listByOrderId ────────────────────────────────────────────────────
 
   describe("listByOrderId", () => {

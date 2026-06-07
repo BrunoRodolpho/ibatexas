@@ -211,8 +211,13 @@ export async function getNatsConnection(): Promise<NatsConnection> {
   // pendingConnection is harmless (natsConn check succeeds first).
 }
 
-// Critical events that require outbox durability
-const OUTBOX_EVENTS = new Set([
+// Critical events that require outbox durability.
+// MUST stay in sync with CRITICAL_EVENTS in apps/api/src/jobs/outbox-retry.ts —
+// which now DERIVES from this set (single source of truth). An event in the retry
+// set but absent here is never persisted, so the retry job finds an empty list and
+// silently loses it (the P0-PAY-4 regression: payment.status_changed was retried
+// but not persisted; see the drift-guard test).
+export const OUTBOX_EVENTS = new Set([
   "order.placed",
   "reservation.created",
   "order.status_changed",
@@ -220,6 +225,9 @@ const OUTBOX_EVENTS = new Set([
   "order.disputed",
   "order.canceled",
   "order.payment_failed",
+  // P0-PAY-4: payment status changes drive order auto-confirm; a lost publish
+  // strands a paid order in pending with no recovery.
+  "payment.status_changed",
   // audit-2026-05-25 (I9): cross-DB LGPD scrub kickoff. The in-process
   // Prisma anonymize TX commits BEFORE this publish; if NATS is down,
   // the Medusa-side customer row keeps PII indefinitely (no
@@ -236,7 +244,16 @@ let _outboxWriter: OutboxWriter | null = null
 export interface OutboxWriter {
   lPush(key: string, value: string): Promise<unknown>
   lRem(key: string, count: number, value: string): Promise<unknown>
+  // Optional: bounds the outbox list so an unreachable NATS server can't grow it
+  // without limit (P1-SCALE-OUTBOXMEM). node-redis exposes lTrim; injecting it is
+  // backward-compatible (older writers simply skip the guard).
+  lTrim?(key: string, start: number, stop: number): Promise<unknown>
 }
+
+// Hard cap on outbox list length per critical event. lPush prepends (newest at
+// index 0), so we keep the newest OUTBOX_MAX_LEN entries. Matches the retry job's
+// LRANGE 0 N-1 head-read so paging and trimming stay consistent (P1-SCALE-OUTBOXMEM).
+const OUTBOX_MAX_LEN = Number.parseInt(process.env.OUTBOX_MAX_LEN || "5000", 10)
 
 /**
  * Inject a Redis client for outbox writes. Called once at API startup.
@@ -244,6 +261,23 @@ export interface OutboxWriter {
  */
 export function setOutboxWriter(writer: OutboxWriter): void {
   _outboxWriter = writer
+}
+
+// Optional DLQ handler (injected by apps/api at startup).
+// nats-client lives in packages/ and cannot import apps/api's pushToDlq or
+// @sentry/node directly (package → app reverse dependency + dep boundary), so
+// the app injects its existing DLQ mechanism here. Mirrors setOutboxWriter.
+export type DlqHandler = (event: string, payload: Record<string, unknown>, error: unknown) => void | Promise<void>
+
+let _dlqHandler: DlqHandler | null = null
+
+/**
+ * Inject a dead-letter-queue handler. Called once at API startup.
+ * Used by subscribeNatsEvent() to route unhandled subscriber errors to the DLQ
+ * (+ Sentry) instead of dropping them in a bare console.error (P1-ERR-NATSLOOP).
+ */
+export function setDlqHandler(handler: DlqHandler): void {
+  _dlqHandler = handler
 }
 
 /**
@@ -270,7 +304,13 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
   // Write to outbox BEFORE NATS publish for critical events
   if (isCritical && _outboxWriter) {
     try {
-      await _outboxWriter.lPush(outboxKey(envPrefix, event), data)
+      const key = outboxKey(envPrefix, event)
+      await _outboxWriter.lPush(key, data)
+      // Bound the list so a prolonged NATS outage can't grow it unbounded.
+      // Keep the newest OUTBOX_MAX_LEN entries (index 0 = newest after lPush).
+      if (_outboxWriter.lTrim && OUTBOX_MAX_LEN > 0) {
+        await _outboxWriter.lTrim(key, 0, OUTBOX_MAX_LEN - 1)
+      }
     } catch (outboxErr) {
       console.error(`[nats] Outbox write failed for ${event}:`, (outboxErr as Error).message)
       // Continue with NATS publish even if outbox write fails
@@ -298,6 +338,17 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
     // If NATS publish fails, event stays in outbox for retry
   }
 }
+
+// P2-MEM-NATSPENDING: bound the in-flight (pending) backlog per subscription so
+// a burst of events while a handler is slow can't grow the iterator's internal
+// queue without limit (unbounded memory). nats.js v2 exposes no public pending-
+// limit *setter* (the `max` SubscriptionOption auto-unsubscribes after N msgs,
+// which would tear down a fire-and-forget subscriber), so we enforce the bound
+// at the application layer: when sub.getPending() exceeds the cap we drop the
+// current message (Core NATS is already at-most-once / lossy — JetStream
+// durability is deferred) and surface it via a warn log instead of buffering.
+// Configurable (rule 3); <= 0 disables the bound (unbounded, prior behavior).
+const NATS_MAX_PENDING_MSGS = Number.parseInt(process.env.NATS_MAX_PENDING_MSGS || "10000", 10)
 
 /**
  * Subscribe to domain events.
@@ -331,11 +382,40 @@ export async function subscribeNatsEvent(
   // Handle messages asynchronously
   ;(async () => {
     for await (const msg of sub) {
+      // P2-MEM-NATSPENDING: shed load when the in-flight backlog exceeds the cap
+      // so a burst against a slow handler can't grow the iterator queue without
+      // bound. getPending() may be absent on test doubles — guard the call (and
+      // keep this operand order: cap>0, then typeof, then call). Core NATS is
+      // already at-most-once, so dropping is acceptable; surfaced via warn log.
+      if (
+        NATS_MAX_PENDING_MSGS > 0 &&
+        typeof (sub as { getPending?: () => number }).getPending === "function" &&
+        (sub as { getPending: () => number }).getPending() > NATS_MAX_PENDING_MSGS
+      ) {
+        console.warn(
+          `[nats] Pending backlog over ${NATS_MAX_PENDING_MSGS} for ${event} — dropping message (backpressure)`,
+        )
+        continue
+      }
+
+      let payload: Record<string, unknown> | null = null
       try {
-        const payload = JSON.parse(new TextDecoder().decode(msg.data))
-        await handler(payload)
+        const parsed = JSON.parse(new TextDecoder().decode(msg.data)) as Record<string, unknown>
+        payload = parsed
+        await handler(parsed)
       } catch (error) {
+        // Anything escaping the subscriber's own try/catch reaches here. Route
+        // it through the injected DLQ (+ Sentry) instead of dropping silently
+        // (P1-ERR-NATSLOOP). console.error is kept as a local breadcrumb.
         console.error(`Event handler failed for ${event}:`, (error as Error).message)
+        if (_dlqHandler) {
+          try {
+            await _dlqHandler(event, payload ?? { _raw: safeDecode(msg.data) }, error)
+          } catch (dlqErr) {
+            // Never let DLQ failure kill the subscription loop.
+            console.error(`DLQ handler failed for ${event}:`, (dlqErr as Error).message)
+          }
+        }
       }
     }
   })()
@@ -345,6 +425,15 @@ export async function subscribeNatsEvent(
     unsubscribe: () => {
       sub.unsubscribe()
     },
+  }
+}
+
+/** Best-effort decode of raw message bytes for DLQ when JSON.parse failed. */
+function safeDecode(data: Uint8Array): string {
+  try {
+    return new TextDecoder().decode(data)
+  } catch {
+    return "<undecodable>"
   }
 }
 

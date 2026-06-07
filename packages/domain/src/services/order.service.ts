@@ -350,15 +350,22 @@ export function createOrderService(
       paymentMethod: string | null
       tipInCentavos: number
     } | null> {
-      const data = await fetchAdmin(`/admin/orders/${orderId}?expand=items,customer`) as { order: MedusaOrder }
+      // Medusa v2 dropped the v1 `expand` query param (it 400s "Unrecognized fields:
+      // 'expand'"). Use the `fields` idiom: `*relation` expands a relation, bare names
+      // select columns. With `expand` the order GET threw before any capture ran, so a
+      // paid PIX order was stranded in `pending` (cart completed, capture never happened).
+      const data = await fetchAdmin(`/admin/orders/${orderId}?fields=id,status,display_id,email,total,subtotal,shipping_total,customer_id,metadata,*items,*customer`) as { order: MedusaOrder }
       const order = data.order
 
       if (order.status !== "pending") return null
       if (order.metadata?.["stripePaymentIntentId"]) return null
 
-      // Guard against stale PI from pre-amendment (total changed but old PI was captured)
+      // Guard against stale PI from pre-amendment (total changed but old PI was captured).
+      // order.total is reais (Medusa v2 — see the *InCentavos mapping below); options.amountInCentavos
+      // is the Stripe minor unit. Compare in centavos, never reais-vs-centavos (CLAUDE.md rule #2):
+      // the old `!== order.total` mismatched for every order > R$0,01, so capture silently no-op'd.
       if (options?.amountInCentavos != null && order.total != null) {
-        if (options.amountInCentavos !== order.total) {
+        if (options.amountInCentavos !== Math.round(order.total * 100)) {
           return null
         }
       }

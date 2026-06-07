@@ -60,11 +60,36 @@ export async function buildServer(): Promise<FastifyInstance> {
   // Cookie parser — must be registered before JWT (JWT reads from cookies)
   await server.register(fastifyCookie);
 
-  // JWT — reads from `token` cookie automatically when cookie is set
+  // JWT — JWTSPLIT (audit): customer and staff tiers use SEPARATE signing
+  // secrets + audiences, so a leak of one tier's secret cannot forge the other,
+  // and a token minted for one tier is cryptographically invalid for the other
+  // (defense BELOW the application-level `userType` and `aud` checks in
+  // middleware/auth.ts). Customer = the DEFAULT instance: request.jwtVerify()
+  // auto-reads the `token` cookie; server.jwt.sign issues customer tokens;
+  // allowedAud rejects any non-customer token at the crypto layer.
   const jwtSecret = requireSecret("JWT_SECRET");
   await server.register(fastifyJwt, {
     secret: jwtSecret,
     cookie: { cookieName: "token", signed: false },
+    verify: { allowedAud: "token" },
+  });
+
+  // Staff = a dedicated NAMESPACED instance reachable at server.jwt.staff.{sign,
+  // verify} (used by middleware/auth.ts staff path + routes/auth.ts
+  // issueStaffJwtToken). MUST register AFTER the default instance — @fastify/jwt
+  // only installs the shared `jwt`/`user` decorators on the first (non-namespaced)
+  // registration; reversing the order double-decorates and throws at boot.
+  const staffJwtSecret = requireSecret("STAFF_JWT_SECRET");
+  if (staffJwtSecret === jwtSecret) {
+    // The entire point of the split is two distinct keys — fail closed if equal.
+    throw new Error(
+      "STAFF_JWT_SECRET must differ from JWT_SECRET (separate staff/customer signing keys)",
+    );
+  }
+  await server.register(fastifyJwt, {
+    secret: staffJwtSecret,
+    namespace: "staff",
+    verify: { allowedAud: "staff_token" },
   });
 
   await registerSensible(server);

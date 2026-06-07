@@ -14,10 +14,18 @@ import Stripe from "stripe"
 import { getAuditSink } from "@ibatexas/audit-sink"
 import { stripeAdjudicated } from "../stripe/adjudicated.js"
 
+// P2-MEM-STRIPENEW: memoize a module-level Stripe client so callers reuse one
+// HTTP agent/connection pool instead of constructing `new Stripe(key)` on every
+// call. Lazy so the key is still read from env at first use. (Mutating egress
+// goes through stripeAdjudicated; this factory is retained per D8 for read-only
+// callers/tests.)
+let stripeClient: Stripe | undefined
+
 export function getStripe(): Stripe {
   const key = process.env.STRIPE_SECRET_KEY
   if (!key) throw new Error("STRIPE_SECRET_KEY not set")
-  return new Stripe(key)
+  if (!stripeClient) stripeClient = new Stripe(key)
+  return stripeClient
 }
 
 /**

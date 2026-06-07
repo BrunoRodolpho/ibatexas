@@ -34,8 +34,11 @@ export async function sendReservationConfirmation(
 
   const sender = getWhatsAppSender()
   if (!sender) {
+    // LGPD: never log the raw phone — presence boolean + internal id only.
     console.warn("[whatsapp.stub] Reservation confirmation:", {
-      to: phone ?? reservation.customerId,
+      reservationId: reservation.id,
+      customerId: reservation.customerId,
+      phone_present: !!phone,
       message,
     })
     return
@@ -79,7 +82,7 @@ export async function sendReservationModified(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.warn("[whatsapp.stub] Reservation modified:", { to: phone ?? reservation.customerId, message })
+    console.warn("[whatsapp.stub] Reservation modified:", { reservationId: reservation.id, customerId: reservation.customerId, phone_present: !!phone, message })
     return
   }
   if (!phone) return
@@ -112,7 +115,7 @@ export async function sendReservationCancelled(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.warn("[whatsapp.stub] Reservation cancelled:", { to: phone ?? reservationId, message })
+    console.warn("[whatsapp.stub] Reservation cancelled:", { reservationId, phone_present: !!phone, message })
     return
   }
   if (!phone) return
@@ -145,7 +148,7 @@ export async function sendReservationReminder(
 
   const sender = getWhatsAppSender()
   if (!sender) {
-    console.warn("[whatsapp.stub] Reservation reminder:", { to: phone ?? reservation.customerId, message })
+    console.warn("[whatsapp.stub] Reservation reminder:", { reservationId: reservation.id, customerId: reservation.customerId, phone_present: !!phone, message })
     return
   }
   if (!phone) return
@@ -185,7 +188,9 @@ export async function notifyWaitlistSpotAvailable(
   const sender = getWhatsAppSender()
   if (!sender) {
     console.warn("[whatsapp.stub] Waitlist notification:", {
-      to: phone ?? waitlist.customerId,
+      waitlistId: waitlist.id,
+      customerId: waitlist.customerId,
+      phone_present: !!phone,
       message,
     })
     return

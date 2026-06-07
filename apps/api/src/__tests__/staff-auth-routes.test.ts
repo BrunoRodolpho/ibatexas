@@ -78,17 +78,29 @@ async function buildTestServer() {
   await app.register(sensible);
   await app.register(cookie);
 
-  const signedPayloads: object[] = [];
+  // JWTSPLIT: staff tokens are signed by the dedicated server.jwt.staff instance;
+  // customer tokens by the default instance. Track each separately so tests can
+  // assert a staff token is never signed by the customer instance.
+  const staffSignedPayloads: object[] = [];
+  const customerSignedPayloads: object[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (app as any).jwt = {
     sign: (payload: object, _options?: object) => {
-      signedPayloads.push(payload);
-      return `mock-staff-jwt-${(payload as { sub: string }).sub}`;
+      customerSignedPayloads.push(payload);
+      return `mock-customer-jwt-${(payload as { sub: string }).sub}`;
+    },
+    staff: {
+      sign: (payload: object, _options?: object) => {
+        staffSignedPayloads.push(payload);
+        return `mock-staff-jwt-${(payload as { sub: string }).sub}`;
+      },
     },
     decode: () => null,
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (app as any)._signedPayloads = signedPayloads;
+  (app as any)._signedPayloads = staffSignedPayloads;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (app as any)._customerSignedPayloads = customerSignedPayloads;
 
   await app.register(authRoutes);
   await app.ready();
@@ -114,6 +126,7 @@ function setupEnv() {
   vi.stubEnv("TWILIO_VERIFY_SID", "VA_test_verify_sid");
   vi.stubEnv("TWILIO_OTP_CHANNEL", "sms");
   vi.stubEnv("JWT_SECRET", "test-jwt-secret-key");
+  vi.stubEnv("STAFF_JWT_SECRET", "test-staff-jwt-secret-key"); // JWTSPLIT: issueStaffJwtToken requires it
   vi.stubEnv("NODE_ENV", "test");
 }
 
@@ -292,12 +305,17 @@ describe("POST /api/auth/staff/verify-otp", () => {
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const payloads = (app as any)._signedPayloads as Array<{ sub: string; userType: string; role: string; jti?: string }>;
+    const payloads = (app as any)._signedPayloads as Array<{ sub: string; userType: string; role: string; jti?: string; aud?: string }>;
     expect(payloads).toHaveLength(1);
     expect(payloads[0].sub).toBe("staff_01");
     expect(payloads[0].userType).toBe("staff");
     expect(payloads[0].role).toBe("MANAGER");
     expect(payloads[0].jti).toBeDefined();
+    expect(payloads[0].aud).toBe("staff_token");
+    // JWTSPLIT: the staff token must be signed by the dedicated staff instance,
+    // never the customer (default) instance.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((app as any)._customerSignedPayloads).toHaveLength(0);
   });
 
   it("returns 404 when phone not found", async () => {

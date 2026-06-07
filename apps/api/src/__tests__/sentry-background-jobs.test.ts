@@ -45,6 +45,8 @@ vi.mock("@ibatexas/tools", () => ({
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
   outboxKey: (prefix: string, event: string) => `${prefix}:outbox:${event}`,
+  // outbox-retry derives CRITICAL_EVENTS from this at module load (P0-PAY-4).
+  OUTBOX_EVENTS: new Set(["order.placed", "payment.status_changed"]),
 }));
 
 vi.mock("../session/store.js", () => ({

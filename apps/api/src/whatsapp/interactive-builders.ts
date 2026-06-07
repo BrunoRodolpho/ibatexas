@@ -58,13 +58,26 @@ const MAX_TITLE_LEN = 24;
 const MAX_DESC_LEN = 72;
 const MAX_BUTTON_LEN = 20;
 
+// P3-DATA-EMOJI: slice by Unicode code points (Array.from) instead of UTF-16
+// code units — prevents splitting surrogate pairs in emoji sequences.
 function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max - 1) + "…";
+  const codePoints = Array.from(text);
+  if (codePoints.length <= max) return text;
+  return codePoints.slice(0, max - 1).join("") + "…";
 }
 
+// P2-I18N-BRL: use Intl.NumberFormat for correct BRL formatting including
+// thousands separators (e.g. "R$ 1.234,56") instead of a raw toFixed/replace.
+// Node pt-BR emits U+00A0 (or U+202F on some ICU builds) between "R$" and the
+// number; normalize to a regular space for consistent comparisons + WhatsApp
+// rendering across Node/ICU versions.
+const _brlFormatter = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+});
+
 function formatPrice(centavos: number): string {
-  return `R$ ${(centavos / 100).toFixed(2).replace(".", ",")}`;
+  return _brlFormatter.format(centavos / 100).replace(/[\u00a0\u202f]/g, " ");
 }
 
 // ── Builders ────────────────────────────────────────────────────────────────────

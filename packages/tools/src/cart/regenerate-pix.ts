@@ -26,6 +26,7 @@ import {
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { getRedisClient } from "../redis/client.js";
 import { rk } from "../redis/key.js";
+import { atomicIncr } from "../redis/atomic-rate-limit.js";
 import { withLock } from "../redis/distributed-lock.js";
 import { stripeAdjudicated } from "../stripe/adjudicated.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
@@ -74,13 +75,13 @@ export async function regeneratePix(
     return { success: false, message: "O pagamento atual não está expirado." };
   }
 
-  // Rate limit: 3 per hour per customer
+  // Rate limit: 3 per hour per customer.
+  // P3-CONC-REGENRATE: INCR + conditional EXPIRE must be atomic — a crash between
+  // a plain INCR and EXPIRE would leave an immortal key, permanently rate-limiting
+  // this customer. atomicIncr does both in a single Lua eval.
   const redis = await getRedisClient();
   const rateLimitKey = rk(`pix:regen:rate:${ctx.customerId}`);
-  const count = await redis.incr(rateLimitKey);
-  if (count === 1) {
-    await redis.expire(rateLimitKey, 3600);
-  }
+  const count = await atomicIncr(redis, rateLimitKey, 3600);
   if (count > 3) {
     return { success: false, message: "Limite de gerações atingido. Tente novamente em 1 hora." };
   }

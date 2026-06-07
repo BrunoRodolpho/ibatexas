@@ -6,23 +6,26 @@
 
 import crypto from "node:crypto";
 import { getRedisClient, rk } from "@ibatexas/tools";
-import { publishNatsEvent, outboxKey } from "@ibatexas/nats-client";
+import { publishNatsEvent, outboxKey, OUTBOX_EVENTS } from "@ibatexas/nats-client";
+import { pushToDlq } from "../subscribers/dlq.js";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
 import { createQueue, createWorker, type Job } from "./queue.js";
 
 const REPEAT_INTERVAL_MS = 60_000; // 60 seconds
-const CRITICAL_EVENTS = [
-  "order.placed",
-  "reservation.created",
-  "order.status_changed",
-  "order.refunded",
-  "order.disputed",
-  "order.canceled",
-  "order.payment_failed",
-  "payment.status_changed",
-] as const;
+
+// Bounded page size per cycle. Reading the whole list (LRANGE 0 -1) loaded an
+// unbounded backlog into memory each run (P1-SCALE-OUTBOXMEM); we now read at
+// most this many head entries per event per cycle. The list is bounded on the
+// write side too (OUTBOX_MAX_LEN in @ibatexas/nats-client).
+const OUTBOX_PAGE_SIZE = Number.parseInt(process.env.OUTBOX_PAGE_SIZE || "500", 10);
+// Events the retry job re-publishes. Single source of truth: the retry set IS the
+// set actually persisted to the outbox (OUTBOX_EVENTS in @ibatexas/nats-client), so
+// an event can never be "retried but never persisted" (the P0-PAY-4 regression) nor
+// "persisted but never retried" (customer.anonymize.medusa.pending). The drift-guard
+// test pins the two sets equal.
+export const CRITICAL_EVENTS: readonly string[] = [...OUTBOX_EVENTS];
 
 let queue: Queue | null = null;
 let worker: Worker | null = null;
@@ -49,19 +52,42 @@ export async function processOutbox(log?: FastifyBaseLogger | null): Promise<voi
 
     for (const event of CRITICAL_EVENTS) {
       const key = outboxKey(envPrefix, event);
-      // Read all pending outbox entries (LRANGE 0 -1)
-      const entries = await redis.lRange(key, 0, -1);
+      // Read a bounded page of pending outbox entries (LRANGE 0 N-1) instead of
+      // the whole list, so a large backlog can't blow up memory in one cycle.
+      // Remaining entries are picked up on subsequent cycles.
+      const entries = await redis.lRange(key, 0, OUTBOX_PAGE_SIZE - 1);
 
       if (entries.length === 0) continue;
 
       effectiveLogger?.info(
-        { event, count: entries.length },
-        "[outbox-retry] Re-publishing undelivered events",
+        { event, count: entries.length, pageSize: OUTBOX_PAGE_SIZE },
+        "[outbox-retry] Re-publishing undelivered events (bounded page)",
       );
 
       for (const entry of entries) {
+        let payload: Record<string, unknown>;
         try {
-          const payload = JSON.parse(entry) as Record<string, unknown>;
+          payload = JSON.parse(entry) as Record<string, unknown>;
+        } catch (parseErr) {
+          // Poison entry — unparseable, can never be re-published. Move it to
+          // the DLQ and remove it from the outbox so it stops blocking the page.
+          effectiveLogger?.error(
+            { event, error: String(parseErr) },
+            "[outbox-retry] Poison outbox entry — routing to DLQ",
+          );
+          await pushToDlq(event, { _rawEntry: entry }, parseErr, effectiveLogger ?? undefined);
+          try {
+            await redis.lRem(key, 1, entry);
+          } catch (remErr) {
+            effectiveLogger?.error(
+              { event, error: String(remErr) },
+              "[outbox-retry] Failed to remove poison entry from outbox",
+            );
+          }
+          continue;
+        }
+
+        try {
           // Re-publish via NATS (this will also attempt to LREM from outbox on success)
           await publishNatsEvent(event, payload);
         } catch (err) {
@@ -75,6 +101,13 @@ export async function processOutbox(log?: FastifyBaseLogger | null): Promise<voi
             scope.setContext("event", { eventType: event });
             Sentry.captureException(err);
           });
+          // Parseable but publish failed: leave it in the outbox (publishNatsEvent
+          // only LREMs on success) so the next cycle retries it. No per-entry
+          // attempt cap — subscriber dedup (isNewEvent) keys on payload content and
+          // the outbox uses exact-string LREM, so embedding a counter would mutate
+          // the stored entry and break both. Unbounded growth is capped on the
+          // write side (OUTBOX_MAX_LEN lTrim) + bounded read here; a durable
+          // attempt cap is deferred to the JetStream migration (max-deliver + DLQ).
         }
       }
     }
