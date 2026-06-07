@@ -8,11 +8,13 @@
 // 2. Each job checks if payment was already confirmed (Redis key set by stripe webhook)
 // 3. If paid → skip. If not → send message.
 
+import * as Sentry from "@sentry/node";
 import { getRedisClient, rk, medusaAdmin } from "@ibatexas/tools";
 import { createPaymentQueryService } from "@ibatexas/domain";
 import { PaymentStatus } from "@ibatexas/types";
 import type { Queue, Worker } from "bullmq";
 import { sendText } from "../whatsapp/client.js";
+import logger from "../lib/logger.js";
 import { createQueue, createWorker, type Job } from "./queue.js";
 
 const PIX_REMINDER_DELAY_MS = Number.parseInt(
@@ -149,6 +151,21 @@ export async function markPixPaid(orderId: string): Promise<void> {
 export function startPixExpiryMonitor(): void {
   if (worker) return;
   worker = createWorker("pix-expiry-monitor", processPixExpiry);
+
+  // The createWorker factory attaches a default "error" handler (connection-level
+  // failures). Add a "failed" listener for PROCESSOR failures: jobs run with
+  // removeOnFail, so a failed reminder/expiry send would otherwise vanish silently.
+  worker.on("failed", (job, err) => {
+    logger.error(
+      { err, job: "pix-expiry-monitor", stage: job?.data?.stage },
+      "[pix-expiry-monitor] job failed",
+    );
+    Sentry.withScope((scope) => {
+      scope.setTag("job", "pix-expiry-monitor");
+      scope.setTag("source", "background-job");
+      Sentry.captureException(err);
+    });
+  });
 }
 
 export async function stopPixExpiryMonitor(): Promise<void> {
