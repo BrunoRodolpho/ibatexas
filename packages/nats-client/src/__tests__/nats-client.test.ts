@@ -3,6 +3,8 @@ import {
   getNatsConnection,
   publishNatsEvent,
   subscribeNatsEvent,
+  setDlqHandler,
+  setOutboxWriter,
   closeNatsConnection,
 } from "../index.js"
 
@@ -186,6 +188,60 @@ describe("NATS Client", () => {
     await flushAsync()
 
     expect(handler).toHaveBeenCalledWith({ orderId: "ord_ok" })
+  })
+
+  // ── P1-ERR-NATSLOOP — route unhandled subscriber errors to the DLQ ──────────
+  it("routes an unhandled subscriber error through the injected DLQ handler", async () => {
+    const conn = await getNatsConnection()
+    const subscribeSpy = conn.subscribe as ReturnType<typeof vi.fn>
+    subscribeSpy.mockReturnValueOnce(oneShotSub(encode({ orderId: "ord_1" }), 5))
+
+    const dlq = vi.fn()
+    setDlqHandler(dlq)
+    const boom = new Error("handler blew up")
+    const handler = vi.fn().mockRejectedValue(boom)
+
+    await subscribeNatsEvent("order.placed", handler)
+    await flushAsync()
+
+    expect(handler).toHaveBeenCalledWith({ orderId: "ord_1" })
+    expect(dlq).toHaveBeenCalledWith("order.placed", { orderId: "ord_1" }, boom)
+    setDlqHandler(() => {}) // reset shared singleton for later tests
+  })
+
+  it("does not invoke the DLQ handler when the subscriber succeeds", async () => {
+    const conn = await getNatsConnection()
+    const subscribeSpy = conn.subscribe as ReturnType<typeof vi.fn>
+    subscribeSpy.mockReturnValueOnce(oneShotSub(encode({ orderId: "ord_ok" }), 5))
+
+    const dlq = vi.fn()
+    setDlqHandler(dlq)
+
+    await subscribeNatsEvent("order.placed", vi.fn().mockResolvedValue(undefined))
+    await flushAsync()
+
+    expect(dlq).not.toHaveBeenCalled()
+    setDlqHandler(() => {})
+  })
+
+  // ── P1-SCALE-OUTBOXMEM (writer-side cap) ────────────────────────────────────
+  it("trims the outbox list after lPush for critical events", async () => {
+    const writer = {
+      lPush: vi.fn().mockResolvedValue(1),
+      lRem: vi.fn().mockResolvedValue(1),
+      lTrim: vi.fn().mockResolvedValue("OK"),
+    }
+    setOutboxWriter(writer)
+
+    await publishNatsEvent("order.placed", { orderId: "ord_2" })
+
+    expect(writer.lPush).toHaveBeenCalledTimes(1)
+    // Keeps a bounded head window [0, MAX-1]; default MAX = 5000.
+    expect(writer.lTrim).toHaveBeenCalledWith(
+      expect.stringContaining(":outbox:order.placed"),
+      0,
+      4999,
+    )
   })
 
   it("getNatsConnection can be called without error", async () => {

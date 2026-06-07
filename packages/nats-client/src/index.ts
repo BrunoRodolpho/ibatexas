@@ -244,7 +244,16 @@ let _outboxWriter: OutboxWriter | null = null
 export interface OutboxWriter {
   lPush(key: string, value: string): Promise<unknown>
   lRem(key: string, count: number, value: string): Promise<unknown>
+  // Optional: bounds the outbox list so an unreachable NATS server can't grow it
+  // without limit (P1-SCALE-OUTBOXMEM). node-redis exposes lTrim; injecting it is
+  // backward-compatible (older writers simply skip the guard).
+  lTrim?(key: string, start: number, stop: number): Promise<unknown>
 }
+
+// Hard cap on outbox list length per critical event. lPush prepends (newest at
+// index 0), so we keep the newest OUTBOX_MAX_LEN entries. Matches the retry job's
+// LRANGE 0 N-1 head-read so paging and trimming stay consistent (P1-SCALE-OUTBOXMEM).
+const OUTBOX_MAX_LEN = Number.parseInt(process.env.OUTBOX_MAX_LEN || "5000", 10)
 
 /**
  * Inject a Redis client for outbox writes. Called once at API startup.
@@ -252,6 +261,23 @@ export interface OutboxWriter {
  */
 export function setOutboxWriter(writer: OutboxWriter): void {
   _outboxWriter = writer
+}
+
+// Optional DLQ handler (injected by apps/api at startup).
+// nats-client lives in packages/ and cannot import apps/api's pushToDlq or
+// @sentry/node directly (package → app reverse dependency + dep boundary), so
+// the app injects its existing DLQ mechanism here. Mirrors setOutboxWriter.
+export type DlqHandler = (event: string, payload: Record<string, unknown>, error: unknown) => void | Promise<void>
+
+let _dlqHandler: DlqHandler | null = null
+
+/**
+ * Inject a dead-letter-queue handler. Called once at API startup.
+ * Used by subscribeNatsEvent() to route unhandled subscriber errors to the DLQ
+ * (+ Sentry) instead of dropping them in a bare console.error (P1-ERR-NATSLOOP).
+ */
+export function setDlqHandler(handler: DlqHandler): void {
+  _dlqHandler = handler
 }
 
 /**
@@ -278,7 +304,13 @@ export async function publishNatsEvent<T extends Record<string, unknown> = Recor
   // Write to outbox BEFORE NATS publish for critical events
   if (isCritical && _outboxWriter) {
     try {
-      await _outboxWriter.lPush(outboxKey(envPrefix, event), data)
+      const key = outboxKey(envPrefix, event)
+      await _outboxWriter.lPush(key, data)
+      // Bound the list so a prolonged NATS outage can't grow it unbounded.
+      // Keep the newest OUTBOX_MAX_LEN entries (index 0 = newest after lPush).
+      if (_outboxWriter.lTrim && OUTBOX_MAX_LEN > 0) {
+        await _outboxWriter.lTrim(key, 0, OUTBOX_MAX_LEN - 1)
+      }
     } catch (outboxErr) {
       console.error(`[nats] Outbox write failed for ${event}:`, (outboxErr as Error).message)
       // Continue with NATS publish even if outbox write fails
@@ -366,11 +398,24 @@ export async function subscribeNatsEvent(
         continue
       }
 
+      let payload: Record<string, unknown> | null = null
       try {
-        const payload = JSON.parse(new TextDecoder().decode(msg.data))
-        await handler(payload)
+        const parsed = JSON.parse(new TextDecoder().decode(msg.data)) as Record<string, unknown>
+        payload = parsed
+        await handler(parsed)
       } catch (error) {
+        // Anything escaping the subscriber's own try/catch reaches here. Route
+        // it through the injected DLQ (+ Sentry) instead of dropping silently
+        // (P1-ERR-NATSLOOP). console.error is kept as a local breadcrumb.
         console.error(`Event handler failed for ${event}:`, (error as Error).message)
+        if (_dlqHandler) {
+          try {
+            await _dlqHandler(event, payload ?? { _raw: safeDecode(msg.data) }, error)
+          } catch (dlqErr) {
+            // Never let DLQ failure kill the subscription loop.
+            console.error(`DLQ handler failed for ${event}:`, (dlqErr as Error).message)
+          }
+        }
       }
     }
   })()
@@ -380,6 +425,15 @@ export async function subscribeNatsEvent(
     unsubscribe: () => {
       sub.unsubscribe()
     },
+  }
+}
+
+/** Best-effort decode of raw message bytes for DLQ when JSON.parse failed. */
+function safeDecode(data: Uint8Array): string {
+  try {
+    return new TextDecoder().decode(data)
+  } catch {
+    return "<undecodable>"
   }
 }
 
