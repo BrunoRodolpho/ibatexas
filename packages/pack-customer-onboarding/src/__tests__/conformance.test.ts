@@ -542,3 +542,83 @@ describe("customerOnboardingPack — policy coherence via analyzePolicy() (AJD-3
     }
   })
 })
+
+// ── PII data-classification guard (F1) ──────────────────────────────────────
+// On customer.pix.details.save, AFTER validateCpfShape (I10). Card PAN → REFUSE;
+// cpf/email/phone mistyped into the NAME leaf → REWRITE-to-sentinel. The legit
+// `email` and the structured `cpf` field are never masked.
+
+describe("customerOnboardingPack — PII data-classification guard (F1)", () => {
+  const pix = (payload: Record<string, unknown>) =>
+    env("customer.pix.details.save", payload)
+
+  it("EXECUTE: legit name + email + valid CPF — nothing masked (I10)", () => {
+    const decision = adjudicate(
+      pix({ name: "Maria Silva", email: "maria@example.com", cpf: VALID_CPF }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("EXECUTE: absent CPF + clean name/email — guest PIX path unchanged (I10)", () => {
+    const decision = adjudicate(
+      pix({ name: "Maria Silva", email: "maria@example.com" }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REWRITE: email mistyped into name → name masked, email + cpf untouched, no key dropped", () => {
+    const decision = adjudicate(
+      pix({ name: "Maria foo@bar.com", email: "maria@example.com", cpf: VALID_CPF }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("REWRITE")
+    if (decision.kind !== "REWRITE") return
+    const p = decision.rewritten.payload as {
+      name: string
+      email: string
+      cpf: string
+    }
+    expect(p.name).toBe("Maria [REDACTED:EMAIL]")
+    expect(p.email).toBe("maria@example.com") // legit email NEVER masked
+    expect(p.cpf).toBe(VALID_CPF) // cpf byte-identical (I10)
+    expect(Object.keys(p).sort()).toEqual(["cpf", "email", "name"])
+  })
+
+  it("REFUSE: card PAN in the name leaf → pii_blocked", () => {
+    const decision = adjudicate(
+      pix({ name: "4111 1111 1111 1111", email: "maria@x.com", cpf: VALID_CPF }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("pii_blocked")
+  })
+
+  it("REFUSE: card PAN in the email leaf → pii_blocked", () => {
+    const decision = adjudicate(
+      pix({ name: "Maria", email: "4111111111111111", cpf: VALID_CPF }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("ordering: PAN + email both in name → REFUSE wins over REWRITE", () => {
+    const decision = adjudicate(
+      pix({
+        name: "foo@bar.com 4111111111111111",
+        email: "maria@x.com",
+        cpf: VALID_CPF,
+      }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+})

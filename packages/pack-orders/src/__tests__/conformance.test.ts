@@ -844,3 +844,132 @@ describe("ordersPack — policy coherence via analyzePolicy() (AJD-301)", () => 
     }
   })
 })
+
+// ── PII data-classification guard (F1) ──────────────────────────────────────
+// Scoped to the PIX/checkout free-text leaves. Card PAN → REFUSE; cpf/email/
+// phone mistyped into the NAME leaf → REWRITE-to-sentinel. The legit `email`
+// field and the structured `cpf` field are never masked (I10 + no PIX-email
+// corruption); money/id fields are never scanned.
+
+describe("ordersPack — PII data-classification guard (F1)", () => {
+  const pix = (payload: Record<string, unknown>) =>
+    env("order.pix.details.set", payload)
+
+  it("EXECUTE: legit name + email + cpf — nothing masked", () => {
+    const decision = adjudicate(
+      pix({
+        cartId: "cart-1",
+        name: "João Silva",
+        email: "joao@example.com",
+        cpf: "11122233344",
+      }),
+      authenticatedState(),
+      ordersPack.policy,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REWRITE: email mistyped into name → name masked, email + cpf untouched, no key dropped", () => {
+    const decision = adjudicate(
+      pix({
+        cartId: "cart-1",
+        name: "João foo@bar.com",
+        email: "joao@example.com",
+        cpf: "11122233344",
+      }),
+      authenticatedState(),
+      ordersPack.policy,
+    )
+    expect(decision.kind).toBe("REWRITE")
+    if (decision.kind !== "REWRITE") return
+    const p = decision.rewritten.payload as {
+      cartId: string
+      name: string
+      email: string
+      cpf: string
+    }
+    expect(p.name).toBe("João [REDACTED:EMAIL]")
+    expect(p.email).toBe("joao@example.com") // legit email NEVER masked
+    expect(p.cpf).toBe("11122233344") // cpf untouched (I10)
+    expect(Object.keys(p).sort()).toEqual(["cartId", "cpf", "email", "name"])
+  })
+
+  it("REFUSE: card PAN in the name leaf → pii_blocked", () => {
+    const decision = adjudicate(
+      pix({
+        cartId: "cart-1",
+        name: "4111 1111 1111 1111",
+        email: "joao@x.com",
+        cpf: "11122233344",
+      }),
+      authenticatedState(),
+      ordersPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("pii_blocked")
+  })
+
+  it("REFUSE: card PAN in the email leaf → pii_blocked (REFUSE scans email; no mutation)", () => {
+    const decision = adjudicate(
+      pix({
+        cartId: "cart-1",
+        name: "João",
+        email: "4111111111111111",
+        cpf: "11122233344",
+      }),
+      authenticatedState(),
+      ordersPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("ordering: PAN + email both in name → REFUSE wins over REWRITE", () => {
+    const decision = adjudicate(
+      pix({
+        cartId: "cart-1",
+        name: "foo@bar.com 4111111111111111",
+        email: "joao@x.com",
+        cpf: "11122233344",
+      }),
+      authenticatedState(),
+      ordersPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("EXECUTE: a 16-digit run in the unscanned cpf field never triggers PAN refuse", () => {
+    const decision = adjudicate(
+      pix({
+        cartId: "cart-1",
+        name: "João Silva",
+        email: "joao@x.com",
+        cpf: "4111111111111111",
+      }),
+      authenticatedState(),
+      ordersPack.policy,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSE: card PAN nested in order.checkout.create pixDetails.name", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "pix",
+        pixDetails: {
+          name: "4111111111111111",
+          email: "x@y.com",
+          cpf: "11122233344",
+        },
+      }),
+      authenticatedState({
+        paymentMethod: "pix",
+        paymentStatus: null,
+        totalInCentavos: 5_000,
+      }),
+      ordersPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+})

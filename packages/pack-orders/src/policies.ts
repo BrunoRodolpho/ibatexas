@@ -39,11 +39,13 @@ import {
 } from "@adjudicate/core/kernel"
 import {
   createConfirmGuard,
+  createDataClassificationGuard,
   createEscalateGuard,
   createRewriteGuard,
   requireTenantBinding,
 } from "@adjudicate/primitives"
 import { createPixPendingDeferGuard } from "@adjudicate/pack-payments-pix"
+import { PII_PATTERNS } from "@ibatexas/pii"
 import {
   refuseAllergensNotExplicit,
   refuseAmountExceedsLimit,
@@ -72,6 +74,53 @@ import {
 } from "./types.js"
 
 type OrderGuard = Guard<OrderIntentKind, OrderPayload, OrderState>
+
+// ── PII data-classification (F1) ─────────────────────────────────────────────
+// Two guards on the PIX / checkout free-text leaves. ORDER MATTERS: the PAN
+// REFUSE MUST precede the REWRITE (first-non-null wins) so a payload carrying
+// BOTH a card number and other PII is BLOCKED, not silently rewritten.
+//   • refuseCardPanInPix — a 13–19-digit card run in name/email ⇒ REFUSE
+//     (PII_BLOCKED). REFUSE never mutates data, so scanning the email leaf is
+//     safe (only an actual card number trips it; an email/CPF cannot).
+//   • redactPiiInPix — cpf/email/phone mistyped into the NAME leaf ⇒
+//     REWRITE-to-sentinel in place. It deliberately does NOT scan the `email`
+//     leaf (EMAIL_RE would mask a legitimate PIX email and corrupt settlement)
+//     nor the structured `cpf` field (I10: a valid CPF must reach the executor
+//     byte-identical). Patterns are sourced from @ibatexas/pii — the single
+//     taxonomy shared with the audit redactor.
+const PII_PAN_PATTERNS = PII_PATTERNS.filter((p) => p.id === "pan")
+const PII_REWRITE_PATTERNS = PII_PATTERNS.filter((p) => p.id !== "pan")
+
+const PIX_PII_KINDS = new Set<OrderIntentKind>([
+  "order.pix.details.set",
+  "order.checkout.create",
+])
+
+const refuseCardPanInPix: OrderGuard = nameGuard(
+  "refuseCardPanInPix",
+  createDataClassificationGuard<OrderIntentKind, OrderPayload, OrderState>({
+    matches: (envelope) => PIX_PII_KINDS.has(envelope.kind),
+    patterns: PII_PAN_PATTERNS,
+    scannedFields: ["name", "email", "pixDetails.name", "pixDetails.email"],
+    action: "REFUSE",
+    sensitivityLevel: "critical",
+    userFacing: "Não consigo processar dados de cartão neste fluxo.",
+  }),
+)
+
+const redactPiiInPix: OrderGuard = nameGuard(
+  "redactPiiInPix",
+  createDataClassificationGuard<OrderIntentKind, OrderPayload, OrderState>({
+    matches: (envelope) => PIX_PII_KINDS.has(envelope.kind),
+    patterns: PII_REWRITE_PATTERNS,
+    // NAME leaves only — never `email` (would mask the legitimate PIX email)
+    // and never the structured `cpf` field (I10).
+    scannedFields: ["name", "pixDetails.name"],
+    action: "REWRITE",
+    sensitivityLevel: "high",
+    reason: "PII mascarado no payload antes da execução.",
+  }),
+)
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -743,6 +792,8 @@ export const ordersPolicyBundle: PolicyBundle<
     escalateLargeCancel,
     confirmLargeTicket,
     validateReviewRating,
+    refuseCardPanInPix,
+    redactPiiInPix,
     executeCartOps,
     executeCheckout,
     executeCancel,

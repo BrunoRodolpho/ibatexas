@@ -695,6 +695,9 @@ importers:
       '@adjudicate/primitives':
         specifier: ^0.3.0
         version: 0.3.0
+      '@ibatexas/pii':
+        specifier: workspace:*
+        version: link:../pii
     devDependencies:
       '@adjudicate/analyze':
         specifier: ^0.3.0
@@ -729,6 +732,9 @@ importers:
       '@adjudicate/primitives':
         specifier: ^0.3.0
         version: 0.3.0
+      '@ibatexas/pii':
+        specifier: workspace:*
+        version: link:../pii
     devDependencies:
       '@adjudicate/analyze':
         specifier: ^0.3.0
