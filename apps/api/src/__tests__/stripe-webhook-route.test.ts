@@ -137,6 +137,29 @@ vi.mock("../jobs/pix-expiry-monitor.js", () => ({
   markPixPaid: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Ack-then-async (P1-NET-STRIPESYNC): the route now enqueues a durable job
+// instead of running handlers inline. By DEFAULT the enqueue mock synchronously
+// dispatches the event through the real handler switch, so every existing
+// handler-effect suite (capture / NATS / reconcile / PIX / double-capture /
+// PIXDUP) keeps exercising the (now-async) handlers via the injected request.
+// The dedicated ack-then-async suite overrides this per-test.
+const mockEnqueueStripeWebhookEvent = vi.hoisted(() =>
+  vi.fn(async (event: unknown, receivedAtMs: number) => {
+    const { dispatchStripeWebhookEvent } = await import("../routes/stripe-webhook.js");
+    await dispatchStripeWebhookEvent(event as never, receivedAtMs, {
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    });
+  }),
+);
+const mockStartStripeWebhookProcessor = vi.hoisted(() => vi.fn());
+
+vi.mock("../jobs/stripe-webhook-processor.js", () => ({
+  enqueueStripeWebhookEvent: mockEnqueueStripeWebhookEvent,
+  startStripeWebhookProcessor: mockStartStripeWebhookProcessor,
+}));
+
 async function buildTestServer() {
   const app = Fastify({ logger: false });
   await app.register(stripeWebhookRoutes);
@@ -873,47 +896,66 @@ describe("POST /api/webhooks/stripe — payment_intent.canceled", () => {
   });
 });
 
-describe("POST /api/webhooks/stripe — processing error", () => {
+describe("POST /api/webhooks/stripe — ack-then-async enqueue contract (P1-NET-STRIPESYNC)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
     setupEnv();
     mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-    // Default: no Payment row found — reconciliation path exits early.
-    // Tests that exercise the envelope path override this explicitly.
     mockGetByStripePaymentIntentId.mockResolvedValue(null);
     mockGetAuditSinkEmit.mockResolvedValue(undefined);
   });
 
-  it("returns 500 and removes idempotency key on processing error", async () => {
+  it("enqueues a durable job and returns 200 WITHOUT running handlers inline", async () => {
     const event = createStripeEvent("payment_intent.succeeded");
     mockConstructEvent.mockReturnValue(event);
+    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue("OK") }));
 
-    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
-    mockGetRedisClient.mockResolvedValue(mockRedis);
-
-    // capturePayment service throws
-    mockCapturePayment.mockRejectedValue(new Error("Medusa down"));
+    // Override the default sync-dispatch with a non-dispatching stub so we can
+    // prove the ROUTE does NOT run the heavy work inline — it only enqueues.
+    mockEnqueueStripeWebhookEvent.mockImplementationOnce(async () => undefined);
 
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
       url: "/api/webhooks/stripe",
-      headers: {
-        "content-type": "application/json",
-        "stripe-signature": "t=123,v1=valid",
-      },
+      headers: { "content-type": "application/json", "stripe-signature": "t=123,v1=valid" },
+      payload: Buffer.from("{}"),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    // Enqueued with the verified event; the heavy handler work did NOT run inline.
+    expect(mockEnqueueStripeWebhookEvent).toHaveBeenCalledTimes(1);
+    expect(mockEnqueueStripeWebhookEvent.mock.calls[0][0]).toMatchObject({ id: "evt_test_123" });
+    expect(mockCapturePayment).not.toHaveBeenCalled();
+    expect(mockPublishNatsEvent).not.toHaveBeenCalled();
+  });
+
+  it("on ENQUEUE failure, downgrades the idempotency key to 300s and returns 500 (Stripe retries)", async () => {
+    const event = createStripeEvent("payment_intent.succeeded");
+    mockConstructEvent.mockReturnValue(event);
+    const mockRedis = createMockRedis({ set: vi.fn().mockResolvedValue("OK") });
+    mockGetRedisClient.mockResolvedValue(mockRedis);
+
+    // The enqueue itself fails (Redis/BullMQ down) — the claimed key must NOT
+    // suppress Stripe's retry, so it is downgraded to a short TTL + we 500.
+    mockEnqueueStripeWebhookEvent.mockRejectedValueOnce(new Error("queue unavailable"));
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: { "content-type": "application/json", "stripe-signature": "t=123,v1=valid" },
       payload: Buffer.from("{}"),
     });
 
     expect(res.statusCode).toBe(500);
-    const body = res.json();
-    expect(body.error).toContain("Internal processing error");
-
-    // Idempotency key TTL should be shortened so retry can succeed after 5min
+    expect(res.json().error).toContain("enqueue");
+    // Key TTL shortened to 300s so Stripe's retry re-opens the window.
     expect(mockRedis.expire).toHaveBeenCalledWith(
       expect.stringContaining("evt_test_123"),
-      expect.any(Number),
+      300,
     );
   });
 });

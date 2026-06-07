@@ -68,6 +68,10 @@ import {
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
 import { markPixPaid } from "../jobs/pix-expiry-monitor.js";
+import {
+  enqueueStripeWebhookEvent,
+  startStripeWebhookProcessor,
+} from "../jobs/stripe-webhook-processor.js";
 
 // P2-MEM-STRIPENEW: memoize a module-level Stripe client so we don't construct a
 // fresh `new Stripe(key)` (with its own HTTP agent/connection pool) on every
@@ -627,9 +631,51 @@ async function handlePaymentIntentCanceled(
   );
 }
 
+// ── Dispatch (runs inside the BullMQ processor, NOT the HTTP handler) ─────────
+
+/**
+ * Route a verified Stripe event to its handler. Invoked by the
+ * stripe-webhook-processor worker (ack-then-async, P1-NET-STRIPESYNC) — the HTTP
+ * route only verifies + enqueues. `receivedAtMs` is the webhook receipt time so
+ * each handler's processing_ms reflects end-to-end latency. The handlers retain
+ * their kernel-adjudicated egress + the P0-PAY-1/P0-PAY-2/PIXDUP/STRIPESRC fixes.
+ */
+export async function dispatchStripeWebhookEvent(
+  event: Stripe.Event,
+  receivedAtMs: number,
+  logger: WebhookLogger,
+): Promise<void> {
+  switch (event.type) {
+    case "payment_intent.succeeded":
+      await handlePaymentSucceeded(event, receivedAtMs, logger);
+      break;
+    case "payment_intent.payment_failed":
+      await handlePaymentFailed(event, receivedAtMs, logger);
+      break;
+    case "charge.refunded":
+      await handleChargeRefunded(event, receivedAtMs, logger);
+      break;
+    case "charge.dispute.created":
+      await handleChargeDisputeCreated(event, receivedAtMs, logger);
+      break;
+    case "payment_intent.canceled":
+      await handlePaymentIntentCanceled(event, receivedAtMs, logger);
+      break;
+    default:
+      logger.info({ event_id: event.id, type: event.type }, "Unhandled Stripe event type — ignoring");
+  }
+}
+
 // ── Route registration ──────────────────────────────────────────────────────
 
 export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
+  // Self-register the durable processor so queued jobs drain on (re)start.
+  // Guarded out of the test env (no BullMQ/Redis worker in unit tests); the
+  // handlers themselves are exercised via dispatchStripeWebhookEvent.
+  if (process.env.NODE_ENV !== "test") {
+    startStripeWebhookProcessor(dispatchStripeWebhookEvent);
+  }
+
   // Scope raw body parser to this route only (Fastify encapsulated plugin)
   await server.register(async function stripeWebhookPlugin(scoped) {
     scoped.addContentTypeParser(
@@ -704,45 +750,28 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
         return reply.code(200).send({ ok: true, duplicate: true });
       }
 
+      // Ack-then-async (P1-NET-STRIPESYNC): enqueue a durable BullMQ job and
+      // return 200 immediately, instead of running the heavy Medusa-complete +
+      // capture + NATS + reconcile work inline (which held the HTTP connection
+      // open and risked a Stripe client timeout → retry storm + double-process).
+      // The 7-day idempotency key is already claimed above, so Stripe will NOT
+      // retry — durability now rests on BullMQ (jobId=event.id dedup + attempts +
+      // failed-set retention), not on Stripe.
+      //
+      // Bad-money-port trap: if the ENQUEUE ITSELF fails (Redis/BullMQ down), the
+      // claimed key would otherwise suppress Stripe's retry forever and the event
+      // would be lost. So downgrade the key to a 300s TTL and return 500 → Stripe
+      // re-delivers and we re-enqueue once the queue recovers. (Processing-time
+      // failures are handled by BullMQ retry, not here.)
       try {
-        switch (event.type) {
-          case "payment_intent.succeeded": {
-            await handlePaymentSucceeded(event, startMs, server.log);
-            break;
-          }
-
-          case "payment_intent.payment_failed": {
-            await handlePaymentFailed(event, startMs, server.log);
-            break;
-          }
-
-          case "charge.refunded": {
-            await handleChargeRefunded(event, startMs, server.log);
-            break;
-          }
-
-          case "charge.dispute.created": {
-            await handleChargeDisputeCreated(event, startMs, server.log);
-            break;
-          }
-
-          case "payment_intent.canceled": {
-            await handlePaymentIntentCanceled(event, startMs, server.log);
-            break;
-          }
-
-          default:
-            server.log.info({ event_id: event.id, type: event.type }, "Unhandled Stripe event type — ignoring");
-        }
+        await enqueueStripeWebhookEvent(event, startMs);
       } catch (err) {
-        server.log.error({ event_id: event.id, error: String(err) }, "Stripe webhook processing error");
-        // Keep the key alive for 5 minutes instead of deleting it. Deleting immediately
-        // would allow Stripe's retry to reprocess before a partial success (e.g. NATS
-        // published but Medusa call failed) has had time to roll back, causing duplicate
-        // order.placed events. The 5-min TTL closes that window while still letting
-        // Stripe retry succeed once the transient failure has recovered.
+        server.log.error(
+          { event_id: event.id, error: String(err) },
+          "[stripe-webhook] enqueue failed — downgrading idempotency key for Stripe retry",
+        );
         await redis.expire(idempotencyKey, 300);
-        return reply.code(500).send({ error: "Internal processing error" });
+        return reply.code(500).send({ error: "Failed to enqueue webhook event" });
       }
 
       return reply.code(200).send({ ok: true });
