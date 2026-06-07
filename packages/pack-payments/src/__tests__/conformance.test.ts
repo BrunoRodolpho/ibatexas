@@ -18,8 +18,10 @@ import { describe, expect, it } from "vitest"
 import { adjudicate } from "@adjudicate/core/kernel"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import { runConformance } from "@adjudicate/conformance"
+import { analyzePolicy, type PlannerProbe } from "@adjudicate/analyze"
 import {
   paymentsPack,
+  type PaymentContext,
   type PaymentIntentKind,
   type PaymentPayload,
   type PaymentState,
@@ -563,5 +565,80 @@ describe("paymentsPack — kernel invariants via runConformance()", () => {
 
   it("policy default is REFUSE (default-polarity / bypass-detection)", () => {
     expect(paymentsPack.policy.default).toBe("REFUSE")
+  })
+})
+
+// ── Tier-3 policy coherence (AJD-301) via analyzePolicy() ───────────────────
+//
+// F11 gate: the planner must never offer an intent the Pack doesn't declare
+// (`phantom_intent`, the only error-severity rule → flips `report.passed`).
+// System-only kinds (taint minimum above UNTRUSTED) are intentionally not
+// planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
+// via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
+// `payment.charge.confirm` from the taint policy fails loudly here.
+//
+// NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
+// omits the many declared, non-system intents (refund.issue, cash.confirm,
+// waive, status.force/transition, …) that are reached by webhook / cron / staff
+// flows, each a benign `unreachable_intent` warning. `report.passed` stays true
+// (error === 0).
+
+describe("paymentsPack — policy coherence via analyzePolicy() (AJD-301)", () => {
+  // The payments planner `void`s both `state` and `context` — it returns the
+  // same customer-driven `allowedIntents` for every input. We still vary the
+  // probe actor (the only meaningful axis) to exercise the planner over the
+  // surface a turn would feed it. `context` carries the per-turn actor shape.
+  const probes: ReadonlyArray<PlannerProbe<PaymentState, PaymentContext>> = [
+    {
+      label: "customer-pending-pix",
+      state: existsState({ currentStatus: "pending", currentMethod: "pix" }),
+      context: { actor: { principal: "user", id: "cust-1" } },
+    },
+    {
+      label: "system-fresh",
+      state: freshState(),
+      context: { actor: { principal: "system" } },
+    },
+  ]
+
+  // Derive the system-only set the SAME way the analyzer does (taint minimum),
+  // never a hand-list — so this test cannot drift from `paymentsTaintPolicy`.
+  const systemOnlyKinds = paymentsPack.intents.filter((k) => {
+    const min = paymentsPack.policy.taint.minimumFor(k)
+    return min !== undefined && min !== "UNTRUSTED"
+  })
+
+  it("planner proposes no phantom intents (report.passed, zero errors)", () => {
+    const report = analyzePolicy({ pack: paymentsPack, plannerProbes: probes })
+    for (const d of report.diagnostics) {
+      if (d.severity === "error") console.error(`[${d.code}] ${d.message}`)
+    }
+    expect(report.passed).toBe(true)
+    expect(report.summary.error).toBe(0)
+  })
+
+  it("system-only kinds (payment.charge.confirm, …) are carved out", () => {
+    const report = analyzePolicy({ pack: paymentsPack, plannerProbes: probes })
+    // Guard against a vacuous pass: the carve-out subject must really be system-only.
+    expect(systemOnlyKinds).toContain("payment.charge.confirm")
+    for (const kind of systemOnlyKinds) {
+      const unreachable = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "unreachable_intent" && d.detail?.intent === kind,
+      )
+      expect(
+        unreachable,
+        `${kind} is system-only — must NOT be flagged unreachable`,
+      ).toBeUndefined()
+      const contradiction = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "system_taint_contradiction" &&
+          d.detail?.intent === kind,
+      )
+      expect(
+        contradiction,
+        `${kind} is system-only — planner must NOT offer it`,
+      ).toBeUndefined()
+    }
   })
 })

@@ -23,8 +23,10 @@ import { describe, expect, it } from "vitest"
 import { adjudicate } from "@adjudicate/core/kernel"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import { runConformance } from "@adjudicate/conformance"
+import { analyzePolicy, type PlannerProbe } from "@adjudicate/analyze"
 import {
   reservationsPack,
+  type ReservationContext,
   type ReservationIntentKind,
   type ReservationPayload,
   type ReservationState,
@@ -576,5 +578,115 @@ describe("reservationsPack — kernel invariants via runConformance()", () => {
     // surfaced explicitly in the Pack's own test surface (task spec
     // acceptance criterion).
     expect(reservationsPack.policy.default).toBe("REFUSE")
+  })
+})
+
+// ── Tier-3 policy coherence (AJD-301) via analyzePolicy() ───────────────────
+//
+// F11 gate: the planner must never offer an intent the Pack doesn't declare
+// (`phantom_intent`, the only error-severity rule → flips `report.passed`).
+// System-only kinds (taint minimum above UNTRUSTED) are intentionally not
+// planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
+// via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
+// `reservation.no_show.mark` from the taint policy fails loudly here.
+//
+// NOTE: we deliberately do NOT assert `summary.warning === 0`. The planner
+// gates intents on `state.ctx.customerId` (customer-facing kinds) and
+// `state.ctx.staffId` (checkin/complete); every declared, non-system intent is
+// reachable across the probe set, so no `unreachable_intent` warnings are
+// expected here — but the assertion stays scoped to `error === 0` so a future
+// non-system intent reached only by routed/system flows stays a benign warning.
+
+describe("reservationsPack — policy coherence via analyzePolicy() (AJD-301)", () => {
+  // Probes MUST exercise BOTH planner branches — the planner keys on
+  // `state.ctx.customerId` (authenticated → customer kinds) and
+  // `state.ctx.staffId` (staff session → checkin/complete). All four
+  // combinations are covered. `context` is unused by this planner (`void
+  // context`) but required by the probe shape.
+  const probes: ReadonlyArray<PlannerProbe<ReservationState, ReservationContext>> =
+    [
+      {
+        label: "guest-web (no customer, no staff)",
+        state: baseState({ customerId: null, staffId: null, channel: "web" }),
+        context: {
+          channel: "web",
+          customerId: null,
+          staffId: null,
+        } as ReservationContext,
+      },
+      {
+        label: "auth-customer-whatsapp",
+        state: baseState({ customerId: "c-1", staffId: null }),
+        context: {
+          channel: "whatsapp",
+          customerId: "c-1",
+          staffId: null,
+        } as ReservationContext,
+      },
+      {
+        label: "staff-only (staff session, no customer)",
+        state: baseState({ customerId: null, staffId: "staff-1", channel: "staff" }),
+        context: {
+          channel: "staff",
+          customerId: null,
+          staffId: "staff-1",
+        } as ReservationContext,
+      },
+      {
+        label: "auth-customer-and-staff",
+        state: baseState({ customerId: "c-1", staffId: "staff-1", channel: "staff" }),
+        context: {
+          channel: "staff",
+          customerId: "c-1",
+          staffId: "staff-1",
+        } as ReservationContext,
+      },
+    ]
+
+  // Derive the system-only set the SAME way the analyzer does (taint minimum),
+  // never a hand-list — so this test cannot drift from `reservationTaintPolicy`.
+  const systemOnlyKinds = reservationsPack.intents.filter((k) => {
+    const min = reservationsPack.policy.taint.minimumFor(k)
+    return min !== undefined && min !== "UNTRUSTED"
+  })
+
+  it("planner proposes no phantom intents (report.passed, zero errors)", () => {
+    const report = analyzePolicy({
+      pack: reservationsPack,
+      plannerProbes: probes,
+    })
+    for (const d of report.diagnostics) {
+      if (d.severity === "error") console.error(`[${d.code}] ${d.message}`)
+    }
+    expect(report.passed).toBe(true)
+    expect(report.summary.error).toBe(0)
+  })
+
+  it("system-only kinds (reservation.no_show.mark, …) are carved out", () => {
+    const report = analyzePolicy({
+      pack: reservationsPack,
+      plannerProbes: probes,
+    })
+    // Guard against a vacuous pass: the carve-out subject must really be system-only.
+    expect(systemOnlyKinds).toContain("reservation.no_show.mark")
+    for (const kind of systemOnlyKinds) {
+      const unreachable = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "unreachable_intent" && d.detail?.intent === kind,
+      )
+      expect(
+        unreachable,
+        `${kind} is system-only — must NOT be flagged unreachable`,
+      ).toBeUndefined()
+      const contradiction = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "system_taint_contradiction" &&
+          d.detail?.intent === kind,
+      )
+      expect(
+        contradiction,
+        `${kind} is system-only — planner must NOT offer it`,
+      ).toBeUndefined()
+    }
   })
 })

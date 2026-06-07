@@ -451,12 +451,18 @@ importers:
 
   packages/cli:
     dependencies:
+      '@adjudicate/analyze':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@adjudicate/audit':
         specifier: ^2.0.1
         version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^2.0.1
         version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+      '@adjudicate/conformance':
+        specifier: ^1.1.0
+        version: 1.1.0(@adjudicate/core@1.3.0)
       '@adjudicate/core':
         specifier: ^1.3.0
         version: 1.3.0
@@ -515,12 +521,30 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
+      '@adjudicate/pack-payments-pix':
+        specifier: ^0.2.1
+        version: 0.2.1
       '@eslint/eslintrc':
         specifier: ^3.0.0
         version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@ibatexas/pack-customer-onboarding':
+        specifier: workspace:*
+        version: link:../pack-customer-onboarding
+      '@ibatexas/pack-orders':
+        specifier: workspace:*
+        version: link:../pack-orders
+      '@ibatexas/pack-payments':
+        specifier: workspace:*
+        version: link:../pack-payments
+      '@ibatexas/pack-reservations':
+        specifier: workspace:*
+        version: link:../pack-reservations
+      '@ibatexas/pack-whatsapp':
+        specifier: workspace:*
+        version: link:../pack-whatsapp
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.15
@@ -672,6 +696,9 @@ importers:
         specifier: ^0.3.0
         version: 0.3.0
     devDependencies:
+      '@adjudicate/analyze':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
         version: 1.1.0(@adjudicate/core@1.3.0)
@@ -703,6 +730,9 @@ importers:
         specifier: ^0.3.0
         version: 0.3.0
     devDependencies:
+      '@adjudicate/analyze':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
         version: 1.1.0(@adjudicate/core@1.3.0)
@@ -734,6 +764,9 @@ importers:
         specifier: ^0.3.0
         version: 0.3.0
     devDependencies:
+      '@adjudicate/analyze':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
         version: 1.1.0(@adjudicate/core@1.3.0)
@@ -762,6 +795,9 @@ importers:
         specifier: ^0.3.0
         version: 0.3.0
     devDependencies:
+      '@adjudicate/analyze':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
         version: 1.1.0(@adjudicate/core@1.3.0)
@@ -790,6 +826,9 @@ importers:
         specifier: ^0.3.0
         version: 0.3.0
     devDependencies:
+      '@adjudicate/analyze':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@adjudicate/conformance':
         specifier: ^1.1.0
         version: 1.1.0(@adjudicate/core@1.3.0)
@@ -923,6 +962,9 @@ packages:
     resolution: {integrity: sha512-J3i3qhMe1XCYCnk99rKrV2Oinwg7/8ETcQHY3nteazedNBgeEkPYWsgHjepIV5vxqyi0SQpT9Ni6Ai3s8s759Q==}
     peerDependencies:
       '@adjudicate/core': 1.3.0
+
+  '@adjudicate/analyze@0.3.0':
+    resolution: {integrity: sha512-oi/eMbdK+ta8feSdmaB+daX/SJJEtO5jhu1LHqKgdcL1xWsjDYCMrTUd2OEjBq2ZsYR4NP6RGg2n0C6Y/7RMGA==}
 
   '@adjudicate/audit-postgres@2.0.1':
     resolution: {integrity: sha512-ry12BysfofTxwcw40zK8SuqXFyy2hZ2vfRmzSGaNEOg5UVNV1FdGtT7OttJQ1IGZn06/qk7aBVs4j8M7C+IP6A==}
@@ -5645,6 +5687,9 @@ packages:
     peerDependencies:
       typescript: '>=5.7.2'
 
+  '@ts-morph/common@0.26.1':
+    resolution: {integrity: sha512-Sn28TGl/4cFpcM+jwsH1wLncYq3FtN/BIpem+HOygfBWPT5pAeS5dB4VFVzV8FbnOKHpDLZmvAl4AjPEev5idA==}
+
   '@tsconfig/node10@1.0.12':
     resolution: {integrity: sha512-UCYBaeFvM11aU2y3YPZ//O5Rhj+xKyzy7mvcIoAjASbigy8mHMryP5cK7dgjlz2hWxh1g5pLw084E0a/wlUSFQ==}
 
@@ -6702,6 +6747,9 @@ packages:
     peerDependencies:
       react: ^18.0.0
       react-dom: ^18.0.0
+
+  code-block-writer@13.0.3:
+    resolution: {integrity: sha512-Oofo0pq3IKnsFtuHqSF7TqBfr71aeyZDVJ0HpmqB7FBM2qEigL0iPONSCZSO9pE9dZTAxANe5XHG9Uy0YMv8cg==}
 
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
@@ -8979,6 +9027,9 @@ packages:
   password-prompt@1.1.3:
     resolution: {integrity: sha512-HkrjG2aJlvF0t2BMH0e2LB/EHf3Lcq3fNMzy4GYHcQblAvOl+QQji1Lx7WRBMqpVK8p+KR7bCg7oqAMXtdgqyw==}
 
+  path-browserify@1.0.1:
+    resolution: {integrity: sha512-b7uo2UCUOYZcnF/3ID0lulOJi/bafxa1xPe7ZPsammBSpjSWQkjNxlt635YGS2MiR9GjvuXCtz2emr3jbsz98g==}
+
   path-case@3.0.4:
     resolution: {integrity: sha512-qO4qCFjXqVTrcbPt/hQfhTQ+VhFsqNKOPtytgNKkKxSoEp3XPUQ8ObFuePylOIok5gjn69ry8XiULxCwot3Wfg==}
 
@@ -10247,6 +10298,9 @@ packages:
   ts-interface-checker@0.1.13:
     resolution: {integrity: sha512-Y/arvbn+rrz3JCKl9C4kVNfTfSm2/mEp5FSz5EsZSANGPSlQrpRI5M4PKF+mJnE52jOO90PnPSc3Ur3bTQw0gA==}
 
+  ts-morph@25.0.1:
+    resolution: {integrity: sha512-QJEiTdnz1YjrB3JFhd626gX4rKHDLSjSVMvGGG4v7ONc3RBwa0Eei98G9AT9uNFDMtV54JyuXsFeC+OH0n6bXQ==}
+
   ts-node@10.9.2:
     resolution: {integrity: sha512-f0FFpIdcHgn8zcPSbf1dRevwt047YMnaiJM3u2w2RewrB+fob/zePZcrOyQoLMMO7aBIddLcQIEK5dYjkLnGrQ==}
     hasBin: true
@@ -10804,6 +10858,11 @@ snapshots:
       zod: 4.3.6
     transitivePeerDependencies:
       - typescript
+
+  '@adjudicate/analyze@0.3.0':
+    dependencies:
+      '@adjudicate/core': 1.3.0
+      ts-morph: 25.0.1
 
   '@adjudicate/audit-postgres@2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))':
     dependencies:
@@ -17039,6 +17098,12 @@ snapshots:
     dependencies:
       typescript: 5.9.3
 
+  '@ts-morph/common@0.26.1':
+    dependencies:
+      fast-glob: 3.3.3
+      minimatch: 10.2.4
+      path-browserify: 1.0.1
+
   '@tsconfig/node10@1.0.12': {}
 
   '@tsconfig/node12@1.0.11': {}
@@ -18282,6 +18347,8 @@ snapshots:
       react-dom: 18.3.1(react@18.3.1)
     transitivePeerDependencies:
       - '@types/react'
+
+  code-block-writer@13.0.3: {}
 
   color-convert@2.0.1:
     dependencies:
@@ -20806,6 +20873,8 @@ snapshots:
       ansi-escapes: 4.3.2
       cross-spawn: 7.0.6
 
+  path-browserify@1.0.1: {}
+
   path-case@3.0.4:
     dependencies:
       dot-case: 3.0.4
@@ -22277,6 +22346,11 @@ snapshots:
       typescript: 5.9.3
 
   ts-interface-checker@0.1.13: {}
+
+  ts-morph@25.0.1:
+    dependencies:
+      '@ts-morph/common': 0.26.1
+      code-block-writer: 13.0.3
 
   ts-node@10.9.2(@swc/core@1.15.21(@swc/helpers@0.5.21))(@types/node@25.9.1)(typescript@5.9.3):
     dependencies:

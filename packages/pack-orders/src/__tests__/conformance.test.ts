@@ -26,8 +26,10 @@ import { describe, expect, it } from "vitest"
 import { adjudicate } from "@adjudicate/core/kernel"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import { runConformance } from "@adjudicate/conformance"
+import { analyzePolicy, type PlannerProbe } from "@adjudicate/analyze"
 import {
   ordersPack,
+  type OrderContext,
   type OrderIntentKind,
   type OrderPayload,
   type OrderState,
@@ -763,5 +765,82 @@ describe("ordersPack — kernel invariants via runConformance()", () => {
     // surfaced explicitly in the Pack's own test surface (task spec
     // acceptance criterion).
     expect(ordersPack.policy.default).toBe("REFUSE")
+  })
+})
+
+// ── Tier-3 policy coherence (AJD-301) via analyzePolicy() ───────────────────
+//
+// F11 gate: the planner must never offer an intent the Pack doesn't declare
+// (`phantom_intent`, the only error-severity rule → flips `report.passed`).
+// System-only kinds (taint minimum above UNTRUSTED) are intentionally not
+// planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
+// via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
+// `order.cancel.system` from the taint policy fails loudly here.
+//
+// NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
+// omits several declared, non-system intents (cart.sync, pix.details.set,
+// amend.*, address.change, type.switch, review.submit, reorder, status.transition)
+// that are reached by routed/system flows, each a benign `unreachable_intent`
+// warning. `report.passed` stays true (error === 0).
+
+describe("ordersPack — policy coherence via analyzePolicy() (AJD-301)", () => {
+  // Probes MUST exercise both planner branches — the planner keys on
+  // `state.ctx.customerId` (guest vs authenticated). `context` is unused by this
+  // planner but required by the probe shape.
+  const probes: ReadonlyArray<PlannerProbe<OrderState, OrderContext>> = [
+    {
+      label: "guest-web",
+      state: authenticatedState({ customerId: null, channel: "web" }),
+      context: { channel: "web", customerId: null } as unknown as OrderContext,
+    },
+    {
+      label: "auth-whatsapp",
+      state: authenticatedState(),
+      context: {
+        channel: "whatsapp",
+        customerId: "c-1",
+      } as unknown as OrderContext,
+    },
+  ]
+
+  // Derive the system-only set the SAME way the analyzer does (taint minimum),
+  // never a hand-list — so this test cannot drift from `orderTaintPolicy`.
+  const systemOnlyKinds = ordersPack.intents.filter((k) => {
+    const min = ordersPack.policy.taint.minimumFor(k)
+    return min !== undefined && min !== "UNTRUSTED"
+  })
+
+  it("planner proposes no phantom intents (report.passed, zero errors)", () => {
+    const report = analyzePolicy({ pack: ordersPack, plannerProbes: probes })
+    for (const d of report.diagnostics) {
+      if (d.severity === "error") console.error(`[${d.code}] ${d.message}`)
+    }
+    expect(report.passed).toBe(true)
+    expect(report.summary.error).toBe(0)
+  })
+
+  it("system-only kinds (order.cancel.system, …) are carved out", () => {
+    const report = analyzePolicy({ pack: ordersPack, plannerProbes: probes })
+    // Guard against a vacuous pass: the carve-out subject must really be system-only.
+    expect(systemOnlyKinds).toContain("order.cancel.system")
+    for (const kind of systemOnlyKinds) {
+      const unreachable = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "unreachable_intent" && d.detail?.intent === kind,
+      )
+      expect(
+        unreachable,
+        `${kind} is system-only — must NOT be flagged unreachable`,
+      ).toBeUndefined()
+      const contradiction = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "system_taint_contradiction" &&
+          d.detail?.intent === kind,
+      )
+      expect(
+        contradiction,
+        `${kind} is system-only — planner must NOT offer it`,
+      ).toBeUndefined()
+    }
   })
 })

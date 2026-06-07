@@ -914,6 +914,192 @@ async function runDeferResume(
 
 // ── Registration ──────────────────────────────────────────────────────────
 
+// ── Governance: AI-BOM (F12) + policy coherence (F11) ──────────────────────
+//
+// `kernelMinVersion` floor stamped into every BOM (the @adjudicate/core major
+// line these packs target). A single named constant per Hard Rule #3 — not
+// authored per-pack. `KERNEL_VERSION` is the installed core line; both feed the
+// reproducible `bomDigest`, so a core bump is a material re-baseline event.
+const KERNEL_MIN_VERSION = "1.0.0"
+const KERNEL_VERSION = "1.3.0"
+// Pinned wall-clock: EXCLUDED from `bomDigest` (digest covers everything except
+// generatedAt + signature), so it keeps the committed BOM artifact byte-stable.
+const BOM_GENERATED_AT = "2026-06-07T00:00:00.000Z"
+
+interface GovernancePack {
+  readonly id: string
+  readonly version: string
+  readonly contract: string
+  readonly intents: readonly string[]
+  readonly signals?: readonly string[]
+  readonly basisCodes?: readonly string[]
+  readonly policy: unknown
+  readonly planner: unknown
+}
+
+// Raw first-party pack objects (not the kind→pack index) for BOM + analyze.
+// Mirrors loadPackIndex's spec list; degrades gracefully outside the monorepo.
+async function loadPacksForGovernance(
+  only?: string,
+): Promise<GovernancePack[]> {
+  const out: GovernancePack[] = []
+  for (const [spec, exp] of [
+    ["@ibatexas/pack-orders", "ordersPack"],
+    ["@ibatexas/pack-reservations", "reservationsPack"],
+    ["@ibatexas/pack-whatsapp", "whatsappPack"],
+    ["@ibatexas/pack-customer-onboarding", "customerOnboardingPack"],
+    ["@ibatexas/pack-payments", "paymentsPack"],
+    // NB: the live export is `paymentsPixPack` (loadPackIndex above still has
+    // the stale `pixChargeLifecyclePack` name — a pre-existing bug there).
+    ["@adjudicate/pack-payments-pix", "paymentsPixPack"],
+  ] as const) {
+    if (only !== undefined && spec !== only) continue
+    try {
+      const mod = (await import(spec as string)) as Record<
+        string,
+        GovernancePack | undefined
+      >
+      const pack = mod[exp]
+      if (pack) out.push(pack)
+    } catch {
+      // Unresolvable spec — skip (CLI may run outside the workspace).
+    }
+  }
+  return out
+}
+
+async function runPackBom(opts: {
+  pack?: string
+  json?: boolean
+  verifyFile?: string
+}): Promise<void> {
+  const { generateAiBom, runConformance, scorePackHealth } = await import(
+    "@adjudicate/conformance"
+  )
+  const packs = await loadPacksForGovernance(opts.pack)
+  if (packs.length === 0) {
+    console.error(
+      chalk.red(`Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`),
+    )
+    process.exitCode = 1
+    return
+  }
+
+  let baseline: Record<string, string> | undefined
+  if (opts.verifyFile !== undefined) {
+    try {
+      baseline = JSON.parse(await readFile(opts.verifyFile, "utf-8")) as Record<
+        string,
+        string
+      >
+    } catch {
+      console.error(chalk.red(`Baseline ilegível: ${opts.verifyFile}`))
+      process.exitCode = 1
+      return
+    }
+  }
+
+  const digests: Record<string, string> = {}
+  let mismatch = false
+  for (const pack of packs) {
+    const conformance = runConformance(pack as never)
+    const manifest = {
+      contract: pack.contract as "v0" | "v1",
+      packId: pack.id,
+      kernelMinVersion: KERNEL_MIN_VERSION,
+      intents: pack.intents,
+      ...(pack.signals ? { signals: pack.signals } : {}),
+    }
+    const health = scorePackHealth({
+      manifest: { ok: true, manifest },
+      conformance,
+      intentCount: pack.intents.length,
+      signalCount: pack.signals?.length ?? 0,
+      packId: pack.id,
+    })
+    const bom = generateAiBom({
+      pack,
+      manifest,
+      conformance,
+      health,
+      generatedAt: BOM_GENERATED_AT,
+      kernelVersion: KERNEL_VERSION,
+    })
+    digests[pack.id] = bom.bomDigest
+
+    if (baseline !== undefined) {
+      const want = baseline[pack.id]
+      if (want === undefined) {
+        console.error(chalk.red(`✗ ${pack.id}: sem entrada na baseline`))
+        mismatch = true
+      } else if (want !== bom.bomDigest) {
+        console.error(
+          chalk.red(
+            `✗ ${pack.id}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${bom.bomDigest.slice(0, 12)}…)`,
+          ),
+        )
+        mismatch = true
+      } else {
+        console.log(chalk.green(`✓ ${pack.id} → ${bom.bomDigest.slice(0, 16)}…`))
+      }
+    } else if (opts.json) {
+      console.log(JSON.stringify(bom, null, 2))
+    } else {
+      console.log(chalk.bold(`AI-BOM ${pack.id}@${pack.version}`))
+      console.log(`  fingerprint : ${bom.fingerprint}`)
+      console.log(`  bomDigest   : ${bom.bomDigest}`)
+      console.log(
+        `  conformance : ${bom.conformance.passedCount}/${bom.conformance.total}`,
+      )
+      console.log(
+        `  health      : ${bom.healthTier} (${bom.healthScore.score}/${bom.healthScore.maxScore})`,
+      )
+    }
+  }
+
+  // When neither verifying nor emitting full JSON, print the digest-lock so an
+  // operator can capture/refresh governance/pack-bom-baseline.json.
+  if (opts.verifyFile === undefined && opts.json !== true) {
+    console.log()
+    console.log(
+      chalk.dim("digest-lock (governance/pack-bom-baseline.json):"),
+    )
+    console.log(JSON.stringify(digests, null, 2))
+  }
+  if (mismatch) process.exitCode = 1
+}
+
+async function runAnalyze(opts: {
+  pack?: string
+  json?: boolean
+  sarif?: boolean
+}): Promise<void> {
+  const { analyzePolicy, renderJson, renderSarif, renderText } = await import(
+    "@adjudicate/analyze"
+  )
+  const packs = await loadPacksForGovernance(opts.pack)
+  if (packs.length === 0) {
+    console.error(
+      chalk.red(`Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`),
+    )
+    process.exitCode = 1
+    return
+  }
+  // Tier-1 coherence (basis-vocab / default-polarity / taint-policy …). NO
+  // `strict` and NO plannerProbes here: the planner-coherence Tier-3 gate
+  // (AJD-301) lives in each pack's conformance.test.ts where the probe fixtures
+  // are. We gate the CLI on `summary.error` only — warnings are intentional.
+  let anyError = false
+  for (const pack of packs) {
+    const report = analyzePolicy({ pack: pack as never })
+    if (!report.passed) anyError = true
+    if (opts.sarif) console.log(renderSarif(report))
+    else if (opts.json) console.log(renderJson(report))
+    else console.log(renderText(report))
+  }
+  if (anyError) process.exitCode = 1
+}
+
 export function registerKernelCommands(group: Command): void {
   group.description("Kernel — estado, replay e migrações do adjudicate kernel")
 
@@ -1000,4 +1186,35 @@ export function registerKernelCommands(group: Command): void {
         }
       },
     )
+
+  // ── pack-bom (F12) ─────────────────────────────────────────────────────────
+  group
+    .command("pack-bom")
+    .description(
+      "Gera o AI Bill-of-Materials (EU AI Act / NIST) dos packs — fingerprint + conformance + health. --verify-file falha (exit 1) se o bomDigest divergir da baseline.",
+    )
+    .option("--pack <spec>", "Pack alvo (default: todos os first-party)")
+    .option("--json", "Emite o AiBom completo em JSON")
+    .option(
+      "--verify-file <path>",
+      "Compara o bomDigest de cada pack contra a baseline commitada (CI gate)",
+    )
+    .action(
+      async (opts: { pack?: string; json?: boolean; verifyFile?: string }) => {
+        await runPackBom(opts)
+      },
+    )
+
+  // ── analyze (F11) ──────────────────────────────────────────────────────────
+  group
+    .command("analyze")
+    .description(
+      "Roda os analisadores de coerência de política (Tier-1) sobre os packs e falha (exit 1) em erros. --sarif para CI.",
+    )
+    .option("--pack <spec>", "Pack alvo (default: todos os first-party)")
+    .option("--json", "Emite o AnalysisReport em JSON")
+    .option("--sarif", "Emite SARIF 2.1.0 (upload em code-scanning)")
+    .action(async (opts: { pack?: string; json?: boolean; sarif?: boolean }) => {
+      await runAnalyze(opts)
+    })
 }
