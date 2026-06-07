@@ -655,9 +655,11 @@ function CheckoutForm() {
                   <p className="text-xs text-smoke-500">{t('delivery_shipping_desc', { cep: cepInput })}</p>
                 </div>
               )}
-              {deliveryError && (
-                <p className="text-sm text-accent-red">{deliveryError}</p>
-              )}
+              <div aria-live="polite" aria-atomic="true">
+                {deliveryError && (
+                  <p className="text-sm text-accent-red">{deliveryError}</p>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -781,7 +783,9 @@ function CheckoutForm() {
           </div>
         </div>
 
-        {error && <p className="text-sm text-accent-red">{error}</p>}
+        <div aria-live="polite" aria-atomic="true">
+          {error && <p className="text-sm text-accent-red">{error}</p>}
+        </div>
 
         {/* Trust badges */}
         <div className="flex items-center justify-center gap-6 text-smoke-400">

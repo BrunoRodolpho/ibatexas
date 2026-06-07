@@ -7,7 +7,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
-import { createCustomerService } from "@ibatexas/domain";
+import { hashPhone } from "../lib/phone-hash.js";
+import { createCustomerService, toE164BR } from "@ibatexas/domain";
 import { Channel, type AgentContext } from "@ibatexas/types";
 import { buildEnvelope } from "@adjudicate/core";
 import type {
@@ -25,13 +26,15 @@ const MAX_CUSTOMER_CREATES_PER_MINUTE = 100;
 
 // ── Phone utilities ────────────────────────────────────────────────────────────
 
-/** Strip `whatsapp:` prefix and validate E.164 format. */
+/**
+ * Strip `whatsapp:` prefix and validate E.164 format. Delegates to the shared
+ * `toE164BR` (P2-DATA-PHONENORM) so the WhatsApp path and the customer @unique
+ * lookup share one canonical form. Behavior on Twilio's clean `whatsapp:+<digits>`
+ * inbound is unchanged; it additionally tolerates formatting (Twilio never sends
+ * it, so this is a benign widening).
+ */
 export function normalizePhone(from: string): string {
-  const phone = from.replace(/^whatsapp:/, "");
-  if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
-    throw new Error(`Invalid phone format: ${from}`);
-  }
-  return phone;
+  return toE164BR(from);
 }
 
 /**
@@ -42,9 +45,10 @@ export function normalizePhone(from: string): string {
  * hash), but NOT session data (uses actual phone for Prisma lookup).
  * If scaling to millions of phones, increase to 16+ hex chars.
  */
-export function hashPhone(phone: string): string {
-  return createHash("sha256").update(phone).digest("hex").slice(0, 12);
-}
+// P1-CRYPTO-PHONEHASH: the phone pseudonym is a keyed, full-length HMAC,
+// centralized in lib/phone-hash.ts. Re-exported here so existing importers
+// (whatsapp-webhook, client, cart-intelligence) keep their import path.
+export { hashPhone };
 
 // ── Session resolution ─────────────────────────────────────────────────────────
 
@@ -287,6 +291,12 @@ export async function acquireAgentLock(phoneHash: string): Promise<string | null
     }
   }, AGENT_LOCK_HEARTBEAT_MS);
 
+  // P3-MEM-HEARTBEAT: if a previous heartbeat for this phone is still tracked
+  // (e.g. a prior lock cycle whose release path didn't run), clear it before
+  // overwriting the Map entry so the old interval can't leak and keep firing.
+  // NX-lock semantics are unchanged — we only reacquired above on a fresh SET.
+  const existing = heartbeats.get(phoneHash);
+  if (existing) clearInterval(existing);
   heartbeats.set(phoneHash, interval);
   return lockValue;
 }
@@ -390,10 +400,11 @@ export async function isMessageDuplicate(
   phoneHash: string,
   messageBody: string,
 ): Promise<boolean> {
+  // Full-length (untruncated) digest — a 64-bit slice collided across distinct
+  // messages, dropping a non-duplicate as a "duplicate" (P1-CRYPTO-PHONEHASH).
   const hash = createHash("sha256")
     .update(`${phoneHash}:${messageBody}`)
-    .digest("hex")
-    .slice(0, 16);
+    .digest("hex");
   const redis = await getRedisClient();
   const key = rk(`wa:dedup:${hash}`);
   const result = await redis.set(key, "1", { EX: DEDUP_TTL_SECONDS, NX: true });

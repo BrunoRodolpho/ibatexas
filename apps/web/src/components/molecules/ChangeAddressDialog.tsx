@@ -58,52 +58,76 @@ export function ChangeAddressDialog({ orderId, isOpen, onClose, onMutate }: Chan
       )}
 
       <div className="space-y-3">
-        <input
-          type="text"
-          placeholder="Endereço"
-          value={address.address1}
-          onChange={(e) => handleChange('address1', e.target.value)}
-          className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
-        />
-        <input
-          type="text"
-          placeholder="Complemento (opcional)"
-          value={address.address2}
-          onChange={(e) => handleChange('address2', e.target.value)}
-          className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
-        />
-        <input
-          type="text"
-          placeholder="Bairro"
-          value={address.neighborhood}
-          onChange={(e) => handleChange('neighborhood', e.target.value)}
-          className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
-        />
-        <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-0.5">
+          <label htmlFor="change-address-address1" className="text-xs font-medium text-[var(--color-text-secondary)]">Endereço</label>
           <input
+            id="change-address-address1"
             type="text"
-            placeholder="Cidade"
-            value={address.city}
-            onChange={(e) => handleChange('city', e.target.value)}
-            className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
-          />
-          <input
-            type="text"
-            placeholder="UF"
-            maxLength={2}
-            value={address.state}
-            onChange={(e) => handleChange('state', e.target.value.toUpperCase())}
+            placeholder="Endereço"
+            value={address.address1}
+            onChange={(e) => handleChange('address1', e.target.value)}
             className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
           />
         </div>
-        <input
-          type="text"
-          placeholder="CEP"
-          maxLength={9}
-          value={address.postalCode}
-          onChange={(e) => handleChange('postalCode', e.target.value)}
-          className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
-        />
+        <div className="flex flex-col gap-0.5">
+          <label htmlFor="change-address-address2" className="text-xs font-medium text-[var(--color-text-secondary)]">Complemento (opcional)</label>
+          <input
+            id="change-address-address2"
+            type="text"
+            placeholder="Complemento (opcional)"
+            value={address.address2}
+            onChange={(e) => handleChange('address2', e.target.value)}
+            className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
+          />
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <label htmlFor="change-address-neighborhood" className="text-xs font-medium text-[var(--color-text-secondary)]">Bairro</label>
+          <input
+            id="change-address-neighborhood"
+            type="text"
+            placeholder="Bairro"
+            value={address.neighborhood}
+            onChange={(e) => handleChange('neighborhood', e.target.value)}
+            className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-0.5">
+            <label htmlFor="change-address-city" className="text-xs font-medium text-[var(--color-text-secondary)]">Cidade</label>
+            <input
+              id="change-address-city"
+              type="text"
+              placeholder="Cidade"
+              value={address.city}
+              onChange={(e) => handleChange('city', e.target.value)}
+              className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
+            />
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <label htmlFor="change-address-state" className="text-xs font-medium text-[var(--color-text-secondary)]">UF</label>
+            <input
+              id="change-address-state"
+              type="text"
+              placeholder="UF"
+              maxLength={2}
+              value={address.state}
+              onChange={(e) => handleChange('state', e.target.value.toUpperCase())}
+              className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
+            />
+          </div>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <label htmlFor="change-address-postalcode" className="text-xs font-medium text-[var(--color-text-secondary)]">CEP</label>
+          <input
+            id="change-address-postalcode"
+            type="text"
+            placeholder="CEP"
+            maxLength={9}
+            value={address.postalCode}
+            onChange={(e) => handleChange('postalCode', e.target.value)}
+            className="w-full px-3 py-2 border border-smoke-300 rounded-md text-sm"
+          />
+        </div>
       </div>
 
       <div className="flex gap-2 justify-end mt-4">

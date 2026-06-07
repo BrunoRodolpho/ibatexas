@@ -27,8 +27,9 @@ const mockCreateFromEnvelope = vi.hoisted(() => vi.fn())
 const mockWithLock = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 
-const mockRedisIncr = vi.hoisted(() => vi.fn())
-const mockRedisExpire = vi.hoisted(() => vi.fn())
+// P3-CONC-REGENRATE: the rate-limit counter now goes through the atomicIncr helper
+// (single Lua eval) instead of a non-atomic redis.incr + conditional redis.expire.
+const mockAtomicIncr = vi.hoisted(() => vi.fn())
 
 const mockStripePaymentIntentsCreate = vi.hoisted(() => vi.fn())
 const mockCancelStalePaymentIntent = vi.hoisted(() => vi.fn())
@@ -58,10 +59,13 @@ vi.mock("@ibatexas/nats-client", () => ({
 }))
 
 vi.mock("../../redis/client.js", () => ({
-  getRedisClient: vi.fn().mockResolvedValue({
-    incr: mockRedisIncr,
-    expire: mockRedisExpire,
-  }),
+  // The concrete client is irrelevant now — atomicIncr is mocked below — but
+  // getRedisClient must still resolve so regeneratePix can pass it through.
+  getRedisClient: vi.fn().mockResolvedValue({}),
+}))
+
+vi.mock("../../redis/atomic-rate-limit.js", () => ({
+  atomicIncr: mockAtomicIncr,
 }))
 
 vi.mock("../../redis/key.js", () => ({
@@ -145,9 +149,8 @@ describe("regeneratePix", () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
-    // Default: within rate limits (first call)
-    mockRedisIncr.mockResolvedValue(1)
-    mockRedisExpire.mockResolvedValue(1)
+    // Default: within rate limits (first call → count 1)
+    mockAtomicIncr.mockResolvedValue(1)
 
     // Default: active expired PIX payment
     mockGetActiveByOrderId.mockResolvedValue(makeActivePayment())
@@ -242,7 +245,7 @@ describe("regeneratePix", () => {
 
   it("customer rate limit exceeded (3/hr) → returns error with rate limit message", async () => {
     // 4th call this hour
-    mockRedisIncr.mockResolvedValue(4)
+    mockAtomicIncr.mockResolvedValue(4)
 
     const result = await regeneratePix(INPUT, CTX)
 
@@ -252,7 +255,7 @@ describe("regeneratePix", () => {
   })
 
   it("customer rate limit at exactly 3 succeeds (boundary check)", async () => {
-    mockRedisIncr.mockResolvedValue(3)
+    mockAtomicIncr.mockResolvedValue(3)
 
     const result = await regeneratePix(INPUT, CTX)
 
@@ -367,19 +370,19 @@ describe("regeneratePix", () => {
     await expect(regeneratePix(INPUT, unauthCtx)).rejects.toThrow("Autenticação necessária.")
   })
 
-  it("first incr call sets TTL on rate limit key", async () => {
-    mockRedisIncr.mockResolvedValue(1)
+  it("P3-CONC-REGENRATE: rate-limit counter uses atomicIncr (INCR+EXPIRE in one eval)", async () => {
+    mockAtomicIncr.mockResolvedValue(1)
 
     await regeneratePix(INPUT, CTX)
 
-    expect(mockRedisExpire).toHaveBeenCalledWith(expect.stringContaining("cust_01"), 3600)
-  })
-
-  it("subsequent incr (count > 1) does not re-set TTL on rate limit key", async () => {
-    mockRedisIncr.mockResolvedValue(2)
-
-    await regeneratePix(INPUT, CTX)
-
-    expect(mockRedisExpire).not.toHaveBeenCalled()
+    // Single atomic call carries both the per-customer key and the 1h TTL — there
+    // is no separate redis.incr / redis.expire window where a crash could leave an
+    // immortal key that permanently rate-limits the customer.
+    expect(mockAtomicIncr).toHaveBeenCalledTimes(1)
+    expect(mockAtomicIncr).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("cust_01"),
+      3600,
+    )
   })
 })

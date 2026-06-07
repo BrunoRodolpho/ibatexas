@@ -245,6 +245,12 @@ function verifyTwilioSignature(
   body: TwilioWebhookBody,
 ): SignatureError | null {
   const authToken = process.env.TWILIO_AUTH_TOKEN;
+  // D-AUTHURL: webhookUrl MUST be the exact public URL Twilio posted to — it is
+  // hashed verbatim with the sorted POST params into X-Twilio-Signature. No proxy
+  // rewrite, no extra query string, and http/https must match byte-for-byte, or
+  // verifyTwilioSignature below rejects every request. The shape (no query, https
+  // in prod) is asserted at startup in ../config.ts; see .env.example for the full
+  // contract.
   const webhookUrl = process.env.TWILIO_WEBHOOK_URL;
 
   if (!authToken || !webhookUrl) {
@@ -285,10 +291,51 @@ function parseIncomingFields(body: TwilioWebhookBody): ParsedFields | null {
   }
 }
 
-async function checkIdempotency(redis: Awaited<ReturnType<typeof getRedisClient>>, messageSid: string): Promise<boolean> {
-  const idempotencyKey = rk(`wa:webhook:${messageSid}`);
-  const wasSet = await redis.set(idempotencyKey, "1", { EX: 86400, NX: true });
-  return !wasSet;
+// P2-SEC-WAIDEMPOTENCY: two-phase idempotency (mirrors the subscribers' withDedup
+// and the Stripe webhook two-phase). The old guard SET the 24h key BEFORE the
+// async turn, so any failure black-holed the MessageSid for 24h.
+//   1. CLAIM   — SET NX with a SHORT in-flight TTL (before the 200). A Redis
+//                error here FAILS CLOSED (caller returns 503 → Twilio retries).
+//   2. RUN     — the async turn.
+//   3a. CONFIRM — on success, promote to the full 24h dedup window.
+//   3b. RELEASE — on failure, DEL the claim so Twilio's retry reprocesses
+//                 (the short TTL is the backstop if the DEL itself fails).
+const WA_DEDUP_TTL = 86400; // 24h — full dedup window (Twilio retry horizon)
+const WA_INFLIGHT_TTL = 300; // 5 min — claim lifetime before the turn confirms
+
+function webhookKey(messageSid: string): string {
+  return rk(`wa:webhook:${messageSid}`);
+}
+
+type IdempotencyClaim = "claimed" | "duplicate" | "unavailable";
+
+/** Phase 1 — claim the message with a short in-flight TTL. */
+async function claimIdempotency(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  messageSid: string,
+): Promise<IdempotencyClaim> {
+  try {
+    const wasSet = await redis.set(webhookKey(messageSid), "1", { EX: WA_INFLIGHT_TTL, NX: true });
+    return wasSet ? "claimed" : "duplicate";
+  } catch {
+    return "unavailable";
+  }
+}
+
+/** Phase 3a — promote the claim to the full dedup window on success. */
+async function confirmProcessed(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  messageSid: string,
+): Promise<void> {
+  await redis.set(webhookKey(messageSid), "1", { EX: WA_DEDUP_TTL });
+}
+
+/** Phase 3b — release the claim so a Twilio retry can reprocess after failure. */
+async function releaseClaim(
+  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  messageSid: string,
+): Promise<void> {
+  await redis.del(webhookKey(messageSid));
 }
 
 // SEC-003: atomic INCR + EXPIRE via Lua to prevent immortal keys after crash
@@ -393,10 +440,14 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
         "[whatsapp.incoming] Message received",
       );
 
-      // ── 4. Idempotency (BEFORE rate limit) ─────────────────────────────────
+      // ── 4. Idempotency (BEFORE rate limit) — two-phase (P2-SEC-WAIDEMPOTENCY) ─
       const redis = await getRedisClient();
-      const isDuplicate = await checkIdempotency(redis, messageSid);
-      if (isDuplicate) {
+      const claim = await claimIdempotency(redis, messageSid);
+      if (claim === "unavailable") {
+        server.log.error({ message_sid: messageSid }, "[whatsapp] Idempotency claim unavailable — failing closed for Twilio retry");
+        return reply.code(503).send({ error: "Service unavailable" });
+      }
+      if (claim === "duplicate") {
         server.log.info({ message_sid: messageSid }, "[whatsapp.duplicate] Already processed");
         return reply.code(200).type("text/xml").send("<Response/>");
       }
@@ -408,6 +459,9 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       // ── 5. Rate limit ──────────────────────────────────────────────────────
       const rateLimited = await checkWebhookRateLimit(redis, hash);
       if (rateLimited) {
+        // Release the claim so a later (slowed) retry of the SAME message isn't
+        // permanently black-holed by our in-flight marker (P2-SEC-WAIDEMPOTENCY).
+        await releaseClaim(redis, messageSid).catch(() => {});
         server.log.warn({ phone_hash: hash }, "[whatsapp.rate] Rate limit exceeded");
         const rateSite = process.env.RESTAURANT_SITE_URL ?? "ibatexas.com.br";
         const ratePhone = process.env.RESTAURANT_PHONE ?? "";
@@ -421,8 +475,9 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       // ── 6. Return 200 immediately ──────────────────────────────────────────
       void reply.code(200).type("text/xml").send("<Response/>");
 
-      // ── 7. Async processing (decoupled from Fastify lifecycle) ─────────────
-      void handleMessageAsync(body, phone, hash, messageBody, numMedia, server.log).catch((err) => {
+      // ── 7. Async processing (decoupled from Fastify lifecycle) — owns Phase 3:
+      //       promote the claim on success / release it on failure. ───────────
+      void handleMessageAsync(body, messageSid, phone, hash, messageBody, numMedia, server.log).catch((err) => {
         server.log.error(err, "[whatsapp.agent.error] Unhandled error in async handler");
       });
 
@@ -459,14 +514,25 @@ async function tryShortcutOrStateMachine(
   return false;
 }
 
+// Max wall-clock for a single WhatsApp turn (P2-CONC-ABORT). A hung provider must
+// not pin the turn open forever (Twilio already got its 200). Overridable via env
+// (CLAUDE.md hard rule #3; documented in .env.example).
+const WA_TURN_TIMEOUT_MS = Number.parseInt(process.env.WA_TURN_TIMEOUT_MS ?? "60000", 10);
+
 async function handleMessageAsync(
   body: TwilioWebhookBody,
+  messageSid: string,
   phone: string,
   hash: string,
   messageBody: string,
   numMedia: number,
   log: LogFn,
 ): Promise<void> {
+  // Phase 3 (P2-SEC-WAIDEMPOTENCY) + max-turn deadline (P2-CONC-ABORT).
+  const idempotencyRedis = await getRedisClient();
+  const turnAbort = new AbortController();
+  const turnTimer = setTimeout(() => turnAbort.abort(), WA_TURN_TIMEOUT_MS);
+  let succeeded = false;
   // Outer try/catch: early-stage crashes still send a fallback error message to the user
   try {
   const startMs = Date.now();
@@ -627,12 +693,23 @@ async function handleMessageAsync(
     const conductorCustomerId = isGuestCustomerId(session.customerId)
       ? `guest:${session.sessionId}`
       : session.customerId;
-    const agentResponse = await runConductorTurn({
+    // Race the turn against the max-turn deadline (P2-CONC-ABORT). The Capsule
+    // takes no external signal, so the race + the aborted-gate on the send below
+    // is the delivery bound.
+    const turnPromise = runConductorTurn({
       input: agentInput,
       customerId: conductorCustomerId,
       sessionKey: session.sessionId,
       log,
     });
+    turnPromise.catch(() => {}); // swallow a late rejection if the timeout wins
+    const agentResponse = await Promise.race([
+      turnPromise,
+      new Promise<never>((_, reject) => {
+        if (turnAbort.signal.aborted) reject(new Error("WhatsApp turn timed out"));
+        turnAbort.signal.addEventListener("abort", () => reject(new Error("WhatsApp turn timed out")), { once: true });
+      }),
+    ]);
 
     const durationMs = Date.now() - startMs;
     log.info(
@@ -645,7 +722,8 @@ async function handleMessageAsync(
     );
 
     // ── Send response ─────────────────────────────────────────────────────
-    if (agentResponse.text) {
+    // Skip a stale reply if the turn raced past the deadline (P2-CONC-ABORT).
+    if (agentResponse.text && !turnAbort.signal.aborted) {
       await sendText(`whatsapp:${phone}`, agentResponse.text);
 
       // Save assistant response to session
@@ -653,6 +731,10 @@ async function handleMessageAsync(
         { role: "assistant", content: agentResponse.text },
       ], true, { customerId: session.customerId, channel: "whatsapp" });
     }
+    // The message was processed (text delivered, or intentionally empty). PIX
+    // follow-up below is supplementary/best-effort — a QR failure must NOT cause
+    // Twilio to reprocess the whole turn, so mark success here (P2-SEC-WAIDEMPOTENCY).
+    succeeded = true;
 
     // ── PIX follow-up: send copia-e-cola + QR code if LLM omitted them ──
     if (agentResponse.pixData) {
@@ -716,6 +798,21 @@ async function handleMessageAsync(
       );
     } catch {
       // Best-effort — sendText itself may fail if Twilio is down
+    }
+  } finally {
+    clearTimeout(turnTimer);
+    // Phase 3 (P2-SEC-WAIDEMPOTENCY): promote the claim on success so the SID is
+    // dedup'd for the full window; on failure release it so Twilio's retry can
+    // reprocess instead of being black-holed for 24h. Both best-effort — the
+    // short in-flight TTL is the backstop.
+    try {
+      if (succeeded) {
+        await confirmProcessed(idempotencyRedis, messageSid);
+      } else {
+        await releaseClaim(idempotencyRedis, messageSid);
+      }
+    } catch (finalizeErr) {
+      log.warn(finalizeErr, "[whatsapp.async] Idempotency finalize failed (in-flight TTL is the backstop)");
     }
   }
 }

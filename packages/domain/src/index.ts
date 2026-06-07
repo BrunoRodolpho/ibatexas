@@ -18,6 +18,7 @@ export {
   type OrderServiceOptions,
 } from "./services/order.service.js"
 export { getEffectivePonr, isWithinPonr, getItemPonrStatus, type PonrConfig, type ItemPonrStatus } from "./services/ponr.js"
+export { toE164BR } from "./phone.js"
 export {
   createCustomerService,
   type CustomerService,

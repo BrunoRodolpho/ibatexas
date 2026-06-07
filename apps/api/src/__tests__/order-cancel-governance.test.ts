@@ -26,6 +26,14 @@ const mockFindActiveByOrderId = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockAdjudicate = vi.hoisted(() => vi.fn());
+// Controllable payment-cancel transition (P2-LOGIC-CANCELPAY terminality gate).
+// Defaults to EXECUTE so existing cancel tests are unaffected.
+const mockPaymentTransition = vi.hoisted(() =>
+  vi.fn(async () => ({
+    decision: { kind: "EXECUTE", basis: [] },
+    result: { version: 2, previousStatus: "awaiting_payment", newStatus: "canceled" },
+  })),
+);
 
 const redisStorage = vi.hoisted(() => new Map<string, string>());
 const mockRedisIncr = vi.hoisted(() => vi.fn(async () => 1));
@@ -67,10 +75,7 @@ vi.mock("@ibatexas/domain", () => ({
   }),
   createPaymentCommandService: () => ({
     findActiveByOrderId: mockFindActiveByOrderId,
-    transitionStatusFromEnvelope: vi.fn(async () => ({
-      decision: { kind: "EXECUTE", basis: [] },
-      result: { version: 2, previousStatus: "awaiting_payment", newStatus: "canceled" },
-    })),
+    transitionStatusFromEnvelope: mockPaymentTransition,
     transitionStatus: vi.fn(),
   }),
   createPaymentQueryService: () => ({
@@ -190,6 +195,33 @@ describe("POST /api/orders/:id/cancel — envelope governance", () => {
       expect(envelope.actor.sessionId).toBe("cust_01");
       expect(envelope.taint).toBe("UNTRUSTED");
       expect(envelope.payload.orderId).toBe("order_01");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("P2-LOGIC-CANCELPAY: active payment can't be made terminal → 409, order.canceled withheld", async () => {
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+    // A live (non-terminal) payment on the initial read AND the authoritative re-read.
+    mockFindActiveByOrderId.mockResolvedValue({ id: "pay_01", status: "awaiting_payment", version: 1 });
+    // The payment-cancel transition fails (e.g. concurrent flip to paid) — and the
+    // re-read still shows the payment active → the order must NOT be announced canceled.
+    mockPaymentTransition.mockRejectedValueOnce(new Error("concurrency"));
+
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/orders/order_01/cancel",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { reason: "Mudei de ideia" },
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json().code).toBe("PAYMENT_CANCEL_FAILED");
+      // order.canceled must be withheld (downstream treats it as fully settled).
+      const canceledPublishes = mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.canceled");
+      expect(canceledPublishes).toHaveLength(0);
     } finally {
       await app.close();
     }

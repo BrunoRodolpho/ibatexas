@@ -15,6 +15,7 @@ import { startPixExpiryMonitor } from "./pix-expiry-monitor.js";
 import { startStaleOrderChecker } from "./stale-order-checker.js";
 import { startDeferTimeoutSweeper } from "./defer-timeout-sweeper.js";
 import { startAnonymizeMedusaRetry } from "./anonymize-medusa-retry.js";
+import { startRetentionCleaner } from "./retention-cleaner.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -31,6 +32,10 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   startHesitationNudgeWorker();
   startPixExpiryMonitor();
   startStaleOrderChecker(log);
+  // [audit-2026-05-27 P3-SCALE-RETENTION] Daily bounded sweep of the two
+  // append-only tables (conversation_messages by sent_at, order_event_log by
+  // created_at). OPT-IN via RETENTION_DAYS — no-op unless configured.
+  startRetentionCleaner(log);
   // [task 03] Sweeps expired defer:pending:* keys every 60s and publishes
   // intent.defer.timeout for downstream notification fan-out.
   startDeferTimeoutSweeper(log);
@@ -57,6 +62,7 @@ export async function shutdownWorkers(): Promise<void> {
   const { stopStaleOrderChecker } = await import("./stale-order-checker.js");
   const { stopDeferTimeoutSweeper } = await import("./defer-timeout-sweeper.js");
   const { stopAnonymizeMedusaRetry } = await import("./anonymize-medusa-retry.js");
+  const { stopRetentionCleaner } = await import("./retention-cleaner.js");
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -70,6 +76,7 @@ export async function shutdownWorkers(): Promise<void> {
     stopHesitationNudgeWorker(),
     stopPixExpiryMonitor(),
     stopStaleOrderChecker(),
+    stopRetentionCleaner(),
     stopDeferTimeoutSweeper(),
     stopAnonymizeMedusaRetry(),
   ]);

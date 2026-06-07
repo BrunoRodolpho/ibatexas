@@ -188,12 +188,14 @@ function issueStaffJwtToken(
   staffId: string,
   role: string,
 ): string {
-  const jwtSecret = process.env.JWT_SECRET;
-  if (!jwtSecret) throw new Error("JWT_SECRET not set");
+  const staffJwtSecret = process.env.STAFF_JWT_SECRET;
+  if (!staffJwtSecret) throw new Error("STAFF_JWT_SECRET not set");
 
   // audit-2026-05-25 (I2): aud claim pins the token to the staff cookie.
-  // See issueJwtToken for the full rationale.
-  return (server as unknown as { jwt: { sign: (payload: object, options?: { expiresIn: string }) => string } }).jwt.sign({
+  // JWTSPLIT (audit): sign with the DEDICATED staff instance (server.jwt.staff) —
+  // separate secret. aud stays in the payload (dev's I2 style); the staff
+  // instance's allowedAud="staff_token" then accepts exactly this token.
+  return (server as unknown as { jwt: { staff: { sign: (payload: object, options?: { expiresIn: string }) => string } } }).jwt.staff.sign({
     sub: staffId,
     userType: "staff",
     role,
@@ -518,12 +520,16 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      // SEC-004: Revoke the JWT so it cannot be reused after logout
-      try {
-        const token = request.cookies?.["token"];
-        if (token) {
+      // SEC-004 / STAFFREVOKE: Revoke the JWT so it cannot be reused after logout.
+      // Both the customer `token` and the staff `staff_token` cookie are revoked via the
+      // shared `jwt:revoked:<jti>` key that middleware/auth.ts checkRevocation consults on
+      // both the customer and staff paths. Best-effort — logout must always succeed.
+      const revokeJwtCookie = async (cookieName: string): Promise<void> => {
+        try {
+          const raw = request.cookies?.[cookieName];
+          if (!raw) return;
           const jwt = server as unknown as { jwt: { decode: (t: string) => { jti?: string; exp?: number } | null } };
-          const payload = jwt.jwt.decode(token);
+          const payload = jwt.jwt.decode(raw);
           if (payload?.jti && payload.exp) {
             const nowSec = Math.floor(Date.now() / 1000);
             const remainingTtl = payload.exp - nowSec;
@@ -532,10 +538,12 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
               await redis.set(rk(`jwt:revoked:${payload.jti}`), "1", { EX: remainingTtl });
             }
           }
+        } catch {
+          // Best-effort revocation — logout must always succeed
         }
-      } catch {
-        // Best-effort revocation — logout must always succeed
-      }
+      };
+      await revokeJwtCookie("token");
+      await revokeJwtCookie("staff_token");
 
       // AUTH-001: Delete refresh token from Redis
       try {
@@ -549,6 +557,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
 
       return reply
         .clearCookie("token", { path: "/" })
+        .clearCookie("staff_token", { path: "/" })
         .clearCookie("refresh_token", { path: "/api/auth/refresh" })
         .code(200)
         .send({ ok: true });

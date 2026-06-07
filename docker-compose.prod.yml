@@ -75,7 +75,11 @@ services:
   # ── Infrastructure services ───────────────────────────────────────────────
 
   postgres:
-    image: postgres:15-alpine
+    # DOCKERDRIFT: aligned to dev docker-compose.yml (was 15-alpine). ⚠️ Major
+    # version jump (15→17): the PGDATA dir is NOT binary-compatible across major
+    # versions — an existing v15 volume must be migrated (pg_upgrade or
+    # dump+restore) BEFORE starting v17. Do NOT point v17 at a v15 data volume.
+    image: postgres:17-alpine
     container_name: ibatexas-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -117,7 +121,11 @@ services:
           memory: 256M
 
   typesense:
-    image: typesense/typesense:0.25.2
+    # DOCKERDRIFT: aligned to dev docker-compose.yml (was 0.25.2). ⚠️ Major
+    # version jump (0.25→27): the on-disk data layout differs — an existing 0.25
+    # data volume must be re-indexed (rebuild the collection from source) under
+    # 27.x. Do NOT reuse the old volume in place.
+    image: typesense/typesense:27.1
     container_name: ibatexas-typesense
     environment:
       TYPESENSE_DATA_DIR: /data
@@ -138,7 +146,9 @@ services:
           memory: 512M
 
   nats:
-    image: nats:2.10-alpine
+    # DOCKERDRIFT: aligned to dev docker-compose.yml (was 2.10-alpine). Minor
+    # bump (2.10→2.11) — wire-compatible, no data migration needed.
+    image: nats:2.11-alpine
     container_name: ibatexas-nats
     command: ["--jetstream", "--store_dir", "/data", "-m", "8222"]
     ports:

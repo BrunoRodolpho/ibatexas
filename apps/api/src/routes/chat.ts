@@ -203,7 +203,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
             void (reply as unknown as { status(code: number): typeof reply }).status(403).send({
               statusCode: 403,
               error: "Forbidden",
-              message: "Invalid session secret",
+              message: "Segredo de sessão inválido.",
             } as never);
             return reply;
           }

@@ -226,9 +226,12 @@ describe("PATCH /api/orders/:id/payment/method — NEW-P0-X4 envelope path", () 
     }
   });
 
-  it("REFUSE on create surfaces 403 with pt-BR refusal text", async () => {
+  // ── P1-ERR-PAYSWITCH — compensating cancel→create ──────────────────────────
+  it("create(newMethod) failure COMPENSATES by restoring the original method (503, original active)", async () => {
+    // First create (the new method) fails; the compensating create (original
+    // method) succeeds via the beforeEach default → order keeps an active payment.
     mockCreateFromEnvelope.mockResolvedValueOnce(
-      refuseDecision("Pedido já tem pagamento ativo.", "payment.active_exists"),
+      refuseDecision("Não foi possível criar pagamento com cartão.", "payment.card_unavailable"),
     );
     const app = await buildTestServer();
     try {
@@ -238,9 +241,48 @@ describe("PATCH /api/orders/:id/payment/method — NEW-P0-X4 envelope path", () 
         headers: { "x-customer-id": "cust_01" },
         payload: { method: "card" },
       });
-      expect(res.statusCode).toBe(403);
-      const body = res.json() as { error: string };
-      expect(body.error).toMatch(/Pedido já tem pagamento ativo/);
+      // Switch failed but the original (pix) method was restored as the active
+      // payment — actionable 503, NOT an opaque 500 and NOT an orphaned order.
+      expect(res.statusCode).toBe(503);
+      const body = res.json() as { error: string; code: string; method: string };
+      expect(body.code).toBe("PAYMENT_SWITCH_FAILED");
+      expect(body.error).toMatch(/continua ativo/);
+      expect(body.method).toBe("pix");
+      // Two create attempts: the new method (refused) + the compensating original.
+      expect(mockCreateFromEnvelope).toHaveBeenCalledTimes(2);
+      expect(mockCreateFromEnvelope.mock.calls[0][0].payload.method).toBe("card");
+      expect(mockCreateFromEnvelope.mock.calls[1][0].payload.method).toBe("pix");
+      // The method did NOT actually change → no method_changed event.
+      expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+        "payment.method_changed",
+        expect.anything(),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("both new-method and compensation creates failing → orphaned 503 (no 500)", async () => {
+    // Every create REFUSEs (new method AND the compensating original).
+    mockCreateFromEnvelope.mockResolvedValue(
+      refuseDecision("Pagamento indisponível no momento.", "payment.unavailable"),
+    );
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/orders/order_01/payment/method",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { method: "card" },
+      });
+      expect(res.statusCode).toBe(503);
+      const body = res.json() as { error: string; code: string };
+      expect(body.code).toBe("PAYMENT_SWITCH_FAILED");
+      expect(body.error).toMatch(/Tente novamente/);
+      expect(mockPublishNatsEvent).not.toHaveBeenCalledWith(
+        "payment.method_changed",
+        expect.anything(),
+      );
     } finally {
       await app.close();
     }

@@ -57,18 +57,17 @@ type TimeSlotRow = {
   maxCovers: number; reservedCovers: number; createdAt: Date;
 }
 
-type TableRow = {
-  id: string; number: string; capacity: number; location: string;
-  active: boolean; createdAt: Date;
-}
+// T-RESERVATIONDTO: compiler-checked relation shape via Prisma.ReservationGetPayload,
+// replacing the hand-maintained ReservationWithRelations type that was drift-prone
+// and required `as unknown as` escape hatches at every call site.
+const reservationWithRelationsArgs = {
+  include: {
+    timeSlot: true,
+    tables: { include: { table: true } },
+  },
+} as const
 
-type ReservationWithRelations = {
-  id: string; displayId: number; customerId: string; partySize: number; status: string;
-  specialRequests: SpecialRequest[] | null; timeSlot: TimeSlotRow;
-  tables: Array<{ reservationId: string; tableId: string; table: TableRow }>;
-  confirmedAt: Date | null; checkedInAt: Date | null; cancelledAt: Date | null;
-  noShowAt?: Date | null; createdAt: Date; updatedAt: Date; timeSlotId: string;
-}
+type ReservationWithRelations = Prisma.ReservationGetPayload<typeof reservationWithRelationsArgs>
 
 // ── DTO mapper ────────────────────────────────────────────────────────────────
 
@@ -81,8 +80,10 @@ function toDTO(r: ReservationWithRelations): ReservationDTO {
     displayId: r.displayId,
     customerId: r.customerId,
     partySize: r.partySize,
-    status: r.status as ReservationStatus,
-    specialRequests: r.specialRequests ?? [],
+    // Prisma types the status enum field as the Prisma enum; cast to the shared domain enum.
+    status: r.status as unknown as ReservationStatus,
+    // specialRequests is stored as JSON; cast from Prisma.JsonValue to the domain type.
+    specialRequests: (r.specialRequests ?? []) as SpecialRequest[],
     timeSlot: {
       id: r.timeSlot.id,
       date: r.timeSlot.date.toISOString().split("T")[0] ?? "",
@@ -229,7 +230,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
       if (!reservation) throw new Error("Reserva não encontrada.")
       if (customerId) assertOwnership(reservation.customerId, customerId, "esta reserva")
 
-      return toDTO(reservation as unknown as ReservationWithRelations)
+      return toDTO(reservation)
     },
 
     async listByCustomer(
@@ -252,7 +253,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
       ])
 
       return {
-        reservations: (reservations as unknown as ReservationWithRelations[]).map(toDTO),
+        reservations: reservations.map(toDTO),
         total,
       }
     },
@@ -277,7 +278,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
       ])
 
       return {
-        reservations: (reservations as unknown as ReservationWithRelations[]).map(toDTO),
+        reservations: reservations.map(toDTO),
         total,
       }
     },
@@ -337,7 +338,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
       })
 
       return {
-        reservation: toDTO(result.reservation as unknown as ReservationWithRelations),
+        reservation: toDTO(result.reservation),
         tableLocation: result.tableLocation,
       }
     },
@@ -400,7 +401,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
         })
       })
 
-      return toDTO(updated as unknown as ReservationWithRelations)
+      return toDTO(updated)
     },
 
     async cancel(id: string, customerId: string): Promise<{ timeSlotId: string; partySize: number }> {

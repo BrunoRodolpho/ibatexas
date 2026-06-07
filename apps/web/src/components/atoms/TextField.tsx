@@ -14,6 +14,7 @@ interface TextFieldProps extends React.InputHTMLAttributes<HTMLInputElement> {
 function TextField({ ref, className, label, error, helperText, required, id, ...props }: TextFieldProps & { ref?: Ref<HTMLInputElement> }) {
   const reactId = useId()
   const fieldId = id || reactId
+  const errorId = `${fieldId}-error`
   return (
     <div className="flex flex-col gap-1">
       {label && (
@@ -34,9 +35,11 @@ function TextField({ ref, className, label, error, helperText, required, id, ...
           className
         )}
         required={required}
+        aria-invalid={!!error}
+        aria-describedby={error ? errorId : undefined}
         {...props}
       />
-      {error && <span className="text-sm text-accent-red">{error}</span>}
+      {error && <span id={errorId} className="text-sm text-accent-red" role="alert">{error}</span>}
       {helperText && !error && <span className="text-sm text-[var(--color-text-secondary)]">{helperText}</span>}
     </div>
   )

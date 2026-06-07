@@ -198,12 +198,35 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       schema: {
         tags: ["me"],
         summary: "Exportar dados pessoais (LGPD Art. 18 — portabilidade)",
-        response: { 200: CustomerDataResponse },
+        response: {
+          200: CustomerDataResponse,
+          // 409 when a privacy operation (erase) holds the per-customer lock.
+          409: z.object({
+            statusCode: z.number(),
+            error: z.string(),
+            message: z.string(),
+          }),
+        },
       },
       preHandler: requireAuth,
     },
     async (request, reply) => {
-      const data = await exportCustomerData(request.customerId!);
+      const customerId = request.customerId!;
+      // Coordinate with the erase route under the SAME per-customer lock
+      // (withLock(`lgpd:${customerId}`)) so an export can't read a half-scrubbed
+      // profile while anonymizeCustomer's transaction is in flight (P0-LGPD-1).
+      // withLock returns null on contention → surface 409 rather than partial data.
+      const data = await withLock(`lgpd:${customerId}`, () =>
+        exportCustomerData(customerId),
+      );
+      if (!data) {
+        return reply.code(409).send({
+          statusCode: 409,
+          error: "Conflict",
+          message:
+            "Uma operação de privacidade está em andamento. Tente novamente em instantes.",
+        });
+      }
       return reply.send(data);
     },
   );

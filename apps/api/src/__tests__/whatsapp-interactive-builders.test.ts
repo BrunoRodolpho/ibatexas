@@ -185,6 +185,40 @@ describe("buildCheckoutConfirmation", () => {
   });
 });
 
+// ── P2-I18N-BRL (thousands separator + nbsp) / P3-DATA-EMOJI (truncate) ───────
+
+describe("formatPrice + truncate hardening (P2-I18N-BRL / P3-DATA-EMOJI)", () => {
+  it("formats prices >= R$1000 with a thousands separator", () => {
+    const msg = buildProductListMessage([
+      { id: "p8", title: "Pacote Família", priceCentavos: 123456 },
+    ]);
+    expect(msg.sections[0].rows[0].description).toContain("R$ 1.234,56");
+  });
+
+  it("formats large checkout totals with grouping", () => {
+    const msg = buildCheckoutConfirmation(1234567);
+    expect(msg.body).toContain("R$ 12.345,67");
+  });
+
+  it("never leaks a non-breaking space from Intl into the formatted price", () => {
+    const desc = buildProductListMessage([
+      { id: "p9", title: "X", priceCentavos: 8900 },
+    ]).sections[0].rows[0].description!;
+    expect(/[\u00a0\u202f]/.test(desc)).toBe(false);
+    expect(desc).toContain("R$ 89,00");
+  });
+
+  it("truncates emoji titles without splitting surrogate pairs", () => {
+    const title = "Costela " + "🍖".repeat(20); // 28 code points, > MAX_TITLE_LEN (24)
+    const out = buildProductListMessage([{ id: "e1", title }]).sections[0].rows[0].title;
+    // Count by code points, not UTF-16 units (emoji are 2 units each).
+    expect(Array.from(out).length).toBeLessThanOrEqual(24);
+    expect(out.endsWith("…")).toBe(true);
+    // No lone high/low surrogate — i.e. no split emoji.
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(out)).toBe(false);
+  });
+});
+
 // ── buildReservationOptions ───────────────────────────────────────────────────
 
 describe("buildReservationOptions", () => {

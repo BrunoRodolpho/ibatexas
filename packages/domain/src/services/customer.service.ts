@@ -22,6 +22,7 @@
 import { createHash } from "node:crypto"
 import { Prisma } from "../generated/prisma-client/client.js"
 import { prisma } from "../client.js"
+import { toE164BR } from "../phone.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import type { Channel } from "@ibatexas/types"
 import {
@@ -69,9 +70,14 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * Called after OTP verification.
      */
     async upsertFromPhone(phone: string, name?: string) {
+      // P2-DATA-PHONENORM: canonicalize at the @unique boundary so the same
+      // number never splits into two rows because a caller passed `whatsapp:+…`
+      // or a formatted variant. Idempotent on the already-validated `+<digits>`
+      // callers pass today; never touches the BR 9th digit (no merge risk).
+      const canonical = toE164BR(phone)
       return prisma.customer.upsert({
-        where: { phone },
-        create: { phone, name: name ?? null },
+        where: { phone: canonical },
+        create: { phone: canonical, name: name ?? null },
         update: { ...(name ? { name } : {}) },
       })
     },
@@ -242,9 +248,13 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * Phone IS identity on WhatsApp — verified by Meta/Twilio.
      */
     async upsertFromWhatsApp(phone: string) {
+      // P2-DATA-PHONENORM: canonicalize at the @unique boundary (same rationale
+      // as upsertFromPhone). Idempotent on the already-normalized phone the
+      // whatsapp path passes; never touches the BR 9th digit.
+      const canonical = toE164BR(phone)
       return prisma.customer.upsert({
-        where: { phone },
-        create: { phone, source: "whatsapp", firstContactAt: new Date() },
+        where: { phone: canonical },
+        create: { phone: canonical, source: "whatsapp", firstContactAt: new Date() },
         update: {},
         select: { id: true },
       })
@@ -315,19 +325,25 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         state,
         customerOnboardingPolicyBundle,
         async (payload) => {
+          // P2-DATA-PHONENORM: canonicalize ONCE at the @unique boundary. This is
+          // the LIVE seed path (auth OTP-verify and WhatsApp first-contact both
+          // route here via createFromEnvelope). Idempotent on the already-validated
+          // phone callers pass (auth PhoneSchema / whatsapp normalizePhone); never
+          // touches the BR 9th digit so distinct numbers stay distinct.
+          const canonical = toE164BR(extras.phone)
           const source = payload.source === "wa-auto" ? "whatsapp" : null
           if (source === "whatsapp") {
             return prisma.customer.upsert({
-              where: { phone: extras.phone },
-              create: { phone: extras.phone, source, firstContactAt: new Date() },
+              where: { phone: canonical },
+              create: { phone: canonical, source, firstContactAt: new Date() },
               update: {},
               select: { id: true },
             })
           }
           // OTP source path.
           const row = await prisma.customer.upsert({
-            where: { phone: extras.phone },
-            create: { phone: extras.phone, name: extras.name ?? null },
+            where: { phone: canonical },
+            create: { phone: canonical, name: extras.name ?? null },
             update: { ...(extras.name ? { name: extras.name } : {}) },
             select: { id: true },
           })

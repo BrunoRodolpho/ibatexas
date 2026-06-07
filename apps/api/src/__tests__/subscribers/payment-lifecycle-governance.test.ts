@@ -17,6 +17,7 @@ import type { IntentEnvelope } from "@adjudicate/core";
 const mockSubscribeNatsEvent = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockIsNewEvent = vi.hoisted(() => vi.fn());
+const mockWithDedup = vi.hoisted(() => vi.fn());
 const mockPushToDlq = vi.hoisted(() => vi.fn());
 const mockTransitionStatusFromEnvelope = vi.hoisted(() => vi.fn());
 const mockGetById = vi.hoisted(() => vi.fn());
@@ -41,6 +42,7 @@ vi.mock("@ibatexas/domain", () => ({
 
 vi.mock("../../subscribers/dedup.js", () => ({
   isNewEvent: mockIsNewEvent,
+  withDedup: mockWithDedup,
 }));
 
 vi.mock("../../subscribers/dlq.js", () => ({
@@ -82,6 +84,14 @@ describe("payment-lifecycle governance (task 16)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIsNewEvent.mockResolvedValue(true);
+    // withDedup now wraps the handler body; default to running it and reporting
+    // success (newly processed). The duplicate test overrides this to false.
+    mockWithDedup.mockImplementation(
+      async (_key: string, handler: () => Promise<void>) => {
+        await handler();
+        return true;
+      },
+    );
     mockEventLogAppend.mockResolvedValue(undefined);
     mockPublishNatsEvent.mockResolvedValue(undefined);
   });
@@ -353,7 +363,8 @@ describe("payment-lifecycle governance (task 16)", () => {
 
   describe("idempotency", () => {
     it("skips when dedup says the event is a duplicate", async () => {
-      mockIsNewEvent.mockResolvedValue(false);
+      // withDedup reports a duplicate (claim already held) → handler not run.
+      mockWithDedup.mockResolvedValue(false);
 
       const callback = await getRegisteredCallback();
       await callback({
