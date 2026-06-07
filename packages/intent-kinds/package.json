@@ -17,7 +17,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@adjudicate/pack-payments-pix": "^0.2.0",
+    "@adjudicate/pack-payments-pix": "^0.2.1",
     "@ibatexas/pack-customer-onboarding": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",
     "@ibatexas/pack-payments": "workspace:*",

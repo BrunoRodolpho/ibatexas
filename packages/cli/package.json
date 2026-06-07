@@ -15,10 +15,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@adjudicate/audit": "^2.0.0",
-    "@adjudicate/audit-postgres": "^2.0.0",
-    "@adjudicate/core": "^1.2.0",
-    "@adjudicate/runtime": "^0.2.0",
+    "@adjudicate/audit": "^2.0.1",
+    "@adjudicate/audit-postgres": "^2.0.1",
+    "@adjudicate/core": "^1.3.0",
+    "@adjudicate/runtime": "^0.2.1",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/intent-kinds": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",

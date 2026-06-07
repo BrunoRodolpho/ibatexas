@@ -84,6 +84,7 @@ import type {
   Ledger,
 } from "@adjudicate/core";
 import {
+  AUDIT_RECORD_VERSION,
   adjudicateAndAudit,
   decisionRefuse,
   installPack,
@@ -104,7 +105,7 @@ import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br";
 // TODO(post-cutover): swap these to canonical `@ibatexas/pack-*` imports
 // once each pack's package.json is restored.
 import { prisma } from "@ibatexas/domain";
-import { getRedisClient } from "@ibatexas/tools";
+import { getRedisClient, rk } from "@ibatexas/tools";
 
 // Audit sink — dev's audit pipeline owns the durable AuditRecord store. The
 // adjudicator consumes the sink composed by `@ibatexas/audit-sink` (boot-time
@@ -451,6 +452,33 @@ async function assertAuditPostgresReady(pool: Pool): Promise<void> {
         "table 'intent_audit' has no partitions — a write would be rejected",
       );
     }
+    // (3) The record_version CHECK admits the version THIS build's
+    // @adjudicate/core stamps (AUDIT_RECORD_VERSION). The sink writes
+    // `record_version` unconditionally, so when core bumps the version (v4→v5,
+    // ADR-124) without migration 010 widening the CHECK, EVERY audit insert
+    // fails Postgres 23514 (check_violation) at the first decision. Catch it at
+    // boot — fail CLOSED here, not at the first payment. Tracks the installed
+    // core version so it never needs hand-editing on a future bump.
+    const conDef = await pool.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_catalog.pg_constraint ` +
+        `WHERE conrelid = 'intent_audit'::regclass ` +
+        `AND conname = 'intent_audit_record_version_check'`,
+    );
+    const def = conDef.rows[0]?.def as string | undefined;
+    if (!def) {
+      throw new Error(
+        "record_version CHECK 'intent_audit_record_version_check' is absent",
+      );
+    }
+    const v = AUDIT_RECORD_VERSION;
+    // Postgres normalizes `IN (…)` to `= ANY (ARRAY[…])`; match the integer as a
+    // standalone token so v5 doesn't false-match inside e.g. "15".
+    if (!new RegExp(`(^|[^0-9])${v}([^0-9]|$)`).test(def)) {
+      throw new Error(
+        `record_version CHECK does not admit v${v} (core stamps ${v}; constraint is "${def}"). ` +
+          `Run 'ibx kernel migrate' to apply the v${v} migration before serving.`,
+      );
+    }
   } catch (err) {
     throw new Error(
       `[claustrum-bootstrap] @adjudicate/audit-postgres not ready: ${(err as Error).message}. ` +
@@ -649,18 +677,106 @@ function naiveResponder(model: AnthropicProvider): ResponderPort {
 }
 
 /**
- * Redis-backed SessionPort. Mirrors the existing
- * `apps/api/src/session/store.ts` semantics (key format, TTLs, ownership
- * checks). Full migration into claustrum's port shape — including parked-
- * envelope semantics — is the next iteration.
+ * Redis-backed SessionPort (claustrum runtime). Persists the full Session
+ * (working memory, parked/deferred envelopes, goals) as a JSON blob keyed by
+ * sessionId, in a namespace distinct from the conversation-history list in
+ * `apps/api/src/session/store.ts`. TTLs mirror that store: 24h for an
+ * authenticated customer, 48h for a guest.
+ *
+ * Persistence model — matches the claustrum Conductor (conductor.ts):
+ *   - openCapsule → `load()`           : held as the immutable `loadedSession`.
+ *   - dispatch    → `park*`/`unpark(sessionId, …)` : read-modify-write on the
+ *     STORE by sessionId (NOT on the in-memory object).
+ *   - closeCapsule→ `load()` + `save()`: re-reads (picking up the parks made
+ *     during dispatch) and persists.
+ * The Conductor holds a per-session lock for the whole turn (conductor.ts:108),
+ * so the read-modify-write park ops are serialized — no WATCH/MULTI needed.
+ *
+ * CRITICAL: `load()` PERSISTS a freshly-created session. Otherwise a park-by-id
+ * during the first turn would read an absent key and silently no-op — the bug
+ * the previous stub shipped (every REQUEST_CONFIRMATION was dropped).
  */
+// Mirror apps/api/src/session/store.ts (the established session-TTL convention).
+const CLAUSTRUM_SESSION_TTL_GUEST_SECONDS = 48 * 60 * 60; // 48h
+const CLAUSTRUM_SESSION_TTL_CUSTOMER_SECONDS = 24 * 60 * 60; // 24h
+
+function claustrumSessionKey(sessionId: string): string {
+  // Distinct namespace from `session:<id>` (the history list) — rule #7: rk().
+  return rk(`claustrum:session:${sessionId}`);
+}
+
+/** Guest-marker convention shared with the planner + tool registry. */
+function isGuestCustomerId(customerId: string): boolean {
+  return /^(guest|anon|anonymous):/i.test(customerId);
+}
+
+// ── Per-session LLM token accounting (cost-cap seam, ADR-120 / F4) ──────────────
+// WRITE side only (foundation slice — the F4 read side is Phase-3 WIP). We
+// accumulate each turn's planning + synthesis model usage onto a per-session
+// Redis counter at `emitTurn` — the single once-per-turn seam that also carries
+// `customerId` — keyed by the same `${channel}:${customerId}` session id the
+// SessionPort uses, and stored OUTSIDE the audit ledger (LLM-trace retention is
+// separate).
+//
+// NOT yet wired: the read side — folding this counter into
+// `state.ctx.sessionTokensConsumed` in `resolveIbatexasTenantPolicy.resolve`, and
+// composing the token-budget guard into the packs. Until that lands the counter
+// is observational only and gates nothing.
+//
+// Inert until claustrum reports usage: `TurnRecord.inputTokens/outputTokens` ship
+// in a `@claustrum/*` release ibatexas has not yet bumped to, so the accumulator
+// reads 0 today (fail-safe: a missing usage field contributes 0). For non-zero
+// totals, ibatexas's planner + responder must also report `usage` on the
+// Plan / DraftResponse they return.
+function sessionTokenKey(channel: string, customerId: string): string {
+  return rk(`llm:tokens:${channel}:${customerId}`);
+}
+
 function redisSessionStore(): SessionPort {
-  let current: Session | null = null;
+  async function readSession(sessionId: string): Promise<Session | null> {
+    const redis = await getRedisClient();
+    const raw = await redis.get(claustrumSessionKey(sessionId));
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as Session;
+    } catch {
+      // Corrupt blob → treat as absent; a fresh session is rebuilt (fail-safe).
+      return null;
+    }
+  }
+
+  async function writeSession(session: Session): Promise<void> {
+    const redis = await getRedisClient();
+    const ttl = isGuestCustomerId(session.customerId)
+      ? CLAUSTRUM_SESSION_TTL_GUEST_SECONDS
+      : CLAUSTRUM_SESSION_TTL_CUSTOMER_SECONDS;
+    await redis.set(claustrumSessionKey(session.id), JSON.stringify(session), {
+      EX: ttl,
+    });
+  }
+
+  // Read-modify-write a stored session by id. No-op if the session is unknown
+  // (per the SessionPort contract). Serialized by the Conductor's per-session
+  // lock, so a plain RMW is race-free.
+  async function mutateSession(
+    sessionId: string,
+    fn: (s: Session) => Session,
+  ): Promise<void> {
+    const existing = await readSession(sessionId);
+    if (!existing) return;
+    await writeSession({
+      ...fn(existing),
+      lastActivityAt: new Date().toISOString(),
+    });
+  }
+
   return {
     async load(customerId, channel) {
-      const now = new Date().toISOString();
       const sessionId = `${channel}:${customerId}`;
-      current = {
+      const existing = await readSession(sessionId);
+      if (existing) return existing;
+      const now = new Date().toISOString();
+      const fresh: Session = {
         id: sessionId,
         customerId,
         channel,
@@ -671,30 +787,62 @@ function redisSessionStore(): SessionPort {
         activeGoals: [],
         workingMemory: { summary: "", facts: [], updatedAt: now },
       };
-      return current;
+      // Persist on first load so a park-by-id during this turn finds it.
+      await writeSession(fresh);
+      return fresh;
     },
-    async save(_session) {
-      // TODO: persist to Redis using rk() keys
-      return;
+
+    async save(session) {
+      await writeSession(session);
     },
-    // SessionPort.current() was removed (RC-R3 SessionHandle residual): park ops
-    // now name their target session explicitly by sessionId rather than acting on
-    // a process-global "last loaded" session.
-    async parkPendingConfirmation(_sessionId, _envelope, _token, _prompt) {
-      // TODO
-      return;
+
+    // Park ops name their target session explicitly by sessionId (RC-R3): no
+    // process-global "current" session, so concurrent turns can't cross-park.
+    async parkPendingConfirmation(
+      sessionId,
+      envelope,
+      confirmationToken,
+      userPrompt,
+    ) {
+      const parkedAt = new Date().toISOString();
+      await mutateSession(sessionId, (s) => ({
+        ...s,
+        pendingConfirmations: [
+          // de-dupe by intentHash so a re-park replaces the prior entry
+          ...s.pendingConfirmations.filter(
+            (p) => p.envelope.intentHash !== envelope.intentHash,
+          ),
+          { envelope, confirmationToken, userPrompt, parkedAt },
+        ],
+      }));
     },
-    async parkDeferred(_sessionId, _envelope, _signal, _until, _timeoutMs) {
-      // TODO
-      return;
+
+    async parkDeferred(sessionId, envelope, signal, deferUntil, timeoutMs) {
+      const parkedAt = new Date().toISOString();
+      await mutateSession(sessionId, (s) => ({
+        ...s,
+        deferredEnvelopes: [
+          ...s.deferredEnvelopes.filter(
+            (d) => d.envelope.intentHash !== envelope.intentHash,
+          ),
+          { envelope, signal, deferUntil, timeoutMs, parkedAt },
+        ],
+      }));
     },
-    async unpark(_sessionId, _intentHash) {
-      // TODO
-      return;
+
+    async unpark(sessionId, intentHash) {
+      await mutateSession(sessionId, (s) => ({
+        ...s,
+        pendingConfirmations: s.pendingConfirmations.filter(
+          (p) => p.envelope.intentHash !== intentHash,
+        ),
+        deferredEnvelopes: s.deferredEnvelopes.filter(
+          (d) => d.envelope.intentHash !== intentHash,
+        ),
+      }));
     },
     // SessionPort.isStale() was removed upstream (claustrum APIReviewer-011,
-    // commit 21c5393 — it was unused in the runtime). This consumer stub is
-    // kept in sync with the port; do not re-add isStale.
+    // commit 21c5393 — it was unused in the runtime). Do not re-add it.
   };
 }
 
@@ -716,9 +864,37 @@ function fastifyTelemetry(): TelemetryPort {
         },
         `turn ${record.turnId} ${record.durationMs}ms`,
       );
+      // Fold this turn's model token total (summed onto the TurnRecord by
+      // claustrum's loop) into the per-session counter the budget guard reads.
+      // Best-effort: telemetry must never break a turn. The cast tolerates the
+      // current @claustrum types (which predate the TurnRecord token fields);
+      // drop it once ibatexas bumps @claustrum/* to the release that adds them.
+      try {
+        const r = record as { inputTokens?: number; outputTokens?: number };
+        const total = (r.inputTokens ?? 0) + (r.outputTokens ?? 0);
+        if (total > 0) {
+          const redis = await getRedisClient();
+          const sessionKey = sessionTokenKey(record.channel, record.customerId);
+          const ttl = isGuestCustomerId(record.customerId)
+            ? CLAUSTRUM_SESSION_TTL_GUEST_SECONDS
+            : CLAUSTRUM_SESSION_TTL_CUSTOMER_SECONDS;
+          await redis
+            .multi()
+            .incrBy(sessionKey, total)
+            .expire(sessionKey, ttl)
+            .exec();
+        }
+      } catch (err) {
+        logger.warn(
+          { component: "conductor", event: "token_fold_failed", error: String(err) },
+          "per-session token fold failed; ignoring",
+        );
+      }
     },
     async emitLLMTrace(_trace) {
-      // TODO: persist to dedicated LLM-trace store (NOT the audit ledger).
+      // Token accounting is folded at emitTurn off the TurnRecord (the
+      // once-per-turn seam that carries customerId). Durable LLM-trace
+      // persistence (separate retention from the audit ledger) is a follow-up.
       return;
     },
     async emitMemoryAccess(_record: MemoryAccess) {
