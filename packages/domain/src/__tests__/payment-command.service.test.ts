@@ -216,6 +216,44 @@ describe("PaymentCommandService — R1-DELETE envelope-typed surface", () => {
       await expect(svc.createFromEnvelope(envelope)).rejects.toThrow(ActivePaymentExistsError)
       expect(mockPaymentCreate).not.toHaveBeenCalled()
     })
+
+    // ── P1-CONC-ACTIVEPAY — DB backstop (partial unique index) ───────────────
+    it("translates the active-payment partial-unique P2002 (lost race) to ActivePaymentExistsError", async () => {
+      // Fast path sees no active payment (the race winner committed after this read)...
+      mockPaymentFindFirst.mockResolvedValueOnce(null)
+      // ...then the INSERT loses the race to the `payment_active_per_order` index.
+      mockPaymentCreate.mockRejectedValueOnce(
+        Object.assign(new Error("Unique constraint failed"), {
+          code: "P2002",
+          meta: { target: "payment_active_per_order" },
+        }),
+      )
+      // The catch re-reads the winning active payment (for the log) via findFirst.
+      mockPaymentFindFirst.mockResolvedValueOnce({ id: "pay_winner", status: "awaiting_payment", version: 1 })
+
+      const envelope = buildCreateEnvelope({ orderId: "order_01", method: "pix", amountInCentavos: 8900 })
+      await expect(svc.createFromEnvelope(envelope)).rejects.toThrow(ActivePaymentExistsError)
+      expect(mockPaymentCreate).toHaveBeenCalledOnce()
+    })
+
+    it("re-throws a P2002 from a DIFFERENT unique index unchanged (not relabeled)", async () => {
+      mockPaymentFindFirst.mockResolvedValueOnce(null)
+      const dup = Object.assign(new Error("Unique constraint failed on idempotency_key"), {
+        code: "P2002",
+        meta: { target: "idempotency_key" },
+      })
+      mockPaymentCreate.mockRejectedValueOnce(dup)
+
+      const envelope = buildCreateEnvelope({
+        orderId: "order_01",
+        method: "pix",
+        amountInCentavos: 8900,
+        idempotencyKey: "idem_1",
+      })
+      const err = await svc.createFromEnvelope(envelope).catch((e) => e)
+      expect(err).toBe(dup)
+      expect(err).not.toBeInstanceOf(ActivePaymentExistsError)
+    })
   })
 
   describe("transitionStatusFromEnvelope", () => {

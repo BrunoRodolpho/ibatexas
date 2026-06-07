@@ -58,6 +58,135 @@ function apiContext(customerId: string): AgentContext {
   return { customerId, channel: Channel.Web, sessionId: "api", userType: "customer" };
 }
 
+type PaymentMethodLiteral = "pix" | "card" | "cash";
+
+/**
+ * Result of {@link replaceActivePayment}.
+ * - `ok`          — the old payment was canceled and the replacement created.
+ * - `compensated` — the replacement `create(newMethod)` failed, but we re-created
+ *   an active payment with the ORIGINAL method, so the order is left in a usable
+ *   payment state (the customer's prior method is restored).
+ * - `orphaned`    — the replacement create failed AND the compensating re-create
+ *   also failed; the order may have no active payment. Caller MUST surface an
+ *   actionable error (never an opaque 500).
+ */
+type ReplacePaymentResult =
+  | { kind: "ok"; payment: { id: string; version: number } }
+  | { kind: "compensated"; payment: { id: string; version: number }; error: unknown }
+  | { kind: "orphaned"; error: unknown; compensationError: unknown };
+
+/**
+ * Compensating cancel→create for the payment retry / regenerate / method-switch
+ * paths (P1-ERR-PAYSWITCH).
+ *
+ * The single-active-payment invariant (enforced inside `payment.create` as a DB
+ * transaction + partial unique index) means the OLD payment MUST be terminal
+ * before a replacement can be created — so create-before-cancel is impossible,
+ * and `canceled` is terminal in the forward-only state machine so the canceled
+ * row cannot be resurrected. `create` is atomic, so a thrown create rolls back
+ * its own row insert and leaves the order with NO active payment.
+ *
+ * Therefore: if `create(newMethod)` fails, we compensate by re-creating an active
+ * payment with the ORIGINAL method, restoring the customer's prior usable state.
+ * Only if that compensating create ALSO fails do we report an orphaned state,
+ * which the caller maps to an actionable (non-500) pt-BR error.
+ *
+ * Every mutation is kernel-adjudicated via the `*FromEnvelope` surface (a non-
+ * EXECUTE create decision is treated as a create failure → compensate). The
+ * cancel of the old payment tolerates REFUSE (already terminal) — the create's
+ * single-active invariant is the authoritative guard. `cancelReason` is pt-BR
+ * (Hard Rule #4); amounts are integer centavos carried verbatim (Hard Rule #2).
+ */
+async function replaceActivePayment(args: {
+  paymentCmdSvc: ReturnType<typeof createPaymentCommandService>;
+  orderId: string;
+  currentPaymentId: string;
+  currentMethod: PaymentMethodLiteral;
+  newMethod: PaymentMethodLiteral;
+  amountInCentavos: number;
+  customerId: string;
+  cancelReason: string;
+  /** Optional pre-cancel transition (switch path: → switching_method). */
+  preCancel?: () => Promise<void>;
+  log: FastifyInstance["log"];
+}): Promise<ReplacePaymentResult> {
+  const {
+    paymentCmdSvc, orderId, currentPaymentId, currentMethod, newMethod,
+    amountInCentavos, customerId, cancelReason, preCancel, log,
+  } = args;
+
+  // Optional intermediate transition (switch path: → switching_method).
+  if (preCancel) await preCancel();
+
+  // Cancel the old payment — kernel-adjudicated. A pre-existing terminal state
+  // surfaces as REFUSE and is benign (the old attempt is already dead), so
+  // tolerate it; the create below still enforces the single-active invariant.
+  const cancelEnv = buildEnvelope<
+    "payment.status.transition",
+    PaymentStatusTransitionPayload
+  >({
+    kind: "payment.status.transition",
+    payload: {
+      paymentId: currentPaymentId,
+      newStatus: PaymentStatus.CANCELED,
+      actor: "customer",
+      actorId: customerId,
+      reason: cancelReason,
+    },
+    nonce: randomUUID(),
+    actor: { principal: "user", sessionId: customerId },
+    taint: "TRUSTED",
+  });
+  await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnv).catch(() => undefined);
+
+  // Create a payment with `method` via the SYSTEM-only envelope. Throws on any
+  // non-EXECUTE decision so the compensation try/catch below can react.
+  const createWithMethod = async (
+    method: PaymentMethodLiteral,
+  ): Promise<{ id: string; version: number }> => {
+    const createEnv = buildEnvelope<"payment.create", PaymentCreatePayload>({
+      kind: "payment.create",
+      payload: { orderId, method, amountInCentavos },
+      nonce: randomUUID(),
+      actor: { principal: "system", sessionId: `customer:${customerId}` },
+      taint: "SYSTEM",
+    });
+    const outcome = await paymentCmdSvc.createFromEnvelope(createEnv);
+    if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
+      const msg =
+        outcome.decision.kind === "REFUSE"
+          ? outcome.decision.refusal.userFacing
+          : `payment.create not authorized (${outcome.decision.kind})`;
+      throw new Error(msg);
+    }
+    return outcome.result!;
+  };
+
+  try {
+    const payment = await createWithMethod(newMethod);
+    return { kind: "ok", payment };
+  } catch (error) {
+    log.error(
+      { orderId, paymentId: currentPaymentId, newMethod, error: String(error) },
+      "payment replacement create() failed — attempting compensation (restore original method)",
+    );
+    try {
+      const restored = await createWithMethod(currentMethod);
+      log.warn(
+        { orderId, restoredPaymentId: restored.id, method: currentMethod },
+        "payment replacement compensated — original method restored as new active payment",
+      );
+      return { kind: "compensated", payment: restored, error };
+    } catch (compensationError) {
+      log.error(
+        { orderId, paymentId: currentPaymentId, error: String(error), compensationError: String(compensationError) },
+        "payment replacement compensation FAILED — order may have no active payment",
+      );
+      return { kind: "orphaned", error, compensationError };
+    }
+  }
+}
+
 /**
  * Derive a deterministic envelope `nonce` from a logical idempotency
  * identifier (e.g. `${orderId}:cancel`). The same logical key on retry
@@ -996,79 +1125,35 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       // composite `payment.retry` intent kind in pack-payments (see
       // `migration/remediation/W3-INTENT-GAPS.md`).
 
-      // 1. Cancel current payment (best-effort if already terminal).
-      const cancelPayload: PaymentStatusTransitionPayload = {
-        paymentId: currentPayment.id,
-        newStatus: PaymentStatus.CANCELED,
-        actor: "customer",
-        actorId: customerId,
-        reason: "Nova tentativa de pagamento",
-      };
-      const cancelEnvelope = buildEnvelope<
-        "payment.status.transition",
-        PaymentStatusTransitionPayload
-      >({
-        kind: "payment.status.transition",
-        payload: cancelPayload,
-        nonce: randomUUID(),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "TRUSTED",
-      });
-      const cancelOutcome =
-        await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
-      // Tolerate REFUSE (e.g., already terminal). REQUEST_CONFIRMATION /
-      // ESCALATE are not expected on a status transition; surface as 403.
-      if (
-        cancelOutcome.decision.kind !== "EXECUTE" &&
-        cancelOutcome.decision.kind !== "REWRITE" &&
-        cancelOutcome.decision.kind !== "REFUSE"
-      ) {
-        const text =
-          cancelOutcome.decision.kind === "ESCALATE"
-            ? "Operação requer atendimento humano."
-            : "Cancelamento do pagamento anterior requer confirmação adicional.";
-        return reply.code(503).send({ error: text });
-      }
-
-      // 2. Create the new payment attempt — adjudicated path.
-      const createPayload: PaymentCreatePayload = {
+      // Cancel current payment + create the retry attempt as a single
+      // compensating sequence (P1-ERR-PAYSWITCH). Retry uses the SAME method,
+      // so the replacement and the compensation target are identical — the only
+      // distinct outcomes are `ok` and `orphaned`.
+      const method = currentPayment.method as PaymentMethodLiteral;
+      const result = await replaceActivePayment({
+        paymentCmdSvc,
         orderId: id,
-        method: currentPayment.method as "pix" | "card" | "cash",
+        currentPaymentId: currentPayment.id,
+        currentMethod: method,
+        newMethod: method,
         amountInCentavos: currentPayment.amountInCentavos,
-      };
-      const createEnvelope = buildEnvelope<
-        "payment.create",
-        PaymentCreatePayload
-      >({
-        kind: "payment.create",
-        payload: createPayload,
-        nonce: randomUUID(),
-        // payment.create is SYSTEM-only — the retry route is acting on
-        // the customer's behalf but the new-payment-row creation is a
-        // system-actor responsibility.
-        actor: { principal: "system", sessionId: `customer:${customerId}` },
-        taint: "SYSTEM",
+        customerId,
+        cancelReason: "Nova tentativa de pagamento",
+        log: server.log,
       });
-      const createOutcome =
-        await paymentCmdSvc.createFromEnvelope(createEnvelope);
-      if (
-        createOutcome.decision.kind !== "EXECUTE" &&
-        createOutcome.decision.kind !== "REWRITE"
-      ) {
-        const text =
-          createOutcome.decision.kind === "REFUSE"
-            ? createOutcome.decision.refusal.userFacing
-            : "Não foi possível criar nova tentativa de pagamento.";
-        return reply
-          .code(createOutcome.decision.kind === "REFUSE" ? 403 : 503)
-          .send({ error: text });
+
+      if (result.kind === "orphaned") {
+        // Both create and compensation failed — actionable error, not a 500.
+        return reply.code(503).send({
+          error: "Não foi possível criar a nova tentativa de pagamento. Tente novamente em instantes.",
+          code: "PAYMENT_RETRY_FAILED",
+        });
       }
-      const newPayment = createOutcome.result!;
 
       return reply.send({
         success: true,
-        paymentId: newPayment.id,
-        method: currentPayment.method,
+        paymentId: result.payment.id,
+        method,
         message: "Nova tentativa de pagamento criada. Conclua o pagamento.",
       });
     },
@@ -1137,68 +1222,29 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // 1. Cancel the current payment (best-effort if terminal).
-      const cancelPayload: PaymentStatusTransitionPayload = {
-        paymentId: currentPayment.id,
-        newStatus: PaymentStatus.CANCELED,
-        actor: "customer",
-        actorId: customerId,
-        reason: "Regeneração de PIX",
-      };
-      const cancelEnvelope = buildEnvelope<
-        "payment.status.transition",
-        PaymentStatusTransitionPayload
-      >({
-        kind: "payment.status.transition",
-        payload: cancelPayload,
-        nonce: randomUUID(),
-        actor: { principal: "user", sessionId: customerId },
-        taint: "TRUSTED",
+      // Cancel current payment + create the regenerated PIX as a single
+      // compensating sequence (P1-ERR-PAYSWITCH). Method is always pix here, so
+      // the replacement and the compensation target are identical.
+      const result = await replaceActivePayment({
+        paymentCmdSvc,
+        orderId: id,
+        currentPaymentId: currentPayment.id,
+        currentMethod: "pix",
+        newMethod: "pix",
+        amountInCentavos: currentPayment.amountInCentavos,
+        customerId,
+        cancelReason: "Regeneração de PIX",
+        log: server.log,
       });
-      const cancelOutcome =
-        await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
-      // Tolerate REFUSE (already terminal). Anything else: surface.
-      if (
-        cancelOutcome.decision.kind !== "EXECUTE" &&
-        cancelOutcome.decision.kind !== "REWRITE" &&
-        cancelOutcome.decision.kind !== "REFUSE"
-      ) {
+
+      if (result.kind === "orphaned") {
+        // Both create and compensation failed — actionable error, not a 500.
         return reply.code(503).send({
-          error: "Cancelamento do pagamento anterior requer confirmação.",
+          error: "Não foi possível gerar um novo QR code PIX. Tente novamente em instantes.",
+          code: "PIX_REGEN_FAILED",
         });
       }
-
-      // 2. Create the new payment row.
-      const createPayload: PaymentCreatePayload = {
-        orderId: id,
-        method: "pix",
-        amountInCentavos: currentPayment.amountInCentavos,
-      };
-      const createEnvelope = buildEnvelope<
-        "payment.create",
-        PaymentCreatePayload
-      >({
-        kind: "payment.create",
-        payload: createPayload,
-        nonce: randomUUID(),
-        actor: { principal: "system", sessionId: `customer:${customerId}` },
-        taint: "SYSTEM",
-      });
-      const createOutcome =
-        await paymentCmdSvc.createFromEnvelope(createEnvelope);
-      if (
-        createOutcome.decision.kind !== "EXECUTE" &&
-        createOutcome.decision.kind !== "REWRITE"
-      ) {
-        const text =
-          createOutcome.decision.kind === "REFUSE"
-            ? createOutcome.decision.refusal.userFacing
-            : "Não foi possível gerar novo PIX.";
-        return reply
-          .code(createOutcome.decision.kind === "REFUSE" ? 403 : 503)
-          .send({ error: text });
-      }
-      const newPayment = createOutcome.result!;
+      const newPayment = result.payment;
 
       // 3. Bump the regeneration counter via the kernel-adjudicated path.
       //    The cap guard refuses bumps above
@@ -1311,115 +1357,86 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       //   3. The HTTP-layer pre-checks (paid, same-method, switchable
       //      states) stay as fast-fails before kernel dispatch.
 
+      // Compensating cancel→create of the ORIGINAL method on create() failure so
+      // the customer is never left with no active payment (P1-ERR-PAYSWITCH).
+      // Held under the per-payment lock so the whole switching_method → cancel →
+      // create → compensate sequence is serialized (cycle-2 invariant).
+      const currentMethod = currentPayment.method as PaymentMethodLiteral;
       const result = await withLock(`payment:${currentPayment.id}`, async () => {
-        // 1. Transition old payment → switching_method (if allowed) via envelope.
-        if (canTransitionPayment(currentPayment.status as PaymentStatus, PaymentStatus.SWITCHING_METHOD)) {
-          const switchingEnvelope = buildEnvelope<
-            "payment.status.transition",
-            PaymentStatusTransitionPayload
-          >({
-            kind: "payment.status.transition",
-            payload: {
-              paymentId: currentPayment.id,
-              newStatus: PaymentStatus.SWITCHING_METHOD,
-              actor: "customer",
-              actorId: customerId,
-              reason: `Troca de ${currentPayment.method} para ${newMethod}`,
-            },
-            nonce: randomUUID(),
-            actor: { principal: "user", sessionId: customerId },
-            taint: "TRUSTED",
-          });
-          const switchingOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope);
-          if (
-            switchingOutcome.decision.kind !== "EXECUTE" &&
-            switchingOutcome.decision.kind !== "REWRITE" &&
-            switchingOutcome.decision.kind !== "REFUSE"
-          ) {
-            return { needsEscalation: true } as const;
-          }
-        }
-
-        // 2. Transition old payment → canceled via envelope.
-        const cancelEnvelope = buildEnvelope<
-          "payment.status.transition",
-          PaymentStatusTransitionPayload
-        >({
-          kind: "payment.status.transition",
-          payload: {
-            paymentId: currentPayment.id,
-            newStatus: PaymentStatus.CANCELED,
-            actor: "customer",
-            actorId: customerId,
-            reason: `Troca de método: ${currentPayment.method} → ${newMethod}`,
-          },
-          nonce: randomUUID(),
-          actor: { principal: "user", sessionId: customerId },
-          taint: "TRUSTED",
-        });
-        const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(cancelEnvelope);
-        if (
-          cancelOutcome.decision.kind !== "EXECUTE" &&
-          cancelOutcome.decision.kind !== "REWRITE" &&
-          cancelOutcome.decision.kind !== "REFUSE"
-        ) {
-          return { needsEscalation: true } as const;
-        }
-
-        // 3. Create new payment with new method via envelope.
-        const createPayload: PaymentCreatePayload = {
+        const replaced = await replaceActivePayment({
+          paymentCmdSvc,
           orderId: id,
-          method: newMethod,
-          amountInCentavos: currentPayment.amountInCentavos,
-        };
-        const createEnvelope = buildEnvelope<
-          "payment.create",
-          PaymentCreatePayload
-        >({
-          kind: "payment.create",
-          payload: createPayload,
-          nonce: randomUUID(),
-          actor: { principal: "system", sessionId: `customer:${customerId}` },
-          taint: "SYSTEM",
-        });
-        const createOutcome = await paymentCmdSvc.createFromEnvelope(createEnvelope);
-        if (
-          createOutcome.decision.kind !== "EXECUTE" &&
-          createOutcome.decision.kind !== "REWRITE"
-        ) {
-          if (createOutcome.decision.kind === "REFUSE") {
-            return {
-              refused: true,
-              userFacing: createOutcome.decision.refusal.userFacing,
-            } as const;
-          }
-          return { needsEscalation: true } as const;
-        }
-        const newPayment = createOutcome.result!;
-
-        await publishNatsEvent("payment.method_changed", {
-          eventType: "payment.method_changed",
-          orderId: id,
-          paymentId: newPayment.id,
-          previousMethod: currentPayment.method,
+          currentPaymentId: currentPayment.id,
+          currentMethod,
           newMethod,
-          timestamp: new Date().toISOString(),
+          amountInCentavos: currentPayment.amountInCentavos,
+          customerId,
+          cancelReason: `Troca de método: ${currentMethod} → ${newMethod}`,
+          // Transition old payment → switching_method before canceling (if the
+          // current state allows it). Tolerate a non-EXECUTE here — the cancel +
+          // create inside replaceActivePayment are the authoritative steps.
+          preCancel: canTransitionPayment(currentPayment.status as PaymentStatus, PaymentStatus.SWITCHING_METHOD)
+            ? async () => {
+                const switchingEnvelope = buildEnvelope<
+                  "payment.status.transition",
+                  PaymentStatusTransitionPayload
+                >({
+                  kind: "payment.status.transition",
+                  payload: {
+                    paymentId: currentPayment.id,
+                    newStatus: PaymentStatus.SWITCHING_METHOD,
+                    actor: "customer",
+                    actorId: customerId,
+                    reason: `Troca de ${currentMethod} para ${newMethod}`,
+                  },
+                  nonce: randomUUID(),
+                  actor: { principal: "user", sessionId: customerId },
+                  taint: "TRUSTED",
+                });
+                await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope).catch(() => undefined);
+              }
+            : undefined,
+          log: server.log,
         });
 
-        return { ok: true, payment: newPayment } as const;
+        // Only emit method_changed when the NEW method actually became active.
+        // On compensation the original method is restored, so the method did NOT
+        // change and no event is published.
+        if (replaced.kind === "ok") {
+          await publishNatsEvent("payment.method_changed", {
+            eventType: "payment.method_changed",
+            orderId: id,
+            paymentId: replaced.payment.id,
+            previousMethod: currentMethod,
+            newMethod,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
+        return replaced;
       }, 15);
 
       if (!result) {
         return reply.code(409).send({ error: "Operação em andamento. Tente novamente.", code: "LOCK_CONFLICT" });
       }
-      if ("refused" in result && result.refused) {
-        return reply.code(403).send({ error: result.userFacing });
+
+      if (result.kind === "orphaned") {
+        // Both the new-method create and the compensating restore failed.
+        return reply.code(503).send({
+          error: "Não foi possível trocar o método de pagamento. Tente novamente em instantes.",
+          code: "PAYMENT_SWITCH_FAILED",
+        });
       }
-      if ("needsEscalation" in result && result.needsEscalation) {
-        return reply.code(503).send({ error: "Troca de método requer atendimento humano." });
-      }
-      if (!("ok" in result) || !result.ok) {
-        return reply.code(500).send({ error: "Erro interno na troca de método de pagamento." });
+
+      if (result.kind === "compensated") {
+        // The switch failed but the original method was restored as the active
+        // payment — actionable error, order still in a usable payment state.
+        return reply.code(503).send({
+          error: `Não foi possível trocar para ${newMethod}. Seu método de pagamento (${currentMethod}) continua ativo. Tente novamente.`,
+          code: "PAYMENT_SWITCH_FAILED",
+          activePaymentId: result.payment.id,
+          method: currentMethod,
+        });
       }
 
       return reply.send({
