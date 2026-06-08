@@ -140,6 +140,8 @@ import {
   resolveCapabilityPolicy,
   type CapabilityPolicyPack,
 } from "./claustrum/capability-policy.js";
+import { createTokenBudgetGuard } from "@adjudicate/primitives";
+import { nameGuard } from "@adjudicate/core/kernel";
 import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
 import {
   listIbatexasToolPacks,
@@ -546,17 +548,57 @@ function noopHandoff(): HandoffPort {
  * `CapabilityPolicyPack` shape (heterogeneous K/P/S erased to string/unknown) so
  * one router can dispatch across all domains. See capability-policy.ts.
  */
+// ── Session token-budget guard (F4, cost cap / ADR-120) ─────────────────────
+// Per-session cumulative LLM-cost cap. INERT today by two independent gates:
+//  (1) the `rk('llm:tokens:…')` counter that would feed `sessionTokensConsumed`
+//      is only written once @claustrum republishes TurnRecord token usage (the
+//      write side at `emitTurn` is itself dormant until then), and
+//  (2) the SystemState the kernel passes to guards is assembled by the planner
+//      from the per-turn Capsule, NOT by `resolveIbatexasTenantPolicy.resolve()`
+//      (whose `state` is static — see the note at its return), so the readback
+//      fold also lands with the republish (planner threads it in).
+// Until both clear, `extractSessionTokens` reads 0 → the guard returns null →
+// zero behavior change. It is composed now so enforcement is a config flip, not
+// a code change, the moment the republish lands. REFUSE (never DEFER — DEFER
+// would park a money intent on a reset signal nobody emits).
+const SESSION_TOKEN_BUDGET = Number.parseInt(
+  process.env.AGENT_SESSION_TOKEN_BUDGET ?? "100000",
+  10,
+);
+const sessionTokenBudgetGuard = nameGuard(
+  "sessionTokenBudget",
+  createTokenBudgetGuard<string, unknown, unknown>({
+    extractSessionTokens: (state) =>
+      (state as { ctx?: { sessionTokensConsumed?: number } }).ctx
+        ?.sessionTokensConsumed ?? 0,
+    sessionBudget: Number.isFinite(SESSION_TOKEN_BUDGET)
+      ? SESSION_TOKEN_BUDGET
+      : 100_000,
+    action: "REFUSE",
+    userFacing:
+      "Você atingiu o limite de uso desta conversa. Tente novamente mais tarde.",
+  }),
+);
+
 const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> = [
   ordersPack,
   paymentsPack,
   reservationsPack,
   customerOnboardingPack,
   whatsappPack,
-].map((p) => ({
-  id: p.id,
-  intents: [...p.intents],
-  policy: p.policy as unknown as PolicyBundle<string, unknown, unknown>,
-}));
+].map((p) => {
+  const base = p.policy as unknown as PolicyBundle<string, unknown, unknown>;
+  return {
+    id: p.id,
+    intents: [...p.intents],
+    // F4: prepend the (inert) session-token-budget guard to every pack's
+    // business phase so it is in place the moment enforcement is unblocked.
+    policy: {
+      ...base,
+      business: [sessionTokenBudgetGuard, ...base.business],
+    } as unknown as PolicyBundle<string, unknown, unknown>,
+  };
+});
 
 /** One kind-dispatching PolicyBundle over every installed pack (built once). */
 const IBATEXAS_POLICY_ROUTER = composePolicyRouter(IBATEXAS_POLICY_PACKS);

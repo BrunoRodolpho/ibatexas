@@ -132,6 +132,9 @@ importers:
       '@adjudicate/pack-payments-pix':
         specifier: ^0.2.1
         version: 0.2.1
+      '@adjudicate/primitives':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@adjudicate/runtime':
         specifier: ^0.2.1
         version: 0.2.1
