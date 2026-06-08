@@ -142,6 +142,10 @@ import {
 } from "./claustrum/capability-policy.js";
 import { createTokenBudgetGuard } from "@adjudicate/primitives";
 import { nameGuard } from "@adjudicate/core/kernel";
+import {
+  verifyConfigSeal,
+  type SealablePackInput,
+} from "@adjudicate/conformance";
 import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
 import {
   listIbatexasToolPacks,
@@ -379,7 +383,8 @@ async function safeAuditedAdjudicate(
 
 // ── First-party pack installation ────────────────────────────────────────────
 
-function installFirstPartyPacks(): void {
+function installFirstPartyPacks(): SealablePackInput[] {
+  const installed: SealablePackInput[] = [];
   // Each pack registers its (kind, payload, state) shape with the kernel.
   // installPack is the kernel-side variant; the runtime never reaches in to
   // mutate the registry — it's a one-time boot step.
@@ -407,6 +412,9 @@ function installFirstPartyPacks(): void {
         pack.default;
       if (value && typeof installPack === "function") {
         installPack(value);
+        // Seal the SOURCE pack object (pre-installPack-wrap; withBasisAudit
+        // strips guard metadata) so the F5 config seal pins the real surface.
+        installed.push(value as SealablePackInput);
       }
     } catch (err) {
       logger.warn(
@@ -415,6 +423,68 @@ function installFirstPartyPacks(): void {
       );
     }
   }
+  return installed;
+}
+
+// ── F5: config integrity seal (boot gate) ───────────────────────────────────
+// Pins each money-pack's introspectable config surface (intents, basis vocab,
+// per-guard metadata, default verdict, per-intent taint minimum) to a sha256
+// digest. SAFE BY DEFAULT: when CONFIG_SEAL_DIGESTS is unset the gate is a
+// no-op — enforcement activates only when an operator mints digests
+// (`ibx kernel seal`) and pins them. When pinned, a mismatch (or a pinned pack
+// that did not install) fails the WHOLE boot CLOSED, before any traffic.
+//
+// DEPTH CAVEAT: the seal pins guard count/order/metadata/default-verdict/taint-
+// minimum — NOT guard function BODIES (describePolicyBundle emits only metadata).
+// It is a config-DRIFT tripwire complementary to golden vectors, not behavioral
+// attestation.
+function parseSealDigests(raw: string | undefined): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!raw) return map;
+  for (const entry of raw.split(";")) {
+    const [id, hex] = entry.split("=").map((s) => s.trim());
+    if (id && hex) map.set(id, hex.toLowerCase());
+  }
+  return map;
+}
+
+function assertConfigSealOrThrow(
+  packs: ReadonlyArray<SealablePackInput>,
+): void {
+  // Tests build ad-hoc packs; never seal-gate them.
+  if ((process.env.NODE_ENV ?? "dev") === "test") return;
+  const pinned = parseSealDigests(process.env.CONFIG_SEAL_DIGESTS);
+  if (pinned.size === 0) return; // safe default — unset ⇒ no enforcement
+  const byId = new Map(packs.map((p) => [p.id, p]));
+  const mismatches: string[] = [];
+  for (const [id, expected] of pinned) {
+    const pack = byId.get(id);
+    if (!pack) {
+      mismatches.push(
+        `pinned pack '${id}' did not install (removed/renamed?)`,
+      );
+      continue;
+    }
+    const report = verifyConfigSeal(
+      pack,
+      { schemaVersion: 1, digest: expected, packId: id },
+      { policy: "require_digest" },
+    );
+    if (!report.verified) {
+      mismatches.push(
+        `pack '${id}' SEAL_MISMATCH: expected ${expected.slice(0, 12)}…, got ${report.computedDigest.slice(0, 12)}…`,
+      );
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `[config-seal] boot refused — pack config drift detected:\n  ${mismatches.join("\n  ")}`,
+    );
+  }
+  logger.info(
+    { component: "startup", sealedPacks: pinned.size },
+    "[config-seal] all pinned pack config seals verified",
+  );
 }
 
 function stripScope(name: string): string {
@@ -978,7 +1048,10 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
 export async function bootstrapClaustrum(): Promise<Conductor> {
   if (_conductor) return _conductor;
 
-  installFirstPartyPacks();
+  const installedPacks = installFirstPartyPacks();
+  // F5 — fail boot CLOSED on pack config drift (no-op unless CONFIG_SEAL_DIGESTS
+  // is pinned). Runs before audit-postgres/tool-roster gates and before traffic.
+  assertConfigSealOrThrow(installedPacks);
 
   // Live decision observability — install the structured MetricsSink so every
   // kernel decision / refusal / ledger op / audit-sink failure emits a

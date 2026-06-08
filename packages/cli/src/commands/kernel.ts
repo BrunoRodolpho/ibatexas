@@ -1217,4 +1217,40 @@ export function registerKernelCommands(group: Command): void {
     .action(async (opts: { pack?: string; json?: boolean; sarif?: boolean }) => {
       await runAnalyze(opts)
     })
+
+  // ── seal (F5) ──────────────────────────────────────────────────────────────
+  group
+    .command("seal")
+    .description(
+      "Computa o config-seal digest de cada pack e imprime a linha CONFIG_SEAL_DIGESTS para fixar o boot-gate (F5).",
+    )
+    .option("--pack <spec>", "Pack alvo (default: todos os first-party)")
+    .action(async (opts: { pack?: string }) => {
+      const { computeConfigDigest, extractSealableSurface } = await import(
+        "@adjudicate/conformance"
+      )
+      const packs = await loadPacksForGovernance(opts.pack)
+      if (packs.length === 0) {
+        console.error(
+          chalk.red(
+            `Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`,
+          ),
+        )
+        process.exitCode = 1
+        return
+      }
+      const entries: string[] = []
+      for (const pack of packs) {
+        const digest = computeConfigDigest(extractSealableSurface(pack as never))
+        console.log(chalk.bold(`${pack.id}@${pack.version}`) + ` → ${digest}`)
+        entries.push(`${pack.id}=${digest}`)
+      }
+      console.log()
+      console.log(
+        chalk.dim(
+          "Fixe em .env (CONFIG_SEAL_DIGESTS) para ativar o boot-gate fail-closed:",
+        ),
+      )
+      console.log(`CONFIG_SEAL_DIGESTS=${entries.join(";")}`)
+    })
 }
