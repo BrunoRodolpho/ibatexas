@@ -71,6 +71,7 @@ import {
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireAuth } from "../middleware/auth.js";
 import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import { identityCtx } from "../claustrum/resolve-and-assemble.js";
 import {
   ANONYMIZE_GRACE_TTL_SECONDS,
   ANONYMIZE_FAIL_THRESHOLD,
@@ -515,19 +516,19 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         customerId,
       });
 
-      // Project state for the pack policy. `otpFresh` is true here
-      // because /verify-otp succeeded within the last 60s.
-      const state: CustomerOnboardingState = {
+      // Project state for the pack policy. `otpFresh` is true here because
+      // /verify-otp succeeded within the last 60s. Unified state contract
+      // (Phase 2): shared identity base + this route's deliberate flags.
+      const state = {
         ctx: {
-          actor: { principal: "user", id: customerId },
-          customerId,
+          ...identityCtx(customerId, "web"),
           customerExists: true,
           isAuthenticated: true,
           otpFresh: true,
           hasParkedAnonymize: false,
           now: new Date(),
         },
-      };
+      } as unknown as CustomerOnboardingState;
 
       const parkedAt = Date.now();
       const intentHash = envelope.intentHash;
@@ -757,10 +758,11 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       // Immediate-erasure state: requireAuthenticated (isAuthenticated) +
       // requireCustomerExists (customerExists) pass; immediateErasure skips
       // requireFreshOtp + deferAnonymizeForGrace → executeAnonymize EXECUTE.
-      const state: CustomerOnboardingState = {
+      // Unified state contract (Phase 2): shared identity base + immediateErasure
+      // PRESERVED (LGPD: immediate erasure must NOT degrade to a 24h defer).
+      const state = {
         ctx: {
-          actor: { principal: "user", id: customerId },
-          customerId,
+          ...identityCtx(customerId, "web"),
           customerExists: true,
           isAuthenticated: true,
           otpFresh: false,
@@ -768,7 +770,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
           immediateErasure: true,
           now: new Date(),
         },
-      };
+      } as unknown as CustomerOnboardingState;
 
       const out = await runCustomerIntent({
         envelope,
@@ -923,10 +925,9 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         customerId,
       });
 
-      const state: CustomerOnboardingState = {
+      const state = {
         ctx: {
-          actor: { principal: "user", id: customerId },
-          customerId,
+          ...identityCtx(customerId, "web"),
           customerExists: true,
           isAuthenticated: true,
           // The pack reads `otpFresh` for cancel too — we treat the
@@ -936,7 +937,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
           hasParkedAnonymize: true,
           parkedAnonymizeAt: receipt.parkedAt,
           now: new Date(),
-        },
+        } as unknown as CustomerOnboardingState["ctx"],
       };
 
       // (c) Adjudicate. The pack's policy is expected to REFUSE with
