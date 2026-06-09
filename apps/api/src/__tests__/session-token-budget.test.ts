@@ -3,10 +3,10 @@
  *
  * Mirrors the guard composed into IBATEXAS_POLICY_PACKS in claustrum-bootstrap.ts
  * (sessionBudget = AGENT_SESSION_TOKEN_BUDGET, reads state.ctx.sessionTokensConsumed,
- * action REFUSE). The real guard is INERT in production until the claustrum
- * republish (TurnRecord token usage) + the planner threads sessionTokensConsumed
- * into the SystemState — see the bootstrap comment. This test locks the crossing
- * semantics enforcement will rely on the moment those land.
+ * action REFUSE). The guard is now LIVE: the resolve stage (resolve-and-assemble.ts)
+ * reads the per-session counter into state.ctx.sessionTokensConsumed each turn. This
+ * test locks the guard's crossing semantics; resolve-and-assemble.test.ts proves the
+ * counter → ctx → guard read path end-to-end.
  */
 
 import { describe, expect, it } from "vitest";

@@ -140,13 +140,19 @@ import {
   resolveCapabilityPolicy,
   type CapabilityPolicyPack,
 } from "./claustrum/capability-policy.js";
-import { createTokenBudgetGuard } from "@adjudicate/primitives";
+import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitives";
 import { nameGuard } from "@adjudicate/core/kernel";
 import {
   verifyConfigSeal,
   type SealablePackInput,
 } from "@adjudicate/conformance";
 import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
+import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
+import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
+import {
+  createInMemoryTokenUsageStore,
+  type TokenUsageStore,
+} from "@adjudicate/adapter-core";
 import {
   listIbatexasToolPacks,
   registerIbatexasToolPacks,
@@ -189,6 +195,35 @@ export interface AdjudicatorBridgeDeps {
 }
 
 /**
+ * Re-assemble the per-envelope SystemState ctx for a parked (already-resolved)
+ * envelope on the resume path. The claustrum resume path adjudicates against
+ * `resolution.state` (channel + customerId), not the plan-stage resolver's
+ * enriched ctx — so without this the pack stateGuards would panic on the stub.
+ * The parked envelope carries the RESOLVED id, so we re-load its entity state
+ * (scoped to customerId). Fail-safe: falls back to the supplied state on any gap.
+ */
+async function enrichResumeState(
+  envelope: IntentEnvelope,
+  state: unknown,
+): Promise<unknown> {
+  const s = state as { channel?: string; customerId?: string };
+  if (typeof s.customerId !== "string" || typeof s.channel !== "string") {
+    return state;
+  }
+  try {
+    const { ctx } = await resolveAndAssemble({
+      kind: envelope.kind,
+      payload: (envelope.payload ?? {}) as Record<string, unknown>,
+      customerId: s.customerId,
+      channel: s.channel,
+    });
+    return { ctx };
+  } catch {
+    return state;
+  }
+}
+
+/**
  * Wraps `@adjudicate/core`'s audited kernel verb (`adjudicateAndAudit`) +
  * `@adjudicate/audit-postgres` into the claustrum `Adjudicator` port. This is
  * the ONLY place in the ibatexas codebase that imports the kernel directly.
@@ -218,10 +253,21 @@ export function buildAdjudicator(deps: AdjudicatorBridgeDeps): Adjudicator {
       // receipt (money-safety / the audit invariant). Omitting the receipt
       // (a deferred envelope whose condition is now met) is a plain
       // re-adjudication: EXECUTE only if the guards naturally pass.
+      //
+      // RESUME-PATH STATE ENRICHMENT: the claustrum resume path re-adjudicates the
+      // PARKED envelope against `resolution.state` (channel+customerId), NOT the
+      // plan-stage resolver's enriched ctx — so without this, the pack stateGuards
+      // would panic on the stub ctx. The parked envelope already carries the
+      // RESOLVED id (orderId/reservationId), so we re-assemble the per-envelope ctx
+      // here from it (scoped to the resolved customerId). The auto-resolve flag is
+      // NOT re-set (the id is now explicit), so confirm-on-autoresolve passes and
+      // the kernel re-adjudicates against FRESH entity state (money-safety: a state
+      // change since parking, e.g. order already shipped, REFUSEs).
+      const resumeState = await enrichResumeState(envelope as IntentEnvelope, state);
       return safeAuditedAdjudicate(
         deps,
         envelope as IntentEnvelope,
-        state,
+        resumeState,
         policy,
         receipt,
       );
@@ -619,22 +665,39 @@ function noopHandoff(): HandoffPort {
  * one router can dispatch across all domains. See capability-policy.ts.
  */
 // ── Session token-budget guard (F4, cost cap / ADR-120) ─────────────────────
-// Per-session cumulative LLM-cost cap. INERT today by two independent gates:
-//  (1) the `rk('llm:tokens:…')` counter that would feed `sessionTokensConsumed`
-//      is only written once @claustrum republishes TurnRecord token usage (the
-//      write side at `emitTurn` is itself dormant until then), and
-//  (2) the SystemState the kernel passes to guards is assembled by the planner
-//      from the per-turn Capsule, NOT by `resolveIbatexasTenantPolicy.resolve()`
-//      (whose `state` is static — see the note at its return), so the readback
-//      fold also lands with the republish (planner threads it in).
-// Until both clear, `extractSessionTokens` reads 0 → the guard returns null →
-// zero behavior change. It is composed now so enforcement is a config flip, not
-// a code change, the moment the republish lands. REFUSE (never DEFER — DEFER
-// would park a money intent on a reset signal nobody emits).
+// Per-session cumulative LLM-cost cap. LIVE: both sides are wired.
+//  WRITE — `emitTurn` folds each turn's planning+synthesis token total (summed
+//    onto the TurnRecord by claustrum's loop) into `rk('llm:tokens:…')`.
+//  READ  — the pre-adjudication resolve stage (claustrum/resolve-and-assemble.ts)
+//    reads that counter back into `state.ctx.sessionTokensConsumed` for EVERY
+//    envelope, so the guard below — prepended to every pack's business phase —
+//    sees a real total. Enforcement is now a config flip (AGENT_SESSION_TOKEN_BUDGET).
+// REFUSE (never DEFER — DEFER would park a money intent on a reset signal nobody emits).
 const SESSION_TOKEN_BUDGET = Number.parseInt(
   process.env.AGENT_SESSION_TOKEN_BUDGET ?? "100000",
   10,
 );
+
+// TokenUsageStore (ADR-135) — TELEMETRY ONLY, strictly outside the determinism
+// boundary. Dashboard-facing per-session / per-tenant consumption + exhaustion
+// events; fed from emitTurn (below). It is an INDEPENDENT read of the same usage
+// the F4 guard meters off the Redis counter — there is no edge between them, so
+// the kernel's decision path is untouched. Process-local + LRU-bounded (a real
+// cross-instance dashboard would swap in a Redis-backed impl behind the same
+// interface — a documented follow-up). Budgets seed from the same env as the guard.
+const PER_TENANT_TOKEN_BUDGET = Number.parseInt(
+  process.env.AGENT_TENANT_TOKEN_BUDGET ?? "0",
+  10,
+);
+const tokenUsageStore: TokenUsageStore = createInMemoryTokenUsageStore({
+  ...(Number.isFinite(SESSION_TOKEN_BUDGET)
+    ? { sessionBudget: SESSION_TOKEN_BUDGET }
+    : {}),
+  ...(Number.isFinite(PER_TENANT_TOKEN_BUDGET) && PER_TENANT_TOKEN_BUDGET > 0
+    ? { perTenantBudget: PER_TENANT_TOKEN_BUDGET }
+    : {}),
+});
+
 const sessionTokenBudgetGuard = nameGuard(
   "sessionTokenBudget",
   createTokenBudgetGuard<string, unknown, unknown>({
@@ -650,6 +713,37 @@ const sessionTokenBudgetGuard = nameGuard(
   }),
 );
 
+// Confirm-on-autoresolve (NL→id confirm-first): when the conductor resolve stage
+// auto-resolved an ambiguous target for an IRREVERSIBLE money/booking intent
+// ("cancelar meu pedido" → most-recent order; "cancelar minha reserva" → the only
+// active booking; PIX regenerate → most-recent order), it sets
+// `state.ctx.autoResolvedMoneyRef`. This guard then REQUEST_CONFIRMATIONs so a
+// wrong guess can never auto-execute — the user sees the target and confirms.
+// On resume (after confirm) the parked envelope carries the EXPLICIT resolved id,
+// so the flag is absent → this guard passes → the kernel re-adjudicates against
+// fresh entity state. Boolean-as-threshold (1 = flagged). Composed at the
+// adopter level (no pack-source change), like the F4 guard.
+const AUTORESOLVE_CONFIRM_KINDS = new Set([
+  "order.cancel",
+  "payment.pix.regenerate",
+  "reservation.cancel",
+]);
+const confirmOnAutoResolveGuard = nameGuard(
+  "confirmOnAutoResolvedRef",
+  createConfirmGuard<string, unknown, unknown>({
+    matches: (env) => AUTORESOLVE_CONFIRM_KINDS.has(env.kind),
+    extract: (_env, state) =>
+      (state as { ctx?: { autoResolvedMoneyRef?: boolean } }).ctx
+        ?.autoResolvedMoneyRef
+        ? 1
+        : 0,
+    threshold: 1,
+    comparator: ">=",
+    prompt: () =>
+      "Identifiquei o item mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
+  }),
+);
+
 const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> = [
   ordersPack,
   paymentsPack,
@@ -661,11 +755,17 @@ const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> = [
   return {
     id: p.id,
     intents: [...p.intents],
-    // F4: prepend the (inert) session-token-budget guard to every pack's
-    // business phase so it is in place the moment enforcement is unblocked.
+    // Prepend the adopter-level business guards to every pack: F4 token-budget
+    // (REFUSE over budget) then confirm-on-autoresolve (REQUEST_CONFIRMATION when
+    // an ambiguous money/booking target was auto-resolved). Both run before the
+    // pack's own business guards; they only fire for their matching kinds/flags.
     policy: {
       ...base,
-      business: [sessionTokenBudgetGuard, ...base.business],
+      business: [
+        sessionTokenBudgetGuard,
+        confirmOnAutoResolveGuard,
+        ...base.business,
+      ],
     } as unknown as PolicyBundle<string, unknown, unknown>,
   };
 });
@@ -783,7 +883,15 @@ function naiveResponder(model: AnthropicProvider): ResponderPort {
           { role: "user", content: input.cognition.perception.text },
         ],
       });
-      return { text: completion.text };
+      // F4 / cost accounting: report this turn's synthesis-model token usage so
+      // the loop sums it (plan.usage + draft.usage) onto the TurnRecord.
+      return {
+        text: completion.text,
+        usage: {
+          inputTokens: completion.inputTokens,
+          outputTokens: completion.outputTokens,
+        },
+      };
     },
   };
 }
@@ -823,26 +931,17 @@ function isGuestCustomerId(customerId: string): boolean {
 }
 
 // ── Per-session LLM token accounting (cost-cap seam, ADR-120 / F4) ──────────────
-// WRITE side only (foundation slice — the F4 read side is Phase-3 WIP). We
-// accumulate each turn's planning + synthesis model usage onto a per-session
-// Redis counter at `emitTurn` — the single once-per-turn seam that also carries
-// `customerId` — keyed by the same `${channel}:${customerId}` session id the
-// SessionPort uses, and stored OUTSIDE the audit ledger (LLM-trace retention is
-// separate).
-//
-// NOT yet wired: the read side — folding this counter into
-// `state.ctx.sessionTokensConsumed` in `resolveIbatexasTenantPolicy.resolve`, and
-// composing the token-budget guard into the packs. Until that lands the counter
-// is observational only and gates nothing.
-//
-// Inert until claustrum reports usage: `TurnRecord.inputTokens/outputTokens` ship
-// in a `@claustrum/*` release ibatexas has not yet bumped to, so the accumulator
-// reads 0 today (fail-safe: a missing usage field contributes 0). For non-zero
-// totals, ibatexas's planner + responder must also report `usage` on the
-// Plan / DraftResponse they return.
-function sessionTokenKey(channel: string, customerId: string): string {
-  return rk(`llm:tokens:${channel}:${customerId}`);
-}
+// Both sides are now wired:
+//   WRITE — `emitTurn` (below) folds each turn's planning + synthesis token total
+//     (summed onto the TurnRecord by claustrum's loop from plan.usage + draft.usage)
+//     into a per-session Redis counter, keyed `${channel}:${customerId}`, stored
+//     OUTSIDE the audit ledger.
+//   READ  — the pre-adjudication resolve stage (claustrum/resolve-and-assemble.ts)
+//     reads that counter back into `state.ctx.sessionTokensConsumed` for EVERY
+//     envelope, so the `sessionTokenBudgetGuard` (prepended to every pack's
+//     business phase) REFUSEs once the session crosses AGENT_SESSION_TOKEN_BUDGET.
+// `sessionTokenKey` is the single source of truth, exported by resolve-and-assemble
+// (the read side) and imported here (the write side) so the key can never drift.
 
 function redisSessionStore(): SessionPort {
   async function readSession(sessionId: string): Promise<Session | null> {
@@ -963,7 +1062,7 @@ function redisSessionStore(): SessionPort {
  * layer). The full implementation will fan out to prom-client metrics
  * and the existing audit-sink subscriber.
  */
-function fastifyTelemetry(): TelemetryPort {
+function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
   return {
     async emitTurn(record: TurnRecord) {
       logger.info(
@@ -977,13 +1076,13 @@ function fastifyTelemetry(): TelemetryPort {
         `turn ${record.turnId} ${record.durationMs}ms`,
       );
       // Fold this turn's model token total (summed onto the TurnRecord by
-      // claustrum's loop) into the per-session counter the budget guard reads.
-      // Best-effort: telemetry must never break a turn. The cast tolerates the
-      // current @claustrum types (which predate the TurnRecord token fields);
-      // drop it once ibatexas bumps @claustrum/* to the release that adds them.
+      // claustrum's loop from plan.usage + draft.usage) into the per-session
+      // counter the F4 budget guard reads (via resolve-and-assemble). The READ
+      // side now closes the loop: the resolver injects this counter into
+      // state.ctx.sessionTokensConsumed at the next turn's adjudication.
+      // Best-effort: telemetry must never break a turn.
       try {
-        const r = record as { inputTokens?: number; outputTokens?: number };
-        const total = (r.inputTokens ?? 0) + (r.outputTokens ?? 0);
+        const total = (record.inputTokens ?? 0) + (record.outputTokens ?? 0);
         if (total > 0) {
           const redis = await getRedisClient();
           const sessionKey = sessionTokenKey(record.channel, record.customerId);
@@ -1000,6 +1099,24 @@ function fastifyTelemetry(): TelemetryPort {
         logger.warn(
           { component: "conductor", event: "token_fold_failed", error: String(err) },
           "per-session token fold failed; ignoring",
+        );
+      }
+      // TokenUsageStore (ADR-135) telemetry — dashboard-facing, independent of the
+      // Redis fold above (no edge to the F4 guard). Best-effort; never breaks a turn.
+      try {
+        const total = (record.inputTokens ?? 0) + (record.outputTokens ?? 0);
+        if (total > 0) {
+          usageStore.record({
+            sessionId: `${record.channel}:${record.customerId}`,
+            tenantId: record.tenantId ?? process.env.KERNEL_TENANT_ID ?? "ibatexas",
+            total,
+            at: record.at,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          { component: "conductor", event: "token_usage_store_failed", error: String(err) },
+          "token-usage store record failed; ignoring",
         );
       }
     },
@@ -1021,7 +1138,7 @@ function fastifyTelemetry(): TelemetryPort {
  * Packs at registration time (kernel-side state).
  */
 const resolveIbatexasTenantPolicy: TenantResolver = {
-  async resolve({ channel }) {
+  async resolve({ channel, customerId }) {
     return {
       tenant: {
         tenantId: "ibatexas",
@@ -1032,9 +1149,11 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
           | "staging"
           | "prod",
       },
-      // Real SystemState is assembled by the planner + kernel from the
-      // per-request Capsule (cart, customer, etc.). Static empty for now.
-      state: { channel },
+      // Fallback SystemState. The conductor's resolve stage (IbatexasResolverPort)
+      // assembles the real per-envelope ctx for the PLAN path; this carries
+      // channel + customerId so the Adjudicator's resume path can re-assemble the
+      // ctx from the (resolved) parked envelope on confirm/defer resumption.
+      state: { channel, customerId },
       // Per-capability PolicyBundle resolution: one kind-dispatching router over
       // the installed packs (RC-A1 Phase A.2 — capability-policy.ts). Replaces the
       // `{}` that fail-closed every mutation. INERT until bootstrapClaustrum() runs.
@@ -1204,11 +1323,16 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     responder: naiveResponder(modelProvider),
     explainer: ibatexasExplainer(),
     handoff: noopHandoff(),
-    telemetry: fastifyTelemetry(),
+    telemetry: fastifyTelemetry(tokenUsageStore),
     session: redisSessionStore(),
     tools: toolRegistry,
     channels,
     tenantResolver: resolveIbatexasTenantPolicy,
+    // F4 / conductor rich-state: the pre-adjudication resolve stage assembles the
+    // per-pack SystemState (real entity state + sessionTokensConsumed) so the
+    // kernel adjudicates commerce mutations correctly instead of panic-REFUSING
+    // against the stub tenant state. See claustrum/resolve-and-assemble.ts.
+    resolver: createIbatexasResolver(),
   });
 
   return _conductor;

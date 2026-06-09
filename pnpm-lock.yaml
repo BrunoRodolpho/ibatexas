@@ -120,6 +120,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@adjudicate/adapter-core':
+        specifier: ^0.3.0
+        version: 0.3.0(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
       '@adjudicate/audit-postgres':
         specifier: ^2.0.1
         version: 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
@@ -149,16 +152,16 @@ importers:
         version: 0.82.0(zod@4.3.6)
       '@claustrum/anthropic':
         specifier: ^0.1.0
-        version: 0.1.0(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        version: 0.1.0(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/channel-web':
         specifier: ^0.1.0
-        version: 0.1.0(@adjudicate/core@1.3.0)(@claustrum/core@0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        version: 0.1.0(@adjudicate/core@1.3.0)(@claustrum/core@0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/channel-whatsapp':
         specifier: ^0.1.0
-        version: 0.1.0(@adjudicate/core@1.3.0)(@claustrum/core@0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
+        version: 0.1.0(@adjudicate/core@1.3.0)(@claustrum/core@0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))
       '@claustrum/core':
-        specifier: ^0.1.0
-        version: 0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+        specifier: ^0.2.0
+        version: 0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
       '@claustrum/grounding-pgvector':
         specifier: ^0.1.0
         version: 0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
@@ -973,6 +976,9 @@ importers:
 
 packages:
 
+  '@adjudicate/adapter-core@0.3.0':
+    resolution: {integrity: sha512-dxrynFeGktfDJJo+5JOmsU9TKfUnBdIcUlicWRZWIZukHL01r1A36JrtVUfecfWny3YsjOQCIoUX0nTG/SRyIg==}
+
   '@adjudicate/admin-sdk@2.1.0':
     resolution: {integrity: sha512-J3i3qhMe1XCYCnk99rKrV2Oinwg7/8ETcQHY3nteazedNBgeEkPYWsgHjepIV5vxqyi0SQpT9Ni6Ai3s8s759Q==}
     peerDependencies:
@@ -1385,6 +1391,13 @@ packages:
 
   '@claustrum/core@0.1.0':
     resolution: {integrity: sha512-D+6AXct7IdiJNMioT0UYZKTN39pOUpSou9mPWkm6Ad4519IimDVbqWXEBmeygEYZFKAyQiDKEFy5kUHTjUsCdA==}
+    engines: {node: '>=20.0.0'}
+    peerDependencies:
+      '@adjudicate/core': ^1.1.0
+      '@adjudicate/runtime': ^0.2.0
+
+  '@claustrum/core@0.2.0':
+    resolution: {integrity: sha512-JoaHIHZE2Ro0ew+iOcKR2QUk0/dLm/f574f94XxxVCreSLeWBHUTCEsay2GN8BZZICb5g7eO2of9vIiQ7UsU8A==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
       '@adjudicate/core': ^1.1.0
@@ -10869,6 +10882,15 @@ packages:
 
 snapshots:
 
+  '@adjudicate/adapter-core@0.3.0(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))':
+    dependencies:
+      '@adjudicate/audit': 2.0.1(@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3))
+      '@adjudicate/conformance': 1.1.0(@adjudicate/core@1.3.0)
+      '@adjudicate/core': 1.3.0
+      '@adjudicate/runtime': 0.2.1
+    transitivePeerDependencies:
+      - '@adjudicate/admin-sdk'
+
   '@adjudicate/admin-sdk@2.1.0(@adjudicate/core@1.3.0)(typescript@5.9.3)':
     dependencies:
       '@adjudicate/core': 1.3.0
@@ -11661,26 +11683,31 @@ snapshots:
       picocolors: 1.1.1
       sisteransi: 1.0.5
 
-  '@claustrum/anthropic@0.1.0(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/anthropic@0.1.0(@anthropic-ai/sdk@0.82.0(zod@4.3.6))(@claustrum/core@0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
       '@anthropic-ai/sdk': 0.82.0(zod@4.3.6)
-      '@claustrum/core': 0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
 
-  '@claustrum/channel-web@0.1.0(@adjudicate/core@1.3.0)(@claustrum/core@0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/channel-web@0.1.0(@adjudicate/core@1.3.0)(@claustrum/core@0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
       '@adjudicate/core': 1.3.0
-      '@claustrum/core': 0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
 
-  '@claustrum/channel-whatsapp@0.1.0(@adjudicate/core@1.3.0)(@claustrum/core@0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
+  '@claustrum/channel-whatsapp@0.1.0(@adjudicate/core@1.3.0)(@claustrum/core@0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1))':
     dependencies:
       '@adjudicate/core': 1.3.0
-      '@claustrum/core': 0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
+      '@claustrum/core': 0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)
       twilio: 5.13.1
     transitivePeerDependencies:
       - debug
       - supports-color
 
   '@claustrum/core@0.1.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)':
+    dependencies:
+      '@adjudicate/core': 1.3.0
+      '@adjudicate/runtime': 0.2.1
+
+  '@claustrum/core@0.2.0(@adjudicate/core@1.3.0)(@adjudicate/runtime@0.2.1)':
     dependencies:
       '@adjudicate/core': 1.3.0
       '@adjudicate/runtime': 0.2.1
