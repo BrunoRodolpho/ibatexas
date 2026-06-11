@@ -1,4 +1,4 @@
-> **NOTE — load-bearing constitutional with stale rollout framing.** The asset inventory, trust boundaries, STRIDE matrix, LGPD analysis, and residual-risks list below are still authoritative. **Exceptions:** the `IBX_KERNEL_ENFORCE` env var asset (line 33), the "enforce-mode rollout MUST NOT happen until..." gating language throughout the STRIDE matrix, and the companion-doc link to `../superseded/SHADOW-ENFORCE-ROLLOUT.md` describe a rollout framework deleted by the IBX-IGE v3.0 cutover (`f3bea43`). Per `CLAUDE.md` rule #9, the kernel is always authoritative — read enforce-flip gates as "before production deploy" production-safety guidance. See `README.md` in this directory for the full classification and the list of localized stale references.
+> **NOTE — load-bearing constitutional with stale rollout framing.** The asset inventory, trust boundaries, STRIDE matrix, LGPD analysis, and residual-risks list below are still authoritative. **Exceptions:** the `IBX_KERNEL_ENFORCE` env var asset (line 33), the "enforce-mode rollout MUST NOT happen until..." gating language throughout the STRIDE matrix, and the companion-doc link to `../superseded/SHADOW-ENFORCE-ROLLOUT.md` describe a rollout framework deleted by the IBX-IGE v3.0 cutover (`f3bea43`). Per `CLAUDE.md` rule #9, the kernel is always authoritative — read enforce-flip gates as "before production deploy" production-safety guidance. See [`../adjudicate-migration/threat-model/README.md`](../adjudicate-migration/threat-model/README.md) for the full classification and the list of localized stale references.
 
 ---
 
@@ -8,7 +8,7 @@
 **Owner:** Security review + migration lead
 **Last reviewed:** 2026-05-23
 **Annual review cadence:** Every 2026-05 (calendar reminder + ticket cut).
-**Companion docs:** `../audit/05-security-red-team.md`, `../audit/AUDIT-SYNTHESIS.md`, `../remediation/REMEDIATION-COMPLETE.md`, `../superseded/SHADOW-ENFORCE-ROLLOUT.md`, `../remediation/NATS-AUTH-REQUIREMENTS.md`.
+**Companion docs:** `../adjudicate-migration/audit/05-security-red-team.md`, `../adjudicate-migration/audit/AUDIT-SYNTHESIS.md`, `../adjudicate-migration/remediation/REMEDIATION-COMPLETE.md`, `./NATS-AUTH-REQUIREMENTS.md`. (The historical `adjudicate-migration/superseded/SHADOW-ENFORCE-ROLLOUT.md` describes the deleted enforce-rollout framework — archived, not a live runbook.)
 
 ---
 
@@ -33,7 +33,7 @@ This threat model covers the kernel-gated mutation surface of IbateXas:
 | Conversation history | MEDIUM — contains PII | Postgres `Conversation`; redacted in audit | The LLM sees this; if leaked, contains customer phone + utterances. |
 | Twilio Verify OTP codes | HIGH — auth bearer | Twilio (we never see them); freshness markers in Redis | Replay of an OTP = full account takeover or anonymize. |
 | Admin JWT cookies | CRITICAL — staff bearer | HTTP-only Set-Cookie; backed by JWT issued at OTP gate | Stolen JWT = stolen staff role (until rotated). |
-| `ADMIN_API_KEY` (env) | CRITICAL — bypasses JWT | Env var | Per P1-H: this is a single-key bearer for system-actor admin paths. Compromise = unbounded refunds. |
+| `ADMIN_API_KEY` (env) | CRITICAL — alternate admin bearer | Env var | Bearer for system-actor admin paths. Post-W4 (P1-H) each key MUST be role-mapped in `ADMIN_API_KEY_ROLES_JSON`; an unmapped key fails closed at the role gate, so a leaked key only carries the role it was granted (`MANAGER`/`OWNER`), not unbounded power. |
 | ~~`IBX_KERNEL_ENFORCE` env var~~ (HISTORICAL) | n/a | n/a | Updated 2026-05-24 post-cutover: the IBX-IGE v3.0 cutover (`f3bea43`) removed `IBX_KERNEL_ENFORCE`/`IBX_KERNEL_SHADOW`. The kernel is always authoritative — there is no env-gated state to tamper with at this asset boundary. |
 | Pack policy code | HIGH — decides every mutation | Source code; build artifact | A malicious Pack edit changes the gate logic. Code review + CI gate (bypass-detection) defends. Post-cutover this is the **only** code path that controls the kernel's decision surface — there is no runtime override. |
 
@@ -81,7 +81,7 @@ This threat model covers the kernel-gated mutation surface of IbateXas:
 |---|---|---|---|
 | Forged customer JWT cookie | Twilio Verify OTP at issue; HTTP-only cookie; HMAC-signed by API JWT secret | Implemented | LOW — JWT secret rotation is on the ops backlog; theft of `JWT_SECRET` env var = global cookie forgery |
 | Stolen JWT replays anonymize | Fresh-OTP gate at `initiate-deletion` (P0-11). Brute-force counter 5 strikes / 30min. 30-min cancel-cooldown. | Implemented (W4) | LOW — stolen JWT is now insufficient by itself for the most destructive operation |
-| Forged staff JWT (admin path) | Twilio Verify OTP at staff login; SQRRL JWT TTL = 1 day; manager role enforced at route. Same-actor gate (P0-5) prevents step-1 + step-2 by same operator | Implemented (W1) | MEDIUM — `ADMIN_API_KEY` env bypasses JWT (P1-H) — single leaked key = unbounded refunds. Tighten via `requireManagerRole` fail-closed when no JWT (TODO) |
+| Forged staff JWT (admin path) | Twilio Verify OTP at staff login; SQRRL JWT TTL = 1 day; manager role enforced at route. Same-actor gate (P0-5) prevents step-1 + step-2 by same operator | Implemented (W1) | LOW — `ADMIN_API_KEY` is an alternate bearer, but post-W4 (P1-H) `requireManagerRole`/`requireOwnerRole` fail closed for any key without an `ADMIN_API_KEY_ROLES_JSON` role mapping; a leaked key carries only its granted role |
 | Forged Stripe webhook | Signature verification via `STRIPE_WEBHOOK_SECRET`; rejected at handler entrypoint | Implemented | LOW — secret rotation requires Stripe coordination |
 | Forged NATS publish (resume signal, audit record, defer-timeout) | NONE today | **P0-12 DEFERRED** | **HIGH** — NATS Core has no auth on `localhost:4222`. Any process on the network can publish forged signals. Mitigation: deploy NKey/JWT auth + TLS per `remediation/NATS-AUTH-REQUIREMENTS.md`. UNTIL THEN enforce-mode rollout MUST NOT happen for kinds whose resume signal arrives via NATS (PIX, anonymize-grace, payment-status). |
 
@@ -136,7 +136,7 @@ This threat model covers the kernel-gated mutation surface of IbateXas:
 | LLM proposes a mutating tool that's not in the planner | `CapabilityPlanner.visibleReadTools` is the gate. Mutating tools NEVER reach the LLM's prompt. Tested via `agent-intent-dispatch.test.ts` | Implemented | LOW |
 | Pack drift: a Pack accepts an envelope kind it shouldn't | `installPack` PackConformanceError fail-fast at boot (P0-6, W6-4). Conformance tests cross-check Pack's `intentSurface` against `knownKinds` | Implemented | LOW |
 | Same-actor two-step bypass (one staff issues both step-1 and step-2 of force-cancel/refund) | P0-5 fix: `consumeWithSameActorCheck` refuses if step-1 and step-2 staffId match | Implemented (W1) | LOW |
-| Admin API-key bypasses two-person rule | `requireManagerRole` fails open when no JWT (P1-H). A leaked single key = unbounded refunds | **P1-H DEFERRED** | MEDIUM — close by tightening `requireManagerRole` or define an API-key-role registry |
+| Admin API-key over-privilege (P1-H) | W4 fix: `requireManagerRole`/`requireOwnerRole` (`middleware/staff-auth.ts`) fail closed when there is no JWT and no `ADMIN_API_KEY_ROLES_JSON`-mapped role; the admin guard (`routes/admin/index.ts`) sets `request.adminApiKeyRole` only on a `timingSafeEqual` registry match | Implemented (W4) | LOW — an unmapped key is 403 at the gate; a mapped key acts only at its granted role. Two-person rule itself is the same-actor gate (P0-5), unchanged by this path |
 | `executeToolDirect` re-introduction (would let any caller dispatch a mutating tool without adjudicate()) | Bypass-detection scenario 3: grep gate fails if the symbol reappears | Implemented (Task 06) | LOW |
 | Pack policy code injection via untrusted Pack | Packs are first-party, source-controlled. The kernel doesn't load Packs from network at runtime | Implemented (architecture) | LOW |
 
@@ -144,7 +144,7 @@ This threat model covers the kernel-gated mutation surface of IbateXas:
 
 ## Attack vectors discovered in audit (with W4-applied mitigations)
 
-The audit identified 7 P0 security findings; W4 closed 5, 2 remain partial/deferred:
+The audit surfaced these findings; W4 closed P0-10, P0-11, P0-13, P1-H, and P1-I. P0-12 (NATS auth) is deferred to operator action; P1-K (line-based bypass grep) is partial:
 
 | ID | Finding | W4 mitigation | Status |
 |---|---|---|---|
@@ -152,7 +152,7 @@ The audit identified 7 P0 security findings; W4 closed 5, 2 remain partial/defer
 | P0-11 | Stolen JWT alone authorises destructive anonymize | Fresh-OTP gate at initiate; brute-force counter 5 strikes / 30min; 30-min cancel-cooldown | CLOSED |
 | P0-13 | `anonymizeCustomer` doesn't scrub phone + reviews | Extended to nullify phone, anonymize reviews, scrub email + cpf + address | CLOSED |
 | P0-12 | NATS has zero authentication | Requirements doc filed (`remediation/NATS-AUTH-REQUIREMENTS.md`). Operator action: deploy NKey/JWT auth + TLS | **DEFERRED — operator action** |
-| P1-H | Admin API-key bypasses two-person rule | Mitigation TBD | **DEFERRED — partial** |
+| P1-H | Admin API-key over-privilege (role gate failed open without JWT) | `ADMIN_API_KEY_ROLES_JSON` role registry (`timingSafeEqual` → `request.adminApiKeyRole`); `requireManagerRole` + new OWNER-only `requireOwnerRole` fail closed for any unmapped key | CLOSED (W4) |
 | P1-I | Refund drip cap (sub-R$200 refunds skip two-step) | Per-staff-day aggregate cap (R$2000/day default) | CLOSED |
 | P1-K | bypass-detection regex line-based — gate is performative | W6-8 extends to 8 scenarios; the multi-line `ALLOWED_MEDUSA_DIRECT` audit lands | PARTIAL — multi-line regex is still line-based for some forbidden patterns; AST-based gate is a follow-up |
 
@@ -162,14 +162,12 @@ The audit identified 7 P0 security findings; W4 closed 5, 2 remain partial/defer
 
 Closing these is the operator's responsibility, not the codebase's:
 
-1. **NATS Core mode lacks auth + TLS (P0-12).** Customer-touching enforce-mode flips MUST WAIT until this is closed. See `remediation/NATS-AUTH-REQUIREMENTS.md` for the infra change.
-2. **Admin `ADMIN_API_KEY` bypasses two-person rule (P1-H).** A single key leak = unbounded refunds. Mitigation requires either (a) tightening `requireManagerRole` to fail-closed without JWT, or (b) building an API-key-role registry with per-key separation-of-duty enforcement.
-3. **BullMQ sweeper recovery on outage (P1-E).** A worker down >24h means parked LGPD-anonymize envelopes expire silently and the deletion never completes. Heartbeat metric is in place; PagerDuty alert routing is the gap.
-4. **Postgres audit-postgres `ON CONFLICT` constraint (P0-14) — verify constraint exists in the `intent_audit` table BEFORE enabling `IBX_AUDIT_POSTGRES_ENABLED=true` in prod.** Otherwise the first audit write crashes with `42P10`.
-5. **Audit redactor breaks `auditHash` (P0-15) verification.** Replay reports `tampered` for every redacted record. The fix is either recompute the hash after redaction OR add a `redactedAuditHash` companion field. Coordinate with `@adjudicate/core` audit shape.
-6. **Pack runtime errors crash the route handler.** No `kernel-runtime-resilience.test.ts` exists; a bug in any Pack's `policy()` function takes down the route. Mitigation: a runtime try/catch in `executeKernel` that downgrades to refusal+sentry-log.
-7. **Audit gap on simultaneous Postgres + Redis-spill outage (Scenario D).** A filesystem-backed spill (the `persistent-buffered-sink.ts` doc comment notes "adopter responsibility") would close this. Not implemented.
-8. **`@ibatexas/llm-provider` package-level intent-ledger fail-open (`IBX_LEDGER_FAIL_OPEN=true`).** Acceptable when configured, but the default is opaque. Operator should explicitly set the value in prod via runbook 04.
+1. **NATS Core mode lacks auth + TLS (P0-12).** Customer-touching enforce-mode flips MUST WAIT until this is closed. See [`docs/security/NATS-AUTH-REQUIREMENTS.md`](./NATS-AUTH-REQUIREMENTS.md) for the infra change (operator runbook — still actionable).
+2. **BullMQ sweeper recovery on outage (P1-E).** A worker down >24h means parked LGPD-anonymize envelopes expire silently and the deletion never completes. Heartbeat metric is in place; PagerDuty alert routing is the gap.
+3. **Postgres audit-postgres `ON CONFLICT` constraint (P0-14).** The Postgres sink is now an unconditional part of the audit fan-out (no `IBX_AUDIT_POSTGRES_ENABLED` gate any longer), so the `intent_audit` upsert constraint must exist on every deployment — verify `ibx kernel migrate` has run before first traffic, or the first audit write crashes with `42P10`.
+4. **Audit redactor breaks `auditHash` (P0-15) verification.** Replay reports `tampered` for every redacted record. The fix is either recompute the hash after redaction OR add a `redactedAuditHash` companion field. Coordinate with `@adjudicate/core` audit shape.
+5. **Pack runtime errors crash the route handler.** No `kernel-runtime-resilience.test.ts` exists; a bug in any Pack's `policy()` function takes down the route. Mitigation: a runtime try/catch in `executeKernel` that downgrades to refusal+sentry-log.
+6. **Audit gap on simultaneous Postgres + Redis-spill outage (Scenario D).** A filesystem-backed spill (the `persistent-buffered-sink.ts` doc comment notes "adopter responsibility") would close this. Not implemented.
 
 ---
 
@@ -192,4 +190,4 @@ Closing these is the operator's responsibility, not the codebase's:
 - `docs/adjudicate-migration/audit/06-reliability-fail-open.md` — reliability + fail-open inventory; ~290 lines
 - `docs/adjudicate-migration/audit/AUDIT-SYNTHESIS.md` — master findings, recommended fix waves
 - `docs/adjudicate-migration/remediation/REMEDIATION-COMPLETE.md` — per-wave outcomes
-- `docs/adjudicate-migration/remediation/NATS-AUTH-REQUIREMENTS.md` — operator infrastructure work
+- `docs/security/NATS-AUTH-REQUIREMENTS.md` — operator infrastructure work (NATS auth + TLS)

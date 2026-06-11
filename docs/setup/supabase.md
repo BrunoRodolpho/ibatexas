@@ -19,7 +19,7 @@ Supabase provides two connection endpoints. Both are required.
 
 ### Pooler URL (PgBouncer — port 6543)
 
-Used by Prisma's query engine at runtime. Set as `DATABASE_URL`:
+The runtime query connection. Set as `DATABASE_URL`:
 
 ```
 postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?connection_limit=10&pool_timeout=30&pgbouncer=true
@@ -31,13 +31,13 @@ postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-sa-east-1.pooler.supabase.c
 
 ### Direct URL (port 5432)
 
-Used by Prisma only for migrations (`ibx db migrate:domain`). Set as `DIRECT_DATABASE_URL`:
+The migration connection. Migrations need DDL that is incompatible with PgBouncer's transaction mode, so they must run against the direct (5432) host, not the pooler.
 
 ```
 postgresql://postgres.[PROJECT_REF]:[PASSWORD]@aws-0-sa-east-1.pooler.supabase.com:5432/postgres
 ```
 
-Migrations require DDL operations that are incompatible with PgBouncer's transaction mode.
+This URL is stored as a **GitHub secret** — `DIRECT_DATABASE_URL` for production, `STAGING_DIRECT_DATABASE_URL` for staging (separate secrets; see `packages/cli/src/commands/infra.ts`). The deploy workflows do **not** keep a `DIRECT_DATABASE_URL` env var — they pass the secret in as `DATABASE_URL` for the migration step (see §4).
 
 ## 3. Configure Environment Variables
 
@@ -45,39 +45,44 @@ Copy the connection strings into your `.env` (never commit this file):
 
 ```bash
 DATABASE_URL=postgresql://postgres.abcdefghijklmnop:YOUR_PASSWORD@aws-0-sa-east-1.pooler.supabase.com:6543/postgres?connection_limit=10&pool_timeout=30&pgbouncer=true
-DIRECT_DATABASE_URL=postgresql://postgres.abcdefghijklmnop:YOUR_PASSWORD@aws-0-sa-east-1.pooler.supabase.com:5432/postgres
 ```
 
-## 4. Create the Domain Schema
+`DATABASE_URL` is the only var the `@ibatexas/domain` Prisma package reads (via `packages/domain/prisma.config.ts`). The direct (5432) URL is only needed when **running a migration** (§4) — point `DATABASE_URL` at it for that command, then switch back to the pooler URL for runtime.
 
-Supabase's default database has `public` and `auth` schemas. IbateXas uses `ibx_domain`:
+## 4. Run Migrations
 
-```sql
--- Run in Supabase SQL Editor (Dashboard → SQL Editor)
-CREATE SCHEMA IF NOT EXISTS ibx_domain;
-```
+The `ibx_domain` schema is created by the baseline migration itself (`packages/domain/prisma/migrations/20260319000000_baseline/migration.sql` → `CREATE SCHEMA IF NOT EXISTS "ibx_domain"`). No manual `CREATE SCHEMA` step is required.
 
-## 5. Run Migrations
+### In CI (automatic)
+
+On deploy, `prisma migrate deploy` runs against the direct host. The workflows set `DATABASE_URL` from the direct secret:
+
+- production — `.github/workflows/deploy.yml` (`DIRECT_DATABASE_URL`)
+- staging — `.github/workflows/deploy-staging.yml` (`STAGING_DIRECT_DATABASE_URL`)
+
+### Manually (authoring a new migration, or applying to a remote DB)
+
+`ibx db migrate:domain` runs `prisma migrate dev` against whatever `DATABASE_URL` currently points at:
 
 ```bash
 ibx db migrate:domain
 ```
 
-This uses `DIRECT_DATABASE_URL` to apply Prisma migrations against the `ibx_domain` schema.
+To author or apply a migration against a Supabase environment from your workstation, set `DATABASE_URL` to the **direct (5432)** URL first — the pooler URL will fail on DDL.
 
-## 6. Verify
+## 5. Verify
 
 ```bash
 ibx db status
 ```
 
-Should show all migrations applied for the domain schema.
+Shows migration status for the domain (Prisma) and Medusa schemas.
 
 ---
 
 ## Notes
 
-- **Local dev** still uses docker-compose Postgres on port 5433 — no Supabase account needed.
-- **ECS Fargate + IPv6**: The direct Supabase host (`db.<ref>.supabase.co`) resolves to IPv6 only. ECS Fargate doesn't support IPv6 outbound by default, so you **must** use the pooler URL (`aws-0-sa-east-1.pooler.supabase.com:6543`) for `DATABASE_URL` in ECS. Using the direct host will cause `ENETUNREACH` errors.
+- **Local dev** uses docker-compose Postgres — no Supabase account needed.
+- **ECS Fargate + IPv6**: The legacy direct host (`db.<ref>.supabase.co`) resolves to IPv6 only, and ECS Fargate has no IPv6 outbound by default, so the runtime `DATABASE_URL` **must** use the pooler host (`aws-0-sa-east-1.pooler.supabase.com:6543`). The direct host would cause `ENETUNREACH`. (The 5432 pooler endpoint above avoids this for migrations.)
 - **RLS (Row-Level Security)** is disabled on `ibx_domain` tables — the API server is the only client and handles authorization in application code.
 - Supabase free tier allows 500 MB storage and 2 GB bandwidth. Upgrade to Pro for production workloads.

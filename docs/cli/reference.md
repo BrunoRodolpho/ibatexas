@@ -24,6 +24,19 @@ ibx --help
 
 ## Command Reference
 
+### Setup — `ibx bootstrap`
+
+```bash
+ibx bootstrap                  # one-shot setup: Docker → migrations → admin user → seeds → verify
+ibx bootstrap --skip-docker    # assume containers already running
+ibx bootstrap --skip-seed      # only run migrations, skip all seeds
+```
+
+`ibx bootstrap` provisions every schema layer on a fresh checkout — Medusa,
+domain (Prisma), the kernel audit-postgres schema, and the `@claustrum` memory +
+grounding (pgvector) schema — then seeds and verifies. Use `ibx db provision` to
+re-apply the kernel + claustrum layers idempotently afterward.
+
 ### SDLC — `ibx dev`
 
 ```bash
@@ -108,6 +121,8 @@ ibx db seed:homepage       # seed customers + reviews for homepage sections (Med
 ibx db seed:delivery       # seed delivery zones, customer addresses, and dietary preferences
 ibx db seed:orders         # seed order history + reservations (Medusa must be running)
 ibx db seed:order-projections  # backfill OrderProjection from Medusa orders (idempotent)
+ibx db seed:payment-projections # backfill payment rows from order projections (idempotent)
+ibx db provision           # ensure kernel audit-postgres + claustrum memory/grounding schemas exist (idempotent)
 ibx db clean               # ⚠️  delete all domain data (keeps schema + Medusa products)
 ibx db clean --all         # also delete Medusa products + Typesense index
 ibx db clean --force       # skip confirmation prompt
@@ -164,6 +179,7 @@ ibx test seed --dry-run        # print the pipeline without executing
 ibx test integration           # seed for UI ↔ API testing (skips product seed if exists)
 ibx test e2e                   # ⚠️  full clean + reseed (destructive, requires confirmation)
 ibx test e2e --force           # skip confirmation prompt
+ibx test e2e-run [filter]      # run Playwright E2E tests (--headed, --ui; unknown flags forwarded)
 ibx test status                # dashboard — what's seeded and ready for each UI section
 ```
 
@@ -413,11 +429,6 @@ ibx chat dump <sessionId> --json   # raw JSON array (for piping to jq)
 ibx chat clean                     # ⚠️  delete ALL conversation data (Redis + Postgres)
 ibx chat clean <sessionId>         # delete a specific session's data
 ibx chat clean --dry-run           # count what would be deleted without actually deleting
-
-# Run conversation E2E scenario tests
-ibx chat scenarios                 # run all scenario fixtures via vitest
-ibx chat scenarios --list          # list available scenario fixture files with descriptions
-ibx chat scenarios --filter "pix"  # filter tests by name pattern
 ```
 
 `ibx chat list` scans Redis for `session:*` keys and shows each session's message count, TTL, and detected channel (WhatsApp vs web).
@@ -427,8 +438,6 @@ ibx chat scenarios --filter "pix"  # filter tests by name pattern
 - **Postgres** (`--source postgres`): reads the durable archive, includes real timestamps and metadata
 
 `ibx chat clean` deletes both Redis keys (`session:{id}`, `wa:machine:{id}`) and Postgres rows. If `@ibatexas/domain` is not available (e.g., no DB connection), Postgres cleanup is skipped with a warning.
-
-`ibx chat scenarios` is a thin wrapper around `pnpm vitest run` targeting the scenario runner test suite. 11 JSON fixture files exercise the full router → machine → synthesizer pipeline.
 
 ### Rate Limits — `ibx rate`
 
@@ -483,6 +492,9 @@ ibx infra secrets:export --file .env.production  # export from a different .env 
 ibx infra secrets:push                 # push infra/secrets.env to AWS Secrets Manager
 ibx infra secrets:push --force         # re-push even for populated secrets
 ibx infra secrets:push --only DATABASE_URL  # push a single secret from the file
+ibx infra secrets:audit                # cross-check AWS SSM / GitHub / local .env, report gaps
+ibx infra secrets:audit --fix          # auto-push missing keys available locally
+ibx infra secrets:audit --json         # machine-readable output
 
 # GitHub CI/CD secrets
 ibx infra github                       # set repo secrets (OIDC role ARN, DB URLs, SONAR_TOKEN)
@@ -502,6 +514,10 @@ ibx infra deploy --target main         # push to main (production)
 ibx infra deploy --watch               # push + poll status + health check
 ibx infra deploy --watch --timeout 20m # custom timeout for first deploy
 ibx infra destroy                      # ⚠  destroy all infrastructure (requires typing env name)
+
+# Cost — pause/resume the dev EC2 host
+ibx infra idle                         # stop the dev host (pauses compute billing; EBS + EIP still charged)
+ibx infra resume                       # start the dev host (~3-5 min to become healthy)
 
 # Live-host operations (patch EC2 without terraform replace)
 ibx infra host:sync                    # re-render compose + deploy script from templates, upload via SSM
@@ -542,6 +558,8 @@ ibx stripe listen                      # forward Stripe webhooks to localhost:30
 ibx stripe listen -p 3002              # forward to a different port
 ibx stripe trigger                     # fire payment_intent.succeeded test event
 ibx stripe trigger charge.refunded     # fire a specific event type
+ibx stripe complete --cart <id>        # ⚠️  dev rescue — force-complete one orphaned PIX/card cart
+ibx stripe complete --all              # force-complete every cart in active:carts (refuses in production)
 ibx stripe flush                       # clear all webhook idempotency keys from Redis
 ibx stripe flush evt_abc123            # clear a specific event's idempotency key
 ibx stripe flush --dry-run             # show what would be deleted
@@ -594,28 +612,100 @@ ibx git log                # recent commits + open PR link
 
 ### Kernel — `ibx kernel`
 
-Operator-facing surface for the adjudicate kernel. Saída em pt-BR.
+Operator-facing surface for the adjudicate kernel. Saída em pt-BR. The kernel is
+**always authoritative** — there is no shadow/enforce/kill-switch state (the
+`IBX_KERNEL_SHADOW`/`IBX_KERNEL_ENFORCE` surface was removed in the IBX-IGE v3.0
+cutover, commit `f3bea43`).
 
 ```bash
-ibx kernel status                          # estado: shadow/enforce/intent kinds/ledger/audit
+ibx kernel status                          # intent kinds + execution ledger + audit sinks
 ibx kernel status --json                   # mesma informação em JSON
 
 ibx kernel replay --since=24h              # re-feed audit window via adjudicate(), reporta drift
 ibx kernel replay --since=7d --intent-kind=order.checkout.create --limit=500
 ibx kernel replay --dry-run                # lista registros sem re-adjudicar
 
-ibx kernel divergence --since=24h          # resumo das classes BASIS_ONLY/DECISION_KIND/PAYLOAD_REWRITE
+ibx kernel migrate                         # aplica as migrações SQL de @adjudicate/audit-postgres em $DATABASE_URL (idempotente)
+
+ibx kernel defer resume <sessionId>        # retomada manual de uma sessão PIX parkada
+ibx kernel defer resume <sessionId> --json # dry-run: imprime o evento sintetizado sem publicar NATS
 ```
 
-**Pre-requisitos:**
-- `kernel status` — sempre executável; lê apenas variáveis de ambiente locais.
-- `kernel replay` — requer `IBX_AUDIT_POSTGRES_ENABLED=true` + `DATABASE_URL`. Sem o flag, emite TODO estruturado para o operador.
-- `kernel divergence` — requer `IBX_AUDIT_POSTGRES_ENABLED=true` OU `POSTHOG_API_KEY`. Sem nenhum dos dois, emite TODO estruturado.
+`kernel status` reports the known intent kinds (grouped by domain), the execution
+ledger flags (`enabled`/`enforce`/`fail-open`, read from `IBX_LEDGER_*`), and the
+audit sinks (postgres always active; console + NATS always-on). It reads only
+local env vars and is always executable.
 
-Referências:
-- `docs/adjudicate-migration/governance/01-intent-taxonomy.md` — vocabulário canônico dos 32 intent kinds.
-- `docs/adjudicate-migration/governance/05-audit-replay-requirements.md` — semântica das 3 classes de divergência.
-- `docs/ops/runbooks/01-stage-read-mutations.md` (e seguintes) — playbook 4-stage shadow → enforce.
+`kernel migrate` resolves and applies every `@adjudicate/audit-postgres` SQL
+migration in numeric order against `$DATABASE_URL`, tracked by the
+`audit_schema_migrations` ledger so each file runs at most once. Idempotent —
+safe on fresh, already-migrated, and pre-ledger databases. Called automatically
+by `ibx bootstrap` on first-time setup.
+
+`kernel replay` re-feeds historical audit records through `adjudicate()` and
+classifies drift (DECISION_KIND / BASIS / PAYLOAD-REWRITE). Requires
+`IBX_AUDIT_POSTGRES_ENABLED=true` + `DATABASE_URL`; without the flag it prints a
+structured operator TODO. Use it after upgrading a Pack to detect policy drift on
+real historical traffic.
+
+`kernel defer resume` is operator recovery for a stuck PIX-deferred session: it
+reads `defer:pending:{sessionId}` from Redis, verifies the parked-envelope hash
+(fail-closed on tamper), and publishes a synthesised `payment.status_changed`
+NATS event so the live `defer-resolver` subscriber re-adjudicates the parked
+envelope.
+
+Reference: [docs/ops/runbooks/kernel-operations.md](../ops/runbooks/kernel-operations.md) — daily kernel operations
+runbook (status, replay, migrate, defer-resume). The canonical intent-kind
+vocabulary is `KNOWN_INTENT_KINDS` — print it live with `ibx kernel status`.
+
+### Claustrum — `ibx claustrum`
+
+```bash
+ibx claustrum migrate                  # provision the @claustrum memory + grounding schema (episodic partitions + pgvector) in $DATABASE_URL
+ibx claustrum migrate --database-url <url>      # override DATABASE_URL
+ibx claustrum migrate --migrations-dir <dirs>   # override migration dirs (comma-separated)
+```
+
+This is the claustrum half of `ibx db provision`; `ibx bootstrap` runs it on
+first-time setup.
+
+### Observability — `ibx obs`
+
+Reads the kernel/turn/payment trace stream (correlationId-keyed).
+
+```bash
+ibx obs decisions                  # kernel decisions + refusals (--since, -n, -f to follow)
+ibx obs turn <turnId>              # one turn's full trace by correlationId (--since, default 1d)
+ibx obs payments                   # recent checkout/payment webhook events (--since, -n)
+ibx obs payments --pi pi_123       # trace one Stripe payment_intent across all stages
+ibx obs payments -f                # live tail
+ibx obs funnel                     # checkout funnel — stage counts + drop-off / stranded orders (--since)
+```
+
+### Jobs — `ibx jobs`
+
+Inspect and replay failed BullMQ background jobs.
+
+```bash
+ibx jobs list [queue]              # list failed jobs in a queue (default: stripe-webhook; -n to cap)
+ibx jobs inspect <queue> <jobId>   # show a failed job's event payload + full failure reason
+ibx jobs replay <queue> [jobId]    # retry a failed job
+ibx jobs replay <queue> --all      # replay every failed job in the queue
+ibx jobs replay <queue> --dry-run  # list what would be replayed without retrying
+```
+
+### Policy — `ibx policy`
+
+Export and diff the rule-provenance manifest (the data source behind the
+rule-provenance tree).
+
+```bash
+ibx policy export                  # export the policy manifest to stdout
+ibx policy export -o policy.json   # write JSON to a path
+ibx policy export --no-source      # structure only, skip source locations (faster)
+ibx policy export --strict         # exit non-zero if any intent kind has no applicable guards
+ibx policy diff <baseline>         # diff the live manifest against a committed baseline JSON
+```
 
 ---
 
@@ -641,14 +731,21 @@ Referências:
 
 `ibx dev` is service-aware. The registry lives in `packages/cli/src/services.ts`.
 
-| Service key | Port | Available | Default? |
-|-------------|------|-----------|----------|
-| `commerce`  | 9000 | ✅        | Yes      |
-| `api`       | 3001 | ✅        | No       |
-| `web`       | 3000 | ✅        | No       |
-| `admin`     | 3002 | ✅        | No       |
+| Service key | Port | Available |
+|-------------|------|-----------|
+| `commerce`  | 9000 | ✅        |
+| `api`       | 3001 | ✅        |
+| `web`       | 3000 | ✅        |
+| `admin`     | 3002 | ✅        |
 
-> **Note:** The agent orchestrator (`runAgent`) is a library (`packages/llm-provider`) used by `apps/api` — it is not a separate service.
+All four services are `available: true`. `resolveServices()` returns **every
+available service** for the default/no-key case, so `ibx dev` (and `ibx dev all`)
+starts all four; naming services restricts the set.
+
+> **Note:** The conversational turn runs through the `@claustrum` Conductor
+> (composition root `apps/api/src/claustrum-bootstrap.ts`), not a separate
+> service. The legacy `@ibatexas/llm-provider` brain was deleted in the claustrum
+> cutover — see CLAUDE.md rule #9.
 
 To start specific services alongside Medusa:
 ```bash

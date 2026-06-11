@@ -34,39 +34,50 @@ Controls which channel(s) can see a product.
 
 ## Entity Map
 
+The Postgres entities below are defined authoritatively in
+[`packages/domain/prisma/schema.prisma`](../../../packages/domain/prisma/schema.prisma)
+(`ibx_domain` schema). The tree shows the conceptual shape and key fields; the schema file
+is the source of truth for exact column types, `@map` names, indexes, and FK actions.
+
 ```
 Customer (Twilio Verify + Medusa)
   │
   ├── phone: string (unique, primary identity)
   ├── name: string | null
   ├── email: string | null
+  ├── cpf: string | null                 ← @db.VarChar(14), format 000.000.000-00
   ├── medusaId: string | null
   ├── source: string | null              ← origin channel: 'web' | 'whatsapp'
   ├── firstContactAt: Date | null        ← timestamp of first interaction
   │
-  ├── GuestSession (Redis, TTL 48h)
-  │     ├── sessionId: string
-  │     ├── cartId: string          ← Medusa cart
-  │     └── channel: 'web' | 'whatsapp'
+  ├── Session (Redis) — two stores, both keyed by sessionId:
+  │     ├── WhatsApp session map (apps/api/src/whatsapp/session.ts, TTL 24h)
+  │     │     { phone, sessionId, customerId, isNew }
+  │     └── Conversation history list (apps/api/src/session/store.ts)
+  │           AgentMessage[] — TTL 48h guest / 24h authenticated
   │
-  ├── CustomerProfile (Redis, TTL 30d, refreshed on activity)
-  │     ├── dietaryRestrictions: string[]     e.g. ['vegetariano', 'sem_gluten']
-  │     ├── allergens: string[]               e.g. ['lactose', 'nuts']
-  │     ├── favouriteItems: string[]           ← productIds, top 5 by frequency
-  │     ├── lastOrder: OrderSummary
-  │     │     ├── orderId: string
-  │     │     ├── items: { productId, name, quantity }[]
-  │     │     └── placedAt: string
-  │     ├── orderingPatterns:
-  │     │     ├── preferredDays: number[]      ← 0=Sun … 6=Sat
-  │     │     ├── preferredHour: number        ← 0–23
-  │     │     └── avgSpend: number             ← centavos BRL
-  │     ├── preferredPayment: 'pix' | 'card' | 'cash'
-  │     └── preferredTableLocation: 'indoor' | 'outdoor' | 'bar' | 'terrace' | null
+  ├── CustomerProfileCache (Redis, TTL 30d — packages/tools/src/intelligence/types.ts)
+  │     ├── recentlyViewed: { productId, viewedAt }[]   ← max 20
+  │     ├── cartItems: string[]                          ← variant IDs currently in cart
+  │     ├── orderCount: number
+  │     ├── lastOrderAt: string | null
+  │     ├── lastOrderedProductIds: string[]
+  │     └── preferences: {                               ← null until set
+  │           dietaryRestrictions: string[]
+  │           allergenExclusions: string[]
+  │           favoriteCategories: string[]
+  │         } | null
+  │     (orderedProductScore:{productId} stored as separate Hash fields)
+  │
+  ├── LoyaltyAccount (Postgres, one per customer, SetNull on delete)
+  │     ├── stamps: number              ← current punch count, resets after reward
+  │     ├── totalEarned: number         ← lifetime stamps, never decremented
+  │     └── redeemed: number            ← rewards redeemed (++ when stamp 10 earned)
   │
   ├── Reservation[] (Postgres)
   │     ├── id: string
-  │     ├── customerId: string       ← FK to Customer.id
+  │     ├── displayId: number           ← @default(autoincrement()), human-facing
+  │     ├── customerId: string          ← FK to Customer.id, onDelete: Restrict
   │     ├── partySize: number
   │     ├── status: ReservationStatus
   │     ├── specialRequests: SpecialRequest[]
@@ -74,15 +85,15 @@ Customer (Twilio Verify + Medusa)
   │     ├── checkedInAt: Date | null
   │     ├── cancelledAt: Date | null
   │     │
-  │     ├── TimeSlot
+  │     ├── TimeSlot                            ← FK onDelete: Restrict
   │     │     ├── id: string
   │     │     ├── date: Date
-  │     │     ├── startTime: string            ← 'HH:MM' format, e.g. '19:30'
+  │     │     ├── startTime: string            ← @db.VarChar(5), 'HH:MM', e.g. '19:30'
   │     │     ├── durationMinutes: number      ← default 90
   │     │     ├── maxCovers: number
   │     │     └── reservedCovers: number       ← atomic counter, updated on create/cancel
   │     │
-  │     └── Table[]
+  │     └── Table[] (via ReservationTable join)
   │           ├── id: string
   │           ├── number: string
   │           ├── capacity: number
@@ -109,26 +120,25 @@ Customer (Twilio Verify + Medusa)
   │     ├── id: string                         ← Medusa order ID (not cuid)
   │     ├── displayId: number
   │     ├── customerId: string | null
-  │     ├── customerEmail: string | null
-  │     ├── customerName: string | null
-  │     ├── customerPhone: string | null
+  │     ├── customerEmail / customerName / customerPhone: string | null
   │     ├── fulfillmentStatus: OrderFulfillmentStatus
   │     ├── paymentStatus: string | null
-  │     ├── totalInCentavos: number
-  │     ├── subtotalInCentavos: number
-  │     ├── shippingInCentavos: number
+  │     ├── totalInCentavos / subtotalInCentavos / shippingInCentavos: number
   │     ├── itemCount: number
   │     ├── itemsJson: Json | null             ← OrderEventItem[], validated by itemsSchemaVersion
   │     ├── itemsSchemaVersion: number         ← currently 1
   │     ├── shippingAddressJson: Json | null
+  │     ├── deliveryType: string | null        ← 'delivery' | 'pickup' | 'dine_in'
+  │     ├── paymentMethod: string | null       ← 'cash' | 'pix' | 'card'
+  │     ├── tipInCentavos: number              ← default 0
+  │     ├── currentPaymentId: string | null    ← active Payment.id
   │     ├── version: number                    ← optimistic concurrency (incremented on each transition)
   │     ├── medusaCreatedAt: Date
   │     │
   │     └── OrderStatusHistory[]
   │           ├── id: string (cuid)
   │           ├── orderId: string              ← FK to OrderProjection
-  │           ├── fromStatus: OrderFulfillmentStatus
-  │           ├── toStatus: OrderFulfillmentStatus
+  │           ├── fromStatus / toStatus: OrderFulfillmentStatus
   │           ├── actor: OrderActor            ← admin | system | system_backfill | customer
   │           ├── actorId: string | null
   │           ├── reason: string | null
@@ -145,57 +155,63 @@ Customer (Twilio Verify + Medusa)
   │     ├── stripePaymentIntentId: string | null (unique)
   │     ├── pixExpiresAt: Date | null
   │     ├── refundedAmountCentavos: number     ← default 0
-  │     ├── regenerationCount: number          ← default 0, max 5 per order
+  │     ├── regenerationCount: number          ← default 0
   │     ├── idempotencyKey: string | null (unique)
   │     ├── version: number                    ← optimistic concurrency
   │     ├── lastStripeEventTs: Date | null     ← out-of-order event guard
-  │     ├── createdAt: Date
-  │     ├── updatedAt: Date
   │     │
-  │     └── PaymentStatusHistory[]
-  │           ├── id: string (cuid)
-  │           ├── paymentId: string            ← FK to Payment
-  │           ├── fromStatus: PaymentStatus
-  │           ├── toStatus: PaymentStatus
-  │           ├── actor: OrderActor
-  │           ├── actorId: string | null
-  │           ├── reason: string | null        ← e.g. "stripe:evt_xxx" for webhooks
-  │           ├── version: number
-  │           └── createdAt: Date
+  │     └── PaymentStatusHistory[]             ← mirrors OrderStatusHistory shape
+  │
+  │     INVARIANT: at most one active (non-terminal) payment per order, enforced by a
+  │     manually-managed partial unique index `payment_active_per_order` (see schema
+  │     comment + migration 20260412000000). Terminal set must stay in sync with
+  │     TERMINAL_PAYMENT_STATUSES in @ibatexas/types.
   │
   ├── OrderNote[] (Postgres — customer/admin notes per order)
-  │     ├── id: string (cuid)
   │     ├── orderId: string                    ← FK to OrderProjection
   │     ├── author: OrderActor
-  │     ├── authorId: string | null
   │     ├── content: string (max 500 chars)
-  │     ├── isInternal: Boolean (default false) — when true, note is only visible to staff (not returned in customer-facing API)
-  │     └── createdAt: Date
+  │     └── isInternal: boolean (default false) ← when true, staff-only (not in customer API)
   │
   ├── OrderEventLog[] (Postgres — append-only, observability/replay layer)
-  │     ├── id: string (cuid)
-  │     ├── orderId: string                    ← FK to OrderProjection
+  │     ├── orderId: string
   │     ├── eventType: string                  ← e.g. "order.placed", "order.status_changed"
   │     ├── idempotencyKey: string (unique)    ← composite: orderId:eventType:discriminator
-  │     ├── payload: Json                      ← full event payload, stored verbatim
-  │     ├── timestamp: Date                    ← event timestamp from source
-  │     └── createdAt: Date
+  │     ├── payload: Json                      ← verbatim; overwritten to {anonymized:true} on LGPD erasure
+  │     └── timestamp: Date
   │
   └── Review[] (Postgres)
-        ├── id: string
         ├── orderId: string                    ← Medusa order id
         ├── productIds: string[]               ← DEPRECATED, use productId
         ├── productId: string | null           ← primary product this review is for
-        ├── customerId: string
+        ├── customerId: string                 ← FK, SetNull on delete
         ├── rating: 1 | 2 | 3 | 4 | 5
         ├── comment: string | null
-        ├── channel: 'web' | 'whatsapp'
-        └── createdAt: Date
+        └── channel: 'web' | 'whatsapp'
+```
+
+### Standalone entities (not Customer-rooted)
+
+```
+Staff (Postgres) — Twilio Verify OTP auth, same as customers
+  ├── id: string
+  ├── phone: string (unique)
+  ├── name: string
+  ├── role: StaffRole              ← OWNER | MANAGER | ATTENDANT (default ATTENDANT)
+  └── active: boolean
+
+Restaurant schedule (Postgres)
+  ├── WeeklySchedule  ← one row per dayOfWeek (0=Sun..6=Sat); isOpen + lunch/dinner HH:MM windows
+  ├── Holiday         ← unique date; label; allDay (or start/end HH:MM)
+  └── ScheduleOverride← unique date; isOpen + blocks: { label, start, end }[]; Holiday wins over override
 ```
 
 ---
 
 ## Enums
+
+Defined in the Prisma schema (`ibx_domain`) and mirrored in `@ibatexas/types`. Order/payment
+status enums are kept in sync with the TS consts by a compile-time test.
 
 ```typescript
 type ReservationStatus =
@@ -204,18 +220,16 @@ type ReservationStatus =
   | 'seated'         // checked in
   | 'completed'      // left, table freed
   | 'cancelled'      // cancelled by customer or staff
-  | 'no_show'        // 15min grace passed, no check-in
+  | 'no_show'        // grace passed, no check-in
 
-type TableLocation =
-  | 'indoor'
-  | 'outdoor'
-  | 'bar'
-  | 'terrace'
+type StaffRole = 'OWNER' | 'MANAGER' | 'ATTENDANT'   // access level: OWNER > MANAGER > ATTENDANT
+
+type TableLocation = 'indoor' | 'outdoor' | 'bar' | 'terrace'
 
 type SpecialRequestType =
   | 'birthday'
   | 'anniversary'
-  | 'allergy_warning'  // extra kitchen attention, not a filter (use allergens for filtering)
+  | 'allergy_warning'  // extra kitchen attention, not a filter (use allergenExclusions for filtering)
   | 'highchair'
   | 'window_seat'
   | 'accessible'
@@ -248,7 +262,7 @@ type PaymentStatus =
   | 'partially_refunded'    // partial refund issued
   | 'refunded'              // full refund — terminal
   | 'disputed'              // chargeback opened
-  | 'canceled'              // PI canceled — terminal
+  | 'canceled'              // PI canceled — terminal (DB value 'pay_canceled')
   | 'waived'                // admin waived — terminal
 
 type PaymentMethod = 'pix' | 'card' | 'cash'
@@ -272,11 +286,11 @@ type MessageRole = 'user' | 'assistant' | 'system'
 ```
 Waitlist (Postgres)
   ├── id: string
-  ├── customerId: string
-  ├── timeSlotId: string
+  ├── customerId: string        ← FK, Cascade on customer delete
+  ├── timeSlotId: string        ← FK, Restrict on slot delete
   ├── partySize: number
   ├── notifiedAt: Date | null   ← when WhatsApp notification was sent
-  ├── expiresAt: Date           ← auto-remove if customer doesn't claim spot in 30min
+  ├── expiresAt: Date           ← claim window
   └── createdAt: Date           ← position derived from ORDER BY createdAt
 ```
 
@@ -287,17 +301,18 @@ Waitlist (Postgres)
 ## Delivery Zones
 
 Zones are stored as a list of CEP prefixes (Phase 1). This covers most practical cases
-without requiring PostGIS. Upgrade to PostGIS polygon storage in Phase 2 if precise
-geo-fencing becomes necessary.
+without requiring PostGIS. The schema also carries optional `centerLat`/`centerLng`/`radiusKm`
+for a circular-zone GPS-pin fallback.
 
 ```typescript
 interface DeliveryZone {
   id: string
   name: string                // e.g. "Centro", "Zona Sul"
   cepPrefixes: string[]       // e.g. ["14800", "14801"] — first 5 digits of CEP
-  feeInCentavos: number       // centavos BRL (schema field: fee_in_centavos)
+  feeInCentavos: number       // centavos BRL
   estimatedMinutes: number    // transit time (added to preparation time)
   active: boolean
+  // optional circular fallback: centerLat, centerLng, radiusKm
 }
 ```
 
@@ -308,24 +323,22 @@ If no zone matches, delivery is unavailable to that address.
 
 ## Abandoned Cart
 
-**Cart TTL:** 24 hours of inactivity (tracked in Redis alongside the guest session).
+**Publisher:** `abandoned-cart-checker.ts` BullMQ repeatable job in `apps/api`, runs every 15 min.
+HSCANs the `active:carts` Redis hash and publishes `cart.abandoned` for sessions idle > 2h with a
+non-empty cart. Multi-tier nudges: re-arms `lastActivity` until the final tier (3), then drops the cart.
 
-**Publisher:** Scheduled job in `apps/api` (cron every 1 hour).
-Queries Redis for guest sessions with `lastActivityAt > 24h ago` and a non-empty cartId.
-Publishes `cart.abandoned` to NATS for each matching session.
-
-**Subscriber:** `packages/tools` event handler.
-Sends WhatsApp reminder message (if phone is known) and updates `CustomerProfile` with abandonment signal.
+**Subscriber:** `cart-intelligence.ts` in `apps/api/src/subscribers` — sends a WhatsApp recovery nudge
+when the phone is known.
 
 ```typescript
-// cart.abandoned payload
+// cart.abandoned payload (apps/api/src/jobs/abandoned-cart-checker.ts)
 {
+  eventType: 'cart.abandoned'
   cartId: string
   sessionId: string
-  customerId: string | null
-  items: { productId: string; name: string; quantity: number }[]
-  totalValue: number           // centavos
-  lastActivityAt: string       // ISO 8601
+  sessionType: 'guest' | 'customer'
+  idleMs: number
+  phone?: string               // included only when resolvable
 }
 ```
 
@@ -346,17 +359,20 @@ interface BusinessEvent<T = Record<string, unknown>> {
 }
 ```
 
+Order/payment events have typed contracts in `packages/types/src/order-events.ts` — that file is
+the source of truth for their payload shapes; the table below summarizes publisher → consumer wiring.
+
 ### Event catalogue
 
 | Event type | Published by | Metadata |
 |---|---|---|
 | `product.viewed` | agent `get_product_details` | `{ productId, source: 'search' \| 'browse' \| 'recommendation' }` |
 | `product.added_to_cart` | _(deprecated — see `cart.item_added` below)_ | `{ productId, variantId, quantity }` |
-| `cart.abandoned` | Redis TTL expiry job | `{ cartId, items[], totalValue, lastActivityAt }` |
-| `order.placed` | Commerce on order create | `{ orderId, items[], totalValue, paymentMethod, deliveryType }` |
+| `cart.abandoned` | `abandoned-cart-checker.ts` job (idle > 2h) | `{ cartId, sessionId, sessionType, idleMs, phone? }` |
+| `order.placed` | Commerce on order create | `OrderPlacedEvent` — `{ orderId, displayId, items[], totalInCentavos, subtotalInCentavos, shippingInCentavos, paymentMethod, deliveryType?, tipInCentavos?, version, ... }` |
 | `order.confirmed` | Commerce on status change | `{ orderId }` |
 | `order.cancelled` | Commerce on status change | `{ orderId, reason }` |
-| `order.status_changed` | Admin updates order fulfillment status | `{ orderId, displayId, previousStatus, newStatus, customerId, updatedBy: OrderActor, version, correlationId?, timestamp }` |
+| `order.status_changed` | Admin updates order fulfillment status | `OrderStatusChangedEvent` — `{ orderId, displayId, previousStatus, newStatus, customerId, updatedBy, version, correlationId?, timestamp }` |
 | `order.delivered` | Commerce on status change | `{ orderId, deliveryMinutes }` |
 | `reservation.created` | Reservation on create | `{ reservationId, partySize, date, timeSlot, tableLocation }` |
 | `reservation.modified` | Reservation on update | `{ reservationId, changes }` |
@@ -382,308 +398,16 @@ interface BusinessEvent<T = Record<string, unknown>> {
 
 **Notes:**
 - `notification.send` subscriber is stubbed — actual delivery not yet implemented
-- `whatsapp.message.*` and `web.{eventType}` are telemetry-only (no subscribers in Phase 1; future JetStream consumers in Phase 3)
-- `order.payment_failed`, `order.refunded`, `order.disputed`, `order.canceled` have no subscribers yet — future consumers will handle notifications and status updates
-- `order.status_changed` events MUST include `version` (projection version after transition). Typed contract: `OrderStatusChangedEvent` in `packages/types/src/order-events.ts`
-- `order.placed` events create an `OrderProjection` row via `cart-intelligence.ts` subscriber. Typed contract: `OrderPlacedEvent`
+- `whatsapp.message.*` and `web.{eventType}` are telemetry-only (no subscribers in Phase 1)
+- `order.payment_failed`, `order.refunded`, `order.disputed`, `order.canceled` have no subscribers yet
+- `order.status_changed` events MUST include `version` (projection version after transition)
+- `order.placed` events create an `OrderProjection` row via the `cart-intelligence.ts` subscriber
 
 ---
 
 ## Prisma Schema
 
-Lives in `packages/domain/prisma/schema.prisma` — `ibx_domain` PostgreSQL schema.
-Separate namespace from Medusa. Run `ibx db migrate:domain` to apply migrations.
-
-```prisma
-model Table {
-  id         String        @id @default(cuid())
-  number     String        @unique
-  capacity   Int
-  location   TableLocation
-  accessible Boolean       @default(false)
-  active     Boolean       @default(true)
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
-
-  reservationTables ReservationTable[]
-}
-
-model TimeSlot {
-  id              String   @id @default(cuid())
-  date            DateTime @db.Date
-  startTime       String   @db.VarChar(5)  // 'HH:MM' format, e.g. '19:30'
-  durationMinutes Int      @default(90)
-  maxCovers       Int
-  reservedCovers  Int      @default(0)  // atomic counter, updated on create/cancel
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  reservations Reservation[]
-  waitlist     Waitlist[]
-
-  @@unique([date, startTime])
-}
-
-model Reservation {
-  id              String            @id @default(cuid())
-  customerId      String
-  partySize       Int
-  status          ReservationStatus @default(pending)
-  specialRequests Json              @default("[]")  // SpecialRequest[] — see SpecialRequest type above
-  confirmedAt     DateTime?
-  checkedInAt     DateTime?
-  cancelledAt     DateTime?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-
-  customer   Customer @relation(fields: [customerId], references: [id])
-  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Restrict)
-  timeSlotId String
-
-  tables ReservationTable[]
-}
-
-model ReservationTable {
-  reservation   Reservation @relation(fields: [reservationId], references: [id])
-  reservationId String
-  table         Table       @relation(fields: [tableId], references: [id])
-  tableId       String
-
-  @@id([reservationId, tableId])
-}
-
-model Waitlist {
-  id         String    @id @default(cuid())
-  customerId String
-  partySize  Int
-  // position is derived: ORDER BY createdAt among entries for the same slot
-  notifiedAt DateTime?
-  expiresAt  DateTime
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-
-  timeSlot   TimeSlot @relation(fields: [timeSlotId], references: [id], onDelete: Restrict)
-  timeSlotId String
-
-  @@unique([customerId, timeSlotId])
-}
-
-model Review {
-  id          String   @id @default(cuid())
-  orderId     String
-  productIds  String[]  // DEPRECATED — use productId
-  productId   String?   // primary product this review is for
-  customerId  String
-  rating      Int       // 1–5
-  comment     String?
-  channel     String    // 'web' | 'whatsapp'
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
-
-  @@unique([orderId, customerId])
-}
-
-model Customer {
-  id             String    @id @default(cuid())
-  phone          String    @unique
-  name           String?
-  email          String?
-  medusaId       String?   @unique
-  source         String?                            // origin channel: 'web' | 'whatsapp'
-  firstContactAt DateTime?                          // timestamp of first interaction
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-
-  addresses     Address[]
-  preferences   CustomerPreferences?
-  reviews       Review[]
-  orderItems    CustomerOrderItem[]
-  orderProjections OrderProjection[]
-  reservations  Reservation[]
-  conversations Conversation[]
-}
-
-model Address {
-  id         String  @id @default(cuid())
-  customerId String
-  street     String
-  number     String
-  complement String?
-  district   String
-  city       String
-  state      String  @db.Char(2)
-  cep        String  @db.Char(8)
-  isDefault  Boolean @default(false)
-
-  customer Customer @relation(fields: [customerId], references: [id])
-}
-
-model CustomerPreferences {
-  id                  String   @id @default(cuid())
-  customerId          String   @unique
-  dietaryRestrictions String[]
-  allergenExclusions  String[] // always explicit array — never infer
-  favoriteCategories  String[]
-  updatedAt           DateTime @updatedAt
-
-  customer Customer @relation(fields: [customerId], references: [id])
-}
-
-model CustomerOrderItem {
-  id               String   @id @default(cuid())
-  customerId       String?                        // nullable for LGPD compliance (SetNull on customer delete)
-  medusaOrderId    String
-  productId        String
-  variantId        String
-  quantity         Int
-  priceInCentavos  Int
-  orderedAt        DateTime
-
-  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
-
-  @@index([customerId, productId])
-  @@index([medusaOrderId])
-}
-
-model DeliveryZone {
-  id               String   @id @default(cuid())
-  name             String
-  cepPrefixes      String[]
-  feeInCentavos    Int
-  estimatedMinutes Int
-  active           Boolean  @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-}
-
-enum TableLocation {
-  indoor
-  outdoor
-  bar
-  terrace
-}
-
-enum ReservationStatus {
-  pending
-  confirmed
-  seated
-  completed
-  cancelled
-  no_show
-}
-
-enum ConversationChannel {
-  whatsapp
-  web
-}
-
-enum MessageRole {
-  user
-  assistant
-  system
-}
-
-model Conversation {
-  id         String              @id @default(cuid())
-  sessionId  String              @unique @map("session_id")
-  customerId String?             @map("customer_id")
-  channel    ConversationChannel
-  startedAt  DateTime            @default(now()) @map("started_at")
-  endedAt    DateTime?           @map("ended_at")
-  createdAt  DateTime            @default(now()) @map("created_at")
-  updatedAt  DateTime            @updatedAt @map("updated_at")
-
-  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  messages ConversationMessage[]
-
-  @@index([customerId])
-  @@index([channel])
-  @@index([startedAt])
-  @@map("conversations")
-}
-
-enum OrderFulfillmentStatus {
-  pending
-  confirmed
-  preparing
-  ready
-  in_delivery
-  delivered
-  canceled
-}
-
-enum OrderActor {
-  admin
-  system
-  system_backfill
-  customer
-}
-
-model OrderProjection {
-  id                  String                 @id               // = Medusa order ID
-  displayId           Int                    @map("display_id")
-  customerId          String?                @map("customer_id")
-  customerEmail       String?                @map("customer_email")
-  customerName        String?                @map("customer_name")
-  customerPhone       String?                @map("customer_phone")
-  fulfillmentStatus   OrderFulfillmentStatus @default(pending) @map("fulfillment_status")
-  paymentStatus       String?                @map("payment_status")
-  totalInCentavos     Int                    @default(0) @map("total_in_centavos")
-  subtotalInCentavos  Int                    @default(0) @map("subtotal_in_centavos")
-  shippingInCentavos  Int                    @default(0) @map("shipping_in_centavos")
-  itemCount           Int                    @default(0) @map("item_count")
-  itemsJson           Json?                  @map("items_json")
-  itemsSchemaVersion  Int                    @default(1) @map("items_schema_version")
-  shippingAddressJson Json?                  @map("shipping_address_json")
-  version             Int                    @default(1)       // optimistic concurrency
-  medusaCreatedAt     DateTime               @map("medusa_created_at")
-  createdAt           DateTime               @default(now()) @map("created_at")
-  updatedAt           DateTime               @updatedAt @map("updated_at")
-
-  customer      Customer?          @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  statusHistory OrderStatusHistory[]
-
-  @@index([customerId])
-  @@index([fulfillmentStatus])
-  @@index([displayId])
-  @@index([medusaCreatedAt])
-  @@index([fulfillmentStatus, medusaCreatedAt(sort: Desc)])
-  @@map("order_projections")
-}
-
-model OrderStatusHistory {
-  id         String                 @id @default(cuid())
-  orderId    String                 @map("order_id")
-  fromStatus OrderFulfillmentStatus @map("from_status")
-  toStatus   OrderFulfillmentStatus @map("to_status")
-  actor      OrderActor             @default(system)
-  actorId    String?                @map("actor_id")
-  reason     String?
-  version    Int
-  backfillBatchId String?           @map("backfill_batch_id")
-  createdAt  DateTime               @default(now()) @map("created_at")
-
-  order OrderProjection @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  @@index([orderId, createdAt])
-  @@index([createdAt])
-  @@map("order_status_history")
-}
-
-model ConversationMessage {
-  id             String      @id @default(cuid())
-  conversationId String      @map("conversation_id")
-  role           MessageRole
-  content        String
-  metadata       Json?
-  sentAt         DateTime    @default(now()) @map("sent_at")
-  createdAt      DateTime    @default(now()) @map("created_at")
-
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-
-  @@index([conversationId, sentAt])
-  @@map("conversation_messages")
-}
-```
+The authoritative schema is [`packages/domain/prisma/schema.prisma`](../../../packages/domain/prisma/schema.prisma)
+— the `ibx_domain` PostgreSQL schema, a separate namespace from Medusa. Read that file for exact
+column types, `@map`/`@@map` names, indexes, FK actions, and the partial-unique-index notes.
+Run `ibx db migrate:domain` to apply migrations.
