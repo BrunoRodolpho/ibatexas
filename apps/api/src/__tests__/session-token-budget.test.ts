@@ -1,7 +1,8 @@
 /**
  * F4 — session token-budget guard semantics (cost cap / ADR-120).
  *
- * Mirrors the guard composed into IBATEXAS_POLICY_PACKS in claustrum-bootstrap.ts
+ * Mirrors the guard defined in claustrum/compose-policy-packs.ts (sessionTokenBudgetGuard,
+ * prepended to every pack in IBATEXAS_POLICY_PACKS)
  * (sessionBudget = AGENT_SESSION_TOKEN_BUDGET, reads state.ctx.sessionTokensConsumed,
  * action REFUSE). The guard is now LIVE: the resolve stage (resolve-and-assemble.ts)
  * reads the per-session counter into state.ctx.sessionTokensConsumed each turn. This
@@ -15,7 +16,7 @@ import { createTokenBudgetGuard } from "@adjudicate/primitives";
 
 const BUDGET = 100_000;
 
-// Same shape as the bootstrap guard (kept in sync with claustrum-bootstrap.ts).
+// Same shape as the guard (kept in sync with claustrum/compose-policy-packs.ts).
 const guard = createTokenBudgetGuard<string, unknown, unknown>({
   extractSessionTokens: (state) =>
     (state as { ctx?: { sessionTokensConsumed?: number } }).ctx

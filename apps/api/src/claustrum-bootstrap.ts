@@ -140,8 +140,12 @@ import {
   resolveCapabilityPolicy,
   type CapabilityPolicyPack,
 } from "./claustrum/capability-policy.js";
-import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitives";
-import { nameGuard } from "@adjudicate/core/kernel";
+import {
+  SESSION_TOKEN_BUDGET,
+  IBATEXAS_ADOPTER_BUSINESS_GUARDS,
+  buildIbatexasPolicyPacks,
+  type ErasedPack,
+} from "./claustrum/compose-policy-packs.js";
 import {
   verifyConfigSeal,
   type SealablePackInput,
@@ -664,20 +668,6 @@ function noopHandoff(): HandoffPort {
  * `CapabilityPolicyPack` shape (heterogeneous K/P/S erased to string/unknown) so
  * one router can dispatch across all domains. See capability-policy.ts.
  */
-// ── Session token-budget guard (F4, cost cap / ADR-120) ─────────────────────
-// Per-session cumulative LLM-cost cap. LIVE: both sides are wired.
-//  WRITE — `emitTurn` folds each turn's planning+synthesis token total (summed
-//    onto the TurnRecord by claustrum's loop) into `rk('llm:tokens:…')`.
-//  READ  — the pre-adjudication resolve stage (claustrum/resolve-and-assemble.ts)
-//    reads that counter back into `state.ctx.sessionTokensConsumed` for EVERY
-//    envelope, so the guard below — prepended to every pack's business phase —
-//    sees a real total. Enforcement is now a config flip (AGENT_SESSION_TOKEN_BUDGET).
-// REFUSE (never DEFER — DEFER would park a money intent on a reset signal nobody emits).
-const SESSION_TOKEN_BUDGET = Number.parseInt(
-  process.env.AGENT_SESSION_TOKEN_BUDGET ?? "100000",
-  10,
-);
-
 // TokenUsageStore (ADR-135) — TELEMETRY ONLY, strictly outside the determinism
 // boundary. Dashboard-facing per-session / per-tenant consumption + exhaustion
 // events; fed from emitTurn (below). It is an INDEPENDENT read of the same usage
@@ -698,77 +688,22 @@ const tokenUsageStore: TokenUsageStore = createInMemoryTokenUsageStore({
     : {}),
 });
 
-const sessionTokenBudgetGuard = nameGuard(
-  "sessionTokenBudget",
-  createTokenBudgetGuard<string, unknown, unknown>({
-    extractSessionTokens: (state) =>
-      (state as { ctx?: { sessionTokensConsumed?: number } }).ctx
-        ?.sessionTokensConsumed ?? 0,
-    sessionBudget: Number.isFinite(SESSION_TOKEN_BUDGET)
-      ? SESSION_TOKEN_BUDGET
-      : 100_000,
-    action: "REFUSE",
-    userFacing:
-      "Você atingiu o limite de uso desta conversa. Tente novamente mais tarde.",
-  }),
-);
-
-// Confirm-on-autoresolve (NL→id confirm-first): when the conductor resolve stage
-// auto-resolved an ambiguous target for an IRREVERSIBLE money/booking intent
-// ("cancelar meu pedido" → most-recent order; "cancelar minha reserva" → the only
-// active booking; PIX regenerate → most-recent order), it sets
-// `state.ctx.autoResolvedMoneyRef`. This guard then REQUEST_CONFIRMATIONs so a
-// wrong guess can never auto-execute — the user sees the target and confirms.
-// On resume (after confirm) the parked envelope carries the EXPLICIT resolved id,
-// so the flag is absent → this guard passes → the kernel re-adjudicates against
-// fresh entity state. Boolean-as-threshold (1 = flagged). Composed at the
-// adopter level (no pack-source change), like the F4 guard.
-const AUTORESOLVE_CONFIRM_KINDS = new Set([
-  "order.cancel",
-  "payment.pix.regenerate",
-  "reservation.cancel",
-]);
-const confirmOnAutoResolveGuard = nameGuard(
-  "confirmOnAutoResolvedRef",
-  createConfirmGuard<string, unknown, unknown>({
-    matches: (env) => AUTORESOLVE_CONFIRM_KINDS.has(env.kind),
-    extract: (_env, state) =>
-      (state as { ctx?: { autoResolvedMoneyRef?: boolean } }).ctx
-        ?.autoResolvedMoneyRef
-        ? 1
-        : 0,
-    threshold: 1,
-    comparator: ">=",
-    prompt: () =>
-      "Identifiquei o item mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
-  }),
-);
-
-const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> = [
-  ordersPack,
-  paymentsPack,
-  reservationsPack,
-  customerOnboardingPack,
-  whatsappPack,
-].map((p) => {
-  const base = p.policy as unknown as PolicyBundle<string, unknown, unknown>;
-  return {
-    id: p.id,
-    intents: [...p.intents],
-    // Prepend the adopter-level business guards to every pack: F4 token-budget
-    // (REFUSE over budget) then confirm-on-autoresolve (REQUEST_CONFIRMATION when
-    // an ambiguous money/booking target was auto-resolved). Both run before the
-    // pack's own business guards; they only fire for their matching kinds/flags.
-    policy: {
-      ...base,
-      business: [
-        sessionTokenBudgetGuard,
-        confirmOnAutoResolveGuard,
-        ...base.business,
-      ],
-    } as unknown as PolicyBundle<string, unknown, unknown>,
-  };
-});
+// The adopter-level business guards (F4 token-budget + confirm-on-autoresolve)
+// and the prepend composition live in `./claustrum/compose-policy-packs.ts` so
+// the policy-manifest exporter describes the IDENTICAL post-prepend bundles the
+// kernel runs. `buildIbatexasPolicyPacks` performs the exact per-pack prepend
+// that was previously inlined here.
+const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> =
+  buildIbatexasPolicyPacks(
+    [
+      ordersPack,
+      paymentsPack,
+      reservationsPack,
+      customerOnboardingPack,
+      whatsappPack,
+    ] as unknown as ReadonlyArray<ErasedPack>,
+    IBATEXAS_ADOPTER_BUSINESS_GUARDS,
+  );
 
 /** One kind-dispatching PolicyBundle over every installed pack (built once). */
 const IBATEXAS_POLICY_ROUTER = composePolicyRouter(IBATEXAS_POLICY_PACKS);

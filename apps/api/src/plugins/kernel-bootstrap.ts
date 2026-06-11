@@ -39,9 +39,10 @@ import { recordSinkFailure, setMetricsSink } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { ordersPack } from "@ibatexas/pack-orders"
 import { paymentsPack } from "@ibatexas/pack-payments"
+import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
-import { KNOWN_INTENT_KINDS } from "@ibatexas/intent-kinds"
+import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds"
 // WS5: the NX-park quota-exceeded hook setter MUST come from the same park-nx
 // module instance the live park calls go through — now the apps/api copy
 // (re-exported by the park-deferred-intent-nx seam). Importing it from
@@ -196,6 +197,12 @@ export function installFirstPartyPacks() {
   const whatsapp = installPack(whatsappPack)
   const customerOnboarding = installPack(customerOnboardingPack)
   const payments = installPack(paymentsPack)
+  // `@adjudicate/pack-payments-pix` — the lighthouse PIX-charge-lifecycle Pack
+  // (CLAUDE.md rule #9 / ADR #13). It declares the `pix.charge.*` wire-PSP
+  // kinds carried in `KNOWN_INTENT_KINDS`; without installing it those kinds
+  // resolve to no policy and `assertPackCoverage` refuses to boot. This
+  // mirrors the canonical six-pack roster in `ibx kernel` (cli loadPackIndex).
+  const paymentsPix = installPack(paymentsPixPack)
 
   const recorder = getKernelMetricsRecorder()
   recorder.recordPackInstall("orders")
@@ -203,8 +210,9 @@ export function installFirstPartyPacks() {
   recorder.recordPackInstall("whatsapp")
   recorder.recordPackInstall("customer-onboarding")
   recorder.recordPackInstall("payments")
+  recorder.recordPackInstall("payments-pix")
 
-  return { orders, reservations, whatsapp, customerOnboarding, payments }
+  return { orders, reservations, whatsapp, customerOnboarding, payments, paymentsPix }
 }
 
 // ── Pack coverage assertion ──────────────────────────────────────────────────
@@ -222,6 +230,25 @@ export class PackCoverageError extends Error {
     this.name = "PackCoverageError"
   }
 }
+
+// Intent kinds that MUST resolve to an installed Pack at boot.
+//
+// `KNOWN_INTENT_KINDS` is the full taxonomy the kernel knows about — it
+// bounds metrics labels and drives the audit-redactor conformance suite.
+// A subset of those kinds is adjudicated NOT through the global Pack
+// registry but via a domain-internal `PolicyBundle` passed straight to
+// `adjudicate()` / `withAdjudicate` (today: `loyalty.stamp.add`, owned by
+// `loyalty-policy.ts` in `@ibatexas/domain`; the SYSTEM-only stamp award is
+// dispatched by the `order.placed` subscriber with the bundle in hand). For
+// those kinds the coverage gate's premise — "no Pack policy ⇒ adjudicate()
+// default-REFUSEs legitimate traffic" — is false: the caller supplies the
+// bundle, so the kernel never consults the registry. We exclude them here,
+// mirroring the `medusa.*` exclusion rationale documented in
+// `@ibatexas/intent-kinds`. Every OTHER known kind must be declared by an
+// installed Pack or the kernel refuses to boot.
+const PACK_REGISTERED_INTENT_KINDS: ReadonlySet<string> = new Set(
+  [...KNOWN_INTENT_KINDS].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
+)
 
 /**
  * Assert that every `KNOWN_INTENT_KINDS` entry is declared by at least one
@@ -310,6 +337,7 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
           "whatsapp",
           "customer-onboarding",
           "payments",
+          "payments-pix",
         ],
       },
       "[kernel-bootstrap] first-party packs installed",
@@ -321,9 +349,11 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     throw err
   }
 
-  // 2. Assert Pack coverage: every known intent kind must resolve to a
-  //    policy in one of the installed Packs. Otherwise the kernel would
-  //    default-REFUSE legitimate traffic.
+  // 2. Assert Pack coverage: every pack-registered intent kind must resolve
+  //    to a policy in one of the installed Packs. Otherwise the kernel would
+  //    default-REFUSE legitimate traffic. Locally-adjudicated kinds (see
+  //    PACK_REGISTERED_INTENT_KINDS) are excluded — they carry their bundle
+  //    to `adjudicate()` directly and never hit the registry.
   try {
     const allPacks = [
       installedPacks.orders,
@@ -331,12 +361,14 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
       installedPacks.whatsapp,
       installedPacks.customerOnboarding,
       installedPacks.payments,
+      installedPacks.paymentsPix,
     ]
-    assertPackCoverage(allPacks)
+    assertPackCoverage(allPacks, PACK_REGISTERED_INTENT_KINDS)
     server.log.info(
       {
         event: "kernel.bootstrap.pack_coverage_validated",
         knownIntentCount: KNOWN_INTENT_KINDS.size,
+        packRegisteredCount: PACK_REGISTERED_INTENT_KINDS.size,
       },
       "[kernel-bootstrap] pack coverage validated",
     )
