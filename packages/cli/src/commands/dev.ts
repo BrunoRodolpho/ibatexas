@@ -307,6 +307,57 @@ async function runPnpmCommand(rawFilter: string | undefined, command: "build" | 
   }
 }
 
+// ── URL summary ──────────────────────────────────────────────────────────────
+
+/** Print a one-glance summary of every dev URL: apps, infra, observability,
+ *  optional services, and the log-viewing CLI commands. */
+async function printDevUrls(): Promise<void> {
+  const { resolveServices, infraEndpoints } = await import("../services.js")
+  const { fetchNgrokUrl } = await import("./tunnel.js")
+  const { VICTORIALOGS_URL } = await import("../lib/logs-query.js")
+
+  const LABEL_W = 16
+  const section = (title: string) => console.log(chalk.dim(`\n  ─ ${title} ─`))
+  const url = (label: string, value: string) =>
+    console.log(`  ${label.padEnd(LABEL_W)}${chalk.cyan(value)}`)
+  const hint = (label: string, value: string) =>
+    console.log(`  ${label.padEnd(LABEL_W)}${chalk.gray(value)}`)
+
+  console.log(chalk.bold("\n  IbateXas — Dev URLs"))
+
+  // ── Apps ──
+  section("Apps")
+  for (const svc of resolveServices(undefined)) {
+    for (const link of svc.urls) url(link.label.trim(), link.url)
+    for (const note of svc.notes ?? []) console.log(chalk.gray(`  ${note}`))
+  }
+
+  // ── Infra ──
+  section("Infra")
+  for (const ep of infraEndpoints()) url(ep.name, ep.address)
+  url("NATS Monitor", "http://localhost:8222")
+
+  // ── Observability ──
+  section("Observability")
+  url("Logs (vmui)", `${VICTORIALOGS_URL}/select/vmui/`)
+  if (process.env.GRAFANA_URL) url("Grafana", process.env.GRAFANA_URL)
+  else hint("Grafana", "(definir GRAFANA_URL)")
+
+  // ── Optional ──
+  section("Optional")
+  const ngrokUrl = await fetchNgrokUrl(1)
+  if (ngrokUrl) url("ngrok Tunnel", `${ngrokUrl}  (→ :3001)`)
+  else hint("ngrok Tunnel", "not running — start with: ibx dev start --with-tunnel")
+  hint("Stripe", "forwarding → localhost:3001/api/webhooks/stripe  (with --with-stripe)")
+
+  // ── Logs (CLI) ──
+  section("Logs (CLI)")
+  hint("Infra logs", "ibx svc logs [postgres|redis|typesense|nats]")
+  hint("Health", "ibx svc status")
+
+  console.log()
+}
+
 // ── Command registration ────────────────────────────────────────────────────
 
 export function registerDevCommands(dev: Command) {
@@ -334,6 +385,12 @@ export function registerDevCommands(dev: Command) {
     .action(async (services: string[], opts: StartOpts) => {
       await pcStart(services, opts)
     })
+
+  // ── ibx dev urls ────────────────────────────────────────────────────────
+  dev
+    .command("urls")
+    .description("Print a summary of all dev URLs (apps, infra, observability, optional)")
+    .action(printDevUrls)
 
   // ── ibx dev stop [service] ──────────────────────────────────────────────
   dev

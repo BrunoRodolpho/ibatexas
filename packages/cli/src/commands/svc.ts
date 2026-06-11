@@ -1,7 +1,7 @@
 import net from "node:net"
 import type { Command } from "commander"
 import chalk from "chalk"
-import { SERVICES } from "../services.js"
+import { SERVICES, infraEndpoints } from "../services.js"
 import { ROOT } from "../utils/root.js"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -463,22 +463,19 @@ async function collectInfraStatus(): Promise<InfraCheckResult[]> {
   const typesensePort = process.env.TYPESENSE_PORT ?? "8108"
   const natsUrl = process.env.NATS_URL ?? "nats://localhost:4222"
 
-  const dbUrl = new URL(databaseUrl || "postgresql://localhost:5433/ibatexas")
-  const redisUrlParsed = new URL(redisUrl)
-  const natsUrlParsed = new URL(natsUrl)
-
-  const infraChecks = [
-    { name: "PostgreSQL", address: `${dbUrl.hostname}:${dbUrl.port || 5433}`, check: () => checkPostgres(databaseUrl) },
-    { name: "Redis", address: `${redisUrlParsed.hostname}:${redisUrlParsed.port || 6379}`, check: () => checkRedis(redisUrl) },
-    { name: "Typesense", address: `http://${typesenseHost}:${typesensePort}`, check: () => checkTypesense(typesenseHost, typesensePort) },
-    { name: "NATS", address: `${natsUrlParsed.hostname}:${natsUrlParsed.port || 4222}`, check: () => checkNats(natsUrl) },
-  ]
+  // Addresses come from the shared infra registry; health checks stay here.
+  const checks: Record<string, () => Promise<ServiceHealth>> = {
+    PostgreSQL: () => checkPostgres(databaseUrl),
+    Redis: () => checkRedis(redisUrl),
+    Typesense: () => checkTypesense(typesenseHost, typesensePort),
+    NATS: () => checkNats(natsUrl),
+  }
 
   return Promise.all(
-    infraChecks.map(async ({ name, address, check }) => ({
+    infraEndpoints().map(async ({ name, address }) => ({
       name,
       address,
-      result: await check(),
+      result: await checks[name](),
     }))
   )
 }

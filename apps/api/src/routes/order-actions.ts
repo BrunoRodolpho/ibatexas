@@ -52,6 +52,11 @@ import { getAuditSink } from "@ibatexas/audit-sink";
 import { type AgentContext, Channel } from "@ibatexas/types";
 import { requireAuth } from "../middleware/auth.js";
 import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import {
+  identityCtx,
+  buildOrderCtx,
+  type OrderProjectionLite,
+} from "../claustrum/resolve-and-assemble.js";
 
 /** Build a minimal AgentContext for API-originated tool calls. */
 function apiContext(customerId: string): AgentContext {
@@ -472,15 +477,15 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         customerId,
       });
 
-      const orderState: OrderState = {
-        ctx: {
-          channel: "web",
-          customerId,
-          cartId: null,
-          orderId: id,
-          totalInCentavos: order.totalInCentavos,
-          lastAction: null,
-        },
+      // Unified state contract (Phase 2): build the orders ctx from the already-
+      // loaded `order` projection via the shared resolve-and-assemble builder, so
+      // the HTTP and conductor paths adjudicate against the identical ctx shape.
+      const orderState = {
+        ctx: buildOrderCtx(
+          identityCtx(customerId, "web"),
+          id,
+          order as unknown as OrderProjectionLite,
+        ),
       };
 
       try {
@@ -845,14 +850,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         customerId,
       });
 
-      const orderState: OrderState = {
-        ctx: {
-          channel: "web",
-          customerId,
-          cartId: null,
-          orderId: id,
-          lastAction: null,
-        },
+      // Unified state contract (Phase 2): shared orders-ctx builder. This route's
+      // own logic enforces PONR before dispatch, so the kernel guard is additive
+      // here; the ctx SHAPE matches the conductor path (identity base + tenantId).
+      const orderState = {
+        ctx: buildOrderCtx(identityCtx(customerId, "web"), id, null),
       };
 
       try {
@@ -933,21 +935,15 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         nonce: randomUUID(),
         customerId: `customer:${customerId}`,
       });
-      const noteOrderState: OrderState = {
-        ctx: {
-          channel: "web",
-          customerId,
-          cartId: null,
-          orderId: id,
-          paymentMethod: (projection.paymentMethod as
-            | "pix"
-            | "card"
-            | "cash"
-            | null) ?? null,
-          paymentStatus: projection.paymentStatus,
-          totalInCentavos: projection.totalInCentavos,
-        },
-      };
+      // Unified state contract (Phase 2): build from the already-loaded projection
+      // (no redundant query) via the shared builder — same ctx shape as the conductor.
+      const noteOrderState = {
+        ctx: buildOrderCtx(
+          identityCtx(customerId, "web"),
+          id,
+          projection as unknown as OrderProjectionLite,
+        ),
+      } as unknown as OrderState;
       const noteAddSvc = createOrderCommandService(server.log, {
         auditSink: getAuditSink(),
       });
@@ -1509,14 +1505,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         customerId,
       });
 
-      const orderState: OrderState = {
-        ctx: {
-          channel: "web",
-          customerId,
-          cartId: null,
-          orderId: id,
-          lastAction: null,
-        },
+      // Unified state contract (Phase 2): shared orders-ctx builder. This route's
+      // own logic enforces PONR before dispatch, so the kernel guard is additive
+      // here; the ctx SHAPE matches the conductor path (identity base + tenantId).
+      const orderState = {
+        ctx: buildOrderCtx(identityCtx(customerId, "web"), id, null),
       };
 
       try {
@@ -1620,14 +1613,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         customerId,
       });
 
-      const orderState: OrderState = {
-        ctx: {
-          channel: "web",
-          customerId,
-          cartId: null,
-          orderId: id,
-          lastAction: null,
-        },
+      // Unified state contract (Phase 2): shared orders-ctx builder. This route's
+      // own logic enforces PONR before dispatch, so the kernel guard is additive
+      // here; the ctx SHAPE matches the conductor path (identity base + tenantId).
+      const orderState = {
+        ctx: buildOrderCtx(identityCtx(customerId, "web"), id, null),
       };
 
       try {

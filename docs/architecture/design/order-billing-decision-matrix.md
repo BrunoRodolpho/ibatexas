@@ -36,7 +36,7 @@ canceled    → (terminal)
 |--------|-------------|------------------------|
 | `awaiting_payment` | Order created, no PI initiated | No |
 | `payment_pending` | PI created, waiting (PIX QR shown / card processing) | No |
-| `payment_expired` | PIX QR expired | Yes* |
+| `payment_expired` | PIX QR expired (past `pixExpiresAt`) | Yes* |
 | `payment_failed` | Card declined / PI failed | Yes* |
 | `cash_pending` | Cash order, payment expected on receipt | No |
 | `paid` | Confirmed/captured | No |
@@ -235,13 +235,15 @@ waived              → (terminal)
 
 | Trigger | Action | Order Impact | Payment Impact |
 |---------|--------|-------------|----------------|
-| PIX QR expires (30min) | Transition payment | None | `payment_pending` → `payment_expired` |
+| PIX QR expires (past `pixExpiresAt`) | Transition payment | None | `payment_pending` → `payment_expired` |
 | Stripe webhook: succeeded | Reconcile payment | Auto-confirm if pending | → `paid` |
 | Stripe webhook: failed | Reconcile payment | None | → `payment_failed` |
 | Stripe webhook: dispute | Reconcile payment | None | → `disputed` |
 | 24h unpaid order | Stale order cleanup | Cancel order | Cancel payment |
 | Payment → `paid` event | Auto-confirm order | `pending` → `confirmed` | — |
 | Payment → `refunded` event | Cancel order (if pending/confirmed) | → `canceled` | — |
+
+**PIX QR expiry window** is env-configurable via `PIX_EXPIRY_SECONDS` (default `3600` = 1h, max 3 days). It is set on the Stripe PI at checkout (`expires_after_seconds`) and persisted as `Payment.pixExpiresAt`; the checker job (every 5min) expires payments whose `pixExpiresAt` is in the past — it does not key off a fixed literal.
 
 **Critical invariant:** PIX expiry NEVER cancels the order. Only the stale order checker (24h) auto-cancels unpaid orders.
 
@@ -287,7 +289,7 @@ Legend: ✅ = implemented, 🔲 = planned, ❌ = not applicable, * = via tool
 3. **Pickup/dine-in show `ready` as final pre-customer state** — no `in_delivery`
 
 ### Payment Method-Specific Rules
-1. **PIX has 30min QR expiry** — auto-expires, customer can regenerate
+1. **PIX QR expiry is env-configurable** (`PIX_EXPIRY_SECONDS`, default 1h) — auto-expires past `pixExpiresAt`, customer can regenerate
 2. **Card requires 3DS** — handled by Stripe PaymentElement
 3. **Cash requires admin confirmation** — `cash_pending` → `paid` is admin-only
 4. **PIX regeneration rate limited** — 3/hr per customer, 5/order total

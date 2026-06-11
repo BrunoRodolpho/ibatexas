@@ -25,9 +25,11 @@ import { describe, expect, it } from "vitest"
 import { adjudicate } from "@adjudicate/core/kernel"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import { runConformance } from "@adjudicate/conformance"
+import { analyzePolicy, type PlannerProbe } from "@adjudicate/analyze"
 import {
   CUSTOMER_ANONYMIZE_GRACE_SIGNAL,
   customerOnboardingPack,
+  type CustomerOnboardingContext,
   type CustomerOnboardingIntentKind,
   type CustomerOnboardingPayload,
   type CustomerOnboardingState,
@@ -451,5 +453,172 @@ describe("customerOnboardingPack — kernel invariants via runConformance()", ()
     // surfaced explicitly in the Pack's own test surface (task spec
     // acceptance criterion).
     expect(customerOnboardingPack.policy.default).toBe("REFUSE")
+  })
+})
+
+// ── Tier-3 policy coherence (AJD-301) via analyzePolicy() ───────────────────
+//
+// F11 gate: the planner must never offer an intent the Pack doesn't declare
+// (`phantom_intent`, the only error-severity rule → flips `report.passed`).
+// System-only kinds (taint minimum above UNTRUSTED) are intentionally not
+// planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
+// via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
+// `customer.create` from the taint policy fails loudly here.
+//
+// NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
+// omits several declared, non-system intents (profile.update, address.add,
+// address.remove, anonymize, anonymize.cancel) that are reached by routed/HTTP
+// flows (task 14), each a benign `unreachable_intent` warning. `report.passed`
+// stays true (error === 0).
+
+describe("customerOnboardingPack — policy coherence via analyzePolicy() (AJD-301)", () => {
+  // Probes MUST exercise both planner branches — the planner keys on
+  // `state.ctx.isAuthenticated` (guest vs authenticated). `context` is unused by
+  // this planner (it does `void context`) but required by the probe shape.
+  const probes: ReadonlyArray<
+    PlannerProbe<CustomerOnboardingState, CustomerOnboardingContext>
+  > = [
+    {
+      label: "unauthenticated",
+      state: baseState({ isAuthenticated: false }),
+      context: {
+        actor: { principal: "user" },
+      } as unknown as CustomerOnboardingContext,
+    },
+    {
+      label: "authenticated",
+      state: baseState(),
+      context: {
+        actor: { principal: "user", id: "c-1" },
+      } as unknown as CustomerOnboardingContext,
+    },
+  ]
+
+  // Derive the system-only set the SAME way the analyzer does (taint minimum),
+  // never a hand-list — so this test cannot drift from
+  // `customerOnboardingTaintPolicy`.
+  const systemOnlyKinds = customerOnboardingPack.intents.filter((k) => {
+    const min = customerOnboardingPack.policy.taint.minimumFor(k)
+    return min !== undefined && min !== "UNTRUSTED"
+  })
+
+  it("planner proposes no phantom intents (report.passed, zero errors)", () => {
+    const report = analyzePolicy({
+      pack: customerOnboardingPack,
+      plannerProbes: probes,
+    })
+    for (const d of report.diagnostics) {
+      if (d.severity === "error") console.error(`[${d.code}] ${d.message}`)
+    }
+    expect(report.passed).toBe(true)
+    expect(report.summary.error).toBe(0)
+  })
+
+  it("system-only kinds (customer.create, …) are carved out", () => {
+    const report = analyzePolicy({
+      pack: customerOnboardingPack,
+      plannerProbes: probes,
+    })
+    // Guard against a vacuous pass: the carve-out subject must really be system-only.
+    expect(systemOnlyKinds).toContain("customer.create")
+    for (const kind of systemOnlyKinds) {
+      const unreachable = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "unreachable_intent" && d.detail?.intent === kind,
+      )
+      expect(
+        unreachable,
+        `${kind} is system-only — must NOT be flagged unreachable`,
+      ).toBeUndefined()
+      const contradiction = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "system_taint_contradiction" &&
+          d.detail?.intent === kind,
+      )
+      expect(
+        contradiction,
+        `${kind} is system-only — planner must NOT offer it`,
+      ).toBeUndefined()
+    }
+  })
+})
+
+// ── PII data-classification guard (F1) ──────────────────────────────────────
+// On customer.pix.details.save, AFTER validateCpfShape (I10). Card PAN → REFUSE;
+// cpf/email/phone mistyped into the NAME leaf → REWRITE-to-sentinel. The legit
+// `email` and the structured `cpf` field are never masked.
+
+describe("customerOnboardingPack — PII data-classification guard (F1)", () => {
+  const pix = (payload: Record<string, unknown>) =>
+    env("customer.pix.details.save", payload)
+
+  it("EXECUTE: legit name + email + valid CPF — nothing masked (I10)", () => {
+    const decision = adjudicate(
+      pix({ name: "Maria Silva", email: "maria@example.com", cpf: VALID_CPF }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("EXECUTE: absent CPF + clean name/email — guest PIX path unchanged (I10)", () => {
+    const decision = adjudicate(
+      pix({ name: "Maria Silva", email: "maria@example.com" }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REWRITE: email mistyped into name → name masked, email + cpf untouched, no key dropped", () => {
+    const decision = adjudicate(
+      pix({ name: "Maria foo@bar.com", email: "maria@example.com", cpf: VALID_CPF }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("REWRITE")
+    if (decision.kind !== "REWRITE") return
+    const p = decision.rewritten.payload as {
+      name: string
+      email: string
+      cpf: string
+    }
+    expect(p.name).toBe("Maria [REDACTED:EMAIL]")
+    expect(p.email).toBe("maria@example.com") // legit email NEVER masked
+    expect(p.cpf).toBe(VALID_CPF) // cpf byte-identical (I10)
+    expect(Object.keys(p).sort()).toEqual(["cpf", "email", "name"])
+  })
+
+  it("REFUSE: card PAN in the name leaf → pii_blocked", () => {
+    const decision = adjudicate(
+      pix({ name: "4111 1111 1111 1111", email: "maria@x.com", cpf: VALID_CPF }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("pii_blocked")
+  })
+
+  it("REFUSE: card PAN in the email leaf → pii_blocked", () => {
+    const decision = adjudicate(
+      pix({ name: "Maria", email: "4111111111111111", cpf: VALID_CPF }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("ordering: PAN + email both in name → REFUSE wins over REWRITE", () => {
+    const decision = adjudicate(
+      pix({
+        name: "foo@bar.com 4111111111111111",
+        email: "maria@x.com",
+        cpf: VALID_CPF,
+      }),
+      baseState(),
+      customerOnboardingPack.policy,
+    )
+    expect(decision.kind).toBe("REFUSE")
   })
 })

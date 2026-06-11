@@ -35,6 +35,7 @@ import { getRedisClient } from "@ibatexas/tools"
 import { prisma } from "@ibatexas/domain"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import type { FastifyBaseLogger } from "fastify"
+import { observeDriftRecord } from "./observability/drift-detector.js"
 
 /**
  * Bootstrap the audit-sink dependency injection. Idempotent — safe to
@@ -63,19 +64,24 @@ export async function bootstrapAuditSinkDI(
     )
   }
 
-  const deps = buildAuditSinkDependencies({
-    redis,
-    prismaWriter: prisma,
-    natsPublisher: {
-      async publish(subject, payload) {
-        // `publishNatsEvent` prepends `ibatexas.` so the final NATS
-        // subject is `ibatexas.audit.intent.decision.v1`. Subscribers
-        // (`audit-consumer`) filter on the full subject.
-        await publishNatsEvent(subject, payload)
+  const deps = {
+    ...buildAuditSinkDependencies({
+      redis,
+      prismaWriter: prisma,
+      natsPublisher: {
+        async publish(subject, payload) {
+          // `publishNatsEvent` prepends `ibatexas.` so the final NATS
+          // subject is `ibatexas.audit.intent.decision.v1`. Subscribers
+          // (`audit-consumer`) filter on the full subject.
+          await publishNatsEvent(subject, payload)
+        },
       },
-    },
-    logger: log,
-  })
+      logger: log,
+    }),
+    // F3 — behavioral-drift tee. Fail-open (the leaf arm swallows); sees only
+    // redacted records. observe() is no-throw.
+    onAuditRecord: observeDriftRecord,
+  }
 
   __setAuditSinkDependencies(deps)
 

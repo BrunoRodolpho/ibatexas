@@ -12,6 +12,10 @@ import {
 import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { cartRoutes } from "../routes/cart.js";
+import {
+  createCheckoutConfirmationStore,
+  type PendingCheckout,
+} from "../routes/checkout-confirmation-store.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -28,6 +32,11 @@ const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
 // from the kernel decision; default to EXECUTE so the EXECUTE/REWRITE
 // branch of `runCustomerIntent` falls through to the route's own logic.
 const mockAdjudicate = vi.hoisted(() => vi.fn());
+// The checkout-confirm RESUME path routes through the AUDITED kernel verb
+// `adjudicateAndAudit` (from `@adjudicate/core`), not the pure `adjudicate`.
+// Mock it so confirm tests control the resolved decision without the real
+// kernel/audit-sink I/O. No existing test touches this verb.
+const mockAdjudicateAndAudit = vi.hoisted(() => vi.fn());
 
 const MockMedusaRequestError = vi.hoisted(() =>
   class extends Error {
@@ -125,6 +134,17 @@ vi.mock("@adjudicate/core/kernel", async (orig) => {
   };
 });
 
+// Preserve every real @adjudicate/core export (buildEnvelope, buildAuditRecord,
+// localizeDecision, …) — only the audited verb is swapped so the confirm path
+// is deterministic in the sandbox.
+vi.mock("@adjudicate/core", async (orig) => {
+  const actual = (await orig()) as Record<string, unknown>;
+  return {
+    ...actual,
+    adjudicateAndAudit: mockAdjudicateAndAudit,
+  };
+});
+
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
     const customerId = request.headers["x-customer-id"] as string | undefined;
@@ -168,6 +188,36 @@ function createMockRedis(overrides: Record<string, unknown> = {}) {
     set: vi.fn().mockResolvedValue("OK"),
     get: vi.fn().mockResolvedValue(null),
     ...overrides,
+  };
+}
+
+// Map-backed Redis with NX-aware `set` + a GET+DEL `eval` so the checkout
+// park→confirm round-trip (idempotency gate, cart-owner claim, single-use
+// confirmation receipt) can be exercised against one consistent store.
+function createStatefulRedis() {
+  const kv = new Map<string, string>();
+  return {
+    kv,
+    hSet: vi.fn().mockResolvedValue(1),
+    hDel: vi.fn().mockResolvedValue(1),
+    hGetAll: vi.fn().mockResolvedValue({}),
+    expire: vi.fn().mockResolvedValue(true),
+    set: vi.fn(async (key: string, val: string, opts?: { NX?: boolean }) => {
+      if (opts?.NX && kv.has(key)) return null;
+      kv.set(key, val);
+      return "OK";
+    }),
+    get: vi.fn(async (key: string) => kv.get(key) ?? null),
+    del: vi.fn(async (key: string) => (kv.delete(key) ? 1 : 0)),
+    eval: vi.fn(async (_script: string, opts: { keys: string[] }) => {
+      const key = opts.keys[0];
+      const val = kv.get(key);
+      if (val !== undefined) {
+        kv.delete(key);
+        return val;
+      }
+      return null;
+    }),
   };
 }
 
@@ -811,6 +861,168 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
 
     expect(res.statusCode).toBe(422);
     expect(res.json().code).toBe("INVALID_CPF");
+  });
+});
+
+// ── Large-ticket checkout confirmation (REQUEST_CONFIRMATION park→confirm) ──
+//
+// Web checkout now adjudicates against the REAL cart total, so the orders
+// pack's confirmLargeTicket guard returns REQUEST_CONFIRMATION for orders
+// ≥ R$1.000. The route parks the prepared checkout under a single-use
+// receipt; POST /api/cart/checkout/confirm consumes it and resumes the
+// EXECUTE through the kernel's confirmationReceipt seam. The hard cap
+// (≥ R$10.000) still REFUSEs even with a valid receipt.
+
+describe("POST /api/cart/checkout — large-ticket confirmation", () => {
+  let redis: ReturnType<typeof createStatefulRedis>;
+
+  const basePending = (
+    overrides: Partial<PendingCheckout> = {},
+  ): PendingCheckout => ({
+    kind: "order.checkout.create",
+    payload: { cartId: "cart_01", paymentMethod: "cash" },
+    idempotencyKey: "cart_01:checkout",
+    cartId: "cart_01",
+    customerId: "cus_01",
+    userType: "customer",
+    checkoutBody: { cartId: "cart_01", paymentMethod: "cash" },
+    prompt: "Confirmar pedido de R$ 1.500,00?",
+    createdAt: "2026-06-08T12:00:00.000Z",
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    redis = createStatefulRedis();
+    mockGetRedisClient.mockResolvedValue(redis);
+    // Defaults: the pure kernel and the audited verb both auto-resolve to
+    // EXECUTE; individual tests override to drive the branch under test.
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+    mockAdjudicateAndAudit.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      record: {},
+      ledgerHit: null,
+    });
+  });
+
+  it("≥ R$1.000 checkout → 202 with a confirmationId + prompt (parked)", async () => {
+    mockAdjudicate.mockReturnValue({
+      kind: "REQUEST_CONFIRMATION",
+      prompt: "Confirmar pedido de R$ 1.500,00?",
+      basis: [],
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "cash" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(202);
+    const body = res.json();
+    expect(body.confirmationRequired).toBe(true);
+    expect(body.confirmationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    expect(body.prompt).toBe("Confirmar pedido de R$ 1.500,00?");
+    expect(body.ttlSeconds).toBe(600);
+  });
+
+  it("park → confirm → EXECUTE 200 (full round-trip)", async () => {
+    // 1) Park: a ≥ R$1k checkout returns a single-use receipt.
+    mockAdjudicate.mockReturnValue({
+      kind: "REQUEST_CONFIRMATION",
+      prompt: "Confirmar?",
+      basis: [],
+    });
+    const app = await buildTestServer();
+    const parkRes = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_01", paymentMethod: "cash" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+    expect(parkRes.statusCode).toBe(202);
+    const confirmationId = parkRes.json().confirmationId as string;
+
+    // 2) Confirm: the audited verb resolves the receipt to EXECUTE → 200.
+    const confirmRes = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout/confirm",
+      payload: { confirmationId },
+      headers: { "x-customer-id": "cus_01" },
+    });
+    expect(confirmRes.statusCode).toBe(200);
+    expect(confirmRes.json().success).toBe(true);
+    expect(mockAdjudicateAndAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirm when the cart now ≥ R$10.000 → 403 (override does NOT rescue REFUSE)", async () => {
+    const store = createCheckoutConfirmationStore();
+    const { confirmationId } = await store.create(basePending());
+    // The kernel re-adjudicates against the grown cart and REFUSEs — the
+    // receipt only satisfies the "ask first" threshold, never the hard cap.
+    mockAdjudicateAndAudit.mockResolvedValue({
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          kind: "BUSINESS",
+          code: "amount_above_cap",
+          userFacing:
+            "Valor acima do limite permitido para checkout automático.",
+          detail: "cart total ≥ R$10.000",
+        },
+        basis: [],
+      },
+      record: {},
+      ledgerHit: null,
+    });
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout/confirm",
+      payload: { confirmationId },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(typeof res.json().error).toBe("string");
+    expect(mockAdjudicateAndAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirm by a different customer → 403 (ownership), never adjudicates", async () => {
+    const store = createCheckoutConfirmationStore();
+    const { confirmationId } = await store.create(
+      basePending({ customerId: "cus_OTHER" }),
+    );
+
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout/confirm",
+      payload: { confirmationId },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(mockAdjudicateAndAudit).not.toHaveBeenCalled();
+  });
+
+  it("confirm with an expired / already-used receipt → 410", async () => {
+    const app = await buildTestServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout/confirm",
+      payload: { confirmationId: "11111111-2222-3333-4444-555555555555" },
+      headers: { "x-customer-id": "cus_01" },
+    });
+
+    expect(res.statusCode).toBe(410);
+    expect(res.json().code).toBe("CONFIRMATION_EXPIRED");
   });
 });
 

@@ -129,3 +129,32 @@ export function resolveServices(key: string | undefined): ServiceDef[] {
 
   return [svc]
 }
+
+// ── Infrastructure endpoints ────────────────────────────────────────────────
+
+export interface InfraEndpoint {
+  name: string
+  address: string
+}
+
+/** Resolve the docker-compose infra addresses from env (same vars + defaults as
+ *  docker-compose.yml). Source-of-truth for infra ports shown by `ibx dev urls`
+ *  and probed by `ibx svc status`. */
+export function infraEndpoints(): InfraEndpoint[] {
+  const databaseUrl = process.env.DATABASE_URL ?? ""
+  const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379"
+  const typesenseHost = process.env.TYPESENSE_HOST ?? "localhost"
+  const typesensePort = process.env.TYPESENSE_PORT ?? "8108"
+  const natsUrl = process.env.NATS_URL ?? "nats://localhost:4222"
+
+  const dbUrl = new URL(databaseUrl || "postgresql://localhost:5433/ibatexas")
+  const redisUrlParsed = new URL(redisUrl)
+  const natsUrlParsed = new URL(natsUrl)
+
+  return [
+    { name: "PostgreSQL", address: `${dbUrl.hostname}:${dbUrl.port || 5433}` },
+    { name: "Redis", address: `${redisUrlParsed.hostname}:${redisUrlParsed.port || 6379}` },
+    { name: "Typesense", address: `http://${typesenseHost}:${typesensePort}` },
+    { name: "NATS", address: `${natsUrlParsed.hostname}:${natsUrlParsed.port || 4222}` },
+  ]
+}

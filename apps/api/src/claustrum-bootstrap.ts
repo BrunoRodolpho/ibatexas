@@ -84,6 +84,7 @@ import type {
   Ledger,
 } from "@adjudicate/core";
 import {
+  AUDIT_RECORD_VERSION,
   adjudicateAndAudit,
   decisionRefuse,
   installPack,
@@ -104,7 +105,7 @@ import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br";
 // TODO(post-cutover): swap these to canonical `@ibatexas/pack-*` imports
 // once each pack's package.json is restored.
 import { prisma } from "@ibatexas/domain";
-import { getRedisClient } from "@ibatexas/tools";
+import { getRedisClient, rk } from "@ibatexas/tools";
 
 // Audit sink — dev's audit pipeline owns the durable AuditRecord store. The
 // adjudicator consumes the sink composed by `@ibatexas/audit-sink` (boot-time
@@ -139,7 +140,23 @@ import {
   resolveCapabilityPolicy,
   type CapabilityPolicyPack,
 } from "./claustrum/capability-policy.js";
+import {
+  SESSION_TOKEN_BUDGET,
+  IBATEXAS_ADOPTER_BUSINESS_GUARDS,
+  buildIbatexasPolicyPacks,
+  type ErasedPack,
+} from "./claustrum/compose-policy-packs.js";
+import {
+  verifyConfigSeal,
+  type SealablePackInput,
+} from "@adjudicate/conformance";
 import { createIbatexasPlanner } from "./claustrum/ibatexas-planner.js";
+import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
+import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
+import {
+  createInMemoryTokenUsageStore,
+  type TokenUsageStore,
+} from "@adjudicate/adapter-core";
 import {
   listIbatexasToolPacks,
   registerIbatexasToolPacks,
@@ -182,6 +199,35 @@ export interface AdjudicatorBridgeDeps {
 }
 
 /**
+ * Re-assemble the per-envelope SystemState ctx for a parked (already-resolved)
+ * envelope on the resume path. The claustrum resume path adjudicates against
+ * `resolution.state` (channel + customerId), not the plan-stage resolver's
+ * enriched ctx — so without this the pack stateGuards would panic on the stub.
+ * The parked envelope carries the RESOLVED id, so we re-load its entity state
+ * (scoped to customerId). Fail-safe: falls back to the supplied state on any gap.
+ */
+async function enrichResumeState(
+  envelope: IntentEnvelope,
+  state: unknown,
+): Promise<unknown> {
+  const s = state as { channel?: string; customerId?: string };
+  if (typeof s.customerId !== "string" || typeof s.channel !== "string") {
+    return state;
+  }
+  try {
+    const { ctx } = await resolveAndAssemble({
+      kind: envelope.kind,
+      payload: (envelope.payload ?? {}) as Record<string, unknown>,
+      customerId: s.customerId,
+      channel: s.channel,
+    });
+    return { ctx };
+  } catch {
+    return state;
+  }
+}
+
+/**
  * Wraps `@adjudicate/core`'s audited kernel verb (`adjudicateAndAudit`) +
  * `@adjudicate/audit-postgres` into the claustrum `Adjudicator` port. This is
  * the ONLY place in the ibatexas codebase that imports the kernel directly.
@@ -211,10 +257,21 @@ export function buildAdjudicator(deps: AdjudicatorBridgeDeps): Adjudicator {
       // receipt (money-safety / the audit invariant). Omitting the receipt
       // (a deferred envelope whose condition is now met) is a plain
       // re-adjudication: EXECUTE only if the guards naturally pass.
+      //
+      // RESUME-PATH STATE ENRICHMENT: the claustrum resume path re-adjudicates the
+      // PARKED envelope against `resolution.state` (channel+customerId), NOT the
+      // plan-stage resolver's enriched ctx — so without this, the pack stateGuards
+      // would panic on the stub ctx. The parked envelope already carries the
+      // RESOLVED id (orderId/reservationId), so we re-assemble the per-envelope ctx
+      // here from it (scoped to the resolved customerId). The auto-resolve flag is
+      // NOT re-set (the id is now explicit), so confirm-on-autoresolve passes and
+      // the kernel re-adjudicates against FRESH entity state (money-safety: a state
+      // change since parking, e.g. order already shipped, REFUSEs).
+      const resumeState = await enrichResumeState(envelope as IntentEnvelope, state);
       return safeAuditedAdjudicate(
         deps,
         envelope as IntentEnvelope,
-        state,
+        resumeState,
         policy,
         receipt,
       );
@@ -376,7 +433,8 @@ async function safeAuditedAdjudicate(
 
 // ── First-party pack installation ────────────────────────────────────────────
 
-function installFirstPartyPacks(): void {
+function installFirstPartyPacks(): SealablePackInput[] {
+  const installed: SealablePackInput[] = [];
   // Each pack registers its (kind, payload, state) shape with the kernel.
   // installPack is the kernel-side variant; the runtime never reaches in to
   // mutate the registry — it's a one-time boot step.
@@ -404,6 +462,9 @@ function installFirstPartyPacks(): void {
         pack.default;
       if (value && typeof installPack === "function") {
         installPack(value);
+        // Seal the SOURCE pack object (pre-installPack-wrap; withBasisAudit
+        // strips guard metadata) so the F5 config seal pins the real surface.
+        installed.push(value as SealablePackInput);
       }
     } catch (err) {
       logger.warn(
@@ -412,6 +473,68 @@ function installFirstPartyPacks(): void {
       );
     }
   }
+  return installed;
+}
+
+// ── F5: config integrity seal (boot gate) ───────────────────────────────────
+// Pins each money-pack's introspectable config surface (intents, basis vocab,
+// per-guard metadata, default verdict, per-intent taint minimum) to a sha256
+// digest. SAFE BY DEFAULT: when CONFIG_SEAL_DIGESTS is unset the gate is a
+// no-op — enforcement activates only when an operator mints digests
+// (`ibx kernel seal`) and pins them. When pinned, a mismatch (or a pinned pack
+// that did not install) fails the WHOLE boot CLOSED, before any traffic.
+//
+// DEPTH CAVEAT: the seal pins guard count/order/metadata/default-verdict/taint-
+// minimum — NOT guard function BODIES (describePolicyBundle emits only metadata).
+// It is a config-DRIFT tripwire complementary to golden vectors, not behavioral
+// attestation.
+function parseSealDigests(raw: string | undefined): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!raw) return map;
+  for (const entry of raw.split(";")) {
+    const [id, hex] = entry.split("=").map((s) => s.trim());
+    if (id && hex) map.set(id, hex.toLowerCase());
+  }
+  return map;
+}
+
+function assertConfigSealOrThrow(
+  packs: ReadonlyArray<SealablePackInput>,
+): void {
+  // Tests build ad-hoc packs; never seal-gate them.
+  if ((process.env.NODE_ENV ?? "dev") === "test") return;
+  const pinned = parseSealDigests(process.env.CONFIG_SEAL_DIGESTS);
+  if (pinned.size === 0) return; // safe default — unset ⇒ no enforcement
+  const byId = new Map(packs.map((p) => [p.id, p]));
+  const mismatches: string[] = [];
+  for (const [id, expected] of pinned) {
+    const pack = byId.get(id);
+    if (!pack) {
+      mismatches.push(
+        `pinned pack '${id}' did not install (removed/renamed?)`,
+      );
+      continue;
+    }
+    const report = verifyConfigSeal(
+      pack,
+      { schemaVersion: 1, digest: expected, packId: id },
+      { policy: "require_digest" },
+    );
+    if (!report.verified) {
+      mismatches.push(
+        `pack '${id}' SEAL_MISMATCH: expected ${expected.slice(0, 12)}…, got ${report.computedDigest.slice(0, 12)}…`,
+      );
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `[config-seal] boot refused — pack config drift detected:\n  ${mismatches.join("\n  ")}`,
+    );
+  }
+  logger.info(
+    { component: "startup", sealedPacks: pinned.size },
+    "[config-seal] all pinned pack config seals verified",
+  );
 }
 
 function stripScope(name: string): string {
@@ -449,6 +572,33 @@ async function assertAuditPostgresReady(pool: Pool): Promise<void> {
     if (Number(parts.rows[0]?.n ?? 0) < 1) {
       throw new Error(
         "table 'intent_audit' has no partitions — a write would be rejected",
+      );
+    }
+    // (3) The record_version CHECK admits the version THIS build's
+    // @adjudicate/core stamps (AUDIT_RECORD_VERSION). The sink writes
+    // `record_version` unconditionally, so when core bumps the version (v4→v5,
+    // ADR-124) without migration 010 widening the CHECK, EVERY audit insert
+    // fails Postgres 23514 (check_violation) at the first decision. Catch it at
+    // boot — fail CLOSED here, not at the first payment. Tracks the installed
+    // core version so it never needs hand-editing on a future bump.
+    const conDef = await pool.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_catalog.pg_constraint ` +
+        `WHERE conrelid = 'intent_audit'::regclass ` +
+        `AND conname = 'intent_audit_record_version_check'`,
+    );
+    const def = conDef.rows[0]?.def as string | undefined;
+    if (!def) {
+      throw new Error(
+        "record_version CHECK 'intent_audit_record_version_check' is absent",
+      );
+    }
+    const v = AUDIT_RECORD_VERSION;
+    // Postgres normalizes `IN (…)` to `= ANY (ARRAY[…])`; match the integer as a
+    // standalone token so v5 doesn't false-match inside e.g. "15".
+    if (!new RegExp(`(^|[^0-9])${v}([^0-9]|$)`).test(def)) {
+      throw new Error(
+        `record_version CHECK does not admit v${v} (core stamps ${v}; constraint is "${def}"). ` +
+          `Run 'ibx kernel migrate' to apply the v${v} migration before serving.`,
       );
     }
   } catch (err) {
@@ -518,17 +668,42 @@ function noopHandoff(): HandoffPort {
  * `CapabilityPolicyPack` shape (heterogeneous K/P/S erased to string/unknown) so
  * one router can dispatch across all domains. See capability-policy.ts.
  */
-const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> = [
-  ordersPack,
-  paymentsPack,
-  reservationsPack,
-  customerOnboardingPack,
-  whatsappPack,
-].map((p) => ({
-  id: p.id,
-  intents: [...p.intents],
-  policy: p.policy as unknown as PolicyBundle<string, unknown, unknown>,
-}));
+// TokenUsageStore (ADR-135) — TELEMETRY ONLY, strictly outside the determinism
+// boundary. Dashboard-facing per-session / per-tenant consumption + exhaustion
+// events; fed from emitTurn (below). It is an INDEPENDENT read of the same usage
+// the F4 guard meters off the Redis counter — there is no edge between them, so
+// the kernel's decision path is untouched. Process-local + LRU-bounded (a real
+// cross-instance dashboard would swap in a Redis-backed impl behind the same
+// interface — a documented follow-up). Budgets seed from the same env as the guard.
+const PER_TENANT_TOKEN_BUDGET = Number.parseInt(
+  process.env.AGENT_TENANT_TOKEN_BUDGET ?? "0",
+  10,
+);
+const tokenUsageStore: TokenUsageStore = createInMemoryTokenUsageStore({
+  ...(Number.isFinite(SESSION_TOKEN_BUDGET)
+    ? { sessionBudget: SESSION_TOKEN_BUDGET }
+    : {}),
+  ...(Number.isFinite(PER_TENANT_TOKEN_BUDGET) && PER_TENANT_TOKEN_BUDGET > 0
+    ? { perTenantBudget: PER_TENANT_TOKEN_BUDGET }
+    : {}),
+});
+
+// The adopter-level business guards (F4 token-budget + confirm-on-autoresolve)
+// and the prepend composition live in `./claustrum/compose-policy-packs.ts` so
+// the policy-manifest exporter describes the IDENTICAL post-prepend bundles the
+// kernel runs. `buildIbatexasPolicyPacks` performs the exact per-pack prepend
+// that was previously inlined here.
+const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> =
+  buildIbatexasPolicyPacks(
+    [
+      ordersPack,
+      paymentsPack,
+      reservationsPack,
+      customerOnboardingPack,
+      whatsappPack,
+    ] as unknown as ReadonlyArray<ErasedPack>,
+    IBATEXAS_ADOPTER_BUSINESS_GUARDS,
+  );
 
 /** One kind-dispatching PolicyBundle over every installed pack (built once). */
 const IBATEXAS_POLICY_ROUTER = composePolicyRouter(IBATEXAS_POLICY_PACKS);
@@ -643,24 +818,111 @@ function naiveResponder(model: AnthropicProvider): ResponderPort {
           { role: "user", content: input.cognition.perception.text },
         ],
       });
-      return { text: completion.text };
+      // F4 / cost accounting: report this turn's synthesis-model token usage so
+      // the loop sums it (plan.usage + draft.usage) onto the TurnRecord.
+      return {
+        text: completion.text,
+        usage: {
+          inputTokens: completion.inputTokens,
+          outputTokens: completion.outputTokens,
+        },
+      };
     },
   };
 }
 
 /**
- * Redis-backed SessionPort. Mirrors the existing
- * `apps/api/src/session/store.ts` semantics (key format, TTLs, ownership
- * checks). Full migration into claustrum's port shape — including parked-
- * envelope semantics — is the next iteration.
+ * Redis-backed SessionPort (claustrum runtime). Persists the full Session
+ * (working memory, parked/deferred envelopes, goals) as a JSON blob keyed by
+ * sessionId, in a namespace distinct from the conversation-history list in
+ * `apps/api/src/session/store.ts`. TTLs mirror that store: 24h for an
+ * authenticated customer, 48h for a guest.
+ *
+ * Persistence model — matches the claustrum Conductor (conductor.ts):
+ *   - openCapsule → `load()`           : held as the immutable `loadedSession`.
+ *   - dispatch    → `park*`/`unpark(sessionId, …)` : read-modify-write on the
+ *     STORE by sessionId (NOT on the in-memory object).
+ *   - closeCapsule→ `load()` + `save()`: re-reads (picking up the parks made
+ *     during dispatch) and persists.
+ * The Conductor holds a per-session lock for the whole turn (conductor.ts:108),
+ * so the read-modify-write park ops are serialized — no WATCH/MULTI needed.
+ *
+ * CRITICAL: `load()` PERSISTS a freshly-created session. Otherwise a park-by-id
+ * during the first turn would read an absent key and silently no-op — the bug
+ * the previous stub shipped (every REQUEST_CONFIRMATION was dropped).
  */
+// Mirror apps/api/src/session/store.ts (the established session-TTL convention).
+const CLAUSTRUM_SESSION_TTL_GUEST_SECONDS = 48 * 60 * 60; // 48h
+const CLAUSTRUM_SESSION_TTL_CUSTOMER_SECONDS = 24 * 60 * 60; // 24h
+
+function claustrumSessionKey(sessionId: string): string {
+  // Distinct namespace from `session:<id>` (the history list) — rule #7: rk().
+  return rk(`claustrum:session:${sessionId}`);
+}
+
+/** Guest-marker convention shared with the planner + tool registry. */
+function isGuestCustomerId(customerId: string): boolean {
+  return /^(guest|anon|anonymous):/i.test(customerId);
+}
+
+// ── Per-session LLM token accounting (cost-cap seam, ADR-120 / F4) ──────────────
+// Both sides are now wired:
+//   WRITE — `emitTurn` (below) folds each turn's planning + synthesis token total
+//     (summed onto the TurnRecord by claustrum's loop from plan.usage + draft.usage)
+//     into a per-session Redis counter, keyed `${channel}:${customerId}`, stored
+//     OUTSIDE the audit ledger.
+//   READ  — the pre-adjudication resolve stage (claustrum/resolve-and-assemble.ts)
+//     reads that counter back into `state.ctx.sessionTokensConsumed` for EVERY
+//     envelope, so the `sessionTokenBudgetGuard` (prepended to every pack's
+//     business phase) REFUSEs once the session crosses AGENT_SESSION_TOKEN_BUDGET.
+// `sessionTokenKey` is the single source of truth, exported by resolve-and-assemble
+// (the read side) and imported here (the write side) so the key can never drift.
+
 function redisSessionStore(): SessionPort {
-  let current: Session | null = null;
+  async function readSession(sessionId: string): Promise<Session | null> {
+    const redis = await getRedisClient();
+    const raw = await redis.get(claustrumSessionKey(sessionId));
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as Session;
+    } catch {
+      // Corrupt blob → treat as absent; a fresh session is rebuilt (fail-safe).
+      return null;
+    }
+  }
+
+  async function writeSession(session: Session): Promise<void> {
+    const redis = await getRedisClient();
+    const ttl = isGuestCustomerId(session.customerId)
+      ? CLAUSTRUM_SESSION_TTL_GUEST_SECONDS
+      : CLAUSTRUM_SESSION_TTL_CUSTOMER_SECONDS;
+    await redis.set(claustrumSessionKey(session.id), JSON.stringify(session), {
+      EX: ttl,
+    });
+  }
+
+  // Read-modify-write a stored session by id. No-op if the session is unknown
+  // (per the SessionPort contract). Serialized by the Conductor's per-session
+  // lock, so a plain RMW is race-free.
+  async function mutateSession(
+    sessionId: string,
+    fn: (s: Session) => Session,
+  ): Promise<void> {
+    const existing = await readSession(sessionId);
+    if (!existing) return;
+    await writeSession({
+      ...fn(existing),
+      lastActivityAt: new Date().toISOString(),
+    });
+  }
+
   return {
     async load(customerId, channel) {
-      const now = new Date().toISOString();
       const sessionId = `${channel}:${customerId}`;
-      current = {
+      const existing = await readSession(sessionId);
+      if (existing) return existing;
+      const now = new Date().toISOString();
+      const fresh: Session = {
         id: sessionId,
         customerId,
         channel,
@@ -671,30 +933,62 @@ function redisSessionStore(): SessionPort {
         activeGoals: [],
         workingMemory: { summary: "", facts: [], updatedAt: now },
       };
-      return current;
+      // Persist on first load so a park-by-id during this turn finds it.
+      await writeSession(fresh);
+      return fresh;
     },
-    async save(_session) {
-      // TODO: persist to Redis using rk() keys
-      return;
+
+    async save(session) {
+      await writeSession(session);
     },
-    // SessionPort.current() was removed (RC-R3 SessionHandle residual): park ops
-    // now name their target session explicitly by sessionId rather than acting on
-    // a process-global "last loaded" session.
-    async parkPendingConfirmation(_sessionId, _envelope, _token, _prompt) {
-      // TODO
-      return;
+
+    // Park ops name their target session explicitly by sessionId (RC-R3): no
+    // process-global "current" session, so concurrent turns can't cross-park.
+    async parkPendingConfirmation(
+      sessionId,
+      envelope,
+      confirmationToken,
+      userPrompt,
+    ) {
+      const parkedAt = new Date().toISOString();
+      await mutateSession(sessionId, (s) => ({
+        ...s,
+        pendingConfirmations: [
+          // de-dupe by intentHash so a re-park replaces the prior entry
+          ...s.pendingConfirmations.filter(
+            (p) => p.envelope.intentHash !== envelope.intentHash,
+          ),
+          { envelope, confirmationToken, userPrompt, parkedAt },
+        ],
+      }));
     },
-    async parkDeferred(_sessionId, _envelope, _signal, _until, _timeoutMs) {
-      // TODO
-      return;
+
+    async parkDeferred(sessionId, envelope, signal, deferUntil, timeoutMs) {
+      const parkedAt = new Date().toISOString();
+      await mutateSession(sessionId, (s) => ({
+        ...s,
+        deferredEnvelopes: [
+          ...s.deferredEnvelopes.filter(
+            (d) => d.envelope.intentHash !== envelope.intentHash,
+          ),
+          { envelope, signal, deferUntil, timeoutMs, parkedAt },
+        ],
+      }));
     },
-    async unpark(_sessionId, _intentHash) {
-      // TODO
-      return;
+
+    async unpark(sessionId, intentHash) {
+      await mutateSession(sessionId, (s) => ({
+        ...s,
+        pendingConfirmations: s.pendingConfirmations.filter(
+          (p) => p.envelope.intentHash !== intentHash,
+        ),
+        deferredEnvelopes: s.deferredEnvelopes.filter(
+          (d) => d.envelope.intentHash !== intentHash,
+        ),
+      }));
     },
     // SessionPort.isStale() was removed upstream (claustrum APIReviewer-011,
-    // commit 21c5393 — it was unused in the runtime). This consumer stub is
-    // kept in sync with the port; do not re-add isStale.
+    // commit 21c5393 — it was unused in the runtime). Do not re-add it.
   };
 }
 
@@ -703,7 +997,7 @@ function redisSessionStore(): SessionPort {
  * layer). The full implementation will fan out to prom-client metrics
  * and the existing audit-sink subscriber.
  */
-function fastifyTelemetry(): TelemetryPort {
+function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
   return {
     async emitTurn(record: TurnRecord) {
       logger.info(
@@ -716,9 +1010,55 @@ function fastifyTelemetry(): TelemetryPort {
         },
         `turn ${record.turnId} ${record.durationMs}ms`,
       );
+      // Fold this turn's model token total (summed onto the TurnRecord by
+      // claustrum's loop from plan.usage + draft.usage) into the per-session
+      // counter the F4 budget guard reads (via resolve-and-assemble). The READ
+      // side now closes the loop: the resolver injects this counter into
+      // state.ctx.sessionTokensConsumed at the next turn's adjudication.
+      // Best-effort: telemetry must never break a turn.
+      try {
+        const total = (record.inputTokens ?? 0) + (record.outputTokens ?? 0);
+        if (total > 0) {
+          const redis = await getRedisClient();
+          const sessionKey = sessionTokenKey(record.channel, record.customerId);
+          const ttl = isGuestCustomerId(record.customerId)
+            ? CLAUSTRUM_SESSION_TTL_GUEST_SECONDS
+            : CLAUSTRUM_SESSION_TTL_CUSTOMER_SECONDS;
+          await redis
+            .multi()
+            .incrBy(sessionKey, total)
+            .expire(sessionKey, ttl)
+            .exec();
+        }
+      } catch (err) {
+        logger.warn(
+          { component: "conductor", event: "token_fold_failed", error: String(err) },
+          "per-session token fold failed; ignoring",
+        );
+      }
+      // TokenUsageStore (ADR-135) telemetry — dashboard-facing, independent of the
+      // Redis fold above (no edge to the F4 guard). Best-effort; never breaks a turn.
+      try {
+        const total = (record.inputTokens ?? 0) + (record.outputTokens ?? 0);
+        if (total > 0) {
+          usageStore.record({
+            sessionId: `${record.channel}:${record.customerId}`,
+            tenantId: record.tenantId ?? process.env.KERNEL_TENANT_ID ?? "ibatexas",
+            total,
+            at: record.at,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          { component: "conductor", event: "token_usage_store_failed", error: String(err) },
+          "token-usage store record failed; ignoring",
+        );
+      }
     },
     async emitLLMTrace(_trace) {
-      // TODO: persist to dedicated LLM-trace store (NOT the audit ledger).
+      // Token accounting is folded at emitTurn off the TurnRecord (the
+      // once-per-turn seam that carries customerId). Durable LLM-trace
+      // persistence (separate retention from the audit ledger) is a follow-up.
       return;
     },
     async emitMemoryAccess(_record: MemoryAccess) {
@@ -733,7 +1073,7 @@ function fastifyTelemetry(): TelemetryPort {
  * Packs at registration time (kernel-side state).
  */
 const resolveIbatexasTenantPolicy: TenantResolver = {
-  async resolve({ channel }) {
+  async resolve({ channel, customerId }) {
     return {
       tenant: {
         tenantId: "ibatexas",
@@ -744,9 +1084,11 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
           | "staging"
           | "prod",
       },
-      // Real SystemState is assembled by the planner + kernel from the
-      // per-request Capsule (cart, customer, etc.). Static empty for now.
-      state: { channel },
+      // Fallback SystemState. The conductor's resolve stage (IbatexasResolverPort)
+      // assembles the real per-envelope ctx for the PLAN path; this carries
+      // channel + customerId so the Adjudicator's resume path can re-assemble the
+      // ctx from the (resolved) parked envelope on confirm/defer resumption.
+      state: { channel, customerId },
       // Per-capability PolicyBundle resolution: one kind-dispatching router over
       // the installed packs (RC-A1 Phase A.2 — capability-policy.ts). Replaces the
       // `{}` that fail-closed every mutation. INERT until bootstrapClaustrum() runs.
@@ -760,7 +1102,10 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
 export async function bootstrapClaustrum(): Promise<Conductor> {
   if (_conductor) return _conductor;
 
-  installFirstPartyPacks();
+  const installedPacks = installFirstPartyPacks();
+  // F5 — fail boot CLOSED on pack config drift (no-op unless CONFIG_SEAL_DIGESTS
+  // is pinned). Runs before audit-postgres/tool-roster gates and before traffic.
+  assertConfigSealOrThrow(installedPacks);
 
   // Live decision observability — install the structured MetricsSink so every
   // kernel decision / refusal / ledger op / audit-sink failure emits a
@@ -913,11 +1258,16 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     responder: naiveResponder(modelProvider),
     explainer: ibatexasExplainer(),
     handoff: noopHandoff(),
-    telemetry: fastifyTelemetry(),
+    telemetry: fastifyTelemetry(tokenUsageStore),
     session: redisSessionStore(),
     tools: toolRegistry,
     channels,
     tenantResolver: resolveIbatexasTenantPolicy,
+    // F4 / conductor rich-state: the pre-adjudication resolve stage assembles the
+    // per-pack SystemState (real entity state + sessionTokensConsumed) so the
+    // kernel adjudicates commerce mutations correctly instead of panic-REFUSING
+    // against the stub tenant state. See claustrum/resolve-and-assemble.ts.
+    resolver: createIbatexasResolver(),
   });
 
   return _conductor;

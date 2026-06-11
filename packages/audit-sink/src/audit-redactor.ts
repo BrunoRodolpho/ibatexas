@@ -90,6 +90,17 @@ import {
   type Decision,
   type IntentActor,
 } from "@adjudicate/core"
+// Single PII taxonomy — shared with the decision-layer createDataClassificationGuard
+// so the redactor and guard can never drift (adversarial-audit finding).
+import {
+  CARD_RE,
+  CPF_RE,
+  EMAIL_RE,
+  HASH_PREFIX,
+  isSentinelString,
+  PHONE_RE,
+  PII_SENTINELS,
+} from "@ibatexas/pii"
 
 // ── Field-name rules ──────────────────────────────────────────────────────────
 //
@@ -194,13 +205,14 @@ const HASH_FIELDS: ReadonlySet<string> = new Set([
 // sentinel format `[REDACTED:*]` plus the `hashed:xxxxxxxx` prefix gives
 // us a stable detection surface — see `isAlreadyRedacted`.
 
-const SENTINEL_FIELD = "[REDACTED]"
-const SENTINEL_CPF = "[REDACTED:CPF]"
-const SENTINEL_EMAIL = "[REDACTED:EMAIL]"
-const SENTINEL_PHONE = "[REDACTED:PHONE]"
-const SENTINEL_CARD = "[REDACTED:CARD]"
-const SENTINEL_LONG = "[REDACTED:TRUNCATED]"
-const HASH_PREFIX = "hashed:"
+// Aliased from @ibatexas/pii to the existing in-file names so the rest of this
+// module is untouched. (HASH_PREFIX + the regexes + isSentinelString are imported.)
+const SENTINEL_FIELD = PII_SENTINELS.FIELD
+const SENTINEL_CPF = PII_SENTINELS.CPF
+const SENTINEL_EMAIL = PII_SENTINELS.EMAIL
+const SENTINEL_PHONE = PII_SENTINELS.PHONE
+const SENTINEL_CARD = PII_SENTINELS.CARD
+const SENTINEL_LONG = PII_SENTINELS.TRUNCATED
 
 // String length cap. Two purposes:
 //   - Defense against a runaway LLM payload that embeds a megabyte of taint.
@@ -209,62 +221,10 @@ const HASH_PREFIX = "hashed:"
 //     length and keep the prefix.
 const MAX_STRING_LENGTH = 500
 
-// Detect strings that are already redactor output. Anchored to avoid matching
-// substrings of free-form text — only an exact match counts as "already
-// redacted". A regex-match line that produced "[REDACTED:CPF] is my doc"
-// would re-trigger on a second pass because the line is no longer a pure
-// sentinel — that's fine, it stays at "[REDACTED:CPF] is my doc" idempotent
-// because the regex output is the same sentinel.
-function isSentinelString(s: string): boolean {
-  return (
-    s === SENTINEL_FIELD ||
-    s === SENTINEL_CPF ||
-    s === SENTINEL_EMAIL ||
-    s === SENTINEL_PHONE ||
-    s === SENTINEL_CARD ||
-    s === SENTINEL_LONG ||
-    s.startsWith(HASH_PREFIX)
-  )
-}
-
-// ── Regex rules ───────────────────────────────────────────────────────────────
-//
-// Last-line-of-defense: even if a field name escapes the REDACT/HASH sets,
-// values that *look* like PII get masked.
-//
-// Patterns deliberately tighter than `sanitize-analytics.ts`:
-//   - CPF anchored to the canonical 11-digit shape (with or without separators).
-//   - Phone restricted to the Brazilian (+55) form to avoid false positives
-//     on innocuous numeric strings (e.g. order ids, prices).
-//   - Email is the same loose RFC-ish shape used by PostHog sanitizer.
-//   - Card: the strict 13-19 digit visa/mc/amex prefix family.
-//
-// Each pattern uses the `g` flag so multiple occurrences in one string get
-// replaced; the `replace` callback is idempotent because the sentinel itself
-// does NOT match any of these patterns.
-
-// NEW-P1-CPF (deep-audit hidden bug #7): the previous lookahead
-//   (?![\d.-])
-// rejected `-` as a trailing char, so `12345678900-foo` slipped past
-// redaction. The lookahead now only blocks another digit — `.` and `-`
-// after a CPF mark a non-CPF boundary (concatenation with a tag) and
-// the match should fire. Lookbehind unchanged: a `-` BEFORE the CPF
-// would still mean we're mid-sequence in a longer number (e.g.
-// `999-12345678900-456` is two fragments, not a CPF).
-const CPF_RE = /(?<![\d.-])(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/g
-const EMAIL_RE = /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g
-// Brazilian phone shapes:
-//   - +55 11 99999-9999 (international)
-//   - 55 11 99999-9999  (no +)
-//   - (11) 99999-9999   (national display)
-//   - 11999999999       (11-digit mobile)
-//   - 1199999999        (10-digit landline)
-//   - 5511999999999     (DDI-prefixed 13-digit)
-const PHONE_RE =
-  /(?<!\d)(?:\+?55)?\s?\(?\d{2}\)?\s?9?\d{4}[-\s]?\d{4}(?!\d)/g
-// Stripe/Visa/MC card-like 13-19 digit run. We deliberately accept embedded
-// separators (spaces, dashes) so "4111-1111-1111-1111" gets caught.
-const CARD_RE = /(?<!\d)(?:\d[\s-]?){13,19}(?!\d)/g
+// `isSentinelString` (exact sentinel match or `hashed:` prefix) and the value
+// regexes (CPF_RE / EMAIL_RE / PHONE_RE / CARD_RE — tuned for BR PII, g-flagged,
+// last-line-of-defense over field values) are imported from @ibatexas/pii, the
+// single taxonomy shared with the decision-layer guard.
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -890,14 +850,14 @@ function redactActorSessionId(
 
 // ── Audit-hash recomputation helper ───────────────────────────────────────────
 //
-// `verifyAuditRecord` from `@adjudicate/core/audit.ts:235-249` does:
-//   const { auditHash, signature, ...rest } = record
+// `verifyAuditRecord` from `@adjudicate/core` (audit.ts) does (v5+):
+//   const { auditHash, signature, metadata, ...rest } = record
 //   const derived = sha256Canonical(rest)
 //   return derived === auditHash ? verified : tampered
 //
 // To produce a record where this returns `verified: true`, the redactor
 // must compute the SAME canonical-JSON hash over the SAME record minus
-// auditHash + signature. We replicate the strip-and-hash here.
+// auditHash + signature + metadata. We replicate the strip-and-hash here.
 //
 // Records lacking a v4 `auditHash` (pre-v4 audit records) get a freshly
 // computed one — this is upgrade-friendly. Records with a signature: the
@@ -905,12 +865,16 @@ function redactActorSessionId(
 // redaction. If non-repudiation is needed downstream, the signer must
 // re-sign post-redaction (out of scope for the redactor).
 function recomputeAuditHash(record: AuditRecord): AuditRecord {
-  // Strip auditHash + signature before deriving. Mirrors verifyAuditRecord.
-  const { auditHash: _previous, signature: _signature, ...rest } = record
+  // Strip auditHash + signature + metadata before deriving. Mirrors
+  // verifyAuditRecord (core audit.ts): metadata (v5+) is EXCLUDED from the hash
+  // pre-image, so a record that later carries governance metadata still
+  // verifies. We re-attach metadata to the output unchanged — it survives
+  // redaction but is never part of the tamper-evident pre-image.
+  const { auditHash: _previous, signature: _signature, metadata, ...rest } = record
   void _previous
   void _signature
   const auditHash = sha256Canonical(rest)
-  return { ...rest, auditHash }
+  return metadata === undefined ? { ...rest, auditHash } : { ...rest, metadata, auditHash }
 }
 
 // ── Walker ────────────────────────────────────────────────────────────────────

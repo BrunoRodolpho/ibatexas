@@ -19,6 +19,8 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import { createCheckoutConfirmationStore } from "./checkout-confirmation-store.js";
+import { identityCtx, loadCartCtx } from "../claustrum/resolve-and-assemble.js";
 import {
   getRedisClient,
   rk,
@@ -253,6 +255,124 @@ async function verifyCartOwnership(
   // Another request won the race — check if it was us
   const actualOwner = await redis.get(ownerKey);
   return actualOwner === customerId;
+}
+
+// Single-use store for parked large-ticket checkouts (REQUEST_CONFIRMATION).
+// Stateless — receipts live in Redis; one module instance is fine.
+const checkoutConfirmationStore = createCheckoutConfirmationStore();
+
+/**
+ * Shared post-checkout finalize: apply the money-path side effects + shape
+ * the response. Used by BOTH `POST /api/cart/checkout` (EXECUTE) and
+ * `POST /api/cart/checkout/confirm` so the two paths never drift.
+ */
+async function finalizeCheckout(args: {
+  reply: FastifyReply;
+  result: Awaited<ReturnType<typeof createCheckout>>;
+  cartId: string;
+  paymentMethod: "pix" | "card" | "cash";
+  customerId: string | undefined;
+  pixExtra?: { customerName?: string; customerEmail?: string; customerTaxId?: string };
+  notes?: string;
+  /**
+   * Called on a fixable (400) failure before responding — e.g. release the
+   * checkout idempotency gate so the customer can correct + retry without
+   * waiting out the 120s TTL. Omitted on the confirm path (no gate held;
+   * the single-use receipt already prevents a double-confirm).
+   */
+  onFixableFailure?: () => Promise<void>;
+}): Promise<FastifyReply> {
+  const { reply, result, cartId, paymentMethod, customerId, pixExtra, notes, onFixableFailure } = args;
+
+  if (!result.success) {
+    if (onFixableFailure) await onFixableFailure();
+    return reply.status(400).send(result);
+  }
+
+  // Cache PIX details for authenticated customers on successful checkout
+  if (paymentMethod === "pix" && customerId && pixExtra) {
+    void cachePixDetailsForCustomer(customerId, {
+      name: pixExtra.customerName,
+      email: pixExtra.customerEmail,
+      cpf: pixExtra.customerTaxId,
+    });
+  }
+
+  // Untrack cart from abandoned-cart detection on successful checkout
+  if (result.orderId) {
+    await untrackCartId(cartId);
+    const redis = await getRedisClient();
+    await redis.del(rk(`cart:owner:${cartId}`));
+  }
+
+  // Persist customer notes as OrderNote — best-effort, never fails checkout.
+  // W7-P4: routed through addNoteFromEnvelope so the order.note.add intent
+  // is kernel-adjudicated and audit-emitted. The Wave-6 finding flagged the
+  // direct prisma.orderNote.create as a parallel/duplicate surface bypass.
+  if (notes && result.orderId) {
+    try {
+      const displayIdMatch = /^IBX-(\d+)$/i.exec(result.orderId);
+      if (displayIdMatch) {
+        const displayId = Number.parseInt(displayIdMatch[1], 10);
+        const projection = await prisma.orderProjection.findFirst({
+          where: { displayId },
+          select: {
+            id: true,
+            customerId: true,
+            paymentMethod: true,
+            paymentStatus: true,
+            totalInCentavos: true,
+          },
+        });
+        if (projection) {
+          const noteEnvelope = buildCustomerEnvelope<
+            "order.note.add",
+            OrderNoteAddPayload
+          >({
+            kind: "order.note.add" as const,
+            payload: {
+              orderId: projection.id,
+              body: notes,
+            },
+            nonce: randomUUID(),
+            customerId: customerId
+              ? `customer:${customerId}`
+              : `cart:${cartId}`,
+          });
+          const noteOrderState: OrderState = {
+            ctx: {
+              channel: "web",
+              customerId: projection.customerId,
+              cartId: null,
+              orderId: projection.id,
+              paymentMethod: (projection.paymentMethod as
+                | "pix"
+                | "card"
+                | "cash"
+                | null) ?? null,
+              paymentStatus: projection.paymentStatus,
+              totalInCentavos: projection.totalInCentavos,
+            },
+          };
+          const orderCmdSvc = createOrderCommandService(undefined, {
+            auditSink: getAuditSink(),
+          });
+          await orderCmdSvc.addNoteFromEnvelope(
+            noteEnvelope,
+            noteOrderState,
+            {
+              author: "customer",
+              ...(customerId ? { authorId: customerId } : {}),
+            },
+          );
+        }
+      }
+    } catch {
+      // note persistence is best-effort
+    }
+  }
+
+  return reply.send(result);
 }
 
 export async function cartRoutes(server: FastifyInstance): Promise<void> {
@@ -916,27 +1036,23 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         customerId: sessionId,
       });
 
-      // The order pack adjudicates against this minimal state slice. We
-      // populate the fields that gate the most common decisions
-      // (paymentMethod for PIX-pending DEFER, totalInCentavos for large-
-      // ticket REQUEST_CONFIRMATION). The remaining fields stay defaulted.
-      const orderState: OrderState = {
-        ctx: {
-          channel: "web",
-          customerId: request.customerId ?? null,
-          cartId,
-          orderId: null,
-          paymentMethod,
-          // No active order yet — settled status irrelevant. The
-          // PIX-pending guard reads `paymentMethod === "pix"` plus
-          // `paymentStatus` not in confirmed set; we leave status null so
-          // the guard does NOT DEFER at checkout. The checkout's own PIX
-          // pending-flow is owned by the Stripe webhook (task 12).
-          paymentStatus: null,
-          totalInCentavos: 0,
-          lastAction: null,
-        },
-      };
+      // Unified state contract (Phase 2): build the orders ctx from the REAL cart
+      // (loaded by cartId) via the shared resolve-and-assemble builder, so the web
+      // checkout adjudicates against the same ctx the conductor uses.
+      // ⚠️ BEHAVIOR CHANGE (ratified): this now loads the real cart total, so the
+      // large-ticket guards apply at web checkout — confirmLargeTicket (≥ R$1.000)
+      // → REQUEST_CONFIRMATION (HTTP 202) and refuseAmountAboveCap (≥ R$10.000) →
+      // REFUSE (403). The web frontend MUST handle the 202 confirmation reply, or
+      // orders ≥ R$1.000 will not complete. (paymentStatus stays null via the
+      // builder so the PIX-pending guard does NOT DEFER at checkout — unchanged.)
+      const guestKey = request.customerId ?? `guest:${cartId}`;
+      const orderState = {
+        ctx: await loadCartCtx(
+          identityCtx(guestKey, "web"),
+          { paymentMethod } as Record<string, unknown>,
+          { cartId },
+        ),
+      } as unknown as OrderState;
 
       const out = await runCustomerIntent({
         envelope,
@@ -963,109 +1079,193 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         refusalMessages: portugueseRefusalMessages,
       });
 
-      // ── Non-EXECUTE/REWRITE branches — surface the gateway's reply
-      // verbatim (the gateway already mapped pt-BR copy + status code).
+      // ── REQUEST_CONFIRMATION (large-ticket ≥ R$1.000) — park the prepared
+      // checkout under a single-use receipt and ask the customer to confirm.
+      // The gateway already mapped a 202 { confirmationRequired, prompt }; we
+      // enrich it with the confirmationId the customer sends back to
+      // POST /api/cart/checkout/confirm. (Without this, the 202 carries no
+      // resume handle and orders ≥ R$1.000 could not complete.)
+      if (out.decision.kind === "REQUEST_CONFIRMATION") {
+        const prompt = out.decision.prompt;
+        const parked = await checkoutConfirmationStore.create({
+          kind: "order.checkout.create",
+          payload: checkoutPayload,
+          idempotencyKey: checkoutIdempotencyKey,
+          cartId,
+          customerId: sessionId,
+          userType: request.userType ?? "guest",
+          checkoutBody: request.body as Record<string, unknown>,
+          ...(pixExtra ? { pixExtra } : {}),
+          prompt,
+          createdAt: new Date().toISOString(),
+        });
+        return reply.code(202).send({
+          confirmationRequired: true,
+          confirmationId: parked.confirmationId,
+          prompt,
+          ttlSeconds: parked.ttlSeconds,
+        });
+      }
+
+      // ── Other non-EXECUTE/REWRITE branches (REFUSE 403 / DEFER 202 /
+      // ESCALATE 503) — surface the gateway's reply verbatim (it already
+      // mapped pt-BR copy + status code).
       if (out.decision.kind !== "EXECUTE" && out.decision.kind !== "REWRITE") {
         return reply.code(out.statusCode).send(out.body);
       }
 
-      // ── EXECUTE / REWRITE: preserve existing post-checkout side effects
+      // ── EXECUTE / REWRITE: apply post-checkout side effects + respond.
       const result = out.body as Awaited<ReturnType<typeof createCheckout>>;
+      return finalizeCheckout({
+        reply,
+        result,
+        cartId,
+        paymentMethod,
+        customerId: request.customerId,
+        ...(pixExtra ? { pixExtra } : {}),
+        ...(request.body.notes ? { notes: request.body.notes } : {}),
+        onFixableFailure: async () => {
+          // P0-PAY-3 — fixable failure: release the idempotency gate so the
+          // customer can correct + retry immediately rather than waiting out
+          // the 120s TTL.
+          await redis.del(checkoutGateKey);
+        },
+      });
+    },
+  );
 
-      if (!result.success) {
-        // P0-PAY-3 — fixable failure: release the idempotency gate so the
-        // customer can correct + retry immediately rather than waiting out
-        // the 120s TTL.
-        await redis.del(checkoutGateKey);
-        return reply.status(400).send(result);
-      }
+  // ── POST /api/cart/checkout/confirm ─────────────────────────────────────
+  //
+  // Resume a parked large-ticket checkout (the REQUEST_CONFIRMATION reply
+  // from POST /api/cart/checkout). The single-use receipt is consumed, the
+  // cart state is re-loaded FRESH, and the IDENTICAL envelope is rebuilt and
+  // re-adjudicated through the AUDITED kernel verb carrying a
+  // confirmationReceipt — so the kernel substitutes EXECUTE for the matching
+  // intentHash while still enforcing every state/taint/auth guard. A cart
+  // that crossed the hard REFUSE cap (≥ R$10.000) since the request is still
+  // refused here (403).
+  app.post(
+    "/api/cart/checkout/confirm",
+    {
+      schema: {
+        tags: ["cart"],
+        summary: "Confirmar checkout de alto valor",
+        body: z.object({
+          confirmationId: z.string().min(1).max(64),
+        }),
+      },
+      preHandler: optionalAuth,
+    },
+    async (request, reply) => {
+      const redis = await getRedisClient();
 
-      // Cache PIX details for authenticated customers on successful checkout
-      if (result.success && paymentMethod === "pix" && request.customerId && pixExtra) {
-        void cachePixDetailsForCustomer(request.customerId, {
-          name: pixExtra.customerName,
-          email: pixExtra.customerEmail,
-          cpf: pixExtra.customerTaxId,
+      // Single-use consume — unknown / expired / already-confirmed → 410 Gone.
+      const pending = await checkoutConfirmationStore.consume(
+        request.body.confirmationId,
+      );
+      if (!pending) {
+        return reply.status(410).send({
+          statusCode: 410,
+          error: "Gone",
+          message:
+            "Esta confirmação expirou ou já foi utilizada. Refaça o checkout.",
+          code: "CONFIRMATION_EXPIRED",
         });
       }
 
-      // Untrack cart from abandoned-cart detection on successful checkout
-      if (result.orderId) {
-        await untrackCartId(cartId);
-        const redis = await getRedisClient();
-        await redis.del(rk(`cart:owner:${cartId}`));
+      // ── Money-safety ownership ───────────────────────────────────────────
+      // The envelope actor sessionId at park time was
+      // `request.customerId ?? cartId`. Recompute the same key for the
+      // confirming session and require equality — a different logged-in
+      // customer (or a guest holding a leaked receipt) cannot confirm
+      // someone else's order.
+      const confirmSessionId = request.customerId ?? pending.cartId;
+      if (pending.customerId !== confirmSessionId) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: "Forbidden",
+          message: "Esta confirmação pertence a outro usuário.",
+        });
       }
 
-      // Persist customer notes as OrderNote — best-effort, never fails checkout.
-      // W7-P4: routed through addNoteFromEnvelope so the order.note.add intent
-      // is kernel-adjudicated and audit-emitted. The Wave-6 finding flagged the
-      // direct prisma.orderNote.create as a parallel/duplicate surface bypass.
-      if (request.body.notes && result.orderId) {
-        try {
-          const displayIdMatch = /^IBX-(\d+)$/i.exec(result.orderId);
-          if (displayIdMatch) {
-            const displayId = Number.parseInt(displayIdMatch[1], 10);
-            const projection = await prisma.orderProjection.findFirst({
-              where: { displayId },
-              select: {
-                id: true,
-                customerId: true,
-                paymentMethod: true,
-                paymentStatus: true,
-                totalInCentavos: true,
-              },
-            });
-            if (projection) {
-              const noteEnvelope = buildCustomerEnvelope<
-                "order.note.add",
-                OrderNoteAddPayload
-              >({
-                kind: "order.note.add" as const,
-                payload: {
-                  orderId: projection.id,
-                  body: request.body.notes,
-                },
-                nonce: randomUUID(),
-                customerId: request.customerId
-                  ? `customer:${request.customerId}`
-                  : `cart:${cartId}`,
-              });
-              const noteOrderState: OrderState = {
-                ctx: {
-                  channel: "web",
-                  customerId: projection.customerId,
-                  cartId: null,
-                  orderId: projection.id,
-                  paymentMethod: (projection.paymentMethod as
-                    | "pix"
-                    | "card"
-                    | "cash"
-                    | null) ?? null,
-                  paymentStatus: projection.paymentStatus,
-                  totalInCentavos: projection.totalInCentavos,
-                },
-              };
-              const orderCmdSvc = createOrderCommandService(undefined, {
-                auditSink: getAuditSink(),
-              });
-              await orderCmdSvc.addNoteFromEnvelope(
-                noteEnvelope,
-                noteOrderState,
-                {
-                  author: "customer",
-                  ...(request.customerId
-                    ? { authorId: request.customerId }
-                    : {}),
-                },
-              );
-            }
-          }
-        } catch {
-          // note persistence is best-effort
-        }
+      // Cart-ownership parity with the checkout route (defense-in-depth).
+      if (!(await verifyCartOwnership(pending.cartId, request.customerId, redis))) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: "Forbidden",
+          message: "Carrinho pertence a outro usuário.",
+        });
       }
 
-      return reply.send(result);
+      // Re-load cart state FRESH so a since-changed total re-adjudicates. The
+      // confirmationReceipt only satisfies the "ask first" threshold — a cart
+      // that grew past the hard cap (≥ R$10.000) is still REFUSEd below.
+      const guestKey = request.customerId ?? `guest:${pending.cartId}`;
+      const orderState = {
+        ctx: await loadCartCtx(
+          identityCtx(guestKey, "web"),
+          { paymentMethod: pending.payload.paymentMethod } as Record<string, unknown>,
+          { cartId: pending.cartId },
+        ),
+      } as unknown as OrderState;
+
+      // Rebuild the IDENTICAL envelope — same kind/payload/nonce/actor → same
+      // intentHash (schema v2: createdAt is NOT hashed) — so the receipt
+      // matches and the kernel can resolve the confirmation.
+      const envelope = buildCustomerEnvelope<"order.checkout.create", OrderCheckoutCreatePayload>({
+        kind: "order.checkout.create",
+        payload: pending.payload,
+        nonce: deriveCartNonce(pending.idempotencyKey),
+        customerId: pending.customerId,
+      });
+
+      const out = await runCustomerIntent({
+        envelope,
+        state: orderState,
+        policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+        executor: async () => {
+          return createCheckout(
+            { ...pending.checkoutBody, cartId: pending.cartId } as Parameters<typeof createCheckout>[0],
+            {
+              channel: Channel.Web,
+              sessionId: pending.cartId,
+              customerId: request.customerId,
+              userType: pending.userType,
+            },
+            pending.pixExtra,
+          );
+        },
+        ctx: {
+          customerId: pending.customerId,
+          route: "cart.checkout.confirm",
+          log: server.log,
+        },
+        auditSink: getAuditSink(),
+        refusalMessages: portugueseRefusalMessages,
+        confirmationReceipt: {
+          intentHash: envelope.intentHash,
+          at: new Date().toISOString(),
+          token: request.body.confirmationId,
+        },
+      });
+
+      // Non-EXECUTE/REWRITE (incl. a now-≥R$10k REFUSE → 403) — surface verbatim.
+      if (out.decision.kind !== "EXECUTE" && out.decision.kind !== "REWRITE") {
+        return reply.code(out.statusCode).send(out.body);
+      }
+
+      const result = out.body as Awaited<ReturnType<typeof createCheckout>>;
+      return finalizeCheckout({
+        reply,
+        result,
+        cartId: pending.cartId,
+        paymentMethod: pending.payload.paymentMethod,
+        customerId: request.customerId,
+        ...(pending.pixExtra ? { pixExtra: pending.pixExtra } : {}),
+        ...(typeof pending.checkoutBody.notes === "string"
+          ? { notes: pending.checkoutBody.notes }
+          : {}),
+      });
     },
   );
 

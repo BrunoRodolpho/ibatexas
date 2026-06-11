@@ -9,8 +9,8 @@ The `ibx` CLI is the primary tool for all dev operations.
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Node.js | 20 LTS | [nodejs.org](https://nodejs.org) or `nvm install 20` |
-| pnpm | 8+ | `npm install -g pnpm` |
+| Node.js | 22+ | [nodejs.org](https://nodejs.org) or `nvm install 22` |
+| pnpm | 10+ | `npm install -g pnpm@10` (repo pins `pnpm@10.32.1`) |
 | Docker Desktop | Latest | [docker.com](https://www.docker.com) |
 | process-compose | Latest | `brew install f1bonacc1/tap/process-compose` |
 | AWS CLI | 2+ | `brew install awscli` _(production only)_ |
@@ -147,10 +147,10 @@ ibx db migrate
 # Run Prisma domain migrations
 ibx db migrate:domain
 
-# Seed with Smoked House products (Medusa must be running)
+# Run the Medusa seed file (Medusa must be running)
 ibx db seed
 
-# Seed domain tables (DeliveryZone, Table, TimeSlot)
+# Seed restaurant Tables + TimeSlots via Prisma
 ibx db seed:domain
 
 # Reindex Typesense from Medusa catalog
@@ -258,4 +258,4 @@ See [plugins.md](plugins.md) for full documentation.
 | `process-compose: command not found` | `brew install f1bonacc1/tap/process-compose` |
 | TUI not rendering | Try `ibx dev start --no-tui` for plain output |
 | `Port XXXX already in use` | Ghost process — run `ibx dev stop -f` to force-kill, then retry |
-| Admin panel returns 503 on all pages | `ADMIN_API_KEY` is empty or mismatched — generate with `openssl rand -base64 32` and set the same value in both `ADMIN_API_KEY` and `NEXT_PUBLIC_ADMIN_API_KEY` in `.env` |
+| Admin panel returns 503 on all pages | Server-side `ADMIN_API_KEY` is empty (the API returns 503 when no admin keys are configured). Generate with `openssl rand -base64 32` and set the **same** value for `ADMIN_API_KEY` in both the API and admin app envs — the admin proxy forwards it as the `x-admin-key` header. (There is no `NEXT_PUBLIC_ADMIN_API_KEY`; the key is server-side only.) |

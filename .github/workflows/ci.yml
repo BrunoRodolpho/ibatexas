@@ -38,6 +38,14 @@ jobs:
       - name: Security audit
         run: pnpm audit --audit-level=high
       - run: pnpm build
+      # Pack governance gates (F11/F12). The Tier-3 planner-coherence checks
+      # already ride `pnpm test` (per-pack conformance suites); these add the
+      # AI-BOM drift gate (EU AI Act Art. 11 / NIST AI RMF) and the Tier-1
+      # policy analyzers. Both need the built CLI + pack dists → after build.
+      - name: AI-BOM drift gate (F12)
+        run: node packages/cli/dist/index.js kernel pack-bom --verify-file packages/cli/governance/pack-bom-baseline.json
+      - name: Policy-coherence gate (F11)
+        run: node packages/cli/dist/index.js kernel analyze
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # v7.0.0
         env:

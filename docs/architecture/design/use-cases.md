@@ -8,6 +8,16 @@ IbateXas has three distinct areas with different interaction models:
 
 In-Person capabilities are Phase 3.
 
+### Legend
+
+- ✅ — shipped today (implemented and reachable in the current build)
+- 🔜 — designed/planned, not yet implemented (no delivery guarantee)
+- Phase 2 / Phase 3 — explicitly scheduled for a later phase
+- — — not offered on this channel
+
+> ✅ marks delivery, not intent. A capability tracked elsewhere as a roadmap
+> item should carry 🔜 or a Phase tag here, never ✅.
+
 ---
 
 ## Catalog
@@ -39,15 +49,15 @@ In-Person capabilities are Phase 3.
 | Choose delivery type: delivery / pickup / dine-in | ✅ | ✅ | ✅ |
 | Select pickup time slot | ✅ | ✅ | ✅ |
 | Checkout + pay via PIX | ✅ | ✅ | ✅ |
-| Checkout + pay via credit card | ✅ | ✅ | ✅ |
-| Checkout + pay via cash (on delivery or at pickup) | ✅ | ✅ | ✅ |
+| Checkout + pay via card | ✅ | ✅ | ✅ |
+| Checkout + pay via cash (pickup or dine-in only — blocked on delivery) | ✅ | ✅ | ✅ |
 | Add tip (gorjeta) | ✅ | ✅ | ✅ |
 | Track order status in real-time | ✅ | ✅ | — |
 | Receive proactive status notifications | — | ✅ | — |
 | Cancel order (while status is received or confirmed) | ✅ | ✅ | — |
 | Reorder (last order or favourite order) | ✅ | ✅ | — |
 | View order history | ✅ | ✅ | — |
-| Download NF-e (tax invoice) | ✅ | ✅ | — |
+| Download NF-e (tax invoice) | 🔜 | 🔜 | — |
 
 ---
 
@@ -76,8 +86,8 @@ In-Person capabilities are Phase 3.
 | Join waitlist when fully booked | ✅ | ✅ | — |
 | Get notified when waitlist spot opens | — | ✅ | — |
 | Check in on arrival | — | ✅ | ✅ |
-| Order at table | — | — | ✅ Phase 3 |
-| Request bill / split bill | — | — | ✅ Phase 3 |
+| Order at table | — | — | Phase 3 |
+| Request bill / split bill | — | — | Phase 3 |
 
 ---
 
@@ -92,7 +102,7 @@ In-Person capabilities are Phase 3.
 | Update allergen profile | ✅ | ✅ | — |
 | Receive post-delivery review request (30min after delivery) | — | ✅ | — |
 | Submit product review | ✅ | ✅ | — |
-| Receive reservation reminder (Phase 2) | — | ✅ | — |
+| Receive reservation reminder | — | Phase 2 | — |
 
 ---
 
@@ -109,6 +119,8 @@ In-Person capabilities are Phase 3.
 ## Shop (`/loja`)
 
 Branded merchandise — camisetas, accessories, gift sets. Standard e-commerce, no agent.
+Shop products are `productType: 'merchandise'` in the same catalog and share the
+restaurant cart store and the single `/checkout` route (PIX / card / cash).
 
 | Use Case | Web | WhatsApp | In-Person |
 |---|:---:|:---:|:---:|
@@ -118,11 +130,10 @@ Branded merchandise — camisetas, accessories, gift sets. Standard e-commerce, 
 | View size guide / variants | ✅ | — | — |
 | Add to cart | ✅ | — | — |
 | Checkout via PIX | ✅ | — | — |
-| Checkout via credit card | ✅ | — | — |
-| Checkout via boleto | ✅ | — | — |
+| Checkout via card | ✅ | — | — |
 | Track shipping | ✅ | — | — |
 | View order history (shop) | ✅ | — | — |
-| Download NF-e | ✅ | — | — |
+| Download NF-e | 🔜 | — | — |
 | WhatsApp shop browsing | — | Phase 2 | — |
 
 ---
@@ -152,6 +163,6 @@ Branded merchandise — camisetas, accessories, gift sets. Standard e-commerce, 
 
 **Web (Restaurant):** The agent chat widget coexists with the full storefront UI. Customers can browse the menu, build a cart, and checkout without ever opening the chat. The chat widget is a floating button on mobile (full-screen overlay) and a side panel on desktop. The Shop (`/loja`) and Admin (`/admin`) sections have no chat widget.
 
-**WhatsApp:** Pure conversation. The agent uses WhatsApp's native message types: list messages for menus, buttons for confirmations, image messages for product photos, and payment links for checkout. Always professional pt-BR.
+**WhatsApp:** Pure conversation. The agent uses WhatsApp's native message types: list messages for menus, interactive buttons for confirmations and payment-method choice (PIX / Cartão / Dinheiro), and image messages for product photos. PIX checkout returns the QR code and copy-paste code inline in the conversation. Always professional pt-BR.
 
 **In-Person (Phase 3):** QR code on table opens a WhatsApp conversation pre-configured with the table number. Same agent, same tools, dine-in context.

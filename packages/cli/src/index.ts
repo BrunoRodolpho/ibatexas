@@ -34,6 +34,7 @@ import { registerKernelCommands } from "./commands/kernel.js"
 import { registerClaustrumCommands } from "./commands/claustrum.js"
 import { registerObsCommands } from "./commands/obs.js"
 import { registerJobsCommands } from "./commands/jobs.js"
+import { registerPolicyCommands } from "./commands/policy.js"
 
 // ── Load .env files ──────────────────────────────────────────────────────────
 // Env precedence: shell > root .env > cli .env. dotenv semantics: each
@@ -365,6 +366,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "claustrum", register: registerClaustrumCommands, description: "Claustrum — provision the memory + grounding (pgvector) schema" },
   { name: "obs",     register: registerObsCommands,      description: "Observability — watch kernel decisions and per-turn traces" },
   { name: "jobs",    register: registerJobsCommands,     description: "Background jobs — inspect and replay failed BullMQ jobs" },
+  { name: "policy",  register: registerPolicyCommands,   description: "Policy — export + diff the rule-provenance manifest" },
 ]
 
 for (const { name, register, description } of groupedCommands) {

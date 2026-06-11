@@ -36,7 +36,12 @@ import {
   type Guard,
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
-import { createStateDeferGuard, requireTenantBinding } from "@adjudicate/primitives"
+import {
+  createDataClassificationGuard,
+  createStateDeferGuard,
+  requireTenantBinding,
+} from "@adjudicate/primitives"
+import { PII_PATTERNS } from "@ibatexas/pii"
 import { CUSTOMER_ANONYMIZE_GRACE_SIGNAL } from "./signals.js"
 import {
   refuseAllergenInferred,
@@ -64,6 +69,52 @@ type CustomerGuard = Guard<
   CustomerOnboardingPayload,
   CustomerOnboardingState
 >
+
+// ── PII data-classification (F1) ─────────────────────────────────────────────
+// On customer.pix.details.save. ORDER MATTERS: the PAN REFUSE MUST precede the
+// REWRITE (first-non-null wins) so a card number is BLOCKED, not rewritten.
+//   • refuseCardPanInPix — a 13–19-digit card run in name/email ⇒ REFUSE
+//     (PII_BLOCKED). REFUSE never mutates data, so scanning email is safe.
+//   • redactPiiInPix — cpf/email/phone mistyped into the NAME leaf ⇒
+//     REWRITE-to-sentinel. Deliberately does NOT scan `email` (would mask a
+//     legitimate PIX email) nor the structured `cpf` field (I10: a valid CPF
+//     reaches the executor byte-identical, after validateCpfShape). Patterns
+//     come from @ibatexas/pii — the taxonomy shared with the audit redactor.
+const PII_PAN_PATTERNS = PII_PATTERNS.filter((p) => p.id === "pan")
+const PII_REWRITE_PATTERNS = PII_PATTERNS.filter((p) => p.id !== "pan")
+
+const refuseCardPanInPix: CustomerGuard = nameGuard(
+  "refuseCardPanInPix",
+  createDataClassificationGuard<
+    CustomerOnboardingIntentKind,
+    CustomerOnboardingPayload,
+    CustomerOnboardingState
+  >({
+    matches: (envelope) => envelope.kind === "customer.pix.details.save",
+    patterns: PII_PAN_PATTERNS,
+    scannedFields: ["name", "email"],
+    action: "REFUSE",
+    sensitivityLevel: "critical",
+    userFacing: "Não consigo processar dados de cartão neste fluxo.",
+  }),
+)
+
+const redactPiiInPix: CustomerGuard = nameGuard(
+  "redactPiiInPix",
+  createDataClassificationGuard<
+    CustomerOnboardingIntentKind,
+    CustomerOnboardingPayload,
+    CustomerOnboardingState
+  >({
+    matches: (envelope) => envelope.kind === "customer.pix.details.save",
+    patterns: PII_REWRITE_PATTERNS,
+    // NAME leaf only — never `email` (legit PIX email) nor `cpf` (I10).
+    scannedFields: ["name"],
+    action: "REWRITE",
+    sensitivityLevel: "high",
+    reason: "PII mascarado no payload antes da execução.",
+  }),
+)
 
 /**
  * Tenant binding (AuthReviewer-009 / RC-A1 D-12). REFUSEs a request whose
@@ -528,6 +579,7 @@ const executeAddressRemove: CustomerGuard = (envelope) => {
  *     1. validateAllergenExplicitArray         — safety-critical first
  *     2. enforceProfileRateLimit               — takeover prevention
  *     3. validateCpfShape                      — PII shape gate
+ *     3b. refuseCardPanInPix / redactPiiInPix  — PII data-classification (F1)
  *     4. handleAnonymizeCancelSupersedesParked — cancel happy path
  *     5. handleAnonymizeCancelNoParked         — cancel no-op path
  *     6. deferAnonymizeForGrace                — LGPD DEFER (after gates)
@@ -549,6 +601,8 @@ export const customerOnboardingPolicyBundle: PolicyBundle<
     validateAllergenExplicitArray,
     enforceProfileRateLimit,
     validateCpfShape,
+    refuseCardPanInPix,
+    redactPiiInPix,
     handleAnonymizeCancelSupersedesParked,
     handleAnonymizeCancelNoParked,
     deferAnonymizeForGrace,

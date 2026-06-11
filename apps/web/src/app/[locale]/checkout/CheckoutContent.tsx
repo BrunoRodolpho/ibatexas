@@ -17,6 +17,7 @@ import { KitchenClosedBanner } from "@/components/molecules/KitchenClosedBanner"
 import Image from "next/image"
 import { Flame, Lock, ShieldCheck } from "lucide-react"
 import { useOrderHistory } from "@/domains/cart/useOrderHistory"
+import { CheckoutConfirmDialog } from "@/components/molecules/CheckoutConfirmDialog"
 import InlineCardInput from "./_components/InlineCardInput"
 
 const stripePromise = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
@@ -89,6 +90,8 @@ function CheckoutForm() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<CheckoutResult | null>(null)
+  // Large-ticket (≥ R$1.000) checkout parked by the API pending confirmation.
+  const [confirmation, setConfirmation] = useState<{ confirmationId: string; prompt: string } | null>(null)
   const checkoutStartedRef = useRef(false)
   const checkoutCompletedRef = useRef(false)
   const [pixName, setPixName] = useState("")
@@ -270,6 +273,128 @@ function CheckoutForm() {
     isValidCpf(pixCpf)
   )
 
+  // Apply a successful checkout result — shared by the normal flow and the
+  // large-ticket confirm flow so the PIX/cash/card branches never drift.
+  async function proceedWithCheckoutResult(data: CheckoutResult) {
+    setResult(data)
+
+    // ── PIX ──
+    if (paymentMethod === "pix") {
+      clearCart()
+      setStage("pix_waiting")
+      return
+    }
+
+    // ── Cash ──
+    if (paymentMethod === "cash") {
+      if (!checkoutCompletedRef.current && data?.orderId) {
+        checkoutCompletedRef.current = true
+        track('checkout_completed', {
+          orderId: data.orderId,
+          orderTotal: total,
+          itemCount: items.length,
+          paymentMethod,
+          currency: 'BRL',
+          ibx_session_id: getSessionId(),
+        })
+        saveOrder({
+          items: items.map((item) => ({
+            productId: item.productId,
+            title: item.title,
+            price: item.price,
+            imageUrl: item.imageUrl ?? undefined,
+            quantity: item.quantity,
+            variantId: item.variantId ?? undefined,
+            variantTitle: item.variantTitle ?? undefined,
+          })),
+          total,
+          orderId: data.orderId,
+          date: new Date().toISOString(),
+        })
+      }
+      clearCart()
+      setStage("confirmed")
+      return
+    }
+
+    // ── Card: confirm payment inline ──
+    if (paymentMethod === "card" && data.stripeClientSecret) {
+      if (!stripe || !elements) {
+        setError(t('stripe_unavailable'))
+        return
+      }
+      const cardElement = elements.getElement(CardElement)
+      if (!cardElement) {
+        setError(t('payment_error'))
+        return
+      }
+
+      const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(
+        data.stripeClientSecret,
+        { payment_method: { card: cardElement } }
+      )
+
+      if (stripeError) {
+        setError(stripeError.message ?? t('payment_error'))
+        return
+      }
+
+      if (paymentIntent && paymentIntent.status === "succeeded") {
+        checkoutCompletedRef.current = true
+        track('checkout_completed', {
+          orderId: paymentIntent.id,
+          orderTotal: total,
+          itemCount: items.length,
+          paymentMethod: 'card',
+          currency: 'BRL',
+          ibx_session_id: getSessionId(),
+        })
+        clearCart()
+        router.push(`/pedido/${paymentIntent.id}`)
+        return
+      }
+
+      // 3DS: Stripe handles the redirect automatically
+      // The stripe-return page handles the callback
+    }
+  }
+
+  // Resume a parked large-ticket checkout: POST the receipt back; the kernel
+  // re-adjudicates against fresh cart state (a cart that grew past the
+  // ≥ R$10.000 cap is REFUSEd here) and, on EXECUTE, the payment fires.
+  async function handleConfirmCheckout() {
+    if (!confirmation) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${getApiBase()}/api/cart/checkout/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ confirmationId: confirmation.confirmationId }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { message?: string; error?: string }
+        throw new Error(data.error ?? data.message ?? t('payment_error'))
+      }
+      const data = await res.json() as CheckoutResult
+      setConfirmation(null)
+      await proceedWithCheckoutResult(data)
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : t('payment_error')
+      track('checkout_error', {
+        step: 'payment',
+        errorType: 'checkout_failed',
+        errorMessage,
+        paymentMethod,
+      })
+      setConfirmation(null)
+      setError(errorMessage)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   async function handleCheckout() {
     setLoading(true)
     setError(null)
@@ -318,92 +443,29 @@ function CheckoutForm() {
           } : {}),
         }),
       })
+      // Large-ticket confirmation: the API parked the checkout (202) and needs
+      // the customer to confirm before the payment fires. Checkout never
+      // DEFERs, so `confirmationRequired` is an unambiguous 202 discriminator.
+      if (res.status === 202) {
+        const body = await res.json().catch(() => ({})) as {
+          confirmationRequired?: boolean
+          confirmationId?: string
+          prompt?: string
+        }
+        if (body.confirmationRequired && body.confirmationId) {
+          setConfirmation({ confirmationId: body.confirmationId, prompt: body.prompt ?? '' })
+          return
+        }
+        throw new Error(t('payment_error'))
+      }
       if (!res.ok) {
-        const data = await res.json().catch(() => ({})) as { message?: string }
-        throw new Error(data.message ?? t('payment_error'))
+        // Prefer the pack's pt-BR refusal copy (`error`, e.g. the ≥ R$10.000
+        // cap) over the generic fallback message.
+        const data = await res.json().catch(() => ({})) as { message?: string; error?: string }
+        throw new Error(data.error ?? data.message ?? t('payment_error'))
       }
       const data = await res.json() as CheckoutResult
-      setResult(data)
-
-      // ── PIX ──
-      if (paymentMethod === "pix") {
-        clearCart()
-        setStage("pix_waiting")
-        return
-      }
-
-      // ── Cash ──
-      if (paymentMethod === "cash") {
-        if (!checkoutCompletedRef.current && data?.orderId) {
-          checkoutCompletedRef.current = true
-          track('checkout_completed', {
-            orderId: data.orderId,
-            orderTotal: total,
-            itemCount: items.length,
-            paymentMethod,
-            currency: 'BRL',
-            ibx_session_id: getSessionId(),
-          })
-          saveOrder({
-            items: items.map((item) => ({
-              productId: item.productId,
-              title: item.title,
-              price: item.price,
-              imageUrl: item.imageUrl ?? undefined,
-              quantity: item.quantity,
-              variantId: item.variantId ?? undefined,
-              variantTitle: item.variantTitle ?? undefined,
-            })),
-            total,
-            orderId: data.orderId,
-            date: new Date().toISOString(),
-          })
-        }
-        clearCart()
-        setStage("confirmed")
-        return
-      }
-
-      // ── Card: confirm payment inline ──
-      if (paymentMethod === "card" && data.stripeClientSecret) {
-        if (!stripe || !elements) {
-          setError(t('stripe_unavailable'))
-          return
-        }
-        const cardElement = elements.getElement(CardElement)
-        if (!cardElement) {
-          setError(t('payment_error'))
-          return
-        }
-
-        const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(
-          data.stripeClientSecret,
-          { payment_method: { card: cardElement } }
-        )
-
-        if (stripeError) {
-          setError(stripeError.message ?? t('payment_error'))
-          return
-        }
-
-        if (paymentIntent && paymentIntent.status === "succeeded") {
-          checkoutCompletedRef.current = true
-          track('checkout_completed', {
-            orderId: paymentIntent.id,
-            orderTotal: total,
-            itemCount: items.length,
-            paymentMethod: 'card',
-            currency: 'BRL',
-            ibx_session_id: getSessionId(),
-          })
-          clearCart()
-          router.push(`/pedido/${paymentIntent.id}`)
-          return
-        }
-
-        // 3DS: Stripe handles the redirect automatically
-        // The stripe-return page handles the callback
-      }
+      await proceedWithCheckoutResult(data)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : t('payment_error')
       track('checkout_error', {
@@ -830,6 +892,13 @@ function CheckoutForm() {
         </Button>
       </Container>
     </div>
+    <CheckoutConfirmDialog
+      isOpen={confirmation !== null}
+      prompt={confirmation?.prompt ?? ''}
+      loading={loading}
+      onConfirm={handleConfirmCheckout}
+      onCancel={() => setConfirmation(null)}
+    />
     </ErrorBoundary>
   )
 }

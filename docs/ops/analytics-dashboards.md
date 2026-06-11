@@ -13,11 +13,11 @@ flowchart TD
 
   subgraph SERVER["apps/api"]
     ROUTE["POST /api/analytics/track — Zod validate"]
-    NATS_PUB["publishNatsEvent — web.eventType"]
+    NATS_PUB["publishNatsEvent — analytics.event"]
   end
 
   POSTHOG["PostHog Cloud — dashboards, retention"]
-  NATS_BUS["NATS ibatexas.web.*"]
+  NATS_BUS["NATS ibatexas.analytics.event"]
   FUTURE["Future: ClickHouse + alerts"]
 
   TRACK --> PH_CAP
@@ -104,8 +104,8 @@ flowchart TD
 | `upsell_toast_added` | User adds the suggested product from upsell toast | `productId` |
 | `upsell_toast_dismissed` | User dismisses upsell toast (or auto-dismiss) | `productId`, `auto` (boolean) |
 | `quantity_changed_inline` | User changes quantity via inline controls on ProductCard | `productId`, `action` (increment\|decrement\|remove), `quantity` |
-| `layout_toggled` | User toggles grid/list layout on search page | `layout` (grid\|list) |
-| `combo_banner_clicked` | User clicks CTA on combo promotion banner | — |
+| `layout_toggled` | _(declared, not yet emitted — no `track()` callsite)_ | `layout` (grid\|list) |
+| `combo_banner_clicked` | _(declared, not yet emitted — no `track()` callsite)_ | — |
 | `review_section_viewed` | Homepage reviews section enters viewport | — |
 | `people_also_ordered_added` | User adds a product from "People Also Ordered" section | `productId` |
 
@@ -135,8 +135,8 @@ flowchart TD
 |-------|---------|------------|
 | `search_performed` | Search query executed | `query`, `resultCount` |
 | `filter_applied` | Filter/sort changed | `filterType` (tag\|category\|sort\|smart), `value` |
-| `search_synonym_resolved` | User query matched a synonym and was auto-resolved | `original`, `canonical` |
-| `trending_search_clicked` | User clicked a trending search pill | `term` |
+| `search_synonym_resolved` | _(declared, not yet emitted — no `track()` callsite)_ | `original`, `canonical` |
+| `trending_search_clicked` | _(declared, not yet emitted — no `track()` callsite)_ | `term` |
 
 ### Checkout Events
 
@@ -156,10 +156,10 @@ flowchart TD
 |-------|---------|------------|
 | `payment_retry_initiated` | Customer clicks "Retry payment" on order tracking page | `orderId`, `paymentId`, `method`, `previousStatus` |
 | `payment_method_switched` | Customer switches payment method (e.g. PIX → cash) | `orderId`, `paymentId`, `previousMethod`, `newMethod` |
-| `pix_regenerated` | Customer regenerates expired PIX QR code | `orderId`, `paymentId`, `attemptCount` |
+| `pix_regenerated` | _(declared, not yet emitted — no `track()` callsite)_ | `orderId`, `paymentId`, `attemptCount` |
 | `order_note_added` | Customer or admin adds a note to an order | `orderId`, `author` (customer/admin), `contentLength` |
 | `order_amended` | Customer amends an order (add/remove/qty change) | `orderId`, `action` (add/remove/update_qty), `itemTitle` |
-| `order_canceled_by_customer` | Customer cancels their order | `orderId`, `fulfillmentStatus`, `paymentStatus`, `minutesSinceCreation` |
+| `order_canceled_by_customer` | _(declared, not yet emitted — no `track()` callsite)_ | `orderId`, `fulfillmentStatus`, `paymentStatus`, `minutesSinceCreation` |
 
 ---
 
@@ -322,47 +322,42 @@ flowchart TD
 
 ### IBX-IGE Audit Events (kernel observability)
 
-These events emit when the Intent-Gated Execution kernel runs against live traffic. They are critical for post-cutover health monitoring.
+These events emit when the Intent-Gated Execution kernel runs against live traffic. They are critical for health monitoring.
 
-> Updated 2026-05-24 post-cutover: the IBX-IGE v3.0 cutover (`f3bea43`) made the kernel always authoritative; the legacy shadow path was removed. The three `audit_kernel_shadow_diverged_{basis,kind,rewrite}` rows below are marked HISTORICAL — the corresponding `PH_EVENT_SHADOW_DIVERGED_*` constants and `kernel_shadow_divergence_total` Prometheus counter were deleted by `1024028`, and `recordShadowDivergence()` is now a no-op in `apps/api/src/plugins/kernel-metrics-sink.ts`. No producer emits these events in the always-on kernel; the string literals remain in the `AnalyticsEvent` union but are unreferenced.
+The kernel is always authoritative (IBX-IGE v3.0) — there is no shadow path. The earlier `audit_kernel_shadow_diverged_{basis,kind,rewrite}` events, their `kernel_shadow_divergence_total` counter, and `recordShadowDivergence()` as a live producer no longer exist: the string literals were removed from the `AnalyticsEvent` union (none remain in `apps/web/src/domains/analytics/events.ts`), and `recordShadowDivergence()` is now a no-op retained only for `MetricsSink` interface compliance.
+
+Four `audit_*` events are actually emitted, all via the `MetricsSink` in `kernel-metrics-sink.ts`:
 
 | Event | Trigger | Key Properties | Operational policy |
 |-------|---------|----------------|--------------------|
-| ~~`audit_kernel_shadow_diverged_basis`~~ (HISTORICAL) | n/a — shadow path removed by `f3bea43` | n/a | No longer emitted post-cutover. |
-| ~~`audit_kernel_shadow_diverged_kind`~~ (HISTORICAL) | n/a — shadow path removed by `f3bea43` | n/a | No longer emitted post-cutover. |
-| ~~`audit_kernel_shadow_diverged_rewrite`~~ (HISTORICAL) | n/a — shadow path removed by `f3bea43` | n/a | No longer emitted post-cutover. |
-| `audit_decision_executed` | adjudicate() returned EXECUTE for a mutating intent | `intentKind`, `taint`, `basisCodes[]`, `durationMs` | Metric — track distribution per intent class |
-| `audit_decision_refused` | adjudicate() returned REFUSE | `intentKind`, `refusalKind`, `refusalCode`, `taint` | Track refusal-rate per intent kind; alert on sudden spike (>2× 7-day baseline) |
-| `audit_ledger_hit` | Execution Ledger replay-suppressed a duplicate intent | `intentKind`, `intentHash`, `firstAt`, `subkind` (e.g., `defer_resume`) | Metric — high rate may indicate webhook redelivery storm |
-| `audit_nats_sink_failed` | NatsSink emit() rejected | `subject`, `errorClass`, `consecutiveFailures` | Alert at >10 consecutive failures (NatsSink throws `NatsSinkError` at this point) |
-| `audit_replay_divergence` | Replay harness produced different Decision than recorded | `intentHash`, `expected`, `actual` | Critical — policy or kernel changed in a way that breaks reproducibility. Block any release that introduces divergence |
+| `audit_decision_executed` | recordDecision with `decision = EXECUTE` | `intent_kind`, `decision_kind`, `latency_ms`, `basis_count`, `intent_hash_prefix` | Metric — track distribution per intent class |
+| `audit_decision_refused` | recordDecision with any non-EXECUTE decision | `intent_kind`, `decision_kind`, `latency_ms`, `basis_count`, `intent_hash_prefix` | Track refusal-rate per intent kind; alert on spike (>2× 7-day baseline) |
+| `audit_ledger_hit` | recordLedgerOp with `outcome = hit` (replay-suppressed duplicate) | `intent_kind`, `op`, `outcome`, `latency_ms` | Metric — high rate may indicate webhook redelivery storm |
+| `audit_nats_sink_failed` | recordSinkFailure (audit sink emit rejected) | `sink`, `subject`, `error_class`, `consecutive_failures` | Alert at ≥10 consecutive failures (the circuit-breaker escalation threshold) |
 
-**~~Rollout dashboards~~ (HISTORICAL — Progressive Authority Rollout, IBX-IGE v2.0):**
+> `audit_replay_divergence` is declared in the `AnalyticsEvent` union but has no producer — the kernel currently signals replay drift through the `kernel_replay_drift_total` Prometheus counter (via `createKernelMetricsRecorder().recordReplayDrift`), not this PostHog event. Treat it as declared, not yet emitted.
 
-> Updated 2026-05-24 post-cutover: the staged shadow→enforce promotion plan (Stage 1 read-like mutating → Stage 4 financial reversals) was superseded by the IBX-IGE v3.0 cutover (`f3bea43`), which made the kernel authoritative for all intent classes in one step. The four shadow-divergence dashboards below no longer have a data source — `audit_kernel_shadow_diverged_*` events are not emitted post-cutover. Post-cutover health monitoring uses `audit_decision_executed` / `audit_decision_refused` rates and the Prometheus counters in §Kernel metrics below.
+Post-cutover health monitoring uses `audit_decision_executed` / `audit_decision_refused` rates plus the Prometheus counters in §Kernel metrics below.
 
-**Sample PostHog queries:**
-
-> Updated 2026-05-24 post-cutover: the "Shadow divergence rate per intent class" query that previously lived here selected from `event = 'audit_kernel_shadow_diverged_kind'`, which is no longer emitted (HISTORICAL — see the rollout-dashboards note above). The decision-distribution query below works as-is and is the post-cutover refusal-rate baseline.
+**Sample PostHog query (decision distribution):**
 
 ```
-# Decision distribution (executed vs refused)
-SELECT
-  event,
-  count() AS volume
+SELECT event, count() AS volume
 FROM events
 WHERE event IN ('audit_decision_executed', 'audit_decision_refused')
   AND timestamp > now() - INTERVAL 1 HOUR
 GROUP BY event
 ```
 
-**NATS subjects:** all 5 actively-emitted `audit_*` events also publish to `ibatexas.analytics.event` per the standard pipeline. The audit-only durable trail emits separately to `ibatexas.audit.intent.decision.v1` via `@adjudicate/audit/sink-nats`. (Updated 2026-05-24 post-cutover: was "all 8" before the 3 shadow-divergence events were retired with the shadow path — see HISTORICAL rows above.)
+**NATS subjects:** the 4 emitted `audit_*` events also publish to `ibatexas.analytics.event` via the standard pipeline (the `trackAnalytics` wire publishes `analytics.event`). The audit-only durable trail emits separately to `ibatexas.audit.intent.decision.v1` via `@adjudicate/audit/sink-nats`.
 
 ### Kernel metrics (Prometheus)
 
-The same `MetricsSink` adapter that emits the 5 active PostHog `audit_*` events above also populates a `prom-client` registry exposed at `GET /metrics` on the API. The endpoint is token-gated by `PROMETHEUS_TOKEN` — unset = 503 (closed by default). All metric names are stable contracts shared with `docs/adjudicate-migration/migration/06-observability-requirements.md`.
+The same `MetricsSink` adapter that emits the active PostHog `audit_*` events above also populates a `prom-client` registry exposed at `GET /metrics` on the API. The endpoint is token-gated: the `x-prometheus-token` header must equal `PROMETHEUS_TOKEN` (unset = 503 closed by default; mismatch = 401).
 
-**Producer:** `apps/api/src/plugins/kernel-metrics-sink.ts` (`createKernelMetricsSink`).
+This table is the human-readable registry the metric names are kept in sync with — `kernel-metrics-sink.ts` references it directly: "Adding a new metric? Update that doc + `docs/ops/analytics-dashboards.md`." Keep it complete.
+
+**Producer:** `apps/api/src/plugins/kernel-metrics-sink.ts` — `createKernelMetricsSink` registers all 19 metrics; the framework-boundary `MetricsSink` hooks populate the first 6, and the out-of-band `createKernelMetricsRecorder` (called from sweepers, the replay CLI, pack-install at boot, the audit-redactor wrap) populates most of the W3 group.
 **Scrape route:** `apps/api/src/routes/metrics.ts`.
 
 | Metric | Type | Labels | Purpose |
@@ -370,12 +365,24 @@ The same `MetricsSink` adapter that emits the 5 active PostHog `audit_*` events 
 | `kernel_decision_total` | Counter | `kind` (Decision kind: EXECUTE / REFUSE / DEFER / REQUEST_CONFIRMATION / ESCALATE / REWRITE), `intent_kind` | Every adjudicate() call. Refusal-rate denominator. |
 | `kernel_refusal_total` | Counter | `kind` (refusal kind: SECURITY / BUSINESS_RULE / AUTH / STATE), `intent_kind`, `basis_category`, `basis_code` | Per-intent refusal distribution. Alert on >2× 7-day baseline. |
 | `kernel_decision_duration_seconds` | Histogram | `intent_kind` | adjudicate() latency in seconds. Alert on p99 > 100ms. Buckets: 1ms — 10s. |
-| ~~`kernel_shadow_divergence_total`~~ (HISTORICAL) | n/a | n/a | Updated 2026-05-24 post-cutover: this counter was the enforce-flip gate metric (per the now-`superseded/04-shadow-enforce-sequencing.md`). The IBX-IGE v3.0 cutover (`f3bea43`) removed the shadow path; the counter registration was dropped from `apps/api/src/plugins/kernel-metrics-sink.ts` by `1024028`. Not present in the live Prometheus registry. |
 | `kernel_ledger_op_total` | Counter | `outcome` (hit / miss / ok / duplicate / error), `op` (check / record) | Execution Ledger fail-open detection. |
 | `kernel_audit_sink_failure_total` | Counter | `sink` (nats / postgres / console), `reason` (errorClass) | NATS / Postgres audit pipeline health. Drives circuit-breaker engagement. |
-| `kernel_defer_resume_duration_seconds` | Histogram | `kind` | Park-to-resume latency for DEFER intents. Populated by the resolver (Task 03). Buckets: 100ms — 4h. |
+| `kernel_defer_resume_duration_seconds` | Histogram | `kind` | Park-to-resume latency for DEFER intents (populated by the resolver). Buckets: 100ms — 4h. |
+| `kernel_intent_kind_coverage` | Gauge | — | Ratio of `KNOWN_INTENT_KINDS` observed in the trailing 24h window. < 1.0 means an emitted kind sits outside the typo gate. Alert when below 1.0. |
+| `kernel_distinct_intent_kinds_observed` | Gauge | — | Count of distinct intent kinds observed in the 24h window (coverage numerator companion). |
+| `kernel_known_intent_kinds_total` | Gauge | — | `KNOWN_INTENT_KINDS.size` — the typo gate's accepted set (coverage denominator). |
+| `kernel_intent_kind_unknown_total` | Counter | `kind` | An intent was emitted with a kind NOT in `KNOWN_INTENT_KINDS` — taxonomy drift signal. |
+| `kernel_audit_lag_seconds` | Histogram | `sink` | Audit pipeline lag: emit() → durable sink acknowledge, per sink. Buckets: 1ms — 60s. |
+| `kernel_replay_drift_total` | Counter | `class` | Replay-drift verdicts from `ibx kernel replay`, one increment per drift event. |
+| `kernel_pack_install_total` | Counter | `pack` | `installPack` calls at boot, labelled by pack name. |
+| `kernel_defer_pending_gauge` | Gauge | — | Currently parked deferred intents (count of `defer:pending:*` Redis keys). |
+| `kernel_defer_quota_exceeded_total` | Counter | `kind` | Per-session DEFER quota-rejection events. |
+| `kernel_defer_timeout_total` | Counter | `kind` | DEFER intents that expired before their resume signal arrived (sweeper-published). |
+| `kernel_audit_redactor_failures_total` | Counter | `reason` | Audit-redactor fail-open events (cyclic refs, throw on traversal). |
+| `kernel_audit_sink_buffer_size` | Gauge | — | In-memory capacity of `persistentBufferedSink` (records held before spill). |
+| `kernel_audit_sink_spill_size` | Gauge | — | Audit Redis spill-list depth (records waiting to drain to inner sinks). |
 
-**Scrape config (Prometheus):**
+**Scrape config (Prometheus):** the route reads the `x-prometheus-token` header (not bearer auth), so inject it via `http_config.request_headers`. Inject `PROMETHEUS_TOKEN` from the scraper's secret store — do not commit it.
 
 ```yaml
 scrape_configs:
@@ -384,20 +391,9 @@ scrape_configs:
     scheme: https
     static_configs:
       - targets: ["api.ibatexas.com.br:443"]
-    bearer_token: # NOT used — use the custom header instead
-    relabel_configs: []
-    # Inject PROMETHEUS_TOKEN via a custom header on the scrape config:
-    authorization: { type: "", credentials: "" }
-```
-
-In practice the Prometheus job sets `http_config.proxy_url` or injects the header via a reverse-proxy. For a Grafana Agent / k8s deployment, use:
-
-```yaml
-- job_name: ibatexas-kernel
-  metrics_path: /metrics
-  http_config:
-    request_headers:
-      x-prometheus-token: ${PROMETHEUS_TOKEN}
+    http_config:
+      request_headers:
+        x-prometheus-token: ${PROMETHEUS_TOKEN}
 ```
 
 ### NATS Analytics Events
@@ -448,19 +444,41 @@ Source: `apps/api/src/routes/analytics.ts` — best-effort, fire-and-forget publ
 
 ## PostHog Configuration
 
+Source: `apps/web/src/lib/posthog.ts`.
+
 ```typescript
 posthog.init(NEXT_PUBLIC_POSTHOG_KEY, {
-  api_host: NEXT_PUBLIC_POSTHOG_HOST,
-  autocapture: false,           // our event taxonomy is explicit
-  capture_pageview: false,      // fired manually on Next.js route changes
-  persistence: 'localStorage',
-  person_profiles: 'identified_only',  // no anonymous user bloat
+  api_host: NEXT_PUBLIC_POSTHOG_HOST,   // defaults to https://us.posthog.com
+  autocapture: false,                   // our event taxonomy is explicit
+  capture_pageview: false,              // fired manually on Next.js route changes
+  capture_pageleave: true,
+  persistence: 'cookie',
+  secure_cookie: location.protocol === 'https:',
+  cross_subdomain_cookie: false,
+  person_profiles: 'identified_only',   // no anonymous user bloat
 })
 ```
 
 - `autocapture: false` — custom events are better than generic click tracking
 - `capture_pageview: false` — PostHogProvider fires `$pageview` on route changes
+- `persistence: 'cookie'` — deliberately NOT `localStorage`, to keep analytics state out of script-readable storage (XSS exposure surface). `secure_cookie` is on under HTTPS; `cross_subdomain_cookie: false` scopes the cookie to the storefront host.
 - `person_profiles: 'identified_only'` — only creates person profiles for authenticated users
+
+---
+
+## Verifying Events in PostHog Live Events
+
+Before creating dashboards or starting a measurement window, confirm events are flowing correctly:
+
+1. Open PostHog → **Live Events**
+2. Trigger each critical event in the storefront (dev or staging)
+3. Confirm the event appears in the live stream with the expected properties
+4. Check that `ibx_session_id` and `distinct_id` are present on every event
+5. Verify `checkout_completed` fires exactly once per order (no duplicates)
+6. Verify `pdp_scroll_depth` fires at most 4 times per PDP visit (25/50/75/100)
+7. Confirm `session_started` does NOT fire on bounce (home page only, no interaction)
+
+Once events are verified, work through the Pre-Baseline Checklist below before locking in the baseline.
 
 ---
 
@@ -477,7 +495,7 @@ Verify in PostHog live events before starting the measurement window:
 - [ ] No duplicate events visible in PostHog live event stream
 - [ ] `sendBeacon` works in production build (not only dev console.log)
 - [ ] RPS test query: `sum(orderTotal) / count(distinct ibx_session_id)` returns expected value
-- [ ] NATS subjects follow `ibatexas.web.{eventName}` pattern
+- [ ] Web events land on the NATS subject `ibatexas.analytics.event` (single subject; `eventType` is a payload field, not the subject)
 
 ---
 
@@ -521,6 +539,6 @@ Uses `window.scrollY + window.innerHeight / document.body.scrollHeight` percenta
 - **Customer Identification:** Call `posthog.identify(customerId)` on auth to link sessions to users
 
 ### Phase 3
-- **ClickHouse Consumer:** NATS subscriber that writes all `ibatexas.web.*` events to ClickHouse for historical BI queries
+- **ClickHouse Consumer:** NATS subscriber that writes `ibatexas.analytics.event` to ClickHouse for historical BI queries
 - **Real-Time Alerts:** NATS subscriber that monitors for anomalies (checkout error spike, conversion drop)
 - **Server-Side Analytics:** Move critical events (order.placed, reservation.created) to server-side PostHog for guaranteed delivery

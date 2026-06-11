@@ -16,6 +16,7 @@ import { startStaleOrderChecker } from "./stale-order-checker.js";
 import { startDeferTimeoutSweeper } from "./defer-timeout-sweeper.js";
 import { startAnonymizeMedusaRetry } from "./anonymize-medusa-retry.js";
 import { startRetentionCleaner } from "./retention-cleaner.js";
+import { startDriftEvaluate } from "./drift-evaluate.js";
 
 /**
  * Start all background job workers and their repeatable schedules.
@@ -43,6 +44,10 @@ export function registerWorkers(log: FastifyBaseLogger): void {
   // 5 min and re-publishes pending events whose subscriber pass failed.
   // Emits .exhausted after MEDUSA_ANONYMIZE_MAX_ATTEMPTS (~1h budget).
   startAnonymizeMedusaRetry(log);
+  // [F3] Recomputes behavioral drift every IBX_DRIFT_EVAL_INTERVAL_MS and
+  // publishes ibx_behavioral_drift_* gauges/counter on the shared kernel
+  // registry so GET /metrics exposes them. Fail-open; never blocks a turn.
+  startDriftEvaluate(log);
 }
 
 /**
@@ -63,6 +68,7 @@ export async function shutdownWorkers(): Promise<void> {
   const { stopDeferTimeoutSweeper } = await import("./defer-timeout-sweeper.js");
   const { stopAnonymizeMedusaRetry } = await import("./anonymize-medusa-retry.js");
   const { stopRetentionCleaner } = await import("./retention-cleaner.js");
+  const { stopDriftEvaluate } = await import("./drift-evaluate.js");
 
   await Promise.all([
     stopAbandonedCartChecker(),
@@ -79,5 +85,6 @@ export async function shutdownWorkers(): Promise<void> {
     stopRetentionCleaner(),
     stopDeferTimeoutSweeper(),
     stopAnonymizeMedusaRetry(),
+    stopDriftEvaluate(),
   ]);
 }

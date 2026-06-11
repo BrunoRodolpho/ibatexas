@@ -30,6 +30,7 @@
 // All user-facing strings are pt-BR per CLAUDE.md rule #4.
 
 import { readFile, readdir } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
@@ -72,6 +73,24 @@ function parseDuration(input: string): number {
           : 1_000
   return n * multiplier
 }
+
+// The canonical Pack roster the CLI loads — `[npm spec, named export]` pairs.
+// SINGLE source of truth shared by `loadPackIndex` (the kind→Pack map behind
+// `replay`/`status`), `loadPacksForGovernance` (raw Packs for BOM/analyze), and
+// the `status` pack count. These three once enumerated the roster independently
+// and drifted: the PIX pack was indexed under a stale export name
+// (`pixChargeLifecyclePack`) in `loadPackIndex` only, so `safeImport` silently
+// dropped it and `pix.charge.*` audit records fell into the replay coverage-gap
+// bucket. Keep this list in lockstep with `installFirstPartyPacks()` in
+// apps/api/src/plugins/kernel-bootstrap.ts.
+const FIRST_PARTY_PACK_SPECS = [
+  ["@ibatexas/pack-orders", "ordersPack"],
+  ["@ibatexas/pack-reservations", "reservationsPack"],
+  ["@ibatexas/pack-whatsapp", "whatsappPack"],
+  ["@ibatexas/pack-customer-onboarding", "customerOnboardingPack"],
+  ["@ibatexas/pack-payments", "paymentsPack"],
+  ["@adjudicate/pack-payments-pix", "paymentsPixPack"],
+] as const
 
 // ── ibx kernel status ─────────────────────────────────────────────────────
 
@@ -125,7 +144,9 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   console.log()
 
   console.log(chalk.bold("── Intent kinds conhecidos ──────────────────────"))
-  console.log(`  ${chalk.cyan(String(KNOWN_INTENT_KINDS.size))} kinds em ${chalk.cyan("5")} packs`)
+  console.log(
+    `  ${chalk.cyan(String(KNOWN_INTENT_KINDS.size))} kinds em ${chalk.cyan(String(FIRST_PARTY_PACK_SPECS.length))} packs`,
+  )
   // Group by domain for readability.
   const groups: Record<string, string[]> = {}
   for (const k of [...KNOWN_INTENT_KINDS].sort((a, b) => a.localeCompare(b))) {
@@ -468,14 +489,7 @@ async function loadPackIndex(): Promise<Map<string, InstalledPack>> {
       return null
     }
   }
-  for (const [spec, exp] of [
-    ["@ibatexas/pack-orders", "ordersPack"],
-    ["@ibatexas/pack-reservations", "reservationsPack"],
-    ["@ibatexas/pack-whatsapp", "whatsappPack"],
-    ["@ibatexas/pack-customer-onboarding", "customerOnboardingPack"],
-    ["@ibatexas/pack-payments", "paymentsPack"],
-    ["@adjudicate/pack-payments-pix", "pixChargeLifecyclePack"],
-  ] as const) {
+  for (const [spec, exp] of FIRST_PARTY_PACK_SPECS) {
     const pack = await safeImport(spec, exp)
     if (pack) packs.push(pack)
   }
@@ -538,56 +552,249 @@ function printReplayReport(report: ReplayReport): void {
  * → package root) before joining `migrations`.
  */
 async function resolveAuditPostgresMigrationsDir(): Promise<string> {
-  // `import.meta.resolve` was promoted to sync in newer Node but is still
-  // typed as returning `string` in @types/node. Use as a string + URL.
-  const indexUrl = await import.meta.resolve("@adjudicate/audit-postgres")
-  const indexPath = fileURLToPath(indexUrl)
+  // Prefer `import.meta.resolve` (sync in modern Node), but it is unavailable
+  // under some bundlers / test runners — Vite SSR turns it into an undefined
+  // `__vite_ssr_import_meta__.resolve` — so fall back to `createRequire`,
+  // which works wherever CJS resolution does. `import.meta.resolve` yields a
+  // `file://` URL; `createRequire(...).resolve` yields a filesystem path.
+  const metaResolve = (import.meta as { resolve?: (s: string) => string })
+    .resolve
+  const indexPath =
+    typeof metaResolve === "function"
+      ? fileURLToPath(await metaResolve("@adjudicate/audit-postgres"))
+      : createRequire(import.meta.url).resolve("@adjudicate/audit-postgres")
   return join(dirname(dirname(indexPath)), "migrations")
+}
+
+/** A migration file paired with its SQL text. */
+export interface PendingMigration {
+  readonly file: string
+  readonly sql: string
+}
+
+/** Minimal client surface used by the migration runner (satisfied by pg.Client). */
+export interface MigrationClient {
+  query(
+    sql: string,
+    params?: readonly unknown[],
+  ): Promise<{ rows: Array<Record<string, unknown>> }>
+}
+
+/** Structured logger surface for the migration runner. */
+export interface MigrateLog {
+  info(msg: string): void
+  warn(msg: string): void
+}
+
+/** Ledger table tracking which audit-postgres migrations have been applied. */
+const AUDIT_MIGRATIONS_LEDGER = "audit_schema_migrations"
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/** Parse the constraint name out of a Postgres check_violation message. */
+function violatedConstraintName(err: unknown): string | null {
+  const m = /constraint "([^"]+)"/i.exec((err as Error | undefined)?.message ?? "")
+  return m ? m[1]! : null
+}
+
+/**
+ * True when some LATER migration re-defines (`ADD CONSTRAINT`) `name`. A
+ * check_violation on a constraint that a subsequent migration re-adds means
+ * the failing migration is a superseded INTERMEDIATE constraint state — e.g.
+ * 005 narrows record_version to `IN (1,2,3)`, 008 widens to `IN (1,2,3,4)`,
+ * 010 to `IN (1,2,3,4,5)`. On a DB whose data is already ahead of the
+ * intermediate, Postgres runs each file as one implicit transaction, so the
+ * failed file rolled back and the prior (wider) constraint is intact —
+ * skipping it is safe. We require provable supersession so a violation on the
+ * FINAL constraint (no later redefinition) is never masked.
+ */
+function isSupersededConstraint(
+  name: string,
+  laterMigrations: readonly PendingMigration[],
+): boolean {
+  const re = new RegExp(`ADD\\s+CONSTRAINT\\s+${escapeRegExp(name)}\\b`, "i")
+  return laterMigrations.some((m) => re.test(m.sql))
+}
+
+/**
+ * Apply `migrations` (in order) against `client`, recording each applied file
+ * in the `audit_schema_migrations` ledger so every migration runs at most
+ * once. This is the re-runnable core behind `ibx kernel migrate` /
+ * `ibx bootstrap`, safe on three kinds of database:
+ *
+ *   - Fresh DB: ledger empty → every file runs in order and is recorded.
+ *   - Already-migrated DB: recorded files are skipped via the ledger.
+ *   - Pre-ledger DB that advanced past the early migrations WITH data
+ *     (the regression this fixes — the old runner re-ran every file from 001
+ *     and aborted re-applying the constraint-NARROWING migration 005, which
+ *     existing v4 rows violate, so it never reached 010): the ledger is
+ *     created empty, then each file is (re-)attempted. Additive migrations are
+ *     idempotent (`IF NOT EXISTS`) or surface "already exists"/"duplicate" →
+ *     recorded as applied. A constraint-narrowing migration whose data is
+ *     ahead of it fails with check_violation; if a later migration re-defines
+ *     that exact constraint it is a superseded intermediate → recorded and
+ *     skipped. Every other failure aborts — we never swallow a violation on
+ *     the final constraint, which would mask genuinely bad data.
+ *
+ * Defence in depth: skipping a superseded constraint is only safe if a LATER
+ * migration re-establishes a VALIDATED constraint of that name. A name match
+ * alone does not prove that (a future migration could re-add the constraint
+ * `NOT VALID`, leaving existing bad rows unchecked). So after the run we
+ * re-assert via `pg_constraint` that every skipped constraint is now present
+ * AND `convalidated` — aborting if not, rather than reporting a false success.
+ *
+ * Requirement: each migration file is executed as ONE implicit transaction
+ * (single multi-statement query), so a failed file rolls back atomically.
+ * Migration files must therefore be transaction-compatible DDL — no
+ * `CREATE INDEX CONCURRENTLY`, `VACUUM`, `REINDEX`, or explicit `BEGIN/COMMIT`
+ * (such a statement errors with SQLSTATE 25001 and the runner aborts loudly).
+ *
+ * Exported for unit testing with a fake client.
+ */
+export async function applyMigrationsWithLedger(
+  client: MigrationClient,
+  migrations: readonly PendingMigration[],
+  log: MigrateLog,
+): Promise<void> {
+  await client.query(
+    `CREATE TABLE IF NOT EXISTS ${AUDIT_MIGRATIONS_LEDGER} (` +
+      `filename TEXT PRIMARY KEY, ` +
+      `applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+  )
+  const appliedRes = await client.query(
+    `SELECT filename FROM ${AUDIT_MIGRATIONS_LEDGER}`,
+  )
+  const applied = new Set(appliedRes.rows.map((r) => String(r.filename)))
+
+  const record = (file: string) =>
+    client.query(
+      `INSERT INTO ${AUDIT_MIGRATIONS_LEDGER} (filename) VALUES ($1) ` +
+        `ON CONFLICT (filename) DO NOTHING`,
+      [file],
+    )
+
+  // Constraints we skipped as "superseded" — re-asserted as validated below.
+  const skippedConstraints = new Set<string>()
+
+  for (let i = 0; i < migrations.length; i++) {
+    const { file, sql } = migrations[i]!
+    if (applied.has(file)) {
+      log.info(`  ⏭ ${file} — registrado, pulando`)
+      continue
+    }
+    try {
+      await client.query(sql)
+      await record(file)
+      log.info(`  ✓ ${file}`)
+      continue
+    } catch (err) {
+      const msg = (err as Error).message ?? ""
+      const code = (err as { code?: string }).code
+      // Additive object already present (pre-ledger DB) — already applied.
+      if (/already exists|duplicate/i.test(msg)) {
+        await record(file)
+        log.info(`  ↺ ${file} — já aplicado`)
+        continue
+      }
+      // Superseded intermediate constraint state (see isSupersededConstraint).
+      // Postgres code 23514 = check_violation. Prefer node-postgres' structured
+      // `err.constraint` (stable wire metadata) over locale-fragile message
+      // parsing; fall back to the message parse if absent.
+      const cname =
+        (err as { constraint?: string }).constraint ??
+        violatedConstraintName(err)
+      if (
+        code === "23514" &&
+        cname !== null &&
+        isSupersededConstraint(cname, migrations.slice(i + 1))
+      ) {
+        skippedConstraints.add(cname)
+        await record(file)
+        log.warn(
+          `  ⤼ ${file} — restrição "${cname}" substituída por migração posterior (dados à frente); pulando`,
+        )
+        continue
+      }
+      throw new Error(`migration ${file} failed: ${msg}`)
+    }
+  }
+
+  // Defence in depth: a name match alone does not prove a skipped constraint
+  // was truly superseded by a VALIDATED replacement (a later migration could
+  // re-add it `NOT VALID`, leaving existing bad rows unchecked). Re-assert that
+  // every skipped constraint now exists AND is `convalidated`, or abort — never
+  // report success on an un-backed skip.
+  if (skippedConstraints.size > 0) {
+    const names = [...skippedConstraints]
+    const res = await client.query(
+      `SELECT conname FROM pg_constraint ` +
+        `WHERE conname = ANY($1) AND convalidated`,
+      [names],
+    )
+    const validated = new Set(res.rows.map((r) => String(r.conname)))
+    const unbacked = names.filter((n) => !validated.has(n))
+    if (unbacked.length > 0) {
+      throw new Error(
+        `migration ledger: superseded-skip left constraint(s) absent or ` +
+          `unvalidated after migrate: ${unbacked.join(", ")} — refusing to ` +
+          `report success`,
+      )
+    }
+  }
+}
+
+/**
+ * Resolve + read every `@adjudicate/audit-postgres` migration file in
+ * numeric order. Exported so the integration test can run the same migration
+ * set the CLI ships.
+ */
+export async function loadAuditPostgresMigrations(): Promise<PendingMigration[]> {
+  const migrationsDir = await resolveAuditPostgresMigrationsDir()
+  const files = (await readdir(migrationsDir))
+    .filter((f) => f.endsWith(".sql"))
+    .sort((a, b) => a.localeCompare(b))
+  const migrations: PendingMigration[] = []
+  for (const file of files) {
+    migrations.push({
+      file,
+      sql: await readFile(join(migrationsDir, file), "utf8"),
+    })
+  }
+  return migrations
 }
 
 /**
  * Apply all `@adjudicate/audit-postgres` SQL migrations against
- * `$DATABASE_URL`. Idempotent — re-running is safe; the SQL files use
- * `IF NOT EXISTS` / `IF NOT EXISTS COLUMN` patterns, and we additionally
- * swallow "already exists" / "duplicate" errors per migration so an old
- * run that partially completed doesn't block recovery.
+ * `$DATABASE_URL`, exactly once each, via the `audit_schema_migrations`
+ * ledger (see `applyMigrationsWithLedger`). Safe to re-run on fresh,
+ * already-migrated, and pre-ledger-with-data databases.
  *
  * Exported so `ibx bootstrap` can call it as part of first-time setup
  * (after Prisma migrations + seeds).
  */
 export async function applyAuditPostgresMigrations(
   databaseUrl: string,
-  log: { info: (msg: string) => void; warn: (msg: string) => void } = {
+  log: MigrateLog = {
     info: (msg) => console.log(msg),
     warn: (msg) => console.warn(msg),
   },
 ): Promise<void> {
-  const migrationsDir = await resolveAuditPostgresMigrationsDir()
-  const files = (await readdir(migrationsDir))
-    .filter((f) => f.endsWith(".sql"))
-    .sort((a, b) => a.localeCompare(b))
-  if (files.length === 0) {
-    log.warn(`Nenhum .sql encontrado em ${migrationsDir}`)
+  const migrations = await loadAuditPostgresMigrations()
+  if (migrations.length === 0) {
+    log.warn("Nenhum arquivo .sql de migração encontrado")
     return
   }
   const { default: pg } = await import("pg")
   const client = new pg.Client({ connectionString: databaseUrl })
   await client.connect()
   try {
-    for (const file of files) {
-      const sql = await readFile(join(migrationsDir, file), "utf8")
-      try {
-        await client.query(sql)
-        log.info(`  ✓ ${file}`)
-      } catch (err) {
-        const msg = (err as Error).message
-        if (/already exists|duplicate/i.test(msg)) {
-          log.info(`  ↺ ${file} — já aplicado`)
-        } else {
-          throw new Error(`migration ${file} failed: ${msg}`)
-        }
-      }
-    }
+    await applyMigrationsWithLedger(
+      client as unknown as MigrationClient,
+      migrations,
+      log,
+    )
   } finally {
     await client.end()
   }
@@ -914,6 +1121,183 @@ async function runDeferResume(
 
 // ── Registration ──────────────────────────────────────────────────────────
 
+// ── Governance: AI-BOM (F12) + policy coherence (F11) ──────────────────────
+//
+// `kernelMinVersion` floor stamped into every BOM (the @adjudicate/core major
+// line these packs target). A single named constant per Hard Rule #3 — not
+// authored per-pack. `KERNEL_VERSION` is the installed core line; both feed the
+// reproducible `bomDigest`, so a core bump is a material re-baseline event.
+const KERNEL_MIN_VERSION = "1.0.0"
+const KERNEL_VERSION = "1.3.0"
+// Pinned wall-clock: EXCLUDED from `bomDigest` (digest covers everything except
+// generatedAt + signature), so it keeps the committed BOM artifact byte-stable.
+const BOM_GENERATED_AT = "2026-06-07T00:00:00.000Z"
+
+interface GovernancePack {
+  readonly id: string
+  readonly version: string
+  readonly contract: string
+  readonly intents: readonly string[]
+  readonly signals?: readonly string[]
+  readonly basisCodes?: readonly string[]
+  readonly policy: unknown
+  readonly planner: unknown
+}
+
+// Raw first-party pack objects (not the kind→pack index) for BOM + analyze.
+// Mirrors loadPackIndex's spec list; degrades gracefully outside the monorepo.
+async function loadPacksForGovernance(
+  only?: string,
+): Promise<GovernancePack[]> {
+  const out: GovernancePack[] = []
+  for (const [spec, exp] of FIRST_PARTY_PACK_SPECS) {
+    if (only !== undefined && spec !== only) continue
+    try {
+      const mod = (await import(spec as string)) as Record<
+        string,
+        GovernancePack | undefined
+      >
+      const pack = mod[exp]
+      if (pack) out.push(pack)
+    } catch {
+      // Unresolvable spec — skip (CLI may run outside the workspace).
+    }
+  }
+  return out
+}
+
+async function runPackBom(opts: {
+  pack?: string
+  json?: boolean
+  verifyFile?: string
+}): Promise<void> {
+  const { generateAiBom, runConformance, scorePackHealth } = await import(
+    "@adjudicate/conformance"
+  )
+  const packs = await loadPacksForGovernance(opts.pack)
+  if (packs.length === 0) {
+    console.error(
+      chalk.red(`Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`),
+    )
+    process.exitCode = 1
+    return
+  }
+
+  let baseline: Record<string, string> | undefined
+  if (opts.verifyFile !== undefined) {
+    try {
+      baseline = JSON.parse(await readFile(opts.verifyFile, "utf-8")) as Record<
+        string,
+        string
+      >
+    } catch {
+      console.error(chalk.red(`Baseline ilegível: ${opts.verifyFile}`))
+      process.exitCode = 1
+      return
+    }
+  }
+
+  const digests: Record<string, string> = {}
+  let mismatch = false
+  for (const pack of packs) {
+    const conformance = runConformance(pack as never)
+    const manifest = {
+      contract: pack.contract as "v0" | "v1",
+      packId: pack.id,
+      kernelMinVersion: KERNEL_MIN_VERSION,
+      intents: pack.intents,
+      ...(pack.signals ? { signals: pack.signals } : {}),
+    }
+    const health = scorePackHealth({
+      manifest: { ok: true, manifest },
+      conformance,
+      intentCount: pack.intents.length,
+      signalCount: pack.signals?.length ?? 0,
+      packId: pack.id,
+    })
+    const bom = generateAiBom({
+      pack,
+      manifest,
+      conformance,
+      health,
+      generatedAt: BOM_GENERATED_AT,
+      kernelVersion: KERNEL_VERSION,
+    })
+    digests[pack.id] = bom.bomDigest
+
+    if (baseline !== undefined) {
+      const want = baseline[pack.id]
+      if (want === undefined) {
+        console.error(chalk.red(`✗ ${pack.id}: sem entrada na baseline`))
+        mismatch = true
+      } else if (want !== bom.bomDigest) {
+        console.error(
+          chalk.red(
+            `✗ ${pack.id}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${bom.bomDigest.slice(0, 12)}…)`,
+          ),
+        )
+        mismatch = true
+      } else {
+        console.log(chalk.green(`✓ ${pack.id} → ${bom.bomDigest.slice(0, 16)}…`))
+      }
+    } else if (opts.json) {
+      console.log(JSON.stringify(bom, null, 2))
+    } else {
+      console.log(chalk.bold(`AI-BOM ${pack.id}@${pack.version}`))
+      console.log(`  fingerprint : ${bom.fingerprint}`)
+      console.log(`  bomDigest   : ${bom.bomDigest}`)
+      console.log(
+        `  conformance : ${bom.conformance.passedCount}/${bom.conformance.total}`,
+      )
+      console.log(
+        `  health      : ${bom.healthTier} (${bom.healthScore.score}/${bom.healthScore.maxScore})`,
+      )
+    }
+  }
+
+  // When neither verifying nor emitting full JSON, print the digest-lock so an
+  // operator can capture/refresh governance/pack-bom-baseline.json.
+  if (opts.verifyFile === undefined && opts.json !== true) {
+    console.log()
+    console.log(
+      chalk.dim("digest-lock (governance/pack-bom-baseline.json):"),
+    )
+    console.log(JSON.stringify(digests, null, 2))
+  }
+  if (mismatch) process.exitCode = 1
+}
+
+async function runAnalyze(opts: {
+  pack?: string
+  json?: boolean
+  sarif?: boolean
+}): Promise<void> {
+  const { analyzePolicy, renderJson, renderSarif, renderText } = await import(
+    "@adjudicate/analyze"
+  )
+  const packs = await loadPacksForGovernance(opts.pack)
+  if (packs.length === 0) {
+    console.error(
+      chalk.red(`Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`),
+    )
+    process.exitCode = 1
+    return
+  }
+  // Tier-1 coherence (basis-vocab / default-polarity / taint-policy …). NO
+  // `strict` and NO plannerProbes here: the planner-coherence Tier-3 gate
+  // (AJD-301) lives in each pack's conformance.test.ts where the probe fixtures
+  // are. We gate the CLI on `summary.error` only — warnings are intentional.
+  let anyError = false
+  for (const pack of packs) {
+    const report = analyzePolicy({ pack: pack as never })
+    if (!report.passed) anyError = true
+    if (opts.sarif) console.log(renderSarif(report))
+    else if (opts.json) console.log(renderJson(report))
+    else console.log(renderText(report))
+  }
+  if (anyError) process.exitCode = 1
+}
+
 export function registerKernelCommands(group: Command): void {
   group.description("Kernel — estado, replay e migrações do adjudicate kernel")
 
@@ -1000,4 +1384,71 @@ export function registerKernelCommands(group: Command): void {
         }
       },
     )
+
+  // ── pack-bom (F12) ─────────────────────────────────────────────────────────
+  group
+    .command("pack-bom")
+    .description(
+      "Gera o AI Bill-of-Materials (EU AI Act / NIST) dos packs — fingerprint + conformance + health. --verify-file falha (exit 1) se o bomDigest divergir da baseline.",
+    )
+    .option("--pack <spec>", "Pack alvo (default: todos os first-party)")
+    .option("--json", "Emite o AiBom completo em JSON")
+    .option(
+      "--verify-file <path>",
+      "Compara o bomDigest de cada pack contra a baseline commitada (CI gate)",
+    )
+    .action(
+      async (opts: { pack?: string; json?: boolean; verifyFile?: string }) => {
+        await runPackBom(opts)
+      },
+    )
+
+  // ── analyze (F11) ──────────────────────────────────────────────────────────
+  group
+    .command("analyze")
+    .description(
+      "Roda os analisadores de coerência de política (Tier-1) sobre os packs e falha (exit 1) em erros. --sarif para CI.",
+    )
+    .option("--pack <spec>", "Pack alvo (default: todos os first-party)")
+    .option("--json", "Emite o AnalysisReport em JSON")
+    .option("--sarif", "Emite SARIF 2.1.0 (upload em code-scanning)")
+    .action(async (opts: { pack?: string; json?: boolean; sarif?: boolean }) => {
+      await runAnalyze(opts)
+    })
+
+  // ── seal (F5) ──────────────────────────────────────────────────────────────
+  group
+    .command("seal")
+    .description(
+      "Computa o config-seal digest de cada pack e imprime a linha CONFIG_SEAL_DIGESTS para fixar o boot-gate (F5).",
+    )
+    .option("--pack <spec>", "Pack alvo (default: todos os first-party)")
+    .action(async (opts: { pack?: string }) => {
+      const { computeConfigDigest, extractSealableSurface } = await import(
+        "@adjudicate/conformance"
+      )
+      const packs = await loadPacksForGovernance(opts.pack)
+      if (packs.length === 0) {
+        console.error(
+          chalk.red(
+            `Nenhum pack encontrado${opts.pack ? ` para ${opts.pack}` : ""}.`,
+          ),
+        )
+        process.exitCode = 1
+        return
+      }
+      const entries: string[] = []
+      for (const pack of packs) {
+        const digest = computeConfigDigest(extractSealableSurface(pack as never))
+        console.log(chalk.bold(`${pack.id}@${pack.version}`) + ` → ${digest}`)
+        entries.push(`${pack.id}=${digest}`)
+      }
+      console.log()
+      console.log(
+        chalk.dim(
+          "Fixe em .env (CONFIG_SEAL_DIGESTS) para ativar o boot-gate fail-closed:",
+        ),
+      )
+      console.log(`CONFIG_SEAL_DIGESTS=${entries.join(";")}`)
+    })
 }

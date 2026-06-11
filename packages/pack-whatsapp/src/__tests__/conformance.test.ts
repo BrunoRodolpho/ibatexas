@@ -24,8 +24,10 @@ import { describe, expect, it } from "vitest"
 import { adjudicate } from "@adjudicate/core/kernel"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import { runConformance } from "@adjudicate/conformance"
+import { analyzePolicy, type PlannerProbe } from "@adjudicate/analyze"
 import {
   whatsappPack,
+  type WhatsAppContext,
   type WhatsAppIntentKind,
   type WhatsAppPayload,
   type WhatsAppState,
@@ -530,5 +532,103 @@ describe("whatsappPack — kernel invariants via runConformance()", () => {
     // surfaced explicitly in the Pack's own test surface (task spec
     // acceptance criterion).
     expect(whatsappPack.policy.default).toBe("REFUSE")
+  })
+})
+
+// ── Tier-3 policy coherence (AJD-301) via analyzePolicy() ───────────────────
+//
+// F11 gate: the planner must never offer an intent the Pack doesn't declare
+// (`phantom_intent`, the only error-severity rule → flips `report.passed`).
+// This Pack's planner is LLM-invisible by construction — `plan()` returns
+// `allowedIntents: []` for every session (see capabilities.ts module doc),
+// so there is no `phantom_intent` surface to begin with; this block pins that
+// guarantee so a future regression that adds an undeclared kind to the
+// planner's surface fails loudly here.
+//
+// System-only kinds (taint minimum above UNTRUSTED) are intentionally not
+// planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
+// via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
+// `whatsapp.template.send` from the taint policy fails loudly here.
+//
+// NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
+// omits the declared non-system intent (`whatsapp.message.send`, reached only
+// via routed/system egress flows), a benign `unreachable_intent` warning.
+// `report.passed` stays true (error === 0).
+
+describe("whatsappPack — policy coherence via analyzePolicy() (AJD-301)", () => {
+  // The planner does not branch on session state (`plan()` voids both
+  // `state` and `context` — it exposes nothing to the LLM regardless of
+  // session). We still vary the probes across the channel/identity surface
+  // so the analyzer drives `plan()` over the realistic input space. `context`
+  // is required by the probe shape.
+  const probes: ReadonlyArray<PlannerProbe<WhatsAppState, WhatsAppContext>> = [
+    {
+      label: "guest-web",
+      state: baseState({ channel: "web", customerId: null }),
+      context: {
+        channel: "web",
+        customerId: null,
+        staffId: null,
+      },
+    },
+    {
+      label: "auth-whatsapp",
+      state: baseState(),
+      context: {
+        channel: "whatsapp",
+        customerId: "c-1",
+        staffId: null,
+      },
+    },
+    {
+      label: "staff-channel",
+      state: baseState({ channel: "staff", staffId: "staff-1" }),
+      context: {
+        channel: "staff",
+        customerId: "c-1",
+        staffId: "staff-1",
+      },
+    },
+  ]
+
+  // Derive the system-only set the SAME way the analyzer does (taint minimum),
+  // never a hand-list — so this test cannot drift from `whatsappTaintPolicy`.
+  const systemOnlyKinds = whatsappPack.intents.filter((k) => {
+    const min = whatsappPack.policy.taint.minimumFor(k)
+    return min !== undefined && min !== "UNTRUSTED"
+  })
+
+  it("planner proposes no phantom intents (report.passed, zero errors)", () => {
+    const report = analyzePolicy({ pack: whatsappPack, plannerProbes: probes })
+    for (const d of report.diagnostics) {
+      if (d.severity === "error") console.error(`[${d.code}] ${d.message}`)
+    }
+    expect(report.passed).toBe(true)
+    expect(report.summary.error).toBe(0)
+  })
+
+  it("system-only kinds (whatsapp.template.send, …) are carved out", () => {
+    const report = analyzePolicy({ pack: whatsappPack, plannerProbes: probes })
+    // Guard against a vacuous pass: the carve-out subject must really be system-only.
+    expect(systemOnlyKinds).toContain("whatsapp.template.send")
+    for (const kind of systemOnlyKinds) {
+      const unreachable = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "unreachable_intent" && d.detail?.intent === kind,
+      )
+      expect(
+        unreachable,
+        `${kind} is system-only — must NOT be flagged unreachable`,
+      ).toBeUndefined()
+      const contradiction = report.diagnostics.find(
+        (d) =>
+          d.detail?.rule === "system_taint_contradiction" &&
+          d.detail?.intent === kind,
+      )
+      expect(
+        contradiction,
+        `${kind} is system-only — planner must NOT offer it`,
+      ).toBeUndefined()
+    }
   })
 })
