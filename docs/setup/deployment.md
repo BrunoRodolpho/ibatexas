@@ -6,7 +6,7 @@ The repo has two deploy targets:
 
 | Environment | Shape | Cost | Status |
 |---|---|---|---|
-| **dev** | Single EC2 (Spot `t4g.small`) + Docker Compose behind Caddy | ~$15/mo | **active** |
+| **dev** | Single EC2 (Spot `t3.small`) + Docker Compose behind Caddy | ~$15/mo | **active** |
 | **production** | ECS Fargate + ALB + ElastiCache + EFS | ~$100/mo+ | **staged** (not applied) |
 
 The heavy Fargate stack lives at `infra/terraform/environments/production/`
@@ -159,7 +159,7 @@ gh variable list
 ### Host architecture
 
 ```
-Route53  ──►  Elastic IP  ──►  EC2 t4g.small (Spot, ARM)
+Route53  ──►  Elastic IP  ──►  EC2 t3.small (Spot, x86)
                                     │
                                     ├─ Caddy    (80/443, auto Let's Encrypt)
                                     ├─ web      :3000  (next.js storefront)
@@ -184,11 +184,14 @@ Parameter Store on each `ibatexas-deploy` run.
 ### CI/CD flow
 
 1. Push to `dev` → `.github/workflows/deploy-staging.yml` fires.
-2. Builds + pushes 3 Docker images to ECR (tagged with commit SHA + `latest`).
-3. Runs Prisma migrations against `STAGING_DIRECT_DATABASE_URL`.
-4. Calls SSM Run Command on the dev host: `/usr/local/bin/ibatexas-deploy`
+2. **build** — matrix builds + pushes 4 Docker images to ECR (`api`, `web`,
+   `admin`, `commerce`), tagged with commit SHA + `latest`.
+3. **migrate** — runs Prisma `migrate deploy` (`@ibatexas/domain`) against
+   `STAGING_DIRECT_DATABASE_URL`.
+4. **deploy** — SSM Run Command on the dev host: `/usr/local/bin/ibatexas-deploy`
    (ECR login + `docker compose pull` + `docker compose up -d`).
-5. Polls HTTPS health endpoints until 200/3xx on all 3 hosts.
+5. **health-check** — probes 4 HTTPS endpoints until 2xx/3xx: storefront,
+   `api/health`, admin, `commerce/health`.
 
 ---
 
@@ -291,15 +294,16 @@ before digging deeper.
 
 ### Spot interruption
 
-t4g.small on Spot typically has very low interruption rates (<5%). If it
+`t3.small` on Spot typically has very low interruption rates (<5%). If it
 happens:
 - Instance stops with 2-min warning.
 - EBS is preserved (`spot_options.instance_interruption_behavior = "stop"`).
 - Instance resumes when capacity returns.
 - Containers restart automatically via systemd.
 
-To switch to on-demand permanently, edit `ec2.tf` — remove
-`instance_market_options {}`. Cost: ~$12.26/mo (vs ~$3.65/mo on Spot).
+To switch to on-demand permanently, edit `ec2.tf` — remove the
+`instance_market_options {}` block. Cost: ~$15/mo on-demand
+(vs ~$5/mo on Spot, us-east-1; Spot prices float).
 
 ---
 
@@ -309,13 +313,15 @@ Dev environment running 24/7:
 
 | Line item | $/mo |
 |---|---|
-| EC2 t4g.small (Spot) | 3.65 |
-| EBS 30 GB gp3 | 2.40 |
+| EC2 t3.small (Spot, us-east-1) | ~5.00 |
+| EBS 30 GB gp3 (`var.ebs_size_gb` default) | 2.40 |
 | Elastic IP | 3.65 |
 | ECR storage | 3.75 |
 | Route53 zone + queries | 0.90 |
 | SSM Parameter Store | 0.00 |
 | Data transfer (low volume) | ~1.00 |
-| **Total** | **~15-16** |
+| **Total** | **~16-17** |
 
-With `ibx infra idle` used evenings/weekends (~50% uptime): **~$11-13/mo**.
+Spot prices float; on-demand `t3.small` is ~$15/mo, raising the total to
+~$26-27/mo. With `ibx infra idle` used evenings/weekends (~50% uptime),
+the EC2 line roughly halves: **~$13-15/mo**.

@@ -97,6 +97,15 @@ describe("ibx kernel status", () => {
     expect(out).toContain("Audit sink")
   })
 
+  it("reports the full Pack roster count (6 packs) in text mode", async () => {
+    // The PIX adopter Pack lifts the canonical roster from 5 to 6. The count
+    // derives from FIRST_PARTY_PACK_SPECS, so it stays honest as Packs are
+    // added — regression guard for the previously-hardcoded stale "5".
+    await cmd.parseAsync(["status"], { from: "user" })
+    const out = stdout.getOutput()
+    expect(out).toMatch(/em\s+6\s+packs/)
+  })
+
   it("includes all 63 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
@@ -340,6 +349,22 @@ describe("ibx kernel replay (real, mocked-Postgres)", () => {
     const allParams = pgQueryRows.capturedParams.flat()
     // The CLI passes the limit to the SQL as a numeric param.
     expect(allParams).toContain(50)
+  })
+
+  it("resolves pix.charge.* records to the PIX pack (no coverage gap)", async () => {
+    // Regression guard: loadPackIndex once imported the PIX pack under a stale
+    // export name (`pixChargeLifecyclePack`), so `pix.charge.*` records were
+    // silently dropped into the "pack ausente" error bucket instead of being
+    // replayed. With the roster sourced from FIRST_PARTY_PACK_SPECS the pack
+    // resolves and the record is adjudicated (cleanly REFUSEd on empty state),
+    // not counted as a coverage gap.
+    pgQueryRows.rows = [
+      buildAuditRow({ intentHash: "d".repeat(64), kind: "pix.charge.create" }),
+    ]
+    await cmd.parseAsync(["replay", "--since=24h"], { from: "user" })
+    const out = stdout.getOutput()
+    expect(out).toMatch(/Total\s*:\s*1/i)
+    expect(out).not.toMatch(/pack ausente/i)
   })
 })
 

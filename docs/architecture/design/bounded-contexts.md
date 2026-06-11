@@ -60,7 +60,7 @@ The catalog covers two distinct product types — food and merchandise — both 
 | Tip | amount (centavos), percentage |
 | Coupon | code, discountType: percent / fixed, value, minOrderValue, expiresAt |
 | Invoice | nfeId, url, issuedAt (via Focus NFe API) |
-| OrderStatus | received → confirmed → in_preparation → ready → out_for_delivery → delivered / cancelled |
+| OrderFulfillmentStatus | pending → confirmed → preparing → ready → in_delivery → delivered / canceled |
 | OrderType | delivery / pickup / dine_in |
 
 ### Rules
@@ -98,7 +98,7 @@ The catalog covers two distinct product types — food and merchandise — both 
 - CEP is validated via ViaCEP API before any delivery order is confirmed
 - Delivery fee is zone-based (restaurant defines zones + fees) — not distance-calculated
 - Delivery estimate = `preparationTime` + `zoneTransitTime` + `currentQueueDelay`
-  - `currentQueueDelay` is estimated from number of active orders in `in_preparation` status
+  - `currentQueueDelay` is estimated from number of active orders in `preparing` status
 - Delivery type options: `delivery` / `pickup` / `dine-in`
   - `dine-in` skips all logistics — customer is already at the table
   - `pickup` requires a pickup time selection (15-min slots)
@@ -154,12 +154,12 @@ The catalog covers two distinct product types — food and merchandise — both 
 | Customer | phone (primary key, verified via Twilio), medusaCustomerId, name, email (optional), source ('web'\|'whatsapp'), firstContactAt, createdAt |
 | CustomerProfile | customerId, dietaryRestrictions[], allergens[], favouriteItems[], lastOrder, orderingPatterns, preferredPayment, preferredTableLocation (Redis, TTL 30d) |
 | Address | customerId, label, street, number, complement, neighbourhood, city, state, cep, isDefault |
-| Staff | phone, role: manager/kitchen/cashier/delivery, active — **NOT YET IMPLEMENTED** in Prisma schema; planned for Phase 2 |
+| Staff | phone (unique), name, role: OWNER \| MANAGER \| ATTENDANT, active — separate Prisma `Staff` model (`packages/domain/prisma/schema.prisma`) |
 
 ### Rules
 
 - Auth is via WhatsApp OTP (Twilio Verify) — no passwords. Phone number is the primary identifier. **This applies to both customers and staff — there is no separate auth provider.**
-- Staff roles are differentiated by `CustomerProfile.type` field (`customer` vs `staff`) and `Staff.role` — not by auth provider
+- Customers and staff are separate Prisma models (`Customer` vs `Staff`) — there is no `type` discriminator field. Staff access level is set by `Staff.role` (`OWNER` > `MANAGER` > `ATTENDANT`), not by the auth provider
 - Guest session → Customer promotion happens at first checkout: cart migrated, sessionId linked to customerId
 - A customer's WhatsApp phone number IS their identity on the WhatsApp channel — Twilio webhook maps phone to customerId
 - Staff members authenticated via the same OTP flow are restricted to `/admin` routes; they cannot place orders through the customer agent
@@ -302,8 +302,8 @@ The Billing context owns the full payment lifecycle independently from order ful
 
 | Event | Publisher | Metadata |
 |---|---|---|
-| `payment.status_changed` | PaymentCommandService | `{ orderId, paymentId, previousStatus, newStatus, method, version, stripeEventId?, timestamp }` |
-| `payment.method_changed` | Payment switch endpoint | `{ orderId, paymentId, previousMethod, newMethod, timestamp }` |
+| `payment.status_changed` | cart tools — `amend-order.ts`, `cancel-order.ts`, `regenerate-pix.ts` (`packages/tools/src/cart/`) | `{ orderId, paymentId, previousStatus, newStatus, method, version, stripeEventId?, timestamp }` |
+| `payment.method_changed` | `amend-order.ts` (`packages/tools/src/cart/`) on method switch | `{ orderId, paymentId, previousMethod, newMethod, timestamp }` |
 
 ### Out of scope
 

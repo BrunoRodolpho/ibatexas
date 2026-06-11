@@ -43,6 +43,7 @@
 // duplicate that work.
 
 import {
+  adjudicateAndAudit,
   buildAuditRecord,
   buildEnvelope,
   localizeDecision,
@@ -218,6 +219,27 @@ export interface RunCustomerIntentOptions<R> {
   readonly onDefer?: (
     decision: Extract<Decision, { kind: "DEFER" }>,
   ) => Promise<CustomerIntentReply<unknown>>;
+  /**
+   * Confirmation receipt — the RESUME side of a prior REQUEST_CONFIRMATION
+   * cycle (e.g. the web checkout-confirm flow). When present, the gateway
+   * adjudicates via the AUDITED kernel verb (`adjudicateAndAudit`) so the
+   * kernel honors the receipt: a re-adjudication that returns
+   * REQUEST_CONFIRMATION for the matching `intentHash` is substituted with
+   * EXECUTE (+ a `confirmation:received` basis), while state/taint/auth
+   * guards are still fully evaluated — a cart that crossed a REFUSE
+   * threshold between request and confirm is still refused.
+   *
+   * On this path the audited verb emits the single AuditRecord itself, so
+   * the gateway SKIPS its best-effort manual emit (no double-audit).
+   * `auditSink` is required when this is set (the audited verb's `sink`).
+   * The caller (the confirm route) owns receipt integrity — it consumes
+   * the single-use confirmation token before passing this in.
+   */
+  readonly confirmationReceipt?: {
+    readonly intentHash: string;
+    readonly at: string;
+    readonly token?: string;
+  };
 }
 
 interface ForgeryFinding {
@@ -323,6 +345,40 @@ async function emitForgeryAudit(
 }
 
 /**
+ * pt-BR message for the audited-confirm fail-closed path. A 503 (temporary)
+ * — not a 403 — because the customer's order may be perfectly valid; the
+ * failure is on our side (kernel throw / audit sink down), so retry is the
+ * right affordance.
+ */
+const CONFIRM_AUDIT_UNAVAILABLE_PT_BR =
+  "Não consigo concluir essa ação no momento. Tente novamente em instantes.";
+
+/**
+ * Fail-closed reply for the audited confirm path. An unauditable confirm
+ * is refused, never silently executed — rule #9 (always-on, fail-closed
+ * execution ledger / audit). The REFUSE decision is surfaced so callers
+ * that emit domain audit still see a decision passthrough.
+ */
+function confirmAuditFailClosedReply(
+  detail: string,
+): CustomerIntentReply<Record<string, unknown>> {
+  return {
+    statusCode: 503,
+    body: { error: CONFIRM_AUDIT_UNAVAILABLE_PT_BR },
+    decision: {
+      kind: "REFUSE",
+      refusal: {
+        kind: "SECURITY",
+        code: "confirm_audit_unavailable",
+        userFacing: CONFIRM_AUDIT_UNAVAILABLE_PT_BR,
+        detail,
+      },
+      basis: [],
+    },
+  };
+}
+
+/**
  * Dispatch a customer-driven envelope through the adjudicate kernel.
  *
  * Decision branching:
@@ -341,8 +397,17 @@ async function emitForgeryAudit(
 export async function runCustomerIntent<R>(
   options: RunCustomerIntentOptions<R>,
 ): Promise<CustomerIntentReply<R | Record<string, unknown>>> {
-  const { envelope, state, policy, executor, ctx, auditSink, refusalMessages, onDefer } =
-    options;
+  const {
+    envelope,
+    state,
+    policy,
+    executor,
+    ctx,
+    auditSink,
+    refusalMessages,
+    onDefer,
+    confirmationReceipt,
+  } = options;
 
   const startedAt = Date.now();
 
@@ -384,27 +449,67 @@ export async function runCustomerIntent<R>(
   // bundle is authoritative — no env-var gating. Any intent kind that
   // lacks a Pack policy will default-REFUSE inside `adjudicate()`, which
   // is the correct behavior for an unconfigured surface.
-  const decision: Decision = adjudicate(envelope, state, policy);
-
-  // ── Audit emit — best-effort, never blocks ─────────────────────────────
-  if (auditSink) {
+  //
+  // Default path: pure, deterministic `adjudicate()` + a best-effort audit
+  // emit (audit failure never blocks the mutation).
+  //
+  // Resume path (`confirmationReceipt` present): the kernel can only honor
+  // the receipt via the AUDITED verb `adjudicateAndAudit`. When the rebuilt
+  // envelope re-adjudicates to REQUEST_CONFIRMATION for the matching
+  // intentHash, the kernel substitutes EXECUTE while still evaluating
+  // state/taint/auth guards in full. The audited verb emits the single
+  // AuditRecord itself, so the manual emit below is skipped. Fail-closed:
+  // a kernel throw, a sink failure, or a missing sink must never license an
+  // ungated checkout — surface a 503 refusal instead.
+  let decision: Decision;
+  if (confirmationReceipt) {
+    if (!auditSink) {
+      ctx.log?.error?.(
+        { route: ctx.route, customerId: ctx.customerId },
+        "[customer-intent-gateway] confirmationReceipt supplied without auditSink — refusing (fail-closed)",
+      );
+      return confirmAuditFailClosedReply(
+        "confirmationReceipt supplied without auditSink",
+      ) as CustomerIntentReply<R | Record<string, unknown>>;
+    }
     try {
-      const record = buildAuditRecord({
-        envelope,
-        decision,
-        durationMs: Date.now() - startedAt,
+      const result = await adjudicateAndAudit(envelope, state, policy, {
+        sink: auditSink,
+        confirmationReceipt,
       });
-      void auditSink.emit(record).catch((err: unknown) => {
-        ctx.log?.warn?.(
-          { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
-          "[customer-intent-gateway] audit emit failed",
-        );
-      });
+      decision = result.decision;
     } catch (err) {
       ctx.log?.warn?.(
         { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
-        "[customer-intent-gateway] audit record build failed",
+        "[customer-intent-gateway] audited confirm adjudication failed — refusing (fail-closed)",
       );
+      return confirmAuditFailClosedReply(
+        `adjudicateAndAudit threw: ${(err as Error)?.message}`,
+      ) as CustomerIntentReply<R | Record<string, unknown>>;
+    }
+  } else {
+    decision = adjudicate(envelope, state, policy);
+
+    // ── Audit emit — best-effort, never blocks ──────────────────────────
+    if (auditSink) {
+      try {
+        const record = buildAuditRecord({
+          envelope,
+          decision,
+          durationMs: Date.now() - startedAt,
+        });
+        void auditSink.emit(record).catch((err: unknown) => {
+          ctx.log?.warn?.(
+            { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
+            "[customer-intent-gateway] audit emit failed",
+          );
+        });
+      } catch (err) {
+        ctx.log?.warn?.(
+          { route: ctx.route, customerId: ctx.customerId, err: (err as Error)?.message },
+          "[customer-intent-gateway] audit record build failed",
+        );
+      }
     }
   }
 

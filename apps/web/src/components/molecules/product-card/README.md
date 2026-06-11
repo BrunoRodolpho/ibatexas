@@ -1,70 +1,88 @@
 # Product Card Variants — IbateXas Web
 
-This codebase has **four** product-card components today. They serve different
-visual purposes and we are not unifying them yet — instead this README is the
-source of truth for which card to use, and where they currently disagree.
+Several product-card components coexist with overlapping but deliberately
+distinct visual roles. They are not unified yet; this README is the source of
+truth for which card to use and where they intentionally (or accidentally)
+disagree. Code is authoritative — when in doubt, read the file.
 
-## The four variants
+## The variants
 
 | Component | Purpose | File |
 |---|---|---|
-| `ProductCardVertical` | The canonical card. Used in grids on `/loja`, `/loja/[category]`, search, favorites, home favorites. | `components/molecules/product-card/ProductCardVertical.tsx` |
-| `ProductCardFeatured` | Hero/landscape card used as the first item in featured grids on `/loja`. | `components/molecules/ProductCardFeatured.tsx` |
-| `CarouselCard` | Wide showcase card used by the home product carousel (`HomeCarousel` → `ProductCarousel`). | `components/molecules/CarouselCard.tsx` |
-| `HomeRecommendations` (inline) | Small horizontal-scroll personalization card. Inlined into `HomeRecommendations.tsx`, not extracted yet. | `app/[locale]/HomeRecommendations.tsx` |
+| `ProductCardVertical` | The canonical grid card. | `product-card/ProductCardVertical.tsx` |
+| `ProductCardHorizontal` | Compact row card (square thumb + inline price/add). Wired into the facade as `variant="horizontal"` but **not used by any call-site yet**. | `product-card/ProductCardHorizontal.tsx` |
+| `ProductCardFeatured` | Hero/landscape card, rendered as the first item in featured grids. | `molecules/ProductCardFeatured.tsx` |
+| `CarouselCard` | Wide showcase card for the home product carousel. | `molecules/CarouselCard.tsx` |
+| `HomeRecommendations` (inline) | Small horizontal-scroll personalization card, inlined — not extracted. | `app/[locale]/HomeRecommendations.tsx` |
+
+### The `ProductCard` facade
+
+`product-card/index.tsx` exports a `ProductCard` facade (re-exported via
+`molecules/ProductCard.tsx`) that owns the shared state and handlers
+(quick-add, inline quantity, analytics tracking, pre-computed image/price/
+discount values) and delegates to `ProductCardVertical` (default) or
+`ProductCardHorizontal` based on its `variant` prop. Consumers never touch the
+variant components directly — they render `ProductCard` (and the grid also
+renders `ProductCardFeatured` for its hero slot):
+
+- `organisms/ProductGrid.tsx` → used by `/loja`, `/loja/[category]`, search,
+  favorites (`HomeFavorites`), wishlist, and PDP.
+- `organisms/RecentlyViewedCarousel.tsx` → home personalization islands.
 
 ## When to use which
 
-- **New surface that shows products in a grid?** `ProductCardVertical`. Always.
-- **Need a hero "first card" feeling?** `ProductCardFeatured`.
+- **Product grid?** Render `ProductCard` (defaults to the vertical card). Always.
+- **Hero "first card" feeling?** `ProductCardFeatured`.
 - **Wide carousel banner that scrolls horizontally with auto-play?** `CarouselCard`.
-- **Tight horizontal-scroll personalization strip?** Use the inline pattern from `HomeRecommendations`. Promote to a real component when a third surface needs it.
+- **Tight horizontal-scroll personalization strip?** Use the inline pattern from
+  `HomeRecommendations`. Promote to a real component when a third surface needs it.
 
-## What is normalized (Phase 4.C4)
+## What is normalized
 
-- **Border radius** — all variants use `rounded-card` (10px). `CarouselCard`
-  was on `rounded-sm`, fixed.
-- **WishlistButton** — top-right of the image on every variant.
-  `ProductCardVertical`, `ProductCardFeatured`, and `CarouselCard` now all
-  render `<WishlistButton size="sm" />` in the same slot. The personalization
-  card is exempt for now (too cramped at 172px wide; revisit).
-- **Hover effects** — all variants use `transition-all duration-500 ease-luxury`.
-- **Click target pattern** — all variants nest a `<Link>` with the
-  `after:absolute after:inset-0 after:content-['']` pseudo-element trick so
-  the entire card is clickable, with interactive children sitting above via
-  z-index. Never nest `<button>` inside `<a>`.
+- **Border radius** — every variant uses `rounded-card` (10px).
+- **WishlistButton** — `<WishlistButton size="sm" />` top-right of the image on
+  `ProductCardVertical`, `ProductCardFeatured`, and `CarouselCard`. The inline
+  personalization card is exempt (too cramped at ~172px wide; revisit).
+- **Click target** — every variant nests a `<Link>` carrying
+  `after:absolute after:inset-0 after:content-['']` so the whole card is
+  clickable, with interactive children raised above via z-index. Never nest a
+  `<button>` inside an `<a>`.
 
 ## What deliberately diverges
 
-- **Image ratio** —
+- **Image ratio** — encodes the card's *role*; don't unify without a design pass.
   - `ProductCardVertical`: `aspect-[4/3]` (editorial portrait)
   - `ProductCardFeatured`: `aspect-[4/5] md:aspect-auto md:min-h-[360px]` (mobile portrait, desktop free-flow)
   - `CarouselCard`: `aspect-[16/10]` (wide cinematic banner)
   - personalization inline: `aspect-square` (compact thumb)
 
-  These ratios encode the card's **role**, not a styling whim. Don't unify them
-  without a design pass.
+- **Internal padding** — varies per ratio. No single token covers all variants.
 
-- **Hover lift amount** —
-  - small/standard cards (`ProductCardVertical`, `CarouselCard`): `hover:-translate-y-1`
-  - large cards (`ProductCardFeatured`, personalization inline): `hover:-translate-y-0.5`
+## Hover styling is NOT yet normalized
 
-  Larger cards use a smaller relative lift so the motion stays proportional.
+These classes drifted and are documented here exactly as they are in code so the
+divergence is visible (not a contract — fix toward one when you touch them):
 
-- **Internal padding** — varies per ratio. No single token covers all four.
+| Variant | Transition | Lift |
+|---|---|---|
+| `ProductCardVertical` | `transition-premium` | `group-hover:-translate-y-0.5` |
+| `ProductCardHorizontal` | `transition-premium` | none |
+| `ProductCardFeatured` | `transition-all duration-500 ease-luxury` | `group-hover:-translate-y-0.5` |
+| inline (`HomeRecommendations`) | `transition-all duration-500 ease-luxury` | `group-hover:-translate-y-0.5` |
+| `CarouselCard` | `transition-all duration-500 ease-luxury` | `hover:-translate-y-1` |
+
+Notes: only `CarouselCard` lifts by `-1`, and it is the only one using a bare
+`hover:` (whole-card) rather than the group-scoped `group-hover:` the rest use.
 
 ## Future unification (out of scope right now)
 
-When the time comes:
-1. Extract a `<ProductCard>` primitive that takes a `variant` prop
-   (`vertical | featured | carousel | mini`).
+The facade is the seam to grow when the time comes:
+1. Fold the remaining standalone variants (`ProductCardFeatured`, `CarouselCard`,
+   the inline card) into the `ProductCard` facade as additional `variant` values.
 2. Move shared bits (image with hover swap, wishlist heart, price block,
-   add-to-cart with cart-quantity controls) into sub-components.
-3. Migrate the four current variants to render the primitive with their own
-   variant flag.
-4. Delete the four files.
+   add-to-cart with quantity controls) into sub-components.
 
-The risk of doing this now is high — `ProductCardVertical` alone has many
-sub-pieces (`ProductImage`, `PriorityBadge`, `PortionScale`, `AvailabilityLabel`,
-`SocialProof`, `PriceBlock`, `QuantityControls`, `AddToCartButton`) and is
-consumed across at least six surfaces.
+The risk of doing this now is high — `ProductCardVertical` already composes
+several sub-pieces (`ProductImage`, `PriceBlock`, `QuantityControls`,
+`SocialProof`, `Badge`, `WishlistButton`) and is consumed across many surfaces
+through the facade.

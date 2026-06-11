@@ -1,10 +1,8 @@
 # LGPD Art. 18 — Anonymize Coverage Proof
 
-**Status:** Wave A complete (in-process surfaces, 11/12); Wave B in progress (Medusa cross-DB, 1/12 pending)
-**Authoritative as of:** 2026-05-24
-**Coverage (post Wave A):** 11/12 surfaces = **91.7%** end-to-end; **100%** of Prisma-side (in-process) surfaces
-**Coverage (post Wave B):** projected 12/12 = **100%** when the Medusa cross-DB resolver lands
-**Branch baseline:** `feat/kernel-always-on-cutover` @ `a111a90`
+**Status:** Wave A (in-process Prisma surfaces) + Wave B (Medusa cross-DB) both LANDED
+**Coverage:** 12/12 surfaces = **100%** — 11 in-process Prisma surfaces scrubbed atomically + the Medusa-side customer row scrubbed via an eventual-consistent compensation chain
+**Branch baseline:** `feat/policy-tree` @ `458526a`
 **Cross-references:**
 - [audit-2026-05-24 CLOSEOUT-STATUS.md](../adjudicate-migration/audit-2026-05-24/CLOSEOUT-STATUS.md)
 - [H3 SYNTHESIS.md](../adjudicate-migration/audit-2026-05-24/tasks/h3-investigation/SYNTHESIS.md)
@@ -18,9 +16,9 @@
 
 This document is the single authoritative artifact a compliance auditor — and any future Autoridade Nacional de Proteção de Dados (ANPD) audit — should read to verify that IbateXas implements the LGPD Art. 18 §III right of erasure (*"direito à eliminação dos dados pessoais tratados"*).
 
-The system honors deletion via an OTP-gated, 24-hour-deferred destructive operation that, when resolved by the grace resolver, scrubs every reachable PII surface across 11 in-process Prisma tables in a single atomic transaction and emits 7 per-surface audit records chained back to the originating customer envelope. One additional surface — the Medusa commerce database customer row — is handled out-of-band via an eventual-consistent compensation pattern (Wave B, in progress). The cancel-vs-resolve race that previously left a customer in a "I clicked cancel, but my account was destroyed" state is closed by a Redis SETNX mutex (`anonymize:active:{customerId}`) shared between the cancel route and the grace resolver; the loser of the race emits a REFUSE audit record (`cancel_won_race`) rather than mutating.
+The system honors deletion via an OTP-gated, 24-hour-deferred destructive operation that, when resolved by the grace resolver, scrubs every reachable PII surface across 11 in-process Prisma tables in a single atomic transaction and emits 7 per-surface audit records chained back to the originating customer envelope. The 12th surface — the Medusa commerce database customer row — is scrubbed out-of-band via an eventual-consistent compensation chain (Wave B): after the Prisma transaction commits, `anonymizeCustomer` publishes `customer.anonymize.medusa.pending`, a subscriber PATCHes the Medusa admin API to null the customer fields, and a BullMQ retry job sweeps any pending events that lack a confirmation. The cancel-vs-resolve race that previously left a customer in a "I clicked cancel, but my account was destroyed" state is closed by a Redis SETNX mutex (`anonymize:active:{customerId}`) shared between the cancel route and the grace resolver; the loser of the race emits a REFUSE audit record (`cancel_won_race`) rather than mutating.
 
-Post Wave A, the only residual PII exposure is the Medusa-side customer row (name, email, phone, addresses, integration metadata). This is acknowledged, scoped, and tracked under Wave B.
+All 12 PII surfaces are now covered end-to-end. The Medusa scrub is eventual-consistent (~minutes), which is acceptable under LGPD's "reasonable timeframe" standard (there is no statutory upper bound on the erasure window).
 
 ---
 
@@ -28,10 +26,10 @@ Post Wave A, the only residual PII exposure is the Medusa-side customer row (nam
 
 | Sub-right | LGPD clause | Status | Implementing path |
 |---|---|---|---|
-| Direito de acesso (Access) | Art. 18 §I | Verified | `GET /api/me/data` → `exportCustomerData()` at `packages/domain/src/services/customer.service.ts:1105` |
+| Direito de acesso (Access) | Art. 18 §I | Verified | `GET /api/me/data` → `exportCustomerData()` at `packages/domain/src/services/customer.service.ts:1233` |
 | Direito à portabilidade (Portability) | Art. 18 §II | Verified | Same endpoint as access — JSON export of all personal data |
 | Direito de correção (Correction) | Art. 18 §III(i) | Out of scope for H3 | Customer can re-authenticate via OTP and supply corrected data via the standard onboarding flow; no dedicated `/api/me/update` endpoint |
-| **Direito à eliminação (Erasure)** | **Art. 18 §III(ii)** | **Verified — this document** | Multi-step OTP-gated flow with 24h grace, then `anonymizeCustomer()` scrubs 11 in-process surfaces atomically + Medusa cross-DB scrub (Wave B) |
+| **Direito à eliminação (Erasure)** | **Art. 18 §III(ii)** | **Verified — this document** | Multi-step OTP-gated flow with 24h grace, then `anonymizeCustomer()` scrubs 11 in-process surfaces atomically + a Medusa cross-DB compensation scrub |
 | Direito de revogar consentimento (Revoke) | Art. 18 §V | Verified | `POST /api/me/data/cancel-deletion` within 24h grace window — REFUSE-supersedes-parked pattern, SETNX-mutex-arbitrated against the resolver |
 | Direito de não ser sujeito a decisão automatizada | Art. 18 §VI | N/A | No ML scoring / autonomous customer-impacting decisions — every mutation is enveloped + kernel-adjudicated (CLAUDE.md rule #9) |
 
@@ -39,19 +37,19 @@ Post Wave A, the only residual PII exposure is the Medusa-side customer row (nam
 
 | Endpoint / trigger | File | Purpose |
 |---|---|---|
-| `POST /api/me/data/send-otp` | `apps/api/src/routes/me.ts:209` | OTP issuance — pre-gate, no mutation |
-| `POST /api/me/data/verify-otp` | `apps/api/src/routes/me.ts:292` | Verify 6-digit code; set 60s `anonymize:otp_verified` marker |
-| `POST /api/me/data/initiate-deletion` | `apps/api/src/routes/me.ts:407` | Build `customer.anonymize` envelope; adjudicate → DEFER; park 24h receipt |
-| `POST /api/me/data/cancel-deletion` | `apps/api/src/routes/me.ts:845` | Build `customer.anonymize.cancel` envelope; REFUSE-supersedes-parked + SETNX arbitration |
+| `POST /api/me/data/send-otp` | `apps/api/src/routes/me.ts:246` | OTP issuance — pre-gate, no mutation |
+| `POST /api/me/data/verify-otp` | `apps/api/src/routes/me.ts:329` | Verify 6-digit code; set 60s `anonymize:otp_verified` marker |
+| `POST /api/me/data/initiate-deletion` | `apps/api/src/routes/me.ts:444` | Build `customer.anonymize` envelope; adjudicate → DEFER; park 24h receipt |
+| `POST /api/me/data/cancel-deletion` | `apps/api/src/routes/me.ts:822` | Build `customer.anonymize.cancel` envelope; REFUSE-supersedes-parked + SETNX arbitration |
 | `intent.defer.timeout` event (grace-resolver) | `apps/api/src/subscribers/anonymize-grace-resolver.ts` | Auto-trigger 24h post-park; calls `anonymizeCustomer()` if receipt is still present |
 
-A legacy single-step `DELETE /api/me/data?token={otp}` exists at `apps/api/src/routes/me.ts:544` for back-compat; it routes through the same `anonymizeCustomerFromEnvelope` executor.
+A legacy single-step `DELETE /api/me/data?token={otp}` exists at `apps/api/src/routes/me.ts:724` for back-compat; it routes through the same `anonymizeCustomerFromEnvelope` executor. The OTP gate shared by these routes lives at `apps/api/src/routes/me/anonymize-otp-gate.ts`.
 
 ---
 
 ## Anonymize coverage by surface
 
-The post-Wave-A executor at `packages/domain/src/services/customer.service.ts:673` (`anonymizeCustomer`) implements 11 in-process surface scrubs. Wave B adds the 12th. The original task scope spoke of "8 surfaces"; the schema investigation refined this to 12 by counting pre-existing baseline surfaces separately from the seven added in Wave A1.
+The executor at `packages/domain/src/services/customer.service.ts:691` (`anonymizeCustomer`) implements 11 in-process surface scrubs and kicks off the Medusa cross-DB compensation chain for the 12th. The original task scope spoke of "8 surfaces"; the schema investigation refined this to 12 by counting pre-existing baseline surfaces separately from the seven added in Wave A1.
 
 | # | Surface | Strategy | Wave | Closing commit | Verification (T4 test case) |
 |---|---|---|---|---|---|
@@ -61,13 +59,13 @@ The post-Wave-A executor at `packages/domain/src/services/customer.service.ts:67
 | 4 | `Review.comment` | `updateMany` → `comment = null` (FK to anonymized Customer stays; PII linkage broken via parent scrub) | Pre-cutover baseline (+ Wave-A heavy-customer batching) | `8c85265` + heavy-path `d880ca0` | T4 happy-path |
 | 5 | `CustomerOrderItem.customerId` | `updateMany` → `customerId = null` (order preserved for fiscal — 5y/NF-e) | Pre-cutover baseline | `8c85265` | T4 happy-path |
 | 6 | `OrderProjection.{customerEmail, customerName, customerPhone, shippingAddressJson}` | null scalars; full-replace JSON `{anonymized: true}` (G2-b pick) | Wave A1 | `8c4b2f9` | T4 happy-path + JSON defense-in-depth scan |
-| 7 | `ConversationMessage.content` | Placeholder `"[anonymized]"`; heavy-path batched pre-tx (≥1000 messages) | Wave A1 | `1b68707` | T4 happy-path |
+| 7 | `ConversationMessage.{content, metadata}` | `content` → placeholder `"[anonymized]"`; `metadata` → `Prisma.JsonNull` (defensive — no current producer fills it, but the column is schema-permitted JSON); heavy-path batched pre-tx (≥1000 messages) | Wave A1 | `1b68707` | T4 happy-path |
 | 8 | `Conversation.customerId` | Null-out (FK already nullable; SetNull cascade declared) | Wave A1 | `1b68707` | T4 happy-path |
 | 9 | `OrderStatusHistory.actorId` | Null-out filtered on `actor = "customer" AND actorId = customerId` (Staff/admin rows MUST stay intact — schema does NOT model `actorId` as a Prisma relation, so no cascade applies) | Wave A1 | `7b46114` | T4 happy-path + **Staff-actor untouched** negative case |
 | 10 | `OrderEventLog.payload` | Full-replace JSON `{anonymized: true}` (G2-d pick); heavy-path batched pre-tx (≥1000 events) | Wave A1 | `7b46114` | T4 happy-path + JSON defense-in-depth scan |
-| 11 | `LoyaltyAccount.{stamps, totalEarned, redeemed}` | Reset to 0; `customerId` linkage RETAINED (G2-c deviation — schema column is `String @unique NOT NULL` with `onDelete: Cascade`, cannot be nulled without a migration; PII linkage break happens via the parent Customer row already being scrubbed) | Wave A1 | `ec462c4` | T4 happy-path + idempotency |
-| 12 | `Reservation.specialRequests` | Replace with `[]` (G2 schema deviation — column is `Json @default("[]") NOT NULL`, cannot be set to null without a migration; empty array obliterates free-form pt-BR notes including allergy/accessibility text) | Wave A1 | `c4e0020` | T4 happy-path |
-| 13 | **Medusa-side customer row** (`Customer.{email, first_name, last_name, phone}` + `addresses[]` + `metadata` JSON) | Compensation pattern (G2-a pick) — eventual-consistent ~5-30 min via NATS + BullMQ retry; idempotent via stable key | **Wave B (pending)** | TBD | TBD (requires Medusa testcontainer, out of T4 scope; deferred to P0-9b) |
+| 11 | `LoyaltyAccount.{customerId, stamps, totalEarned, redeemed}` | `customerId` → `null` (linkage genuinely broken); counters reset to 0. Migration `20260524000000` made the column `String? @unique` with `onDelete: SetNull` (schema.prisma:527-528), so the G2-c linkage scrub is now fully implemented in app code | Wave A1 (+ nullable migration) | `ec462c4` | T4 happy-path + idempotency |
+| 12 | `Reservation.specialRequests` | Replace with `[]` (schema deviation — column is `Json @default("[]") NOT NULL`, cannot be set to null without a migration; empty array obliterates free-form pt-BR notes including allergy/accessibility text) | Wave A1 | `c4e0020` | T4 happy-path |
+| 13 | **Medusa-side customer row** (`Customer.{email, first_name, last_name, phone, company_name}` + `metadata` JSON) | Compensation pattern (G2-a pick) — `anonymizeCustomer` publishes `customer.anonymize.medusa.pending` (customer.service.ts:1134-1154); subscriber `customer-anonymize-medusa-resolver` PATCHes the Medusa admin API (nulls the fields, `metadata={anonymized:true}`); BullMQ retry job sweeps unconfirmed events; idempotent via stable key | **Wave B (landed)** | — | `customer-anonymize-medusa-resolver.test.ts` + `anonymize-medusa-retry.test.ts` (Medusa admin mocked) |
 
 **Per-surface scrub audit-record kinds (Wave A1):**
 
@@ -81,7 +79,7 @@ customer.anonymize.loyalty_account.scrubbed
 customer.anonymize.reservation_special_requests.scrubbed
 ```
 
-Defined as `SCRUB_AUDIT_KINDS` at `packages/domain/src/services/customer.service.ts:642`. Seven kinds — one per Wave A1 surface; the four pre-cutover-baseline surfaces remain covered by the original `customer.anonymize.confirmed_after_grace` envelope emitted by the grace resolver.
+Defined as `SCRUB_AUDIT_KINDS` at `packages/domain/src/services/customer.service.ts:660`. Seven kinds — one per Wave A1 surface; the four pre-cutover-baseline surfaces remain covered by the original `customer.anonymize.confirmed_after_grace` envelope emitted by the grace resolver. The four Wave-B Medusa audit kinds (`customer.anonymize.medusa.{pending,confirmed,failed,exhausted}`) are defined separately as `MEDUSA_ANONYMIZE_KINDS` in `apps/api/src/subscribers/__shared__/medusa-anonymize-kinds.ts`.
 
 Each scrub audit record carries:
 - `actor.principal = "system"` (the grace resolver is a system-driven mutation per CLAUDE.md rule #9)
@@ -89,7 +87,7 @@ Each scrub audit record carries:
 - `taint = "SYSTEM"`
 - `nonce = "{customerId}:{kind}"` (deterministic; idempotent retries collapse to the same record)
 - `decision = EXECUTE` with `basis = [{ category: "business", code: "rule_satisfied" }]` — the LGPD-erasure business rule was satisfied by the scrub
-- `supersedes.predecessorIntentHash` chained back to the original `customer.anonymize` envelope (when the caller passes `predecessor` — the grace resolver does)
+- `supersedes` chained back to the original `customer.anonymize` envelope (when the caller passes `predecessor` — the grace resolver does), with `reason: "lgpd_scrub"` (customer.service.ts:1176). The earlier H3 implementation used `reason: "replay"` as the closest fit in the closed `@adjudicate/core` v1.0 `SupersessionReason` union; the dedicated `lgpd_scrub` member (available since `@adjudicate/core@1.1.0`; the repo now pins `^1.3.0`) is the semantically-correct value — operator dashboards aggregating by reason no longer double-count scrubs as generic replays
 
 **Heavy-customer paths:**
 
@@ -99,7 +97,7 @@ Three surfaces have ≥1000-row pre-batched paths outside the main transaction t
 - `ConversationMessage.content` — batched at 500/batch when `messageCount > 1000`
 - `OrderEventLog.payload` — batched at 500/batch via id-cursor when `eventCount > 1000`
 
-Constants at `packages/domain/src/services/customer.service.ts:593..624`.
+Constants at `packages/domain/src/services/customer.service.ts:611..650`.
 
 ---
 
@@ -109,7 +107,7 @@ These properties are load-bearing for the LGPD posture; an auditor should verify
 
 ### Single atomic Prisma transaction for the 11 in-process surfaces
 
-`packages/domain/src/services/customer.service.ts:842` opens `prisma.$transaction(...)` with `timeout: 60_000ms` and `maxWait: 5_000ms`. All 11 in-process surface scrubs (steps 1-12 in the executor, minus the cross-DB Medusa surface) commit together or roll back together. The heavy-path pre-batches happen outside the transaction but are idempotent on rerun, so a transaction abort + retry converges to the same end state.
+`packages/domain/src/services/customer.service.ts:881` opens `prisma.$transaction(...)` with `timeout: 60_000ms` and `maxWait: 5_000ms`. All 11 in-process surface scrubs (steps 1-12 in the executor, minus the cross-DB Medusa surface) commit together or roll back together. The heavy-path pre-batches happen outside the transaction but are idempotent on rerun, so a transaction abort + retry converges to the same end state.
 
 ### Mutex protection against cancel-vs-resolve race (closed)
 
@@ -121,29 +119,29 @@ Closing commits:
 
 The follow-up (`4c82a22`) handles the variant where the resolver SETNX-wins but the parkKey was cleared between the wakeup and the SETNX — the resolver re-checks parkKey existence post-SETNX before dispatching, and emits `REFUSE` / `code: defer.resume.skipped` / `detail: parkKey_missing_after_sweeper` if the cancel cleared the receipt. T6 conformance suite is now at **hard-zero violations across 500 race iterations** (5 separate 100-iteration runs).
 
-### Per-surface audit-record emit (12 records per execution chain)
+### Per-surface audit-record emit
 
 A successful anonymize execution produces this audit chain:
 
 1. The original `customer.anonymize` envelope from `/api/me/data/initiate-deletion` (DEFER decision; parked)
 2. After 24h: `customer.anonymize.confirmed_after_grace` envelope from the grace resolver (EXECUTE decision; calls `anonymizeCustomer`)
 3. Seven per-surface scrub records (`customer.anonymize.{surface}.scrubbed`) — one per Wave A1 surface
+4. The Wave-B Medusa chain: `customer.anonymize.medusa.pending` → `.confirmed` (or `.failed`/`.exhausted` on the error/retry path)
 
 The pre-cutover baseline surfaces (Customer / Address / CustomerPreferences / Review / CustomerOrderItem) do not emit their own per-surface records — they are subsumed under the `customer.anonymize.confirmed_after_grace` envelope. Wave A1 expanded coverage to the seven new surfaces precisely because the baseline emit was insufficient for ANPD forensic discovery.
 
-`supersedes.predecessorIntentHash` links every Wave A1 record back to the initiating envelope without join hops; audit readers can reconstruct the full chain by predecessor traversal.
+`supersedes` (with `reason: "lgpd_scrub"`) links every Wave A1 scrub record back to the initiating envelope without join hops; the Wave-B chain threads the same `parkedIntentHash` so audit readers can reconstruct the full request → grace-expire → Prisma scrub → Medusa scrub → confirmed chain by predecessor traversal.
 
-### Compensation pattern for Medusa cross-DB (Wave B)
+### Compensation pattern for Medusa cross-DB (Wave B — landed)
 
-The Medusa commerce database lives in `apps/commerce/...` and is operationally separate from the `@ibatexas/domain` Prisma database. A 2PC across both was rejected (over-engineered for a low-concurrency destructive op with no rollback semantics). G2-a settled on a compensation pattern:
+The Medusa commerce database lives in `apps/commerce/...` and is operationally separate from the `@ibatexas/domain` Prisma database, reachable only via the HTTP admin API. A 2PC across both was rejected (over-engineered for a low-concurrency destructive op with no rollback semantics). G2-a settled on a compensation chain, now implemented:
 
-1. After the Wave-A1 Prisma transaction commits, emit `customer.anonymize.medusa.pending` via NATS
-2. A new subscriber `customer-anonymize-medusa-resolver` consumes; calls the Medusa admin API to scrub `Customer.{email, first_name, last_name, phone}` + the customer's `addresses[]` + `metadata` JSON
-3. On success, publish `customer.anonymize.medusa.confirmed`
-4. BullMQ retry job picks up pending entries after N minutes for retries (idempotent via a stable key)
-5. Eventual consistency window: ~5-30 minutes
+1. `anonymizeCustomer` captures `Customer.medusaId` BEFORE the Prisma TX nulls it; if the customer was never linked to Medusa (`medusaId === null`), the chain is skipped — there's nothing to scrub.
+2. After the Prisma transaction commits, it `await`s `publishNatsEvent("customer.anonymize.medusa.pending", ...)` (customer.service.ts:1134-1154). The event is in `OUTBOX_EVENTS`, so a NATS outage writes it to the Redis outbox and the outbox-retry job re-publishes on recovery; only a total Redis outage can fail the publish, which is logged but does NOT fail-back the already-committed scrub.
+3. The subscriber `apps/api/src/subscribers/customer-anonymize-medusa-resolver.ts` consumes it and PATCHes the Medusa admin API to set `first_name/last_name/email/phone/company_name = null` and `metadata = {anonymized:true}` via the adjudicated `medusaAdjudicated({ idempotencyKey })` wrapper. On success it publishes `customer.anonymize.medusa.confirmed`; on a Medusa 4xx/5xx it publishes `customer.anonymize.medusa.failed` (forensic only).
+4. The BullMQ retry job `apps/api/src/jobs/anonymize-medusa-retry.ts` sweeps pending events lacking a confirmation and re-publishes, up to `MEDUSA_ANONYMIZE_MAX_ATTEMPTS` (12 × 5-min ≈ 1h budget), then emits `customer.anonymize.medusa.exhausted` and pages the operator. Idempotency key `customer.anonymize.medusa.{medusaId}.{parkedIntentHash}` is stable across retries so Medusa de-duplicates the write.
 
-Wave B is scoped, not started. The compensation pattern is acceptable under LGPD because there is no statutory upper bound on the erasure window — only a "reasonable timeframe" requirement, which ~5-30 minutes meets.
+The four kinds + payload shape + idempotency-key helper live in `apps/api/src/subscribers/__shared__/medusa-anonymize-kinds.ts`. The compensation pattern is acceptable under LGPD because there is no statutory upper bound on the erasure window — only a "reasonable timeframe" requirement, which the ~minutes window meets.
 
 ### Customer revocation honored via SETNX
 
@@ -169,13 +167,11 @@ Per G2-d, the entire `payload` JSON is replaced with `{anonymized: true}` for ev
 
 This is the most expensive surface to scrub because there is no FK from `OrderEventLog` to `Customer` — the link is via `orderId → OrderProjection.customerId`. The heavy-path pre-batches in chunks of 500 by id-cursor when the customer has >1000 events.
 
-### `LoyaltyAccount` — counters reset, linkage retained (G2-c, schema-constrained)
+### `LoyaltyAccount` — counters reset, linkage genuinely broken (G2-c)
 
-Per G2-c, the intended approach was "scrub linkage + reset balance to 0." The schema constraint at `LoyaltyAccount.customerId` (`String @unique NOT NULL`, `onDelete: Cascade`) blocks the linkage scrub from app code — we cannot null the column without a migration, and we cannot substitute a sentinel customerId because the FK constraint requires the value to exist in `Customer.id`.
+Per G2-c, the approach is "scrub linkage + reset balance to 0." Migration `20260524000000` made `LoyaltyAccount.customerId` nullable (`String? @unique`, `onDelete: SetNull`; schema.prisma:527-528), so the executor (customer.service.ts:1045-1053) sets `customerId = null` and zeros `stamps`, `totalEarned`, `redeemed`. The linkage is now truly broken at the column level — not merely relying on the parent Customer row being scrubbed. The row itself is retained so historical loyalty aggregates (stamp velocity, redemption-rate cohorts) survive after PII is purged.
 
-The effective compromise: counters (`stamps`, `totalEarned`, `redeemed`) reset to 0, removing aggregate-stat reconstructability, while the row stays linked to the anonymized Customer (whose own PII was already obliterated). Anyone joining `LoyaltyAccount → Customer` for PII access lands on `name="Usuário Removido"`, `email=null`, sentinel phone — no original-customer PII reaches the consumer.
-
-A future schema migration to make `customerId` nullable would let a future Wave fully implement G2-c as originally intended. Tracked in the H3 closeout follow-ups.
+A prior I9 fix substituted a synthetic `customerId = "SCRUBBED:<uuid>"` sentinel; it was REVERTED because that value VIOLATES the still-present FK (the migration kept the FK with `ON DELETE SET NULL`), so the `updateMany` threw P2003 and aborted the entire LGPD erasure transaction for any customer with a loyalty account — a production-breaking governance regression. `NULL` is FK-safe and matches the T4 conformance assertion. See the executor comment at customer.service.ts:1019-1044.
 
 ### `Reservation.specialRequests` — empty array, structural shape preserved
 
@@ -187,7 +183,7 @@ A nullable migration is a future option but was out of Wave A1 scope.
 
 `Review.customerId` is declared `String NOT NULL` in the Prisma schema even though the relation declares `onDelete: SetNull` — a schema inconsistency we cannot fix from app code. The Wave A1 executor scrubs the comment text (the customer-typed PII path) and relies on the parent Customer row's anonymization to break PII linkage. Anyone querying the customer record via the Review's FK lands on the scrubbed Customer.
 
-This is acknowledged in the executor's inline comments at `packages/domain/src/services/customer.service.ts:866` and tracked as a schema-level follow-up.
+This is acknowledged in the executor's inline comments at `packages/domain/src/services/customer.service.ts:905-908` and tracked as a schema-level follow-up.
 
 ### `Customer.phone` — sentinel substitution, not null
 
@@ -224,7 +220,8 @@ A declarative `PIIFixtureSpec` builder at `apps/api/src/__tests__/audit-2026-05-
 - `packages/domain/src/services/__tests__/anonymize-customer.test.ts` — unit tests with mocked Prisma; covers the pre-cutover baseline 5 surfaces + heavy-path batching for reviews / messages / events. Updated in `fb7ff85` (Wave A1-7) to cover the 7 new surfaces.
 - `apps/api/src/__tests__/integration/lgpd-anonymize-lifecycle.test.ts` — end-to-end OTP → DEFER park → 24h timeout-sweeper → grace-resolver → `anonymizeCustomer`. Real Redis testcontainer. Asserts OTP brute-force lockout (5 failures → 30min lockout) and cancel-cooldown (30min).
 - `apps/api/src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts` — T6 conformance for the cancel-vs-resolve race at the 24h boundary. Hard-zero violations across 500 race iterations.
-- `apps/api/src/routes/me/__tests__/anonymize-otp-gate.test.ts` — OTP gate unit tests including W7-G1 hardening (whitespace `customerId` trim at gate).
+- The OTP gate (`apps/api/src/routes/me/anonymize-otp-gate.ts`) is covered by `apps/api/src/__tests__/me-routes.test.ts` plus the whitespace-hardening cases in `apps/api/src/__tests__/wave6-red-team/{01-customerid-whitespace-bypass,05-whitespace-rejected}.test.ts` and `apps/api/src/__tests__/anonymize-empty-customerid.test.ts`.
+- `apps/api/src/subscribers/__tests__/customer-anonymize-medusa-resolver.test.ts` + `apps/api/src/jobs/__tests__/anonymize-medusa-retry.test.ts` — Wave-B compensation chain (Medusa admin API mocked): pending→PATCH→confirmed, failure handling, and the retry/exhausted cap.
 
 ### CI gate
 
@@ -238,10 +235,10 @@ The repository CI workflow (`.github/workflows/ci.yml`) runs `pnpm test -- -- --
 
 What the system explicitly does NOT do, and the reason. An auditor reading code should expect these to be absent.
 
-- **The LLM cannot anonymize a customer.** `customer.anonymize` is a destructive intent kind whose envelope is never built from an LLM tool call. Per CLAUDE.md rule #9, the LLM has zero state-mutation authority — the anonymize envelope is built only by `/api/me/data/initiate-deletion` (after OTP gate + adjudication) or by the grace resolver's system-actor envelope. The `CapabilityPlanner` at `packages/llm-provider/src/capability-planner.ts` does not expose any anonymize-shaped tool to the LLM.
+- **The LLM cannot anonymize a customer.** `customer.anonymize` is a destructive intent kind whose envelope is never built from an LLM tool call. Per CLAUDE.md rule #9, the LLM has zero state-mutation authority — the anonymize envelope is built only by `/api/me/data/initiate-deletion` (after OTP gate + adjudication) or by the grace resolver's system-actor envelope. The production planner `createIbatexasPlanner` (`apps/api/src/claustrum/ibatexas-planner.ts`) exposes exactly one mutating tool (`express_intent`); per-state tool visibility is governed by each Pack's `CapabilityPlanner` (the `CapabilityPlanner`/`ToolClassification` contracts in `@adjudicate/core/llm`), none of which surface an anonymize-shaped tool. (The legacy `@ibatexas/llm-provider` brain and its `capability-planner.ts` were deleted in the claustrum cutover.)
 - **Allergens are not inferred from product names.** CLAUDE.md rule #1. Adjacent to the anonymize surface because `CustomerPreferences` carries allergen flags; the system requires explicit array `[]` at write time, so the anonymize scrub (`deleteMany`) is safe — there's no inference path that would resurrect allergen data post-deletion.
-- **No 2PC across Medusa.** G2-a — eventual consistency (~5-30 min) is acceptable under LGPD; over-engineered 2PC is rejected for a destructive op with no rollback semantics.
-- **No row-delete on `LoyaltyAccount`.** G2-c — counters reset, row retained for the linkage break to work (FK-to-anonymized-Customer is the actual privacy guarantee). Hard-delete would orphan aggregate accounting context without strengthening privacy.
+- **No 2PC across Medusa.** G2-a — eventual consistency (~minutes via the NATS + BullMQ compensation chain) is acceptable under LGPD; over-engineered 2PC is rejected for a destructive op with no rollback semantics.
+- **No row-delete on `LoyaltyAccount`.** G2-c — `customerId` is nulled (linkage broken at the column level) and counters reset, but the row is retained so historical loyalty aggregates survive. Hard-delete would orphan aggregate accounting context without strengthening privacy.
 - **No "legitimate interest" carve-out on `OrderEventLog`.** G2-d — full erasure of payload is the conservative LGPD-compliant default. Future legal counsel may revisit this if ANPD publishes guidance recognizing append-only audit as exempt.
 - **No silent failure on audit-sink errors during scrub.** A failing `auditSink.emit()` is logged but does NOT fail the scrub — the data is already mutated by the committed transaction; throwing here would surface as a misleading "anonymize failed" up the stack and confuse retries. Emission is intentionally best-effort post-commit.
 - **No plain `redis.del()` to release the anonymize mutex.** CLAUDE.md rule #10 — UUID lock values with Lua conditional release. Closes a class of bug where one party's release accidentally unlocks another party's hold.
@@ -253,11 +250,10 @@ What the system explicitly does NOT do, and the reason. An auditor reading code 
 These are surfaces where a future legal opinion could change the posture. Documented here so an ANPD audit understands the system's reasoning, not as gaps.
 
 1. **`OrderEventLog.payload` — currently full-replace.** A future legal opinion that recognizes "audit-trail necessity" as a legitimate interest (LGPD Art. 7 §IX) would let us move to a carve-out that preserves payload content under retention rather than erasure. Currently we honor full erasure as the conservative default.
-2. **`LoyaltyAccount.customerId` linkage retained.** Schema-blocked from full G2-c implementation. A future migration to `customerId String?` + cascade adjustment would let us fully null the linkage. Not a compliance gap (parent Customer is anonymized, so PII does not reach the consumer), but a cleanliness improvement.
-3. **`Reservation.specialRequests` empty array vs null.** Same shape — `Json NOT NULL` blocks full null-out. Empty array is semantically equivalent to "no special requests" and is the column's default. A future nullable migration would let us emit a clearer "scrubbed" signal.
-4. **`Review.customerId` not null.** Prisma schema inconsistency (declared `String NOT NULL` while the relation declares `onDelete: SetNull`). Parent-Customer anonymization is the effective linkage break. A future schema fix would let the Review FK genuinely null out.
-5. **Medusa `metadata` JSON undocumented PII.** Integrations (Stripe-customer-id, third-party loyalty IDs, etc.) may have written PII into the `Customer.metadata` blob without documentation. Wave B currently plans to scrub the whole `metadata` JSON in the compensation step; an alternative key-scrub approach would require a production audit of actual `metadata` content. Tracked as a G2-f sub-decision to settle before Wave B lands.
-6. **Cache invalidation across all `rk()` namespaces.** Redis keys under `cart:`, `loyalty:`, `intelligence:`, `whatsapp:session:` may carry PII (snapshots, derived state). The current anonymize executor does not exercise cache cleanup. Identified in the H3 compliance investigation as a P1 hygiene gap. Tracked as a follow-up.
+2. **`Reservation.specialRequests` empty array vs null.** `Json @default("[]") NOT NULL` blocks full null-out. Empty array is semantically equivalent to "no special requests" and is the column's default. A future nullable migration would let us emit a clearer "scrubbed" signal.
+3. **`Review.customerId` not null.** Prisma schema inconsistency (declared `String NOT NULL` while the relation declares `onDelete: SetNull`; schema.prisma:218/225). Parent-Customer anonymization is the effective linkage break — the executor scrubs the comment text and nulls nothing on the FK. A future schema fix would let the Review FK genuinely null out.
+4. **Medusa `metadata` JSON full-replace.** Integrations (Stripe-customer-id, third-party loyalty IDs, etc.) may have written PII into the `Customer.metadata` blob without documentation. The Wave-B compensation step full-replaces the whole `metadata` JSON with `{anonymized:true}` (the conservative default, since no PII keys are documented). A finer-grained key-scrub would require a production audit of actual `metadata` content; tracked as a G2-f sub-decision.
+5. **Cache invalidation across all `rk()` namespaces.** Redis keys under `cart:`, `loyalty:`, `intelligence:`, `whatsapp:session:` may carry PII (snapshots, derived state). The current anonymize executor does not exercise cache cleanup. Identified in the H3 compliance investigation as a P1 hygiene gap. Tracked as a follow-up.
 
 ---
 
@@ -297,10 +293,11 @@ These are surfaces where a future legal opinion could change the posture. Docume
 
 ### Source files
 
-- `packages/domain/src/services/customer.service.ts` — `anonymizeCustomer` executor (line 673), `emitScrubAuditRecords` (line 1038), `SCRUB_AUDIT_KINDS` (line 642), threshold constants (line 593-624)
+- `packages/domain/src/services/customer.service.ts` — `anonymizeCustomer` executor (line 691), `emitScrubAuditRecords` (line 1159, `reason: "lgpd_scrub"` at 1176), `SCRUB_AUDIT_KINDS` (line 660), threshold constants (lines 611-650), `exportCustomerData` (line 1233), Medusa-pending publish (lines 1134-1154)
 - `apps/api/src/subscribers/anonymize-grace-resolver.ts` — grace resolver, SETNX mutex, `cancel_won_race` REFUSE audit record
-- `apps/api/src/routes/me.ts` — OTP-gated initiate-deletion + cancel-deletion routes (lines 209, 292, 407, 544, 845)
-- `apps/api/src/middleware/auth.ts` — whitespace `sub` trim at lines 65, 102, 135
+- `apps/api/src/subscribers/customer-anonymize-medusa-resolver.ts` — Wave-B Medusa scrub subscriber; `apps/api/src/jobs/anonymize-medusa-retry.ts` — retry/exhausted job; `apps/api/src/subscribers/__shared__/medusa-anonymize-kinds.ts` — kinds + payload + idempotency-key helper
+- `apps/api/src/routes/me.ts` — OTP-gated routes (send-otp 246, verify-otp 329, initiate-deletion 444, DELETE 724, cancel-deletion 822); OTP gate at `apps/api/src/routes/me/anonymize-otp-gate.ts`
+- `apps/api/src/middleware/auth.ts` — whitespace `sub` rejection at lines 116, 156
 - `apps/api/src/__tests__/audit-2026-05-24/h3-t4-lgpd-scrub-conformance.test.ts` — T4 conformance suite
 - `apps/api/src/__tests__/audit-2026-05-24/h3-postgres-container.ts` — testcontainer harness
 - `apps/api/src/__tests__/audit-2026-05-24/h3-fixture-builder.ts` — PIIFixtureSpec builder
@@ -320,8 +317,8 @@ These are surfaces where a future legal opinion could change the posture. Docume
 
 ## Last verified
 
-**Date:** 2026-05-24
-**Commit:** `a111a90` (`feat/kernel-always-on-cutover` HEAD; "H3 Wave A complete + 3 new schema-level follow-ups")
-**Method:** static reconciliation against the Wave A1 executor at `packages/domain/src/services/customer.service.ts:673` + T4 conformance suite at `apps/api/src/__tests__/audit-2026-05-24/h3-t4-lgpd-scrub-conformance.test.ts` + audit chain (`SCRUB_AUDIT_KINDS`).
+**Date:** 2026-06-10
+**Commit:** `458526a` (`feat/policy-tree`)
+**Method:** static reconciliation against the executor at `packages/domain/src/services/customer.service.ts:691` + the Wave-B subscriber/job + T4 conformance suite at `apps/api/src/__tests__/audit-2026-05-24/h3-t4-lgpd-scrub-conformance.test.ts` + audit chains (`SCRUB_AUDIT_KINDS`, `MEDUSA_ANONYMIZE_KINDS`).
 
 An ANPD auditor can verify each surface row in the coverage table against the linked commit hash via `git show <commit>` to inspect the actual code change.

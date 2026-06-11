@@ -13,7 +13,7 @@ const WEBHOOK_PATH = "/api/webhooks/whatsapp"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-async function fetchNgrokUrl(retries = 10): Promise<string | null> {
+export async function fetchNgrokUrl(retries = 10): Promise<string | null> {
   for (let i = 0; i < retries; i++) {
     try {
       const res = await fetch(NGROK_API)
@@ -23,7 +23,7 @@ async function fetchNgrokUrl(retries = 10): Promise<string | null> {
     } catch {
       // ngrok not ready yet
     }
-    await sleep(1000)
+    if (i < retries - 1) await sleep(1000)
   }
   return null
 }

@@ -203,6 +203,13 @@ export interface AuditSinkDependencies {
   readonly onBufferSize?: AuditSinkBufferSizeHook
   /** Per-event spill-size observability hook. */
   readonly onSpillSize?: AuditSinkSpillSizeHook
+  /**
+   * F3 — behavioral-drift tee. Invoked once per REDACTED record (downstream of
+   * redaction; never sees raw PII). Fail-open: the arm that calls it swallows
+   * errors so a buggy observer can never block an audit emit. apps/api wires it
+   * to the drift detector's `observe()`.
+   */
+  readonly onAuditRecord?: (record: AuditRecord) => void
 }
 
 // ── Module-level lazy state ──────────────────────────────────────────────
@@ -333,7 +340,21 @@ function buildInnerSink(deps: AuditSinkDependencies): AuditSink {
     },
   }
 
-  return multiSink(console_, nats, postgresSinkWithReset)
+  // F3 — behavioral-drift tee. Fail-open + downstream of redaction (these arms
+  // only ever see redacted records). multiSink is STRICT (it throws if an arm
+  // throws), so this arm swallows everything — a drift observer can NEVER block
+  // or fail an audit emit (hot-path safety).
+  const driftObserverSink: AuditSink = {
+    async emit(record) {
+      try {
+        deps.onAuditRecord?.(record)
+      } catch {
+        // Telemetry tee must never affect the audit path.
+      }
+    },
+  }
+
+  return multiSink(console_, nats, postgresSinkWithReset, driftObserverSink)
 }
 
 function buildSink(deps: AuditSinkDependencies): AuditSink {

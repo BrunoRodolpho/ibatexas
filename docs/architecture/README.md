@@ -22,8 +22,9 @@ graph TD
     CHAT_RT["Chat Route<br/>POST /chat + SSE stream"]
   end
 
-  AGENT["Claude Agent<br/>Anthropic tool-use API"]
-  TOOL_REG["Tool Registry<br/>25 tools — Zod validated"]
+  COND["claustrum Conductor<br/>getConductor() — per-turn Capsule"]
+  KERNEL["Kernel adjudicate()<br/>@adjudicate/core — every IntentEnvelope"]
+  PACKS["Pack tools<br/>17 LLM-callable intents"]
   SHARED["packages/tools/<br/>shared logic"]
   MEDUSA["Medusa v2 :9000"]
 
@@ -45,10 +46,11 @@ graph TD
   ROUTES ==> SHARED
   CHAT -->|"Path B"| CHAT_RT
   WA -->|"Path B: webhook"| CHAT_RT
-  CHAT_RT ==> AGENT
-  AGENT <==>|tool_use| ANTHROPIC
-  AGENT ==> TOOL_REG
-  TOOL_REG ==> SHARED
+  CHAT_RT ==>|"getConductor()"| COND
+  COND <==>|"LLM sees only express_intent"| ANTHROPIC
+  COND ==>|"each IntentEnvelope"| KERNEL
+  KERNEL ==>|"EXECUTE decision"| PACKS
+  PACKS ==> SHARED
   SHARED ==> MEDUSA & PG & REDIS & TS & NATS
   SHARED ==> STRIPE & TWILIO
   MEDUSA ==> PG
@@ -59,8 +61,9 @@ graph TD
   style WA fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style ROUTES fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style CHAT_RT fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
-  style AGENT fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
-  style TOOL_REG fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
+  style COND fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
+  style KERNEL fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
+  style PACKS fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
   style SHARED fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style MEDUSA fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style PG fill:#3e2723,stroke:#ffab91,color:#ffccbc
@@ -75,18 +78,22 @@ graph TD
 
 ### Path A vs Path B — Quick Reference
 
-| Operation | Path A: Browser (REST) | Path B: Agent (tool_use) | Shared? |
-|-----------|----------------------|--------------------------|:-------:|
-| Search products | `GET /api/products` | `search_products` tool | Yes |
-| Product details | `GET /api/products/:id` | `get_product_details` tool | Yes |
-| Delivery estimate | `GET /api/cart/delivery-estimate` | `estimate_delivery` tool | Yes |
-| Checkout | `POST /api/cart/checkout` | `create_checkout` tool | Yes |
-| Reservations (all) | `GET/POST/PATCH/DELETE /api/reservations` | reservation tools | Yes |
-| **Cart (add/update/remove)** | **Zustand store (client-side)** | **Medusa direct** | **No** |
-| Order history | Not exposed yet | `get_order_history` tool | Agent only |
-| Customer profile | Not exposed | `get_customer_profile` tool | Agent only |
+Path A is direct REST. Path B is the **intent-gated** conversational turn: the LLM only ever
+proposes an `express_intent(capability, payload)`; the kernel `adjudicate()`s each resulting
+`IntentEnvelope` before any mutation runs (see §6).
 
-**Why cart diverges:** Web uses client-side Zustand for instant UX. Agent calls Medusa backend directly. Both converge at checkout via `createCheckout()`.
+| Operation | Path A: Browser (REST) | Path B: Conductor intent (`capability`) | Shared? |
+|-----------|----------------------|------------------------------------------|:-------:|
+| Search products | `GET /api/products` | read tool (no mutation) | Yes |
+| Delivery estimate | `GET /api/cart/delivery-estimate` | read tool (no mutation) | Yes |
+| Add to cart | Zustand store (client-side) | `order.item.add` intent | No |
+| Update/remove item | Zustand store (client-side) | `order.item.update` / `order.item.remove` | No |
+| Checkout | `POST /api/cart/checkout` | `order.checkout.create` intent | Yes |
+| Reservations | `GET/POST/PATCH/DELETE /api/reservations` | `reservation.create` / `.modify` / `.cancel` / `.waitlist.join` | Yes |
+| PIX details / regen | Not exposed | `customer.pix.details.save` / `payment.pix.regenerate` | Agent only |
+
+**Why cart diverges:** Web uses client-side Zustand for instant UX. The Conductor mutates via an
+adjudicated intent. Both converge at checkout via `createCheckout()`.
 
 ---
 
@@ -100,7 +107,7 @@ graph LR
   subgraph apps["apps/"]
     direction TB
     WEB["web/ :3000<br/>domains: analytics, cart, chat,<br/>checkout, search, session, shipping<br/>components: atoms, molecules, organisms"]
-    API_APP["api/ :3001<br/>routes: auth, cart, catalog, reservations,<br/>chat, stripe-webhook, whatsapp-webhook, admin/<br/>middleware, whatsapp/, jobs/, session/"]
+    API_APP["api/ :3001<br/>routes: auth, cart, catalog, reservations,<br/>chat, stripe-webhook, whatsapp-webhook, admin/<br/>claustrum-bootstrap.ts (Conductor root + getConductor)<br/>claustrum/ibatexas-planner.ts (createIbatexasPlanner)<br/>tools/register-ibatexas-tool-packs.ts<br/>middleware, whatsapp/, subscribers/, jobs/, session/"]
     COMMERCE["commerce/ :9000<br/>Medusa subscribers"]
     ADMIN_APP["admin/ :3002<br/>dashboard + cardapio"]
   end
@@ -109,8 +116,9 @@ graph LR
     direction TB
     TOOLS["tools/<br/>cart, search, reservation,<br/>redis, typesense, guards,<br/>intelligence, embeddings"]
     DOMAIN["domain/<br/>prisma schema + migrations<br/>services: reservation, customer, order"]
-    LLM["llm-provider/<br/>agent.ts, tool-registry.ts,<br/>system-prompt.ts"]
-    CLI_PKG["cli/<br/>19 commands"]
+    PACKS["pack-orders, pack-payments,<br/>pack-reservations, pack-whatsapp,<br/>pack-customer-onboarding<br/>(CapabilityPlanner + PolicyBundle per domain)"]
+    KERN["intent-kinds, audit-sink, pii"]
+    CLI_PKG["cli/<br/>30 commands"]
     OTHER["nats-client, types, ui"]
   end
 
@@ -126,7 +134,8 @@ graph LR
   style ADMIN_APP fill:#1a3a2a,stroke:#4caf50,color:#c8e6c9
   style TOOLS fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style DOMAIN fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
-  style LLM fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
+  style PACKS fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
+  style KERN fill:#4a1a6b,stroke:#ce93d8,color:#e1bee7
   style CLI_PKG fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style OTHER fill:#1e3a5f,stroke:#64b5f6,color:#bbdefb
   style TF fill:#3e2723,stroke:#ffab91,color:#ffccbc
@@ -145,6 +154,8 @@ Every `ibx` command goes through the same infrastructure the apps use.
 | `api` (products, search, chat) | Medusa admin API, Typesense, API :3001 | Query catalog, test agent |
 | `debug`, `inspect`, `intelligence` | Redis, Typesense, Postgres, Medusa | Infrastructure + business state |
 | `tag` | Medusa → Typesense reindex → Redis cache flush | Product metadata |
+| `kernel`, `claustrum`, `policy`, `obs`, `orders`, `dlq`, `rate` | Audit-postgres + claustrum schema, kernel decisions, DLQ, rate limits | Operate the intent-gated stack |
+| `infra`, `jobs`, `stripe` | Terraform/ECS, background jobs, Stripe webhooks | Ops + integrations |
 | `deps`, `env`, `auth`, `git`, `doctor` | pnpm, dotenv, Redis, Git, all infra | Config + maintenance |
 | `tunnel` | ngrok → API :3001 | Expose local API for WhatsApp webhooks |
 
@@ -206,51 +217,51 @@ sequenceDiagram
   end
 ```
 
-### 3b. Agent Conversation Flow (Path B — WhatsApp / Chat UI)
+### 3b. Conversational Flow (Path B — WhatsApp / Chat UI)
 
-Customer orders via conversation. Agent autonomously decides which tools to call.
+The chat + WhatsApp routes both call `getConductor()`. The LLM is a semantic parser only: it
+sees exactly one mutating tool, `express_intent(capability, payload)`, plus read tools. Every
+proposed intent becomes an `IntentEnvelope` that the kernel `adjudicate()`s before any mutation
+runs (CLAUDE.md rule #9). Read tools (search, delivery estimate) need no adjudication.
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'actorBkg': '#1a3a2a', 'actorBorder': '#4caf50', 'actorTextColor': '#c8e6c9', 'signalColor': '#6ba3d6', 'signalTextColor': '#e0e0e0', 'labelBoxBkgColor': '#161b22', 'labelBoxBorderColor': '#30363d', 'labelTextColor': '#e0e0e0', 'loopTextColor': '#e0e0e0', 'noteBkgColor': '#1e3a5f', 'noteTextColor': '#bbdefb', 'noteBorderColor': '#4a90d9', 'activationBkgColor': '#1e3a5f', 'activationBorderColor': '#4a90d9', 'sequenceNumberColor': '#e0e0e0'}}}%%
 sequenceDiagram
   actor C as Customer
   participant CH as WhatsApp / Chat UI
-  participant A as API :3001
-  participant AG as Claude Agent
-  participant TL as packages/tools/
-  participant M as Medusa :9000
-  participant T as Typesense
+  participant RT as Route (chat.ts / whatsapp-webhook.ts)
+  participant CO as Conductor (Capsule)
+  participant PL as Planner (LLM)
+  participant K as Kernel adjudicate()
+  participant TL as Pack tool -> packages/tools/
 
   rect rgba(26, 58, 42, 0.3)
-  Note over C,T: Turn 1 — Search
+  Note over C,TL: Turn 1 — Search (read tool, no adjudication)
   C->>CH: "quero comprar costela"
-  CH->>A: POST /chat/messages (or Twilio webhook)
-  A->>A: Store in session history
-  A-->>CH: messageId
-  A->>AG: runAgent(message, history, context)
-  AG->>AG: Decide: search_products
-  AG->>TL: search_products("costela")
-  TL->>T: Typesense search
-  T-->>TL: hits[]
-  TL-->>AG: products[]
-  AG-->>A: Stream text chunks (SSE / Twilio)
-  A-->>CH: "Encontrei costela! R$89. Quer adicionar?"
-  CH-->>C: Response displayed
+  CH->>RT: POST /chat/messages (or Twilio webhook)
+  RT->>CO: getConductor().openCapsule(...) -> handleTurn
+  CO->>PL: assemble CognitiveState, prompt LLM
+  PL->>TL: search_products (read tool)
+  TL-->>PL: products[]
+  PL-->>CO: response text (no express_intent)
+  CO-->>RT: turn result (SSE / Twilio)
+  CH-->>C: "Encontrei costela! R$89. Quer adicionar?"
   end
 
   rect rgba(30, 58, 95, 0.3)
-  Note over C,M: Turn 2 — Add to cart
+  Note over C,TL: Turn 2 — Add to cart (mutating intent, adjudicated)
   C->>CH: "sim, 2 unidades"
-  CH->>A: POST /chat/messages
-  A->>AG: runAgent(message, history, context)
-  AG->>AG: Decide: add_to_cart
-  AG->>TL: add_to_cart(costela, qty: 2)
-  TL->>M: POST /store/carts/:id/line-items
-  M-->>TL: updated cart
-  TL-->>AG: cart summary
-  AG-->>A: Stream response
-  A-->>CH: "Adicionei 2x Costela. Total: R$178. Finalizar?"
-  CH-->>C: Response displayed
+  CH->>RT: POST /chat/messages
+  RT->>CO: handleTurn
+  CO->>PL: prompt LLM
+  PL-->>CO: express_intent("order.item.add", {qty: 2})
+  CO->>K: adjudicate(IntentEnvelope, state, policy)
+  Note over K: state + taint + policy guards;<br/>decision audited (console + NATS + Postgres)
+  K-->>CO: EXECUTE
+  CO->>TL: pack handler -> add to cart
+  TL-->>CO: cart summary
+  CO-->>RT: response text
+  CH-->>C: "Adicionei 2x Costela. Total: R$178. Finalizar?"
   end
 ```
 
@@ -320,6 +331,41 @@ flowchart LR
 
 ---
 
+## 6. Intent-Gated Execution — Kernel + Audit
+
+The conversational turn (Path B) runs through the **claustrum Conductor**, not a direct
+agent-tool loop. Authority lives in the kernel, never in the LLM (CLAUDE.md rule #9).
+
+- **The LLM has zero state-mutation authority.** It is a semantic parser that sees exactly one
+  mutating tool, `express_intent(capability, payload)`, plus read tools. The visible `capability`
+  enum per turn is the union of the installed packs' `allowedIntents` for the current state —
+  produced by each Pack's `*CapabilityPlanner`. Internal tool ids (`ibatexas.cart.addItem.v1`)
+  are never LLM-facing.
+- **Every mutation is an `IntentEnvelope<kind, payload>`** (`@adjudicate/core`, built via
+  `buildEnvelope` with `actor.principal = "llm"`, `taint = "UNTRUSTED"`). The planner is
+  `createIbatexasPlanner` in `apps/api/src/claustrum/ibatexas-planner.ts`.
+- **The kernel `adjudicate()`s each envelope** against its owning Pack's `PolicyBundle` before any
+  mutation runs. The kernel is **always authoritative** — no env-var gating, no shadow mode, no
+  kill switch. Wiring lives in `apps/api/src/claustrum-bootstrap.ts` (`adjudicateAndAudit`).
+- **Every decision is audited** — console + NATS + Postgres via `@adjudicate/audit-postgres`.
+- **The 17 LLM-callable tool definitions** are assembled by
+  `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`), keyed by
+  `capability := intentKind`. `toolRosterDrift()` runs fail-closed at boot to keep that invariant.
+- **System-driven mutations** (subscribers, jobs, webhooks) build a system-actor envelope
+  (`actor.principal = "system"`) via `buildSystemEnvelope()` in `apps/api/src/subscribers/__shared__/`.
+
+See CLAUDE.md rule #9 and `docs/architecture/decisions.md` (ADR #9).
+
+| Concern | Go to |
+|---------|-------|
+| Conductor wiring | `apps/api/src/claustrum-bootstrap.ts` (`getConductor`) |
+| LLM intent extraction | `apps/api/src/claustrum/ibatexas-planner.ts` (`createIbatexasPlanner`) |
+| Tool roster (17) | `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks`) |
+| Per-domain policy + visibility | `packages/pack-*/src/` (`*CapabilityPlanner`, `*PolicyBundle`) |
+| Decision audit (Postgres) | `@adjudicate/audit-postgres` |
+
+---
+
 ## Where Is X?
 
 | Concern | Go to | Start reading |
@@ -332,9 +378,11 @@ flowchart LR
 | Checkout | `packages/tools/src/cart/create-checkout.ts` | `createCheckout()` |
 | Product search | `packages/tools/src/search/search-products.ts` | `searchProducts()` |
 | Reservations | `packages/tools/src/reservation/` | `check-availability.ts` |
-| AI Agent loop | `packages/llm-provider/src/agent.ts` | `runAgent()` |
-| Tool registry | `packages/llm-provider/src/tool-registry.ts` | tool definitions |
-| WhatsApp | `apps/api/src/whatsapp/state-machine.ts` | state machine |
+| Conductor composition root | `apps/api/src/claustrum-bootstrap.ts` | `getConductor()` |
+| LLM planner (intent extractor) | `apps/api/src/claustrum/ibatexas-planner.ts` | `createIbatexasPlanner()` |
+| LLM-callable tool registry | `apps/api/src/tools/register-ibatexas-tool-packs.ts` | `listIbatexasToolPacks()` (17 tools) |
+| Kernel adjudication | `apps/api/src/claustrum-bootstrap.ts` | `adjudicate()` via `@adjudicate/core` |
+| WhatsApp | `apps/api/src/routes/whatsapp-webhook.ts` + `apps/api/src/whatsapp/session.ts` | webhook handler + session |
 | Analytics events | `apps/web/src/domains/analytics/events.ts` | `AnalyticsEvent` union |
 | Typesense indexing | `packages/tools/src/typesense/index-product.ts` | `indexProduct()` |
 | Delivery/shipping | `packages/tools/src/catalog/estimate-delivery.ts` | fee calculation |
@@ -343,9 +391,10 @@ flowchart LR
 | NATS events | `packages/nats-client/src/index.ts` | `publishNatsEvent()` |
 | Prisma schema | `packages/domain/prisma/schema.prisma` | entities |
 | Domain services | `packages/domain/src/services/` | `reservation.service.ts` etc |
-| CLI (all 19 cmds) | `packages/cli/src/commands/` | one file per command |
+| CLI (all 30 cmds) | `packages/cli/src/commands/` | one file per command |
 | CLI (services def) | `packages/cli/src/services.ts` | port assignments, service registry |
-| CLI (scenarios) | `packages/cli/src/scenarios/` | YAML-driven state testing |
+| Domain Packs | `packages/pack-*/src/` | `*CapabilityPlanner`, `*PolicyBundle` per domain |
+| Intent kinds | `packages/intent-kinds/src/` | `IntentEnvelope.kind` constants |
 | Shared UI | `packages/ui/src/` | `atoms/`, `molecules/` |
 | Web components | `apps/web/src/components/` | app-specific UI |
 | Env config | `apps/api/src/config.ts` | Zod schema |

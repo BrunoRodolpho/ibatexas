@@ -8,6 +8,13 @@
 //     missing (operator gets a clear path to `ibx bootstrap`)
 
 import { afterEach, describe, expect, it } from "vitest"
+import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
+import { ordersPack } from "@ibatexas/pack-orders"
+import { paymentsPack } from "@ibatexas/pack-payments"
+import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
+import { reservationsPack } from "@ibatexas/pack-reservations"
+import { whatsappPack } from "@ibatexas/pack-whatsapp"
+import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds"
 import {
   assertPackCoverage,
   PackCoverageError,
@@ -50,6 +57,54 @@ describe("assertPackCoverage", () => {
     expect(() =>
       assertPackCoverage([], new Set(["order.cart.ensure"])),
     ).toThrow(PackCoverageError)
+  })
+})
+
+// ── Real boot roster covers the real taxonomy ────────────────────────────────
+//
+// Regression guard. The toy-set cases above never exercise the actual
+// `KNOWN_INTENT_KINDS` against the actual installed roster, which is exactly
+// how `pix.charge.*` (the un-installed `@adjudicate/pack-payments-pix` Pack)
+// and `loyalty.stamp.add` (a domain-internal bundle, never registered) both
+// slipped past CI and crashed the live boot. These tests pin the invariant:
+// every pack-registered kind resolves to one of the six installed Packs, and
+// the only kinds excluded from the gate are the locally-adjudicated ones.
+
+describe("assertPackCoverage — real boot roster", () => {
+  // Mirrors `installFirstPartyPacks()` in kernel-bootstrap.ts. assertPackCoverage
+  // reads `installed.pack.intents`, so wrap each raw Pack as `{ pack }`.
+  const roster = [
+    { pack: ordersPack },
+    { pack: reservationsPack },
+    { pack: whatsappPack },
+    { pack: customerOnboardingPack },
+    { pack: paymentsPack },
+    { pack: paymentsPixPack },
+  ]
+
+  // KNOWN_INTENT_KINDS minus the locally-adjudicated kinds — the same set the
+  // boot anchor passes (PACK_REGISTERED_INTENT_KINDS, module-private there).
+  const packRegistered = new Set(
+    [...KNOWN_INTENT_KINDS].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
+  )
+
+  it("covers every pack-registered intent kind (incl. pix.charge.*)", () => {
+    expect(() => assertPackCoverage(roster, packRegistered)).not.toThrow()
+  })
+
+  it("would refuse boot if loyalty.stamp.add were treated as pack-registered", () => {
+    // Documents WHY loyalty.stamp.add is excluded: no installed Pack declares
+    // it (it ships its own bundle to adjudicate()), so the full KNOWN set fails.
+    let caught: unknown = null
+    try {
+      assertPackCoverage(roster, KNOWN_INTENT_KINDS)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(PackCoverageError)
+    expect((caught as PackCoverageError).missingKinds).toEqual([
+      ...LOYALTY_INTENT_KINDS,
+    ])
   })
 })
 

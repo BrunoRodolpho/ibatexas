@@ -279,7 +279,18 @@ export function createIbatexasPlanner(deps: IbatexasPlannerDeps): PlannerPort {
           ? `ibatexas-planner: ${envelopes.length} envelope(s); dropped out-of-plan [${dropped.join(", ")}]`
           : `ibatexas-planner: ${envelopes.length} envelope(s)`;
 
-      return { envelopes, rationale, capabilities, readToolCalls };
+      // F4 / cost accounting: report this turn's planning-model token usage so
+      // the loop folds it onto the TurnRecord (emitTurn → per-session counter).
+      return {
+        envelopes,
+        rationale,
+        capabilities,
+        readToolCalls,
+        usage: {
+          inputTokens: completion.inputTokens,
+          outputTokens: completion.outputTokens,
+        },
+      };
     },
   };
 }
