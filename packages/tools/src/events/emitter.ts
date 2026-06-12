@@ -45,6 +45,7 @@ export type ScenarioEventType =
 export type JourneyEventType =
   | "journey.start"
   | "journey.end"
+  | "preflight.check"
   | "act.start"
   | "act.end"
   | "llm.call"
@@ -79,6 +80,8 @@ export interface IbxEventBase {
   actKind?: ActKindName
   actIndex?: number
   outcome?: "pass" | "fail" | "error"
+  // preflight.check — which environment-handshake check this record is for
+  check?: string
   // llm.call (required there — see LlmCallEvent)
   model?: string
   inputTokens?: number
@@ -227,6 +230,21 @@ export function emitActEnd(
     outcome,
     ...(detail !== undefined ? { detail } : {}),
   })
+}
+
+/**
+ * One environment-handshake pre-flight check (T1a-10). The harness records
+ * EVERY check — pass or fail — into the JSONL trace before refusing/running.
+ * `detail` must never contain secret values (e.g. ANTHROPIC_API_KEY).
+ */
+export function emitPreflightCheck(args: {
+  check: string
+  outcome: "pass" | "fail"
+  detail?: string
+  journey?: string
+  runId?: string
+}): void {
+  emit({ type: "preflight.check", timestamp: new Date().toISOString(), ...args })
 }
 
 /** One provider round-trip. Token counts are required — the dollar source. */

@@ -20,6 +20,7 @@ import {
   emitJourneyStart,
 } from "@ibatexas/tools"
 
+import { runPreflight, type PreflightResult } from "../harness/preflight.js"
 import type {
   ChatAct,
   FixtureAct,
@@ -77,6 +78,11 @@ export interface JourneyRunResult {
   journeyId: string
   runId: string
   ok: boolean
+  /**
+   * From the mandatory pre-flight (T1a-10): true only when ANTHROPIC_MODEL
+   * equals the certification target and the nonCertifying escape was unused.
+   */
+  certifying: boolean
   acts: ActRunRecord[]
   /** Set when an executor threw (outcome "error") or an act failed. */
   error?: string
@@ -92,6 +98,12 @@ export class JourneyBlockedError extends Error {
   }
 }
 
+/** Shape of the mandatory pre-flight step — see `runPreflight` (T1a-10). */
+export type PreflightFn = (args: {
+  journeyId: string
+  runId: string
+}) => Promise<PreflightResult>
+
 export interface RunJourneyOptions {
   /** Fixed run id (defaults to a fresh UUID). */
   runId?: string
@@ -99,6 +111,14 @@ export interface RunJourneyOptions {
   vars?: Record<string, unknown>
   /** Run a `status: blocked` journey anyway (debugging only). */
   allowBlocked?: boolean
+  /**
+   * The environment-handshake pre-flight (T1a-10) — ALWAYS executed as the
+   * run's first step and NOT skippable: a refusal (`PreflightRefusalError`)
+   * propagates and no act runs. Defaults to the real `runPreflight` against
+   * `process.env`; injectable ONLY to substitute a stub in unit tests or to
+   * thread non-default `PreflightOptions` (e.g. the nonCertifying escape).
+   */
+  preflight?: PreflightFn
 }
 
 // ── Runner ───────────────────────────────────────────────────────────────────
@@ -121,7 +141,9 @@ async function executeAct(
 /**
  * Run a journey's acts sequentially. Fail-fast: the first failing/throwing
  * act stops the run. Never throws for act-level failures — returns a
- * result; throws only `JourneyBlockedError` for blocked journeys.
+ * result; throws `JourneyBlockedError` for blocked journeys and
+ * `PreflightRefusalError` when the mandatory environment handshake
+ * (T1a-10 — ALWAYS the first step) refuses the stack.
  */
 export async function runJourney(
   journey: Journey,
@@ -133,6 +155,13 @@ export async function runJourney(
   }
 
   const runId = opts.runId ?? randomUUID()
+
+  // MANDATORY first step — environment handshake (T1a-10). Refusal throws
+  // PreflightRefusalError before any act executes; every check is recorded
+  // into the JSONL trace as a `preflight.check` event either way.
+  const preflight = opts.preflight ?? runPreflight
+  const preflightResult = await preflight({ journeyId: journey.id, runId })
+
   const ctx: JourneyRunContext = {
     journeyId: journey.id,
     runId,
@@ -176,6 +205,7 @@ export async function runJourney(
     journeyId: journey.id,
     runId,
     ok,
+    certifying: preflightResult.certifying,
     acts: records,
     ...(runError !== undefined
       ? { error: runError }

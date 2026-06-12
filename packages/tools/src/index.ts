@@ -261,6 +261,13 @@ export type { WhatsAppSender } from "./whatsapp/sender.js"
 // ── API base URL ──────────────────────────────────────────────────────────────
 export { getApiBase, MEDUSA_ADMIN_URL } from "./api/base-url.js"
 
+// ── Infra address resolution (moved from packages/cli/src/services.ts, T1a-10) ─
+// Port source of truth for `ibx dev urls` / `ibx svc status` (cli re-exports it)
+// and the journeys harness pre-flight hostname denylist (journeys→tools only —
+// journeys never imports the cli).
+export { infraEndpoints } from "./infra/endpoints.js"
+export type { InfraEndpoint } from "./infra/endpoints.js"
+
 // ── Structured JSONL event emitter (ibx scenarios + journeys; IBX_EVENTS=json) ─
 export {
   emit,
@@ -274,6 +281,7 @@ export {
   emitActStart,
   emitActEnd,
   emitLlmCall,
+  emitPreflightCheck,
 } from "./events/emitter.js"
 export type {
   IbxEvent,

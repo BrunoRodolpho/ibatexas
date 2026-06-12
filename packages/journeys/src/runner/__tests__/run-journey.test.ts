@@ -1,14 +1,30 @@
 // Tests for runner/run-journey.ts — sequential execution, injected
-// executors, journey.*/act.* event emission, fail-fast semantics.
+// executors, journey.*/act.* event emission, fail-fast semantics, and the
+// mandatory pre-flight first step (T1a-10).
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { onEvent, type IbxEventBase } from "@ibatexas/tools"
 
+import { PreflightRefusalError } from "../../harness/preflight.js"
 import { validateJourney, type Journey } from "../../schema/index.js"
 import {
   runJourney,
   JourneyBlockedError,
   type ActExecutors,
+  type PreflightFn,
+  type RunJourneyOptions,
 } from "../run-journey.js"
+
+// Unit tests stub the pre-flight (its own checks are covered by
+// harness/__tests__/preflight.test.ts and the live handshake).
+const passPreflight: PreflightFn = async () => ({ ok: true, certifying: true, checks: [] })
+
+function run(
+  journey: Journey,
+  executors: ActExecutors,
+  opts: RunJourneyOptions = {},
+): ReturnType<typeof runJourney> {
+  return runJourney(journey, executors, { preflight: passPreflight, ...opts })
+}
 
 function makeJourney(overrides: Record<string, unknown> = {}): Journey {
   const result = validateJourney({
@@ -62,7 +78,7 @@ describe("runJourney — sequential execution", () => {
 
   it("executes stub acts strictly in YAML order", async () => {
     const log: string[] = []
-    const result = await runJourney(makeJourney(), stubExecutors(log), { runId: "run-1" })
+    const result = await run(makeJourney(), stubExecutors(log), { runId: "run-1" })
 
     expect(log).toEqual(["fixture:seed", "chat:talk", "http:probe"])
     expect(result.ok).toBe(true)
@@ -71,7 +87,7 @@ describe("runJourney — sequential execution", () => {
   })
 
   it("emits journey.* and act.* events in order", async () => {
-    await runJourney(makeJourney(), stubExecutors([]), { runId: "run-2" })
+    await run(makeJourney(), stubExecutors([]), { runId: "run-2" })
 
     expect(events.map((e) => e.type)).toEqual([
       "journey.start",
@@ -93,7 +109,7 @@ describe("runJourney — sequential execution", () => {
     const executors = stubExecutors(log)
     executors.chat = async () => ({ ok: false, detail: "driver gave up" })
 
-    const result = await runJourney(makeJourney(), executors)
+    const result = await run(makeJourney(), executors)
 
     expect(log).toEqual(["fixture:seed"]) // http never ran
     expect(result.ok).toBe(false)
@@ -109,7 +125,7 @@ describe("runJourney — sequential execution", () => {
       throw new Error("seed helper exploded")
     }
 
-    const result = await runJourney(makeJourney(), executors)
+    const result = await run(makeJourney(), executors)
 
     expect(result.ok).toBe(false)
     expect(result.acts).toHaveLength(1)
@@ -129,7 +145,7 @@ describe("runJourney — sequential execution", () => {
       seen.push(ctx.vars.orderHandle)
     }
 
-    await runJourney(makeJourney({ params: { productHandle: "costela-bovina-defumada" } }), executors)
+    await run(makeJourney({ params: { productHandle: "costela-bovina-defumada" } }), executors)
 
     expect(seen[0]).toEqual({
       journeyId: "JOURNEY-001",
@@ -139,22 +155,22 @@ describe("runJourney — sequential execution", () => {
   })
 
   it("generates a fresh runId when none is given", async () => {
-    const a = await runJourney(makeJourney(), stubExecutors([]))
-    const b = await runJourney(makeJourney(), stubExecutors([]))
+    const a = await run(makeJourney(), stubExecutors([]))
+    const b = await run(makeJourney(), stubExecutors([]))
     expect(a.runId).not.toBe(b.runId)
     expect(a.runId).toMatch(/[0-9a-f-]{36}/)
   })
 
   it("refuses to run a blocked journey (JourneyBlockedError)", async () => {
     const blocked = makeJourney({ status: "blocked", blocked_by: ["ws4"] })
-    await expect(runJourney(blocked, stubExecutors([]))).rejects.toThrow(JourneyBlockedError)
-    await expect(runJourney(blocked, stubExecutors([]))).rejects.toThrow(/journey_blocked/)
+    await expect(run(blocked, stubExecutors([]))).rejects.toThrow(JourneyBlockedError)
+    await expect(run(blocked, stubExecutors([]))).rejects.toThrow(/journey_blocked/)
     expect(events).toHaveLength(0) // nothing emitted for a refused run
   })
 
   it("runs a blocked journey under allowBlocked (debugging escape hatch)", async () => {
     const blocked = makeJourney({ status: "blocked", blocked_by: ["ws4"] })
-    const result = await runJourney(blocked, stubExecutors([]), { allowBlocked: true })
+    const result = await run(blocked, stubExecutors([]), { allowBlocked: true })
     expect(result.ok).toBe(true)
   })
 
@@ -162,7 +178,89 @@ describe("runJourney — sequential execution", () => {
     const journey = makeJourney({
       acts: [{ kind: "chat", goal: "Oi" }],
     })
-    const result = await runJourney(journey, stubExecutors([]))
+    const result = await run(journey, stubExecutors([]))
     expect(result.acts[0].name).toBe("act-1:chat")
+  })
+})
+
+describe("runJourney — mandatory pre-flight (T1a-10)", () => {
+  let events: IbxEventBase[]
+  let unsub: () => void
+
+  beforeEach(() => {
+    events = []
+    unsub = onEvent((e) => events.push(e))
+  })
+
+  afterEach(() => {
+    unsub()
+  })
+
+  it("runs the pre-flight as the FIRST step, with journeyId + runId", async () => {
+    const order: string[] = []
+    const seen: unknown[] = []
+    const preflight: PreflightFn = async (args) => {
+      order.push("preflight")
+      seen.push(args)
+      return { ok: true, certifying: true, checks: [] }
+    }
+    const executors = stubExecutors([])
+    executors.fixture = async () => {
+      order.push("act")
+    }
+
+    await runJourney(makeJourney(), executors, { preflight, runId: "run-pf" })
+
+    expect(order[0]).toBe("preflight")
+    expect(order).toContain("act")
+    expect(seen[0]).toEqual({ journeyId: "JOURNEY-001", runId: "run-pf" })
+  })
+
+  it("propagates PreflightRefusalError — no act runs, no journey.start emitted", async () => {
+    const log: string[] = []
+    const preflight: PreflightFn = async () => {
+      throw new PreflightRefusalError([
+        { name: "fingerprint", ok: false, detail: "no testFingerprint" },
+      ])
+    }
+
+    await expect(
+      runJourney(makeJourney(), stubExecutors(log), { preflight }),
+    ).rejects.toThrow(PreflightRefusalError)
+    await expect(
+      runJourney(makeJourney(), stubExecutors(log), { preflight }),
+    ).rejects.toThrow(/preflight_refused/)
+
+    expect(log).toHaveLength(0) // no act executed
+    expect(events.filter((e) => e.type === "journey.start")).toHaveLength(0)
+  })
+
+  it("surfaces the pre-flight certifying flag on the run result", async () => {
+    const nonCertifying: PreflightFn = async () => ({
+      ok: true,
+      certifying: false,
+      checks: [],
+    })
+    const result = await runJourney(makeJourney(), stubExecutors([]), {
+      preflight: nonCertifying,
+    })
+    expect(result.ok).toBe(true)
+    expect(result.certifying).toBe(false)
+
+    const certifying = await run(makeJourney(), stubExecutors([]))
+    expect(certifying.certifying).toBe(true)
+  })
+
+  it("checks blocked status BEFORE the pre-flight (blocked journeys never handshake)", async () => {
+    let called = 0
+    const preflight: PreflightFn = async () => {
+      called += 1
+      return { ok: true, certifying: true, checks: [] }
+    }
+    const blocked = makeJourney({ status: "blocked", blocked_by: ["ws4"] })
+    await expect(
+      runJourney(blocked, stubExecutors([]), { preflight }),
+    ).rejects.toThrow(JourneyBlockedError)
+    expect(called).toBe(0)
   })
 })
