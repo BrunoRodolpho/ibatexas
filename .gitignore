@@ -65,3 +65,6 @@ apps/commerce/.medusa/types/query-entry-points.d.ts
 # Medusa admin file uploads
 apps/commerce/static/
 infra/terraform/environments/dev/tfplan
+
+# Journey run traces (ibx journey run, T1a-13) — per-run JSONL, never committed
+/runs/

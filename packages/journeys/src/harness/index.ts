@@ -19,3 +19,31 @@ export {
   type PreflightOptions,
   type PreflightResult,
 } from "./preflight.js"
+
+// T1a-13 — `ibx journey run`: full live loop with measured cost.
+export {
+  ATTEMPT_TIMEOUT_MS,
+  JourneyRunCliError,
+  runJourneyCli,
+  type JourneyAttemptReport,
+  type JourneyRunReport,
+  type RunJourneyCliOptions,
+  type TokenSplitReport,
+} from "./run-journey-cli.js"
+export { loadTestEnv, parseEnvFile, type LoadTestEnvResult } from "./test-env.js"
+export {
+  attemptCost,
+  costOfCalls,
+  DEFAULT_PRICE_TABLE_PATH,
+  formatUsd,
+  loadPriceTable,
+  PriceTableError,
+  readSutLlmCalls,
+  renderCostLine,
+  type AttemptCost,
+  type CostSide,
+  type LlmCallLike,
+  type ModelPrice,
+  type PriceTable,
+  type TokenSplit,
+} from "./cost.js"

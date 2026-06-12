@@ -70,3 +70,14 @@ export {
   OracleDatabaseUrlError,
   requireOracleDatabaseUrl,
 } from "./oracle-database-url.js"
+
+// T1a-13 — read-only domain lookups + the audit-namespace hash (run scoping).
+export {
+  createDomainReader,
+  hashedAuditSessionId,
+  projectionBarrierPrisma,
+  type CreateDomainReaderOptions,
+  type DomainCustomerRow,
+  type DomainOrderProjectionRow,
+  type DomainReader,
+} from "./domain-reader.js"

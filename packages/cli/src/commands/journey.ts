@@ -277,6 +277,65 @@ async function runJourneyCoverage(opts: {
   console.log(JSON.stringify(coverageBaseline(report), null, 2))
 }
 
+// ── `ibx journey run` (T1a-13) ──────────────────────────────────────────────
+// THIN registration: toda a composição (preflight → fixture → driver → http →
+// verify[] → trace JSONL → relatório de custo) vive em @ibatexas/journeys
+// (src/harness/run-journey-cli.ts). Saída de dev/CI em inglês (convenção do
+// plano de teste); exit 0 somente com TODAS as tentativas verdes.
+
+async function runJourneyRun(
+  id: string,
+  opts: { k?: string; json?: boolean; dir?: string; envFile?: string },
+): Promise<void> {
+  const { runJourneyCli, JourneyRunCliError } = await import("@ibatexas/journeys")
+
+  const k = opts.k !== undefined ? Number.parseInt(opts.k, 10) : 1
+  try {
+    const report = await runJourneyCli({
+      journeyId: id,
+      k,
+      ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
+      ...(opts.envFile !== undefined ? { envFile: resolveUserPath(opts.envFile) } : {}),
+      // Progress lines stream to stderr so --json keeps stdout machine-clean.
+      onProgress: (line) => {
+        if (opts.json === true) process.stderr.write(`${line}\n`)
+        else console.log(chalk.dim(line))
+      },
+    })
+
+    if (opts.json === true) {
+      console.log(JSON.stringify(report, null, 2))
+    } else {
+      for (const attempt of report.attempts) {
+        const head = attempt.pass
+          ? chalk.green(`✓ attempt ${attempt.attempt}: PASS`)
+          : chalk.red(`✗ attempt ${attempt.attempt}: FAIL`)
+        console.log(
+          `${head} ${chalk.dim(
+            `runId=${attempt.runId} turns=${attempt.turns} ${(attempt.durationMs / 1000).toFixed(1)}s ${attempt.certifying ? "certifying" : "NON-certifying"}`,
+          )}`,
+        )
+        console.log(attempt.costLine)
+        if (attempt.error !== undefined) console.error(chalk.red(`  ${attempt.error}`))
+      }
+      console.log(report.costLine)
+      console.log(
+        report.pass
+          ? chalk.green(`✓ ${report.journey} green ${report.k}/${report.k}`)
+          : chalk.red(`✗ ${report.journey} failed (${report.attempts.filter((a) => a.pass).length}/${report.k} green)`),
+      )
+    }
+    if (!report.pass) process.exitCode = 1
+  } catch (err) {
+    if (err instanceof JourneyRunCliError) {
+      console.error(chalk.red(err.message))
+      process.exitCode = 1
+      return
+    }
+    throw err
+  }
+}
+
 export function registerJourneyCommands(group: Command): void {
   group.description(
     "Journeys — registry de jornadas LLM-driven e seus gates de governança (plano de teste)",
@@ -299,6 +358,30 @@ export function registerJourneyCommands(group: Command): void {
     .action(async (opts: { json?: boolean; verifyFile?: string; dir?: string }) => {
       await runJourneyLint(opts)
     })
+
+  group
+    .command("run <id>")
+    .description(
+      "Executa uma jornada contra o stack de teste ao vivo (T1a-13): preflight → fixture/chat/http acts → verify[] → trace JSONL (runs/<runId>/) → relatório de custo via llm.call × price-table. --k N exige N tentativas TODAS verdes (exit 0 só com todas).",
+    )
+    .option("--k <n>", "Tentativas sequenciais; todas devem passar (default 1)")
+    .option("--json", "Emite o relatório da execução em JSON (stdout limpo)")
+    .option(
+      "--dir <path>",
+      "Diretório alternativo de jornadas (default: packages/journeys/journeys/)",
+    )
+    .option(
+      "--env-file <path>",
+      "Arquivo .env do stack de teste (default: <repo>/.env.test; shell env tem precedência)",
+    )
+    .action(
+      async (
+        id: string,
+        opts: { k?: string; json?: boolean; dir?: string; envFile?: string },
+      ) => {
+        await runJourneyRun(id, opts)
+      },
+    )
 
   group
     .command("coverage")
