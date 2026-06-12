@@ -97,7 +97,7 @@ import {
 } from "@adjudicate/audit";
 
 import { prisma } from "@ibatexas/domain";
-import { getRedisClient, rk } from "@ibatexas/tools";
+import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
 
 // Audit sink — dev's audit pipeline owns the durable AuditRecord store. The
 // adjudicator consumes the sink composed by `@ibatexas/audit-sink` (boot-time
@@ -1013,6 +1013,30 @@ function fastifyTelemetry(usageStore: TokenUsageStore): TelemetryPort {
         logger.warn(
           { component: "conductor", event: "token_fold_failed", error: String(err) },
           "per-session token fold failed; ignoring",
+        );
+      }
+      // T1a-13 — SUT-side dollar source: re-emit this turn's token usage as a
+      // JSONL `llm.call` event through the shared @ibatexas/tools emitter.
+      // Inert unless IBX_EVENTS=json (test profile; IBX_EVENTS_FILE adds the
+      // file sink the journey harness parses). `sessionId` carries the
+      // conversation handle so the harness scopes events to its run; only
+      // token COUNTS are emitted — never message content or secrets.
+      try {
+        const total = (record.inputTokens ?? 0) + (record.outputTokens ?? 0);
+        if (total > 0) {
+          emitLlmCall({
+            inputTokens: record.inputTokens ?? 0,
+            outputTokens: record.outputTokens ?? 0,
+            model: process.env.ANTHROPIC_MODEL,
+            source: "sut",
+            sessionId: record.conversationId,
+            duration: record.durationMs,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          { component: "conductor", event: "llm_call_emit_failed", error: String(err) },
+          "SUT llm.call trace emit failed; ignoring",
         );
       }
       // TokenUsageStore (ADR-135) telemetry — dashboard-facing, independent of the
