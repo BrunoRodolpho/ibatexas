@@ -97,6 +97,16 @@ export interface DomainReader {
     since?: Date,
   ): Promise<DomainOrderProjectionRow | null>
   orderById(orderId: string): Promise<DomainOrderProjectionRow | null>
+  /**
+   * Product handles of the order's CURRENT Medusa line items (public-schema
+   * Medusa order tables — the write-side commerce truth, so a post-checkout
+   * amendment that went through the Medusa order-edit flow is visible here
+   * even before any projection refresh). Joined variant→product because the
+   * denormalized order_line_item columns vary across Medusa versions; rows
+   * are deduplicated. Consumed by the `order.goal-state` binding's
+   * `containsItemHandle` arg (T1b-0).
+   */
+  orderItemHandles(orderId: string): Promise<string[]>
   /** Ends the pool iff the reader created it. */
   close(): Promise<void>
 }
@@ -166,6 +176,24 @@ export function createDomainReader(opts: CreateDomainReaderOptions = {}): Domain
         [orderId],
       )
       return (result.rows[0] as DomainOrderProjectionRow | undefined) ?? null
+    },
+
+    async orderItemHandles(orderId) {
+      // Medusa v2 order items: order_item links the order to its (versioned)
+      // order_line_item rows; variant→product resolves the seed-stable
+      // handle. Soft-deleted rows are excluded; an item REMOVED by an order
+      // edit keeps its row with quantity 0, so zero-quantity links are
+      // excluded too (this method answers "does the order CONTAIN x now?").
+      const result = await pool.query(
+        `SELECT DISTINCT p.handle FROM order_item oi ` +
+          `JOIN order_line_item oli ON oli.id = oi.item_id ` +
+          `JOIN product_variant pv ON pv.id = oli.variant_id ` +
+          `JOIN product p ON p.id = pv.product_id ` +
+          `WHERE oi.order_id = $1 AND oi.deleted_at IS NULL ` +
+          `AND oli.deleted_at IS NULL AND oi.quantity > 0`,
+        [orderId],
+      )
+      return (result.rows as Array<{ handle: string }>).map((r) => r.handle)
     },
 
     async close() {

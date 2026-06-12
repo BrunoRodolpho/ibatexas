@@ -242,12 +242,23 @@ function truncate(text: string, max = 400): string {
  * `:orderId` self-resolves to the run's own order (most-recent projection for
  * the run's customer, created at/after the attempt start) behind the
  * projection barrier — handles the async projector lag after a chat checkout.
+ *
+ * T1b-0: `excludeOrderId` (the customer's latest order id BEFORE this
+ * attempt, captured at seedCustomer-resolve time) hardens the fallback
+ * against the back-to-back-attempt race: the runStartedAt window carries a
+ * 2s clock slack, so attempt N's filter can match attempt N-1's just-created
+ * order while attempt N's own projection is still in projector flight — the
+ * barrier would return the STALE most-recent instead of waiting (live k=2
+ * JOURNEY-005 failure: "Pedido já é deste tipo." on attempt 1's order).
+ * Excluding the pre-attempt latest makes the barrier poll until the run's
+ * OWN order is the most recent.
  */
 async function resolveHttpPath(
   path: string,
   ctx: JourneyRunContext,
   barrier: ProjectionBarrierPrisma,
   runStartedAt: Date,
+  excludeOrderId: () => string | null,
 ): Promise<string> {
   const segments = path.split("/")
   const out: string[] = []
@@ -265,10 +276,12 @@ async function resolveHttpPath(
           "http act needs :orderId but ctx.vars.customerId is unset — declare the seedCustomer fixture act first",
         )
       }
+      const stale = excludeOrderId()
       const settled = await awaitProjection({
         prisma: barrier,
         filter: { customerId, createdAt: { gte: runStartedAt } },
-        predicate: (state) => state.projection !== null,
+        predicate: (state) =>
+          state.projection !== null && state.projection.id !== stale,
         timeoutMs: ORDER_RESOLVE_TIMEOUT_MS,
         pollMs: 250,
       })
@@ -338,7 +351,7 @@ function buildExecutors(args: {
   barrier: ProjectionBarrierPrisma
   chatSessionIds: Set<string>
   onProgress: (line: string) => void
-}): ActExecutors {
+}): { executors: ActExecutors; preAttemptLatestOrderId: () => string | null } {
   const {
     journey,
     runId,
@@ -355,6 +368,13 @@ function buildExecutors(args: {
   // the journey's fixture act resolves first.
   let driver: PersonaDriver | undefined
   let chatClient: ChatClient | undefined
+
+  // T1b-0: the customer's latest order id BEFORE this attempt (captured when
+  // the seedCustomer fixture resolves) — the :orderId barrier excludes it so
+  // a back-to-back attempt can never bind to its predecessor's order (see
+  // resolveHttpPath). Held OUTSIDE ctx.vars: the persona kickoff serializes
+  // ctx.vars and must never see raw order ids it didn't observe.
+  let preAttemptLatestOrderId: string | null = null
 
   function mintCustomerCookie(ctx: JourneyRunContext): string {
     const customerId = ctx.vars["customerId"]
@@ -395,6 +415,10 @@ function buildExecutors(args: {
         }
       }
       ctx.vars["customerId"] = customer.id
+      // Pre-attempt latest order (may be a previous attempt's, created inside
+      // this attempt's 2s-slack window) — the :orderId barrier excludes it.
+      preAttemptLatestOrderId =
+        (await domain.latestOrderForCustomer(customer.id))?.id ?? null
       emitEvidenceCapture({
         evidence: "customerId",
         detail: customer.id,
@@ -486,7 +510,13 @@ function buildExecutors(args: {
     const headers: Record<string, string> = { "content-type": "application/json" }
     if (asRole === "customer") headers["cookie"] = mintCustomerCookie(ctx)
 
-    const path = await resolveHttpPath(act.path, ctx, barrier, runStartedAt)
+    const path = await resolveHttpPath(
+      act.path,
+      ctx,
+      barrier,
+      runStartedAt,
+      () => preAttemptLatestOrderId,
+    )
     const body = act.body !== undefined ? resolveBodyVars(act.body, ctx.vars) : undefined
     const response = await fetch(`${apiBaseUrl}${path}`, {
       method: act.method,
@@ -537,7 +567,10 @@ function buildExecutors(args: {
     }
   }
 
-  return { chat, http, fixture }
+  return {
+    executors: { chat, http, fixture },
+    preAttemptLatestOrderId: () => preAttemptLatestOrderId,
+  }
 }
 
 // ── Verify phase (the harness re-executes verify[] with YAML-bound args) ─────
@@ -562,6 +595,8 @@ async function runVerifyPhase(args: {
   barrier: ProjectionBarrierPrisma
   scopeSessionIds: string[]
   runStartedAt: Date
+  /** T1b-0: pre-attempt latest order id — excluded by the :orderId fallback. */
+  preAttemptLatestOrderId: () => string | null
   onProgress: (line: string) => void
 }): Promise<VerifyOutcome[]> {
   const { journey, ctx, audit, domain, barrier, scopeSessionIds, runStartedAt, onProgress } =
@@ -590,10 +625,11 @@ async function runVerifyPhase(args: {
         "order.goal-state needs the run's order but ctx.vars.customerId is unset",
       )
     }
+    const stale = args.preAttemptLatestOrderId()
     const settled = await awaitProjection({
       prisma: barrier,
       filter: { customerId, createdAt: { gte: runStartedAt } },
-      predicate: (state) => state.projection !== null,
+      predicate: (state) => state.projection !== null && state.projection.id !== stale,
       timeoutMs: ORDER_RESOLVE_TIMEOUT_MS,
       pollMs: 250,
     })
@@ -668,12 +704,50 @@ async function runVerifyPhase(args: {
           pollMs: 250,
         })
         const row = await domain.orderById(orderId)
+
+        // ── T1b-0 — additional YAML-bound goal-state args. These must NEVER
+        // pass vacuously: an order amend's HTTP route answers 200 even when
+        // the inner tool reports failure, so `containsItemHandle` (Medusa
+        // line items — the write-side truth) is the load-bearing assert for
+        // JOURNEY-002, and `orderType` (projection delivery_type, updated
+        // synchronously by switchTypeFromEnvelope) for JOURNEY-005.
+        const goalFailures: string[] = []
+        const orderType = verify.args?.["orderType"]
+        if (orderType !== undefined) {
+          if (typeof orderType !== "string") {
+            goalFailures.push("args.orderType must be a string")
+          } else if (row?.deliveryType !== orderType) {
+            goalFailures.push(
+              `orderType: expected "${orderType}", projection has "${row?.deliveryType ?? "null"}"`,
+            )
+          }
+        }
+        const containsItemHandle = verify.args?.["containsItemHandle"]
+        let observedHandles: string[] | undefined
+        if (containsItemHandle !== undefined) {
+          if (typeof containsItemHandle !== "string") {
+            goalFailures.push("args.containsItemHandle must be a string")
+          } else {
+            observedHandles = await domain.orderItemHandles(orderId)
+            if (!observedHandles.includes(containsItemHandle)) {
+              goalFailures.push(
+                `containsItemHandle: "${containsItemHandle}" not among the order's ` +
+                  `Medusa line items [${observedHandles.join(", ")}]`,
+              )
+            }
+          }
+        }
+
         outcomes.push({
           invariant: id,
-          ok: true,
+          ok: goalFailures.length === 0,
           detail:
-            `order ${orderId} reached fulfillmentStatus=${status} ` +
-            `(version=${row?.version ?? "?"}, barrier ${settled.elapsedMs}ms/${settled.polls} polls)`,
+            goalFailures.length > 0
+              ? `order ${orderId}: ${goalFailures.join("; ")}`
+              : `order ${orderId} reached fulfillmentStatus=${status} ` +
+                `(version=${row?.version ?? "?"}, barrier ${settled.elapsedMs}ms/${settled.polls} polls` +
+                `${typeof orderType === "string" ? `, orderType=${orderType}` : ""}` +
+                `${typeof containsItemHandle === "string" ? `, contains ${containsItemHandle} of [${(observedHandles ?? []).join(", ")}]` : ""})`,
         })
       } else {
         // Registered ids without a T1a-13 binding fail LOUDLY — an invariant
@@ -753,7 +827,7 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
     const audit = createAuditReader({ pool })
     const barrier = projectionBarrierPrisma(pool)
 
-    const executors = buildExecutors({
+    const { executors, preAttemptLatestOrderId } = buildExecutors({
       journey,
       runId,
       runStartedAt,
@@ -786,6 +860,7 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
         barrier,
         scopeSessionIds,
         runStartedAt,
+        preAttemptLatestOrderId,
         onProgress,
       })
 
