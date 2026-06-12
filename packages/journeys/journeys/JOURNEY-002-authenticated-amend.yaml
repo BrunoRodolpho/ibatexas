@@ -1,0 +1,69 @@
+# JOURNEY-002 — authenticated amend of a just-placed order (plan §5 T1a-12).
+#
+# Decision-trajectory derivation:
+#   * order.amend.request is planner-advertised only when isAuthenticated
+#     (pack-orders capabilities.ts) and is NOT in ORDER_AUTORESOLVE_KINDS
+#     (resolve-and-assemble.ts), so confirm-on-autoresolve never fires for
+#     it — but that also means the conductor does NOT auto-resolve the
+#     orderId: the SUT planner must surface the explicit orderId into the
+#     amend payload (via its read tools — check_order_status /
+#     get_order_history — or the checkout reply), otherwise
+#     requireOrderIdForMutation REFUSEs with `no_order`. The goal text
+#     therefore nudges the persona to reference the just-placed order.
+#   * With an explicit orderId: requireAmendable passes (order not
+#     cancelled), executeAmend → EXECUTE.
+id: JOURNEY-002
+title: Authenticated customer amends a just-placed order via chat
+businessCase: >-
+  Customers routinely forget a side dish right after checking out. Amend is
+  the difference between "cancel everything and start over" and a one-turn
+  fix — it must work conversationally, kernel-adjudicated, on the order the
+  customer just placed.
+persona: >-
+  João Santos, cliente autenticado, fecha um pedido de brisket para retirada
+  e percebe em seguida que esqueceu a farofa — quer adicionar a farofa ao
+  MESMO pedido pelo chat, sem refazer nada.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T1a-12
+params:
+  authenticated: true
+  customerPhone: "+5519900000002"
+  productHandle: brisket-americano
+  amendProductHandle: farofa-de-bacon-defumado
+  paymentMethod: cash
+  fulfillment: pickup
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000002"
+  - kind: chat
+    name: place-order
+    goal: >-
+      Montar um pedido com um brisket americano (400g), escolher retirada no
+      balcão e pagamento em dinheiro, e finalizar o pedido. Guarde o número
+      do pedido informado na confirmação.
+  - kind: chat
+    name: amend-order
+    goal: >-
+      Pedir para adicionar uma porção de farofa de bacon defumado ao pedido
+      que acabou de fazer (mencione que é o pedido recém-criado). Confirme a
+      alteração se o agente pedir.
+expects:
+  - intentKind: order.item.add
+    decision: EXECUTE
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: order.amend.request
+    decision: EXECUTE
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: expects[] as a subsequence of the run-sessionId audit namespace
+  - invariant: order.goal-state
+    args:
+      status: pending
+      containsItemHandle: farofa-de-bacon-defumado

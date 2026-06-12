@@ -1,0 +1,91 @@
+# JOURNEY-001 — THE exit journey (plan §5 T1a-12 / T1a-13).
+#
+# Decision-trajectory derivation (read from the live policy composition):
+#   * order.checkout.create — `confirmOnAutoResolveGuard`
+#     (apps/api/src/claustrum/compose-policy-packs.ts) matches ONLY
+#     {order.cancel, payment.pix.regenerate, reservation.cancel}, so it can
+#     never fire on checkout. `confirmLargeTicket` (pack-orders policies.ts)
+#     fires at >= R$1.000 — this cart is one item, far below — so the
+#     realistic checkout decision is a single EXECUTE.
+#   * order.cancel — the persona asks to cancel WITHOUT quoting an order id,
+#     and the planner perceives single-turn text, so the conductor's resolve
+#     stage auto-resolves the most-recent order and sets
+#     `ctx.autoResolvedMoneyRef` (resolve-and-assemble.ts
+#     ORDER_AUTORESOLVE_KINDS) → confirmOnAutoResolveGuard returns
+#     REQUEST_CONFIRMATION. The "sim" turn resumes the parked envelope; the
+#     resume path re-assembles ctx from the now-explicit orderId (the flag is
+#     absent) and re-adjudicates to EXECUTE (claustrum-bootstrap.ts resume +
+#     enrichResumeState). `escalateLargeCancel` needs >= R$1.000 — not here.
+#   So the cancel trajectory is REQUEST_CONFIRMATION → EXECUTE, by code.
+#
+# Trajectory mode: IN_ORDER (audit.trajectory.in_order) — the expects[] must
+# appear as a subsequence of the run's audited trail; incidental envelopes
+# (e.g. a leading order.cart.ensure if the SUT planner ensures the cart
+# explicitly) are tolerated. Turn-completion uses the ChatClient's SSE done +
+# audit/projection barrier (T1a-5/T1a-6) — the barrier is runner mechanics,
+# not a verify[] entry.
+id: JOURNEY-001
+title: Authenticated customer places an order via chat, then cancels it
+businessCase: >-
+  The flagship money loop: a logged-in customer assembles a real order in
+  conversation, pays nothing yet (cash on pickup), regrets it, and cancels —
+  every mutation kernel-adjudicated and audited. Checkout and cancel are
+  planner-gated on isAuthenticated, so this journey proves the
+  authenticated-customer surface end to end (guests structurally cannot run
+  it — that negative is JOURNEY-009).
+persona: >-
+  Maria Silva, cliente cadastrada e autenticada, quer uma costela bovina
+  defumada para retirar no balcão e pagar em dinheiro — mas logo depois de
+  fechar o pedido muda de ideia e quer cancelar tudo pelo próprio chat.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T1a-12 (exit journey; run by T1a-13)
+params:
+  authenticated: true
+  customerPhone: "+5519900000001"
+  productHandle: costela-bovina-defumada
+  paymentMethod: cash
+  fulfillment: pickup
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000001"
+    note: >-
+      Precondition only — Maria Silva is one of the SEED_CUSTOMERS
+      (packages/domain/src/seed-constants.ts); the authFixture (T1a-4) mints
+      her customer JWT cookie and the ChatClient threads it on POST + SSE.
+  - kind: chat
+    name: place-order
+    goal: >-
+      Montar um pedido com uma costela bovina defumada (1kg), escolher
+      retirada no balcão e pagamento em dinheiro, e finalizar o pedido.
+      Informe os alérgenos exatamente como o cardápio apresentar.
+  - kind: chat
+    name: cancel-order
+    goal: >-
+      Cancelar o pedido que acabou de fazer, SEM citar número ou código do
+      pedido (diga apenas "quero cancelar meu pedido"). Quando o agente pedir
+      confirmação do pedido mais recente, responda "sim" para confirmar o
+      cancelamento.
+expects:
+  - intentKind: order.item.add
+    decision: EXECUTE
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: order.cancel
+    decision: REQUEST_CONFIRMATION
+  - intentKind: order.cancel
+    decision: EXECUTE
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: expects[] as a subsequence of the run-sessionId audit namespace
+  - invariant: audit.record.verified
+    args: {}
+  - invariant: order.goal-state
+    args:
+      # OrderFulfillmentStatus.CANCELED — packages/types/src/order-status.ts
+      status: canceled

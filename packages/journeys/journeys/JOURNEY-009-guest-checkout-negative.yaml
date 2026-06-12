@@ -1,0 +1,63 @@
+# JOURNEY-009 — guest negative: checkout is NOT proposable (plan §5
+# T1a-12; the auth-gating fact pinned as a negative).
+#
+# Code basis: chat guests get customerId null and the orders planner
+# advertises order.checkout.create / order.cancel ONLY when isAuthenticated
+# (pack-orders capabilities.ts) — so a guest can browse and build a cart
+# (GUEST_CART_KINDS pass requireAuthenticated) but the SUT's LLM can never
+# even PROPOSE a checkout envelope: nothing reaches the kernel, nothing is
+# audited. The deterministic negative is therefore audit-side absence, not a
+# refusal.
+#
+# Assertion choices (stated per the task):
+#   * LOAD-BEARING + DETERMINISTIC: `audit.kind-absent` — no
+#     order.checkout.create envelope may appear in this run's sessionId
+#     audit namespace; plus cart.goal-state — the guest cart really was
+#     built (the journey is not vacuous).
+#   * ADVISORY ONLY (llm-judge-excluded): "the reply does not offer
+#     checkout" is fuzzy text. It is deliberately NOT a verify[] entry — no
+#     deterministic phrasing check survives LLM wording variance, and
+#     LLM-judge assertions are excluded from merge gates by plan ("LLM-judge
+#     assertions: fuzzy-text only, never state, never merge gates"). The
+#     expectation is documented on the act note for human/driver-trace
+#     review only.
+id: JOURNEY-009
+title: Guest builds a cart via chat — checkout is structurally not proposable
+businessCase: >-
+  Guests may shop, but money mutations require an authenticated identity.
+  The business needs this pinned as a NEGATIVE: no conversation steering may
+  ever produce a guest checkout envelope — the planner surface, not a
+  refusal message, is the control.
+persona: >-
+  Visitante sem cadastro e sem login navega pelo cardápio no site, monta um
+  carrinho com bebida e sobremesa e tenta fechar o pedido pelo chat,
+  insistindo um pouco quando o agente orienta a entrar na conta.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T1a-12
+params:
+  productHandle: limonada-suica
+  secondProductHandle: brownie-com-sorvete
+acts:
+  - kind: chat
+    name: guest-cart-and-checkout-attempt
+    goal: >-
+      Sem fazer login, montar um carrinho com uma limonada suíça e um
+      brownie com sorvete, e então tentar finalizar o pedido. Insista uma
+      vez ("não dá para fechar mesmo assim?") se o agente orientar login.
+    note: >-
+      ADVISORY (not a verify entry): the reply should steer the guest to
+      authenticate and must not offer to complete the checkout itself.
+expects:
+  - intentKind: order.item.add
+    decision: EXECUTE
+verify:
+  - invariant: audit.kind-absent
+    args:
+      intentKind: order.checkout.create
+  - invariant: cart.goal-state
+    args:
+      containsProductHandles:
+        - limonada-suica
+        - brownie-com-sorvete

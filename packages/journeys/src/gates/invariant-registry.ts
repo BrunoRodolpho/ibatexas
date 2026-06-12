@@ -41,6 +41,13 @@
  *   audit.trajectory.any_order → multiset equality between expected steps
  *                             and the run's trail — any order, nothing left
  *                             over (mode ANY_ORDER, T1a-7).
+ *   audit.kind-absent       → NO audited envelope of the named intent kind
+ *                             exists in the run's sessionId namespace — the
+ *                             deterministic negative behind JOURNEY-009
+ *                             (guest checkout NOT proposable: no
+ *                             `order.checkout.create` envelope may appear).
+ *                             Registered by T1a-12; bound by the harness over
+ *                             the AuditReader namespace query (T1a-7/T1a-13).
  *
  * T1a-12's journey files were not yet authored when T1a-7 landed; the
  * `audit.*` ids above are the defining registration (plan §5 names
@@ -56,4 +63,5 @@ export const KNOWN_INVARIANT_IDS: ReadonlySet<string> = new Set([
   "audit.trajectory.exact",
   "audit.trajectory.in_order",
   "audit.trajectory.any_order",
+  "audit.kind-absent",
 ])

@@ -1,0 +1,81 @@
+# JOURNEY-005 — delivery→pickup conversion of an in-flight order
+# (plan §5 T1a-12).
+#
+# Real intent kind: `order.type.switch` (KNOWN_INTENT_KINDS via
+# @ibatexas/pack-orders). It is NOT chat-drivable (not in
+# CHAT_DRIVABLE_TOOL_KINDS, not planner-advertised) — the live conversion
+# surface is the authenticated HTTP route PATCH /api/orders/:id/type
+# (apps/api/src/routes/order-actions.ts), which collapses pickup/dine_in to
+# the pack's `takeout` vocabulary, enforces PONR route-side, then
+# adjudicates an `order.type.switch` customer envelope against
+# ordersPolicyBundle (state: requireOrderIdForMutation ✓; taint UNTRUSTED ✓;
+# auth requireAuthenticated ✓; business executeW5Kinds → EXECUTE).
+#
+# Coverage note: `order.type.switch` maps to no chat/staff-http matrix cell,
+# so this expect is reported under `unmatchedExpects` by design (public-http
+# kinds are outside the DR-5 cell domain); the journey's chat expects still
+# claim their chat cells.
+id: JOURNEY-005
+title: Customer converts an in-flight delivery order to pickup
+businessCase: >-
+  Delivery windows slip; customers near the restaurant convert to pickup to
+  save the fee and the wait. The conversion must respect the kitchen's point
+  of no return and be kernel-audited with both the policy vocabulary
+  (takeout) and what the customer actually asked for (pickup).
+persona: >-
+  Ana Oliveira, cliente autenticada, fecha um pedido para ENTREGA em casa,
+  mas percebe que vai passar em frente ao restaurante — converte o pedido em
+  andamento para RETIRADA no balcão.
+channel: web
+status: active
+blocked_by: []
+source: docs/agents/plan-v2.md §5 T1a-12
+params:
+  authenticated: true
+  customerPhone: "+5519900000003"
+  productHandle: costela-bovina-defumada
+  paymentMethod: cash
+  fulfillmentInitial: delivery
+  fulfillmentFinal: pickup
+acts:
+  - kind: fixture
+    name: seed-authenticated-customer
+    seed: seedCustomer
+    params:
+      phone: "+5519900000003"
+    note: >-
+      Ana Oliveira is a SEED_CUSTOMER with a seeded delivery address
+      (packages/domain/src/seed-delivery.ts) — required for the delivery
+      checkout slot.
+  - kind: chat
+    name: place-delivery-order
+    goal: >-
+      Montar um pedido com uma costela bovina defumada (1kg) para ENTREGA no
+      endereço cadastrado, pagamento em dinheiro na entrega, e finalizar o
+      pedido.
+  - kind: http
+    name: convert-to-pickup
+    method: PATCH
+    path: /api/orders/:orderId/type
+    body:
+      type: pickup
+    asRole: customer
+    note: >-
+      The executor binds :orderId from ctx.vars (surfaced by the driver
+      during place-delivery-order). Route enforces ownership + PONR before
+      the kernel dispatch; a just-placed order is well inside the window.
+expects:
+  - intentKind: order.item.add
+    decision: EXECUTE
+  - intentKind: order.checkout.create
+    decision: EXECUTE
+  - intentKind: order.type.switch
+    decision: EXECUTE
+verify:
+  - invariant: audit.trajectory.in_order
+    args:
+      note: expects[] as a subsequence of the run-sessionId audit namespace
+  - invariant: order.goal-state
+    args:
+      status: pending
+      orderType: pickup
