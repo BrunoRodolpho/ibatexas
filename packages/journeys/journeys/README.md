@@ -23,6 +23,14 @@ README is the only content.
      (`seed` + `params`). A fixture may NEVER publish NATS, mint
      SYSTEM-taint envelopes, or write state that later appears in
      `expects`/`verify` — the Phase-1b reconciliation gate enforces it.
+     Registered seeds: `seedCustomer`, `resolveProductVariant` (read-only
+     resolves) and `paidState` (T2-1 — drives the run's order to
+     payment=paid through the REAL signature-verified Stripe webhook
+     route; the SUT mints the audited system-actor
+     `payment.status.reconcile` envelope, which hashes OUTSIDE the run
+     namespace, so reconciliation is unaffected and the paid state is
+     audited, never forged. Declare it AFTER the storefront checkout
+     acts — it never creates orders).
 4. **Handles only.** Reference catalog entities by handle
    (`costela-bovina-defumada`), never raw Medusa ids (`prod_…`,
    `variant_…`, `cart_…`) — those are not seed-stable and the schema lint

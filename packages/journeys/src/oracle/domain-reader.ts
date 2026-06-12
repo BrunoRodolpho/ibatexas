@@ -76,6 +76,36 @@ export interface DomainVariantRow {
   productHandle: string
 }
 
+/** ibx_domain.payments row slice (T2-1 paid-state barrier + fixture inputs). */
+export interface DomainPaymentRow {
+  id: string
+  orderId: string
+  status: string
+  method: string
+  amountInCentavos: number
+  stripePaymentIntentId: string | null
+  version: number
+  createdAt: Date
+}
+
+/**
+ * Terminal payment statuses — mirror of TERMINAL_PAYMENT_STATUSES
+ * (packages/types/src/payment-status.ts) so `activePaymentByOrderId`
+ * matches the SUT's getActiveByOrderId semantics (createdAt-desc +
+ * terminal-status exclusion). DB-LEVEL enum literals: this reader speaks
+ * raw SQL, and the Prisma schema maps `canceled` → `pay_canceled`
+ * (`@map("pay_canceled")`, schema.prisma — disambiguates from
+ * OrderFulfillmentStatus.canceled), so the domain-level "canceled" is
+ * NOT a valid ibx_domain."PaymentStatus" input here.
+ */
+const TERMINAL_PAYMENT_DB_STATUSES = [
+  "refunded",
+  "pay_canceled",
+  "waived",
+  "payment_failed",
+  "payment_expired",
+] as const
+
 export interface DomainReader {
   /** Seeded-customer precondition lookup (fixture acts resolve, never write). */
   customerByPhone(phone: string): Promise<DomainCustomerRow | null>
@@ -107,6 +137,13 @@ export interface DomainReader {
    * `containsItemHandle` arg (T1b-0).
    */
   orderItemHandles(orderId: string): Promise<string[]>
+  /**
+   * The order's ACTIVE payment row (most-recent non-terminal — the same
+   * semantics as the SUT's PaymentQueryService.getActiveByOrderId). T2-1:
+   * the paid-state fixture reads `amountInCentavos` as the webhook event's
+   * amount and `awaitPaidState` polls this until `status === "paid"`.
+   */
+  activePaymentByOrderId(orderId: string): Promise<DomainPaymentRow | null>
   /** Ends the pool iff the reader created it. */
   close(): Promise<void>
 }
@@ -194,6 +231,21 @@ export function createDomainReader(opts: CreateDomainReaderOptions = {}): Domain
         [orderId],
       )
       return (result.rows as Array<{ handle: string }>).map((r) => r.handle)
+    },
+
+    async activePaymentByOrderId(orderId) {
+      const result = await pool.query(
+        `SELECT id, order_id AS "orderId", status, method, ` +
+          `amount_in_centavos AS "amountInCentavos", ` +
+          `stripe_payment_intent_id AS "stripePaymentIntentId", version, ` +
+          `created_at AS "createdAt" FROM ibx_domain.payments ` +
+          `WHERE order_id = $1 AND status NOT IN (${TERMINAL_PAYMENT_DB_STATUSES.map(
+            (_, i) => `$${i + 2}::text::ibx_domain."PaymentStatus"`,
+          ).join(", ")}) ` +
+          `ORDER BY created_at DESC LIMIT 1`,
+        [orderId, ...TERMINAL_PAYMENT_DB_STATUSES],
+      )
+      return (result.rows[0] as DomainPaymentRow | undefined) ?? null
     },
 
     async close() {

@@ -7,3 +7,7 @@
 
 export * from "./auth-fixture.js"
 export * from "./chat-client.js"
+// T2-1: paid-state fixture — locally signed Stripe webhook delivery (the
+// kernel-routed paid transition) + the paid projection barrier.
+export * from "./stripe-webhook-signer.js"
+export * from "./paid-state-fixture.js"

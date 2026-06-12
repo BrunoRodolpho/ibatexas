@@ -20,6 +20,15 @@
 //             intent kind has a matching audited envelope produced by the
 //             SUT itself; this schema records the rule.
 //
+//             T2-1 extension (paidState): a fixture MAY drive the SUT's REAL
+//             signature-verified ingress (the locally signed Stripe webhook,
+//             clients/paid-state-fixture.ts) — the harness still mints no
+//             envelope itself; the SUT's own webhook→buildEnvelope(system)→
+//             adjudicate→projection path produces the audited transition.
+//             Those system-actor rows hash OUTSIDE the run namespace (D-015),
+//             so reconciliation is unaffected, and any state the fixture
+//             precipitates is audited — never forged into projections.
+//
 // ── Entity references (schema-enforced) ──────────────────────────────────────
 //
 // Journeys reference catalog entities by HANDLE only (kebab-case, e.g.

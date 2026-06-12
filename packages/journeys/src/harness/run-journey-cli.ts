@@ -93,6 +93,7 @@ import {
 } from "./cost.js"
 import { ChatClient } from "../clients/chat-client.js"
 import { cookieHeader, mintCustomerToken } from "../clients/auth-fixture.js"
+import { awaitPaidState, firePaidStateWebhook } from "../clients/paid-state-fixture.js"
 import {
   PersonaDriver,
   createDriverChatExecutor,
@@ -461,9 +462,94 @@ function buildExecutors(args: {
         detail: `resolved ${handle}${variantTitle !== undefined ? ` (${variantTitle})` : ""} -> ${variant.id}`,
       }
     }
+    if (act.seed === "paidState") {
+      // ── T2-1 paid-state fixture — kernel-routed, NEVER projection-forged ──
+      // Drives the run's order to payment=paid through the REAL
+      // signature-verified Stripe webhook route (locally signed with the test
+      // plane's STRIPE_WEBHOOK_SECRET → buildEnvelope(system actor) →
+      // adjudicate → projection). The resulting envelopes are SYSTEM-actor
+      // rows hashing OUTSIDE the run namespace (D-015) — reconciliation is
+      // unaffected and the asserted paid state has audited envelopes.
+      const webhookSecret = process.env["STRIPE_WEBHOOK_SECRET"]
+      if (webhookSecret === undefined || webhookSecret === "") {
+        return {
+          ok: false,
+          detail: "paidState: STRIPE_WEBHOOK_SECRET is missing from the env (.env.test)",
+        }
+      }
+      // Resolve the run's OWN order — same barrier + stale-exclusion contract
+      // as the http-act `:orderId` binding (resolveHttpPath): the order must
+      // have been created by EARLIER acts through the public storefront
+      // surface; this fixture never creates orders.
+      let orderId = ctx.vars["orderId"]
+      if (typeof orderId !== "string" || orderId === "") {
+        const customerId = ctx.vars["customerId"]
+        if (typeof customerId !== "string") {
+          return {
+            ok: false,
+            detail:
+              "paidState: ctx.vars.orderId/customerId unset — declare seedCustomer and the storefront checkout acts first",
+          }
+        }
+        const stale = preAttemptLatestOrderId
+        const settled = await awaitProjection({
+          prisma: barrier,
+          filter: { customerId, createdAt: { gte: runStartedAt } },
+          predicate: (state) => state.projection !== null && state.projection.id !== stale,
+          timeoutMs: ORDER_RESOLVE_TIMEOUT_MS,
+          pollMs: 250,
+        })
+        orderId = settled.projection?.id
+        if (typeof orderId !== "string") {
+          return { ok: false, detail: "paidState: the run's order projection never appeared" }
+        }
+        ctx.vars["orderId"] = orderId
+        emitEvidenceCapture({
+          evidence: "orderId",
+          detail: orderId,
+          journey: journey.id,
+          runId,
+        })
+      }
+      // Event amount MUST equal the order total (capturePayment's stale-PI
+      // guard); the active payment row's amount IS that total.
+      const payment = await domain.activePaymentByOrderId(orderId)
+      if (payment === null) {
+        return {
+          ok: false,
+          detail: `paidState: order ${orderId} has no active payment row — was the checkout act kernel-EXECUTEd?`,
+        }
+      }
+      if (payment.status === "paid") {
+        return { ok: true, detail: `paidState: order ${orderId} payment already paid — no-op` }
+      }
+      const customerId = ctx.vars["customerId"]
+      const fired = await firePaidStateWebhook({
+        baseUrl: apiBaseUrl,
+        webhookSecret,
+        orderId,
+        amountInCentavos: payment.amountInCentavos,
+        ...(typeof customerId === "string" ? { customerId } : {}),
+      })
+      const settled = await awaitPaidState(domain, orderId)
+      ctx.vars["stripeEventId"] = fired.eventId
+      ctx.vars["paymentIntentId"] = fired.paymentIntentId
+      emitEvidenceCapture({
+        evidence: "stripeEventId",
+        detail: fired.eventId,
+        journey: journey.id,
+        runId,
+      })
+      return {
+        ok: true,
+        detail:
+          `paidState: signed webhook ${fired.eventId} drove order ${orderId} payment ` +
+          `${payment.status} -> ${settled.status} (kernel payment.status.reconcile; system namespace)`,
+      }
+    }
     return {
       ok: false,
-      detail: `unknown fixture seed "${act.seed}" (known: seedCustomer, resolveProductVariant)`,
+      detail: `unknown fixture seed "${act.seed}" (known: seedCustomer, resolveProductVariant, paidState)`,
     }
   }
 
