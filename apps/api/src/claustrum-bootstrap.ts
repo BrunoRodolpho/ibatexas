@@ -62,6 +62,7 @@ import {
   type RedisClientLike,
 } from "@claustrum/memory-postgres";
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
+import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -1221,14 +1222,30 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     adjudicator,
   });
 
-  const grounding = createPgVectorGroundingProvider({
-    // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
-    // no cast needed (was a redundant `as never`).
-    pool: pgPool,
-    modelProvider,
-    modelId: embeddingModelId,
-    tenantId: "ibatexas",
-  });
+  // Fail-safe wrapper: handleTurn awaits retrieve() with no catch, and the
+  // provider chain throws today (AnthropicProvider.embed() has no embedding
+  // proxy configured) — without this every conversational turn rejects before
+  // the planner runs. Degrades to empty retrieval; attestation failure yields
+  // zero proofs (kernel refuses grounding-required envelopes — fail-closed).
+  // See fail-safe-grounding.ts + docs/agents/decisions.md D-009.
+  const grounding = failSafeGrounding(
+    createPgVectorGroundingProvider({
+      // pg.Pool is structurally assignable to pgvector's minimal { query } Pool —
+      // no cast needed (was a redundant `as never`).
+      pool: pgPool,
+      modelProvider,
+      modelId: embeddingModelId,
+      tenantId: "ibatexas",
+    }),
+    {
+      modelId: embeddingModelId,
+      onError: (op, err) =>
+        logger.warn(
+          { component: "grounding", op, error: String(err) },
+          "grounding port degraded (fail-safe): returning empty result",
+        ),
+    },
+  );
 
   const channels: ChannelDriver[] = [];
 
