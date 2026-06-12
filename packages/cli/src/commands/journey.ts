@@ -1,10 +1,10 @@
 // `ibx journey` — gates da Journey Registry (plano de teste, Fase 1a).
 //
-// THIN registration only: toda a lógica de lint vive em
-// `@ibatexas/journeys` (`src/gates/lint.ts`) — este arquivo apenas registra
-// o comando e formata a saída. Vocabulário: "journey" (jornada LLM-driven,
-// novo plano de teste) ≠ "ibx scenario" (o engine de data-state existente —
-// intocado).
+// THIN registration only: toda a lógica de lint/cobertura vive em
+// `@ibatexas/journeys` (`src/gates/lint.ts` + `src/gates/coverage.ts`) —
+// este arquivo apenas registra os comandos e formata a saída. Vocabulário:
+// "journey" (jornada LLM-driven, novo plano de teste) ≠ "ibx scenario" (o
+// engine de data-state existente — intocado).
 //
 // Idioma de CI exatamente igual a `ibx kernel pack-bom`:
 //   - `--json`               → emite o relatório completo em JSON
@@ -17,9 +17,32 @@
 // Dependência cli→journeys é a direção sancionada (check-bypass leg 6
 // exclui packages/cli). Import dinâmico para não pesar o startup do ibx.
 
-import { readFile } from "node:fs/promises"
+import { existsSync, realpathSync } from "node:fs"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { dirname, isAbsolute, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
 import chalk from "chalk"
+
+// Raiz do monorepo, ancorada neste arquivo (mesmo idioma do index.ts):
+// src/commands/ e dist/commands/ estão ambos a 3 níveis de packages/cli →
+// 4 níveis da raiz. realpathSync resolve symlinks de npm link.
+const MONOREPO_ROOT = resolve(
+  dirname(realpathSync(fileURLToPath(import.meta.url))),
+  "../../../..",
+)
+
+// Runners como `pnpm --filter @ibatexas/cli exec` trocam o cwd para
+// packages/cli — um caminho relativo digitado da raiz (ex.:
+// packages/journeys/governance/…) deixaria de resolver. Regra: cwd primeiro;
+// se não existir lá mas existir relativo à raiz do monorepo, usa a raiz.
+function resolveUserPath(p: string): string {
+  if (isAbsolute(p)) return p
+  const fromCwd = resolve(process.cwd(), p)
+  if (existsSync(fromCwd)) return fromCwd
+  const fromRoot = resolve(MONOREPO_ROOT, p)
+  return existsSync(fromRoot) ? fromRoot : fromCwd
+}
 
 async function runJourneyLint(opts: {
   json?: boolean
@@ -106,6 +129,154 @@ async function runJourneyLint(opts: {
   console.log(JSON.stringify(lintDigestLock(report), null, 2))
 }
 
+// ── `ibx journey coverage` (T1a-3) ─────────────────────────────────────────
+
+async function runJourneyCoverage(opts: {
+  json?: boolean
+  verifyFile?: string
+  dir?: string
+  waivers?: string
+  out?: string
+  quarantined?: string
+}): Promise<void> {
+  const {
+    computeJourneyCoverage,
+    coverageMatrixView,
+    journeyPassView,
+    coverageBaseline,
+    verifyCoverageBaseline,
+    CoverageBaselineSchema,
+  } = await import("@ibatexas/journeys")
+
+  const report = await computeJourneyCoverage({
+    ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
+    ...(opts.waivers !== undefined ? { waiversPath: resolveUserPath(opts.waivers) } : {}),
+    ...(opts.quarantined !== undefined
+      ? {
+          quarantined: opts.quarantined
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0),
+        }
+      : {}),
+  })
+
+  // ── Problemas (registry/waivers quebrados) → exit 1 ────────────────────
+  if (!report.ok) {
+    if (opts.json === true) {
+      console.log(JSON.stringify(report, null, 2))
+    } else {
+      for (const p of report.problems) {
+        console.error(chalk.red(`✗ ${p.file}: ${p.code} — ${p.message}`))
+      }
+    }
+    process.exitCode = 1
+    return
+  }
+
+  // ── --out: grava as duas views (matriz célula-a-célula + journey-pass) ─
+  if (opts.out !== undefined) {
+    const outDir = resolveUserPath(opts.out)
+    await mkdir(outDir, { recursive: true })
+    await writeFile(
+      join(outDir, "coverage-matrix.json"),
+      `${JSON.stringify(coverageMatrixView(report), null, 2)}\n`,
+    )
+    await writeFile(
+      join(outDir, "coverage-journeys.json"),
+      `${JSON.stringify(journeyPassView(report), null, 2)}\n`,
+    )
+    if (opts.json !== true) {
+      console.log(
+        chalk.dim(`views gravadas em ${outDir}/coverage-matrix.json + coverage-journeys.json`),
+      )
+    }
+  }
+
+  const t = report.totals
+  const totalsLine =
+    `${t.covered}/${t.cells} células cobertas, ${t.uncovered} descobertas, ` +
+    `waived: ${t["waived-pending-WS4"]} pending-WS4 / ` +
+    `${t["waived-unadvertised"]} unadvertised / ` +
+    `${t["waived-quarantined"]} quarantined`
+
+  // ── Verificação de baseline (regressão covered→uncovered) ──────────────
+  if (opts.verifyFile !== undefined) {
+    const verifyPath = resolveUserPath(opts.verifyFile)
+    let baselineRaw: unknown
+    try {
+      baselineRaw = JSON.parse(await readFile(verifyPath, "utf-8"))
+    } catch {
+      console.error(chalk.red(`Baseline ilegível: ${verifyPath}`))
+      process.exitCode = 1
+      return
+    }
+    const baselineParsed = CoverageBaselineSchema.safeParse(baselineRaw)
+    if (!baselineParsed.success) {
+      console.error(
+        chalk.red(`Baseline inválida (${opts.verifyFile}): esperado {"covered": [...]}`),
+      )
+      process.exitCode = 1
+      return
+    }
+    const result = verifyCoverageBaseline(report, baselineParsed.data)
+
+    if (opts.json === true) {
+      console.log(
+        JSON.stringify({ ...report, verify: { file: opts.verifyFile, ...result } }, null, 2),
+      )
+    } else {
+      for (const r of result.regressions) {
+        console.error(
+          chalk.red(`✗ regressão: ${r.cell} estava coberta na baseline, agora ${r.state}`),
+        )
+      }
+      for (const cell of result.quarantinedClaims) {
+        console.warn(
+          chalk.yellow(`⚠ ${cell} coberta na baseline, agora waived-quarantined (flake ledger)`),
+        )
+      }
+      if (result.newlyCovered.length > 0) {
+        console.log(
+          chalk.dim(
+            `${result.newlyCovered.length} célula(s) coberta(s) ainda fora da baseline — atualize ${opts.verifyFile} para reivindicá-las.`,
+          ),
+        )
+      }
+      if (result.ok) {
+        console.log(chalk.green(`✓ Sem regressão de cobertura. ${totalsLine}`))
+      } else {
+        console.error(
+          chalk.red(`${result.regressions.length} regressão(ões) de cobertura. ${totalsLine}`),
+        )
+      }
+    }
+    if (!result.ok) process.exitCode = 1
+    return
+  }
+
+  // ── Saída limpa ─────────────────────────────────────────────────────────
+  if (opts.json === true) {
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
+
+  console.log(chalk.green(`✓ ${totalsLine}`))
+  if (report.dormantWaivers.length > 0) {
+    console.log(
+      chalk.dim(
+        `waivers dormentes (kind fora do domínio atual): ${report.dormantWaivers.map((w) => w.kind).join(", ")}`,
+      ),
+    )
+  }
+  // Baseline para capturar/atualizar (idioma pack-bom, como o lint).
+  console.log()
+  console.log(
+    chalk.dim("baseline (packages/journeys/governance/journey-coverage-baseline.json):"),
+  )
+  console.log(JSON.stringify(coverageBaseline(report), null, 2))
+}
+
 export function registerJourneyCommands(group: Command): void {
   group.description(
     "Journeys — registry de jornadas LLM-driven e seus gates de governança (plano de teste)",
@@ -128,4 +299,43 @@ export function registerJourneyCommands(group: Command): void {
     .action(async (opts: { json?: boolean; verifyFile?: string; dir?: string }) => {
       await runJourneyLint(opts)
     })
+
+  group
+    .command("coverage")
+    .description(
+      "Matriz de cobertura célula-a-célula (kind × decisão × superfície, DR-5) sobre o registry de jornadas. --verify-file falha (exit 1) em regressão covered→uncovered contra a baseline; waivers em packages/journeys/governance/journey-coverage-waivers.json.",
+    )
+    .option("--json", "Emite o relatório de cobertura em JSON")
+    .option(
+      "--verify-file <path>",
+      "Compara as células cobertas contra a baseline commitada (CI gate; exit 1 em regressão)",
+    )
+    .option(
+      "--dir <path>",
+      "Diretório alternativo de jornadas (default: packages/journeys/journeys/)",
+    )
+    .option(
+      "--waivers <path>",
+      "Arquivo de waivers alternativo (default: packages/journeys/governance/journey-coverage-waivers.json)",
+    )
+    .option(
+      "--out <dir>",
+      "Grava as duas views (coverage-matrix.json + coverage-journeys.json) no diretório",
+    )
+    .option(
+      "--quarantined <ids>",
+      "Ids de jornadas em quarentena, separados por vírgula (seam — o flake ledger da Fase 1b é a fonte autoritativa)",
+    )
+    .action(
+      async (opts: {
+        json?: boolean
+        verifyFile?: string
+        dir?: string
+        waivers?: string
+        out?: string
+        quarantined?: string
+      }) => {
+        await runJourneyCoverage(opts)
+      },
+    )
 }
