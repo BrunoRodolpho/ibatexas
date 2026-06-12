@@ -89,57 +89,109 @@ f96246a (P0-7), 1dc2364 (P0-9), a32392f + adjudicate 99ec4dd (P0-5), 3bee5e5 (P0
 - **Transient**: one Docker Hub pull flake (TLS handshake timeout on redis:7-alpine) in a full-suite run;
   clean on immediate re-run. If nightly CI hits this, add a registry mirror/retry — not a code issue.
 
+## D-009 — Fail-safe grounding wrapper (pre-Phase-1a SUT fix, commit 1c6e784)
+
+The P0-6 watch item proved out: `handleTurn` awaits `grounding.retrieve()` with no catch;
+`createPgVectorGroundingProvider.retrieve()` embeds on every call; `AnthropicProvider.embed()` throws
+`not_implemented` with no embedding proxy configured → **every Conductor turn rejected before the
+planner ran**. JOURNEY-001 (and all of T1a-13) was structurally impossible. Fix: `failSafeGrounding()`
+wrapper in the bootstrap — retrieve degrades to empty docs (recall-path philosophy, mirrors P0-2);
+attestGrounding degrades to zero proofs (kernel refuses grounding-required envelopes — fail-closed on
+the money path). The underlying product gap — no embedding vendor wired, pgvector grounding inert at
+runtime — needs a vendor decision (user's call) and is NOT made here. EMBEDDING_MODEL_ID stays
+boot-required per P0-6.
+
+## D-010 — Phase 1a naming/contract pins (set once, used by multiple tasks)
+
+- Test fingerprint env var: **`IBX_TEST_FINGERPRINT`** (set only by the test profile env); `/health`
+  exposes it as `testFingerprint`; the JWT-minting helper refuses to run without it (T1a-4/10/11a).
+- Certification model target: **`claude-sonnet-4-6`** (DR-1); harness pre-flight asserts
+  `ANTHROPIC_MODEL` equals it.
+- Journey YAML home: `packages/journeys/journeys/*.yaml`; governance files at
+  `packages/journeys/governance/`.
+- Dependency direction (enforced by check-bypass legs 6/7): journeys→tools, cli→journeys, cli→tools;
+  never journeys→cli, never journeys→apps/api. If the harness needs `infraEndpoints()` (today in
+  packages/cli/src/services.ts), the address-resolution slice moves to @ibatexas/tools (the same move
+  the events emitter makes), with cli re-exporting.
+
+## D-011 — Phase 1a interruption + resume (2026-06-12)
+
+The Phase 1a workflow hit the account session limit mid-run (~01:30 CDT): T1a-1/2/6/9/11a/11b committed;
+T1a-3/12/10/7/4/5/8 died with partial uncommitted work in the tree. Resumed at 07:36 CDT from the
+workflow journal (completed tasks cached); re-run agents instructed by their standing prompts to read
+current file state and adapt, so partial work is absorbed rather than discarded.
+
+## D-012 — Fail-safe memory wrapper (T1a-5 live-test discovery, commit d303b2e, 2026-06-12)
+
+The first REAL chat turn ever driven against the SUT (T1a-5's live contract test) failed with
+"Erro interno." on EVERY turn: `handleTurn` awaits `memory.recall()` with no catch (same UNDERSTAND
+Promise.all as D-009), and `createPostgresMemoryProvider`'s cold path reads
+`prisma.claustrum_memory_*.findMany` — but the injected `@ibatexas/domain` PrismaClient declares NO
+claustrum_memory models, so the delegate is `undefined` (TypeError on every cache-cold turn). The SQL
+tables exist (`ibx claustrum migrate`); the gap is the Prisma CLIENT surface. Fix mirrors D-009:
+`failSafeMemory()` wrapper in the bootstrap — recall degrades to an empty snapshot, search/recentActions
+to empty lists, observe to a logged no-op; turns run memory-less, mutations stay kernel-guarded. The
+underlying product gap (domain schema lacks the models the installed @claustrum/memory-postgres adapter
+consumes — long-term memory is inert at runtime) needs a schema decision (user's call) and is NOT made
+here. T1a-5's authenticated-conversation assertion choice is also recorded in the live test header:
+smalltalk turns dispatch no envelope, so the test uses a proposing utterance (authenticated cart add)
+and asserts BOTH the intent_audit row AND the sessionId↔customerId binding via the SUT-minted
+`sessionToken` (signed chat-session-store claim). **Binding live finding for T1a-13/T1b-1 scoping**:
+the audit sink's redactor HASHES `actor.sessionId` before the row lands —
+`intent_audit.session_id = "hashed:" + sha256(chatSessionId + AUDIT_REDACT_SECRET).hex.slice(0,8)`
+(audit-redactor.ts:847/:1106; intent-audit-wiring.ts:210) — so the run's chat-act audit namespace is
+the HASHED conversationId, never the raw one (and NOT customerId; payload.customerId absent in the
+live row — the D-008 recall gap confirmed). The customerId binding lives in the sessionToken claim.
+
+## D-014 — T1a-13 closure: Phase 1a exit criterion VERIFIED (2026-06-12)
+
+JOURNEY-001 green twice via `ibx journey run JOURNEY-001 --k 2 --json` — agent's two acceptance runs
+PLUS a fresh main-session verification run (exit 0, 2/2 PASS, $0.1150 total; lint + coverage gates
+exit 0). Measured §7 re-baseline (docs/agents/phase-1a-measurements.md): ~$0.057/attempt combined
+(driver ~$0.032, SUT ~$0.025, 3 turns); per-SUT-turn ≈ $0.008 → 8-turn journey ≈ $0.07 (inside the
+plan's $0.08–0.15 band); $0.50 ceiling kept (9× headroom); nightly ≈ $1.3 for 22 attempts.
+
+**JOURNEY-001 corrected to what the system actually does** (executable-spec principle): order assembly
+via storefront HTTP API (chat planner emits free-form NL payloads, readToolCalls never executed, no
+resolver leg for cart ops — chat item-add structurally REFUSEs `order.cart.missing`; `order.item.add
+EXECUTE` is producible by NO public surface); cancel leg = chat asserts the confirm gate
+(REQUEST_CONFIRMATION via auto-resolve, works live) + documented `POST /api/orders/:orderId/cancel`
+completes EXECUTE (WebChannel.matchToParked ≡ null; SSE carries no confirm token; no chat-confirm
+endpoint; responder never surfaces the confirm prompt).
+
+**Four real SUT bugs found+fixed by the crucible**: (1) chat SSE abort race — late socket close
+aborted the session's NEXT turn (silent reply drops in prod); (2) web checkout 403 for everyone —
+route dropped `deliveryType` from kernel ctx; (3) test stack had no projections — subscribers gated
+off under NODE_ENV=test, now keyed to IBX_TEST_FINGERPRINT prod-parity; (4) audit-sink Postgres writer
+dropped all v4/v5 columns incl. `audit_hash` while stamping v5 — tamper-evidence was defeated in
+production; writer now persists all 25 columns.
+
+**New product gaps recorded**: `chat-order-assembly` (planner payload synthesis + read-tool execution
+missing); `chat-confirmation-resume` extended with responder blindness (users never see confirm
+prompts/tool results); JOURNEY-002/005 chat expects likely unexecutable the same way (correct in
+Phase 1b); order-cancel route rate limit (5/10min/customer) caps same-stack JOURNEY-001 attempts at 4
+per window.
+
+## D-013 — Phase 1a outcomes (2026-06-12, all 12 workflow tasks done; T1a-13 in flight)
+
+- **Journeys authored (T1a-12)**: 9 files; 4 active (001 authed place+cancel, 002 amend, 005
+  delivery→pickup, 009 guest-negative), 5 blocked with named gap ids. THREE NEW product/test gaps
+  discovered during authoring, encoded as blockers rather than knowingly-failing specs:
+  `order-cancel-kernel-ponr` (006), `web-pix-pending-ctx` (007), `envelope-ingress-gap` (008) — each
+  YAML header cites code locations and unblock requirements. These join the product backlog
+  (blocked journeys ARE the backlog, per the plan's design commitment).
+- **Coverage at authoring**: 5/114 cells covered, 103 uncovered, 6 waived-unadvertised — honest matrix;
+  Phase 2 grows it.
+- **Boot+seed measured (T1a-11b)**: 57s cold local (infra 5 / migrate 12 / apps 18 / seed 22) — far
+  under the ≤15 min CI planning budget. §7 cost re-baseline lands with T1a-13.
+- **Live SUT verified (T1a-5)**: real two-turn guest + authenticated chat conversations completed
+  against the running stack — only possible because of the D-009/D-012 fail-safe wrappers; before
+  them, zero turns had ever completed through the Conductor on this composition.
+- **Stack lifecycle**: ./scripts/test-stack-up.sh / ./scripts/test-stack-down.sh (dev-stack guard,
+  full teardown); .env.test from .env.test.example; serialize via /tmp/ibx-test-stack.lock.d.
+
 ## D-007 — CLAUDE.md "only run tests when explicitly requested" vs plan verify steps
 
 ibatexas CLAUDE.md's Agent Behavior section discourages unprompted test runs. The plan's per-task
 acceptance criteria explicitly name verify commands; executing the plan includes running them. The plan
 (and the goal directive) take precedence for this initiative.
-
-## D-013 — T1a-13 outcomes: JOURNEY-001 green twice, measured cost, live corrections (2026-06-12)
-
-Acceptance met: two consecutive `ibx journey run JOURNEY-001 --k 2 --json` runs, both exit 0
-(4/4 green attempts, all certifying), cost lines non-zero. Measured split + §7 re-baseline
-recorded in docs/agents/phase-1a-measurements.md (~$0.057/attempt combined: driver ~$0.032 /
-SUT ~$0.025; ~35 s/attempt). Engineering decisions and assumptions inherited by later phases:
-
-- **JOURNEY-001 corrected to the system's REAL behavior** (the journey is the executable spec):
-  order assembly runs through the storefront's public HTTP API (create cart → line-items →
-  checkout); chat asserts ONLY the cancel confirm gate (`order.cancel REQUEST_CONFIRMATION`
-  via auto-resolve, verified live); the public cancel route completes the loop. expects[] =
-  checkout EXECUTE → cancel REQUEST_CONFIRMATION → cancel EXECUTE (IN_ORDER).
-- **Product gaps discovered (recorded, not closed here)**:
-  - `chat-order-assembly`: the planner is a single-shot semantic parser (free-form NL payloads;
-    readToolCalls recorded but never executed; no resolver leg for cart-op payloads) — chat
-    item-add structurally REFUSEs `order.cart.missing`; `order.item.add EXECUTE` is producible
-    by NO public surface (the HTTP route audits as `medusa.cart.line_items.add`, system actor).
-  - `chat-confirmation-resume` (already named by JOURNEY-003): WebChannel.matchToParked ≡ null,
-    the SSE carries no confirmation token, no chat-confirm endpoint exists, AND the naive
-    responder is blind to decision/acted (the user never even SEES the confirm prompt).
-  - JOURNEY-002/005's chat expects (amend / item.add / checkout via chat) are very likely
-    similarly unexecutable — their live corrections are T1b work; the coverage baseline still
-    carries the chat cells they claim (journey-level attribution model).
-- **Real SUT bugs found-and-fixed by the crucible** (each its own commit):
-  1. chat SSE abort race — a post-terminal late socket close aborted the session's NEXT turn
-     (reply silently dropped, client hangs);
-  2. web checkout dropped `deliveryType` from the kernel ctx → `requireSlotsFilledForCheckout`
-     403'd EVERY web checkout (`order.checkout.slots_incomplete`);
-  3. NATS subscribers/jobs were gated off under NODE_ENV=test → the journey stack had no
-     order projections at all; gate now honors IBX_TEST_FINGERPRINT (prod parity on the
-     test stack);
-  4. the audit-sink Postgres writer dropped ALL v4/v5 columns (incl. `audit_hash`, the
-     tamper-evidence chain) while stamping record_version=5 — `verifyAuditRecord` was
-     structurally defeated end-to-end in production.
-- **Harness conventions pinned**: `.env.test` is loaded with OVERRIDE semantics by
-  `ibx journey run` (the CLI's dotenv preload of the dev .env must never leak into the test
-  plane); audit fetches are time-scoped to the attempt (`since=runStartedAt`) because the
-  seeded customer's hashed namespace accumulates rows across runs; `audit.record.verified` is
-  redaction-aware (sentinel-redacted envelopes fall back to the whole-record auditHash check —
-  the redactor recomputes it post-redaction by design); http acts support `:var` path/body
-  substitution + declared response `capture`; fixtures stay read-only resolves (`seedCustomer`,
-  `resolveProductVariant`); the PersonaDriver gets NO http executor (http acts are
-  harness-mechanical, the persona model can never fire a mutation act). The raw-Medusa-id lint
-  requires an id-like tail (≥8 alphanumerics) so field names like `variant_id` pass.
-- **Operational caveat**: POST /api/orders/:id/cancel rate-limits 5 cancels/10 min per
-  customer — JOURNEY-001 uses the fixed seeded customer, so >4 attempts inside 10 min on one
-  stack will 429 (nightly k=4 fits; debug sessions should clear `rate:cancel:<customerId>` or
-  wait).
