@@ -110,3 +110,25 @@ fork-PR safe. After push:
 
 Verified locally before commit (recorded in the T2-7 task output): full
 `IBX_TEST_E2E=1` stack boot + `playwright test` all specs green + teardown.
+
+## 9. Graphs gate required check (T2-4, Phase 2)
+
+`.github/workflows/graphs-gate.yml` is the regenerate-and-diff gate over the four
+derived graph artifacts (`packages/journeys/graphs/*.json` — contract + regeneration
+discipline in `packages/journeys/graphs/README.md`). It needs **NO secret and NO
+database** — zero tokens; the impact graph regenerates from the committed test-stack
+window fixture. After push:
+
+1. Sanity-dispatch is not possible (`pull_request`-only trigger) — open any PR touching
+   `packages/packs-composed/**` or `packages/journeys/**` and confirm the
+   **`Graphs gate / graphs-gate`** check appears and passes; then verify the negative
+   leg by pushing a PR commit that edits a pack/journey WITHOUT running
+   `ibx graph export` → the check must fail (drift), and pass again after committing
+   the regenerated graphs.
+2. Make it a **required check** on `main` alongside items 4/8: Settings → Branches →
+   `main` → Require status checks → add **`Graphs gate / graphs-gate`**. Same
+   path-filter caveat as item 8.3 (docs-only PRs produce no check).
+
+Verified locally before commit (T2-4 task output): `ibx graph export --check` exit 0
+on the committed artifacts; mutated-artifact negative → exit 1 (DRIFT) → regenerate →
+exit 0; vitest drift/missing/registry-change legs green.
