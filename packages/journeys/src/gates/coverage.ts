@@ -359,6 +359,9 @@ export async function computeJourneyCoverage(
     const claimedCells: string[] = []
     const unmatchedExpects: JourneyPassEntry["unmatchedExpects"] = []
     for (const expect of journey.expects) {
+      // `optional: true` entries are reconciliation ALLOWANCES (T1b-1) — the
+      // run tolerates them absent, so they may never claim a cell covered.
+      if (expect.optional === true) continue
       const candidates: string[] = []
       if (hasChat) {
         candidates.push(coverageCellKey("chat", expect.intentKind, expect.decision))

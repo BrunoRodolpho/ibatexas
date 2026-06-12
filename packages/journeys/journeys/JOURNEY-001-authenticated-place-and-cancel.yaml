@@ -54,6 +54,18 @@
 # source-subject namespaces; the cancel executor's inner transitions share
 # the customer namespace) are tolerated. Noop/smalltalk turns write no audit
 # rows at all (only envelope rows are observable — plan §5 fact 18).
+#
+# Reconciliation allowances (T1b-1): the post-attempt gate requires EVERY
+# observed envelope in the run's namespaces to be explained by expects[].
+# The cancel route's executor emits inner projection-level transitions
+# (order.status.transition + payment.status.transition,
+# order-actions.ts:504/:545) as user-principal envelopes with
+# actor.sessionId = customerId — they land in the run's hashed(customerId)
+# namespace and are declared below as `optional: true` allowances (observed
+# but not asserted; tolerated absent). The medusa.cart.* gateway rows do NOT
+# need allowances: system-actor envelopes carry
+# actor.sessionId = "<sourceSubject>:<eventId>" (per-event), so their hashed
+# namespaces are structurally outside the run's fetch scope.
 id: JOURNEY-001
 title: Authenticated customer places an order, then cancels it (chat confirm gate)
 businessCase: >-
@@ -175,6 +187,16 @@ expects:
     decision: REQUEST_CONFIRMATION
   - intentKind: order.cancel
     decision: EXECUTE
+  # T1b-1 reconciliation allowances — the cancel executor's inner
+  # projection-level transitions share the customer audit namespace (see
+  # header). Observed-but-not-asserted; tolerated when absent; never
+  # trajectory requirements and never coverage claims.
+  - intentKind: order.status.transition
+    decision: EXECUTE
+    optional: true
+  - intentKind: payment.status.transition
+    decision: EXECUTE
+    optional: true
 verify:
   - invariant: audit.trajectory.in_order
     args:

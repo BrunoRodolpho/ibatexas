@@ -1,4 +1,5 @@
-// gates/ barrel — registry gates: lint (T1a-2) + coverage (T1a-3).
+// gates/ barrel — registry gates: lint (T1a-2) + coverage (T1a-3) +
+// reconciliation (T1b-1).
 
 export {
   lintJourneys,
@@ -46,3 +47,15 @@ export {
 } from "./coverage.js"
 
 export { KNOWN_INVARIANT_IDS } from "./invariant-registry.js"
+
+export {
+  reconcileExpects,
+  RECONCILIATION_GATE_ID,
+  type EnvelopeExplanation,
+  type ReconciledEnvelope,
+  type ReconciledExpect,
+  type ReconciliationFailure,
+  type ReconciliationFailureCode,
+  type ReconciliationReport,
+  type ReconcileExpectsOptions,
+} from "./reconciliation.js"

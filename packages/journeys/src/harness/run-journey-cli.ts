@@ -80,6 +80,11 @@ import {
 } from "../driver/persona-driver.js"
 import { createAnthropicModelProvider } from "../driver/anthropic-provider.js"
 import {
+  reconcileExpects,
+  RECONCILIATION_GATE_ID,
+  type ReconciliationReport,
+} from "../gates/reconciliation.js"
+import {
   createAuditReader,
   verifyFetchedRecords,
   type AuditReader,
@@ -142,6 +147,8 @@ export interface JourneyAttemptReport {
   costLine: string
   error?: string
   verify?: Array<{ invariant: string; ok: boolean; detail: string }>
+  /** T1b-1 post-attempt gate: declared expects[] vs observed intent_audit. */
+  reconciliation?: ReconciliationReport
 }
 
 export interface JourneyRunReport {
@@ -524,10 +531,14 @@ async function runVerifyPhase(args: {
   // shared across attempts, so the hashed(customerId) namespace accumulates
   // rows from earlier runs — `since` cuts them out of the trajectory.
   const fetchOpts = { since: runStartedAt }
-  const expected: ExpectedTrajectoryStep[] = journey.expects.map((e) => ({
-    intentKind: e.intentKind,
-    decision: e.decision,
-  }))
+  // `optional: true` entries are reconciliation ALLOWANCES (T1b-1), never
+  // trajectory requirements — only required expects become expected steps.
+  const expected: ExpectedTrajectoryStep[] = journey.expects
+    .filter((e) => e.optional !== true)
+    .map((e) => ({
+      intentKind: e.intentKind,
+      decision: e.decision,
+    }))
 
   async function resolveRunOrderId(): Promise<string> {
     const fromVars = ctx.vars["orderId"]
@@ -667,6 +678,7 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
   let certifying = false
   let error: string | undefined
   let verifyOutcomes: VerifyOutcome[] | undefined
+  let reconciliation: ReconciliationReport | undefined
 
   try {
     // Mandatory preflight — run ONCE here (the trace records every check);
@@ -726,6 +738,48 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
         runStartedAt,
         onProgress,
       })
+
+      // ── T1b-1 reconciliation gate (post-attempt, mandatory) ─────────────
+      // Every observed envelope in the run's namespaces must be explained by
+      // an expects[] entry (required or optional allowance) — unexplained
+      // envelopes are drift and fail the attempt; verify[] goal-state asserts
+      // must trace to audited EXECUTE/REWRITE decisions (no fixture-forged
+      // assertions). Rows settled during the verify phase's audit barrier;
+      // one fresh fetch reconciles the final trail. An empty scope (no chat
+      // sessions, no customer) reconciles over [] — with state-asserting
+      // verify[] entries that is itself the forged-assertion failure.
+      try {
+        const reconciliationRecords =
+          scopeSessionIds.length > 0
+            ? await audit.fetchRecords({ sessionIds: scopeSessionIds }, { since: runStartedAt })
+            : []
+        reconciliation = reconcileExpects({
+          journeyId: journey.id,
+          expects: journey.expects,
+          verify: journey.verify,
+          records: reconciliationRecords,
+        })
+        verifyOutcomes.push({
+          invariant: RECONCILIATION_GATE_ID,
+          ok: reconciliation.ok,
+          detail: reconciliation.ok
+            ? `${reconciliation.observed.length} observed envelope(s) all explained ` +
+              `(${reconciliation.observed.filter((o) => o.explanation === "optional").length} by optional allowances` +
+              `${reconciliation.supersededCount > 0 ? `, ${reconciliation.supersededCount} superseded intermediate(s) dropped` : ""})`
+            : reconciliation.report,
+        })
+      } catch (err) {
+        verifyOutcomes.push({
+          invariant: RECONCILIATION_GATE_ID,
+          ok: false,
+          detail: `reconciliation fetch failed: ${(err as Error).message}`,
+        })
+      }
+      const gateOutcome = verifyOutcomes.at(-1)!
+      onProgress(
+        `  verify ${gateOutcome.ok ? "PASS" : "FAIL"} ${gateOutcome.invariant}: ${truncate(gateOutcome.detail, 200)}`,
+      )
+
       pass = verifyOutcomes.every((o) => o.ok)
       if (!pass) {
         error = verifyOutcomes
@@ -810,6 +864,7 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
     costLine,
     ...(error !== undefined ? { error } : {}),
     ...(verifyOutcomes !== undefined ? { verify: verifyOutcomes } : {}),
+    ...(reconciliation !== undefined ? { reconciliation } : {}),
   }
 }
 

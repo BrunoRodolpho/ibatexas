@@ -168,13 +168,25 @@ export type ActKind = JourneyAct["kind"]
 
 // ── Expects / verify ─────────────────────────────────────────────────────────
 
-/** One expected audited kernel decision: `{intentKind, decision}`. */
+/**
+ * One expected audited kernel decision: `{intentKind, decision}`.
+ *
+ * `optional: true` (T1b-1) marks the entry as a RECONCILIATION ALLOWANCE,
+ * not a requirement: the trajectory matcher never requires it (the harness
+ * filters optional entries out of the expected steps), but the
+ * reconciliation gate accepts observed envelopes matching its
+ * (intentKind, decision) tuple as EXPLAINED. Use it for envelopes the run
+ * legitimately produces but does not assert — e.g. an executor's inner
+ * projection-level transitions that share the customer audit namespace.
+ * Optional entries claim NO coverage (gates/coverage.ts skips them).
+ */
 export const ExpectSchema = z
   .object({
     intentKind: z
       .string()
       .regex(INTENT_KIND_PATTERN, "intentKind must be dotted lowercase (e.g. order.checkout.create)"),
     decision: z.enum(JOURNEY_EXPECT_DECISIONS),
+    optional: z.boolean().optional(),
   })
   .strict()
 
