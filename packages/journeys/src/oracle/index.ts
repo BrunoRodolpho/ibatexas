@@ -71,6 +71,26 @@ export {
   requireOracleDatabaseUrl,
 } from "./oracle-database-url.js"
 
+// T1b-2 — NatsCapture (publish-incapable NATS observer; check-bypass leg 8).
+export {
+  assertPublishUnreachable,
+  connectNatsCapture,
+  createNatsCapture,
+  NatsCaptureExpectationError,
+  NatsCaptureGuardError,
+  subjectMatchesPattern,
+  type CaptureMessageLike,
+  type CapturedMessage,
+  type CaptureSubscriptionHandle,
+  type CaptureSubscriptionLike,
+  type ExpectSubjectsOptions,
+  type ExpectSubjectsResult,
+  type NatsCapture,
+  type NatsCaptureOptions,
+  type SubjectExpectations,
+  type SubscribeOnlyConnection,
+} from "./nats-capture.js"
+
 // T1a-13 — read-only domain lookups + the audit-namespace hash (run scoping).
 export {
   createDomainReader,

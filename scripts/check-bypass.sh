@@ -22,6 +22,11 @@
 #      internals. Non-vacuous since Phase 1a (T1a-1) landed the package: a
 #      missing packages/journeys now FAILS the gate instead of passing
 #      vacuously (T1a-9 armed the leg).
+#   8. Test-plane NATS containment (T1b-2/DR-2): packages/journeys never
+#      calls a NATS publish API (.publish(/jetstream(/publishNatsEvent(/…) —
+#      the oracle observes the bus through the publish-incapable NatsCapture
+#      wrapper (src/oracle/nats-capture.ts), whose guard internals + tests
+#      are the only sanctioned places that may NAME those members.
 #
 # Every pnpm --filter leg is guarded: a filter that matches no workspace
 # package fails the gate instead of silently no-opping (pnpm exits 0 on
@@ -79,6 +84,7 @@ echo "  4. setMetricsSink(undefined|null) in production"
 echo "  5. Dispatcher refuses unknown tools (runtime smoke)"
 echo "  6. App/package sources importing @ibatexas/journeys (test plane)"
 echo "  7. packages/journeys reaching into apps/api internals"
+echo "  8. packages/journeys calling a NATS publish API (test plane is subscribe-only)"
 echo ""
 
 # Run the consolidated bypass-detection vitest suite.
@@ -152,6 +158,44 @@ if [[ -n "$API_INTERNAL_IMPORTS" ]]; then
   exit 1
 fi
 echo "✓ packages/journeys does not reach into apps/api (scanned non-vacuously)."
+
+echo ""
+echo "── Test-plane NATS containment: journeys never publishes (leg 8) ─────"
+echo ""
+
+# T1b-2 (DR-2): the journey test plane OBSERVES the event bus, never injects
+# into it — a test-plane publish could forge production signals
+# (payment.status_changed → forged resume; intent.defer.timeout → forged LGPD
+# anonymize). The only sanctioned NATS surface in packages/journeys is the
+# publish-incapable NatsCapture wrapper (src/oracle/nats-capture.ts), so any
+# call-shaped use of a publish API anywhere else in the package fails the
+# gate. Patterns cover Core NATS (.publish(/.publishMessage(/.request(/
+# .requestMany(), JetStream entry points (jetstream(/jetstreamManager(), and
+# the in-repo helper (publishNatsEvent().
+#
+# Exclusions (the task-pinned carve-out, kept minimal):
+#   - src/oracle/nats-capture.ts — the guard module itself NAMES the
+#     forbidden members to assert they are unreachable;
+#   - tests (__tests__/ + *.test.ts/*.spec.ts) — they pin the guard by
+#     attempting the forbidden calls against doubles.
+# Leg 7 above already fails closed when packages/journeys is missing, so
+# this grep never passes vacuously.
+NATS_PUBLISH_CALLS="$(grep -rnE \
+  "(\.publish\(|\.publishMessage\(|\.request\(|\.requestMany\(|jetstream\(|jetstreamManager\(|publishNatsEvent\()" \
+  packages/journeys \
+  --include='*.ts' --include='*.tsx' \
+  --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=__tests__ \
+  --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' \
+  --exclude='nats-capture.ts' || true)"
+
+if [[ -n "$NATS_PUBLISH_CALLS" ]]; then
+  echo "$NATS_PUBLISH_CALLS"
+  echo "✗ packages/journeys must never call a NATS publish API — the test" >&2
+  echo "  plane is subscribe-only (use the NatsCapture oracle wrapper;" >&2
+  echo "  see src/oracle/nats-capture.ts)." >&2
+  exit 1
+fi
+echo "✓ packages/journeys contains no NATS publish API calls (subscribe-only test plane)."
 
 echo ""
 echo "✓ Bypass detection passed."
