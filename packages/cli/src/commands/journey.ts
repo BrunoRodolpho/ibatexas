@@ -277,6 +277,48 @@ async function runJourneyCoverage(opts: {
   console.log(JSON.stringify(coverageBaseline(report), null, 2))
 }
 
+// ── `ibx journey migrate` (T1b-5) ───────────────────────────────────────────
+// Aplica a camada sim do plano de teste (sim_runs/sim_results — registros
+// persistentes de execução, juntáveis ao intent_audit via os namespaces de
+// sessionId HASHEADOS) em DATABASE_URL. Passo DEDICADO, não dobrado em
+// `ibx db provision`: a camada sim é exclusiva do test plane e `db provision`
+// também roda contra bancos dev/prod (escolha registrada — T1b-5). Conecta
+// como o papel de migração (DATABASE_URL); o papel de ESCRITA do runtime
+// (ibx_sim_writer, INSERT/UPDATE somente em sim_*) é provisionado por
+// scripts/test-stack/provision-sim-writer-role.sh DEPOIS deste comando.
+
+async function runJourneyMigrate(): Promise<void> {
+  const { migrateSimTables } = await import("@ibatexas/journeys")
+  const { default: pg } = await import("pg")
+
+  const databaseUrl = process.env.DATABASE_URL
+  if (databaseUrl === undefined || databaseUrl === "") {
+    console.error(chalk.red("DATABASE_URL não definido — rode `ibx env check`"))
+    process.exitCode = 1
+    return
+  }
+
+  const client = new pg.Client({ connectionString: databaseUrl })
+  try {
+    await client.connect()
+    const result = await migrateSimTables(client, {
+      log: (msg: string) => console.log(chalk.dim(`  ${msg}`)),
+    })
+    const applied =
+      result.applied.length > 0 ? `${result.applied.length} aplicada(s)` : "em dia"
+    console.log(
+      chalk.green(
+        `✓ camada sim (sim_runs/sim_results): ${applied}, ${result.skipped.length} já aplicada(s)`,
+      ),
+    )
+  } catch (err) {
+    console.error(chalk.red(`✗ journey migrate falhou: ${(err as Error).message}`))
+    process.exitCode = 1
+  } finally {
+    await client.end().catch(() => undefined)
+  }
+}
+
 // ── `ibx journey run` (T1a-13) ──────────────────────────────────────────────
 // THIN registration: toda a composição (preflight → fixture → driver → http →
 // verify[] → trace JSONL → relatório de custo) vive em @ibatexas/journeys
@@ -443,6 +485,15 @@ export function registerJourneyCommands(group: Command): void {
     )
     .action(async (opts: { json?: boolean; verifyFile?: string; dir?: string }) => {
       await runJourneyLint(opts)
+    })
+
+  group
+    .command("migrate")
+    .description(
+      "Aplica a camada sim do test plane (sim_runs/sim_results — packages/journeys/migrations/, ledger apply-once journeys_sim_migrations) em DATABASE_URL. Idempotente; invocado por scripts/test-stack-up.sh antes do papel ibx_sim_writer.",
+    )
+    .action(async () => {
+      await runJourneyMigrate()
     })
 
   group

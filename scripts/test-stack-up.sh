@@ -120,6 +120,15 @@ ibx bootstrap --skip-docker --skip-seed
 # layers (needs the ibx_domain + audit schemas). The journeys oracle connects
 # via ORACLE_DATABASE_URL (.env.test) using this role.
 IBX_TEST_COMPOSE_PROJECT="$PROJECT" ./scripts/test-stack/provision-oracle-role.sh
+# T1b-5: journeys sim layer (sim_runs/sim_results — persistent run records
+# joined to intent_audit via the hashed sessionId namespaces). Dedicated
+# `ibx journey migrate` step, NOT folded into `ibx db provision`: the sim
+# layer is test-plane-only and dev/prod flows also run `db provision`. The
+# writer role (ibx_sim_writer — INSERT/UPDATE on sim_* only; the oracle
+# stays read-only) is provisioned right after, since its grants need the
+# tables. The runner persists run records via SIM_DATABASE_URL (.env.test).
+ibx journey migrate
+IBX_TEST_COMPOSE_PROJECT="$PROJECT" ./scripts/test-stack/provision-sim-writer-role.sh
 T2=$(now)
 
 # ── [3/4] App boot (process-compose test profile) ────────────────────────────

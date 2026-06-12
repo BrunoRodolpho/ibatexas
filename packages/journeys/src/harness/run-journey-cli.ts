@@ -103,6 +103,7 @@ import {
   RECONCILIATION_GATE_ID,
   type ReconciliationReport,
 } from "../gates/reconciliation.js"
+import { createSimStore } from "./sim-store.js"
 import {
   createAuditReader,
   verifyFetchedRecords,
@@ -713,6 +714,21 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
   const chatSessionIds = new Set<string>()
   /** ctx.vars threaded through acts AND into the verify phase. */
   const vars: Record<string, unknown> = {}
+
+  // The run's HASHED audit-namespace set (D-012): the audit redactor hashes
+  // every actor.sessionId before the intent_audit row lands — chat acts under
+  // hashed(chat sessionId), customer http acts under hashed(customerId).
+  // Computed lazily (acts populate chatSessionIds/vars); consumed by the
+  // verify-phase scope AND the T1b-5 sim_runs record.
+  const hashedRunSessionIds = (): string[] => {
+    const redactSecret = process.env["AUDIT_REDACT_SECRET"] ?? ""
+    return [
+      ...[...chatSessionIds].map((s) => hashedAuditSessionId(s, redactSecret)),
+      ...(typeof vars["customerId"] === "string"
+        ? [hashedAuditSessionId(vars["customerId"] as string, redactSecret)]
+        : []),
+    ]
+  }
   let pool: pg.Pool | undefined
   let pass = false
   let certifying = false
@@ -761,13 +777,7 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
       // ── Verify[] re-execution — scoped to the run's HASHED session ids ──
       // (audit-redactor hashes every actor.sessionId; chat acts land under
       // hashed(chat sessionId), customer http acts under hashed(customerId)).
-      const redactSecret = process.env["AUDIT_REDACT_SECRET"] ?? ""
-      const scopeSessionIds = [
-        ...[...chatSessionIds].map((s) => hashedAuditSessionId(s, redactSecret)),
-        ...(typeof vars["customerId"] === "string"
-          ? [hashedAuditSessionId(vars["customerId"] as string, redactSecret)]
-          : []),
-      ]
+      const scopeSessionIds = hashedRunSessionIds()
       verifyOutcomes = await runVerifyPhase({
         journey,
         ctx: { vars },
@@ -885,6 +895,46 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
     writeFileSync(tracePath, `${lines.join("\n")}\n`)
   } catch {
     onProgress(`  warning: trace write failed (${tracePath})`)
+  }
+
+  // ── T1b-5 sim store: persistent run record, joined to intent_audit ─────────
+  // One sim_runs row per attempt + one sim_results row per expects[] entry,
+  // written through the DEDICATED ibx_sim_writer role (SIM_DATABASE_URL —
+  // INSERT/UPDATE on sim_* only; the read-only oracle containment stays
+  // intact). session_ids records the run's HASHED namespaces (D-012), so
+  // `SIM_RUN_DECISIONS_SQL` recovers the run's kernel decisions with a plain
+  // join. Bookkeeping, not a gate: a write failure warns LOUDLY but never
+  // flips the attempt outcome (the audit trail itself is the evidence plane).
+  try {
+    const simStore = createSimStore()
+    try {
+      await simStore.writeAttempt({
+        run: {
+          runId,
+          journeyId: journey.id,
+          // The attempt's audit-window start (same instant the verify scope
+          // uses) so the documented join reproduces the observed trail.
+          startedAt: runStartedAt,
+          finishedAt: new Date(),
+          pass,
+          attempt,
+          modelId: process.env["ANTHROPIC_MODEL"] ?? "unknown",
+          certifying,
+          costUsd: cost.totalUsd,
+          driverTokens: cost.driver.tokens,
+          sutTokens: cost.sut.tokens,
+          sessionIds: hashedRunSessionIds(),
+        },
+        expects: journey.expects,
+        ...(reconciliation !== undefined ? { reconciliation } : {}),
+      })
+    } finally {
+      await simStore.close()
+    }
+  } catch (err) {
+    onProgress(
+      `  warning: sim-store write failed — run record not persisted (${(err as Error).message})`,
+    )
   }
 
   const costLine = renderCostLine(`attempt ${attempt}`, cost)

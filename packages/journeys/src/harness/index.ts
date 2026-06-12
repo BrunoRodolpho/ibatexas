@@ -54,6 +54,30 @@ export {
   type RunJourneySuiteCliOptions,
 } from "./run-suite-cli.js"
 export { loadTestEnv, parseEnvFile, type LoadTestEnvResult } from "./test-env.js"
+
+// T1b-5 — sim_runs / sim_results: persistent run records joined to the
+// audit ledger via the run's HASHED sessionId namespaces (D-012).
+export {
+  buildSimResults,
+  createSimStore,
+  requireSimDatabaseUrl,
+  SIM_DATABASE_URL_ENV,
+  SIM_DB_ROLE,
+  SIM_RUN_DECISIONS_SQL,
+  SimDatabaseUrlError,
+  type CreateSimStoreOptions,
+  type SimQueryable,
+  type SimResultRow,
+  type SimRunRow,
+  type SimStore,
+} from "./sim-store.js"
+export {
+  migrateSimTables,
+  SIM_MIGRATIONS_TABLE,
+  simMigrationsDir,
+  type SimMigrateClient,
+  type SimMigrateResult,
+} from "./sim-migrate.js"
 export {
   attemptCost,
   costOfCalls,
