@@ -1,0 +1,71 @@
+{
+  "comment": [
+    "T2-4 impact-window fixture — kind×decision counts aggregated from a",
+    "test-stack intent_audit window, EXCLUDING the 'agent:' session",
+    "namespace (same filter as the T1b-3 kernel-replay gate; the exclusion",
+    "count is reported, never silent). Captured via `ibx graph export",
+    "--capture-impact` against a golden-vector-seeded audit database; the",
+    "committed impact.json regenerates from THIS file so the drift gate",
+    "stays deterministic and DB-free. Recapture + regenerate together.",
+    "excludedAgentRows: 1 is REAL — a synthetic agent:-prefixed row was",
+    "inserted during capture to prove the exclusion live."
+  ],
+  "window": {
+    "fromIso": "2026-06-11T22:22:22.505Z",
+    "toIso": "2026-06-12T22:22:22.505Z"
+  },
+  "source": "test-stack intent_audit aggregation (ibx graph export --capture-impact)",
+  "excludedAgentRows": 1,
+  "rows": [
+    {
+      "intentKind": "customer.create",
+      "decision": "REFUSE",
+      "count": 1
+    },
+    {
+      "intentKind": "order.cancel",
+      "decision": "REFUSE",
+      "count": 1
+    },
+    {
+      "intentKind": "order.checkout.create",
+      "decision": "REFUSE",
+      "count": 1
+    },
+    {
+      "intentKind": "order.item.add",
+      "decision": "REFUSE",
+      "count": 1
+    },
+    {
+      "intentKind": "payment.charge.create",
+      "decision": "REFUSE",
+      "count": 1
+    },
+    {
+      "intentKind": "payment.method.switch",
+      "decision": "REFUSE",
+      "count": 1
+    },
+    {
+      "intentKind": "pix.charge.create",
+      "decision": "DEFER",
+      "count": 1
+    },
+    {
+      "intentKind": "reservation.create",
+      "decision": "REFUSE",
+      "count": 1
+    },
+    {
+      "intentKind": "reservation.waitlist.join",
+      "decision": "REFUSE",
+      "count": 1
+    },
+    {
+      "intentKind": "whatsapp.template.send",
+      "decision": "REFUSE",
+      "count": 1
+    }
+  ]
+}
