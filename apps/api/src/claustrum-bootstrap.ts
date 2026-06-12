@@ -94,6 +94,12 @@ import {
 // pt-BR refusal registry (code → curated, detail-free pt-BR text). The kernel +
 // pack refusals carry a stable `code`; the explainer localizes by it.
 import { portugueseRefusalMessages } from "@adjudicate/locales-pt-br";
+// Execution ledger implementation — Redis SET-NX dedup behind the kernel's
+// Ledger contract (the contract itself lives in @adjudicate/core, above).
+import {
+  createRedisLedger,
+  type RedisLedgerClient,
+} from "@adjudicate/audit";
 
 // Pack imports — at the time of this commit, ibatexas's first-party Packs
 // are in packages/pack-*/ but those packages have no published package.json
@@ -1158,12 +1164,31 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // `createPostgresSink` + hand-rolled `PostgresWriter` block — dev owns the
   // richer pipeline.)
   await bootstrapAuditSinkDI(logger);
-  // TODO(Stage 3): wire createRedisLedger({ client: redis, keyFor: rk }) for
-  // cross-turn replay-suppression once EXECUTE fires. The bridge already
-  // accepts an optional `ledger` dep (AdjudicatorBridgeDeps); domain-level
-  // idempotency (cycle-2 PAY-3) guards payment double-fire meanwhile.
-  const adjudicator = buildAdjudicator({ sink: getAuditSink() });
+
+  // Execution ledger (Hard Rule #9) — always-on, fail-closed cross-turn
+  // replay-suppression. Redis must be up BEFORE the adjudicator exists, so the
+  // client connect moves ahead of buildAdjudicator. Fail-closed is structural:
+  // createRedisLedger's checkLedger/recordExecution reject when Redis is
+  // unreachable, adjudicateAndAudit does not catch ledger throws, and the
+  // bridge's safeAuditedAdjudicate catch degrades the throw to REFUSE — Redis
+  // loss is a refusal, never a dedup bypass. Keys go through rk() (Hard Rule
+  // #7); TTL stays the upstream 14-day default.
   const redis = await getRedisClient();
+  // node-redis's generic reply type is `string | Buffer | null`; this client is
+  // never put in buffer mode, so narrow set/get/del to the exact contract the
+  // ledger consumes (RedisLedgerClient) rather than an `as unknown as` cast.
+  // Rejections pass through untouched — that is the fail-closed path.
+  const ledgerClient: RedisLedgerClient = {
+    set: (key, value, options) =>
+      redis.set(key, value, {
+        ...(options?.NX ? { NX: true as const } : {}),
+        ...(options?.EX !== undefined ? { EX: options.EX } : {}),
+      }) as Promise<string | null>,
+    get: (key) => redis.get(key) as Promise<string | null>,
+    del: (key) => redis.del(key),
+  };
+  const ledger = createRedisLedger({ client: ledgerClient, keyFor: rk });
+  const adjudicator = buildAdjudicator({ sink: getAuditSink(), ledger });
 
   // Tool registry (RC-A1 Phase A) — register the ibatexas tool packs and assert
   // roster integrity before the conductor goes live. The registry keys tools by
