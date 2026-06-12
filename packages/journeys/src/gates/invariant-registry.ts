@@ -27,10 +27,33 @@
  *                             ledger replay-suppression refusal
  *                             `{category:"ledger", code:"replay_suppressed"}`
  *                             (T1a-7).
+ *   audit.record.verified   → every record in the run's sessionId namespace
+ *                             passes `verifyAuditRecord` tamper-evidence
+ *                             (oracle/audit-reader.ts `verifyFetchedRecords`,
+ *                             T1a-7).
+ *   audit.trajectory.exact  → the run's audit trail equals the expected
+ *                             `{intentKind, decision}` sequence index by
+ *                             index (oracle/audit-trail-matcher.ts
+ *                             `matchTrajectory` mode EXACT, T1a-7).
+ *   audit.trajectory.in_order → the expected steps appear as a subsequence
+ *                             of the run's trail — extras allowed, order
+ *                             enforced (mode IN_ORDER, T1a-7).
+ *   audit.trajectory.any_order → multiset equality between expected steps
+ *                             and the run's trail — any order, nothing left
+ *                             over (mode ANY_ORDER, T1a-7).
+ *
+ * T1a-12's journey files were not yet authored when T1a-7 landed; the
+ * `audit.*` ids above are the defining registration (plan §5 names
+ * `audit.trajectory.in_order` / `audit.record.verified` explicitly) — T1a-12
+ * references these exact strings.
  */
 export const KNOWN_INVARIANT_IDS: ReadonlySet<string> = new Set([
   "order.goal-state",
   "reservation.goal-state",
   "cart.goal-state",
   "audit.refusal-basis",
+  "audit.record.verified",
+  "audit.trajectory.exact",
+  "audit.trajectory.in_order",
+  "audit.trajectory.any_order",
 ])

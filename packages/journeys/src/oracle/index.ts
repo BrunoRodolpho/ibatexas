@@ -21,6 +21,39 @@ export {
   type ProjectionPredicate,
 } from "./projection-barrier.js"
 
+// T1a-7 — AuditReader (read-only intent_audit reader, run-sessionId scoped).
+export {
+  AuditReaderScopeError,
+  createAuditReader,
+  RUN_SESSION_NAMESPACE,
+  runNamespacePrefix,
+  verifyFetchedRecords,
+  type AuditReader,
+  type AuditVerificationFailure,
+  type AuditVerificationReport,
+  type CreateAuditReaderOptions,
+  type FetchAuditRecordsOptions,
+  type OracleQueryable,
+  type RunSessionScope,
+  type VerifyFetchedRecordsOptions,
+} from "./audit-reader.js"
+
+// T1a-7 — AuditTrailMatcher (EXACT / IN_ORDER / ANY_ORDER trajectories,
+// supersession chains resolved via the upstream @adjudicate/audit walker).
+export {
+  matchTrajectory,
+  resolveSupersessionChains,
+  type ExpectedTrajectoryStep,
+  type MatchTrajectoryOptions,
+  type ObservedTrajectoryStep,
+  type PayloadPredicate,
+  type ResolvedTrajectory,
+  type TrajectoryMatchResult,
+  type TrajectoryMismatchReason,
+  type TrajectoryMode,
+  type TrajectoryStepMismatch,
+} from "./audit-trail-matcher.js"
+
 // T1a-9 — test-plane containment wiring.
 export {
   createHttpVerifyClient,
