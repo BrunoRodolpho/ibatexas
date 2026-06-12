@@ -168,6 +168,11 @@ import {
   registerIbatexasToolPacks,
   toolRosterDrift,
 } from "./tools/register-ibatexas-tool-packs.js";
+import {
+  createAuditReadPaths,
+  postgresReaderFromPool,
+  type AuditReadPaths,
+} from "./claustrum/audit-read-paths.js";
 
 // ── Singleton ────────────────────────────────────────────────────────────────
 
@@ -202,6 +207,16 @@ export interface AdjudicatorBridgeDeps {
    * so a side effect cannot double-fire across retried turns.
    */
   readonly ledger?: Ledger;
+  /**
+   * Optional audit READ paths (intent_audit / audit_outcomes) backing the
+   * port's memory-recall surface — replayEnvelopesByCustomerId /
+   * streamAuditByIntentHashPrefix / getOutcomes. Absent (unit tests, partial
+   * composition) → those methods return empty. Fail-SAFE either way: these
+   * reads feed recall, not the money path, and `createAuditReadPaths`
+   * swallows read failures into empty results. The write-audit invariant
+   * (`sink`, fail-closed) is independent of this dep.
+   */
+  readonly auditReads?: AuditReadPaths;
 }
 
 /**
@@ -314,18 +329,27 @@ export function buildAdjudicator(deps: AdjudicatorBridgeDeps): Adjudicator {
         )
       );
     },
-    async replayEnvelopesByCustomerId(_customerId, _since) {
-      // TODO(loop-closure): wire to `createPostgresAuditStore` reader once the
-      // conductor's memory-recall path is exercised (Stage 3). The write-audit
-      // invariant (above) does not depend on this read path.
-      return [] as ReadonlyArray<AuditRecord>;
+    // Audit read paths (loop-closure Stage 3) — delegate to the injected
+    // reader (claustrum/audit-read-paths.ts). Un-wired dep → empty results,
+    // never a throw: recall degradation must not crash a turn.
+    async replayEnvelopesByCustomerId(customerId, since, tenantId) {
+      if (!deps.auditReads) return [] as ReadonlyArray<AuditRecord>;
+      return deps.auditReads.replayEnvelopesByCustomerId(
+        customerId,
+        since,
+        tenantId,
+      );
     },
-    async *streamAuditByIntentHashPrefix(_prefix): AsyncIterable<AuditRecord> {
-      // TODO(loop-closure): wire through @adjudicate/audit-postgres reader.
+    async *streamAuditByIntentHashPrefix(
+      prefix,
+      tenantId,
+    ): AsyncIterable<AuditRecord> {
+      if (!deps.auditReads) return;
+      yield* deps.auditReads.streamAuditByIntentHashPrefix(prefix, tenantId);
     },
-    async getOutcomes(_filter) {
-      // TODO(loop-closure): wire through @adjudicate/audit-postgres outcomes-store.
-      return [];
+    async getOutcomes(filter) {
+      if (!deps.auditReads) return [];
+      return deps.auditReads.getOutcomes(filter);
     },
     verifyAuditRecord(record): AuditVerification {
       // Kernel tamper-evidence verifier (RC-K1 restored the v4 round-trip).
@@ -1188,7 +1212,18 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     del: (key) => redis.del(key),
   };
   const ledger = createRedisLedger({ client: ledgerClient, keyFor: rk });
-  const adjudicator = buildAdjudicator({ sink: getAuditSink(), ledger });
+  // Audit READ paths over the same pool the readiness probe validated —
+  // memory-recall reads (fail-safe: a read outage degrades recall to empty,
+  // logged here, never a thrown turn).
+  const auditReads = createAuditReadPaths({
+    reader: postgresReaderFromPool(pgPool),
+    onError: (err, op) =>
+      logger.warn(
+        { component: "claustrum-bootstrap", op, err: err.message },
+        "audit read path failed (fail-safe: empty result)",
+      ),
+  });
+  const adjudicator = buildAdjudicator({ sink: getAuditSink(), ledger, auditReads });
 
   // Tool registry (RC-A1 Phase A) — register the ibatexas tool packs and assert
   // roster integrity before the conductor goes live. The registry keys tools by
