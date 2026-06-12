@@ -48,6 +48,8 @@ export type JourneyEventType =
   | "preflight.check"
   | "act.start"
   | "act.end"
+  | "chat.turn.start"
+  | "chat.turn.end"
   | "llm.call"
   | "evidence.capture"
   | "evidence.persist"
@@ -82,6 +84,9 @@ export interface IbxEventBase {
   outcome?: "pass" | "fail" | "error"
   // preflight.check — which environment-handshake check this record is for
   check?: string
+  // chat.turn.* (T1a-5 ChatClient) — SUT conversation handle + 1-based turn no.
+  sessionId?: string
+  turn?: number
   // llm.call (required there — see LlmCallEvent)
   model?: string
   inputTokens?: number
@@ -230,6 +235,38 @@ export function emitActEnd(
     outcome,
     ...(detail !== undefined ? { detail } : {}),
   })
+}
+
+/**
+ * `chat.turn.start` — the ChatClient (T1a-5) is about to POST one user turn
+ * to the SUT's chat surface. Turn wall-clock is the CLIENT-side llm boundary;
+ * the SUT's own provider costs are measured server-side via `llm.call`.
+ */
+export function emitChatTurnStart(args: {
+  sessionId: string
+  turn: number
+  journey?: string
+  runId?: string
+  detail?: string
+}): void {
+  emit({ type: "chat.turn.start", timestamp: new Date().toISOString(), ...args })
+}
+
+/**
+ * `chat.turn.end` — the turn reached its terminal state (SSE `done`, an SSE
+ * `error` event, or a transport failure). `duration` is the turn wall-clock
+ * (ms); `detail` carries the post/stream/barrier breakdown — never secrets.
+ */
+export function emitChatTurnEnd(args: {
+  sessionId: string
+  turn: number
+  duration: number
+  outcome: "pass" | "fail" | "error"
+  journey?: string
+  runId?: string
+  detail?: string
+}): void {
+  emit({ type: "chat.turn.end", timestamp: new Date().toISOString(), ...args })
 }
 
 /**

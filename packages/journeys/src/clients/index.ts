@@ -6,3 +6,4 @@
 // barrel — the root src/index.ts already re-exports it.
 
 export * from "./auth-fixture.js"
+export * from "./chat-client.js"
