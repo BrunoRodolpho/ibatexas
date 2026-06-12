@@ -336,6 +336,9 @@ interface JourneyRunCliFlags {
   kMoney?: string
   moneyFlows?: string
   budgetUsd?: string
+  // T1b-4 — nightly mode (retry-once amarelo + flake ledger + quarentena)
+  nightly?: boolean
+  retryDelaySeconds?: string
 }
 
 function parseIdList(raw: string): string[] {
@@ -346,8 +349,14 @@ function parseIdList(raw: string): string[] {
 }
 
 async function runJourneyRun(id: string | undefined, opts: JourneyRunCliFlags): Promise<void> {
-  const { runJourneyCli, runJourneySuiteCli, JourneyRunCliError, BudgetConfigError } =
-    await import("@ibatexas/journeys")
+  const {
+    runJourneyCli,
+    runJourneySuiteCli,
+    runNightlySuiteCli,
+    JourneyRunCliError,
+    BudgetConfigError,
+    FlakeLedgerError,
+  } = await import("@ibatexas/journeys")
 
   const k = opts.k !== undefined ? Number.parseInt(opts.k, 10) : 1
   const budgetUsd = opts.budgetUsd !== undefined ? Number.parseFloat(opts.budgetUsd) : undefined
@@ -358,6 +367,69 @@ async function runJourneyRun(id: string | undefined, opts: JourneyRunCliFlags): 
   }
 
   try {
+    // ── Nightly path (T1b-4): suite + retry-once + flake ledger ─────────────
+    // SOMENTE o modo nightly lê/escreve o flake ledger — runs locais de
+    // suíte nunca mutam o estado de quarentena.
+    if (opts.nightly === true) {
+      if (opts.suite !== true || id !== undefined) {
+        console.error(chalk.red("--nightly requer --suite (e não combina com <id>)"))
+        process.exitCode = 1
+        return
+      }
+      const report = await runNightlySuiteCli({
+        ...(opts.only !== undefined ? { only: parseIdList(opts.only) } : {}),
+        k,
+        ...(opts.kMoney !== undefined ? { kMoney: Number.parseInt(opts.kMoney, 10) } : {}),
+        ...(opts.moneyFlows !== undefined ? { moneyFlows: parseIdList(opts.moneyFlows) } : {}),
+        ...(budgetUsd !== undefined ? { budgetUsd } : {}),
+        ...(opts.retryDelaySeconds !== undefined
+          ? { retryDelaySeconds: Number.parseInt(opts.retryDelaySeconds, 10) }
+          : {}),
+        ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
+        ...(opts.envFile !== undefined ? { envFile: resolveUserPath(opts.envFile) } : {}),
+        onProgress,
+      })
+
+      if (opts.json === true) {
+        console.log(JSON.stringify(report, null, 2))
+      } else {
+        for (const skipped of report.quarantinedSkipped) {
+          console.log(chalk.yellow(`⊘ ${skipped}: QUARANTINED — skipped (flake ledger)`))
+        }
+        for (const o of report.outcomes) {
+          const line =
+            o.outcome === "green"
+              ? chalk.green(`✓ ${o.journey}: GREEN`)
+              : o.outcome === "yellow"
+                ? chalk.yellow(`⚠ ${o.journey}: YELLOW (failed once, passed the retry)`)
+                : chalk.red(
+                    `✗ ${o.journey}: RED${o.abortedByBudget ? " (aborted-by-budget)" : o.retried ? " (failed twice)" : ""}`,
+                  )
+          console.log(line)
+        }
+        if (report.ledger.changed) {
+          console.log(
+            chalk.dim(
+              `flake ledger UPDATED (${report.ledger.path})` +
+                (report.ledger.newlyQuarantined.length > 0
+                  ? ` — newly quarantined: ${report.ledger.newlyQuarantined.join(", ")}`
+                  : ""),
+            ),
+          )
+        }
+        for (const issue of report.issues) {
+          console.error(chalk.red(`issue: ${issue.title}`))
+        }
+        console.log(
+          report.pass
+            ? chalk.green(`✓ nightly green (${report.outcomes.length} journeys, ${report.date})`)
+            : chalk.red(`✗ nightly RED (${report.date})`),
+        )
+      }
+      if (!report.pass) process.exitCode = 1
+      return
+    }
+
     // ── Suite path (T1b-8): all active journeys, sequential, dollar-capped ──
     if (opts.suite === true) {
       if (id !== undefined) {
@@ -455,7 +527,88 @@ async function runJourneyRun(id: string | undefined, opts: JourneyRunCliFlags): 
     }
     if (!report.pass) process.exitCode = 1
   } catch (err) {
-    if (err instanceof JourneyRunCliError || err instanceof BudgetConfigError) {
+    if (
+      err instanceof JourneyRunCliError ||
+      err instanceof BudgetConfigError ||
+      err instanceof FlakeLedgerError
+    ) {
+      console.error(chalk.red(err.message))
+      process.exitCode = 1
+      return
+    }
+    throw err
+  }
+}
+
+// ── `ibx journey flake` (T1b-4) ─────────────────────────────────────────────
+// Leitura/escrita do flake ledger (packages/journeys/governance/
+// flake-ledger.json — a lista de quarentena autoritativa do nightly).
+//   (sem flags)            resumo humano das entradas
+//   --list-quarantined     ids em quarentena, separados por vírgula (stdout
+//                          limpo — o workflow nightly alimenta
+//                          `ibx journey coverage --quarantined` com isso)
+//   --dequarantine <id>    de-quarentena MANUAL: o critério documentado é
+//                          verde duas vezes em re-run manual
+//                          (`ibx journey run <id> --k 2 --json`) ANTES de
+//                          rodar este comando — quem roda está atestando.
+
+async function runJourneyFlake(opts: {
+  json?: boolean
+  dequarantine?: string
+  listQuarantined?: boolean
+  ledger?: string
+}): Promise<void> {
+  const {
+    dequarantineJourney,
+    DEFAULT_FLAKE_LEDGER_PATH,
+    FlakeLedgerError,
+    loadFlakeLedger,
+    quarantinedJourneyIds,
+    saveFlakeLedger,
+  } = await import("@ibatexas/journeys")
+
+  const ledgerPath =
+    opts.ledger !== undefined ? resolveUserPath(opts.ledger) : DEFAULT_FLAKE_LEDGER_PATH
+  try {
+    const ledger = loadFlakeLedger(ledgerPath)
+
+    if (opts.listQuarantined === true) {
+      // Machine-clean stdout for the nightly's coverage seam (empty = none).
+      console.log(quarantinedJourneyIds(ledger).join(","))
+      return
+    }
+
+    if (opts.dequarantine !== undefined) {
+      const next = dequarantineJourney(ledger, opts.dequarantine)
+      saveFlakeLedger(next, ledgerPath)
+      console.log(
+        chalk.green(
+          `✓ ${opts.dequarantine} removido da quarentena (${ledgerPath}) — commit o ledger atualizado.`,
+        ),
+      )
+      return
+    }
+
+    if (opts.json === true) {
+      console.log(JSON.stringify(ledger, null, 2))
+      return
+    }
+    const entries = Object.values(ledger.journeys)
+    if (entries.length === 0) {
+      console.log(chalk.green("✓ flake ledger vazio — nenhuma jornada flaky ou em quarentena."))
+      return
+    }
+    for (const e of entries) {
+      const head =
+        e.status === "quarantined"
+          ? chalk.red(`⊘ ${e.journey}: quarantined desde ${e.quarantinedAt ?? "?"}`)
+          : chalk.yellow(`⚠ ${e.journey}: flaky (${e.consecutiveFlakyNights} noite(s) consecutiva(s))`)
+      console.log(
+        `${head} ${chalk.dim(`firstSeen=${e.firstSeen} lastFlakyNight=${e.lastFlakyNight} owner=${e.owner === "" ? "UNASSIGNED" : e.owner}`)}`,
+      )
+    }
+  } catch (err) {
+    if (err instanceof FlakeLedgerError) {
       console.error(chalk.red(err.message))
       process.exitCode = 1
       return
@@ -519,6 +672,14 @@ export function registerJourneyCommands(group: Command): void {
       "--budget-usd <usd>",
       "Cap de dólares da execução (default: IBX_NIGHTLY_BUDGET_USD ou $50) — custo acumulado ≥ cap aborta como run vermelho",
     )
+    .option(
+      "--nightly",
+      "Com --suite: modo nightly (T1b-4) — retry-once = amarelo, flake ledger (quarentena após 2 noites flaky consecutivas), payloads de gh issue para runs vermelhos. SOMENTE este modo lê/escreve o ledger.",
+    )
+    .option(
+      "--retry-delay-seconds <n>",
+      "Com --nightly: espera antes do único retry (default 0; o nightly usa 600 — janela do rate limit de cancelamento, 5/10min/cliente)",
+    )
     .option("--json", "Emite o relatório da execução em JSON (stdout limpo)")
     .option(
       "--dir <path>",
@@ -531,6 +692,35 @@ export function registerJourneyCommands(group: Command): void {
     .action(async (id: string | undefined, opts: JourneyRunCliFlags) => {
       await runJourneyRun(id, opts)
     })
+
+  group
+    .command("flake")
+    .description(
+      "Flake ledger do nightly (T1b-4; packages/journeys/governance/flake-ledger.json). Sem flags: resumo. --list-quarantined: ids em quarentena (vírgula, stdout limpo). --dequarantine <id>: de-quarentena manual — critério documentado: `ibx journey run <id> --k 2 --json` verde DUAS vezes antes deste comando.",
+    )
+    .option("--json", "Emite o ledger em JSON")
+    .option(
+      "--list-quarantined",
+      "Imprime os ids em quarentena separados por vírgula (consumido pelo workflow nightly: `ibx journey coverage --quarantined ...`)",
+    )
+    .option(
+      "--dequarantine <id>",
+      "Remove a jornada da quarentena (recusa entradas não-quarantined; flaky se resolve com noite verde)",
+    )
+    .option(
+      "--ledger <path>",
+      "Arquivo de ledger alternativo (default: packages/journeys/governance/flake-ledger.json)",
+    )
+    .action(
+      async (opts: {
+        json?: boolean
+        dequarantine?: string
+        listQuarantined?: boolean
+        ledger?: string
+      }) => {
+        await runJourneyFlake(opts)
+      },
+    )
 
   group
     .command("coverage")

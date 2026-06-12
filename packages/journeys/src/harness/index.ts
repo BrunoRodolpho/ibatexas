@@ -55,6 +55,37 @@ export {
 } from "./run-suite-cli.js"
 export { loadTestEnv, parseEnvFile, type LoadTestEnvResult } from "./test-env.js"
 
+// T1b-4 — flake policy WITH OWNERSHIP (retry-once = yellow; quarantine after
+// 2 consecutive flaky nights; manual green-twice de-quarantine) + the
+// nightly mode of `ibx journey run --suite`.
+export {
+  DEFAULT_FLAKE_LEDGER_PATH,
+  dequarantineJourney,
+  emptyFlakeLedger,
+  FLAKE_LEDGER_VERSION,
+  FlakeLedgerError,
+  FlakeLedgerSchema,
+  flakeOwner,
+  loadFlakeLedger,
+  QUARANTINE_THRESHOLD,
+  quarantinedJourneyIds,
+  recordNightlyOutcome,
+  saveFlakeLedger,
+  type FlakeLedger,
+  type FlakeLedgerEntry,
+  type NightlyOutcome,
+  type RecordOutcomeResult,
+} from "./flake-ledger.js"
+export {
+  DEQUARANTINE_MANUAL_COMMANDS,
+  runNightlySuiteCli,
+  type NightlyIssuePayload,
+  type NightlyJourneyOutcome,
+  type NightlyLedgerReport,
+  type NightlySuiteReport,
+  type RunNightlySuiteCliOptions,
+} from "./nightly-suite.js"
+
 // T1b-5 — sim_runs / sim_results: persistent run records joined to the
 // audit ledger via the run's HASHED sessionId namespaces (D-012).
 export {
