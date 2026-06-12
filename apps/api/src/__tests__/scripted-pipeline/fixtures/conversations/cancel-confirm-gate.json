@@ -1,0 +1,23 @@
+{
+  "id": "cancel-confirm-gate",
+  "scenario": "JOURNEY-001 chat cancel leg: an authenticated customer with exactly one order asks chat to cancel it without naming an id. The resolve stage auto-resolves the most-recent order (NL→id) and flags autoResolvedMoneyRef; the adopter confirm-on-autoresolve guard parks the RESOLVED envelope and returns REQUEST_CONFIRMATION so a wrong guess can never auto-execute (live-verified D-014). The parked payload carries the resolved order id — templated, never a raw Medusa id (ULIDs are seed-nondeterministic, plan v2 ledger #15).",
+  "conversation": [
+    { "role": "user", "content": "Quero cancelar meu pedido, por favor." }
+  ],
+  "expectedEnvelopeKinds": ["order.cancel"],
+  "expectedDecisionKind": "REQUEST_CONFIRMATION",
+  "expectAwaitingConfirmation": true,
+  "expectedParkedPayload": { "orderId": "{{ORDER_ID}}" },
+  "expectedResponseText": "Certo! Estou cuidando do seu pedido.",
+  "expectedAudit": {
+    "rows": 1,
+    "records": [
+      {
+        "kind": "order.cancel",
+        "decision": "REQUEST_CONFIRMATION",
+        "refusalCode": null
+      }
+    ]
+  },
+  "tags": ["journey-001", "cancel", "confirm-gate", "auto-resolve"]
+}

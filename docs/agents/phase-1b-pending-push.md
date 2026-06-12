@@ -132,3 +132,27 @@ window fixture. After push:
 Verified locally before commit (T2-4 task output): `ibx graph export --check` exit 0
 on the committed artifacts; mutated-artifact negative → exit 1 (DRIFT) → regenerate →
 exit 0; vitest drift/missing/registry-change legs green.
+
+## 10. T2-6b scripted fixture suite green on PRs (Phase 2 exit-criterion leg)
+
+The golden-conversation suite (`apps/api/src/__tests__/scripted-pipeline/`) rides the
+EXISTING PR workflow — `.github/workflows/ci.yml` runs `pnpm test` (turbo → apps/api
+`vitest run`) after a `docker info` testcontainer preflight, so NO workflow change was
+needed. Zero tokens by construction: the suite injects the content-keyed scripted
+ModelProvider through the T2-6a DI seam, so the Anthropic SDK client is never
+constructed (no secret is read; `ANTHROPIC_API_KEY` is not required by the job).
+After push:
+
+1. Open any PR touching `apps/api/**` and confirm the **`CI / check`** run executes
+   `src/__tests__/scripted-pipeline/` (2 files / 10 tests) green — that is the
+   "T2-6b fixture suite green on PRs" clause of the Phase 2 exit criterion.
+2. Negative leg (optional, mirrors the local acceptance run): a PR that edits the
+   planner system prompt in `apps/api/src/claustrum/ibatexas-planner.ts` without
+   re-recording `fixtures/completions/surfaces.json` must FAIL the suite with the
+   loud unknown-content-key error naming the nearest fixtures.
+
+Verified locally before commit (T2-6b task output): full directory green
+(10/10: container suite — postgres+audit migrations+domain `prisma db push`, redis,
+real `bootstrapClaustrum` — plus the zero-infra content-key unit acceptance), and the
+one-char prompt mutation produced a different content key + the loud unknown-key
+error listing `planner:cancel-confirm-gate` as nearest (shared prefix 1180 chars).
