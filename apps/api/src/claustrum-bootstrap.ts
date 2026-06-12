@@ -63,6 +63,7 @@ import {
 } from "@claustrum/memory-postgres";
 import { createPgVectorGroundingProvider } from "@claustrum/grounding-pgvector";
 import { failSafeGrounding } from "./claustrum/fail-safe-grounding.js";
+import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { WebChannel } from "@claustrum/channel-web";
 
@@ -1216,11 +1217,29 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),
   // so the cast is irreducible — but name the exact contracts the adapter consumes
   // (`as unknown as <T>`) instead of `as never`, which would swallow real drift.
-  const memory = createPostgresMemoryProvider({
-    prisma: prisma as unknown as PrismaClientLike,
-    redis: redis as unknown as RedisClientLike,
-    adjudicator,
-  });
+  //
+  // Fail-safe wrapper: handleTurn awaits recall() with no catch (the
+  // UNDERSTAND Promise.all), and the adapter's cold path throws today —
+  // the domain PrismaClient generates NO claustrum_memory_* delegates, so
+  // `prisma.claustrum_memory_episodic.findMany` is a TypeError on every
+  // cache-cold turn ("Erro interno." on the chat routes; surfaced by T1a-5's
+  // live contract test). Degrades to empty recall/search/recentActions and
+  // dropped observes — the turn runs memory-less; mutations stay
+  // kernel-guarded. See fail-safe-memory.ts + docs/agents/decisions.md D-012.
+  const memory = failSafeMemory(
+    createPostgresMemoryProvider({
+      prisma: prisma as unknown as PrismaClientLike,
+      redis: redis as unknown as RedisClientLike,
+      adjudicator,
+    }),
+    {
+      onError: (op, err) =>
+        logger.warn(
+          { component: "memory", op, error: String(err) },
+          "memory port degraded (fail-safe): returning empty result",
+        ),
+    },
+  );
 
   // Fail-safe wrapper: handleTurn awaits retrieve() with no catch, and the
   // provider chain throws today (AnthropicProvider.embed() has no embedding
