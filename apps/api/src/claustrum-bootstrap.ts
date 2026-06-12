@@ -47,6 +47,7 @@ import {
   type HandoffPort,
   type CognitiveState,
   type MemoryAccess,
+  type ModelProvider,
   type ResponderPort,
   type Session,
   type SessionPort,
@@ -104,14 +105,18 @@ import { emitLlmCall, getRedisClient, rk } from "@ibatexas/tools";
 // DI). This replaces the audit-branch's bare `createPostgresSink` block: the
 // dev audit-sink threads Postgres + NATS + Redis-spill + PII redaction, and is
 // wired here via `bootstrapAuditSinkDI()` before `buildAdjudicator()` reads it.
-import { getAuditSink } from "@ibatexas/audit-sink";
+import { __resetAuditSink, getAuditSink } from "@ibatexas/audit-sink";
 import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
 
 // ── RC-A1 cutover composition (Phase A.1/A.2) ────────────────────────────────
 // The production planner + per-kind PolicyBundle router, composed over the 5
 // first-party packs. INERT until bootstrapClaustrum() is called.
-import type { PolicyBundle } from "@adjudicate/core/kernel";
-import { hasMetricsSink, setMetricsSink } from "@adjudicate/core/kernel";
+import type { MetricsSink, PolicyBundle } from "@adjudicate/core/kernel";
+import {
+  _resetMetricsSink,
+  hasMetricsSink,
+  setMetricsSink,
+} from "@adjudicate/core/kernel";
 import { createIbatexasMetricsSink } from "./observability/metrics-sink.js";
 import { logger } from "./lib/logger.js";
 // The five first-party packs are named in exactly ONE site —
@@ -163,6 +168,14 @@ import {
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 let _conductor: Conductor | null = null;
+// The per-bootstrap pg Pool (audit readiness probe + audit read paths +
+// pgvector grounding + advisory session lock). Tracked at module level so
+// `resetClaustrumForTests()` can end it — a leaked pool keeps the vitest
+// process (and any postgres testcontainer) alive. `_ownsPgPool` is false when
+// the pool was injected via `ClaustrumBootstrapOptions.pgPool` — an injected
+// pool is CALLER-owned and never ended by the reset hook.
+let _pgPool: Pool | null = null;
+let _ownsPgPool = false;
 
 export function getConductor(): Conductor {
   if (!_conductor) {
@@ -171,6 +184,166 @@ export function getConductor(): Conductor {
     );
   }
   return _conductor;
+}
+
+// ── Injectable seams (T2-6a — scripted-pipeline harness) ────────────────────
+
+/**
+ * Optional DI seams for `bootstrapClaustrum()`. Production call sites pass
+ * NOTHING (zero-arg call in `index.ts` — today's behavior, unchanged); the
+ * scripted journey harness (T2-6b) injects a content-keyed ModelProvider plus
+ * test-plane infra so a full Conductor composition boots at zero token cost.
+ *
+ * Scope notes (honest seams, not a full IoC container):
+ *  - `redis` overrides the BOOT-TIME client only (execution ledger + memory
+ *    provider). The session store and telemetry fold resolve
+ *    `getRedisClient()` lazily per call — in the test harness those converge
+ *    on the same server because `REDIS_URL` points at the test container.
+ *  - `auditSink`, when injected, is handed straight to the adjudicator bridge
+ *    and `bootstrapAuditSinkDI()` is SKIPPED — the global `@ibatexas/audit-
+ *    sink` leaf DI is left untouched (a test can wire/inspect it separately).
+ *  - `metricsSink`, when injected, is installed UNCONDITIONALLY via
+ *    `setMetricsSink()` (a test wants determinism); the zero-arg path keeps
+ *    the WS7 guard (only install when no sink is present — the production
+ *    sink from `installKernelMetricsSink()` wins).
+ *  - A warm singleton wins: when `_conductor` already exists the options are
+ *    IGNORED and the cached instance is returned (zero-arg double-init parity
+ *    with index.ts). Harnesses MUST call `resetClaustrumForTests()` between
+ *    differently-composed bootstraps.
+ */
+export interface ClaustrumBootstrapOptions {
+  /**
+   * ModelProvider for planner + responder + grounding embeds. Default: a
+   * fresh `AnthropicProvider` over the Anthropic SDK (`ANTHROPIC_API_KEY`).
+   * When injected, the Anthropic SDK client is never constructed.
+   */
+  readonly modelProvider?: ModelProvider;
+  /**
+   * pg Pool for the audit readiness probe, audit read paths, pgvector
+   * grounding, and the advisory session lock. Default: a new `Pool` over
+   * `DATABASE_URL`, OWNED by the bootstrap (ended by the reset hook).
+   * Injected pools are caller-owned: the reset hook never ends them.
+   */
+  readonly pgPool?: Pool;
+  /**
+   * AuditSink for the adjudicator bridge. Default: `bootstrapAuditSinkDI()` +
+   * `getAuditSink()` (the composed Postgres/NATS/spill/redaction pipeline).
+   */
+  readonly auditSink?: AuditSink;
+  /** Kernel MetricsSink. Default: WS7 guard semantics (see above). */
+  readonly metricsSink?: MetricsSink;
+  /**
+   * Boot-time Redis client (execution ledger + memory provider). Default:
+   * the `@ibatexas/tools` singleton via `getRedisClient()` (`REDIS_URL`).
+   */
+  readonly redis?: Awaited<ReturnType<typeof getRedisClient>>;
+}
+
+/**
+ * Test-fingerprint gate for the test-only surfaces below. Allowed only under
+ * `NODE_ENV=test` (vitest) or when `IBX_TEST_FINGERPRINT` is set (the test
+ * profile env, D-010) — a production composition can never reach them.
+ */
+function assertTestOnlySurface(surface: string): void {
+  const fingerprint = process.env.IBX_TEST_FINGERPRINT;
+  if (
+    process.env.NODE_ENV === "test" ||
+    (typeof fingerprint === "string" && fingerprint.length > 0)
+  ) {
+    return;
+  }
+  throw new Error(
+    `[claustrum-bootstrap] ${surface} is test-only. It requires NODE_ENV=test ` +
+      `or IBX_TEST_FINGERPRINT to be set; refusing in this environment.`,
+  );
+}
+
+/** What `resetClaustrumForTests()` actually did (per-leg, machine-checkable). */
+export interface ClaustrumResetReport {
+  /** A conductor existed and was cleared. */
+  readonly conductorCleared: boolean;
+  /**
+   * The bootstrap-OWNED pg Pool was ended (`pool.end()` resolved). False when
+   * no pool existed, when the pool was injected (caller-owned), or when
+   * `end()` threw (logged, swallowed — reset must always complete).
+   */
+  readonly pgPoolEnded: boolean;
+  /** `@ibatexas/audit-sink` leaf DI was cleared via `__resetAuditSink()`. */
+  readonly auditSinkReset: boolean;
+  /** Kernel MetricsSink reset via `_resetMetricsSink()` (see caveat below). */
+  readonly metricsSinkReset: boolean;
+}
+
+/**
+ * Full reset hook for in-process test harnesses (T2-6a). Clears every piece
+ * of process-global state `bootstrapClaustrum()` establishes so two
+ * sequential bootstraps in ONE vitest process do not cross-contaminate:
+ *
+ *  1. `_conductor` singleton → null (`getConductor()` throws again).
+ *  2. The bootstrap-OWNED pg Pool → `pool.end()` (no leaked handles).
+ *     Injected pools (caller-owned) are left open.
+ *  3. Audit-sink leaf DI → `__resetAuditSink()` (deps + cached sink cleared;
+ *     `getAuditSink()` fail-closes until the next `bootstrapAuditSinkDI()` —
+ *     which the next zero-`auditSink` bootstrap re-runs).
+ *  4. Global kernel MetricsSink → `_resetMetricsSink()` (upstream @internal
+ *     test hook in `@adjudicate/core` — the ONLY unset path; `setMetricsSink`
+ *     has no removal API). `hasMetricsSink()` returns false afterwards, so
+ *     the next bootstrap installs a fresh sink. CAVEAT: in the production
+ *     boot order this would drop the `installKernelMetricsSink()` production
+ *     sink (PostHog/Sentry/Prometheus) — exactly why this hook is gated.
+ *
+ * Deliberately NOT reset (out of this hook's ownership):
+ *  - The shared `@ibatexas/tools` Redis singleton — process-wide infra used
+ *    by far more than the conductor; test teardown owns it via
+ *    `closeRedisClient()`.
+ *  - The W3 observability hook registries on the audit-sink leaf
+ *    (`setAuditLagHook` etc.) — inert observers, re-registered by
+ *    `installKernelMetricsSink()` in the production boot order only.
+ *  - `tokenUsageStore` (module-level, ADR-135) — telemetry-only, outside the
+ *    determinism boundary, LRU-bounded.
+ *  - Installed kernel packs — `installPack` is re-run-safe (a stateless
+ *    conformance check; see the index.ts boot-order note).
+ */
+export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
+  assertTestOnlySurface("resetClaustrumForTests()");
+
+  const conductorCleared = _conductor !== null;
+  _conductor = null;
+
+  let pgPoolEnded = false;
+  if (_pgPool && _ownsPgPool && !_pgPool.ended) {
+    try {
+      await _pgPool.end();
+      pgPoolEnded = true;
+    } catch (err) {
+      logger.warn(
+        { component: "claustrum-bootstrap", err: (err as Error).message },
+        "resetClaustrumForTests: owned pg pool end() failed (continuing)",
+      );
+    }
+  }
+  _pgPool = null;
+  _ownsPgPool = false;
+
+  __resetAuditSink();
+  _resetMetricsSink();
+
+  return {
+    conductorCleared,
+    pgPoolEnded,
+    auditSinkReset: true,
+    metricsSinkReset: true,
+  };
+}
+
+/**
+ * Test-only accessor for the current per-bootstrap pg Pool (owned or
+ * injected). Lets the reset acceptance test spy `end()` / assert `ended` on
+ * the pool the bootstrap composed. Same gate as the reset hook.
+ */
+export function getClaustrumPgPoolForTests(): Pool | null {
+  assertTestOnlySurface("getClaustrumPgPoolForTests()");
+  return _pgPool;
 }
 
 // ── Adjudicator bridge ───────────────────────────────────────────────────────
@@ -782,7 +955,9 @@ export function deriveIbatexasPlannerContext(state: CognitiveState): {
  * (system prompt, tool framing) is incremental work layered on top.
  */
 function naiveResponder(
-  model: AnthropicProvider,
+  // The consumed surface is exactly the ModelProvider port (`.complete()`) —
+  // typed as such so the T2-6a injectable seam (scripted providers) fits.
+  model: ModelProvider,
   modelId: string,
 ): ResponderPort {
   return {
@@ -1102,7 +1277,12 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 
-export async function bootstrapClaustrum(): Promise<Conductor> {
+export async function bootstrapClaustrum(
+  options: ClaustrumBootstrapOptions = {},
+): Promise<Conductor> {
+  // Warm singleton wins — zero-arg double-init parity (index.ts boot order).
+  // Options are IGNORED here by design: an in-process harness that wants a
+  // differently-composed conductor MUST call resetClaustrumForTests() first.
   if (_conductor) return _conductor;
 
   // Model ids resolve ONCE, fail-fast, before any infra is touched. The
@@ -1131,7 +1311,11 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // Overwriting it here would silently drop those signals. Only install the
   // observability-only sink when NO sink is present (i.e. when claustrum is
   // bootstrapped standalone, e.g. its own tests). The production sink wins.
-  if (!hasMetricsSink()) {
+  if (options.metricsSink) {
+    // Injected sink (test seam) — installed unconditionally: a scripted
+    // harness needs deterministic ownership of the metrics surface.
+    setMetricsSink(options.metricsSink);
+  } else if (!hasMetricsSink()) {
     setMetricsSink(createIbatexasMetricsSink(logger));
   }
 
@@ -1141,26 +1325,41 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // unauditable mutation is refused rather than silently executed. Create the
   // pool first so the readiness probe runs on the very connection backing the
   // Postgres writer (and the pgvector grounding provider below).
-  const pgPool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-  });
+  const pgPool =
+    options.pgPool ??
+    new Pool({
+      connectionString: process.env.DATABASE_URL,
+    });
+  // Track for resetClaustrumForTests(): only a bootstrap-created pool is
+  // OWNED (and therefore ended) by the reset hook; an injected pool stays
+  // caller-owned.
+  _pgPool = pgPool;
+  _ownsPgPool = !options.pgPool;
   await assertAuditPostgresReady(pgPool);
 
-  const anthropicClient = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY ?? "",
-  });
-  // The structural AnthropicClientLike type in @claustrum/anthropic exposes
-  // only the subset of the SDK we use; the real Anthropic class has many
-  // more fields. Cast through `unknown` is intentional.
-  const modelProvider = new AnthropicProvider({
-    client: anthropicClient as unknown as ConstructorParameters<
-      typeof AnthropicProvider
-    >[0]["client"],
-    // Route the provider's non-fatal warnings (max_tokens fallback) through the
-    // structured logger so they reach VictoriaLogs (cycle-36 L5 sweep) instead
-    // of a bare console.warn in the adapter.
-    onWarn: (message, fields) => logger.warn(fields, message),
-  });
+  let modelProvider: ModelProvider;
+  if (options.modelProvider) {
+    // Injected provider (scripted harness, T2-6b) — the Anthropic SDK client
+    // is never constructed, so a scripted composition is structurally unable
+    // to spend tokens.
+    modelProvider = options.modelProvider;
+  } else {
+    const anthropicClient = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY ?? "",
+    });
+    // The structural AnthropicClientLike type in @claustrum/anthropic exposes
+    // only the subset of the SDK we use; the real Anthropic class has many
+    // more fields. Cast through `unknown` is intentional.
+    modelProvider = new AnthropicProvider({
+      client: anthropicClient as unknown as ConstructorParameters<
+        typeof AnthropicProvider
+      >[0]["client"],
+      // Route the provider's non-fatal warnings (max_tokens fallback) through the
+      // structured logger so they reach VictoriaLogs (cycle-36 L5 sweep) instead
+      // of a bare console.warn in the adapter.
+      onWarn: (message, fields) => logger.warn(fields, message),
+    });
+  }
 
   // Wire dev's audit-sink dependency injection (Postgres + NATS + Redis spill +
   // PII redaction) BEFORE reading the composed sink. `bootstrapAuditSinkDI`
@@ -1168,8 +1367,16 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // sink` leaf; `getAuditSink()` then returns the fail-closed composed sink the
   // adjudicator bridge consumes. (Replaces the audit-branch's bare
   // `createPostgresSink` + hand-rolled `PostgresWriter` block — dev owns the
-  // richer pipeline.)
-  await bootstrapAuditSinkDI(logger);
+  // richer pipeline.) An injected sink (test seam) SKIPS the global DI wiring
+  // entirely — the bridge consumes the injected sink directly and the leaf's
+  // module state is left untouched.
+  let auditSink: AuditSink;
+  if (options.auditSink) {
+    auditSink = options.auditSink;
+  } else {
+    await bootstrapAuditSinkDI(logger);
+    auditSink = getAuditSink();
+  }
 
   // Execution ledger (Hard Rule #9) — always-on, fail-closed cross-turn
   // replay-suppression. Redis must be up BEFORE the adjudicator exists, so the
@@ -1179,7 +1386,7 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // bridge's safeAuditedAdjudicate catch degrades the throw to REFUSE — Redis
   // loss is a refusal, never a dedup bypass. Keys go through rk() (Hard Rule
   // #7); TTL stays the upstream 14-day default.
-  const redis = await getRedisClient();
+  const redis = options.redis ?? (await getRedisClient());
   // node-redis's generic reply type is `string | Buffer | null`; this client is
   // never put in buffer mode, so narrow set/get/del to the exact contract the
   // ledger consumes (RedisLedgerClient) rather than an `as unknown as` cast.
@@ -1205,7 +1412,7 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
         "audit read path failed (fail-safe: empty result)",
       ),
   });
-  const adjudicator = buildAdjudicator({ sink: getAuditSink(), ledger, auditReads });
+  const adjudicator = buildAdjudicator({ sink: auditSink, ledger, auditReads });
 
   // Tool registry (RC-A1 Phase A) — register the ibatexas tool packs and assert
   // roster integrity before the conductor goes live. The registry keys tools by
