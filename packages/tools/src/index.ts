@@ -282,6 +282,8 @@ export {
   emitActEnd,
   emitChatTurnStart,
   emitChatTurnEnd,
+  emitJourneyAborted,
+  emitEvidenceCapture,
   emitLlmCall,
   emitPreflightCheck,
 } from "./events/emitter.js"

@@ -45,6 +45,7 @@ export type ScenarioEventType =
 export type JourneyEventType =
   | "journey.start"
   | "journey.end"
+  | "journey.aborted"
   | "preflight.check"
   | "act.start"
   | "act.end"
@@ -84,6 +85,8 @@ export interface IbxEventBase {
   outcome?: "pass" | "fail" | "error"
   // preflight.check — which environment-handshake check this record is for
   check?: string
+  // journey.aborted — machine-readable abort reason (e.g. "token_ceiling")
+  reason?: string
   // chat.turn.* (T1a-5 ChatClient) — SUT conversation handle + 1-based turn no.
   sessionId?: string
   turn?: number
@@ -282,6 +285,36 @@ export function emitPreflightCheck(args: {
   runId?: string
 }): void {
   emit({ type: "preflight.check", timestamp: new Date().toISOString(), ...args })
+}
+
+/**
+ * `journey.aborted` — the run attempt was cut short by a budget/guard, not
+ * by an act outcome (T1a-8: the driver's per-attempt token ceiling emits
+ * `reason: "token_ceiling"`; T1b-8's suite-level dollar abort emits
+ * `reason: "dollar_cap"`). Emitted BEFORE the abort error propagates so the
+ * JSONL trace always carries the reason.
+ */
+export function emitJourneyAborted(args: {
+  journey: string
+  runId: string
+  reason: string
+  detail?: string
+}): void {
+  emit({ type: "journey.aborted", timestamp: new Date().toISOString(), ...args })
+}
+
+/**
+ * `evidence.capture` — a piece of run evidence was captured (T1a-8: the
+ * test driver surfaced an entity id/handle into ctx.vars; `evidence` is the
+ * var name, `detail` its value — handles/codes only, never secrets).
+ */
+export function emitEvidenceCapture(args: {
+  evidence: string
+  detail?: string
+  journey?: string
+  runId?: string
+}): void {
+  emit({ type: "evidence.capture", timestamp: new Date().toISOString(), ...args })
 }
 
 /** One provider round-trip. Token counts are required — the dollar source. */
