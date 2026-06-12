@@ -80,9 +80,13 @@ export const INTENT_KIND_PATTERN = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/
 
 /**
  * Raw Medusa entity-id literals — forbidden anywhere in `acts`/`params`.
- * Matches `prod_…`, `variant_…`, `cart_…` at a word boundary.
+ * Matches `prod_…`, `variant_…`, `cart_…` at a word boundary followed by an
+ * id-like tail (Medusa ids are 26-char ULIDs; ≥8 alphanumerics keeps the
+ * lint hot while letting legitimate API FIELD NAMES like `variant_id` /
+ * `cart_id` through — T1a-13: the storefront line-items route's body field
+ * tripped the original any-length pattern).
  */
-export const RAW_MEDUSA_ID_PATTERN = /(^|[^A-Za-z0-9_])(prod|variant|cart)_[A-Za-z0-9]/
+export const RAW_MEDUSA_ID_PATTERN = /(^|[^A-Za-z0-9_])(prod|variant|cart)_[A-Za-z0-9]{8,}/
 
 // ── Acts ─────────────────────────────────────────────────────────────────────
 
@@ -113,11 +117,25 @@ export const HttpActSchema = z
     kind: z.literal("http"),
     ...actBaseFields,
     method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-    /** Public route path, must start with `/` (e.g. `/api/orders/intent`). */
+    /**
+     * Public route path, must start with `/`. `:name` segments are resolved
+     * from ctx.vars at execution time (e.g. `/api/orders/:orderId/cancel`) —
+     * journeys never carry raw entity ids (T1a-13 harness).
+     */
     path: z.string().regex(/^\//, "path must start with /"),
+    /**
+     * JSON body. String values that are exactly `:name` are resolved from
+     * ctx.vars at execution time (same convention as path segments).
+     */
     body: JsonValueSchema.optional(),
     /** Auth identity for the call; executors default to `anonymous`. */
     asRole: z.enum(["anonymous", "customer", "staff"]).optional(),
+    /**
+     * Response captures: varName → dot-path into the parsed JSON response
+     * (e.g. `{ cartId: "cart.id" }`). The harness surfaces each captured
+     * value into ctx.vars for later acts (T1a-13).
+     */
+    capture: z.record(z.string(), z.string()).optional(),
   })
   .strict()
 

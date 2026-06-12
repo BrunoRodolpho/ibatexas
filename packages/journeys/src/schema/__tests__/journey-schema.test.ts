@@ -108,11 +108,36 @@ describe("JourneyFileSchema — named errors", () => {
   })
 
   it("rejects variant_/cart_ ids nested deep in journey params", () => {
-    const byVariant = { ...validDoc(), params: { nested: { list: ["variant_01ABC"] } } }
+    // Realistic id tails (Medusa ids are 26-char ULIDs; the pattern requires
+    // ≥8 alphanumerics after the underscore — T1a-13 sharpening).
+    const byVariant = {
+      ...validDoc(),
+      params: { nested: { list: ["variant_01HXYZABCDEF"] } },
+    }
     expect(codesOf(byVariant)).toContain("raw_medusa_id")
 
-    const byCartKey = { ...validDoc(), params: { cart_01XYZ: true } }
+    const byCartKey = { ...validDoc(), params: { cart_01HXYZABCDEF: true } }
     expect(codesOf(byCartKey)).toContain("raw_medusa_id")
+  })
+
+  it("does NOT flag API field NAMES like variant_id / cart_id (T1a-13)", () => {
+    // The storefront line-items route's body field is literally `variant_id`
+    // — a field name, not an id literal. The ≥8-alphanumeric tail keeps the
+    // lint hot for ids while letting these through.
+    const doc = {
+      ...validDoc(),
+      acts: [
+        {
+          kind: "http",
+          method: "POST",
+          path: "/api/cart/:cartId/line-items",
+          asRole: "customer",
+          body: { variant_id: ":variantId", quantity: 1 },
+        },
+        { kind: "chat", goal: "Continuar o pedido." },
+      ],
+    }
+    expect(codesOf(doc)).not.toContain("raw_medusa_id")
   })
 
   it("does NOT flag handles or words merely containing 'cart'", () => {

@@ -245,6 +245,41 @@ async function resolveHttpPath(
   return out.join("/")
 }
 
+/**
+ * Resolve `:name` string values inside a declared http-act body from
+ * ctx.vars (same convention as path segments). Non-string leaves and strings
+ * not starting with `:` pass through verbatim.
+ */
+function resolveBodyVars(value: unknown, vars: Record<string, unknown>): unknown {
+  if (typeof value === "string" && value.startsWith(":") && value.length > 1) {
+    const name = value.slice(1)
+    const resolved = vars[name]
+    if (typeof resolved !== "string" || resolved === "") {
+      throw new JourneyRunCliError(
+        `http act body: no ctx.vars value for "${value}" — earlier acts must surface it`,
+      )
+    }
+    return resolved
+  }
+  if (Array.isArray(value)) return value.map((item) => resolveBodyVars(item, vars))
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, resolveBodyVars(v, vars)]),
+    )
+  }
+  return value
+}
+
+/** Extract a dot-path (e.g. `cart.id`) from a parsed JSON value. */
+function extractPath(value: unknown, path: string): unknown {
+  let current: unknown = value
+  for (const segment of path.split(".")) {
+    if (current === null || typeof current !== "object") return undefined
+    current = (current as Record<string, unknown>)[segment]
+  }
+  return current
+}
+
 function buildExecutors(args: {
   journey: Journey
   runId: string
@@ -320,7 +355,44 @@ function buildExecutors(args: {
       })
       return { ok: true, detail: `resolved seeded customer ${phone} -> ${customer.id}` }
     }
-    return { ok: false, detail: `unknown fixture seed "${act.seed}" (known: seedCustomer)` }
+    if (act.seed === "resolveProductVariant") {
+      // Precondition resolve (read-only): catalog handle (+ optional variant
+      // title) → variant id, surfaced as ctx.vars.variantId. Journeys never
+      // carry raw Medusa ids — this is how an http act gets one at run time.
+      const handle = (act.params?.["handle"] ?? ctx.params["productHandle"]) as
+        | string
+        | undefined
+      const variantTitle = act.params?.["variantTitle"] as string | undefined
+      if (typeof handle !== "string" || handle === "") {
+        return {
+          ok: false,
+          detail:
+            "resolveProductVariant: no handle in act.params.handle or journey params.productHandle",
+        }
+      }
+      const variant = await domain.variantByHandle(handle, variantTitle)
+      if (variant === null) {
+        return {
+          ok: false,
+          detail: `resolveProductVariant: no variant for handle "${handle}"${variantTitle !== undefined ? ` title "${variantTitle}"` : ""} — is the catalog seeded?`,
+        }
+      }
+      ctx.vars["variantId"] = variant.id
+      emitEvidenceCapture({
+        evidence: "variantId",
+        detail: variant.id,
+        journey: journey.id,
+        runId,
+      })
+      return {
+        ok: true,
+        detail: `resolved ${handle}${variantTitle !== undefined ? ` (${variantTitle})` : ""} -> ${variant.id}`,
+      }
+    }
+    return {
+      ok: false,
+      detail: `unknown fixture seed "${act.seed}" (known: seedCustomer, resolveProductVariant)`,
+    }
   }
 
   const chat = async (act: ChatAct, ctx: JourneyRunContext): Promise<ActExecutionResult> => {
@@ -367,22 +439,53 @@ function buildExecutors(args: {
     if (asRole === "customer") headers["cookie"] = mintCustomerCookie(ctx)
 
     const path = await resolveHttpPath(act.path, ctx, barrier, runStartedAt)
+    const body = act.body !== undefined ? resolveBodyVars(act.body, ctx.vars) : undefined
     const response = await fetch(`${apiBaseUrl}${path}`, {
       method: act.method,
       headers,
-      ...(act.body !== undefined ? { body: JSON.stringify(act.body) } : {}),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     })
     let bodyText = ""
     try {
-      bodyText = truncate(await response.text())
+      bodyText = await response.text()
     } catch {
       /* body read best-effort */
     }
     const ok = response.status >= 200 && response.status < 300
+
+    // Declared response captures: varName → dot-path into the JSON response.
+    if (ok && act.capture !== undefined) {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(bodyText)
+      } catch {
+        return {
+          ok: false,
+          detail: `${act.method} ${path} -> ${response.status} but the response is not JSON (capture declared)`,
+        }
+      }
+      for (const [varName, dotPath] of Object.entries(act.capture)) {
+        const value = extractPath(parsed, dotPath)
+        if (typeof value !== "string" && typeof value !== "number") {
+          return {
+            ok: false,
+            detail: `${act.method} ${path}: capture "${varName}" found no string/number at "${dotPath}"`,
+          }
+        }
+        ctx.vars[varName] = String(value)
+        emitEvidenceCapture({
+          evidence: varName,
+          detail: String(value),
+          journey: journey.id,
+          runId,
+        })
+      }
+    }
+
     onProgress(`  http ${act.method} ${path} -> ${response.status}`)
     return {
       ok,
-      detail: `${act.method} ${path} -> ${response.status}${ok ? "" : ` ${bodyText}`}`,
+      detail: `${act.method} ${path} -> ${response.status}${ok ? "" : ` ${truncate(bodyText)}`}`,
     }
   }
 
@@ -417,6 +520,10 @@ async function runVerifyPhase(args: {
     args
   const outcomes: VerifyOutcome[] = []
   const scope = { sessionIds: scopeSessionIds }
+  // Time-scope every fetch to the attempt window: the seeded customer is
+  // shared across attempts, so the hashed(customerId) namespace accumulates
+  // rows from earlier runs — `since` cuts them out of the trajectory.
+  const fetchOpts = { since: runStartedAt }
   const expected: ExpectedTrajectoryStep[] = journey.expects.map((e) => ({
     intentKind: e.intentKind,
     decision: e.decision,
@@ -454,10 +561,10 @@ async function runVerifyPhase(args: {
         // so projector/sink lag can never flake the trajectory assert.
         const mode = TRAJECTORY_MODES[id]!
         const deadline = Date.now() + AUDIT_SETTLE_TIMEOUT_MS
-        let last = matchTrajectory(await audit.fetchRecords(scope), expected, { mode })
+        let last = matchTrajectory(await audit.fetchRecords(scope, fetchOpts), expected, { mode })
         while (!last.ok && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, AUDIT_SETTLE_POLL_MS))
-          last = matchTrajectory(await audit.fetchRecords(scope), expected, { mode })
+          last = matchTrajectory(await audit.fetchRecords(scope, fetchOpts), expected, { mode })
         }
         outcomes.push({
           invariant: id,
@@ -467,13 +574,13 @@ async function runVerifyPhase(args: {
             : last.diff,
         })
       } else if (id === "audit.record.verified") {
-        const records = await audit.fetchRecords(scope)
+        const records = await audit.fetchRecords(scope, fetchOpts)
         const report = verifyFetchedRecords(records)
         outcomes.push({
           invariant: id,
           ok: report.ok,
           detail: report.ok
-            ? `${report.verifiedCount}/${report.total} record(s) verified tamper-evident`
+            ? `${report.verifiedCount + report.redactedVerifiedCount}/${report.total} record(s) verified tamper-evident (${report.redactedVerifiedCount} redaction-aware)`
             : `${report.failures.length} failure(s): ${report.failures
                 .map((f) => `${f.intentKind}@${f.at} ${f.reason}`)
                 .join("; ")}`,
@@ -484,7 +591,7 @@ async function runVerifyPhase(args: {
           outcomes.push({ invariant: id, ok: false, detail: "args.intentKind missing" })
           continue
         }
-        const records = await audit.fetchRecords(scope, { intentKind: kind })
+        const records = await audit.fetchRecords(scope, { ...fetchOpts, intentKind: kind })
         outcomes.push({
           invariant: id,
           ok: records.length === 0,
@@ -756,14 +863,15 @@ export async function runJourneyCli(options: RunJourneyCliOptions): Promise<Jour
   }
   const onProgress = options.onProgress ?? (() => undefined)
 
-  // Env contract: .env.test fills anything the shell did not set (the
-  // fingerprint, secrets, oracle URL, model pins). Missing file is tolerated
-  // — the preflight refuses with a named error if the contract is incomplete.
+  // Env contract: .env.test is AUTHORITATIVE for the run (override semantics
+  // — the ibx CLI preloads the dev .env via dotenv, which must never leak
+  // into the test plane; see test-env.ts). Missing file is tolerated — the
+  // preflight refuses with a named error if the contract is incomplete.
   const envFile = options.envFile ?? join(REPO_ROOT, ".env.test")
   try {
     const loaded = loadTestEnv(envFile)
     onProgress(
-      `env: ${envFile} (${loaded.injected.length} injected, ${loaded.preserved.length} shell-preserved)`,
+      `env: ${envFile} (${loaded.injected.length} injected, ${loaded.overridden.length} overridden, ${loaded.identical.length} identical)`,
     )
   } catch {
     onProgress(`env: ${envFile} not readable — relying on the shell environment`)

@@ -42,6 +42,7 @@ import {
   type IntentAuditRow,
 } from "@adjudicate/audit-postgres"
 import {
+  sha256Canonical,
   verifyAuditRecord,
   type AuditRecord,
   type DecisionKind,
@@ -309,6 +310,13 @@ export interface AuditVerificationReport {
   total: number
   /** Records whose tamper-evident hash verified intact. */
   verifiedCount: number
+  /**
+   * Records whose envelope was PII-redacted by the audit sink (actor.sessionId
+   * carries the `hashed:` sentinel) and whose post-redaction auditHash verified
+   * intact (T1a-13 — see `redactionAware`). Counted separately from
+   * `verifiedCount`; both are passes.
+   */
+  redactedVerifiedCount: number
   /** Pre-v4 records with no auditHash (failures unless `allowMissingHash`). */
   missingHashCount: number
   failures: AuditVerificationFailure[]
@@ -321,19 +329,54 @@ export interface VerifyFetchedRecordsOptions {
    * red flag and fails the invariant.
    */
   allowMissingHash?: boolean
+  /**
+   * Default true. The SUT's audit sink REDACTS every envelope actor.sessionId
+   * (salted hash, `hashed:` sentinel — packages/audit-sink/audit-redactor.ts)
+   * and RECOMPUTES the record's auditHash post-redaction. Such records can
+   * never pass `verifyAuditRecord`'s envelope→intentHash self-consistency leg
+   * (the intentHash was derived from the UN-redacted envelope — by design),
+   * but their whole-record auditHash still proves tamper-evidence. When set,
+   * an `envelope_intent_mismatch` on a sentinel-redacted envelope falls back
+   * to the auditHash check (the exact strip-and-hash `verifyAuditRecord`
+   * performs); unredacted records must still fully verify.
+   */
+  redactionAware?: boolean
+}
+
+/** The audit redactor's sentinel prefix on a redacted actor.sessionId. */
+const REDACTION_SENTINEL = "hashed:"
+
+function isRedactedEnvelope(record: AuditRecord): boolean {
+  const sessionId = (record.envelope as { actor?: { sessionId?: unknown } }).actor?.sessionId
+  return typeof sessionId === "string" && sessionId.startsWith(REDACTION_SENTINEL)
+}
+
+/**
+ * The whole-record auditHash leg of `verifyAuditRecord`, standalone — strips
+ * auditHash + signature + metadata exactly as the kernel does (audit.ts) and
+ * compares the canonical sha256. Used for the redaction-aware fallback.
+ */
+function auditHashVerifies(record: AuditRecord): boolean | null {
+  const { auditHash, signature: _signature, metadata: _metadata, ...rest } =
+    record as AuditRecord & { signature?: unknown; metadata?: unknown }
+  if (auditHash === undefined) return null
+  return sha256Canonical(rest) === auditHash
 }
 
 /**
  * Run `verifyAuditRecord` (@adjudicate/core — the canonical tamper-evidence
  * check) over a fetched trail. Backs the `audit.record.verified` invariant:
- * every record in the run's namespace must verify intact.
+ * every record in the run's namespace must verify intact (redaction-aware by
+ * default — see `VerifyFetchedRecordsOptions.redactionAware`).
  */
 export function verifyFetchedRecords(
   records: readonly AuditRecord[],
   opts: VerifyFetchedRecordsOptions = {},
 ): AuditVerificationReport {
+  const redactionAware = opts.redactionAware ?? true
   const failures: AuditVerificationFailure[] = []
   let verifiedCount = 0
+  let redactedVerifiedCount = 0
   let missingHashCount = 0
 
   for (const record of records) {
@@ -354,6 +397,18 @@ export function verifyFetchedRecords(
       }
       continue
     }
+    // Redaction-aware fallback: a sentinel-redacted envelope is EXPECTED to
+    // fail intentHash self-consistency; tamper-evidence is the post-redaction
+    // auditHash, which the redactor maintains.
+    if (
+      redactionAware &&
+      verification.reason === "envelope_intent_mismatch" &&
+      isRedactedEnvelope(record) &&
+      auditHashVerifies(record) === true
+    ) {
+      redactedVerifiedCount += 1
+      continue
+    }
     failures.push({
       intentHash: record.intentHash,
       intentKind: record.envelope.kind,
@@ -368,6 +423,7 @@ export function verifyFetchedRecords(
     ok: failures.length === 0,
     total: records.length,
     verifiedCount,
+    redactedVerifiedCount,
     missingHashCount,
     failures,
   }

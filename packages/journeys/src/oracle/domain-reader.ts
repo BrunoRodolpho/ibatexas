@@ -70,9 +70,22 @@ export interface DomainOrderProjectionRow {
   createdAt: Date
 }
 
+export interface DomainVariantRow {
+  id: string
+  title: string | null
+  productHandle: string
+}
+
 export interface DomainReader {
   /** Seeded-customer precondition lookup (fixture acts resolve, never write). */
   customerByPhone(phone: string): Promise<DomainCustomerRow | null>
+  /**
+   * Catalog-variant precondition lookup over the Medusa tables (public
+   * schema — the oracle role has SELECT there). `variantTitle` (e.g. "1kg")
+   * disambiguates multi-variant products; without it the first variant by
+   * (created_at, id) is returned.
+   */
+  variantByHandle(handle: string, variantTitle?: string): Promise<DomainVariantRow | null>
   /**
    * The customer's most-recent order projection (the same "most recent"
    * ordering the SUT's auto-resolve uses — resolve-and-assemble.ts), optionally
@@ -114,6 +127,22 @@ export function createDomainReader(opts: CreateDomainReaderOptions = {}): Domain
         [phone],
       )
       return (result.rows[0] as DomainCustomerRow | undefined) ?? null
+    },
+
+    async variantByHandle(handle, variantTitle) {
+      const params: unknown[] = [handle]
+      let where = `p.handle = $1 AND pv.deleted_at IS NULL AND p.deleted_at IS NULL`
+      if (variantTitle !== undefined) {
+        params.push(variantTitle)
+        where += ` AND pv.title = $${params.length}`
+      }
+      const result = await pool.query(
+        `SELECT pv.id, pv.title, p.handle AS "productHandle" FROM product_variant pv ` +
+          `JOIN product p ON pv.product_id = p.id WHERE ${where} ` +
+          `ORDER BY pv.created_at, pv.id LIMIT 1`,
+        params,
+      )
+      return (result.rows[0] as DomainVariantRow | undefined) ?? null
     },
 
     async latestOrderForCustomer(customerId, since) {
