@@ -16,3 +16,15 @@ export const SEED_CUSTOMERS = [
 
 /** Phone numbers only — for quick lookups in seed scripts. */
 export const SEED_CUSTOMER_PHONES = SEED_CUSTOMERS.map((c) => c.phone)
+
+/**
+ * Seeded staff members (T2-2a). The journeys harness's `seedStaff` fixture
+ * act RESOLVES these rows read-only (it never writes) and the authFixture
+ * mints the matching `staff_token` cookie — staff auth re-checks an ACTIVE
+ * `ibx_domain.staff` row on EVERY request (apps/api middleware/auth.ts),
+ * so the row must exist before any staff-HTTP journey act can run.
+ * Upserted by `seed-tables.ts` (the `seed-domain` pipeline step).
+ */
+export const SEED_STAFF = [
+  { phone: "+5519900000900", name: "Tainá Gerente", role: "MANAGER" as const },
+] as const

@@ -53,6 +53,24 @@
  * `audit.*` ids above are the defining registration (plan §5 names
  * `audit.trajectory.in_order` / `audit.record.verified` explicitly) — T1a-12
  * references these exact strings.
+ *
+ * T2-2a additions (bound by harness/run-journey-cli.ts):
+ *
+ *   order.event-log.anonymized → EVERY ibx_domain.order_event_log row for
+ *                             the run's own order carries the LGPD scrub
+ *                             payload `{anonymized: true}` AND at least one
+ *                             row exists (non-vacuous — the order.placed
+ *                             log row must have landed before the erasure;
+ *                             journeys barrier on it via the `awaitRunOrder`
+ *                             fixture). This is the OrderEventLog behavior
+ *                             `anonymizeCustomer` produces (customer.service
+ *                             .ts surface 5) and the projection barrier
+ *                             already tolerates (T1a-6).
+ *   customer.anonymize.goal-state → the run customer's ibx_domain.customers
+ *                             row is scrubbed exactly as `anonymizeCustomer`
+ *                             specifies: name "Usuário Removido", phone
+ *                             `anonymized:<sha-prefix>` sentinel, email and
+ *                             cpf null.
  */
 export const KNOWN_INVARIANT_IDS: ReadonlySet<string> = new Set([
   "order.goal-state",
@@ -64,4 +82,6 @@ export const KNOWN_INVARIANT_IDS: ReadonlySet<string> = new Set([
   "audit.trajectory.in_order",
   "audit.trajectory.any_order",
   "audit.kind-absent",
+  "order.event-log.anonymized",
+  "customer.anonymize.goal-state",
 ])

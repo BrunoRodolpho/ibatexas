@@ -92,7 +92,13 @@ import {
   type PriceTable,
 } from "./cost.js"
 import { ChatClient } from "../clients/chat-client.js"
-import { cookieHeader, mintCustomerToken } from "../clients/auth-fixture.js"
+import {
+  cookieHeader,
+  mintCustomerToken,
+  mintStaffToken,
+  STAFF_ROLES,
+  type StaffRole,
+} from "../clients/auth-fixture.js"
 import { awaitPaidState, firePaidStateWebhook } from "../clients/paid-state-fixture.js"
 import {
   PersonaDriver,
@@ -391,28 +397,80 @@ function buildExecutors(args: {
     return cookieHeader(mintCustomerToken({ customerId, jwtSecret }))
   }
 
+  // T2-2a: staff acts mint the `staff_token` cookie for the SEEDED ACTIVE
+  // staff row the seedStaff fixture resolved (the API re-checks the row per
+  // request — middleware/auth.ts; the authFixture replicates issueStaffJwtToken
+  // exactly, fingerprint-gated).
+  function mintStaffCookie(ctx: JourneyRunContext): string {
+    const staffId = ctx.vars["staffId"]
+    const staffRole = ctx.vars["staffRole"]
+    if (typeof staffId !== "string" || staffId === "" || typeof staffRole !== "string") {
+      throw new JourneyRunCliError(
+        "staff http act but ctx.vars.staffId/staffRole are unset — declare the seedStaff fixture act first",
+      )
+    }
+    if (!STAFF_ROLES.includes(staffRole as StaffRole)) {
+      throw new JourneyRunCliError(
+        `staff http act: ctx.vars.staffRole "${staffRole}" is not one of ${STAFF_ROLES.join("|")}`,
+      )
+    }
+    const staffJwtSecret = process.env["STAFF_JWT_SECRET"]
+    if (staffJwtSecret === undefined || staffJwtSecret === "") {
+      throw new JourneyRunCliError("STAFF_JWT_SECRET is missing from the env (.env.test)")
+    }
+    return cookieHeader(
+      mintStaffToken({ staffId, role: staffRole as StaffRole, staffJwtSecret }),
+    )
+  }
+
   const fixture = async (
     act: FixtureAct,
     ctx: JourneyRunContext,
   ): Promise<ActExecutionResult> => {
     if (act.seed === "seedCustomer") {
+      // T2-2a: `phonePool` — an ordered list of seeded phones; the fixture
+      // resolves the FIRST phone that still exists. Built for the LGPD
+      // erasure journey: an anonymized customer's phone becomes the
+      // `anonymized:` sentinel (customerByPhone → null), so each attempt
+      // rotates to the next un-erased pool entry. Resolve-only as ever —
+      // pool exhaustion fails loudly (the per-stack attempt budget IS the
+      // pool size; a fresh `ibx test seed` stack resets it).
+      const pool = act.params?.["phonePool"]
+      const candidates: string[] = Array.isArray(pool)
+        ? pool.filter((p): p is string => typeof p === "string" && p !== "")
+        : []
       const phone = (act.params?.["phone"] ?? ctx.params["customerPhone"]) as
         | string
         | undefined
-      if (typeof phone !== "string" || phone === "") {
-        return {
-          ok: false,
-          detail: "seedCustomer: no phone in act.params.phone or journey params.customerPhone",
+      if (candidates.length === 0) {
+        if (typeof phone !== "string" || phone === "") {
+          return {
+            ok: false,
+            detail:
+              "seedCustomer: no phone in act.params.phone/phonePool or journey params.customerPhone",
+          }
         }
+        candidates.push(phone)
       }
       // Preconditions resolve via the SELECT-only oracle role — never write.
       // The customer is one of SEED_CUSTOMERS; `ibx test seed` (stack step
       // 4/4) creates the row.
-      const customer = await domain.customerByPhone(phone)
-      if (customer === null) {
+      let customer: Awaited<ReturnType<typeof domain.customerByPhone>> = null
+      let resolvedPhone: string | undefined
+      for (const candidate of candidates) {
+        customer = await domain.customerByPhone(candidate)
+        if (customer !== null) {
+          resolvedPhone = candidate
+          break
+        }
+      }
+      if (customer === null || resolvedPhone === undefined) {
         return {
           ok: false,
-          detail: `seedCustomer: no customer with phone ${phone} — run \`ibx test seed\` (the fixture act only resolves seeded rows, it never writes)`,
+          detail:
+            candidates.length > 1
+              ? `seedCustomer: no resolvable customer left in phonePool [${candidates.join(", ")}] — every pool entry is missing or already anonymized; bring up a freshly seeded stack (the pool size is the per-stack attempt budget)`
+              : `seedCustomer: no customer with phone ${candidates[0]} — run \`ibx test seed\` (the fixture act only resolves seeded rows, it never writes)`,
         }
       }
       ctx.vars["customerId"] = customer.id
@@ -426,7 +484,10 @@ function buildExecutors(args: {
         journey: journey.id,
         runId,
       })
-      return { ok: true, detail: `resolved seeded customer ${phone} -> ${customer.id}` }
+      return {
+        ok: true,
+        detail: `resolved seeded customer ${resolvedPhone} -> ${customer.id}`,
+      }
     }
     if (act.seed === "resolveProductVariant") {
       // Precondition resolve (read-only): catalog handle (+ optional variant
@@ -461,6 +522,189 @@ function buildExecutors(args: {
         ok: true,
         detail: `resolved ${handle}${variantTitle !== undefined ? ` (${variantTitle})` : ""} -> ${variant.id}`,
       }
+    }
+    if (act.seed === "seedStaff") {
+      // T2-2a: resolve a SEEDED ACTIVE staff row (read-only — seed-tables.ts
+      // upserts SEED_STAFF in the seed-domain step; this fixture never
+      // writes). Staff auth re-checks the active row per request
+      // (middleware/auth.ts), so a minted-but-unseeded staff token is
+      // rejected regardless of signature validity. Surfaces
+      // ctx.vars.staffId/staffRole for the staff http executor AND adds the
+      // hashed(`admin:<staffId>`) audit namespace to the run scope (the
+      // admin reservation routes stamp actor.sessionId = `admin:${staffId}`).
+      const phone = (act.params?.["phone"] ?? ctx.params["staffPhone"]) as
+        | string
+        | undefined
+      const role = (act.params?.["role"] ?? ctx.params["staffRole"] ?? "MANAGER") as string
+      if (typeof phone !== "string" || phone === "") {
+        return {
+          ok: false,
+          detail: "seedStaff: no phone in act.params.phone or journey params.staffPhone",
+        }
+      }
+      if (!STAFF_ROLES.includes(role as StaffRole)) {
+        return {
+          ok: false,
+          detail: `seedStaff: role must be one of ${STAFF_ROLES.join("|")} (got "${role}")`,
+        }
+      }
+      const staff = await domain.staffByPhone(phone)
+      if (staff === null) {
+        return {
+          ok: false,
+          detail: `seedStaff: no staff with phone ${phone} — run \`ibx test seed\` (seed-domain upserts SEED_STAFF; the fixture only resolves seeded rows, it never writes)`,
+        }
+      }
+      if (!staff.active) {
+        return {
+          ok: false,
+          detail: `seedStaff: staff ${staff.id} is INACTIVE — the API re-checks the active row on every request`,
+        }
+      }
+      if (staff.role !== role) {
+        return {
+          ok: false,
+          detail: `seedStaff: seeded row role is ${staff.role}, journey asked for ${role} — honest journeys mint the seeded role`,
+        }
+      }
+      ctx.vars["staffId"] = staff.id
+      ctx.vars["staffRole"] = staff.role
+      emitEvidenceCapture({
+        evidence: "staffId",
+        detail: staff.id,
+        journey: journey.id,
+        runId,
+      })
+      return { ok: true, detail: `resolved seeded staff ${phone} -> ${staff.id} (${staff.role})` }
+    }
+    if (act.seed === "resolveTimeSlot") {
+      // T2-2a: read-only resolve of the earliest seeded FUTURE time slot
+      // (date >= tomorrow — keeps requireSlotInFuture trivially satisfied)
+      // with capacity for the party. Surfaced as ctx.vars.timeSlotId so the
+      // journey file never carries a raw slot id and never computes dates.
+      const partySizeRaw = act.params?.["partySize"] ?? ctx.params["partySize"]
+      const partySize =
+        typeof partySizeRaw === "number" && Number.isInteger(partySizeRaw) && partySizeRaw > 0
+          ? partySizeRaw
+          : 2
+      const slot = await domain.futureTimeSlot(partySize)
+      if (slot === null) {
+        return {
+          ok: false,
+          detail: `resolveTimeSlot: no future time slot with >= ${partySize} free covers — run \`ibx test seed\` (seed-domain seeds 30 days of slots)`,
+        }
+      }
+      ctx.vars["timeSlotId"] = slot.id
+      emitEvidenceCapture({
+        evidence: "timeSlotId",
+        detail: slot.id,
+        journey: journey.id,
+        runId,
+      })
+      return {
+        ok: true,
+        detail: `resolved future slot ${slot.id} (${slot.date.toISOString().split("T")[0]} ${slot.startTime}, ${slot.maxCovers - slot.reservedCovers} covers free)`,
+      }
+    }
+    if (act.seed === "resolveHistoricalOrderItem") {
+      // T2-2a: read-only resolve of the customer's SEEDED order history
+      // (customer_order_items — `ibx test seed`'s seed-orders step) for a
+      // pinned catalog handle. Proves the reorder journey's history
+      // precondition AND surfaces the HISTORICAL variantId — the re-order
+      // assembles exactly what the customer bought before.
+      const handle = (act.params?.["handle"] ?? ctx.params["productHandle"]) as
+        | string
+        | undefined
+      const customerId = ctx.vars["customerId"]
+      if (typeof customerId !== "string" || customerId === "") {
+        return {
+          ok: false,
+          detail:
+            "resolveHistoricalOrderItem: ctx.vars.customerId unset — declare the seedCustomer fixture act first",
+        }
+      }
+      if (typeof handle !== "string" || handle === "") {
+        return {
+          ok: false,
+          detail:
+            "resolveHistoricalOrderItem: no handle in act.params.handle or journey params.productHandle",
+        }
+      }
+      const item = await domain.historicalOrderItemByHandle(customerId, handle)
+      if (item === null) {
+        return {
+          ok: false,
+          detail: `resolveHistoricalOrderItem: no seeded order-history row for handle "${handle}" — run \`ibx test seed\` (seed-orders creates the history; the fixture only resolves)`,
+        }
+      }
+      ctx.vars["variantId"] = item.variantId
+      emitEvidenceCapture({
+        evidence: "variantId",
+        detail: item.variantId,
+        journey: journey.id,
+        runId,
+      })
+      return {
+        ok: true,
+        detail: `resolved historical ${handle} (order ${item.medusaOrderId}, ${item.orderedAt.toISOString().split("T")[0]}) -> ${item.variantId}`,
+      }
+    }
+    if (act.seed === "awaitRunOrder") {
+      // T2-2a: read-only BARRIER — waits for the run's OWN order projection
+      // (same stale-exclusion contract as the http-act `:orderId` binding)
+      // and, with `requireEventLog: true`, for at least one
+      // order_event_log row. The LGPD journey needs this ordering: the
+      // erasure scrubs event-log payloads ONCE at DELETE time, so a
+      // projector-lagged log row written AFTER the scrub would stay
+      // un-anonymized forever and fail the invariant for the wrong reason.
+      const customerId = ctx.vars["customerId"]
+      if (typeof customerId !== "string") {
+        return {
+          ok: false,
+          detail: "awaitRunOrder: ctx.vars.customerId unset — declare seedCustomer first",
+        }
+      }
+      let orderId = ctx.vars["orderId"]
+      if (typeof orderId !== "string" || orderId === "") {
+        const stale = preAttemptLatestOrderId
+        const settled = await awaitProjection({
+          prisma: barrier,
+          filter: { customerId, createdAt: { gte: runStartedAt } },
+          predicate: (state) => state.projection !== null && state.projection.id !== stale,
+          timeoutMs: ORDER_RESOLVE_TIMEOUT_MS,
+          pollMs: 250,
+        })
+        orderId = settled.projection?.id
+        if (typeof orderId !== "string") {
+          return { ok: false, detail: "awaitRunOrder: the run's order projection never appeared" }
+        }
+        ctx.vars["orderId"] = orderId
+        emitEvidenceCapture({
+          evidence: "orderId",
+          detail: orderId,
+          journey: journey.id,
+          runId,
+        })
+      }
+      if (act.params?.["requireEventLog"] === true) {
+        const deadline = Date.now() + ORDER_RESOLVE_TIMEOUT_MS
+        let rows = await barrier.orderEventLog.findMany({ where: { orderId } })
+        while (rows.length === 0 && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 250))
+          rows = await barrier.orderEventLog.findMany({ where: { orderId } })
+        }
+        if (rows.length === 0) {
+          return {
+            ok: false,
+            detail: `awaitRunOrder: no order_event_log row appeared for order ${orderId} within ${ORDER_RESOLVE_TIMEOUT_MS}ms`,
+          }
+        }
+        return {
+          ok: true,
+          detail: `order ${orderId} settled with ${rows.length} event-log row(s)`,
+        }
+      }
+      return { ok: true, detail: `order ${orderId} projection settled` }
     }
     if (act.seed === "paidState") {
       // ── T2-1 paid-state fixture — kernel-routed, NEVER projection-forged ──
@@ -549,7 +793,10 @@ function buildExecutors(args: {
     }
     return {
       ok: false,
-      detail: `unknown fixture seed "${act.seed}" (known: seedCustomer, resolveProductVariant, paidState)`,
+      detail:
+        `unknown fixture seed "${act.seed}" (known: seedCustomer, seedStaff, ` +
+        `resolveProductVariant, resolveTimeSlot, resolveHistoricalOrderItem, ` +
+        `awaitRunOrder, paidState)`,
     }
   }
 
@@ -587,14 +834,13 @@ function buildExecutors(args: {
 
   const http = async (act: HttpAct, ctx: JourneyRunContext): Promise<ActExecutionResult> => {
     const asRole = act.asRole ?? "anonymous"
-    if (asRole === "staff") {
-      return {
-        ok: false,
-        detail: "staff http acts are not wired in the T1a-13 harness (customer/anonymous only)",
-      }
-    }
-    const headers: Record<string, string> = { "content-type": "application/json" }
+    // content-type only when a body is actually sent — fastify 400s an
+    // empty body under an explicit application/json content-type (T2-2a:
+    // the body-less staff transition POSTs tripped this).
+    const headers: Record<string, string> = {}
+    if (act.body !== undefined) headers["content-type"] = "application/json"
     if (asRole === "customer") headers["cookie"] = mintCustomerCookie(ctx)
+    if (asRole === "staff") headers["cookie"] = mintStaffCookie(ctx)
 
     const path = await resolveHttpPath(
       act.path,
@@ -835,10 +1081,106 @@ async function runVerifyPhase(args: {
                 `${typeof orderType === "string" ? `, orderType=${orderType}` : ""}` +
                 `${typeof containsItemHandle === "string" ? `, contains ${containsItemHandle} of [${(observedHandles ?? []).join(", ")}]` : ""})`,
         })
+      } else if (id === "reservation.goal-state") {
+        // T2-2a: the run's OWN reservation (ctx.vars.reservationId — captured
+        // by the reservation-create http act) must reach args.status. The
+        // staff transitions are synchronous in the admin routes, but poll up
+        // to the goal-state budget so a slow stack can never flake this.
+        const status = verify.args?.["status"]
+        if (typeof status !== "string") {
+          outcomes.push({ invariant: id, ok: false, detail: "args.status missing" })
+          continue
+        }
+        const reservationId = ctx.vars["reservationId"]
+        if (typeof reservationId !== "string" || reservationId === "") {
+          outcomes.push({
+            invariant: id,
+            ok: false,
+            detail:
+              "ctx.vars.reservationId unset — the reservation-create http act must capture it",
+          })
+          continue
+        }
+        const deadline = Date.now() + GOAL_STATE_TIMEOUT_MS
+        let row = await domain.reservationById(reservationId)
+        while (row?.status !== status && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 250))
+          row = await domain.reservationById(reservationId)
+        }
+        outcomes.push({
+          invariant: id,
+          ok: row?.status === status,
+          detail:
+            row === null
+              ? `reservation ${reservationId} not found`
+              : row.status === status
+                ? `reservation ${reservationId} reached status=${status} (partySize=${row.partySize})`
+                : `reservation ${reservationId} status=${row.status}, expected ${status}`,
+        })
+      } else if (id === "order.event-log.anonymized") {
+        // T2-2a (LGPD): EVERY order_event_log row for the run's own order
+        // carries the scrub payload {anonymized: true} — and at least one
+        // row exists (non-vacuous; the awaitRunOrder fixture barriers on the
+        // log row BEFORE the erasure act so a projector-lagged row can never
+        // dodge the scrub). This is the exact behavior anonymizeCustomer
+        // writes (customer.service.ts surface 5) and the projection barrier
+        // already tolerates.
+        const orderId = await resolveRunOrderId()
+        const rows = await barrier.orderEventLog.findMany({ where: { orderId } })
+        const notAnonymized = rows.filter((row) => {
+          const payload = row.payload as Record<string, unknown> | null
+          return !(
+            payload !== null &&
+            typeof payload === "object" &&
+            payload["anonymized"] === true
+          )
+        })
+        outcomes.push({
+          invariant: id,
+          ok: rows.length > 0 && notAnonymized.length === 0,
+          detail:
+            rows.length === 0
+              ? `order ${orderId} has NO event-log rows — the assert would be vacuous (barrier on awaitRunOrder requireEventLog before erasing)`
+              : notAnonymized.length === 0
+                ? `all ${rows.length} event-log row(s) for order ${orderId} carry {anonymized: true}`
+                : `${notAnonymized.length}/${rows.length} event-log row(s) for order ${orderId} NOT anonymized (e.g. ${notAnonymized[0]?.eventType})`,
+        })
+      } else if (id === "customer.anonymize.goal-state") {
+        // T2-2a (LGPD): the customer row is scrubbed exactly as
+        // anonymizeCustomer specifies — sentinel phone, fixed name, null
+        // email/cpf. Synchronous by the DELETE route's 200, so a single
+        // oracle read suffices.
+        const customerId = ctx.vars["customerId"]
+        if (typeof customerId !== "string" || customerId === "") {
+          outcomes.push({
+            invariant: id,
+            ok: false,
+            detail: "ctx.vars.customerId unset — declare the seedCustomer fixture act first",
+          })
+          continue
+        }
+        const row = await domain.customerLgpdById(customerId)
+        const failures: string[] = []
+        if (row === null) {
+          failures.push("customer row missing (anonymize keeps the row — it must exist)")
+        } else {
+          if (row.name !== "Usuário Removido") failures.push(`name="${row.name ?? "null"}"`)
+          if (!row.phone.startsWith("anonymized:")) failures.push("phone not the anonymized: sentinel")
+          if (row.email !== null) failures.push("email not null")
+          if (row.cpf !== null) failures.push("cpf not null")
+        }
+        outcomes.push({
+          invariant: id,
+          ok: failures.length === 0,
+          detail:
+            failures.length === 0
+              ? `customer ${customerId} scrubbed (sentinel phone, name "Usuário Removido", email/cpf null)`
+              : `customer ${customerId} NOT fully scrubbed: ${failures.join("; ")}`,
+        })
       } else {
         // Registered ids without a T1a-13 binding fail LOUDLY — an invariant
-        // must never pass vacuously (reservation/cart goal-state +
-        // audit.refusal-basis land with the journeys that need them).
+        // must never pass vacuously (cart goal-state + audit.refusal-basis
+        // land with the journeys that need them).
         outcomes.push({
           invariant: id,
           ok: false,
@@ -880,14 +1222,35 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
   // hashed(chat sessionId), customer http acts under hashed(customerId).
   // Computed lazily (acts populate chatSessionIds/vars); consumed by the
   // verify-phase scope AND the T1b-5 sim_runs record.
+  //
+  // T2-2a extensions (explicit, never blanket — widening every run's scope
+  // would surface foreign-namespace envelopes in OTHER journeys' gates):
+  //   * staff acts: the admin reservation routes stamp actor.sessionId =
+  //     `admin:${staffId}` — included whenever a seedStaff fixture resolved
+  //     ctx.vars.staffId (only staff-act journeys do).
+  //   * params.auditScopeCustomerTool: true — opt-in for the
+  //     `customer:${customerId}` namespace some user-principal routes/tools
+  //     stamp (e.g. the order-note route, order-actions.ts:935; the
+  //     reservation customer tools). Declared per journey, so kernel rows
+  //     landing there become part of THAT run's reconciled trail only.
   const hashedRunSessionIds = (): string[] => {
     const redactSecret = process.env["AUDIT_REDACT_SECRET"] ?? ""
-    return [
+    const ids = [
       ...[...chatSessionIds].map((s) => hashedAuditSessionId(s, redactSecret)),
       ...(typeof vars["customerId"] === "string"
         ? [hashedAuditSessionId(vars["customerId"] as string, redactSecret)]
         : []),
     ]
+    if (
+      journey.params?.["auditScopeCustomerTool"] === true &&
+      typeof vars["customerId"] === "string"
+    ) {
+      ids.push(hashedAuditSessionId(`customer:${vars["customerId"] as string}`, redactSecret))
+    }
+    if (typeof vars["staffId"] === "string") {
+      ids.push(hashedAuditSessionId(`admin:${vars["staffId"] as string}`, redactSecret))
+    }
+    return ids
   }
   let pool: pg.Pool | undefined
   let pass = false

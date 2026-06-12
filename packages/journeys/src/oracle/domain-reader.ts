@@ -88,6 +88,50 @@ export interface DomainPaymentRow {
   createdAt: Date
 }
 
+/** ibx_domain.staff row slice (T2-2a — `seedStaff` fixture resolve). */
+export interface DomainStaffRow {
+  id: string
+  phone: string
+  name: string
+  role: string
+  active: boolean
+}
+
+/** ibx_domain.reservations row slice (T2-2a — reservation.goal-state). */
+export interface DomainReservationRow {
+  id: string
+  customerId: string
+  status: string
+  partySize: number
+  timeSlotId: string
+}
+
+/** ibx_domain.time_slots row slice (T2-2a — `resolveTimeSlot` fixture). */
+export interface DomainTimeSlotRow {
+  id: string
+  date: Date
+  startTime: string
+  maxCovers: number
+  reservedCovers: number
+}
+
+/** ibx_domain.customer_order_items slice (T2-2a — reorder-from-history). */
+export interface DomainHistoricalOrderItemRow {
+  variantId: string
+  medusaOrderId: string
+  orderedAt: Date
+  productHandle: string
+}
+
+/** LGPD-relevant ibx_domain.customers fields (T2-2a — anonymize goal-state). */
+export interface DomainCustomerLgpdRow {
+  id: string
+  phone: string
+  name: string | null
+  email: string | null
+  cpf: string | null
+}
+
 /**
  * Terminal payment statuses — mirror of TERMINAL_PAYMENT_STATUSES
  * (packages/types/src/payment-status.ts) so `activePaymentByOrderId`
@@ -144,6 +188,34 @@ export interface DomainReader {
    * amount and `awaitPaidState` polls this until `status === "paid"`.
    */
   activePaymentByOrderId(orderId: string): Promise<DomainPaymentRow | null>
+  /**
+   * Seeded-staff precondition lookup (T2-2a `seedStaff` fixture — resolve
+   * only, never write; the row is upserted by the seed-domain step).
+   */
+  staffByPhone(phone: string): Promise<DomainStaffRow | null>
+  /** Reservation row by id (T2-2a `reservation.goal-state` binding). */
+  reservationById(reservationId: string): Promise<DomainReservationRow | null>
+  /**
+   * Earliest seeded FUTURE time slot (date >= tomorrow — the pack's
+   * requireSlotInFuture guard compares slot start vs now) with at least
+   * `partySize` remaining covers. Read-only precondition resolve for the
+   * `resolveTimeSlot` fixture — slots are seeded 30 days ahead by
+   * `ibx test seed` (seed-tables.ts).
+   */
+  futureTimeSlot(partySize: number): Promise<DomainTimeSlotRow | null>
+  /**
+   * The customer's most-recent SEEDED order-history row for a catalog
+   * handle (ibx_domain.customer_order_items joined to the Medusa catalog —
+   * `ibx test seed`'s seed-orders step creates the history). Read-only
+   * precondition resolve for the reorder-from-history journey: it proves
+   * the history exists AND surfaces the historical variantId.
+   */
+  historicalOrderItemByHandle(
+    customerId: string,
+    handle: string,
+  ): Promise<DomainHistoricalOrderItemRow | null>
+  /** LGPD goal-state read: the customer row's PII columns (T2-2a). */
+  customerLgpdById(customerId: string): Promise<DomainCustomerLgpdRow | null>
   /** Ends the pool iff the reader created it. */
   close(): Promise<void>
 }
@@ -246,6 +318,63 @@ export function createDomainReader(opts: CreateDomainReaderOptions = {}): Domain
         [orderId, ...TERMINAL_PAYMENT_DB_STATUSES],
       )
       return (result.rows[0] as DomainPaymentRow | undefined) ?? null
+    },
+
+    async staffByPhone(phone) {
+      const result = await pool.query(
+        `SELECT id, phone, name, role, active FROM ibx_domain.staff WHERE phone = $1 LIMIT 1`,
+        [phone],
+      )
+      return (result.rows[0] as DomainStaffRow | undefined) ?? null
+    },
+
+    async reservationById(reservationId) {
+      const result = await pool.query(
+        `SELECT id, customer_id AS "customerId", status, party_size AS "partySize", ` +
+          `time_slot_id AS "timeSlotId" FROM ibx_domain.reservations WHERE id = $1`,
+        [reservationId],
+      )
+      return (result.rows[0] as DomainReservationRow | undefined) ?? null
+    },
+
+    async futureTimeSlot(partySize) {
+      // NB: TimeSlot.startTime carries NO @map in the Prisma schema — the
+      // physical column is camelCase ("startTime"), unlike its snake_cased
+      // siblings (max_covers / reserved_covers).
+      const result = await pool.query(
+        `SELECT id, date, "startTime", max_covers AS "maxCovers", ` +
+          `reserved_covers AS "reservedCovers" FROM ibx_domain.time_slots ` +
+          `WHERE date >= (CURRENT_DATE + 1) AND (max_covers - reserved_covers) >= $1 ` +
+          `ORDER BY date ASC, "startTime" ASC LIMIT 1`,
+        [partySize],
+      )
+      return (result.rows[0] as DomainTimeSlotRow | undefined) ?? null
+    },
+
+    async historicalOrderItemByHandle(customerId, handle) {
+      // Cross-schema read: customer_order_items carries raw Medusa
+      // variant/product ids (seed-stable only via the handle join, which is
+      // why the journey file pins the HANDLE and this resolve surfaces the
+      // id at run time).
+      const result = await pool.query(
+        `SELECT coi.variant_id AS "variantId", coi.medusa_order_id AS "medusaOrderId", ` +
+          `coi.ordered_at AS "orderedAt", p.handle AS "productHandle" ` +
+          `FROM ibx_domain.customer_order_items coi ` +
+          `JOIN product_variant pv ON pv.id = coi.variant_id ` +
+          `JOIN product p ON p.id = pv.product_id ` +
+          `WHERE coi.customer_id = $1 AND p.handle = $2 ` +
+          `ORDER BY coi.ordered_at DESC LIMIT 1`,
+        [customerId, handle],
+      )
+      return (result.rows[0] as DomainHistoricalOrderItemRow | undefined) ?? null
+    },
+
+    async customerLgpdById(customerId) {
+      const result = await pool.query(
+        `SELECT id, phone, name, email, cpf FROM ibx_domain.customers WHERE id = $1`,
+        [customerId],
+      )
+      return (result.rows[0] as DomainCustomerLgpdRow | undefined) ?? null
     },
 
     async close() {

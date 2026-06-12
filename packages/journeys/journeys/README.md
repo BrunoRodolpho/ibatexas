@@ -23,14 +23,30 @@ README is the only content.
      (`seed` + `params`). A fixture may NEVER publish NATS, mint
      SYSTEM-taint envelopes, or write state that later appears in
      `expects`/`verify` — the Phase-1b reconciliation gate enforces it.
-     Registered seeds: `seedCustomer`, `resolveProductVariant` (read-only
-     resolves) and `paidState` (T2-1 — drives the run's order to
+     Registered seeds: `seedCustomer` (single `phone` or `phonePool` —
+     the LGPD rotation, T2-2a), `seedStaff` (resolves a seeded ACTIVE
+     `ibx_domain.staff` row — `SEED_STAFF`, seed-domain step — and
+     surfaces ctx.vars.staffId/staffRole for `asRole: staff` acts),
+     `resolveProductVariant`, `resolveTimeSlot` (earliest seeded FUTURE
+     slot with capacity), `resolveHistoricalOrderItem` (the customer's
+     seeded order history by handle — reorder journeys), `awaitRunOrder`
+     (read-only barrier on the run's own order projection, optionally its
+     first order_event_log row) — all read-only resolves — and
+     `paidState` (T2-1 — drives the run's order to
      payment=paid through the REAL signature-verified Stripe webhook
      route; the SUT mints the audited system-actor
      `payment.status.reconcile` envelope, which hashes OUTSIDE the run
      namespace, so reconciliation is unaffected and the paid state is
      audited, never forged. Declare it AFTER the storefront checkout
      acts — it never creates orders).
+   - **Audit scope (T2-2a):** the run scope is hashed(chat sessionIds) +
+     hashed(customerId), plus hashed(`admin:<staffId>`) whenever a
+     `seedStaff` fixture ran (the admin routes' envelope namespace), plus
+     hashed(`customer:<customerId>`) when the journey declares
+     `params.auditScopeCustomerTool: true` (some user-principal routes —
+     e.g. the order-note route — stamp that prefixed namespace). The
+     extensions are explicit/opt-in so one journey's scope never leaks
+     foreign envelopes into another's reconciliation gate.
 4. **Handles only.** Reference catalog entities by handle
    (`costela-bovina-defumada`), never raw Medusa ids (`prod_…`,
    `variant_…`, `cart_…`) — those are not seed-stable and the schema lint

@@ -5,7 +5,11 @@
     "active": [
       "JOURNEY-001",
       "JOURNEY-005",
-      "JOURNEY-009"
+      "JOURNEY-009",
+      "JOURNEY-010",
+      "JOURNEY-011",
+      "JOURNEY-012",
+      "JOURNEY-013"
     ],
     "blocked": [
       "JOURNEY-002",
@@ -24,7 +28,7 @@
       "web-pix-pending-ctx",
       "ws4"
     ],
-    "journeys": 9
+    "journeys": 13
   },
   "nodes": [
     {
@@ -492,6 +496,325 @@
       }
     },
     {
+      "id": "journey:JOURNEY-010:act:0",
+      "type": "act",
+      "label": "seed-authenticated-customer",
+      "meta": {
+        "index": 0,
+        "kind": "fixture",
+        "seed": "seedCustomer"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-010:act:1",
+      "type": "act",
+      "label": "seed-staff-manager",
+      "meta": {
+        "index": 1,
+        "kind": "fixture",
+        "seed": "seedStaff"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-010:act:2",
+      "type": "act",
+      "label": "chat-booking-attempt",
+      "meta": {
+        "index": 2,
+        "kind": "chat",
+        "mode": "goal"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-010:act:3",
+      "type": "act",
+      "label": "resolve-future-time-slot",
+      "meta": {
+        "index": 3,
+        "kind": "fixture",
+        "seed": "resolveTimeSlot"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-010:act:4",
+      "type": "act",
+      "label": "create-reservation",
+      "meta": {
+        "asRole": "customer",
+        "index": 4,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/reservations"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-010:act:5",
+      "type": "act",
+      "label": "staff-checkin",
+      "meta": {
+        "asRole": "staff",
+        "index": 5,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/admin/reservations/:reservationId/checkin"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-010:act:6",
+      "type": "act",
+      "label": "staff-complete",
+      "meta": {
+        "asRole": "staff",
+        "index": 6,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/admin/reservations/:reservationId/complete"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-011:act:0",
+      "type": "act",
+      "label": "seed-authenticated-customer",
+      "meta": {
+        "index": 0,
+        "kind": "fixture",
+        "seed": "seedCustomer"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-011:act:1",
+      "type": "act",
+      "label": "resolve-historical-order-item",
+      "meta": {
+        "index": 1,
+        "kind": "fixture",
+        "seed": "resolveHistoricalOrderItem"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-011:act:2",
+      "type": "act",
+      "label": "chat-reorder-attempt",
+      "meta": {
+        "index": 2,
+        "kind": "chat",
+        "mode": "goal"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-011:act:3",
+      "type": "act",
+      "label": "create-cart",
+      "meta": {
+        "asRole": "customer",
+        "index": 3,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-011:act:4",
+      "type": "act",
+      "label": "add-historical-item",
+      "meta": {
+        "asRole": "customer",
+        "index": 4,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart/:cartId/line-items"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-011:act:5",
+      "type": "act",
+      "label": "checkout",
+      "meta": {
+        "asRole": "customer",
+        "index": 5,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart/checkout"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012:act:0",
+      "type": "act",
+      "label": "seed-poolable-customer",
+      "meta": {
+        "index": 0,
+        "kind": "fixture",
+        "seed": "seedCustomer"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012:act:1",
+      "type": "act",
+      "label": "resolve-product-variant",
+      "meta": {
+        "index": 1,
+        "kind": "fixture",
+        "seed": "resolveProductVariant"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012:act:2",
+      "type": "act",
+      "label": "create-cart",
+      "meta": {
+        "asRole": "customer",
+        "index": 2,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012:act:3",
+      "type": "act",
+      "label": "add-item",
+      "meta": {
+        "asRole": "customer",
+        "index": 3,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart/:cartId/line-items"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012:act:4",
+      "type": "act",
+      "label": "checkout",
+      "meta": {
+        "asRole": "customer",
+        "index": 4,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart/checkout"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012:act:5",
+      "type": "act",
+      "label": "await-order-and-event-log",
+      "meta": {
+        "index": 5,
+        "kind": "fixture",
+        "seed": "awaitRunOrder"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012:act:6",
+      "type": "act",
+      "label": "export-my-data",
+      "meta": {
+        "asRole": "customer",
+        "index": 6,
+        "kind": "http",
+        "method": "GET",
+        "path": "/api/me/data"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012:act:7",
+      "type": "act",
+      "label": "immediate-erasure",
+      "meta": {
+        "asRole": "customer",
+        "index": 7,
+        "kind": "http",
+        "method": "DELETE",
+        "path": "/api/me/data"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-013:act:0",
+      "type": "act",
+      "label": "seed-authenticated-customer",
+      "meta": {
+        "index": 0,
+        "kind": "fixture",
+        "seed": "seedCustomer"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-013:act:1",
+      "type": "act",
+      "label": "resolve-product-variant",
+      "meta": {
+        "index": 1,
+        "kind": "fixture",
+        "seed": "resolveProductVariant"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-013:act:2",
+      "type": "act",
+      "label": "create-cart",
+      "meta": {
+        "asRole": "customer",
+        "index": 2,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-013:act:3",
+      "type": "act",
+      "label": "add-item",
+      "meta": {
+        "asRole": "customer",
+        "index": 3,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart/:cartId/line-items"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-013:act:4",
+      "type": "act",
+      "label": "checkout",
+      "meta": {
+        "asRole": "customer",
+        "index": 4,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/cart/checkout"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-013:act:5",
+      "type": "act",
+      "label": "chat-note-and-review-attempt",
+      "meta": {
+        "index": 5,
+        "kind": "chat",
+        "mode": "goal"
+      }
+    },
+    {
+      "id": "journey:JOURNEY-013:act:6",
+      "type": "act",
+      "label": "add-note-via-route",
+      "meta": {
+        "asRole": "customer",
+        "index": 6,
+        "kind": "http",
+        "method": "POST",
+        "path": "/api/orders/:orderId/notes"
+      }
+    },
+    {
+      "id": "expect:customer.anonymize:EXECUTE",
+      "type": "expectation",
+      "label": "customer.anonymize → EXECUTE",
+      "meta": {
+        "decision": "EXECUTE",
+        "intentKind": "customer.anonymize"
+      }
+    },
+    {
       "id": "expect:order.amend.request:EXECUTE",
       "type": "expectation",
       "label": "order.amend.request → EXECUTE",
@@ -591,6 +914,24 @@
       }
     },
     {
+      "id": "expect:order.note.add:EXECUTE",
+      "type": "expectation",
+      "label": "order.note.add → EXECUTE",
+      "meta": {
+        "decision": "EXECUTE",
+        "intentKind": "order.note.add"
+      }
+    },
+    {
+      "id": "expect:order.note.add:REFUSE",
+      "type": "expectation",
+      "label": "order.note.add → REFUSE",
+      "meta": {
+        "decision": "REFUSE",
+        "intentKind": "order.note.add"
+      }
+    },
+    {
       "id": "expect:order.status.transition:EXECUTE",
       "type": "expectation",
       "label": "order.status.transition → EXECUTE",
@@ -624,6 +965,33 @@
       "meta": {
         "decision": "EXECUTE",
         "intentKind": "payment.status.transition"
+      }
+    },
+    {
+      "id": "expect:reservation.checkin:EXECUTE",
+      "type": "expectation",
+      "label": "reservation.checkin → EXECUTE",
+      "meta": {
+        "decision": "EXECUTE",
+        "intentKind": "reservation.checkin"
+      }
+    },
+    {
+      "id": "expect:reservation.complete:EXECUTE",
+      "type": "expectation",
+      "label": "reservation.complete → EXECUTE",
+      "meta": {
+        "decision": "EXECUTE",
+        "intentKind": "reservation.complete"
+      }
+    },
+    {
+      "id": "expect:reservation.create:REFUSE",
+      "type": "expectation",
+      "label": "reservation.create → REFUSE",
+      "meta": {
+        "decision": "REFUSE",
+        "intentKind": "reservation.create"
       }
     },
     {
@@ -887,6 +1255,91 @@
         "optionalExpectCount": 1,
         "personaContext": "guest",
         "source": "docs/agents/plan-v2.md §5 T1a-12 (corrected by T1b-0 per D-014)",
+        "status": "active",
+        "verifyInvariants": [
+          "audit.trajectory.in_order",
+          "audit.record.verified",
+          "audit.kind-absent"
+        ]
+      }
+    },
+    {
+      "id": "journey:JOURNEY-010",
+      "type": "journey",
+      "label": "JOURNEY-010 — Customer books a table, staff checks the party in and completes the visit",
+      "meta": {
+        "actCount": 7,
+        "blockedBy": [],
+        "channel": "web",
+        "expectCount": 3,
+        "journeyId": "JOURNEY-010",
+        "optionalExpectCount": 0,
+        "personaContext": "authed-customer",
+        "source": "docs/agents/plan-v2.md §5 T2-2a",
+        "status": "active",
+        "verifyInvariants": [
+          "audit.trajectory.in_order",
+          "audit.record.verified",
+          "reservation.goal-state"
+        ]
+      }
+    },
+    {
+      "id": "journey:JOURNEY-011",
+      "type": "journey",
+      "label": "JOURNEY-011 — Returning customer reorders a past favorite — chat proposes, the storefront assembles",
+      "meta": {
+        "actCount": 6,
+        "blockedBy": [],
+        "channel": "web",
+        "expectCount": 2,
+        "journeyId": "JOURNEY-011",
+        "optionalExpectCount": 1,
+        "personaContext": "authed-customer",
+        "source": "docs/agents/plan-v2.md §5 T2-2a",
+        "status": "active",
+        "verifyInvariants": [
+          "audit.trajectory.in_order",
+          "audit.record.verified",
+          "order.goal-state"
+        ]
+      }
+    },
+    {
+      "id": "journey:JOURNEY-012",
+      "type": "journey",
+      "label": "JOURNEY-012 — Customer exports their data, then exercises immediate LGPD erasure",
+      "meta": {
+        "actCount": 8,
+        "blockedBy": [],
+        "channel": "web",
+        "expectCount": 2,
+        "journeyId": "JOURNEY-012",
+        "optionalExpectCount": 0,
+        "personaContext": "authed-customer",
+        "source": "docs/agents/plan-v2.md §5 T2-2a",
+        "status": "active",
+        "verifyInvariants": [
+          "audit.trajectory.in_order",
+          "audit.record.verified",
+          "order.event-log.anonymized",
+          "customer.anonymize.goal-state"
+        ]
+      }
+    },
+    {
+      "id": "journey:JOURNEY-013",
+      "type": "journey",
+      "label": "JOURNEY-013 — Customer asks for an order note in chat, completes it on the site — review stays unproposable",
+      "meta": {
+        "actCount": 7,
+        "blockedBy": [],
+        "channel": "web",
+        "expectCount": 3,
+        "journeyId": "JOURNEY-013",
+        "optionalExpectCount": 0,
+        "personaContext": "authed-customer",
+        "source": "docs/agents/plan-v2.md §5 T2-2a",
         "status": "active",
         "verifyInvariants": [
           "audit.trajectory.in_order",
@@ -1167,6 +1620,94 @@
     {
       "from": "journey:JOURNEY-009",
       "to": "expect:order.item.add:REFUSE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "expect:reservation.checkin:EXECUTE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "expect:reservation.complete:EXECUTE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "expect:reservation.create:REFUSE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "expect:order.cart.ensure:EXECUTE",
+      "type": "expects",
+      "meta": {
+        "optional": true
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "expect:order.checkout.create:EXECUTE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "expect:order.item.add:REFUSE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "expect:customer.anonymize:EXECUTE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "expect:order.checkout.create:EXECUTE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "expect:order.checkout.create:EXECUTE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "expect:order.note.add:EXECUTE",
+      "type": "expects",
+      "meta": {
+        "optional": false
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "expect:order.note.add:REFUSE",
       "type": "expects",
       "meta": {
         "optional": false
@@ -1514,6 +2055,230 @@
       "type": "has-act",
       "meta": {
         "index": 5
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "journey:JOURNEY-010:act:0",
+      "type": "has-act",
+      "meta": {
+        "index": 0
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "journey:JOURNEY-010:act:1",
+      "type": "has-act",
+      "meta": {
+        "index": 1
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "journey:JOURNEY-010:act:2",
+      "type": "has-act",
+      "meta": {
+        "index": 2
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "journey:JOURNEY-010:act:3",
+      "type": "has-act",
+      "meta": {
+        "index": 3
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "journey:JOURNEY-010:act:4",
+      "type": "has-act",
+      "meta": {
+        "index": 4
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "journey:JOURNEY-010:act:5",
+      "type": "has-act",
+      "meta": {
+        "index": 5
+      }
+    },
+    {
+      "from": "journey:JOURNEY-010",
+      "to": "journey:JOURNEY-010:act:6",
+      "type": "has-act",
+      "meta": {
+        "index": 6
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "journey:JOURNEY-011:act:0",
+      "type": "has-act",
+      "meta": {
+        "index": 0
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "journey:JOURNEY-011:act:1",
+      "type": "has-act",
+      "meta": {
+        "index": 1
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "journey:JOURNEY-011:act:2",
+      "type": "has-act",
+      "meta": {
+        "index": 2
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "journey:JOURNEY-011:act:3",
+      "type": "has-act",
+      "meta": {
+        "index": 3
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "journey:JOURNEY-011:act:4",
+      "type": "has-act",
+      "meta": {
+        "index": 4
+      }
+    },
+    {
+      "from": "journey:JOURNEY-011",
+      "to": "journey:JOURNEY-011:act:5",
+      "type": "has-act",
+      "meta": {
+        "index": 5
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "journey:JOURNEY-012:act:0",
+      "type": "has-act",
+      "meta": {
+        "index": 0
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "journey:JOURNEY-012:act:1",
+      "type": "has-act",
+      "meta": {
+        "index": 1
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "journey:JOURNEY-012:act:2",
+      "type": "has-act",
+      "meta": {
+        "index": 2
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "journey:JOURNEY-012:act:3",
+      "type": "has-act",
+      "meta": {
+        "index": 3
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "journey:JOURNEY-012:act:4",
+      "type": "has-act",
+      "meta": {
+        "index": 4
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "journey:JOURNEY-012:act:5",
+      "type": "has-act",
+      "meta": {
+        "index": 5
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "journey:JOURNEY-012:act:6",
+      "type": "has-act",
+      "meta": {
+        "index": 6
+      }
+    },
+    {
+      "from": "journey:JOURNEY-012",
+      "to": "journey:JOURNEY-012:act:7",
+      "type": "has-act",
+      "meta": {
+        "index": 7
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "journey:JOURNEY-013:act:0",
+      "type": "has-act",
+      "meta": {
+        "index": 0
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "journey:JOURNEY-013:act:1",
+      "type": "has-act",
+      "meta": {
+        "index": 1
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "journey:JOURNEY-013:act:2",
+      "type": "has-act",
+      "meta": {
+        "index": 2
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "journey:JOURNEY-013:act:3",
+      "type": "has-act",
+      "meta": {
+        "index": 3
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "journey:JOURNEY-013:act:4",
+      "type": "has-act",
+      "meta": {
+        "index": 4
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "journey:JOURNEY-013:act:5",
+      "type": "has-act",
+      "meta": {
+        "index": 5
+      }
+    },
+    {
+      "from": "journey:JOURNEY-013",
+      "to": "journey:JOURNEY-013:act:6",
+      "type": "has-act",
+      "meta": {
+        "index": 6
       }
     }
   ]
