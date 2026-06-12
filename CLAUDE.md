@@ -4,23 +4,17 @@
 
 | Need | Go to |
 |------|-------|
-| What works, what's broken, priorities | [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) |
 | System diagrams, module map, "where is X?" | [docs/architecture/](docs/architecture/) |
-| Pre-launch backlog | [docs/backlog/TODO-BACKLOG.md](docs/backlog/TODO-BACKLOG.md) |
-| Full CLI reference (24 commands) | [docs/cli/reference.md](docs/cli/reference.md) |
+| Full CLI reference (30 commands) | [docs/cli/reference.md](docs/cli/reference.md) |
 | Deployment guide, CI/CD pipeline | [docs/setup/deployment.md](docs/setup/deployment.md) |
 | Bounded contexts, entity ownership | [docs/architecture/design/bounded-contexts.md](docs/architecture/design/bounded-contexts.md) |
 | Prisma schema, entities, NATS events | [docs/architecture/design/domain-model.md](docs/architecture/design/domain-model.md) |
 | Agent tools — auth level, inputs, outputs (17 LLM-callable) | [docs/architecture/design/agent-tools.md](docs/architecture/design/agent-tools.md) |
-| ADRs, cross-cutting patterns | [docs/architecture/decisions.md](docs/architecture/decisions.md) |
-| Zero-Trust LLM, tool classification, intent bridge | [docs/architecture/decisions.md](docs/architecture/decisions.md) (ADR #9) |
 | PIX charge lifecycle Pack (`@adjudicate/pack-payments-pix`) | [BrunoRodolpho/adjudicate](https://github.com/BrunoRodolpho/adjudicate/blob/main/packages/pack-payments-pix/README.md), ADR #13 |
 | Kernel operations (always-on; no shadow / enforce / kill-switch) | [docs/ops/runbooks/kernel-operations.md](docs/ops/runbooks/kernel-operations.md) |
 | Analytics events, PostHog dashboards | [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) |
 | Redis key patterns, TTLs | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
-| Claude Code plugins — what's installed, usage | [docs/setup/plugins.md](docs/setup/plugins.md) |
 | Conversational turn pipeline (claustrum Conductor) | rule #9 below + `apps/api/src/claustrum-bootstrap.ts` |
-| Pre-cutover XState brain (SUPERSEDED — historical) | [docs/architecture/design/hybrid-state-flow.md](docs/architecture/design/hybrid-state-flow.md) |
 
 ---
 

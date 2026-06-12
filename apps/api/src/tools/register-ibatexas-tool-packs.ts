@@ -28,14 +28,6 @@
 //     `withReservationOwnership`, whose type is `(input) => Promise<R>`. They
 //     carry `customerId` INSIDE the input payload and do their own ownership
 //     check, so the adapter ctx is intentionally not threaded into them.
-//
-// ⚠️ INERT — `registerIbatexasToolPacks()` has no caller in the live graph
-//    (bootstrapClaustrum is not invoked at server start). The wrapped handlers
-//    below mutate Prisma/Medusa/Stripe directly; until the conductor is wired
-//    AND every mutation routes through adjudicate(), the registry stays inert —
-//    a full commerce regression but SAFE (no ungated mutation flows through
-//    chat). Activating the conductor without routing the direct HTTP routes
-//    through it would re-open the kernel bypass at full volume. See WS4+.
 
 import {
   addOrderNote,

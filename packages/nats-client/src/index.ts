@@ -21,7 +21,7 @@
 //      to provision creds + flip env vars.
 //   2. OPERATOR — provision NATS server credentials, rotate, flip env
 //      vars on staging/prod. See
-//      `docs/adjudicate-migration/remediation/NATS-AUTH-REQUIREMENTS.md`.
+//      `docs/security/NATS-AUTH-REQUIREMENTS.md`.
 //
 // Env vars consumed by this module:
 //   - NATS_URL              : connect target (defaults to localhost)
@@ -154,8 +154,8 @@ export async function getNatsConnection(): Promise<NatsConnection> {
       "[nats][SECURITY] production requires NATS auth (NATS_CREDS_PATH or " +
       "NATS_NKEY_SEED) and/or TLS (NATS_TLS_CA + NATS_TLS_REQUIRED=true). " +
       "Without authentication any process reaching the NATS port can read " +
-      "audit records and publish forged events. See docs/adjudicate-" +
-      "migration/remediation/NATS-AUTH-REQUIREMENTS.md."
+      "audit records and publish forged events. See " +
+      "docs/security/NATS-AUTH-REQUIREMENTS.md."
     console.error(securityMessage)
     throw new Error(securityMessage)
   }

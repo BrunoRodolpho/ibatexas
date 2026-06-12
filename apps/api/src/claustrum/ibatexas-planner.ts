@@ -38,9 +38,8 @@
  * "user expresses an action" case correctly and deterministically.
  *
  * Pure + dependency-injected (model + capability planners passed in), so it is
- * unit-testable with a mocked `ModelProvider` and hand-built capability planners
- * and carries no dependency on the not-yet-workspace-wired `@ibatexas/pack-*`
- * packages. INERT until wired into `createConductor` at the composition root.
+ * unit-testable with a mocked `ModelProvider` and hand-built capability
+ * planners. Wired into `createConductor` by `claustrum-bootstrap.ts`.
  */
 
 import { randomUUID } from "node:crypto";
