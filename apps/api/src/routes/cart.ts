@@ -1046,10 +1046,19 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       // orders ≥ R$1.000 will not complete. (paymentStatus stays null via the
       // builder so the PIX-pending guard does NOT DEFER at checkout — unchanged.)
       const guestKey = request.customerId ?? `guest:${cartId}`;
+      // T1a-13 fix: thread the request's deliveryType into the ctx builder —
+      // buildCartCtx maps it onto ctx.fulfillment, which the pack's
+      // requireSlotsFilledForCheckout guard requires non-null. Without it the
+      // guard 403'd EVERY web checkout with order.checkout.slots_incomplete
+      // (surfaced by the first JOURNEY-001 live run). Absent deliveryType
+      // still refuses — the customer genuinely hasn't picked a fulfillment.
       const orderState = {
         ctx: await loadCartCtx(
           identityCtx(guestKey, "web"),
-          { paymentMethod } as Record<string, unknown>,
+          {
+            paymentMethod,
+            ...(reqDeliveryType !== undefined ? { deliveryType: reqDeliveryType } : {}),
+          } as Record<string, unknown>,
           { cartId },
         ),
       } as unknown as OrderState;
