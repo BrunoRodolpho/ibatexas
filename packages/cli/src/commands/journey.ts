@@ -617,6 +617,90 @@ async function runJourneyFlake(opts: {
   }
 }
 
+// ── `ibx journey from-audit` (T2-3) ─────────────────────────────────────────
+// THIN registration: toda a lógica vive em @ibatexas/journeys
+// (src/schema/scaffold.ts). O operador passa o sessionId BRUTO do chat
+// (`ibx chat list`); o scaffolder re-deriva o namespace de auditoria HASHEADO
+// (D-012: session_id = "hashed:" + sha256(raw + AUDIT_REDACT_SECRET)[0..8]),
+// então o comando RODA CONTRA O ENV DE TESTE/OPS que carrega o MESMO
+// AUDIT_REDACT_SECRET do audit sink do stack (default: <repo>/.env.test;
+// --env-file para um env de ops) + ORACLE_DATABASE_URL (papel SELECT-only).
+// O scaffold nasce status: blocked, blocked_by: [scaffold-review] — um
+// scaffold nunca nasce ativo.
+
+/** Resolve um caminho de SAÍDA (o arquivo ainda não existe — ancora no diretório). */
+function resolveOutPath(p: string): string {
+  if (isAbsolute(p)) return p
+  const fromCwd = resolve(process.cwd(), p)
+  if (existsSync(dirname(fromCwd))) return fromCwd
+  const fromRoot = resolve(MONOREPO_ROOT, p)
+  return existsSync(dirname(fromRoot)) ? fromRoot : fromCwd
+}
+
+async function runJourneyFromAudit(
+  sessionId: string,
+  opts: { out?: string; envFile?: string; transcript?: string },
+): Promise<void> {
+  const {
+    FromAuditScaffoldError,
+    loadTestEnv,
+    OracleDatabaseUrlError,
+    scaffoldFromAuditSession,
+    transcriptFromChatDumpJson,
+  } = await import("@ibatexas/journeys")
+
+  // Contrato de env do plano de teste (mesma semântica de `journey run`):
+  // .env.test é autoritativo — AUDIT_REDACT_SECRET + ORACLE_DATABASE_URL.
+  const envFile =
+    opts.envFile !== undefined ? resolveUserPath(opts.envFile) : join(MONOREPO_ROOT, ".env.test")
+  try {
+    const loaded = loadTestEnv(envFile)
+    console.error(
+      chalk.dim(
+        `env: ${envFile} (${loaded.injected.length} injected, ${loaded.overridden.length} overridden, ${loaded.identical.length} identical)`,
+      ),
+    )
+  } catch {
+    console.error(chalk.dim(`env: ${envFile} not readable — relying on the shell environment`))
+  }
+
+  try {
+    const transcript =
+      opts.transcript !== undefined
+        ? transcriptFromChatDumpJson(await readFile(resolveUserPath(opts.transcript), "utf-8"))
+        : undefined
+    const result = await scaffoldFromAuditSession(sessionId, {
+      ...(transcript !== undefined ? { transcript } : {}),
+    })
+    // Resumo no stderr — stdout fica limpo para pipe do YAML.
+    console.error(
+      chalk.dim(
+        `audit namespace: ${result.hashedSessionId} (D-012) — ${result.auditRows} envelope row(s) → ` +
+          `${result.expectTuples} expect tuple(s), ${result.chatActs} chat act(s)`,
+      ),
+    )
+    if (opts.out !== undefined) {
+      const outPath = resolveOutPath(opts.out)
+      await mkdir(dirname(outPath), { recursive: true })
+      await writeFile(outPath, result.yaml)
+      console.log(
+        chalk.green(
+          `✓ scaffold written: ${outPath} (status: blocked, blocked_by: [scaffold-review]) — review before activation`,
+        ),
+      )
+    } else {
+      process.stdout.write(result.yaml)
+    }
+  } catch (err) {
+    if (err instanceof FromAuditScaffoldError || err instanceof OracleDatabaseUrlError) {
+      console.error(chalk.red(err.message))
+      process.exitCode = 1
+      return
+    }
+    throw err
+  }
+}
+
 export function registerJourneyCommands(group: Command): void {
   group.description(
     "Journeys — registry de jornadas LLM-driven e seus gates de governança (plano de teste)",
@@ -719,6 +803,26 @@ export function registerJourneyCommands(group: Command): void {
         ledger?: string
       }) => {
         await runJourneyFlake(opts)
+      },
+    )
+
+  group
+    .command("from-audit <sessionId>")
+    .description(
+      "Scaffolda um journey YAML a partir de um slice de auditoria de produção (T2-3): transcript (ibx_domain.conversations, mesmo material de `ibx chat dump --json`) + linhas do intent_audit no namespace HASHEADO da sessão (D-012). Recebe o sessionId BRUTO do chat (`ibx chat list`) e re-deriva o hash com AUDIT_REDACT_SECRET — roda contra o env de teste/ops que carrega o secret do stack (default <repo>/.env.test) + ORACLE_DATABASE_URL (papel SELECT-only). O scaffold nasce status: blocked, blocked_by: [scaffold-review].",
+    )
+    .option("--out <file>", "Grava o scaffold no arquivo (default: stdout; resumo sempre no stderr)")
+    .option(
+      "--transcript <file>",
+      "Transcript alternativo: arquivo JSON no formato de `ibx chat dump <id> --json` (sessões só-Redis sem linha em conversations)",
+    )
+    .option(
+      "--env-file <path>",
+      "Arquivo .env do stack de teste/ops (default: <repo>/.env.test; precisa de AUDIT_REDACT_SECRET + ORACLE_DATABASE_URL)",
+    )
+    .action(
+      async (sessionId: string, opts: { out?: string; envFile?: string; transcript?: string }) => {
+        await runJourneyFromAudit(sessionId, opts)
       },
     )
 

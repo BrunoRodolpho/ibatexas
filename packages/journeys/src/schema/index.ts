@@ -37,3 +37,21 @@ export {
   JourneyLoadError,
   DEFAULT_JOURNEYS_DIR,
 } from "./load.js"
+
+// T2-3 — `ibx journey from-audit <sessionId>` scaffolder.
+export {
+  FromAuditScaffoldError,
+  observedDecisionsFromRecords,
+  scaffoldFromAuditSession,
+  scaffoldJourneyFromAudit,
+  SCAFFOLD_PLACEHOLDER_ID,
+  SCAFFOLD_REVIEW_BLOCKER,
+  transcriptFromChatDumpJson,
+  type FromAuditScaffoldOptions,
+  type FromAuditScaffoldResult,
+  type ScaffoldedJourney,
+  type ScaffoldJourneyInput,
+  type ScaffoldObservedDecision,
+  type ScaffoldTranscript,
+  type ScaffoldTranscriptMessage,
+} from "./scaffold.js"
