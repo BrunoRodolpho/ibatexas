@@ -57,6 +57,7 @@ import {
 import { AnthropicProvider } from "@claustrum/anthropic";
 import {
   createPostgresMemoryProvider,
+  PostgresAdvisorySessionLock,
   type PrismaClientLike,
   type RedisClientLike,
 } from "@claustrum/memory-postgres";
@@ -1292,6 +1293,11 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     // kernel adjudicates commerce mutations correctly instead of panic-REFUSING
     // against the stub tenant state. See claustrum/resolve-and-assemble.ts.
     resolver: createIbatexasResolver(),
+    // RC-R3 / Decision 1: without a distributed lock the conductor falls back to
+    // its in-process InMemorySessionLock, so two api replicas would adjudicate
+    // the same `${channel}:${customerId}` session concurrently (double-EXECUTE).
+    // Postgres advisory locks pin acquire/release to one pooled connection.
+    sessionLock: new PostgresAdvisorySessionLock(pgPool),
   });
 
   return _conductor;
