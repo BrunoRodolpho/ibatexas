@@ -1,7 +1,8 @@
 // clients/ barrel — SUT-facing clients (public surface only).
 //
-// PLACEHOLDER: filled by T1a-4 (authFixture — fingerprint-gated offline JWT
-// minting) and T1a-5 (ChatClient with secret + cookie threading). Later
-// agents edit ONLY this barrel — the root src/index.ts already re-exports it.
+// T1a-4: authFixture — fingerprint-gated offline JWT minting + cookie
+// transport (cookieHeader is shared with the ChatClient, T1a-5).
+// T1a-5 (ChatClient) adds its export line here; agents edit ONLY this
+// barrel — the root src/index.ts already re-exports it.
 
-export {}
+export * from "./auth-fixture.js"

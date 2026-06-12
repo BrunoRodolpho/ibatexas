@@ -26,6 +26,7 @@
     "@ibatexas/packs-composed": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
+    "fast-jwt": "^6.2.4",
     "pg": "^8.11.0",
     "yaml": "^2.8.2",
     "zod": "^4.3.6"
