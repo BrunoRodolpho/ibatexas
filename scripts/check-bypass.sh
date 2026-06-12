@@ -135,7 +135,14 @@ if [[ ! -d packages/journeys ]]; then
 fi
 require_workspace_pkg "@ibatexas/journeys"
 
-API_INTERNAL_IMPORTS="$(grep -rnE "['\"]([^'\"]*apps/api|@ibatexas/api)" packages/journeys \
+# Anchored to import syntax (from/import/require directly before the quoted
+# specifier): a bare `['\"]...apps/api` pattern treats prose apostrophes as
+# opening quotes — a doc comment like «P0-2's precedent in apps/api/...»
+# false-positived the leg. Catches static `from "..."`, side-effect
+# `import "..."`, dynamic `import("...")` and `require("...")`.
+API_INTERNAL_IMPORTS="$(grep -rnE \
+  "(^|[^[:alnum:]_.])(from|import|require)[[:space:](]*['\"]([^'\"]*apps/api|@ibatexas/api)" \
+  packages/journeys \
   --include='*.ts' --include='*.tsx' \
   --exclude-dir=node_modules --exclude-dir=dist || true)"
 
