@@ -119,6 +119,7 @@ import { logger } from "./lib/logger.js";
 import {
   IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
   IBATEXAS_COMPOSED_PACKS,
+  composedIntentKinds,
 } from "@ibatexas/packs-composed";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
@@ -1187,11 +1188,20 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
   // CLOSED at boot if drift exists — a failed boot beats a live conductor that
   // can't honor the decisions it makes. (Previously this passed an EMPTY registry,
   // so the chat path had no tools at all.)
+  // P0-7: the same gate also probes the composed capability planners under the
+  // named contexts (authed-customer / staff) so a planner-advertised kind with
+  // no registered tool fails the boot; registered-but-unadvertised kinds are
+  // WARN-only (order.review.submit — web-flow-reached, no chat advertisement).
   const toolRegistry = createToolRegistry();
   registerIbatexasToolPacks(toolRegistry);
   const rosterDrift = toolRosterDrift(
     listIbatexasToolPacks(),
-    IBATEXAS_POLICY_PACKS.flatMap((p) => p.intents),
+    composedIntentKinds(),
+    {
+      planners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+      onWarn: (message) =>
+        logger.warn({ component: "claustrum-bootstrap" }, message),
+    },
   );
   if (rosterDrift.length > 0) {
     throw new Error(

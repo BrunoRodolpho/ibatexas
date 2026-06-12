@@ -61,6 +61,7 @@ import {
   type AgentContext,
   type UserType,
 } from "@ibatexas/types";
+import type { CapabilityPlanner } from "@adjudicate/core/llm";
 import type {
   Capsule,
   CapabilityId as CapId,
@@ -220,7 +221,9 @@ function makeReservationTool(opts: {
 //
 // 17 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
 // `allowedIntents` that has a `@ibatexas/tools` handler. The two payment kinds
-// the pack planner advertises but ships no handler for — see TODO(WS4) below.
+// that ship no handler were DE-ADVERTISED in pack-payments (P0-7) — the
+// context-aware leg of `toolRosterDrift()` below now fails the boot if a
+// planner ever advertises a kind with no registered tool.
 const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
   // ── pack-orders (10) ──────────────────────────────────────────────────────
   makeTool({
@@ -359,11 +362,11 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
   }),
 
   // ── pack-payments (1) ────────────────────────────────────────────────────────
-  // NOTE: `payment.method.switch` and `payment.retry` are advertised by
-  // paymentsCapabilityPlanner but have NO `@ibatexas/tools` handler, so they are
-  // intentionally NOT registered. They remain valid pack-owned intents (the
-  // roster test asserts registered ⊆ pack-owned, not the reverse). See
-  // TODO(WS4) on toolRosterDrift below.
+  // NOTE: `payment.method.switch` and `payment.retry` have NO `@ibatexas/tools`
+  // handler, so they are intentionally NOT registered AND no longer advertised
+  // by paymentsCapabilityPlanner (de-advertised in P0-7; the WS4 backlog
+  // restores both alongside their handlers). They remain valid pack-owned
+  // intents reached by the explicit HTTP routes (order-actions.ts).
   makeTool({
     id: "ibatexas.payment.regeneratePix.v1",
     capability: "payment.pix.regenerate",
@@ -407,22 +410,119 @@ export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
  *
  * This is the `registered ⊆ pack-owned` direction (every registered tool is
  * valid). It deliberately does NOT assert the reverse (pack-owned ⊆ registered):
+ * most pack-owned kinds are webhook / cron / staff-route-only by design and
+ * never get a chat tool.
  *
- * TODO(WS4): `payment.method.switch` and `payment.retry` are pack-owned intents
- *   advertised by paymentsCapabilityPlanner with NO `@ibatexas/tools` handler, so
- *   they are correctly absent from the roster. Wiring (or de-advertising) them is
- *   a WS4 domain decision; do NOT edit the payment pack here. They are dangling
- *   allowlist entries the LLM could propose but no tool can dispatch — a planner
- *   would emit the envelope and the kernel would adjudicate it, but
- *   dispatchDecision would `tool_unresolved` on EXECUTE.
+ * Context-aware leg (P0-7): when `options.planners` is supplied, the pack
+ * CapabilityPlanners are additionally evaluated under each named context in
+ * `ROSTER_DRIFT_CONTEXTS` and `advertised ⊆ registered` is asserted per
+ * context — a kind the planner advertises with no registered tool is a
+ * dangling allowlist entry the LLM could propose but no tool can dispatch
+ * (the planner would emit the envelope, the kernel would adjudicate it, and
+ * dispatchDecision would `tool_unresolved` on EXECUTE). This is exactly the
+ * dangle `payment.method.switch` / `payment.retry` shipped before P0-7
+ * de-advertised them. The documented staff-chat exception is whitelisted
+ * (see ADVERTISED_NOT_REGISTERED_WHITELIST); registered-but-unadvertised
+ * kinds are WARN-only via `options.onWarn` — unreachable via chat is dead
+ * weight, never a dispatch failure (`order.review.submit` is the known case:
+ * the orders planner never advertises it; reviews arrive via the web flow).
  *
- * Pure: the caller supplies the pack intent union (the registrar deliberately
- * does not import `@ibatexas/pack-*` to stay dependency-light). Returns a list of
+ * Pure: the caller supplies the pack intent union AND the planners (the
+ * registrar deliberately does not import `@ibatexas/pack-*` /
+ * `@ibatexas/packs-composed` to stay dependency-light). Returns a list of
  * human-readable problems; empty array means the roster is healthy.
  */
+export interface RosterDriftContext {
+  /** Stable name used in problem messages and the whitelist keys. */
+  readonly name: string;
+  /** The (state, context) pair fed to each CapabilityPlanner.plan(). */
+  readonly state: unknown;
+  readonly context: unknown;
+}
+
+/** Mirror of the union ctx shape `deriveIbatexasPlannerContext` builds. */
+function driftProbeState(over: {
+  customerId: string | null;
+  staffId: string | null;
+  isAuthenticated: boolean;
+}): unknown {
+  return {
+    ctx: {
+      tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
+      channel: "web",
+      cartId: null,
+      orderId: null,
+      ...over,
+    },
+  };
+}
+
+/**
+ * The named contexts the drift gate probes. Each pack planner gates
+ * `allowedIntents` on the union ctx (customerId / staffId / isAuthenticated),
+ * so the advertised surface is context-dependent — a single probe would miss
+ * kinds advertised only to an authenticated customer or only to staff.
+ */
+export const ROSTER_DRIFT_CONTEXTS: ReadonlyArray<RosterDriftContext> = [
+  {
+    // The live chat planner's authenticated-customer shape
+    // (deriveIbatexasPlannerContext with a real recalled customerId).
+    name: "authed-customer",
+    state: driftProbeState({
+      customerId: "drift-probe-customer",
+      staffId: null,
+      isAuthenticated: true,
+    }),
+    context: {},
+  },
+  {
+    // Hypothetical staff chat surface. The live chat planner pins
+    // staffId:null (CognitiveState carries no staff actor), but the pack
+    // planners DO advertise staff kinds when staffId is set — probe that
+    // surface so wiring a staff chat later cannot silently dangle.
+    name: "staff",
+    state: driftProbeState({
+      customerId: null,
+      staffId: "drift-probe-staff",
+      isAuthenticated: false,
+    }),
+    context: {},
+  },
+];
+
+// Documented staff-chat exception, keyed `<context>:<kind>`:
+// `reservation.checkin` / `reservation.complete` are STAFF-ROUTE-ONLY BY
+// DESIGN — the live chat planner pins staffId:null so neither is ever
+// proposable via chat, and the admin routes build their envelopes directly
+// (never through this tool registry). The reservations pack still advertises
+// them for a staff session (the pack ships the capability for adopters with
+// a staff chat surface), so under the synthetic "staff" probe they are
+// advertised-but-unregistered — EXPECTED, not drift.
+const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
+  "staff:reservation.checkin",
+  "staff:reservation.complete",
+]);
+
+export interface ToolRosterDriftOptions {
+  /**
+   * The composed pack CapabilityPlanners (boot passes
+   * IBATEXAS_COMPOSED_CAPABILITY_PLANNERS). When present, enables the
+   * context-aware `advertised ⊆ registered` leg.
+   */
+  readonly planners?: ReadonlyArray<CapabilityPlanner<unknown, unknown>>;
+  /** Named contexts to probe; defaults to ROSTER_DRIFT_CONTEXTS. */
+  readonly contexts?: ReadonlyArray<RosterDriftContext>;
+  /**
+   * WARN-only sink for registered-but-unadvertised kinds. Never contributes
+   * to the returned problems. Defaults to console.warn.
+   */
+  readonly onWarn?: (message: string) => void;
+}
+
 export function toolRosterDrift(
   tools: ReadonlyArray<TD<unknown, unknown>>,
   packIntentKinds: ReadonlyArray<string>,
+  options?: ToolRosterDriftOptions,
 ): string[] {
   const union = new Set(packIntentKinds);
   const problems: string[] = [];
@@ -441,6 +541,51 @@ export function toolRosterDrift(
       );
     }
   }
+
+  // ── Context-aware leg (P0-7): advertised ⊆ registered per named context ──
+  const planners = options?.planners;
+  if (planners !== undefined && planners.length > 0) {
+    const contexts = options?.contexts ?? ROSTER_DRIFT_CONTEXTS;
+    const onWarn = options?.onWarn ?? ((m: string) => console.warn(m));
+    // Registration is keyed by `capability` (resolveTool matches it against
+    // envelope.kind; check 1 above pins capability === intentKind).
+    const registered = new Set(
+      tools.map((t) => t.capability as unknown as string),
+    );
+    const advertisedAnywhere = new Set<string>();
+    for (const probe of contexts) {
+      const advertised = new Set<string>();
+      for (const planner of planners) {
+        for (const kind of planner.plan(probe.state, probe.context)
+          .allowedIntents) {
+          advertised.add(kind);
+        }
+      }
+      for (const kind of advertised) {
+        advertisedAnywhere.add(kind);
+        if (registered.has(kind)) continue;
+        if (ADVERTISED_NOT_REGISTERED_WHITELIST.has(`${probe.name}:${kind}`)) {
+          continue;
+        }
+        problems.push(
+          `context "${probe.name}": planner-advertised kind "${kind}" has no registered tool — ` +
+            `express_intent could propose it but dispatchDecision would be tool_unresolved`,
+        );
+      }
+    }
+    // Registered-but-unadvertised: unreachable via chat under every probed
+    // context — dead weight, never a dispatch failure. WARN, never fail.
+    for (const kind of registered) {
+      if (!advertisedAnywhere.has(kind)) {
+        onWarn(
+          `toolRosterDrift: registered kind "${kind}" is not advertised by any planner under ` +
+            `the probed contexts (${contexts.map((c) => c.name).join(", ")}) — ` +
+            `unreachable via chat (WARN only)`,
+        );
+      }
+    }
+  }
+
   return problems;
 }
 
