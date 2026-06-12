@@ -94,3 +94,52 @@ f96246a (P0-7), 1dc2364 (P0-9), a32392f + adjudicate 99ec4dd (P0-5), 3bee5e5 (P0
 ibatexas CLAUDE.md's Agent Behavior section discourages unprompted test runs. The plan's per-task
 acceptance criteria explicitly name verify commands; executing the plan includes running them. The plan
 (and the goal directive) take precedence for this initiative.
+
+## D-013 — T1a-13 outcomes: JOURNEY-001 green twice, measured cost, live corrections (2026-06-12)
+
+Acceptance met: two consecutive `ibx journey run JOURNEY-001 --k 2 --json` runs, both exit 0
+(4/4 green attempts, all certifying), cost lines non-zero. Measured split + §7 re-baseline
+recorded in docs/agents/phase-1a-measurements.md (~$0.057/attempt combined: driver ~$0.032 /
+SUT ~$0.025; ~35 s/attempt). Engineering decisions and assumptions inherited by later phases:
+
+- **JOURNEY-001 corrected to the system's REAL behavior** (the journey is the executable spec):
+  order assembly runs through the storefront's public HTTP API (create cart → line-items →
+  checkout); chat asserts ONLY the cancel confirm gate (`order.cancel REQUEST_CONFIRMATION`
+  via auto-resolve, verified live); the public cancel route completes the loop. expects[] =
+  checkout EXECUTE → cancel REQUEST_CONFIRMATION → cancel EXECUTE (IN_ORDER).
+- **Product gaps discovered (recorded, not closed here)**:
+  - `chat-order-assembly`: the planner is a single-shot semantic parser (free-form NL payloads;
+    readToolCalls recorded but never executed; no resolver leg for cart-op payloads) — chat
+    item-add structurally REFUSEs `order.cart.missing`; `order.item.add EXECUTE` is producible
+    by NO public surface (the HTTP route audits as `medusa.cart.line_items.add`, system actor).
+  - `chat-confirmation-resume` (already named by JOURNEY-003): WebChannel.matchToParked ≡ null,
+    the SSE carries no confirmation token, no chat-confirm endpoint exists, AND the naive
+    responder is blind to decision/acted (the user never even SEES the confirm prompt).
+  - JOURNEY-002/005's chat expects (amend / item.add / checkout via chat) are very likely
+    similarly unexecutable — their live corrections are T1b work; the coverage baseline still
+    carries the chat cells they claim (journey-level attribution model).
+- **Real SUT bugs found-and-fixed by the crucible** (each its own commit):
+  1. chat SSE abort race — a post-terminal late socket close aborted the session's NEXT turn
+     (reply silently dropped, client hangs);
+  2. web checkout dropped `deliveryType` from the kernel ctx → `requireSlotsFilledForCheckout`
+     403'd EVERY web checkout (`order.checkout.slots_incomplete`);
+  3. NATS subscribers/jobs were gated off under NODE_ENV=test → the journey stack had no
+     order projections at all; gate now honors IBX_TEST_FINGERPRINT (prod parity on the
+     test stack);
+  4. the audit-sink Postgres writer dropped ALL v4/v5 columns (incl. `audit_hash`, the
+     tamper-evidence chain) while stamping record_version=5 — `verifyAuditRecord` was
+     structurally defeated end-to-end in production.
+- **Harness conventions pinned**: `.env.test` is loaded with OVERRIDE semantics by
+  `ibx journey run` (the CLI's dotenv preload of the dev .env must never leak into the test
+  plane); audit fetches are time-scoped to the attempt (`since=runStartedAt`) because the
+  seeded customer's hashed namespace accumulates rows across runs; `audit.record.verified` is
+  redaction-aware (sentinel-redacted envelopes fall back to the whole-record auditHash check —
+  the redactor recomputes it post-redaction by design); http acts support `:var` path/body
+  substitution + declared response `capture`; fixtures stay read-only resolves (`seedCustomer`,
+  `resolveProductVariant`); the PersonaDriver gets NO http executor (http acts are
+  harness-mechanical, the persona model can never fire a mutation act). The raw-Medusa-id lint
+  requires an id-like tail (≥8 alphanumerics) so field names like `variant_id` pass.
+- **Operational caveat**: POST /api/orders/:id/cancel rate-limits 5 cancels/10 min per
+  customer — JOURNEY-001 uses the fixed seeded customer, so >4 attempts inside 10 min on one
+  stack will 429 (nightly k=4 fits; debug sessions should clear `rate:cancel:<customerId>` or
+  wait).
