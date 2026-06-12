@@ -470,6 +470,9 @@ describe("PersonaDriver — JSONL event-kind snapshot", () => {
           "model",
           "outputTokens",
           "runId",
+          // T1a-13: driver llm.calls are stamped source:"driver" so the cost
+          // report splits them from the SUT-side events (source:"sut").
+          "source",
           "timestamp",
           "type",
         ],

@@ -329,6 +329,8 @@ export class PersonaDriver {
       const durationMs = Date.now() - t0
 
       // THE dollar source (T1b-8): one llm.call per provider round-trip.
+      // source:"driver" splits the cost report from the SUT-side llm.call
+      // events the api emits via TelemetryPort (T1a-13).
       emitLlmCall({
         inputTokens: response.usage.inputTokens,
         outputTokens: response.usage.outputTokens,
@@ -336,6 +338,7 @@ export class PersonaDriver {
         duration: durationMs,
         journey: this.#journey.id,
         runId: this.#runId,
+        source: "driver",
       })
 
       this.#tokensUsed += response.usage.inputTokens + response.usage.outputTokens

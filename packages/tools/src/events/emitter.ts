@@ -20,7 +20,18 @@
 //
 // `llm.call` is the dollar source: `inputTokens` / `outputTokens` are
 // REQUIRED on every emission (cost reports are computed from these events
-// × the checked-in price table — plan §7).
+// × the checked-in price table — plan §7). `source` splits the dollar
+// report: "driver" (the persona test driver's own model calls) vs "sut"
+// (the api's Conductor turns, re-emitted from TelemetryPort.emitTurn).
+//
+// File sink (T1a-13): when `IBX_EVENTS=json` AND `IBX_EVENTS_FILE=<path>`
+// are both set, every JSONL line is ALSO appended (line-buffered,
+// append-mode) to that file — the journey harness parses SUT-side events
+// from it instead of scraping process logs. Unset (prod/dev) = exactly the
+// previous behavior. File-write failures are swallowed: telemetry must
+// never break the emitting process.
+
+import { appendFileSync } from "node:fs"
 
 // ── Event-kind unions ────────────────────────────────────────────────────────
 
@@ -94,6 +105,8 @@ export interface IbxEventBase {
   model?: string
   inputTokens?: number
   outputTokens?: number
+  /** llm.call cost attribution: persona driver ("driver") vs the api under test ("sut"). */
+  source?: "driver" | "sut"
   // evidence.*
   evidence?: string
 }
@@ -155,12 +168,25 @@ export function onEvent(listener: EventListener): () => void {
  * Emit a structured event.
  *
  * - If `IBX_EVENTS=json` → writes one JSON line to stderr
+ * - If additionally `IBX_EVENTS_FILE=<path>` → appends the same line to that
+ *   file (append mode, line-buffered via a synchronous append — the line is
+ *   durable before the emitter returns). Test-profile wiring only; unset =
+ *   today's behavior. Failures are swallowed (telemetry never breaks a turn).
  * - Always dispatches to registered listeners
  */
 export function emit(event: IbxEvent): void {
   // JSONL output for CI integration: ibx scenario homepage 2> events.jsonl
   if (process.env.IBX_EVENTS === "json") {
-    process.stderr.write(`${JSON.stringify(event)}\n`)
+    const line = `${JSON.stringify(event)}\n`
+    process.stderr.write(line)
+    const file = process.env.IBX_EVENTS_FILE
+    if (file !== undefined && file !== "") {
+      try {
+        appendFileSync(file, line)
+      } catch {
+        // Best-effort file sink — never let trace persistence break the caller.
+      }
+    }
   }
 
   // Dispatch to internal listeners
@@ -326,6 +352,10 @@ export function emitLlmCall(args: {
   runId?: string
   duration?: number
   detail?: string
+  /** Cost attribution: "driver" (persona driver) vs "sut" (api Conductor turn). */
+  source?: "driver" | "sut"
+  /** Conversation handle (SUT-side emissions carry the TurnRecord conversationId). */
+  sessionId?: string
 }): void {
   emit({ type: "llm.call", timestamp: new Date().toISOString(), ...args })
 }
