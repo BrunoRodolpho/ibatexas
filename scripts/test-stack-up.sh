@@ -32,6 +32,10 @@
 #   IBX_TEST_PC_PORT          process-compose server port (default 28505 —
 #                             distinct from the dev instance's 8080)
 #   IBX_TEST_APP_WAIT_SECONDS per-app readiness budget (default 600)
+#   IBX_TEST_E2E              "1" → ALSO boot apps/web (:3000) by overlaying
+#                             process-compose.e2e.yaml on the test profile
+#                             (T2-7 Playwright e2e stack). Default off: the
+#                             journeys harness never needs the storefront UI.
 #
 # Teardown (ALWAYS run it, including after failures):
 #   ./scripts/test-stack-down.sh
@@ -47,9 +51,11 @@ cd "$REPO_ROOT"
 ENV_FILE=".env.test"
 COMPOSE_FILE="docker-compose.test.yml"
 PC_FILE="process-compose.test.yaml"
+PC_E2E_FILE="process-compose.e2e.yaml"
 PROJECT="${IBX_TEST_COMPOSE_PROJECT:-ibx-test}"
 PC_PORT="${IBX_TEST_PC_PORT:-28505}"
 APP_WAIT_SECONDS="${IBX_TEST_APP_WAIT_SECONDS:-600}"
+E2E="${IBX_TEST_E2E:-0}"
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 now() { date +%s; }
@@ -61,7 +67,13 @@ done
 [[ -f "$ENV_FILE" ]] || fail "$ENV_FILE not found — generate it with ./scripts/gen-env-test.sh"
 [[ -f "$PC_FILE" ]] || fail "$PC_FILE not found — run from the repo root"
 
-for port in 3001 9000; do
+APP_PORTS=(3001 9000)
+if [[ "$E2E" == "1" ]]; then
+  [[ -f "$PC_E2E_FILE" ]] || fail "$PC_E2E_FILE not found — run from the repo root"
+  APP_PORTS+=(3000)
+fi
+
+for port in "${APP_PORTS[@]}"; do
   if lsof -ti ":$port" >/dev/null 2>&1; then
     fail "port $port is busy — the test profile binds the same app ports as dev; stop the dev stack (ibx dev stop) first"
   fi
@@ -131,11 +143,19 @@ ibx journey migrate
 IBX_TEST_COMPOSE_PROJECT="$PROJECT" ./scripts/test-stack/provision-sim-writer-role.sh
 T2=$(now)
 
-# ── [3/4] App boot (process-compose test profile) ────────────────────────────
-echo "[3/4] apps: process-compose up -f $PC_FILE -e $ENV_FILE -D -p $PC_PORT"
-process-compose up -f "$PC_FILE" -e "$ENV_FILE" -D -p "$PC_PORT"
+# ── [3/4] App boot (process-compose test profile [+ e2e overlay]) ────────────
+PC_FILE_ARGS=(-f "$PC_FILE")
+if [[ "$E2E" == "1" ]]; then
+  # T2-7: overlay merges the web (:3000) process on top of the test profile.
+  PC_FILE_ARGS+=(-f "$PC_E2E_FILE")
+fi
+echo "[3/4] apps: process-compose up ${PC_FILE_ARGS[*]} -e $ENV_FILE -D -p $PC_PORT"
+process-compose up "${PC_FILE_ARGS[@]}" -e "$ENV_FILE" -D -p "$PC_PORT"
 wait_http "http://localhost:9000/health" "commerce (:9000)"
 wait_http "http://localhost:3001/health" "api (:3001)"
+if [[ "$E2E" == "1" ]]; then
+  wait_http "http://localhost:3000/" "web (:3000)"
+fi
 T3=$(now)
 
 # ── [4/4] Seed ───────────────────────────────────────────────────────────────

@@ -49,6 +49,12 @@ for port in 3001 9000; do
     rc=1
   fi
 done
+# T2-7: the e2e overlay (IBX_TEST_E2E=1) also binds web on :3000. The down
+# script cannot know whether the overlay was used, and :3000 may legitimately
+# belong to an unrelated process — warn only, never fail teardown on it.
+if lsof -ti ":3000" >/dev/null 2>&1; then
+  echo "warning: port 3000 still busy — if this is an orphaned e2e web process, kill it (lsof -ti :3000 | xargs kill); it will block the next IBX_TEST_E2E=1 run" >&2
+fi
 
 # ── 2. Tear down the ephemeral infra (volumes included) ──────────────────────
 echo "tearing down infra (docker compose -p $PROJECT down -v)..."

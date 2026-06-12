@@ -32,6 +32,9 @@ importers:
 
   .:
     devDependencies:
+      '@ibatexas/journeys':
+        specifier: workspace:*
+        version: link:packages/journeys
       '@playwright/test':
         specifier: ^1.58.2
         version: 1.59.1

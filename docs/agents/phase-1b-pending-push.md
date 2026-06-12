@@ -1,8 +1,8 @@
-# Phase 1b — push-dependent items (T1b-4)
+# Phase 1b — push-dependent items (T1b-4; extended by Phase 2)
 
-Everything below is implemented and committed on `agents/phase-1b` but can only be
-**activated/verified after the branch is pushed** (the workspace never pushes — recorded
-discipline). Work through this list at push time, in order.
+Everything below is implemented and committed on `agents/phase-1b` (Phase 2 additions on
+`agents/phase-2`) but can only be **activated/verified after the branch is pushed** (the
+workspace never pushes — recorded discipline). Work through this list at push time, in order.
 
 ## 1. Repo environment + the spend-capped key (BLOCKS the nightly)
 
@@ -81,3 +81,32 @@ in the workflow:
 `gh issue create` payloads carry `[journeys-nightly]` title prefixes (no label
 dependency — labels require admin setup). If you want a label, create `journeys-nightly`
 once and add `--label journeys-nightly` to the issue step.
+
+## 8. e2e-smoke required check (T2-7, Phase 2)
+
+`.github/workflows/e2e-smoke.yml` runs the Playwright smoke + web golden path + the
+authed api-golden-path (JOURNEY-001's HTTP legs: cart create → line-item → checkout
+cash/pickup) against the full ephemeral test stack **with web (:3000) booted** via the
+`IBX_TEST_E2E=1` overlay (`process-compose.e2e.yaml`). It needs **NO repo secret** —
+zero-tokens by design, the stack boots with a placeholder `ANTHROPIC_API_KEY`, so it is
+fork-PR safe. After push:
+
+1. First dispatch + watch:
+
+   ```bash
+   gh workflow run e2e-smoke
+   gh run watch $(gh run list --workflow e2e-smoke -L1 --json databaseId -q '.[0].databaseId') --exit-status
+   ```
+
+2. Make it a **required check** on `main`: Settings → Branches → `main` protection
+   rule → Require status checks → add **`e2e-smoke / e2e`** (alongside the
+   kernel-replay-gate check from item 4 and `ci.yml`'s `check`).
+
+3. Note: it triggers on `pull_request` for web/api/commerce + shared-package +
+   harness paths only — a docs-only PR will not produce the check. If `main`
+   requires it unconditionally, GitHub treats path-filtered absent checks as
+   pending; prefer "required for the matching paths" semantics via merge-queue or
+   accept the dispatch fallback (`workflow_dispatch` exists for that).
+
+Verified locally before commit (recorded in the T2-7 task output): full
+`IBX_TEST_E2E=1` stack boot + `playwright test` all specs green + teardown.
