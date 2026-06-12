@@ -101,3 +101,43 @@ export function composedIntentKinds(): ReadonlyArray<string> {
   }
   return kinds
 }
+
+// ── Chat-drivable registered tool roster (T1a-2) ─────────────────────────────
+
+/**
+ * The 17 chat-drivable, LLM-callable mutating tool capability ids
+ * (`capability := intentKind`) registered by apps/api's
+ * `listIbatexasToolPacks()` (`apps/api/src/tools/register-ibatexas-tool-packs.ts`).
+ *
+ * That registry is an apps/api module — unreachable from packages/* by
+ * design — but the journey gates (`ibx journey lint` / `coverage`, DR-5)
+ * need the registered chat surface as data. This list mirrors it in the
+ * composition home; the drift test
+ * `apps/api/src/__tests__/chat-drivable-roster-drift.test.ts` pins it to the
+ * live roster fail-closed (same spirit as `toolRosterDrift`). Adding or
+ * dropping a registered tool MUST update this list deliberately, or the api
+ * suite goes red.
+ */
+export const CHAT_DRIVABLE_TOOL_KINDS: ReadonlyArray<string> = [
+  // pack-orders (10)
+  "order.cart.ensure",
+  "order.item.add",
+  "order.item.update",
+  "order.item.remove",
+  "order.coupon.apply",
+  "order.checkout.create",
+  "order.cancel",
+  "order.amend.request",
+  "order.note.add",
+  "order.review.submit",
+  // pack-reservations (4)
+  "reservation.create",
+  "reservation.modify",
+  "reservation.cancel",
+  "reservation.waitlist.join",
+  // pack-customer-onboarding (2)
+  "customer.preferences.update",
+  "customer.pix.details.save",
+  // pack-payments (1)
+  "payment.pix.regenerate",
+]

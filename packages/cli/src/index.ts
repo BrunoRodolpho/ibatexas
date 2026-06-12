@@ -15,6 +15,7 @@ import { registerIntelligenceCommands } from "./commands/intelligence.js"
 import { registerTestCommands } from "./commands/test.js"
 import { registerTagCommands }  from "./commands/tag.js"
 import { registerScenarioCommands } from "./commands/scenario.js"
+import { registerJourneyCommands } from "./commands/journey.js"
 import { registerDebugCommands } from "./commands/debug.js"
 import { registerInspectCommands } from "./commands/inspect.js"
 import { registerDoctorCommands } from "./commands/doctor.js"
@@ -145,6 +146,12 @@ function buildHelpText(): string {
       commands: [
         { usage: "scenario list",           desc: "Discover YAML scenario files" },
         { usage: "scenario run <name>",     desc: "Run a scenario (--dry-run, --verify-only, --force)" },
+      ],
+    },
+    {
+      title: "Journey",
+      commands: [
+        { usage: "journey lint",            desc: "Lint the journey registry (--json, --verify-file)" },
       ],
     },
     {
@@ -348,6 +355,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "test",     register: registerTestCommands },
   { name: "tag",      register: registerTagCommands },
   { name: "scenario", register: registerScenarioCommands },
+  { name: "journey",  register: registerJourneyCommands,  description: "Journeys — LLM-driven journey registry gates (test plane)" },
   { name: "debug",    register: registerDebugCommands },
   { name: "inspect",  register: registerInspectCommands },
   { name: "matrix",   register: registerMatrixCommands },

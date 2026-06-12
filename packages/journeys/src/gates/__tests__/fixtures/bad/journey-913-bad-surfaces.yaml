@@ -1,0 +1,16 @@
+# Lint-gate BAD fixture — unreal surfaces (check 5): channel is not `web`,
+# and the http act path is not plain route-path syntax. Lint must fail it
+# with `unsupported_channel` + `invalid_http_path`.
+id: JOURNEY-913
+title: Lint fixture — unsupported channel and malformed http path
+businessCase: Gate fixture; persona/act surfaces must be real.
+persona: Cliente anônimo em um canal que a fase 1 não dirige.
+channel: whatsapp
+acts:
+  - kind: http
+    method: GET
+    path: "/api//rota inválida"
+expects: []
+verify: []
+status: active
+source: T1a-2 lint-gate fixture

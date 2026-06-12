@@ -1,0 +1,20 @@
+# Lint-gate BAD fixture — a chat-only journey expecting a KNOWN kind that
+# is neither planner-advertised for any chat persona context nor a
+# registered chat-drivable tool (`reservation.checkin` is staff-route-only
+# by design). Lint must fail it with `expectation_unreachable`.
+id: JOURNEY-911
+title: Lint fixture — chat act expecting a non-advertised kind
+businessCase: Gate fixture; chat-act expectations must stay within planner-advertised ∪ registered.
+persona: Cliente autenticado tentando fazer check-in pelo chat.
+channel: web
+params:
+  authenticated: true
+acts:
+  - kind: chat
+    goal: Fazer o check-in da minha reserva pelo chat.
+expects:
+  - intentKind: reservation.checkin
+    decision: EXECUTE
+verify: []
+status: active
+source: T1a-2 lint-gate fixture

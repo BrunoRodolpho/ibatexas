@@ -496,6 +496,9 @@ importers:
       '@ibatexas/intent-kinds':
         specifier: workspace:*
         version: link:../intent-kinds
+      '@ibatexas/journeys':
+        specifier: workspace:*
+        version: link:../journeys
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../nats-client
@@ -694,6 +697,12 @@ importers:
       '@adjudicate/core':
         specifier: ^1.3.0
         version: 1.3.0
+      '@ibatexas/intent-kinds':
+        specifier: workspace:*
+        version: link:../intent-kinds
+      '@ibatexas/packs-composed':
+        specifier: workspace:*
+        version: link:../packs-composed
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../tools
@@ -710,9 +719,18 @@ importers:
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@types/pg':
+        specifier: ^8.11.0
+        version: 8.20.0
       '@vitest/coverage-v8':
         specifier: ^3.2.0
         version: 3.2.4(vitest@3.2.4(@types/node@25.9.1)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      pg:
+        specifier: ^8.11.0
+        version: 8.20.0
+      testcontainers:
+        specifier: ^12.0.0
+        version: 12.0.0
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

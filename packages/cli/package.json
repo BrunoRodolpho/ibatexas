@@ -23,6 +23,7 @@
     "@adjudicate/runtime": "^0.2.1",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/intent-kinds": "workspace:*",
+    "@ibatexas/journeys": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",

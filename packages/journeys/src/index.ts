@@ -10,6 +10,7 @@
 //
 //   schema/  — journey file schema v1 + YAML loader        (T1a-1, done)
 //   runner/  — sequential act runner skeleton              (T1a-1, done)
+//   gates/   — registry gates: lint / coverage             (T1a-2, done / T1a-3)
 //   oracle/  — ProjectionBarrier, AuditReader/Matcher      (T1a-6 / T1a-7)
 //   clients/ — authFixture, ChatClient                     (T1a-4 / T1a-5)
 //   driver/  — LLM test-driver agent                       (T1a-8)
@@ -17,6 +18,7 @@
 
 export * from "./schema/index.js"
 export * from "./runner/index.js"
+export * from "./gates/index.js"
 export * from "./oracle/index.js"
 export * from "./clients/index.js"
 export * from "./driver/index.js"

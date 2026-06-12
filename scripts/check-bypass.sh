@@ -15,9 +15,13 @@
 #   5. Runtime smoke: the dispatcher refuses unknown tool names with
 #      kind:"failed" (no silent success on missing handlers).
 #   6. Forward-containment: app/package sources never import the test plane
-#      (@ibatexas/journeys); the dependency only flows the other way.
+#      (@ibatexas/journeys); the dependency only flows the other way
+#      (sanctioned exception: packages/cli — the pinned direction is
+#      journeys→tools, cli→journeys, cli→tools).
 #   7. Forward-containment: packages/journeys never reaches into apps/api
-#      internals (vacuously green until the package lands in Phase 1).
+#      internals. Non-vacuous since Phase 1a (T1a-1) landed the package: a
+#      missing packages/journeys now FAILS the gate instead of passing
+#      vacuously (T1a-9 armed the leg).
 #
 # Every pnpm --filter leg is guarded: a filter that matches no workspace
 # package fails the gate instead of silently no-opping (pnpm exits 0 on
@@ -98,15 +102,20 @@ echo ""
 
 # The test plane (@ibatexas/journeys, Phase 1) may depend on apps/packages,
 # never the reverse. Greps regardless of whether the package exists yet.
+# Sanctioned exception (T1a-2): packages/cli is the thin registration point
+# for the `ibx journey` gates — the dependency direction is cli→journeys,
+# never journeys→cli (the reverse stays caught by journeys' own deps).
 JOURNEYS_IMPORTS="$(grep -rnE "['\"]@ibatexas/journeys" apps packages \
   --include='*.ts' --include='*.tsx' \
   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=__tests__ \
   --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' \
-  | grep -v '^packages/journeys/' || true)"
+  | grep -v '^packages/journeys/' \
+  | grep -v '^packages/cli/' || true)"
 
 if [[ -n "$JOURNEYS_IMPORTS" ]]; then
   echo "$JOURNEYS_IMPORTS"
-  echo "✗ apps/* and non-test packages/* must not import @ibatexas/journeys." >&2
+  echo "✗ apps/* and non-test packages/* (except the cli registration point)" >&2
+  echo "  must not import @ibatexas/journeys." >&2
   exit 1
 fi
 echo "✓ No @ibatexas/journeys imports outside the test plane."
@@ -115,21 +124,27 @@ echo ""
 echo "── Forward-containment: journeys never reaches into apps/api ────────"
 echo ""
 
-# A missing packages/journeys is success — the leg arms the moment it lands.
-if [[ -d packages/journeys ]]; then
-  API_INTERNAL_IMPORTS="$(grep -rnE "['\"]([^'\"]*apps/api|@ibatexas/api)" packages/journeys \
-    --include='*.ts' --include='*.tsx' \
-    --exclude-dir=node_modules --exclude-dir=dist || true)"
-
-  if [[ -n "$API_INTERNAL_IMPORTS" ]]; then
-    echo "$API_INTERNAL_IMPORTS"
-    echo "✗ packages/journeys must not import apps/api internals." >&2
-    exit 1
-  fi
-  echo "✓ packages/journeys does not reach into apps/api."
-else
-  echo "✓ packages/journeys not present yet — leg passes vacuously."
+# Non-vacuous since T1a-1 landed the package (T1a-9 armed this): the package
+# must exist AND resolve in the workspace, otherwise the leg fails closed —
+# a deleted/renamed test plane must never silently green this gate.
+if [[ ! -d packages/journeys ]]; then
+  echo "✗ packages/journeys is missing — the test plane landed in Phase 1a;" >&2
+  echo "  this leg no longer passes vacuously. Restore the package or" >&2
+  echo "  consciously remove the leg." >&2
+  exit 1
 fi
+require_workspace_pkg "@ibatexas/journeys"
+
+API_INTERNAL_IMPORTS="$(grep -rnE "['\"]([^'\"]*apps/api|@ibatexas/api)" packages/journeys \
+  --include='*.ts' --include='*.tsx' \
+  --exclude-dir=node_modules --exclude-dir=dist || true)"
+
+if [[ -n "$API_INTERNAL_IMPORTS" ]]; then
+  echo "$API_INTERNAL_IMPORTS"
+  echo "✗ packages/journeys must not import apps/api internals." >&2
+  exit 1
+fi
+echo "✓ packages/journeys does not reach into apps/api (scanned non-vacuously)."
 
 echo ""
 echo "✓ Bypass detection passed."
