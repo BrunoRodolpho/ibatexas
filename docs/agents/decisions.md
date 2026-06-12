@@ -172,6 +172,40 @@ prompts/tool results); JOURNEY-002/005 chat expects likely unexecutable the same
 Phase 1b); order-cancel route rate limit (5/10min/customer) caps same-stack JOURNEY-001 attempts at 4
 per window.
 
+## D-015 — Phase 1b outcomes (2026-06-12, all 9 tasks done; exit criterion local parts verified)
+
+Commits e16f86f (T1b-1), 54fc64c (T1b-8), 666d80e (T1b-3), d2127c6 (T1b-2), b5630be (T1b-7),
+4cb1afb (T1b-5), ac4c76f (T1b-0), a301418 (T1b-4); adjudicate 22d1de5 (T1b-6). Binding outcomes:
+
+- **Reconciliation gate (T1b-1)**: tuple-level (kind+decision) matching; supersession chains resolved
+  default-on; `optional: true` expects[] flag for in-namespace extras (claims no coverage cells);
+  `gate.reconciliation` is harness-mandatory, not journey-declarable. KEY STRUCTURAL FACT: system-actor
+  envelopes (`sessionId = sourceSubject:eventId`) hash outside any run namespace — never need
+  allowances; JOURNEY-001's real extras are the cancel route's inner order.status.transition +
+  payment.status.transition (user-principal, sessionId=customerId).
+- **Suite runner + dollar abort (T1b-8)**: `ibx journey run --suite [--only] [--k] [--k-money
+  --money-flows id,..] [--budget-usd]`; cap flag>env(IBX_NIGHTLY_BUDGET_USD)>default-50; abort = RED,
+  remainder `aborted-by-budget`; budget applies to --k loops too.
+- **Replay gate (T1b-3)**: exit 0/1/2; `--ci` hard-fails on unset flag/empty window; agent-namespace
+  exclusion pinned to UNHASHED `agent:` sessionId prefix (Phase-3 composition must write it unhashed —
+  redactor change scoped there).
+- **SIXTH-class SUT finding (T1b-0)**: order-amend is dead against Medusa v2 — add/remove/update_qty
+  hit removed v1 order-edit endpoints (404) while the HTTP route returns 200 and the kernel audits
+  EXECUTE for mutations that never happened (decision-vs-execution divergence, tamper-evident audit
+  attests to phantom mutations). JOURNEY-002 re-blocked (`medusa-v2-order-edit`); unblock = port
+  amendOrder/cancelItem to /admin/order-edits. Active journeys now: 001, 005, 009.
+- **Nightly (T1b-4)**: journeys-nightly.yml authored; local rehearsal green — suite 3 journeys
+  (001 k=4 certifying, all 4 cancels inside one rate-limit window), $0.2806 vs $50 cap; nightly mode
+  is the ONLY path that mutates the flake ledger; measured nightly ≈$0.28 (vs §7's ≈$1.3 estimate).
+- **Push-dependent items** (docs/agents/phase-1b-pending-push.md): 3-consecutive-nights-green
+  criterion, kernel-replay-gate as branch-protection required check, journeys-nightly environment +
+  spend-capped ANTHROPIC_API_KEY secret. These CANNOT be verified without the user pushing.
+- **Phase 2 exit-criterion deviation flagged**: plan says "≥14 active journeys"; 6 of 9 authored
+  journeys are blocked on real product gaps (the plan's own blocked-journeys-are-backlog principle
+  forbids fabricating green specs). Phase 2 targets every EXECUTABLE journey active + gaps documented;
+  the numeric target is met only if the gaps' surfaces allow it. Recorded here rather than silently
+  missed.
+
 ## D-013 — Phase 1a outcomes (2026-06-12, all 12 workflow tasks done; T1a-13 in flight)
 
 - **Journeys authored (T1a-12)**: 9 files; 4 active (001 authed place+cancel, 002 amend, 005
