@@ -261,5 +261,30 @@ export type { WhatsAppSender } from "./whatsapp/sender.js"
 // ── API base URL ──────────────────────────────────────────────────────────────
 export { getApiBase, MEDUSA_ADMIN_URL } from "./api/base-url.js"
 
+// ── Structured JSONL event emitter (ibx scenarios + journeys; IBX_EVENTS=json) ─
+export {
+  emit,
+  onEvent,
+  emitScenarioStart,
+  emitScenarioFinish,
+  emitStepStart,
+  emitStepFinish,
+  emitJourneyStart,
+  emitJourneyEnd,
+  emitActStart,
+  emitActEnd,
+  emitLlmCall,
+} from "./events/emitter.js"
+export type {
+  IbxEvent,
+  IbxEventBase,
+  IbxEventType,
+  ScenarioEvent,
+  ScenarioEventType,
+  JourneyEventType,
+  LlmCallEvent,
+  ActKindName,
+} from "./events/emitter.js"
+
 // ── Re-export shared types consumed by CLI and other packages ─────────────────
 export { Channel } from "@ibatexas/types"

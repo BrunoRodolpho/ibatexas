@@ -689,6 +689,37 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  packages/journeys:
+    dependencies:
+      '@adjudicate/core':
+        specifier: ^1.3.0
+        version: 1.3.0
+      '@ibatexas/tools':
+        specifier: workspace:*
+        version: link:../tools
+      '@ibatexas/types':
+        specifier: workspace:*
+        version: link:../types
+      yaml:
+        specifier: ^2.8.2
+        version: 2.8.3
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@25.9.1)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@25.9.1)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3)
+
   packages/nats-client:
     dependencies:
       '@ibatexas/types':
