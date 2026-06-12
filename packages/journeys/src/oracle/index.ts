@@ -20,3 +20,20 @@ export {
   type ProjectionBarrierState,
   type ProjectionPredicate,
 } from "./projection-barrier.js"
+
+// T1a-9 — test-plane containment wiring.
+export {
+  createHttpVerifyClient,
+  HttpVerifyMethodError,
+  HttpVerifyOriginError,
+  type HttpVerifyClient,
+  type HttpVerifyClientOptions,
+  type HttpVerifyFetch,
+  type HttpVerifyGetInit,
+  type HttpVerifyResponse,
+} from "./http-verify-client.js"
+export {
+  ORACLE_DB_ROLE,
+  OracleDatabaseUrlError,
+  requireOracleDatabaseUrl,
+} from "./oracle-database-url.js"

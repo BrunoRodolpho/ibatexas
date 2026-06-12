@@ -66,6 +66,7 @@ WEB_GATEWAY="$(gen)"
 AUDIT_REDACT="$(gen)"
 ADMIN_KEY="$(gen)"
 MEDUSA_PW="$(gen)"
+ORACLE_PW="$(gen)"
 FINGERPRINT="ibx-test-$(openssl rand -hex 16)"
 
 if [[ "$JWT" == "$STAFF_JWT" ]]; then
@@ -80,6 +81,7 @@ awk \
   -v jwt="$JWT" -v staff="$STAFF_JWT" -v cookie="$COOKIE" \
   -v hmac="$SESSION_HMAC" -v pepper="$PHONE_PEPPER" -v gw="$WEB_GATEWAY" \
   -v redact="$AUDIT_REDACT" -v admin="$ADMIN_KEY" -v medusa="$MEDUSA_PW" \
+  -v oracle="$ORACLE_PW" \
   -v fp="$FINGERPRINT" -v anthropic="$ANTHROPIC_KEY" '
   function subst(value) { gsub(/__GENERATE__/, value); }
   /^IBX_TEST_POSTGRES_PASSWORD=/      { subst(pg) }
@@ -95,6 +97,7 @@ awk \
   /^AUDIT_REDACT_SECRET=/             { subst(redact) }
   /^ADMIN_API_KEY=/                   { subst(admin) }
   /^MEDUSA_ADMIN_PASSWORD=/           { subst(medusa) }
+  /^IBX_TEST_ORACLE_PASSWORD=|^ORACLE_DATABASE_URL=/ { subst(oracle) }
   /^IBX_TEST_FINGERPRINT=/            { gsub(/__GENERATE__/, fp) }
   /^ANTHROPIC_API_KEY=/               { gsub(/__FROM_DEV_ENV__/, anthropic) }
   { print }
@@ -113,5 +116,6 @@ fi
 echo "wrote $TARGET (mode 600). Secrets generated: IBX_TEST_POSTGRES_PASSWORD," >&2
 echo "IBX_TEST_REDIS_PASSWORD/REDIS_PASSWORD, IBX_TEST_TYPESENSE_API_KEY/TYPESENSE_API_KEY," >&2
 echo "JWT_SECRET, STAFF_JWT_SECRET, COOKIE_SECRET, SESSION_HMAC_SECRET, PHONE_HASH_PEPPER," >&2
-echo "WEB_GATEWAY_SIGNING_KEY, AUDIT_REDACT_SECRET, ADMIN_API_KEY, MEDUSA_ADMIN_PASSWORD." >&2
+echo "WEB_GATEWAY_SIGNING_KEY, AUDIT_REDACT_SECRET, ADMIN_API_KEY, MEDUSA_ADMIN_PASSWORD," >&2
+echo "IBX_TEST_ORACLE_PASSWORD/ORACLE_DATABASE_URL (T1a-9 read-only oracle role)." >&2
 echo "ANTHROPIC_API_KEY interpolated from .env; IBX_TEST_FINGERPRINT minted (values not shown)." >&2
