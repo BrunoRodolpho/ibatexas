@@ -1,0 +1,107 @@
+version: "0.5"
+
+# process-compose.test.yaml — T1a-11b app-boot test profile (journey-test stack).
+#
+# Boots ONLY @ibatexas/api (:3001) + commerce/Medusa (:9000) against the
+# T1a-11a ephemeral infra (docker-compose.test.yml — bring it up FIRST).
+# web/admin are deliberately excluded until T2-7 needs them. Medusa is NOT
+# containerized (plan-v2 §5: explicitly not undertaken) — it boots here as a
+# process, mirroring the dev profile (process-compose.yaml).
+#
+# ENV CONTRACT (T1a-11a, .env.test): the full env block must be present BEFORE
+# process boot — rk() in @ibatexas/tools captures APP_ENV at module load, and
+# apps load no dotenv. Two layers guarantee that:
+#   1. Each app command sources ./.env.test with `set -a` and only then execs
+#      the dev server. Sourcing OVERRIDES inherited values, so even if a dev
+#      .env leaked into the environment, the test contract wins.
+#   2. The canonical launcher (scripts/test-stack-up.sh) passes `-e .env.test`,
+#      which REPLACES process-compose's default env-file list ([.env]).
+# WARNING: a top-level `env_file:` key is silently IGNORED by process-compose
+# (verified on v1.103.0) and `process-compose up` auto-loads the DEV .env via
+# its `-e` default — never rely on either; the in-command sourcing above is the
+# binding mechanism. Run from the repo root (paths are relative).
+#
+# Canonical lifecycle (counted, timed steps — scripts/test-stack-up.sh):
+#   [1] docker compose --env-file .env.test -f docker-compose.test.yml -p <proj> up -d --wait
+#   [2] ibx db provision && ibx bootstrap --skip-docker --skip-seed
+#       (kernel audit-postgres incl. intent_audit partitions + claustrum,
+#       then Medusa + Prisma domain + admin user — all against the test DB;
+#       provision must run FIRST: see scripts/test-stack-up.sh)
+#   [3] process-compose up -f process-compose.test.yaml -e .env.test -D -p <pc-port>
+#   [4] ibx db reindex && ibx test seed
+# Teardown: scripts/test-stack-down.sh (process-compose down + compose down -v).
+
+environment:
+  - "FORCE_COLOR=1"
+
+log_level: info
+
+processes:
+  # ── Package build (one-shot — mirrors the dev profile) ─────────────────────
+  # Rebuild the two source-edited shared packages so dist/ matches source.
+  build-packages:
+    command: |
+      echo "Cleaning dist caches..." &&
+      rm -rf packages/types/dist packages/tools/dist &&
+      echo "Building @ibatexas/types..." &&
+      cd packages/types && npx tsc --outDir dist && cd ../.. &&
+      echo "Building @ibatexas/tools..." &&
+      cd packages/tools && npx tsc --outDir dist && cd ../.. &&
+      echo "Package build complete"
+    availability:
+      restart: "no"
+
+  # ── Commerce (Medusa, :9000) ───────────────────────────────────────────────
+  # Same command + probe as the dev profile. Gated on build-packages (unlike
+  # dev) so a mid-rebuild dist/ can never race the boot in CI. PORT=9000 is
+  # pinned AFTER sourcing .env.test: Medusa's start command DOES honor the
+  # PORT env (verified — with .env.test's PORT=3001 it binds the api's port
+  # and the stack deadlocks); the dev stack never hits this because the dev
+  # .env sets no PORT.
+  commerce:
+    command: "test -f .env.test || { echo 'missing .env.test — run ./scripts/gen-env-test.sh' >&2; exit 1; }; set -a && . ./.env.test && set +a && export PORT=9000 && exec pnpm --filter @ibatexas/commerce dev"
+    depends_on:
+      build-packages:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 9000
+        path: "/health"
+      initial_delay_seconds: 10
+      period_seconds: 5
+      timeout_seconds: 5
+      failure_threshold: 60
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
+
+  # ── API (Fastify, :3001) ───────────────────────────────────────────────────
+  # /health is the deep check (Redis/Postgres critical → 503 until both are
+  # reachable), so readiness here implies the test infra is actually wired.
+  # The testFingerprint field on /health arrives with T1a-10.
+  api:
+    command: "test -f .env.test || { echo 'missing .env.test — run ./scripts/gen-env-test.sh' >&2; exit 1; }; set -a && . ./.env.test && set +a && exec pnpm --filter @ibatexas/api dev"
+    depends_on:
+      commerce:
+        condition: process_healthy
+      build-packages:
+        condition: process_completed_successfully
+    readiness_probe:
+      http_get:
+        host: "localhost"
+        port: 3001
+        path: "/health"
+      initial_delay_seconds: 5
+      period_seconds: 3
+      timeout_seconds: 5
+      failure_threshold: 40
+    availability:
+      restart: on_failure
+      max_restarts: 3
+    shutdown:
+      signal: 15
+      timeout_seconds: 10
