@@ -51,6 +51,7 @@
     "@ibatexas/pack-payments": "workspace:*",
     "@ibatexas/pack-reservations": "workspace:*",
     "@ibatexas/pack-whatsapp": "workspace:*",
+    "@ibatexas/packs-composed": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@sentry/node": "^10.45.0",

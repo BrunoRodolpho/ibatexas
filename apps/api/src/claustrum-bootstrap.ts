@@ -34,14 +34,6 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { Pool } from "pg";
-import { createRequire } from "node:module";
-
-// apps/api is ESM ("type": "module"); `require` is not a global here. The
-// pack-install + audit-postgres-probe paths below use a dynamic require() to
-// skip-if-missing — shim a working require bound to this module's URL so the
-// bootstrap composes when actually called (it was latent while INERT). Node's
-// require() handles both CJS and ESM (>=22) workspace packages.
-const require = createRequire(import.meta.url);
 import {
   createConductor,
   createToolRegistry,
@@ -101,15 +93,6 @@ import {
   type RedisLedgerClient,
 } from "@adjudicate/audit";
 
-// Pack imports — at the time of this commit, ibatexas's first-party Packs
-// are in packages/pack-*/ but those packages have no published package.json
-// at the root yet (only `dist/`). We import their compiled .d.ts barrel via
-// relative path; pnpm install will resolve these via the workspace symlinks
-// if/when they grow proper package.json files. If a pack isn't yet available,
-// the bootstrap logs a warning and skips it (graceful degradation).
-//
-// TODO(post-cutover): swap these to canonical `@ibatexas/pack-*` imports
-// once each pack's package.json is restored.
 import { prisma } from "@ibatexas/domain";
 import { getRedisClient, rk } from "@ibatexas/tools";
 
@@ -124,22 +107,20 @@ import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
 // ── RC-A1 cutover composition (Phase A.1/A.2) ────────────────────────────────
 // The production planner + per-kind PolicyBundle router, composed over the 5
 // first-party packs. INERT until bootstrapClaustrum() is called.
-import type { CapabilityPlanner } from "@adjudicate/core/llm";
 import type { PolicyBundle } from "@adjudicate/core/kernel";
 import { hasMetricsSink, setMetricsSink } from "@adjudicate/core/kernel";
 import { createIbatexasMetricsSink } from "./observability/metrics-sink.js";
 import { logger } from "./lib/logger.js";
-import { ordersPack, ordersCapabilityPlanner } from "@ibatexas/pack-orders";
-import { paymentsPack, paymentsCapabilityPlanner } from "@ibatexas/pack-payments";
+// The five first-party packs are named in exactly ONE site —
+// @ibatexas/packs-composed (a workspace package, so the CLI/journeys gates
+// can consume the same composition; an apps/api export is unreachable from
+// packages/*). The pix lifecycle pack is the platform adopter pack (ADR #13),
+// not first-party, so it stays a direct registry import.
 import {
-  reservationsPack,
-  reservationsCapabilityPlanner,
-} from "@ibatexas/pack-reservations";
-import {
-  customerOnboardingPack,
-  customerOnboardingCapabilityPlanner,
-} from "@ibatexas/pack-customer-onboarding";
-import { whatsappPack, whatsappCapabilityPlanner } from "@ibatexas/pack-whatsapp";
+  IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+  IBATEXAS_COMPOSED_PACKS,
+} from "@ibatexas/packs-composed";
+import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
 import {
@@ -470,37 +451,22 @@ function installFirstPartyPacks(): SealablePackInput[] {
   // installPack is the kernel-side variant; the runtime never reaches in to
   // mutate the registry — it's a one-time boot step.
   //
-  // The dynamic require pattern lets us skip a missing pack gracefully (its
-  // package.json may not yet be wired to the workspace). When restored,
-  // each pack call becomes a plain top-level import.
-  const packs = [
-    "@ibatexas/pack-orders",
-    "@ibatexas/pack-payments",
-    "@ibatexas/pack-reservations",
-    "@ibatexas/pack-customer-onboarding",
-    "@ibatexas/pack-whatsapp",
-    "@adjudicate/pack-payments-pix",
-  ];
+  // The five first-party packs come from the single composition site
+  // (@ibatexas/packs-composed) plus the platform pix adopter pack. A pack
+  // that fails to install (conformance drift, double-install) is logged and
+  // skipped — the F5 seal gate catches a pinned pack that did not install.
+  const packs = [...IBATEXAS_COMPOSED_PACKS, paymentsPixPack] as const;
 
-  for (const packName of packs) {
+  for (const pack of packs) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const pack = require(packName);
-      const value =
-        pack[`${pluralCamel(stripScope(packName))}Pack`] ??
-        pack[`${stripScope(packName).replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}Pack`] ??
-        pack.pack ??
-        pack.default;
-      if (value && typeof installPack === "function") {
-        installPack(value);
-        // Seal the SOURCE pack object (pre-installPack-wrap; withBasisAudit
-        // strips guard metadata) so the F5 config seal pins the real surface.
-        installed.push(value as SealablePackInput);
-      }
+      installPack(pack as unknown as ErasedPack);
+      // Seal the SOURCE pack object (pre-installPack-wrap; withBasisAudit
+      // strips guard metadata) so the F5 config seal pins the real surface.
+      installed.push(pack as unknown as SealablePackInput);
     } catch (err) {
       logger.warn(
-        { component: "startup", pack: packName, err: (err as Error).message },
-        "Pack could not be installed (likely not yet workspace-published)",
+        { component: "startup", pack: pack.id, err: (err as Error).message },
+        "Pack could not be installed",
       );
     }
   }
@@ -566,15 +532,6 @@ function assertConfigSealOrThrow(
     { component: "startup", sealedPacks: pinned.size },
     "[config-seal] all pinned pack config seals verified",
   );
-}
-
-function stripScope(name: string): string {
-  return name.replace(/^@[^/]+\//, "").replace(/^pack-/, "");
-}
-
-function pluralCamel(name: string): string {
-  // "orders" -> "orders"; "customer-onboarding" -> "customerOnboarding"
-  return name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
 }
 
 // ── Audit-postgres readiness probe ───────────────────────────────────────────
@@ -726,13 +683,7 @@ const tokenUsageStore: TokenUsageStore = createInMemoryTokenUsageStore({
 // that was previously inlined here.
 const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> =
   buildIbatexasPolicyPacks(
-    [
-      ordersPack,
-      paymentsPack,
-      reservationsPack,
-      customerOnboardingPack,
-      whatsappPack,
-    ] as unknown as ReadonlyArray<ErasedPack>,
+    IBATEXAS_COMPOSED_PACKS as unknown as ReadonlyArray<ErasedPack>,
     IBATEXAS_ADOPTER_BUSINESS_GUARDS,
   );
 
@@ -751,20 +702,9 @@ export function policyForKind(
   return resolveCapabilityPolicy(IBATEXAS_POLICY_PACKS, kind);
 }
 
-/** The packs' capability planners — union'd by the production planner. */
-// CapabilityPlanner<S, C>.plan is declared method-style, so its params compare
-// bivariantly — each pack's concrete planner widens to CapabilityPlanner<unknown,
-// unknown> with no cast. A plain annotation states the erased element type
-// honestly (was an unnecessary `as unknown as` that hid that the widening is free).
-const IBATEXAS_CAPABILITY_PLANNERS: ReadonlyArray<
-  CapabilityPlanner<unknown, unknown>
-> = [
-  ordersCapabilityPlanner,
-  paymentsCapabilityPlanner,
-  reservationsCapabilityPlanner,
-  customerOnboardingCapabilityPlanner,
-  whatsappCapabilityPlanner,
-];
+// The packs' capability planners — union'd by the production planner — now
+// live alongside the pack list in @ibatexas/packs-composed
+// (IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, imported above).
 
 /**
  * Map the claustrum CognitiveState onto the union (state, context) the pack
@@ -1326,7 +1266,7 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     planner: createIbatexasPlanner({
       model: modelProvider,
       modelId: anthropicModelId,
-      capabilityPlanners: IBATEXAS_CAPABILITY_PLANNERS,
+      capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
       deriveContext: deriveIbatexasPlannerContext,
     }),
     responder: naiveResponder(modelProvider, anthropicModelId),
