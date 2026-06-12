@@ -12,18 +12,40 @@
 #     stage auto-resolves the most-recent order and sets
 #     `ctx.autoResolvedMoneyRef` (resolve-and-assemble.ts
 #     ORDER_AUTORESOLVE_KINDS) → confirmOnAutoResolveGuard returns
-#     REQUEST_CONFIRMATION. The "sim" turn resumes the parked envelope; the
-#     resume path re-assembles ctx from the now-explicit orderId (the flag is
-#     absent) and re-adjudicates to EXECUTE (claustrum-bootstrap.ts resume +
-#     enrichResumeState). `escalateLargeCancel` needs >= R$1.000 — not here.
-#   So the cancel trajectory is REQUEST_CONFIRMATION → EXECUTE, by code.
+#     REQUEST_CONFIRMATION. The envelope is parked.
+#
+# ── T1a-13 CORRECTION (the journey is the executable spec of what the system
+#    ACTUALLY does): the CHAT surface cannot resume a parked confirmation.
+#    Verified against the running composition:
+#      * WebChannel.matchToParked returns null unconditionally
+#        (@claustrum/channel-web web-channel.ts) — handleTurn's resume trigger
+#        never fires for web chat;
+#      * the chat SSE pushes only text_delta + a bare `done`
+#        (apps/api/src/routes/chat.ts:296-307) — response.meta
+#        .awaitingConfirmation and the confirmation token never reach the
+#        client, and no chat-confirm endpoint exists (the only confirm
+#        round-trip is POST /api/cart/checkout/confirm — the large-ticket
+#        checkout path, routes/checkout-confirmation-store.ts);
+#      * the planner perceives single-turn text only
+#        (claustrum/ibatexas-planner.ts) — a bare "sim" next turn proposes
+#        nothing (and memory recall is fail-safe degraded, D-012).
+#    This is the `chat-confirmation-resume` product gap already named by
+#    JOURNEY-003's blocked_by (plan §5: no phase closes it). The cancel leg
+#    therefore asserts the best achievable trajectory: the chat leg proves
+#    the confirm GATE (order.cancel REQUEST_CONFIRMATION parked), and the
+#    documented public HTTP cancel route (POST /api/orders/:orderId/cancel,
+#    apps/api/src/routes/order-actions.ts:401 — explicit id, no auto-resolve
+#    flag, within-PONR) completes the cancel as a fresh customer envelope
+#    (order.cancel EXECUTE). When the web surface ships confirm-resume, this
+#    journey reverts to the pure-chat REQUEST_CONFIRMATION → EXECUTE chain.
 #
 # Trajectory mode: IN_ORDER (audit.trajectory.in_order) — the expects[] must
 # appear as a subsequence of the run's audited trail; incidental envelopes
-# (e.g. a leading order.cart.ensure if the SUT planner ensures the cart
-# explicitly) are tolerated. Turn-completion uses the ChatClient's SSE done +
-# audit/projection barrier (T1a-5/T1a-6) — the barrier is runner mechanics,
-# not a verify[] entry.
+# (e.g. a leading order.cart.ensure, or the cancel executor's inner
+# order.status.transition / payment.status.transition envelopes) are
+# tolerated. Turn-completion uses the ChatClient's SSE done + audit/projection
+# barrier (T1a-5/T1a-6) — the barrier is runner mechanics, not a verify[]
+# entry.
 id: JOURNEY-001
 title: Authenticated customer places an order via chat, then cancels it
 businessCase: >-
@@ -32,11 +54,14 @@ businessCase: >-
   every mutation kernel-adjudicated and audited. Checkout and cancel are
   planner-gated on isAuthenticated, so this journey proves the
   authenticated-customer surface end to end (guests structurally cannot run
-  it — that negative is JOURNEY-009).
+  it — that negative is JOURNEY-009). The cancel leg pins BOTH halves of the
+  system's real behavior: the chat confirm gate (REQUEST_CONFIRMATION parked
+  on auto-resolved money refs) and the HTTP cancel route completing the
+  cancellation.
 persona: >-
   Maria Silva, cliente cadastrada e autenticada, quer uma costela bovina
   defumada para retirar no balcão e pagar em dinheiro — mas logo depois de
-  fechar o pedido muda de ideia e quer cancelar tudo pelo próprio chat.
+  fechar o pedido muda de ideia e quer cancelar tudo.
 channel: web
 status: active
 blocked_by: []
@@ -57,19 +82,41 @@ acts:
       Precondition only — Maria Silva is one of the SEED_CUSTOMERS
       (packages/domain/src/seed-constants.ts); the authFixture (T1a-4) mints
       her customer JWT cookie and the ChatClient threads it on POST + SSE.
+      The harness resolves the seeded row via the read-only oracle role and
+      never writes.
   - kind: chat
     name: place-order
     goal: >-
-      Montar um pedido com uma costela bovina defumada (1kg), escolher
-      retirada no balcão e pagamento em dinheiro, e finalizar o pedido.
+      Montar um pedido com uma costela bovina defumada (1kg) e finalizá-lo.
+      Faça em duas etapas: primeiro peça para adicionar o produto ao
+      carrinho; depois que o agente confirmar o item no carrinho, peça para
+      finalizar o pedido com retirada no balcão e pagamento em dinheiro.
       Informe os alérgenos exatamente como o cardápio apresentar.
   - kind: chat
-    name: cancel-order
+    name: request-cancel
     goal: >-
-      Cancelar o pedido que acabou de fazer, SEM citar número ou código do
-      pedido (diga apenas "quero cancelar meu pedido"). Quando o agente pedir
-      confirmação do pedido mais recente, responda "sim" para confirmar o
-      cancelamento.
+      Pedir o cancelamento do pedido que acabou de fazer, SEM citar número ou
+      código do pedido (diga apenas "quero cancelar meu pedido"). O agente
+      vai pedir uma confirmação sobre o pedido mais recente — quando isso
+      acontecer, NÃO responda mais nada: encerre a conversa nesse ponto (a
+      confirmação será concluída por outro canal).
+    note: >-
+      Asserts the confirm GATE only: the parked envelope cannot be resumed
+      via chat (chat-confirmation-resume product gap — see header). The
+      REQUEST_CONFIRMATION audit row is this act's deliverable.
+  - kind: http
+    name: confirm-cancel-via-http
+    method: POST
+    path: /api/orders/:orderId/cancel
+    asRole: customer
+    body:
+      reason: "Cancelado pela cliente após confirmação"
+    note: >-
+      The documented public cancel round-trip (order-actions.ts:401):
+      explicit order id (resolved by the harness to the run's own order, via
+      the projection barrier), requireAuth cookie, within-PONR → kernel
+      EXECUTE. Runs as a standalone runner act — the persona model never
+      holds the http act-tool in this journey.
 expects:
   - intentKind: order.item.add
     decision: EXECUTE
