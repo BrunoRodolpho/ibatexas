@@ -34,6 +34,9 @@
 //
 // Per-attempt budgets: 10-minute wall-clock timeout (abort = red, never a
 // hang) and the driver's token ceiling (DriverTokenCeilingError = red).
+// Suite/k-loop budget (T1b-8): cumulative measured cost is charged into a
+// DollarBudget after each attempt; spend ≥ cap aborts everything left as
+// `aborted-by-budget` (RED, reported — see budget.ts + run-suite-cli.ts).
 
 import { randomUUID } from "node:crypto"
 import { mkdirSync, writeFileSync } from "node:fs"
@@ -62,6 +65,16 @@ import {
 } from "../runner/run-journey.js"
 import { runPreflight, type PreflightResult } from "./preflight.js"
 import { loadTestEnv } from "./test-env.js"
+import {
+  ABORTED_BY_BUDGET,
+  createDollarBudget,
+  NIGHTLY_BUDGET_ENV,
+  renderBudgetLine,
+  resolveBudgetCapUsd,
+  type BudgetReport,
+  type DollarBudget,
+  type RunCompletionStatus,
+} from "./budget.js"
 import {
   attemptCost,
   loadPriceTable,
@@ -134,6 +147,12 @@ export interface JourneyAttemptReport {
   attempt: number
   runId: string
   pass: boolean
+  /**
+   * T1b-8: "completed" = the attempt actually ran (pass or fail);
+   * "aborted-by-budget" = the suite dollar cap was reached before this
+   * attempt started — it never ran and is reported, never silently dropped.
+   */
+  status: RunCompletionStatus
   certifying: boolean
   /** Completed SUT chat turns (chat.turn.end outcome=pass) in this attempt. */
   turns: number
@@ -155,9 +174,13 @@ export interface JourneyRunReport {
   journey: string
   k: number
   pass: boolean
+  /** T1b-8: "aborted-by-budget" when ANY attempt was budget-truncated. */
+  status: RunCompletionStatus
   attempts: JourneyAttemptReport[]
   totalCostUsd: number
   costLine: string
+  /** T1b-8: the dollar cap + cumulative spend at report time. */
+  budget: BudgetReport
 }
 
 export class JourneyRunCliError extends Error {
@@ -179,6 +202,17 @@ export interface RunJourneyCliOptions {
   runsDir?: string
   /** Progress sink for human output (act/turn/cost lines). */
   onProgress?: (line: string) => void
+  /**
+   * T1b-8 dollar cap (`--budget-usd`): overrides `IBX_NIGHTLY_BUDGET_USD`
+   * (default $50). Ignored when `budget` is supplied.
+   */
+  budgetUsd?: number
+  /**
+   * T1b-8 shared accumulator: the SUITE runner passes one `DollarBudget`
+   * instance spanning every journey, so cumulative spend aborts mid-suite
+   * AND mid-k-loop. Single-journey runs build their own from `budgetUsd`.
+   */
+  budget?: DollarBudget
 }
 
 // ── Attempt composition ──────────────────────────────────────────────────────
@@ -852,6 +886,7 @@ async function runAttempt(deps: AttemptDeps): Promise<JourneyAttemptReport> {
     attempt,
     runId,
     pass,
+    status: "completed",
     certifying,
     turns,
     costUsd: cost.totalUsd,
@@ -884,6 +919,7 @@ async function runAttemptWithTimeout(deps: AttemptDeps): Promise<JourneyAttemptR
         attempt: deps.attempt,
         runId: "attempt-timeout",
         pass: false,
+        status: "completed", // it RAN (and timed out) — not budget-truncated
         certifying: false,
         turns: 0,
         costUsd: 0,
@@ -907,6 +943,83 @@ async function runAttemptWithTimeout(deps: AttemptDeps): Promise<JourneyAttemptR
   } finally {
     if (timer !== undefined) clearTimeout(timer)
   }
+}
+
+// ── Budget-aware k-loop (T1b-8) ──────────────────────────────────────────────
+
+/** The attempt record reported for a budget-truncated (never-run) attempt. */
+export function abortedByBudgetAttemptReport(
+  attempt: number,
+  budget: DollarBudget,
+): JourneyAttemptReport {
+  const detail =
+    `cumulative suite cost ${formatUsd(budget.spentUsd)} >= cap ${formatUsd(budget.capUsd)} ` +
+    `(cap source: ${budget.source}; --budget-usd / ${NIGHTLY_BUDGET_ENV})`
+  return {
+    attempt,
+    runId: ABORTED_BY_BUDGET,
+    pass: false,
+    status: ABORTED_BY_BUDGET,
+    certifying: false,
+    turns: 0,
+    costUsd: 0,
+    driverCostUsd: 0,
+    sutCostUsd: 0,
+    driverTokens: { in: 0, out: 0 },
+    sutTokens: { in: 0, out: 0 },
+    durationMs: 0,
+    tracePath: "",
+    costLine: `cost[attempt ${attempt}]: ${ABORTED_BY_BUDGET} (${detail})`,
+    error: `${ABORTED_BY_BUDGET}: ${detail}`,
+  }
+}
+
+/**
+ * Run up to `k` sequential attempts, charging each attempt's MEASURED cost
+ * (`llm.call` events × the checked-in price table — already aggregated into
+ * the attempt report's `costUsd`) into the shared `DollarBudget` after the
+ * attempt finishes. Once cumulative spend ≥ cap, every remaining attempt is
+ * reported `aborted-by-budget` (pass=false → RED) instead of running —
+ * never silent truncation. Exported as the unit-test seam for the T1b-8
+ * abort semantics (`runJourneyCli` composes it with the real attempt fn).
+ */
+export async function runAttemptsWithBudget(args: {
+  journeyId: string
+  k: number
+  budget: DollarBudget
+  runAttempt: (attempt: number) => Promise<JourneyAttemptReport>
+  onProgress?: (line: string) => void
+}): Promise<{ attempts: JourneyAttemptReport[]; abortedByBudget: boolean }> {
+  const { journeyId, k, budget, runAttempt } = args
+  const onProgress = args.onProgress ?? (() => undefined)
+  const attempts: JourneyAttemptReport[] = []
+  let abortedByBudget = false
+
+  for (let attempt = 1; attempt <= k; attempt++) {
+    if (budget.exceeded()) {
+      const aborted = abortedByBudgetAttemptReport(attempt, budget)
+      if (!abortedByBudget) {
+        // First truncated attempt of THIS journey → one journey.aborted event
+        // (reason "dollar_cap" — the emitter contract for T1b-8).
+        abortedByBudget = true
+        emitJourneyAborted({
+          journey: journeyId,
+          runId: ABORTED_BY_BUDGET,
+          reason: "dollar_cap",
+          detail: aborted.error ?? renderBudgetLine(budget),
+        })
+        onProgress(`${journeyId}: ${renderBudgetLine(budget)}`)
+      }
+      attempts.push(aborted)
+      onProgress(`${journeyId} attempt ${attempt}/${k}: ${ABORTED_BY_BUDGET}`)
+      continue
+    }
+    const report = await runAttempt(attempt)
+    attempts.push(report)
+    budget.charge(report.costUsd)
+  }
+
+  return { attempts, abortedByBudget }
 }
 
 // ── Entry point (`ibx journey run` calls this) ───────────────────────────────
@@ -944,26 +1057,37 @@ export async function runJourneyCli(options: RunJourneyCliOptions): Promise<Jour
   const apiBaseUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001"
   const runsDir = options.runsDir ?? join(REPO_ROOT, "runs")
 
-  const attempts: JourneyAttemptReport[] = []
-  for (let attempt = 1; attempt <= k; attempt++) {
-    onProgress(`${journey.id} attempt ${attempt}/${k} starting`)
-    const report = await runAttemptWithTimeout({
-      journey,
-      attempt,
-      apiBaseUrl,
-      priceTable,
-      runsDir,
-      onProgress,
-    })
-    attempts.push(report)
-    onProgress(
-      `${journey.id} attempt ${attempt}/${k}: ${report.pass ? "PASS" : "FAIL"} ` +
-        `(turns=${report.turns}, ${(report.durationMs / 1000).toFixed(1)}s` +
-        `${report.certifying ? ", certifying" : ", NON-certifying"})` +
-        `${report.error !== undefined ? ` — ${truncate(report.error, 300)}` : ""}`,
-    )
-    onProgress(report.costLine)
-  }
+  // T1b-8 dollar budget: the suite passes ONE shared accumulator; a
+  // standalone run builds its own (--budget-usd > IBX_NIGHTLY_BUDGET_USD >
+  // $50 default). Cumulative cost is charged after EACH attempt; once
+  // spend ≥ cap, the remaining attempts are reported aborted-by-budget.
+  const budget = options.budget ?? createDollarBudget(resolveBudgetCapUsd(options.budgetUsd))
+
+  const { attempts, abortedByBudget } = await runAttemptsWithBudget({
+    journeyId: journey.id,
+    k,
+    budget,
+    onProgress,
+    runAttempt: async (attempt) => {
+      onProgress(`${journey.id} attempt ${attempt}/${k} starting`)
+      const report = await runAttemptWithTimeout({
+        journey,
+        attempt,
+        apiBaseUrl,
+        priceTable,
+        runsDir,
+        onProgress,
+      })
+      onProgress(
+        `${journey.id} attempt ${attempt}/${k}: ${report.pass ? "PASS" : "FAIL"} ` +
+          `(turns=${report.turns}, ${(report.durationMs / 1000).toFixed(1)}s` +
+          `${report.certifying ? ", certifying" : ", NON-certifying"})` +
+          `${report.error !== undefined ? ` — ${truncate(report.error, 300)}` : ""}`,
+      )
+      onProgress(report.costLine)
+      return report
+    },
+  })
 
   const totalCostUsd = attempts.reduce((sum, a) => sum + a.costUsd, 0)
   const totalDriver = attempts.reduce((s, a) => s + a.driverCostUsd, 0)
@@ -976,8 +1100,10 @@ export async function runJourneyCli(options: RunJourneyCliOptions): Promise<Jour
     journey: journey.id,
     k,
     pass: attempts.length === k && attempts.every((a) => a.pass),
+    status: abortedByBudget ? ABORTED_BY_BUDGET : "completed",
     attempts,
     totalCostUsd,
     costLine,
+    budget: budget.snapshot(),
   }
 }

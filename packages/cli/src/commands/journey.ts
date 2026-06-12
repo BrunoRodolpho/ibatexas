@@ -283,24 +283,101 @@ async function runJourneyCoverage(opts: {
 // (src/harness/run-journey-cli.ts). Saída de dev/CI em inglês (convenção do
 // plano de teste); exit 0 somente com TODAS as tentativas verdes.
 
-async function runJourneyRun(
-  id: string,
-  opts: { k?: string; json?: boolean; dir?: string; envFile?: string },
-): Promise<void> {
-  const { runJourneyCli, JourneyRunCliError } = await import("@ibatexas/journeys")
+interface JourneyRunCliFlags {
+  k?: string
+  json?: boolean
+  dir?: string
+  envFile?: string
+  // T1b-8 — suite + dollar-abort flags
+  suite?: boolean
+  only?: string
+  kMoney?: string
+  moneyFlows?: string
+  budgetUsd?: string
+}
+
+function parseIdList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
+async function runJourneyRun(id: string | undefined, opts: JourneyRunCliFlags): Promise<void> {
+  const { runJourneyCli, runJourneySuiteCli, JourneyRunCliError, BudgetConfigError } =
+    await import("@ibatexas/journeys")
 
   const k = opts.k !== undefined ? Number.parseInt(opts.k, 10) : 1
+  const budgetUsd = opts.budgetUsd !== undefined ? Number.parseFloat(opts.budgetUsd) : undefined
+  // Progress lines stream to stderr so --json keeps stdout machine-clean.
+  const onProgress = (line: string): void => {
+    if (opts.json === true) process.stderr.write(`${line}\n`)
+    else console.log(chalk.dim(line))
+  }
+
   try {
+    // ── Suite path (T1b-8): all active journeys, sequential, dollar-capped ──
+    if (opts.suite === true) {
+      if (id !== undefined) {
+        console.error(chalk.red("--suite roda todas as jornadas ativas — não combine com <id> (use --only)"))
+        process.exitCode = 1
+        return
+      }
+      const report = await runJourneySuiteCli({
+        ...(opts.only !== undefined ? { only: parseIdList(opts.only) } : {}),
+        k,
+        ...(opts.kMoney !== undefined ? { kMoney: Number.parseInt(opts.kMoney, 10) } : {}),
+        ...(opts.moneyFlows !== undefined ? { moneyFlows: parseIdList(opts.moneyFlows) } : {}),
+        ...(budgetUsd !== undefined ? { budgetUsd } : {}),
+        ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
+        ...(opts.envFile !== undefined ? { envFile: resolveUserPath(opts.envFile) } : {}),
+        onProgress,
+      })
+
+      if (opts.json === true) {
+        console.log(JSON.stringify(report, null, 2))
+      } else {
+        for (const j of report.journeys) {
+          const aborted = j.status === "aborted-by-budget"
+          const head = j.pass
+            ? chalk.green(`✓ ${j.journey}: PASS`)
+            : chalk.red(`✗ ${j.journey}: ${aborted ? "ABORTED-BY-BUDGET" : "FAIL"}`)
+          console.log(
+            `${head} ${chalk.dim(`(${j.attempts.filter((a) => a.pass).length}/${j.k} green)`)}`,
+          )
+          console.log(j.costLine)
+        }
+        console.log(report.costLine)
+        if (report.abortedByBudget) {
+          console.error(
+            chalk.red(
+              `✗ suite aborted-by-budget: spent $${report.budget.spentUsd.toFixed(4)} >= cap $${report.budget.capUsd.toFixed(4)} (${report.budget.source}) — RED run`,
+            ),
+          )
+        }
+        console.log(
+          report.pass
+            ? chalk.green(`✓ suite green (${report.journeys.length} journeys)`)
+            : chalk.red(`✗ suite RED (${report.journeys.filter((j) => j.pass).length}/${report.journeys.length} green)`),
+        )
+      }
+      if (!report.pass) process.exitCode = 1
+      return
+    }
+
+    // ── Single-journey path (T1a-13; budget applies to the --k loop too) ────
+    if (id === undefined) {
+      console.error(chalk.red("informe uma jornada (<id>) ou rode a suíte com --suite"))
+      process.exitCode = 1
+      return
+    }
     const report = await runJourneyCli({
       journeyId: id,
       k,
+      ...(budgetUsd !== undefined ? { budgetUsd } : {}),
       ...(opts.dir !== undefined ? { dir: resolveUserPath(opts.dir) } : {}),
       ...(opts.envFile !== undefined ? { envFile: resolveUserPath(opts.envFile) } : {}),
-      // Progress lines stream to stderr so --json keeps stdout machine-clean.
-      onProgress: (line) => {
-        if (opts.json === true) process.stderr.write(`${line}\n`)
-        else console.log(chalk.dim(line))
-      },
+      onProgress,
     })
 
     if (opts.json === true) {
@@ -309,7 +386,9 @@ async function runJourneyRun(
       for (const attempt of report.attempts) {
         const head = attempt.pass
           ? chalk.green(`✓ attempt ${attempt.attempt}: PASS`)
-          : chalk.red(`✗ attempt ${attempt.attempt}: FAIL`)
+          : chalk.red(
+              `✗ attempt ${attempt.attempt}: ${attempt.status === "aborted-by-budget" ? "ABORTED-BY-BUDGET" : "FAIL"}`,
+            )
         console.log(
           `${head} ${chalk.dim(
             `runId=${attempt.runId} turns=${attempt.turns} ${(attempt.durationMs / 1000).toFixed(1)}s ${attempt.certifying ? "certifying" : "NON-certifying"}`,
@@ -319,6 +398,13 @@ async function runJourneyRun(
         if (attempt.error !== undefined) console.error(chalk.red(`  ${attempt.error}`))
       }
       console.log(report.costLine)
+      if (report.status === "aborted-by-budget") {
+        console.error(
+          chalk.red(
+            `✗ aborted-by-budget: spent $${report.budget.spentUsd.toFixed(4)} >= cap $${report.budget.capUsd.toFixed(4)} (${report.budget.source})`,
+          ),
+        )
+      }
       console.log(
         report.pass
           ? chalk.green(`✓ ${report.journey} green ${report.k}/${report.k}`)
@@ -327,7 +413,7 @@ async function runJourneyRun(
     }
     if (!report.pass) process.exitCode = 1
   } catch (err) {
-    if (err instanceof JourneyRunCliError) {
+    if (err instanceof JourneyRunCliError || err instanceof BudgetConfigError) {
       console.error(chalk.red(err.message))
       process.exitCode = 1
       return
@@ -360,11 +446,28 @@ export function registerJourneyCommands(group: Command): void {
     })
 
   group
-    .command("run <id>")
+    .command("run [id]")
     .description(
-      "Executa uma jornada contra o stack de teste ao vivo (T1a-13): preflight → fixture/chat/http acts → verify[] → trace JSONL (runs/<runId>/) → relatório de custo via llm.call × price-table. --k N exige N tentativas TODAS verdes (exit 0 só com todas).",
+      "Executa uma jornada (<id>) ou a suíte (--suite, todas as ativas em sequência) contra o stack de teste ao vivo: preflight → fixture/chat/http acts → verify[] → trace JSONL (runs/<runId>/) → relatório de custo via llm.call × price-table. --k N exige N tentativas TODAS verdes (exit 0 só com todas). Abort por orçamento (T1b-8): custo acumulado ≥ cap → run VERMELHO, restante reportado aborted-by-budget (cap: --budget-usd > IBX_NIGHTLY_BUDGET_USD > $50).",
     )
     .option("--k <n>", "Tentativas sequenciais; todas devem passar (default 1)")
+    .option("--suite", "Roda TODAS as jornadas ativas em sequência (T1b-8; nightly T1b-4)")
+    .option(
+      "--only <ids>",
+      "Com --suite: restringe às jornadas listadas (ids separados por vírgula)",
+    )
+    .option(
+      "--k-money <n>",
+      "Com --suite: tentativas para as jornadas de --money-flows (default: --k)",
+    )
+    .option(
+      "--money-flows <ids>",
+      "Com --suite: ids das jornadas money-flow que recebem --k-money (vírgula)",
+    )
+    .option(
+      "--budget-usd <usd>",
+      "Cap de dólares da execução (default: IBX_NIGHTLY_BUDGET_USD ou $50) — custo acumulado ≥ cap aborta como run vermelho",
+    )
     .option("--json", "Emite o relatório da execução em JSON (stdout limpo)")
     .option(
       "--dir <path>",
@@ -374,14 +477,9 @@ export function registerJourneyCommands(group: Command): void {
       "--env-file <path>",
       "Arquivo .env do stack de teste (default: <repo>/.env.test; shell env tem precedência)",
     )
-    .action(
-      async (
-        id: string,
-        opts: { k?: string; json?: boolean; dir?: string; envFile?: string },
-      ) => {
-        await runJourneyRun(id, opts)
-      },
-    )
+    .action(async (id: string | undefined, opts: JourneyRunCliFlags) => {
+      await runJourneyRun(id, opts)
+    })
 
   group
     .command("coverage")

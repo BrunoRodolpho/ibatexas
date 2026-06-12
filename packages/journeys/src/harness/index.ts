@@ -22,14 +22,37 @@ export {
 
 // T1a-13 — `ibx journey run`: full live loop with measured cost.
 export {
+  abortedByBudgetAttemptReport,
   ATTEMPT_TIMEOUT_MS,
   JourneyRunCliError,
+  runAttemptsWithBudget,
   runJourneyCli,
   type JourneyAttemptReport,
   type JourneyRunReport,
   type RunJourneyCliOptions,
   type TokenSplitReport,
 } from "./run-journey-cli.js"
+
+// T1b-8 — suite-level dollar abort + `ibx journey run --suite`.
+export {
+  ABORTED_BY_BUDGET,
+  BudgetConfigError,
+  createDollarBudget,
+  DEFAULT_NIGHTLY_BUDGET_USD,
+  DollarBudget,
+  NIGHTLY_BUDGET_ENV,
+  renderBudgetLine,
+  resolveBudgetCapUsd,
+  type BudgetCapSource,
+  type BudgetReport,
+  type ResolvedBudgetCap,
+  type RunCompletionStatus,
+} from "./budget.js"
+export {
+  runJourneySuiteCli,
+  type JourneySuiteReport,
+  type RunJourneySuiteCliOptions,
+} from "./run-suite-cli.js"
 export { loadTestEnv, parseEnvFile, type LoadTestEnvResult } from "./test-env.js"
 export {
   attemptCost,
