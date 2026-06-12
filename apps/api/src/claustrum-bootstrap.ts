@@ -141,6 +141,7 @@ import {
 } from "@ibatexas/pack-customer-onboarding";
 import { whatsappPack, whatsappCapabilityPlanner } from "@ibatexas/pack-whatsapp";
 import { requireSecret } from "./utils/require-secret.js";
+import { requireEnv } from "./utils/require-env.js";
 import {
   composePolicyRouter,
   resolveCapabilityPolicy,
@@ -836,11 +837,15 @@ export function deriveIbatexasPlannerContext(state: CognitiveState): {
  * Minimal responder — a direct Anthropic completion. Richer prompt synthesis
  * (system prompt, tool framing) is incremental work layered on top.
  */
-function naiveResponder(model: AnthropicProvider): ResponderPort {
+function naiveResponder(
+  model: AnthropicProvider,
+  modelId: string,
+): ResponderPort {
   return {
     async respond(input) {
       const completion = await model.complete({
-        model: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-5-20250101",
+        // Resolved fail-fast at boot by bootstrapClaustrum() — no fallback.
+        model: modelId,
         maxTokens: 1024,
         system:
           "Você é o atendente da IbateXas. Responda em pt-BR de forma curta e clara.",
@@ -1132,6 +1137,15 @@ const resolveIbatexasTenantPolicy: TenantResolver = {
 export async function bootstrapClaustrum(): Promise<Conductor> {
   if (_conductor) return _conductor;
 
+  // Model ids resolve ONCE, fail-fast, before any infra is touched. The
+  // previous inline fallbacks were bogus: a dated Opus id that does not exist
+  // at the Anthropic API (unset env surfaced as a 404 on the FIRST turn, not
+  // at boot), and an OpenAI embedding id stamped onto grounding proofs by an
+  // AnthropicProvider that cannot embed. An unset var now refuses boot,
+  // naming the variable.
+  const anthropicModelId = requireEnv("ANTHROPIC_MODEL");
+  const embeddingModelId = requireEnv("EMBEDDING_MODEL_ID");
+
   const installedPacks = installFirstPartyPacks();
   // F5 — fail boot CLOSED on pack config drift (no-op unless CONFIG_SEAL_DIGESTS
   // is pinned). Runs before audit-postgres/tool-roster gates and before traffic.
@@ -1261,7 +1275,7 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     // no cast needed (was a redundant `as never`).
     pool: pgPool,
     modelProvider,
-    modelId: process.env.EMBEDDING_MODEL_ID ?? "text-embedding-3-small",
+    modelId: embeddingModelId,
     tenantId: "ibatexas",
   });
 
@@ -1311,11 +1325,11 @@ export async function bootstrapClaustrum(): Promise<Conductor> {
     grounding,
     planner: createIbatexasPlanner({
       model: modelProvider,
-      modelId: process.env.ANTHROPIC_MODEL ?? "claude-opus-4-5-20250101",
+      modelId: anthropicModelId,
       capabilityPlanners: IBATEXAS_CAPABILITY_PLANNERS,
       deriveContext: deriveIbatexasPlannerContext,
     }),
-    responder: naiveResponder(modelProvider),
+    responder: naiveResponder(modelProvider, anthropicModelId),
     explainer: ibatexasExplainer(),
     handoff: noopHandoff(),
     telemetry: fastifyTelemetry(tokenUsageStore),
