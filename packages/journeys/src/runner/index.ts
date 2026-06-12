@@ -1,4 +1,5 @@
-// runner/ barrel — sequential journey runner skeleton (owned by T1a-1).
+// runner/ barrel — sequential journey runner skeleton (owned by T1a-1)
+// + per-run journey locks (T1b-7).
 
 export {
   runJourney,
@@ -12,3 +13,13 @@ export {
   type JourneyRunResult,
   type RunJourneyOptions,
 } from "./run-journey.js"
+
+export {
+  acquireJourneyLock,
+  JourneyLockTimeoutError,
+  JOURNEY_LOCK_TTL_SECONDS,
+  JOURNEY_LOCK_ACQUIRE_TIMEOUT_MS,
+  type JourneyLockHandle,
+  type JourneyLockOptions,
+  type JourneyLockRedis,
+} from "./journey-lock.js"

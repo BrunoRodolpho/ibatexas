@@ -44,6 +44,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import pg from "pg"
 import {
+  closeRedisClient,
   onEvent,
   emitEvidenceCapture,
   emitJourneyAborted,
@@ -63,6 +64,11 @@ import {
   type ActExecutors,
   type JourneyRunContext,
 } from "../runner/run-journey.js"
+import {
+  acquireJourneyLock,
+  JourneyLockTimeoutError,
+  type JourneyLockHandle,
+} from "../runner/journey-lock.js"
 import { runPreflight, type PreflightResult } from "./preflight.js"
 import { loadTestEnv } from "./test-env.js"
 import {
@@ -1053,6 +1059,45 @@ export async function runJourneyCli(options: RunJourneyCliOptions): Promise<Jour
     )
   }
 
+  // ── T1b-7 per-run journey lock ─────────────────────────────────────────
+  // One Redis lock per JOURNEY id (SET NX EX, UUID-token value, Lua
+  // conditional release — runner/journey-lock.ts): concurrent runs of the
+  // SAME journey serialize — the second run WAITS for the holder (with a
+  // progress line), failing with a clear message past the deadline; runs
+  // of DIFFERENT journeys never contend. Serialization protects the run's
+  // shared stack state: the seeded customer row, the hashed(customerId)
+  // audit namespace the verify phase scopes to (D-012), and the
+  // order-cancel route's 5/10min/customer rate-limit budget (D-014).
+  // REDIS_URL comes from the harness env (.env.test, loaded above).
+  let lock: JourneyLockHandle
+  try {
+    lock = await acquireJourneyLock(journey.id, { onWait: onProgress })
+  } catch (err) {
+    throw new JourneyRunCliError(
+      err instanceof JourneyLockTimeoutError
+        ? err.message
+        : `journey lock: acquire failed for ${journey.id} — ${(err as Error).message}`,
+    )
+  }
+
+  try {
+    return await runLockedJourney({ journey, k, options, onProgress })
+  } finally {
+    await lock.release()
+    // The lock's shared Redis client must never pin the event loop open
+    // after the run (`ibx journey run` exits via exitCode, not process.exit).
+    await closeRedisClient().catch(() => undefined)
+  }
+}
+
+/** The lock-guarded body of `runJourneyCli` — attempts, budget, report. */
+async function runLockedJourney(args: {
+  journey: Journey
+  k: number
+  options: RunJourneyCliOptions
+  onProgress: (line: string) => void
+}): Promise<JourneyRunReport> {
+  const { journey, k, options, onProgress } = args
   const priceTable = loadPriceTable()
   const apiBaseUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001"
   const runsDir = options.runsDir ?? join(REPO_ROOT, "runs")
