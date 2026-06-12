@@ -48,6 +48,47 @@ acceptance tests (P0-1, P0-2, P0-9) run against it; `testcontainers@^12` was alr
 already has an env-gated real-Redis test idiom (`REDIS_TEST_URL` skip-guards) alongside testcontainers —
 agents may use either pattern where the plan says "real-Redis test".
 
+## D-008 — Phase 0 outcomes: assumptions adopted from the implementing agents (2026-06-12)
+
+All 10 workflow tasks `done`; commits 7b82f8e (P0-1), 83d2c8c (P0-2), d93dc89 (P0-6), 2a1deaf (P0-8),
+f96246a (P0-7), 1dc2364 (P0-9), a32392f + adjudicate 99ec4dd (P0-5), 3bee5e5 (P0-4), 0a2ca96 (P0-3),
+10fa796 (P0-11), 04e6609 (P0-10). Notable engineering decisions inherited by later phases:
+
+- **Ledger identifiers (P0-1)**: replay suppression surfaces as refusal code `ledger_replay_suppressed`
+  with basis `{category:"ledger", code:"replay_suppressed"}` — journey oracles must assert these exact
+  strings. `@adjudicate/audit@^2.0.1` is now a direct apps/api dep; node-redis is adapted via a typed
+  narrowing wrapper (rejections pass through → bridge fail-closed).
+- **Audit read-path conventions (P0-2)**: no upstream reader fits the port shapes; direct SQL through
+  audit-postgres's `PostgresReader` + its canonical `rowToRecord`. Customer attribution = `session_id
+  = customerId` OR `envelope payload.customerId`; an LLM-planner envelope without payload.customerId is
+  NOT attributable from the audit row (documented recall gap). Wrong tenantId → empty (fail-safe).
+  Caps: 500 rows replay/outcomes, keyset-paged 200 stream.
+- **WATCH ITEM — embedding gap (P0-6 investigation)**: `@claustrum/grounding-pgvector.retrieve()` calls
+  `modelProvider.embed(perception.text)` at runtime, but `AnthropicProvider.embed()` throws
+  `not_implemented` unless constructed with an `embedding.proxy` — and claustrum-bootstrap constructs
+  it without one. Pre-existing production gap (not introduced here). MUST verify how the cognitive loop
+  handles a throwing grounding port before T1a-13 runs JOURNEY-001 against the real SUT.
+- **ANTHROPIC_MODEL + EMBEDDING_MODEL_ID** are now fail-fast required at boot (first statements of
+  bootstrapClaustrum) — the T1a-11a env contract must set both; .env.example documents both as REQUIRED.
+- **packs-composed surface (P0-8)**: exports `IBATEXAS_COMPOSED_PACKS`,
+  `IBATEXAS_COMPOSED_CAPABILITY_PLANNERS`, `composedIntentKinds()` (59-kind dedup union; `pix.*`/
+  `loyalty.*` deliberately excluded — those live in @ibatexas/intent-kinds). @adjudicate/pack-payments-pix
+  is NOT in the composed list (platform pack, not first-party). T1a-2's lint gate imports this package.
+- **Roster drift (P0-7)**: `toolRosterDrift(tools, intents, {planners, contexts, onWarn})` — context legs
+  run only when planners supplied; `ROSTER_DRIFT_CONTEXTS` + `ADVERTISED_NOT_REGISTERED_WHITELIST`
+  (keyed `<context>:<kind>`) exported from register-ibatexas-tool-packs.ts. De-advertising touched only
+  planner `allowedIntents`; tool→intent maps + MUTATING classifications kept so WS4 restore is one line.
+- **P0-4**: 3 stale domain tests updated to the kernel-REFUSE contract (`payment.not_found` /
+  `order.projection.not_found`) — the cutover moved the not-found path from thrown errors to REFUSE
+  decisions; tests now assert the current intended contract.
+- **P0-5**: CLAUDE.md rule 9 verified ACCURATE post-P0-1 (no edit needed). Six (not two) stale NATS-doc
+  refs repointed. Remaining dead-link debt (README→PROJECT_STATE, 7 kernel.yaml runbook_urls →deleted
+  migration docs, ADR content home deleted) recorded as product-docs backlog — outside plan scope.
+- **P0-11**: lock value = JSON blob `{scenario,pid,startedAt,token:<uuid>}` with full-string Lua compare
+  (strictly stronger than PID check); `force` = plain SET EX takeover, old holder's release no-ops.
+- **Transient**: one Docker Hub pull flake (TLS handshake timeout on redis:7-alpine) in a full-suite run;
+  clean on immediate re-run. If nightly CI hits this, add a registry mirror/retry — not a code issue.
+
 ## D-007 — CLAUDE.md "only run tests when explicitly requested" vs plan verify steps
 
 ibatexas CLAUDE.md's Agent Behavior section discourages unprompted test runs. The plan's per-task
