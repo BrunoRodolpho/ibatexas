@@ -352,13 +352,15 @@ Engineering decisions / assumptions adopted (most-logical, per the goal directiv
 The mechanics are built + unit-validated; the following are operational steps that REQUIRE the running
 test/staging stack and/or a real 7-day soak clock, so they cannot complete in-session:
 
-1. **Live boot wiring** — compose the agent plane in `bootstrapClaustrum`: expose the shared production
-   ports from the bootstrap closure, then wire AGENT_REGISTRY → `createAgentTriggerBridge` (T3-2) with
-   `createShadowTriggerRunner` over `composeShadowConductor` (T3-6) as its runner, boot the
-   `createAgentKillSwitchManager` pollers (T3-5) + `setAgentKillStateReader(manager.isKilled)`, the host-
-   side kill check in the runner, the `createAgentApprovalEngine` (T3-7) + a `POST /api/agents/approvals/
-   :token/resolve` route, and a per-agent `createModelCallCap` on the agent model. Cleanup in
-   `resetClaustrumForTests`. Validate against the test stack (docker-compose.test + process-compose).
+1. **Live boot wiring — DONE (flag-gated, commit 15f3c02).** `startManagedAgentPlane` +
+   `createPixTriggerMapper` (`managed-agent-plane.ts`) compose the Stage-0 plane from the production
+   ports (shadow conductor T3-6 + sandbox registry, kill-switch manager T3-5, approval engine T3-7,
+   kill-guarded shadow runner over the trigger bridge T3-2) and `bootstrapClaustrum` starts it behind
+   `IBX_AGENTS_ENABLED` (default OFF; fail-open; Redis pub/sub via `redis.duplicate()`; cleanup in
+   `resetClaustrumForTests`). Unit-validated flag-OFF path + mapper; the flag-ON `start()` (live NATS/
+   BullMQ/Redis-pubsub) is operator-validated on the test stack — that enabled boot starts the soak
+   clock. STILL PENDING here: the `POST …/approvals/:token/resolve` HTTP route (thin glue over the
+   engine) + an optional per-trigger `createModelCallCap` on the agent model.
 2. **agent_runs durable table** — add the Postgres `agent_runs` migration (records `activatedAt`, decision
    distribution, stage) that the soak gate reads across restarts.
 3. **Stage-0 activation** — record the activation timestamp (soak clock start) when the plane boots in
