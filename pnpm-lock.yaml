@@ -500,6 +500,40 @@ importers:
         specifier: ^8.46.0
         version: 8.58.0(eslint@9.39.4(jiti@2.6.1))(typescript@5.9.3)
 
+  packages/agents:
+    dependencies:
+      '@adjudicate/conformance':
+        specifier: ^1.1.0
+        version: 1.1.0(@adjudicate/core@1.3.0)
+      '@adjudicate/core':
+        specifier: ^1.3.0
+        version: 1.3.0
+      '@adjudicate/pack-payments-pix':
+        specifier: ^0.2.1
+        version: 0.2.1
+      '@ibatexas/packs-composed':
+        specifier: workspace:*
+        version: link:../packs-composed
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+    devDependencies:
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.15
+      '@vitest/coverage-v8':
+        specifier: ^3.2.0
+        version: 3.2.4(vitest@3.2.4(@types/node@22.19.15)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.4(@types/node@22.19.15)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3)
+
   packages/audit-sink:
     dependencies:
       '@adjudicate/admin-sdk':
@@ -548,6 +582,9 @@ importers:
       '@adjudicate/runtime':
         specifier: ^0.2.1
         version: 0.2.1
+      '@ibatexas/agents':
+        specifier: workspace:*
+        version: link:../agents
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain

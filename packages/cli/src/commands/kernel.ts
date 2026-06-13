@@ -1748,6 +1748,70 @@ async function runPackBom(opts: {
     }
   }
 
+  // ── Managed agents (T3-3) ──────────────────────────────────────────────
+  // The agent roster is part of the AI-BOM: each AgentDefinition in
+  // @ibatexas/agents folds into the same digest-lock via the upstream
+  // pack-health/PackManifest mapping (`generateAgentAiBom`), keyed
+  // `agent/<id>` in the baseline next to the pack entries. The roster-drift
+  // gate runs first, fail-closed in EVERY mode (a drifting roster must
+  // never be baselined or verified green). Skipped only under `--pack`,
+  // which scopes the command to one pack explicitly.
+  if (opts.pack === undefined) {
+    const { AGENT_REGISTRY, agentRosterDrift, generateAgentAiBom } =
+      await import("@ibatexas/agents")
+    const driftFindings = agentRosterDrift()
+    if (driftFindings.length > 0) {
+      for (const f of driftFindings) {
+        console.error(
+          chalk.red(`✗ agent-roster drift [${f.agentId}] ${f.code}: ${f.detail}`),
+        )
+      }
+      mismatch = true
+    }
+    for (const def of AGENT_REGISTRY) {
+      const bom = generateAgentAiBom(def, {
+        generatedAt: BOM_GENERATED_AT,
+        kernelVersion: KERNEL_VERSION,
+        kernelMinVersion: KERNEL_MIN_VERSION,
+      })
+      digests[bom.packId] = bom.bomDigest
+
+      if (baseline !== undefined) {
+        const want = baseline[bom.packId]
+        if (want === undefined) {
+          console.error(chalk.red(`✗ ${bom.packId}: sem entrada na baseline`))
+          mismatch = true
+        } else if (want !== bom.bomDigest) {
+          console.error(
+            chalk.red(
+              `✗ ${bom.packId}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${bom.bomDigest.slice(0, 12)}…)`,
+            ),
+          )
+          mismatch = true
+        } else {
+          console.log(
+            chalk.green(`✓ ${bom.packId} → ${bom.bomDigest.slice(0, 16)}…`),
+          )
+        }
+      } else if (opts.json) {
+        console.log(JSON.stringify(bom, null, 2))
+      } else {
+        console.log(
+          chalk.bold(`AI-BOM ${bom.packId}@${bom.packVersion}`) +
+            chalk.dim(` (agente gerenciado, stage ${def.autonomyStage})`),
+        )
+        console.log(`  fingerprint : ${bom.fingerprint}`)
+        console.log(`  bomDigest   : ${bom.bomDigest}`)
+        console.log(
+          `  conformance : ${bom.conformance.passedCount}/${bom.conformance.total}`,
+        )
+        console.log(
+          `  health      : ${bom.healthTier} (${bom.healthScore.score}/${bom.healthScore.maxScore})`,
+        )
+      }
+    }
+  }
+
   // When neither verifying nor emitting full JSON, print the digest-lock so an
   // operator can capture/refresh governance/pack-bom-baseline.json.
   if (opts.verifyFile === undefined && opts.json !== true) {
@@ -1903,7 +1967,7 @@ export function registerKernelCommands(group: Command): void {
   group
     .command("pack-bom")
     .description(
-      "Gera o AI Bill-of-Materials (EU AI Act / NIST) dos packs — fingerprint + conformance + health. --verify-file falha (exit 1) se o bomDigest divergir da baseline.",
+      "Gera o AI Bill-of-Materials (EU AI Act / NIST) dos packs E do roster de agentes gerenciados (@ibatexas/agents) — fingerprint + conformance + health. --verify-file falha (exit 1) se o bomDigest divergir da baseline ou se o roster de agentes driftar.",
     )
     .option("--pack <spec>", "Pack alvo (default: todos os first-party)")
     .option("--json", "Emite o AiBom completo em JSON")
