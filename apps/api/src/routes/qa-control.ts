@@ -104,12 +104,14 @@ function stripQuotes(s: string): string {
 async function listJourneys(): Promise<Array<{ id: string; status: string }>> {
   const files = (await readdir(JOURNEYS_DIR))
     .filter((f) => /^JOURNEY-.*\.ya?ml$/.test(f))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
   const out: Array<{ id: string; status: string }> = [];
   for (const f of files) {
     const raw = await readFile(join(JOURNEYS_DIR, f), "utf-8");
-    const id = stripQuotes(/^id:\s*(.+)$/m.exec(raw)?.[1] ?? f.replace(/\.ya?ml$/, ""));
-    const status = stripQuotes(/^status:\s*(.+)$/m.exec(raw)?.[1] ?? "unknown");
+    // `\s*(\S.*)` (not `\s*(.+)`) keeps the match linear — the `\S` boundary
+    // removes the whitespace/`.` overlap that flags as super-linear backtracking.
+    const id = stripQuotes(/^id:\s*(\S.*)$/m.exec(raw)?.[1] ?? f.replace(/\.ya?ml$/, ""));
+    const status = stripQuotes(/^status:\s*(\S.*)$/m.exec(raw)?.[1] ?? "unknown");
     out.push({ id, status });
   }
   return out;
@@ -119,7 +121,7 @@ async function listScenarios(): Promise<Array<{ name: string }>> {
   if (!existsSync(SCENARIOS_DIR)) return [];
   return (await readdir(SCENARIOS_DIR))
     .filter((f) => /\.ya?ml$/.test(f))
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .map((f) => ({ name: f.replace(/\.ya?ml$/, "") }));
 }
 
