@@ -415,3 +415,64 @@ describe("resolve-and-assemble — identity base", () => {
     expect(ctx.sessionTokensConsumed).toBe(0);
   });
 });
+
+describe("resolve-and-assemble — agent-namespace token read (T3-4)", () => {
+  const AGENT_NS = "agent:pix-payment-failure-remediation@0.1.0";
+  const AGENT_SESSION = `${AGENT_NS}:entity:pay_001`;
+
+  it("injects ctx.agentTokensConsumed for agent sessions, keyed by the agent namespace via sessionTokenKey", async () => {
+    const seen: string[] = [];
+    redisGet = async (k) => {
+      seen.push(k);
+      if (k === sessionTokenKey("system", AGENT_NS)) return "150000";
+      if (k === sessionTokenKey("system", "cust_001")) return "777";
+      return null;
+    };
+    const { ctx } = await resolveAndAssemble({
+      kind: "payment.pix.regenerate",
+      payload: { orderId: "o1" },
+      customerId: "cust_001",
+      channel: "system",
+      sessionId: AGENT_SESSION,
+    });
+    // Agent meter read off the NAMESPACE (id@version), never the full
+    // per-entity sessionId — tokensPerDay aggregates across entity capsules.
+    expect(ctx.agentTokensConsumed).toBe(150_000);
+    expect(seen).toContain(sessionTokenKey("system", AGENT_NS));
+    expect(seen).not.toContain(sessionTokenKey("system", AGENT_SESSION));
+    // The F4 customer-session read is unchanged and coexists.
+    expect(ctx.sessionTokensConsumed).toBe(777);
+  });
+
+  it("non-agent sessions get NO agent meter (key never read, ctx key absent)", async () => {
+    const seen: string[] = [];
+    redisGet = async (k) => {
+      seen.push(k);
+      return null;
+    };
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.note.add",
+      payload: { orderId: "o1" },
+      customerId: "c1",
+      channel: "web",
+      sessionId: "chat-session-123",
+    });
+    expect(ctx.agentTokensConsumed).toBeUndefined();
+    expect(seen).toEqual([sessionTokenKey("web", "c1")]);
+  });
+
+  it("fails OPEN to 0 on a meter read error (parity with the F4 read side)", async () => {
+    redisGet = async (k) => {
+      if (k === sessionTokenKey("system", AGENT_NS)) throw new Error("redis down");
+      return null;
+    };
+    const { ctx } = await resolveAndAssemble({
+      kind: "payment.pix.regenerate",
+      payload: { orderId: "o1" },
+      customerId: "cust_001",
+      channel: "system",
+      sessionId: AGENT_SESSION,
+    });
+    expect(ctx.agentTokensConsumed).toBe(0);
+  });
+});

@@ -2,12 +2,23 @@
  * Policy-pack composition — the SINGLE source of the post-prepend pack list.
  *
  * The kernel adjudicates each intent against its owning pack's PolicyBundle,
- * but ibatexas prepends two ADOPTER-LEVEL business guards to every pack's
- * `business` phase at composition: the F4 session token-budget guard (REFUSE
- * over budget / ADR-120) and the confirm-on-autoresolve guard
- * (REQUEST_CONFIRMATION when an ambiguous money/booking target was
- * auto-resolved). These guards are NOT in any published `@ibatexas/pack-*`;
- * they live only here.
+ * but ibatexas prepends ADOPTER-LEVEL guards to every pack at composition:
+ *
+ *   business phase — the F4 session token-budget guard (REFUSE over budget /
+ *   ADR-120) and the confirm-on-autoresolve guard (REQUEST_CONFIRMATION when
+ *   an ambiguous money/booking target was auto-resolved).
+ *
+ *   auth phase (T3-4) — the managed-agent scope guard (REFUSE
+ *   `agent_scope_violation` for `agent:`-namespaced envelopes outside the
+ *   agent's declared kinds) and the per-agent over-budget ESCALATE guards.
+ *   These MUST sit in AUTH, not business: the kernel evaluates
+ *   state → taint → auth → business, and `confirmOnAutoResolveGuard` is
+ *   prepended to business — a business-phase scope guard would let an
+ *   out-of-scope money kind short-circuit into REQUEST_CONFIRMATION before
+ *   it could REFUSE (plan-v2 §9, governance critic).
+ *
+ * None of these guards are in any published `@ibatexas/pack-*`; they live
+ * only here (the agent factories in ./agent-guards.ts).
  *
  * Both the production router (`claustrum-bootstrap` → `composePolicyRouter`)
  * AND the policy-manifest exporter (`policy-manifest-export`) consume
@@ -19,6 +30,8 @@
 import type { PackV0 } from "@adjudicate/core";
 import { nameGuard, type Guard, type PolicyBundle } from "@adjudicate/core/kernel";
 import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitives";
+import { AGENT_REGISTRY } from "@ibatexas/agents";
+import { createAgentBudgetGuards, createAgentScopeGuard } from "./agent-guards.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -93,8 +106,22 @@ export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
   Guard<string, unknown, unknown>
 > = [sessionTokenBudgetGuard, confirmOnAutoResolveGuard];
 
+// ── Managed-agent scope + budget guards (T3-4) — AUTH phase ─────────────────
+// Built once over the composed AGENT_REGISTRY (@ibatexas/agents, T3-3) and
+// prepended to EVERY pack's auth phase, in evaluation order: scope first
+// (an out-of-scope envelope REFUSEs before its budget is even considered),
+// then one over-budget ESCALATE guard per agent that declares
+// `budgets.tokensPerDay`. All of them are inert (null) for non-agent traffic.
+export const agentScopeGuard = createAgentScopeGuard(AGENT_REGISTRY);
+export const agentBudgetGuards = createAgentBudgetGuards(AGENT_REGISTRY);
+
+export const IBATEXAS_ADOPTER_AUTH_GUARDS: ReadonlyArray<
+  Guard<string, unknown, unknown>
+> = [agentScopeGuard, ...agentBudgetGuards];
+
 /**
  * Build the production policy-pack list: each first-party pack with the
+ * adopter-level auth guards prepended to its `authGuards` phase and the
  * adopter-level business guards prepended to its `business` phase. This is the
  * EXACT composition `composePolicyRouter` dispatches over and the manifest
  * exporter describes — keeping the two in lockstep by construction.
@@ -104,6 +131,9 @@ export function buildIbatexasPolicyPacks(
   adopterBusinessGuards: ReadonlyArray<
     Guard<string, unknown, unknown>
   > = IBATEXAS_ADOPTER_BUSINESS_GUARDS,
+  adopterAuthGuards: ReadonlyArray<
+    Guard<string, unknown, unknown>
+  > = IBATEXAS_ADOPTER_AUTH_GUARDS,
 ): ReadonlyArray<ErasedPack> {
   return packs.map((p) => {
     const base = p.policy as unknown as PolicyBundle<string, unknown, unknown>;
@@ -111,6 +141,7 @@ export function buildIbatexasPolicyPacks(
       ...p,
       policy: {
         ...base,
+        authGuards: [...adopterAuthGuards, ...base.authGuards],
         business: [...adopterBusinessGuards, ...base.business],
       },
     } as unknown as ErasedPack;

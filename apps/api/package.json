@@ -42,6 +42,7 @@
     "@fastify/sensible": "^6.0.4",
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^5.2.5",
+    "@ibatexas/agents": "workspace:*",
     "@ibatexas/audit-sink": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/intent-kinds": "workspace:*",
