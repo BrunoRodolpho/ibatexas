@@ -176,6 +176,12 @@ echo ""
 # Exclusions (the task-pinned carve-out, kept minimal):
 #   - src/oracle/nats-capture.ts — the guard module itself NAMES the
 #     forbidden members to assert they are unreachable;
+#   - src/harness/trigger-inject.ts — T3-9: the SINGLE sanctioned test-plane
+#     publish (wakes a managed-agent trigger bridge in a journey). Contained
+#     like nats-capture: fingerprint-gated at runtime (IBX_TEST_FINGERPRINT),
+#     never imported by the persona driver (not in the {chat,http,fixture}
+#     act-tool set), unreachable from apps/* (leg 6). Deliberate + named,
+#     mirroring the JWT-fixture containment (plan §9 governance critic).
 #   - tests (__tests__/ + *.test.ts/*.spec.ts) — they pin the guard by
 #     attempting the forbidden calls against doubles.
 # Leg 7 above already fails closed when packages/journeys is missing, so
@@ -186,7 +192,8 @@ NATS_PUBLISH_CALLS="$(grep -rnE \
   --include='*.ts' --include='*.tsx' \
   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=__tests__ \
   --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' \
-  --exclude='nats-capture.ts' || true)"
+  --exclude='nats-capture.ts' \
+  --exclude='trigger-inject.ts' || true)"
 
 if [[ -n "$NATS_PUBLISH_CALLS" ]]; then
   echo "$NATS_PUBLISH_CALLS"
