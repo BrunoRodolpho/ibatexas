@@ -49,7 +49,8 @@
       "next": "apps/admin + apps/web direct dep fix — GHSA-q4gf-8mx6-v5v3 DoS via Server Components + the CVE-2026-44573..45109 middleware/proxy-bypass, SSRF and DoS cluster. Patched in 16.2.6+.",
       "@opentelemetry/sdk-node, @opentelemetry/exporter-prometheus": "apps/api transitive fix — GHSA-q7rr-3cgh-j5r3 (CVE-2026-44902) Prometheus exporter process crash via malformed HTTP. Patched in 0.217.0+.",
       "tmp": "transitive fix — GHSA-ph9p-34f9-6g65 (CVE-2026-44705) path traversal via unsanitized prefix/postfix. Patched in 0.2.6+.",
-      "fast-xml-builder": "transitive fix — GHSA-5wm8-gmm8-39j9 (CVE-2026-44665) attribute-value injection. Patched in 1.1.7+."
+      "fast-xml-builder": "transitive fix — GHSA-5wm8-gmm8-39j9 (CVE-2026-44665) attribute-value injection. Patched in 1.1.7+.",
+      "@claustrum/core": "T3-0 / D-017 local-tarball pin — @claustrum/core 0.3.0 (ChannelKind 'system' + DR-4 lockKeyStrategy) is not on the registry yet; @claustrum/memory-postgres and @claustrum/grounding-pgvector tarballs carry an EXACT 0.3.0 dependency (pnpm-pack-materialized workspace:*), which only the override can satisfy. Remove (with the apps/api file: pins) when the real claustrum release lands and registry pins are bumped — see docs/agents/phase-1b-pending-push.md."
     },
     "overrides": {
       "minimatch": "10.2.4",
@@ -73,7 +74,8 @@
       "@opentelemetry/sdk-node": ">=0.217.0",
       "@opentelemetry/exporter-prometheus": ">=0.217.0",
       "tmp": ">=0.2.6",
-      "fast-xml-builder": ">=1.1.7"
+      "fast-xml-builder": ">=1.1.7",
+      "@claustrum/core": "file:./local-tarballs/claustrum-core-0.3.0.tgz"
     },
     "auditConfig": {
       "ignoreCves": [

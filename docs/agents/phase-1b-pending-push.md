@@ -156,3 +156,32 @@ Verified locally before commit (T2-6b task output): full directory green
 real `bootstrapClaustrum` — plus the zero-infra content-key unit acceptance), and the
 one-char prompt mutation produced a different content key + the loud unknown-key
 error listing `planner:cancel-confirm-gate` as nearest (shared prefix 1180 chars).
+
+## 11. T3-0 claustrum release + registry pin bump (Phase 3, D-017)
+
+The T3-0 upstream change (claustrum `agents/phase-3`, commit `f8e24b1`: `ChannelKind`
+widened with `"system"`; DR-4 `lockKeyStrategy` + `sessionKeyAwareLockKey`; two-process
+trigger-vs-chat serialization test) is consumed by ibatexas as **committed local
+tarballs** (`local-tarballs/claustrum-*.tgz`, `file:` pins in `apps/api/package.json`
+plus a root `pnpm.overrides` entry for `@claustrum/core` — needed because the packed
+`memory-postgres`/`grounding-pgvector` tarballs carry an EXACT `0.3.0` core dependency).
+At push/release time:
+
+1. Push claustrum `agents/phase-3`, open the PR (small focused diff — this gated the
+   phase, plan §5 T3-0). NOTE: the branch is **already versioned** (core `0.3.0` minor,
+   channel-whatsapp `0.2.0` minor, dependents patch + CHANGELOGs — the changeset was
+   applied locally), so the changesets bot will see no pending changeset: publish with
+   `pnpm changeset publish` (tags + npm) after merge, or re-add a changeset and revert
+   the version commits if you prefer the bot's version-PR flow. Deliberate deviation
+   recorded in the claustrum commit: changesets' default peer-dep rule escalated all
+   core peer-dependents to **1.0.0**; this was overridden to patch bumps
+   (anthropic/channel-web/conformance/openai `0.1.2`) to avoid an unintended stability
+   signal — re-apply your preferred policy at publish time if different.
+2. After the registry has the release: in ibatexas, replace the six `file:` pins in
+   `apps/api/package.json` with registry ranges (`@claustrum/core ^0.3.0`,
+   `@claustrum/channel-whatsapp ^0.2.0`, others `^0.1.1`/`^0.1.2`), DELETE the root
+   `pnpm.overrides`/`overrideNotes` entry for `@claustrum/core`, delete
+   `local-tarballs/`, and `pnpm install`.
+3. Re-verify: `pnpm --filter @ibatexas/api test` green; in claustrum,
+   `pnpm -C packages/memory-postgres test` green (includes
+   `conductor-trigger-chat-serialization.test.ts`).
